@@ -58,7 +58,7 @@ struct ControlCenterView: View {
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 20) {
-            BudgetRailCard()
+            UsageRailCard()
             RepoStateRailCard()
             SignalsRailCard()
             KeyboardRailCard()
@@ -69,7 +69,7 @@ struct ControlCenterView: View {
 // MARK: - Rail cards
 
 /// Small card header used throughout the rail.
-private struct RailCardHeader: View {
+struct RailCardHeader: View {
     let title: String
     var body: some View {
         Text(title.uppercased())
@@ -77,63 +77,6 @@ private struct RailCardHeader: View {
             .tracking(0.06 * 11)
             .foregroundStyle(DS.Ink.p4)
             .padding(.bottom, 10)
-    }
-}
-
-struct BudgetRailCard: View {
-    @EnvironmentObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            RailCardHeader(title: "Today's budget")
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("$\(todayCost as NSDecimalNumber)")
-                    .font(DS.serif(22, weight: .medium))
-                    .foregroundStyle(DS.Ink.p1)
-                Text("/ $\(dailyCap as NSDecimalNumber)")
-                    .font(DS.mono(13))
-                    .foregroundStyle(DS.Ink.p4)
-            }
-            progressBar(fraction: CGFloat(truncating: fraction as NSNumber))
-                .padding(.top, 10)
-            Text(monthlySummary)
-                .font(DS.mono(11.5))
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.top, 6)
-        }
-        .editorialCard(padding: 16)
-    }
-
-    private var todayCost: Decimal {
-        let cal = Calendar.current
-        return state.sessionLogService.runs
-            .filter { cal.isDateInToday($0.startedAt) }
-            .compactMap(\.cost)
-            .reduce(Decimal(0), +)
-    }
-    private var dailyCap: Decimal { 8 }
-    private var fraction: Decimal {
-        min(1, todayCost / dailyCap)
-    }
-    private var monthlySummary: String {
-        let cal = Calendar.current
-        let month = state.sessionLogService.runs
-            .filter { cal.isDate($0.startedAt, equalTo: Date(), toGranularity: .month) }
-            .compactMap(\.cost)
-            .reduce(Decimal(0), +)
-        return "Monthly: $\(month as NSDecimalNumber) / $250.00 · on track"
-    }
-
-    private func progressBar(fraction: CGFloat) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3).fill(DS.Paper.sunk)
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(DS.Status.ok)
-                    .frame(width: max(4, geo.size.width * max(0, min(1, fraction))))
-            }
-        }
-        .frame(height: 5)
     }
 }
 

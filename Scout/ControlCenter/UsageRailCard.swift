@@ -10,7 +10,7 @@ struct UsageRailCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            UsageRailCardHeader(title: "Today's usage")
+            RailCardHeader(title: "Today's usage")
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(formatTokens(todayTotals.allTokens))
                     .font(DS.serif(22, weight: .medium))
@@ -95,18 +95,3 @@ struct UsageRailCard: View {
     }
 }
 
-// MARK: - Local header
-
-/// Local copy of the rail-card header pattern.
-/// `RailCardHeader` in `ControlCenterView.swift` is `private`; rather than
-/// touching that file (Task 9's territory), we define an equivalent here.
-private struct UsageRailCardHeader: View {
-    let title: String
-    var body: some View {
-        Text(title.uppercased())
-            .font(DS.sans(11, weight: .medium))
-            .tracking(0.06 * 11)
-            .foregroundStyle(DS.Ink.p4)
-            .padding(.bottom, 10)
-    }
-}
