@@ -10,6 +10,7 @@ struct ControlCenterView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    ConnectorAlertBanner()
                     header
                     HStack(alignment: .top, spacing: 32) {
                         primaryColumn
@@ -60,6 +61,7 @@ struct ControlCenterView: View {
         VStack(alignment: .leading, spacing: 20) {
             UsageRailCard()
             RepoStateRailCard()
+            ConnectorHealthRailCard()
             SignalsRailCard()
             KeyboardRailCard()
         }
