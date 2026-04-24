@@ -25,44 +25,16 @@ Items here span all three Scout repos:
 
 ### Cross-cutting (affects multiple modules in scout-plugin/engine/scout/)
 
-#### Wheel-packaging readiness **(important)**
+_All three "important" cross-cutting items addressed in scout-plugin
+PR #6 (polish/plan-1-followups). See the Resolved section below._
 
-- `scout.config.PACKAGE_DEFAULTS_PATH` and `scout.manifest.ENGINE_DIR` both
-  use `Path(__file__).parent.parent` navigation. This works for
-  `pip install -e .` (editable) but breaks when the package is built as a
-  wheel: `pyproject.toml` `[tool.hatch.build.targets.wheel]` only includes
-  `packages = ["scout"]`, so `defaults/scout-config.yaml` and the
-  `manifest.json` write target are outside the packaged tree.
-- **Fix direction:** before building any wheel, migrate to
-  `importlib.resources.files("scout") / "defaults" / "scout-config.yaml"`,
-  and either move `defaults/` under `scout/` or add an explicit
-  `[tool.hatch.build.targets.wheel.force-include]` entry. Add a CI smoke
-  test that does `pip wheel .` then `pip install` the built wheel and runs
-  `scoutctl version`.
-
-#### Unexpected-exception policy in `scout.cli.main` **(important)**
-
-- `main()` catches only `ScoutError`. Any other exception bubbles up as a
-  raw Python traceback with exit code 1 — indistinguishable from
-  `ScoutError.exit_code = 1`. Scout-app will parse exit codes to decode
-  errors; a bare traceback breaks that contract.
-- **Fix direction:** either wrap `app()` in a broader `except Exception`
-  that maps to a reserved code (e.g. 70, "internal error") and formats
-  stderr consistently, or explicitly document that non-ScoutError bubbling
-  is intentional with a comment explaining why. Current ambiguity is the
-  worst outcome.
-
-#### Subcommand drift between `scout.manifest` and `scout.cli` **(important)**
-
-- `scout.manifest.build_manifest()` hardcodes
-  `subcommands=["version", "manifest"]`. `scout.cli` registers these via
-  Typer. Adding a new subcommand in Plan 2+ requires a manual update to
-  `manifest.py`; easy to forget, and scout-app's capability check won't
-  notice the divergence until something is invoked that isn't declared.
-- **Fix direction:** derive `subcommands` from the live Typer app at build
-  time:
-  `[cmd.name for cmd in app.registered_commands] + [g.name for g in app.registered_groups]`.
-  Or add a static-assertion test that fails if the two diverge.
+The partial fix in PR #6 covers `scout.config` (wheel-ready via
+`importlib.resources`) but leaves `scout.manifest.ENGINE_DIR` still
+using `Path(__file__).parent.parent`. That path is only consulted by
+`scoutctl manifest build`, which is a dev-only operation that targets
+the editable engine clone — under wheel install there is no
+"engine dir" to write into. Revisit when a non-editable use case
+appears (e.g., a packaged `.app` bundling the engine).
 
 ### scout.errors
 
@@ -131,14 +103,11 @@ Items here span all three Scout repos:
 
 ### scout.cli
 
-- **(important)** No `test_cli.py`. Task 8's perf/import-discipline
-  checks don't exercise the actual CLI plumbing. Add `CliRunner`-based
-  tests for:
-  - exit-code forwarding on `ScoutError`
-  - `manifest build` writes the file
-  - `manifest show` emits valid JSON
-  - `version` equals `__version__` exactly
-  - end-to-end subprocess invocation of each subcommand
+- **(important)** ~~No `test_cli.py`.~~ Resolved in scout-plugin PR #6
+  — added `CliRunner`-based tests for exit-code forwarding, `manifest
+  build` file write, `manifest show` JSON output, `version` equality
+  with `__version__`, and end-to-end subprocess via the wheel smoke
+  test.
 - **(minor)** `print()` used four times. Swap to `typer.echo()` for
   broken-pipe handling (`scoutctl version | head` without a `BrokenPipeError`)
   and future `err=True` / color options.
@@ -218,3 +187,31 @@ Items here span all three Scout repos:
 
 _(Move entries here as PRs close them. Format:
 `- **[item title]** — PR #N, date.`)_
+
+### scout-plugin PR #6 — polish: plan-1 followups (2026-04-24)
+
+- **Wheel-packaging readiness (cross-cutting, important)** — moved
+  `engine/defaults/` under `engine/scout/defaults/`; `scout.config`
+  now resolves the file via `importlib.resources.files() + as_file()`.
+  Added slow-marked smoke test (`tests/smoke/test_wheel_install.py`)
+  that builds a wheel, installs it in a fresh uv venv, and verifies
+  `scoutctl version`, `manifest show`, and `load_config()` all work.
+  Note: `scout.manifest.ENGINE_DIR` left as-is — only used by
+  `scoutctl manifest build` which is a dev-only operation.
+- **Unexpected-exception policy in `scout.cli.main` (cross-cutting,
+  important)** — `main()` now catches `Exception` and maps to
+  reserved exit code `70` with `scoutctl: internal error: <Type>:
+  <msg>` to stderr. `KeyboardInterrupt` and `SystemExit` propagate
+  unchanged. Tests cover all four paths.
+- **Subcommand drift between `scout.manifest` and `scout.cli`
+  (cross-cutting, important)** — `build_manifest()` now derives
+  `subcommands` by walking the click group built from
+  `scout.cli.app`, so adding a `@app.command()` automatically updates
+  the manifest. Lazy imports of `typer.main` and `scout.cli` keep
+  `scoutctl` startup unchanged. Test monkeypatches a dummy
+  `CommandInfo` onto the app and asserts it appears in the manifest.
+- **`scout.cli` — No `test_cli.py` (important)** — added full
+  `CliRunner` coverage of `version`, `manifest show`, `manifest
+  build`, no-args help, and `main()` error dispatch (clean return,
+  `ScoutError` forwarding, unexpected-exception mapping,
+  `KeyboardInterrupt` and `SystemExit` propagation).
