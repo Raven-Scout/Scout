@@ -219,6 +219,22 @@ scoutctl = "scout.cli:main"
 dev = ["pytest", "pytest-cov", "mypy", "ruff"]
 ```
 
+### Startup latency budget
+
+The app invokes `scoutctl` on interactive user actions (checkbox clicks, alert acks). Python import of `textual`, `rich`, and the KB ontology can add 200–400ms if imported at module top. This is not acceptable for UI responsiveness.
+
+**Rules enforced via test:**
+
+- `scoutctl` top-level imports are restricted to `typer`, `pathlib`, `sys`, `os`, and the small internal modules (`config`, `paths`, `errors`). No heavy imports at module top of `cli.py` or any subcommand module's top-level body.
+- Heavy imports (`textual`, `rich`, `jinja2`, `yaml` where possible, `watchdog`, `scout.kb.*`) live **inside** the subcommand function body — imported on first call, not at CLI startup.
+- A dedicated latency test in `engine/tests/perf/test_startup.py` asserts:
+  - `scoutctl --help` completes in < 100ms (cold).
+  - `scoutctl version` completes in < 50ms.
+  - `scoutctl action-items mark-done ...` completes in < 200ms including the file rewrite (warm).
+- A ruff rule or a simple import-analysis test flags top-level imports of the blacklisted modules and fails CI.
+
+This keeps the CLI responsive enough that scout-app's UI doesn't feel laggy when driving it.
+
 ### File migration map (source → destination)
 
 Moves to plugin:
@@ -429,9 +445,24 @@ slack: "@example"
 
 **Does not:**
 - Touch existing files.
-- Populate KB content.
+- Populate KB content (unless `--with-examples` passed).
 - Write secrets (`scoutctl setup mcp` does that).
 - Run silent migrations — schema mismatches fail fast with a `scoutctl migrate` instruction.
+
+### `--with-examples` flag (colleague first-run bootstrap)
+
+`scoutctl setup data-dir --with-examples` additionally copies a small seed dataset from `engine/defaults/example_kb/` into the data dir if the target KB subdirs are empty. Contents:
+
+- `knowledge-base/people/example-colleague.md` (2 entries) — schema-valid placeholder persons.
+- `knowledge-base/projects/example-project.md` (1 entry) — placeholder project.
+- `knowledge-base/channels/example-channel.md` (1 entry) — placeholder Slack channel.
+- `action-items/action-items-<today>.md` — a 3-task sample file with at least one task referencing an example person and one with a `[ ]` checkbox so mark-done can be tested.
+
+The seed is labeled in-file with a leading comment (`<!-- example seed; safe to delete -->`) so the user can identify and remove it once they've populated their own content. Running `scoutctl setup data-dir` without `--with-examples` skips this; running with the flag on an already-populated directory is a no-op (existing files untouched).
+
+**Why v0.4.0, not a follow-up:** without seed data, a colleague's first scout-app launch shows empty cards — they can't tell the install succeeded or failed. With seed data, they see populated cards immediately and can verify end-to-end by marking an example task done. This is the difference between "did it work?" and obvious success.
+
+**Smoke test:** `scoutctl setup verify --smoke-test` exercises the example data (list action items, mark one done, query an example person, emit a connector-health report against empty JSONL) and reports a green checklist. Runs automatically at the end of `scoutctl setup` when `--with-examples` was used.
 
 ### Data dir schema versioning
 
@@ -440,6 +471,32 @@ Plain-text `$SCOUT_DATA_DIR/.scout-state/schema-version` holds the integer versi
 | Version | Change |
 |---|---|
 | 1 | Initial — matches current `~/Scout` layout |
+
+### Concurrency and file-locking rules
+
+Multiple processes touch the data dir simultaneously: scout-app reads (logs, KB, action items), Claude Code hooks write (JSONL logs, session tokens), Claude sessions mutate markdown (action items), scheduled LaunchAgents run reports, and the TUI may be running in a terminal.
+
+**Writer rules:**
+
+| File class | Pattern | Rationale |
+|---|---|---|
+| JSONL logs (`.scout-logs/*.jsonl`) | Append-only with `O_APPEND`; single `write()` per line; keep lines under 4KB when possible | POSIX guarantees atomic append for writes ≤ `PIPE_BUF` (typically 4KB). Multiple concurrent appenders interleave cleanly line-by-line. |
+| JSONL lines > 4KB | Same `O_APPEND` path + advisory `flock(LOCK_EX)` around the `write()` call | Defensive; large lines are rare but shouldn't risk interleaving. |
+| Action-item markdown (`action-items/*.md`) | Write to `<file>.tmp`, `fsync()`, then `os.replace(tmp, final)` | Atomic rename is POSIX-guaranteed; readers see either the old or new complete file, never a half-written state. |
+| Stateful JSON (`connector-alerts-acked.json`) | Read-modify-write under `flock(LOCK_EX)` on the file itself; write via temp + rename | Protects against lost updates when app and engine both ack. |
+| `schema-version` file | Written only by `scoutctl migrate`; held under exclusive lock for the duration | Single-writer invariant. |
+
+**Reader rules:**
+
+- JSONL readers must tolerate malformed / truncated trailing lines (common at tail during an active append) — log + skip, never crash.
+- Markdown readers can read without locking thanks to atomic rename.
+- Stateful JSON readers take `flock(LOCK_SH)` briefly; retry once on failure.
+
+**Concurrency tests** (`engine/tests/concurrency/`):
+
+- `test_jsonl_parallel_appenders` — N processes each append K lines; final file has N*K parseable lines, no partial/interleaved rows.
+- `test_action_item_atomic_rewrite` — Writer loops rewriting a file; reader loops reading; reader never sees an incomplete file over 1000 iterations.
+- `test_ack_store_concurrent` — Two processes ack different alerts concurrently; both end up persisted.
 
 ## 7. Scout-app integration
 
@@ -454,6 +511,22 @@ Legacy default (~/Scout for data; ${CLAUDE_PLUGIN_ROOT}/engine if discoverable)
     ↓ (if unresolved)
 First-run wizard
 ```
+
+### Path normalization rule (critical)
+
+Swift, Python, and bash handle `~` and symlinks inconsistently. A value like `~/Scout` read from the process environment is never expanded by Swift; `URL(fileURLWithPath: "~/Scout")` yields a literal path with a tilde character. Passing that to a subprocess fails or behaves surprisingly.
+
+**Rule:** **The app normalizes all paths at the resolution boundary.** Immediately on resolution — from env, NSUserDefaults, or wizard — the app applies:
+
+1. Tilde expansion (`NSString.expandingTildeInPath` or `stringByExpandingTildeInPath`).
+2. Symlink resolution (`URL.resolvingSymlinksInPath`).
+3. Absolute-path canonicalization (`URL.standardizedFileURL`).
+
+Only fully-expanded absolute paths are ever persisted to NSUserDefaults or passed to `EngineClient`. `EngineClient` asserts incoming paths are absolute and non-tilde-prefixed before invoking `scoutctl`.
+
+**Defense in depth (Python side):** `scout.paths` also applies `Path(...).expanduser().resolve()` on any env-var-sourced path, so a hand-edited shell profile with `SCOUT_DATA_DIR=~/Scout` still works — just slightly less cleanly than via the app.
+
+Test: `ScoutEnvironmentResolverTests.testExpandsAndResolvesPaths` covers tilde input, symlink chain, relative path, and already-absolute input.
 
 ### `ScoutEnvironment` value
 
@@ -650,10 +723,29 @@ Targets `engine/scout/*.py`. Fast, no real I/O (uses `tmp_path` fixtures). Cover
 |---|---|
 | `test_setup_fresh_data_dir` | `scoutctl setup data-dir` on empty dir creates all expected subdirs + seed files |
 | `test_setup_idempotent` | Second `scoutctl setup` run changes nothing |
+| `test_setup_with_examples` | `--with-examples` copies seed data; re-running is a no-op when KB non-empty |
 | `test_setup_refuses_on_schema_mismatch` | v1 data dir, v2 engine → refuses with migrate instruction |
 | `test_hook_end_to_end` | Pipe Claude Code event JSON to `scoutctl hook connector-log`; assert JSONL row appended |
 | `test_manifest_round_trip` | `manifest build` → `manifest show` equality |
 | `test_action_items_cli_contract` | Every action-items subcommand's stdout/stderr/exit-code shape scout-app depends on |
+| `test_verify_smoke_test` | `scoutctl setup verify --smoke-test` on an example-seeded data dir returns green |
+
+### Performance tests (pytest, `engine/tests/perf/`)
+
+| Scenario | Assertion |
+|---|---|
+| `test_startup_help` | `scoutctl --help` completes in < 100ms (cold process) |
+| `test_startup_version` | `scoutctl version` completes in < 50ms |
+| `test_action_items_mark_done_latency` | End-to-end `scoutctl action-items mark-done` including atomic file rewrite completes in < 200ms |
+| `test_no_heavy_imports_at_startup` | Static import analysis fails if `textual`, `rich`, `jinja2`, `watchdog`, or `scout.kb.*` are imported at module top of `cli.py` or any subcommand module |
+
+### Concurrency tests (pytest, `engine/tests/concurrency/`)
+
+| Scenario | Assertion |
+|---|---|
+| `test_jsonl_parallel_appenders` | N=8 processes each append K=100 JSONL lines; final file has 800 parseable lines, no partial rows |
+| `test_action_item_atomic_rewrite` | Writer + reader loop 1000 iterations; reader never sees a half-written markdown file |
+| `test_ack_store_concurrent` | Two processes ack different alerts concurrently; both persist |
 
 ### Contract tests (both sides)
 
@@ -780,8 +872,20 @@ The design handles this via **split**, not **scrub-and-delete**:
 11. Commit scout-plugin with tag `scrub-complete`.
 
 **Phase D — Wire runtime context injection:**
+
 12. Engine adds a template rendering step before session start: Jinja over the skill markdown with `{user: {...}, kb_summary: {...}}` context.
-13. Test with live data: run a session with the template-rendered skills; verify Claude's output quality is not degraded relative to pre-scrub inlined-context behavior. Degradation fix: more structured `kb_summary` injection, not re-inlining.
+
+    **`kb_summary` is pre-computed, not live-queried per session.** The session-start path must stay fast (< 200ms KB summary resolution). Approach:
+
+    - `scoutctl kb refresh-summary` builds a `kb_summary.json` in `$SCOUT_DATA_DIR/.scout-cache/kb-summary.json`. Contents: compact denormalized projection of people, projects, channels, and open-task counts — just the fields skills actually reference, not the full graph.
+    - Refresh triggers, any of:
+      - A new launchd job (`kb-summary-refresh.plist`) running every 15 minutes.
+      - The existing `kb-pre-filter` hook fires `refresh-summary` when it detects KB mutations since the last refresh.
+      - Manual via `scoutctl kb refresh-summary` from the TUI or app's Preferences.
+    - Session start reads the cached JSON. If the cache is missing or older than 1 hour, it triggers a synchronous refresh once and logs a slow-path warning (`scoutctl --log-level debug` visible).
+    - Cache validity is checksummed against KB directory mtimes; stale-but-fresh detection is O(number of KB files), not O(KB content size).
+
+13. Test with live data: run a session with the template-rendered skills; verify Claude's output quality is not degraded relative to pre-scrub inlined-context behavior. Degradation fix: enrich the `kb_summary` projection (more fields, more entities), not re-inline into skills.
 
 **Phase E — Delete originals:**
 14. `rm ~/Scout/SKILL.md ~/Scout/DREAMING.md ~/Scout/RESEARCH.md`.
@@ -808,7 +912,7 @@ None blocking implementation. Possible followups after v0.4.0 ships:
 - Sparkle auto-updater for scout-app.
 - A `scoutctl plugin sync` command that wraps `git pull && uv pip install -e .[dev] --upgrade && scoutctl setup verify` into one colleague-friendly update step.
 - Auto-prompt in app when plugin has updates available (polls `git fetch` periodically).
-- A public "example" KB seed dataset for colleagues' first-run bootstrap.
+- Richer seed KB dataset (the v0.4 seed is minimal — just enough to verify the install).
 
 ## 14. References
 
