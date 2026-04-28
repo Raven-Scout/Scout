@@ -251,6 +251,7 @@ extension ActionItemsParser {
             if inSection,
                let m = taskRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
                 let nsLine = line as NSString
+                let indent = nsLine.substring(with: m.range(at: 1))
                 let mark = nsLine.substring(with: m.range(at: 2))
                 let rest = nsLine.substring(with: m.range(at: 3))
                 let done = mark.lowercased() == "x"
@@ -277,7 +278,8 @@ extension ActionItemsParser {
                     comments: [],
                     deepLinks: deepLinks,
                     snoozedUntil: snoozedUntil,
-                    carriedInFrom: carriedInFrom
+                    carriedInFrom: carriedInFrom,
+                    indentLevel: indentLevelFor(indent)
                 ))
                 i += 1; continue
             }
@@ -371,6 +373,20 @@ extension ActionItemsParser {
             return true
         }
         return false
+    }
+
+    /// Translate a leading-whitespace indent prefix (group 1 of ``taskRe``)
+    /// into a markdown-list nesting depth. Mirrors how the action-items files
+    /// are typeset: 1 tab = 1 level, otherwise 2 spaces = 1 level. Mixed
+    /// indentation sums correctly (1 tab + 2 spaces = level 2).
+    static func indentLevelFor(_ indent: String) -> Int {
+        var tabs = 0
+        var spaces = 0
+        for ch in indent {
+            if ch == "\t" { tabs += 1 }
+            else if ch == " " { spaces += 1 }
+        }
+        return tabs + spaces / 2
     }
 
     static func kindFor(emoji: String, title: String) -> ActionSection.Kind {
