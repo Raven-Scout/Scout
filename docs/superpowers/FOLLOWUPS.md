@@ -181,6 +181,40 @@ appears (e.g., a packaged `.app` bundling the engine).
   consumers. Will be used by Plan 2+ concurrency tests per the spec
   (§ 6 Concurrency and file-locking rules).
 
+### scout.ids (Plan 2/3 — not yet implemented; v0.4 spec §13.1)
+
+- **(minor)** `id-map.json` retention policy is unspecified. When a user
+  deletes a task in Obsidian, its `[#A3F7]→ULID` mapping becomes orphaned.
+  Decide during implementation: retain forever (text is cheap, audit
+  value), or prune entries whose `last_seen_in_file` is older than N
+  days. Default to "retain forever" — the file is bounded by the user's
+  total lifetime task count, which won't reach concerning sizes for
+  years. Worth a load-test once `id-map.json` exceeds ~10MB.
+
+### scout.action_items.writer (Plan 2/3 — not yet implemented; v0.4 spec §6, §13.1)
+
+- **(minor)** Obsidian "Safe Save" / iCloud-sync interaction with our
+  atomic-rename writes is unverified. Spec relies on `os.replace(tmp,
+  final)` being POSIX-atomic, which Obsidian generally handles cleanly,
+  but in some configurations (iCloud syncing the vault, or specific
+  timing) external overwrites trigger Obsidian's "External changes
+  merged" notification. When implementing `writer.py` tests, include a
+  manual verification step: open today's action-items file in Obsidian,
+  trigger a `mark_done` from CLI, confirm no popup appears. If popup
+  reproduces, evaluate alternatives (file-handle hold + truncate-write
+  vs. rename) before locking in atomic-rename as the v0.4 invariant.
+
+### v0.5+ event store (Plan 6+ implementation; vision spec §"Egress failure handling")
+
+- **(minor)** `scoutctl connector dead-letter retry <event_id>` re-emit
+  semantics: implement as *new event with copied payload + new ULID +
+  current timestamp + reference to the failed original*, NOT as
+  re-insertion of the original row. Strict event-sourcing invariant:
+  the log's `ts` ordering must remain monotonic; you never inject past
+  events into the present. The retry event's payload includes
+  `replay_of: <original_event_id>` for audit. The tombstone on the
+  failed original stays in place.
+
 ---
 
 ## Resolved

@@ -232,6 +232,7 @@ The app invokes `scoutctl` on interactive user actions (checkbox clicks, alert a
   - `scoutctl version` completes in < 50ms.
   - `scoutctl action-items mark-done ...` completes in < 200ms including the file rewrite (warm).
 - A ruff rule or a simple import-analysis test flags top-level imports of the blacklisted modules and fails CI.
+- **CI-aware thresholds.** The latency assertions read a `LATENCY_BUDGET_MULTIPLIER` env var (default `1.0` locally; `4.0` on shared GitHub Actions runners, set in the workflow YAML). Local CI enforces <100ms / <50ms / <200ms strictly; cloud CI enforces <400ms / <200ms / <800ms — same protection against the actual failure mode (heavy top-level imports producing 200–400ms regressions) but tolerant of shared-runner I/O variance. The `test_no_heavy_imports_at_startup` static-analysis check is *not* multiplied — it's environment-independent and catches the real regression source directly.
 
 This keeps the CLI responsive enough that scout-app's UI doesn't feel laggy when driving it.
 
@@ -905,7 +906,87 @@ Out of scope for this design:
 - Rewriting engine in Go/Rust/Swift.
 - Any engine capability not currently present in `~/Scout` (this spec is consolidation, not feature work).
 
-## 13. Open questions
+## 13. Forward-compatibility commitments for v0.5+
+
+Scout's v0.5+ trajectory is documented separately in [`./2026-04-25-scout-event-architecture-design.md`](./2026-04-25-scout-event-architecture-design.md). That spec describes the shift from "markdown is canonical" to "a SQLite event store is canonical and markdown is one projection," plus a bidirectional connector model that lets external sources (Linear, Slack, GitHub, Telegram) push events into Scout and consume Scout's events back.
+
+v0.4 implements **none** of that infrastructure. v0.4 *does* commit to three small disciplines that keep the door open without expanding scope. Anchoring these in the unification spec — rather than threading the same constraint through Plans 2–7 individually — keeps every plan's TDD task list short.
+
+### 13.1 Stable IDs on every mutable entity
+
+Every action item, KB entry, hook log line, and session is assigned a ULID at creation time. Storage and surface forms differ by entity type:
+
+- **Storage form (canonical):** the full 26-character ULID (e.g., `01HXABCDEF0123456789GHJKLM`). Used in JSONL log lines, KB frontmatter (`id:` field), session records, and the future event store.
+- **Markdown surface form for action items:** a 4-character Crockford base32 prefix in square brackets, e.g.:
+
+    ```markdown
+    - [ ] [#A3F7] Submit Lever feedback to recruiting
+    ```
+
+    A full 26-char ULID-as-comment on every list item would degrade the Obsidian reading/writing experience and is fragile to copy-paste. A 4-char prefix is light enough to live inline and easy enough to ignore visually. The engine maintains the prefix↔ULID mapping in `$SCOUT_DATA_DIR/.scout-state/id-map.json` (in v0.5+, in the SQLite store).
+
+    **Prefix length is fixed at 4 characters.** The engine never rewrites markdown files in the background to extend a prefix — that would race the user's Obsidian editor and cause cursor jumps or save conflicts. Collision handling is purely additive:
+
+    - **At creation:** if a freshly generated 4-char prefix already exists in the id-map, the engine retries with a new random prefix until it finds a free one. The Crockford base32 space is 32^4 ≈ 1M; collisions at personal-scale entity counts (thousands, not millions) are statistically rare and resolution is invisible to the user.
+    - **At parse time (user-introduced duplicates via copy-paste):** if `[#A3F7]` appears twice in the same daily note, the diff engine identifies the original line by title + last-known-position match against the id-map, and assigns a fresh prefix to the *new* (copied) line. The reassignment is applied on the user's next mutation through `mark_done`/`snooze`/`add_comment` or on Scout's next scheduled markdown rewrite for that file — never as a background overwrite while the user is actively editing.
+
+If a user accidentally deletes a `[#xxxx]` prefix, the diff engine fuzzy-matches by title + section position against the last-known projection state. If reattachment fails, the engine logs a warning and treats the line as a *new* item — never silently merged with an old one.
+
+Mutators (`mark_done`, `snooze`, `add_comment`) match by prefix → ULID first; substring matching becomes the explicit fallback (`--by-subject`) for legacy lines until they're rewritten on next mutation.
+
+Scope of changes (touches Plans 2 and 3):
+- New module `engine/scout/ids.py` — ULID generation, prefix derivation, prefix→ULID resolver, collision handling.
+- New file `$SCOUT_DATA_DIR/.scout-state/id-map.json` — flat mapping with last-known position + title for reattachment.
+- `mark_done`, `snooze`, `add_comment`, `parser`, `writer` adjusted to read/write the prefix.
+- KB frontmatter schema gains `id:` (optional in v0.4 to avoid breaking existing user data; required for new entries).
+
+**Why this matters for v0.5+:** external sources need a stable join key. A Linear webhook saying *"ENG-1234 → Done"* binds to its action item via a `linear_ref:` field stored in the ID-map alongside the ULID. Substring matching (today's `mark_done --subject`) makes external sync structurally fragile.
+
+### 13.2 Mutations return event-shaped values
+
+Every Python function that mutates persistent state returns an `Event` dataclass alongside its existing side effect:
+
+```python
+# engine/scout/events.py
+
+from dataclasses import dataclass
+from typing import Any
+
+@dataclass(frozen=True)
+class Event:
+    id: str               # ULID for the event itself (distinct from the mutated entity's ULID)
+    ts: str               # ISO 8601 UTC, millisecond precision
+    kind: str             # e.g., "action_item.completed"
+    source: str           # e.g., "cli:mark_done", "hook:connector-log"
+    payload: dict[str, Any]
+```
+
+Today the CLI ignores the return value; tests assert on it. Hooks `emit(event)` instead of writing JSONL directly — `emit()` in v0.4 simply performs the existing JSONL write to `.scout-logs/`. In v0.5, `emit()` also appends to the SQLite event store; every existing mutation flows in for free without rewriting any caller.
+
+**Why this matters for v0.5+:** the event store lands as one new module plus a substituted `emit()`. Without this discipline, v0.5 becomes a pass over every mutation site in the engine.
+
+### 13.3 `watch` and `kb refresh-summary` are projection-consumer contracts
+
+The CLI help text and the spec wording for §6 (data dir contract) and §11 (kb_summary cache) describe these subcommands as *streams of changes to action items / KB entities,* not *watchers of file X.* The v0.4 implementation is still a file-watcher (no event store to subscribe to yet), but the public contract does not promise file-watching.
+
+Specifically:
+- `scoutctl action-items watch --help` says: *"Stream changes to today's action items as they happen."* Not *"Tail the markdown file for modifications."*
+- `scoutctl kb refresh-summary --help` says: *"Rebuild the KB summary projection from current entities."* Not *"Walk the knowledge-base directory and rewrite the cache."*
+- §11 Phase D's `kb_summary` description names the rebuild trigger sources (launchd schedule, `kb-pre-filter` hook, manual) without committing to *how* the rebuilder discovers changes — leaving the door open for an event-store subscriber in v0.5.
+
+**Why this matters for v0.5+:** contracts that promise *"I tail file X"* are stuck tailing files. Contracts that promise *"I stream changes"* admit transparent substitution — the v0.5 implementation swaps in an event-store subscriber without changing the CLI surface or the Mac app's calls.
+
+### Cost summary
+
+| Commitment | v0.4 cost | v0.5+ unlock |
+|---|---|---|
+| Stable IDs + short-prefix surface | ~10 mutation sites × ~5 lines + new `scout.ids` module + new `.scout-state/id-map.json` | External sources have a join key |
+| Event-shaped mutations | ~10 mutation sites × ~5 lines + new `scout.events.Event` dataclass | One-line `emit()` substitution lights up the entire event store |
+| Projection-consumer contracts | Zero implementation cost; wording change in CLI help and §6/§11 only | `watch` and `kb refresh-summary` swap implementations transparently |
+
+Total v0.4 footprint: ≈100 lines of code + two new tiny modules (`scout.ids`, `scout.events`). Pulled into Plan 2 (action_items mutators) and Plan 3 (hook + script ports). Plans 4–7 are unchanged structurally; they inherit IDs and event-shaped functions from earlier work.
+
+## 14. Open questions
 
 None blocking implementation. Possible followups after v0.4.0 ships:
 
@@ -914,7 +995,7 @@ None blocking implementation. Possible followups after v0.4.0 ships:
 - Auto-prompt in app when plugin has updates available (polls `git fetch` periodically).
 - Richer seed KB dataset (the v0.4 seed is minimal — just enough to verify the install).
 
-## 14. References
+## 15. References
 
 - Existing cross-repo feature example: `docs/superpowers/specs/2026-04-22-usage-and-connector-health-design.md`.
 - scout-plugin repository: `github.com/jordanrburger/scout-plugin`.

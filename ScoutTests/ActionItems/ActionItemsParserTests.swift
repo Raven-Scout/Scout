@@ -82,6 +82,39 @@ struct ActionItemsParserTests {
             #expect(d.tasks.allSatisfy { $0.done })
         }
     }
+
+    @Test func indentLevelTranslatesTabsAndSpaces() {
+        #expect(ActionItemsParser.indentLevelFor("") == 0)
+        #expect(ActionItemsParser.indentLevelFor("\t") == 1)
+        #expect(ActionItemsParser.indentLevelFor("\t\t") == 2)
+        #expect(ActionItemsParser.indentLevelFor("  ") == 1)
+        #expect(ActionItemsParser.indentLevelFor("    ") == 2)
+        #expect(ActionItemsParser.indentLevelFor("\t  ") == 2)
+    }
+
+    @Test func nestedTasksParsedWithIndentLevel() throws {
+        // Synthetic doc that mirrors the Prague-trip nesting pattern in the
+        // real action-items files (1 tab for child, 2 tabs for grand-child).
+        let synthetic = """
+        # Action Items — Synthetic
+        Preamble line.
+
+        ## 🔴 Urgent
+
+        - [ ] **Top-level parent**
+        \t- [ ] **Child A**
+        \t- [ ] **Child B with sub-items:**
+        \t\t- [ ] Grand-child 1
+        \t\t- [ ] Grand-child 2
+        - [ ] **Sibling top-level**
+        """
+        let url = URL(fileURLWithPath: "/tmp/action-items-2026-01-01.md")
+        let doc = try ActionItemsParser.parse(text: synthetic, sourceURL: url, sourceBytes: synthetic.utf8.count)
+        let urgent = try #require(doc.sections.first { $0.kind == .urgent })
+        let levels = urgent.tasks.map(\.indentLevel)
+        #expect(levels == [0, 1, 1, 2, 2, 0],
+                "Got \(levels) — expected nested levels for parent / 2 children / 2 grand-children / sibling")
+    }
 }
 
 /// Type anchor so Bundle(for:) finds the ScoutTests test bundle.

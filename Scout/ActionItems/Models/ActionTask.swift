@@ -19,4 +19,34 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     let snoozedUntil: Date?
     /// Parsed from a `_(carried in from YYYY-MM-DD)_` body marker. ``nil`` otherwise.
     let carriedInFrom: Date?
+    /// Markdown-list nesting depth. ``0`` = top-level, ``1`` = child of the
+    /// preceding top-level task, etc. Computed from the leading whitespace on
+    /// the source line (1 tab = 1 level; otherwise 2 spaces = 1 level).
+    let indentLevel: Int
+
+    init(
+        id: UUID,
+        lineNumber: Int,
+        done: Bool,
+        subject: String,
+        plainSubject: String,
+        body: String,
+        comments: [TaskComment],
+        deepLinks: [TaskDeepLink],
+        snoozedUntil: Date?,
+        carriedInFrom: Date?,
+        indentLevel: Int = 0
+    ) {
+        self.id = id
+        self.lineNumber = lineNumber
+        self.done = done
+        self.subject = subject
+        self.plainSubject = plainSubject
+        self.body = body
+        self.comments = comments
+        self.deepLinks = deepLinks
+        self.snoozedUntil = snoozedUntil
+        self.carriedInFrom = carriedInFrom
+        self.indentLevel = indentLevel
+    }
 }

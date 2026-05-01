@@ -19,11 +19,18 @@ struct TaskCardView: View {
             rail
                 .frame(width: 140, alignment: .trailing)
         }
-        .padding(.vertical, 18)
+        .padding(.vertical, isNested ? 10 : 18)
+        .padding(.leading, CGFloat(task.indentLevel) * 28)
         .overlay(alignment: .bottom) {
-            EditorialRule()
+            // Nested entries share the parent's bottom rule — only the last
+            // sibling needs its own. Top-level entries always get a rule.
+            if !isNested { EditorialRule() }
         }
     }
+
+    /// Sub-tasks (depth ≥ 1) get a lighter visual treatment so the parent–child
+    /// relationship reads at a glance. Sized down, no halo, no meta rail.
+    private var isNested: Bool { task.indentLevel > 0 }
 
     // MARK: - Gutter
 
@@ -31,15 +38,17 @@ struct TaskCardView: View {
         VStack(spacing: 8) {
             Circle()
                 .fill(DS.priorityColor(kind))
-                .frame(width: 10, height: 10)
+                .frame(width: isNested ? 6 : 10, height: isNested ? 6 : 10)
                 .shadow(color: DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), radius: 0, y: 0)
                 .overlay {
-                    Circle()
-                        .strokeBorder(DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), lineWidth: 3)
-                        .frame(width: 16, height: 16)
+                    if !isNested {
+                        Circle()
+                            .strokeBorder(DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), lineWidth: 3)
+                            .frame(width: 16, height: 16)
+                    }
                 }
                 .opacity(task.done ? 0.55 : 1)
-                .padding(.top, 6)
+                .padding(.top, isNested ? 8 : 6)
             Rectangle()
                 .fill(DS.Rule.soft)
                 .frame(width: 1)
@@ -110,8 +119,8 @@ struct TaskCardView: View {
     private var title: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             InlineMarkdownText(task.subject)
-                .font(DS.serif(15.5, weight: .medium))
-                .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
+                .font(DS.serif(isNested ? 13.5 : 15.5, weight: isNested ? .regular : .medium))
+                .foregroundStyle(task.done ? DS.Ink.p3 : (isNested ? DS.Ink.p2 : DS.Ink.p1))
                 .strikethrough(task.done, color: DS.Ink.p4)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
@@ -156,7 +165,10 @@ struct TaskCardView: View {
             if let snoozed = task.snoozedUntil, !task.done {
                 railRow(key: "until", value: dateShort(snoozed))
             }
-            if task.lineNumber > 0 {
+            // Nested rows skip the line number — it's a power-user diagnostic
+            // that only makes sense on top-level tasks. Removing it from
+            // sub-items keeps the right rail visually quiet.
+            if task.lineNumber > 0 && !isNested {
                 railRow(key: "line", value: "\(task.lineNumber)")
             }
         }
