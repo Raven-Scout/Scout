@@ -20,7 +20,12 @@ struct ConnectorHealthRailCard: View {
 
     var body: some View {
         let matrix = state.connectorHealthService.matrix
+        let fallbackReason = state.connectorHealthService.rosterFallbackReason
         VStack(alignment: .leading, spacing: 0) {
+            if let reason = fallbackReason {
+                rosterFallbackBanner(reason: reason)
+                    .padding(.bottom, 10)
+            }
             RailCardHeader(title: "Connector health")
             if matrix.sessionsNewestFirst.isEmpty {
                 Text("No scheduled runs have produced connector data yet.")
@@ -32,6 +37,38 @@ struct ConnectorHealthRailCard: View {
             }
         }
         .editorialCard(padding: 16)
+    }
+
+    // MARK: - Roster fallback banner
+
+    /// Yellow advisory shown above the matrix when the connector roster
+    /// snapshot couldn't be loaded and the service is running on the
+    /// hardcoded fallback list. Surfaces the actionable message verbatim
+    /// from `ConnectorHealthService.rosterFallbackReason`.
+    private func rosterFallbackBanner(reason: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("⚠")
+                .font(DS.mono(12))
+                .foregroundStyle(DS.Status.warn)
+            Text(reason)
+                .font(DS.mono(11))
+                .foregroundStyle(DS.Ink.p2)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(DS.Status.warn.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(DS.Status.warn.opacity(0.45), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Connector roster fallback warning: \(reason)")
     }
 
     // MARK: - Grid
