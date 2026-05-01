@@ -13,7 +13,11 @@ In v0.5+, **Scout becomes a personal event bus with pluggable bidirectional conn
 
 A defining property: **Scout itself can author new connectors on the fly.** When the user describes a new source-and-trigger pairing in chat, Scout fills out a connector manifest YAML; the engine validates and starts a worker process. No commit, no PR. The pattern is the same one Home Assistant, Beeper, n8n, and Zapier use, with a Claude-shaped front door.
 
-This is a one-year evolution split into versions v0.5 → v0.9. Each step is independently shippable.
+A second defining property: **Scout is a product, not a personal hack.** A three-tier connector model (official / auto-discovered from the user's existing claude.ai or local MCPs / community-contributed) makes the system useful out-of-the-box for any user, not just for the original author. v0.8 ships `scoutctl connectors discover` to detect and opt-in to MCPs the user already has wired up, reducing first-time-setup cost to near-zero for connector-heavy users.
+
+A third: **the user is treated as an authoritative async source, not as the operator of every action.** Scout fans out scheduled-run summaries to multiple channels (Slack DM, Telegram bot DM, future Email/SMS). Per-run it asks at most N (default 2) targeted questions to fill knowledge-graph gaps; user replies async on whichever channel suits them; the next scheduled session picks up the answers. Interactive escalation (macOS deep-link → Claude Code session with preloaded context) is the escape hatch when async isn't enough.
+
+This is a multi-year evolution split into versions v0.5 → v0.10+. Each step is independently shippable. The endpoint is a system that's harness-independent (Scout as its own MCP client, pluggable LLM backend) and useful to any user who wants reactive synthesis over their personal data sources.
 
 ## Why this exists
 
@@ -236,6 +240,8 @@ Concretely:
 - **Eventual consistency, made visible.** Projections may lag. The Mac app shows a small indicator when its view is more than ~2s behind the store. Honest UX beats the illusion of synchronous truth.
 - **Fail open, retry forever.** A handler crash logs to a dead-letter queue and retries with exponential backoff. The event is never lost. The user sees a banner; nothing wedges silently.
 - **WAL checkpoint discipline.** The dispatcher owns SQLite WAL checkpointing. It runs `PRAGMA wal_checkpoint(TRUNCATE)` on an hourly cadence and after each batch of ≥100 events processed. All other processes (connectors, projection handlers, CLI invocations) open short-lived connections — they never hold read transactions across event-loop iterations. This prevents unbounded `events.db-wal` growth (a long-held read transaction blocks checkpointing in WAL mode) and keeps checkpoint latency predictable.
+- **Multi-source identity matching.** Every entity is matchable on ≥ 2 identifiers from different sources (phone + Slack ID + email + WhatsApp ID + Telegram chat ID + GitHub handle + Linear user ID, etc.). Single-source matches go to a review queue; they never auto-mutate the entity. Names alone are not stable join keys across systems — phone numbers are; email is; account-system IDs are. Adding a new connector tier means adding new identifier fields to the `person` (and other) entity schemas — not a new matching algorithm.
+- **Knowledge velocity exceeds human bandwidth — by design.** Scout's value is producing more knowledge than the user can review in real time. The architecture is built around that as a feature: the user is the authority on facts only they know; Scout handles routine writes autonomously and surfaces only what genuinely needs human input. The opportunistic-questions budget (per-run cap on KG-gap questions to the user) is the throttle that keeps async collaboration sustainable rather than overwhelming.
 
 ## Self-extensibility: Scout authors its own connectors
 
@@ -264,16 +270,98 @@ This is the same shape as MCP servers, Home Assistant integrations, and Zapier t
 - **Per-connector kill switch** — `scoutctl connector disable <name>` stops the worker; events queued for it drain to dead-letter.
 - **Audit log** — every connector enable/disable, every secret grant, every authored manifest is itself an event in the store (`scout.connector.authored`, `scout.connector.enabled`, `scout.permission.granted`). Self-monitoring.
 
+## Connector taxonomy and discovery
+
+Three classes of connector, one consistent integration shape. All three share the same surface: a YAML entry in `connectors.yaml`, a phase MD in `phases/connectors/<name>.md` (consumed by the renderer in Plan 5+), optional remediation guidance in `connector-health-report`, optional MCP server config in `.mcp.json`. Adding a connector to any tier costs the same effort.
+
+| Tier | Source | Examples | Maintenance |
+|---|---|---|---|
+| **Official** | `scout-plugin` repo | Slack, Linear, Gmail, Calendar, Drive, GitHub, Granola, WhatsApp inbound, Telegram outbound, Google Messages | Maintained by the project; ships in the public plugin |
+| **Auto-discovered** | User's existing claude.ai MCP setup, local `.mcp.json`, local Claude Code plugins | Whatever the user has wired (Apollo, Atlassian, Sentry, custom MCPs…) | Plugin detects on session start; user opts in per-connector on first use |
+| **Community-contributed** | External repos, community plugin marketplace, `scout-plugin-community` contrib path | Strava, Notion, Apple Reminders, Spotify, anything someone builds for themselves and shares | Loaded from a contrib path or git URL; sandbox-isolated; same phase-MD contract as official connectors |
+
+### Discovery flow
+
+`scoutctl connectors discover` introspects the user's environment and emits a candidate list:
+
+1. **Existing claude.ai MCP connectors** (read via the claude.ai connector list, exposed through the local Claude Code config or an authenticated API call).
+2. **Local `.mcp.json` files** in `~/.claude/` and project `.mcp.json` overrides.
+3. **Claude Code plugin manifests** in `~/.claude/plugins/` that declare MCP servers.
+4. **Community contrib path** (`~/.scout-community/connectors/`) if installed.
+
+For each candidate not yet in `connectors.yaml`, the user opts in via `scoutctl connectors enable <name>`:
+- **Official tier:** phase MD + YAML entry already in plugin; enable just instantiates the vault overlay (empty `<vault>/connectors/<name>.local.md` template) and registers any required hooks.
+- **Auto-discovered tier:** prompts the user to author a phase MD via `scoutctl connectors author` (Scout-assisted, declarative-first per *Self-extensibility* §). The agent fills out the manifest in chat; the engine validates and starts the worker.
+- **Community tier:** clones from the contrib path or git URL into a sandboxed directory under `~/.scout-community/`. Same shape as official but with capability-grant prompts for any new permissions and sandbox isolation enforced by the `connector-runner`.
+
+The discovery + enable flow is explicitly the answer to *"users with their own niche use cases"* — you don't need to fork `scout-plugin` to wire up Strava or Spotify or your company's internal API. Scout discovers what you already have, helps you author the phase MD if needed, and runs it.
+
+## Working with the user as collaborator
+
+Scout treats the user as an **authoritative information source** that responds asynchronously. The architecture supports two modes — async-first (the common case) and interactive-when-needed (the escape hatch).
+
+### Async-first user comms
+
+**Multi-channel notification fan-out.** Every notification carries a `(mode, tier)` tuple: mode is which session produced it (briefing / consolidation / dreaming / research / work), tier is `informational` or `action_required`. Per-tuple channel routing is configured in `connectors.yaml`. Examples:
+
+| Mode | Tier | Channels | Notification style |
+|---|---|---|---|
+| briefing | informational | Slack DM (silent), Telegram bot DM (silent) | Run summary, no push sound |
+| briefing | action_required | Slack DM, Telegram DM (loud), Email | Sound + 🔴 prefix; surfaces in lock-screen previews |
+| dreaming | action_required | Telegram DM only (loud) | Don't wake Slack notifications overnight |
+| consolidation | informational | Slack DM (silent) | Quiet — just a record |
+
+Channels (v0.5+): Slack DM, Telegram bot DM, Email, SMS via Twilio. The notification routing layer is a thin abstraction over outbound connectors — adding a new channel is a new outbound connector + a config row.
+
+**Opportunistic knowledge-graph enrichment.** A *KG gap detector* runs as part of every scheduled session's wrap-up phase. It identifies entities with low confidence, missing relationships, or single-source identifier matches. Scout fires at most **N targeted user questions per scheduled run** (default `N=2`, configurable in `connectors.yaml` under `kg_enrichment.questions_per_run`), embedded in the wrap message under a "Help me learn" section.
+
+Examples of opportunistic questions:
+- *"Is Andrea Novakova your spouse, partner, or close friend? (relationship_type is currently null on her entity)"*
+- *"What does AI-3076 stand for? The Linear issue has no description and you've referenced it in 3 messages this week."*
+- *"I see a phone number `+15551234567` in two SMS threads but no `person` entity matches it — should I create one, or is it the same person as someone already tracked?"*
+
+The user replies async via whichever channel they prefer; the next scheduled run picks up the reply via the connector's inbound listener and updates the KG. **The N cap is the throttle**: never overwhelming, always making forward progress on graph quality. Calibrate `N` per user engagement style; some users will tolerate 5/run, others need 1/week.
+
+**Multi-conversation context preservation.** Multiple parallel async threads stay distinct via durable thread/channel IDs. Scout never loses context between a question fired Tuesday morning and the answer received Wednesday evening. Each open question is an event in the store with `kind: scout.question.asked`; the matching reply (when received) is `kind: scout.question.answered` with the source event ID in payload.
+
+### Interactive escalation (when async isn't enough)
+
+Sometimes the back-and-forth would take too many async round-trips, or the decision is irreversible enough to warrant a live conversation. The architecture supports both directions:
+
+**Scout-initiated escalation.** When the runner detects a "needs Jordan" blocker class — calendar mutation requiring approval, sandbox-scope grant needed, ambiguous classification, conflict requiring human resolution, or a synthesis that the user must validate — it composes context, writes it to `.scout-state/interactive-context/<context-hash>.md`, and fires a Telegram message with a `claude-scout://session/<context-hash>` deep link. User taps; macOS handler launches Claude Code into a fresh interactive session with the context preloaded as a `--resume`-equivalent. User decides; session ends; the result feeds the next scheduled run via a `scout.interactive.completed` event.
+
+**User-initiated session.** The user DMs the Scout bot (`/work`, `/ask`, or freeform). The bot:
+- If the user is at their machine (heartbeat / last-activity timestamp within 60s), fires the same launcher mechanism as Scout-initiated.
+- If not, replies *"queued for next scheduled run — I'll have an answer for you in ~3 hours"* and writes a JSONL row to `.scout-state/queued-questions.jsonl`. The next scheduled session reads queued questions during wrap-up and answers them in the wrap message.
+
+Both directions need: (a) a deep-link/launcher mechanism on macOS (custom URL scheme `claude-scout://`), (b) a return bridge that ingests inbound channel messages as feedback signals — same pattern as Slack thread-reply ingestion that already exists for the Apr 27 feedback-prefetch hook.
+
+## Long-term: harness independence
+
+Scout v0.4–v0.8 rides on Claude Code's harness — schedule via launchd → run-scout.sh → claude CLI → MCP servers via claude.ai connectors. v0.9+ targets harness independence: Scout owns the agent loop directly.
+
+What that means concretely:
+- **Scout becomes its own MCP client.** Manages credentials, MCP server lifecycles, and connector authentication directly — no claude.ai marketplace dependency.
+- **Pluggable LLM backend.** Anthropic SDK, Claude API, or any provider becomes a swappable adapter. Sessions can run against different models per mode (cheap-fast for consolidation, large-context for dreaming).
+- **Decouples Scout from a single vendor.** The connector tier model, event store, and projection-consumer contracts already separate concerns; harness independence is the last vendor-coupling to break.
+
+Multi-year horizon. Architectural rules to keep the door open today (every v0.5–v0.8 design choice should respect these):
+- Engine code never imports Claude-Code-specific paths. Session JSONL formats, the `~/.claude/projects/...` directory layout, and the `claude` CLI surface are *not* dependencies of `scout-engine`.
+- Connector definitions describe **what** a connector does (capabilities, auth method, data shape), never **how** claude.ai surfaces it. The MCP-via-claude.ai variant of a connector is one of multiple possible realisations of the same connector spec.
+- `.scout-secrets/` is designed for direct programmatic access (file mode 600, `age`-encrypted optional, never embedded in tool I/O), not as a passthrough to claude.ai.
+- Session prompts are *generated* by the renderer, not edited in place — the renderer is the ground truth across harnesses.
+
 ## Roadmap
 
 | Version | Adds | Carries forward |
 |---|---|---|
-| **v0.4** (current spec) | Stable IDs (short-prefix surface form for markdown), mutations function-shaped as events, `watch` reframed as projection consumer | All of unification |
-| **v0.5** | SQLite event store (WAL); mutations *also* append to store (markdown still authoritative); first projection rebuilders + snapshot table; markdown watcher with origin-tagged events | Markdown stays canonical for action items; no external connectors yet |
+| **v0.4** (current spec) | Stable IDs (short-prefix surface form for markdown), mutations function-shaped as events, `watch` reframed as projection consumer; **`connectors.yaml` lifts the connector roster to a single source of truth** (Plan 4 — co-shipped with the hooks/scripts port); **WhatsApp inbound + Telegram outbound + Google Messages connectors land as official-tier additions** (Plan 4 same scope, MCP-server-based for WhatsApp, Bot API for Telegram, Chrome MCP for Google Messages) | All of unification |
+| **v0.5** | SQLite event store (WAL); mutations *also* append to store (markdown still authoritative); first projection rebuilders + snapshot table; markdown watcher with origin-tagged events | Markdown stays canonical for action items; no external connectors yet beyond v0.4's official-tier additions |
 | **v0.6** | Dispatcher with idempotency + retries + tombstone application; first **bidirectional connector (Linear)** — easiest: stable IDs, signed webhooks, REST API for outbound; event store becomes co-canonical with markdown; LWW conflict resolution + scout-app banner | Plan 6's scout-app reads from the projection cache |
-| **v0.7** | Connector manifest schema v1 + generic builtin runners; second connector (**Slack**); third (**Telegram bot**); migrate v0.4's `connector-log` and `session-tokens` hooks to emit events | Markdown remains the editable surface |
-| **v0.8** | `scoutctl connector build` skill: agent fills out manifest in chat, engine validates and starts. Capability-grant prompts for new permissions. | First user-authored connectors land |
-| **v0.9** | Saga support for multi-step orchestration; per-field conflict resolution; session-spawning handler with policy gates | — |
+| **v0.7** | Connector manifest schema v1 + generic builtin runners; **bidirectional Telegram connector** (upgrades v0.4's outbound-only stub with the inbound return-bridge — user replies become feedback signals); **Slack bidirectional**; **WhatsApp upgraded** to bidirectional (still inbound-only by user choice but architecturally bidirectional). **Multi-channel notification fan-out** (per-`(mode, tier)` channel routing). **Opportunistic KG-enrichment loop** ships with default 2-questions-per-run cap. Migrate v0.4's `connector-log` and `session-tokens` hooks to emit events | Markdown remains the editable surface |
+| **v0.8** | **Connector tier model lands**: `scoutctl connectors discover` introspects user's existing claude.ai MCPs / local `.mcp.json` / Claude Code plugins → emits candidate list → `scoutctl connectors enable <name>` opts in. **Community-contributed connector tier** + sandbox isolation + capability-grant prompts. **Interactive escalation**: macOS `claude-scout://` URL scheme + queued-questions JSONL for offline users. `scoutctl connector build` skill: agent fills out manifest in chat, engine validates and starts | First user-authored and auto-discovered connectors land |
+| **v0.9** | **Harness-independence prep**: extract LLM backend into a pluggable adapter (Anthropic SDK / Claude API / others); session runner owns its agent loop directly rather than shelling out to `claude` CLI; engine paths fully decouple from `~/.claude/projects/...`. Saga support for multi-step orchestration; per-field conflict resolution | Claude Code remains a supported harness alongside the new direct-MCP-client mode |
+| **v0.10+** | **Scout as MCP client**: own MCP server lifecycles, credentials, connector authentication; claude.ai marketplace becomes one optional source among several; `claude-hud` and `scout.app` continue to work via the harness-agnostic engine | Long-term horizon — multi-year |
 
 Roughly a year of evolution. Each step independently shippable.
 
@@ -305,6 +393,8 @@ Their CLI help text and spec wording describe them as *streams of changes,* not 
 - **A hosted service.** Single-machine, single-user, file-based. The dispatcher and connectors are local processes. (A future hosted variant is conceivable but explicitly out of scope.)
 - **Open-ended code generation.** Scout authors connectors against a constrained manifest schema. It does not write arbitrary daemons.
 - **A high-throughput message bus.** SQLite WAL handles the personal-scale write rate (tens of events/sec at burst peak). Scaling to hundreds-of-events/sec sustained would require a proper queue (NATS, Redis Streams) and is out of scope.
+- **Permanently harness-locked.** Scout v0.4–v0.8 runs on Claude Code, but v0.9+ targets harness independence (Scout as MCP client + pluggable LLM backend). Connector definitions describe **what** they do, not **how** claude.ai surfaces them. Engine code never imports Claude-Code-specific paths. The point is to keep the door open, not to plan a forced migration.
+- **A complete replacement for direct API access.** Scout's connector tier model (official / auto-discovered / community) makes wiring up niche sources cheap, but it's not a goal to subsume every external API the user might ever touch. If you need real-time programmatic access to Stripe, Mixpanel, or your CRM with no Scout-style synthesis on top, write a script. Scout is for sources where reactive synthesis + KG integration earn their keep.
 
 ## Open questions
 
@@ -313,6 +403,11 @@ Their CLI help text and spec wording describe them as *streams of changes,* not 
 3. **Per-field conflict resolution.** v0.5 ships LWW + visible banner. Per-field origin tracking ("Linear owns `state`, user owns `title`") is correct but complex. v0.9 problem.
 4. **Backfill semantics.** When a new Linear connector is enabled, does it backfill historical events, or only stream from "now"? Probably user-configurable; default "now"; backfill is a separate `scoutctl connector backfill` command.
 5. **Event versioning vocabulary.** Tombstones cover *correction*; the open question is the convention for *additive* schema change (new optional field) vs. *breaking* (renamed field). Likely a `v` field on each event payload + per-kind compatibility rules. v0.6–v0.7 problem.
+6. **Knowledge-velocity throttle calibration.** The default opportunistic-questions budget is `2 per scheduled run`. Right value depends on session frequency × user engagement patterns. Users with 5 sessions/day and high engagement may tolerate `5/run`; users with 2 sessions/day may need `1/week`. v0.7 problem; needs telemetry on user-reply rates.
+7. **Auto-discovery API surface (v0.8).** Is `scoutctl connectors discover` blocking on user approval for every candidate, or does it auto-enable safe-by-default connectors (e.g., the user's existing claude.ai Gmail/Calendar)? Probably manual-approve for v1; auto-enable opt-in via `connectors.yaml: auto_enable_discovered: true` later.
+8. **Community connector trust model (v0.8).** Sandboxing approach (subprocess + user/group separation? Containerization?), signing (Sigstore?), allowlist, manual review per connector? Probably allowlist + manual review for v1; explore signing once contributors materialize.
+9. **Interactive escalation deep-link reliability (v0.8).** macOS `claude-scout://` URL scheme requires an `LSHandlers` registration and a launcher binary. Verify the deep-link handler reliably preloads context across Claude Code versions — if Claude Code's session-resume API drifts, the launcher needs a layer of indirection (e.g., write context to a known cache path, fire `claude --resume <session>` with a context-loading prompt).
+10. **Harness-independence transition path (v0.9+).** When the engine starts owning the agent loop, the per-mode runner scripts (`run-scout.sh`, `run-dreaming.sh`, etc.) need to either invoke the new direct-LLM mode or stay on `claude` CLI. Plan a *parallel-run period* where both work, then a flag-flip cutover.
 
 Resolved by this revision (no longer open):
 

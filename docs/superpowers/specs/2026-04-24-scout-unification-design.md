@@ -422,7 +422,9 @@ The `user:` block consolidates the "Jordan's Details" footer found duplicated ac
 
 The `~/Scout/knowledge-base/` directory is the source of truth for people, projects, channels, and any other entities with relationships. Skills query via `scoutctl kb query --type person --name-match "${name}"` instead of inlining names.
 
-Per-entity entries use frontmatter:
+Per-entity entries use frontmatter. Person entries support multiple identifier
+fields so cross-source signals (Slack, WhatsApp, Telegram, Google Messages, Linear,
+GitHub) can resolve to the same entity even when display names disagree:
 
 ```yaml
 ---
@@ -430,9 +432,27 @@ type: person
 name: Example Person
 team: Example Team
 works_on: [ProjectA, ProjectB]
+# Identifier fields — all optional, used for cross-source matching.
+# A connector that produces signals tagged with one of these IDs joins
+# the entity via that field; new IDs auto-extend the entity on confirmed
+# cross-references (or queue to review-queue.md when uncertain).
 slack: "@example"
+slack_id: U02T4ADKB38
+email: example@org.com
+github: example-handle
+linear_user_id: usr_abc123
+phone_number: "+15551234567"        # E.164. Primary cross-key for SMS/RCS/WhatsApp.
+whatsapp_id: "+15551234567"         # Usually equals phone_number; broken out for sources that surface it differently.
+telegram_chat_id: 123456789         # Numeric. Captured at first DM via getUpdates.
+google_messages: true               # Boolean — enrolment in the Chrome/messages.google.com inbound scan.
 ---
 ```
+
+The identifier set is open (new connectors add new fields freely); none are
+required. The matching invariant is: every entity is matchable on ≥ 2
+identifiers from different sources before automatic write-back actions are
+allowed against it. Single-source matches go to `review-queue.md` instead of
+mutating the entity.
 
 ### `scoutctl setup data-dir` contract
 
@@ -852,6 +872,17 @@ The design handles this via **split**, not **scrub-and-delete**:
 
 - **Scalars** (email, GitHub username, Slack ID, timezone, phone) → `~/Scout/.scout-config.yaml` under `user:`. Jinja-rendered into skill templates at session start.
 - **Relations** (people, projects, channels, companies) → `~/Scout/knowledge-base/` entries. Skills query via `scoutctl kb query --type person --name-match "${name}"` at runtime.
+
+### The plugin/vault content boundary for connector phases
+
+The same split applies to **connector phase content** (`scout-plugin/phases/connectors/<name>.md`, the per-connector instruction blocks consumed by the skill renderer in Plan 5+). The plugin ships *generic* phase prose; the vault holds user-specific instantiation. Concretely:
+
+- **Plugin phase MD references the vault generically.** Slack's phase says *"check channels listed in `channels.md`"*, never *"check #scout-engine, #ai-platform, #design-leadership"*. WhatsApp's phase says *"scan threads from contacts marked `whatsapp_id` in `people/`"*, never *"scan threads with Andrea"*. The plugin never inlines a person, channel, account, or org-internal artifact.
+- **The vault holds the standardized contract.** Files the plugin assumes exist: `channels.md`, `people/`, `people.md`, `personal/`, `projects/`, `ontology/schema.yaml`, `review-queue.md`. `scoutctl setup data-dir` creates empty templates if any are missing; user fills them in.
+- **Forward-looking overlay (deferred to Plan 8 or later).** A per-connector overlay file `<vault>/connectors/<name>.local.md` may extend or override the plugin's phase MD with user-specific instructions ("always prioritize Andrea's WhatsApp messages over noise from group chats"). v0.4 ships *neither* the renderer nor the overlay — but the plugin instruction style today (generic vault references, no inlined specifics) is a forward-compatibility contract that keeps the overlay mechanism a small, additive change later.
+
+Pre-commit check (added to `scout-plugin` lint workflow when Plan 5 lands):
+grep `scout-plugin/phases/` for proper-noun matches against a denylist seeded from the user's `people.md` + `channels.md` and fail if any appear. v0.4 enforces the rule by convention; v0.5+ enforces by lint.
 
 ### Ordered task list (Step 5 of Jordan's migration)
 
