@@ -169,20 +169,22 @@ Per-tick algorithm:
    - **`fire`** — fire if within `missed_window_hours`; else emit `slot.skipped` with `reason="stale-after-window"`.
    - **`skip`** — emit `slot.skipped` with `reason="on_miss=skip"`. Always.
    - **`collapse`** — within a type group, only the most-recently-targeted candidate fires; earlier ones get `slot.skipped` with `reason="collapsed-into=<key>"`.
-5. For each `fire` decision: spawn the slot's `runner` with `SCOUT_FORCE_MODE=<slot_key>`; record fire timestamp in tracker; emit `slot.fired`.
-6. Emit `schedule.tick.completed` summarizing the tick.
+5. **Pre-spawn network check.** Before spawning any runner, attempt a TCP connect to `api.anthropic.com:443` with a 3-second timeout. If unreachable, sleep 5s and retry up to 6 times (≤ 30s total). If still offline after the budget, emit `slot.skipped` with `reason="network-offline"` for every fire-decision slot and exit the tick (do NOT mark them fired in the tracker; the next tick will re-evaluate). This handles the wake-from-sleep race where launchd fires `tick` within milliseconds of lid-open but the Wi-Fi stack hasn't reconnected yet (typical 2–5s delay).
+6. **Single-fire-per-tick (priority-ordered).** Among the slots that survived steps 4–5, fire **at most one** subprocess this tick, picked by slot-type priority: `briefing > consolidation > dreaming > research > manual`. The non-winners stay eligible (no `slot.skipped` emitted for them — they're a transient deferral, not a final decision); the next tick re-evaluates and fires the next highest-priority. With a 5-min tick interval, a 4-slot wake-from-sleep backlog clears in ~20 minutes. This prevents concurrent runner subprocesses from racing to update the same `action-items-YYYY-MM-DD.md`, and keeps API rate-limit consumption predictable.
+7. For the winning slot: spawn the runner with `SCOUT_FORCE_MODE=<slot_key>`; record fire timestamp in tracker; emit `slot.fired`.
+8. Emit `schedule.tick.completed` summarizing the tick (fired slot, skipped slots with reasons, deferred slots that remain eligible, duration_ms).
 
-Catch-up after extended sleep is **the same code path** — when tick wakes after a sleep gap, `last_fire_ts` for one or more slots is older than today's target; the on_miss + missed_window rules naturally do the right thing without a separate "catch-up mode."
+Catch-up after extended sleep is **the same code path** — when tick wakes after a sleep gap, `last_fire_ts` for one or more slots is older than today's target; the on_miss + missed_window rules naturally do the right thing without a separate "catch-up mode." Network-readiness and single-fire-per-tick provide the wake-from-sleep guardrails.
 
 `run-scout.sh` simplification: the existing `case $HOUR in 08) MODE="morning-briefing" ...` block is deleted. The runner reads `SCOUT_FORCE_MODE` unconditionally (already its existing override path).
 
 ## 5. Sleep handling
 
-Three layers, in order of cost:
+Three layers, ordered by what carries the load:
 
-1. **Catch-up dispatcher** — default behavior, no system config. Mac sleeps normally; missed slots are evaluated on next wake per their on_miss policy. This is the only layer required for correctness.
-2. **`scoutctl schedule install-wake-schedule`** — opt-in. Computes the earliest weekday `fires_at_local` across the schedule; runs `pmset repeat wakeorpoweron MTWRF HH:MM:SS`. Mac wakes near the earliest slot when on AC power, so live firing is more likely. Only one rule per machine (pmset's constraint); the dispatcher's 5-min tick covers the rest of the day. Companion `--uninstall` removes the rule.
-3. **Scout.app menubar power-state awareness** — observability. Polls `pmset -g batt` every 30s; surfaces a yellow banner above the schedule strip when on battery: *"On battery — runs may be missed if the lid closes. Plug in for guaranteed firing."*
+1. **Catch-up dispatcher (primary).** Mac sleeps normally; missed slots are evaluated on the next tick after wake, per their on_miss policy. No system config required. This is the load-bearing mechanism — everything below is optimization.
+2. **Scout.app menubar power-state awareness (primary defense for battery + lid-closed).** Polls `pmset -g batt` every 30s; surfaces a yellow banner above the schedule strip when on battery: *"On battery — runs may be missed if the lid closes. Plug in for guaranteed firing."* This is the **first-line UX defense** for the case `pmset wakeorpoweron` cannot solve (see point 3). The honest framing: catch-up will collect missed runs whenever the laptop next wakes, but live firing during long lid-closed-on-battery stretches is not achievable on modern Apple Silicon.
+3. **`scoutctl schedule install-wake-schedule` (optional, AC-only).** Opt-in. Computes the earliest weekday `fires_at_local`; runs `pmset repeat wakeorpoweron MTWRF HH:MM:SS`. **Documented limitation:** on Apple Silicon laptops, `wakeorpoweron` is unreliable when on battery with the lid closed — macOS's deep-sleep / standby state suppresses wake timers to preserve battery. This layer is therefore most useful for **AC-powered desk-Mac scenarios** (e.g., user's primary workstation stays plugged in overnight). The `install-wake-schedule` command prints this caveat at install time and recommends keeping the laptop plugged in if guaranteed live firing matters. Companion `--uninstall` removes the rule.
 
 The `slot.skipped` event carries `reason` so connector-health-report can distinguish `laptop-asleep` skips from real connector outages — no false-positive Slack-dark alerts on a Monday morning that follows a closed-laptop weekend.
 
@@ -245,7 +247,7 @@ Four new event kinds:
 | Kind | Source | Payload |
 |---|---|---|
 | `slot.fired` | `cli:schedule_tick` | `{slot_key, slot_type, target_local, target_utc, runner, pid_spawned}` |
-| `slot.skipped` | `cli:schedule_tick` | `{slot_key, slot_type, target_local, reason}` where reason ∈ `{on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep}` |
+| `slot.skipped` | `cli:schedule_tick` | `{slot_key, slot_type, target_local, reason}` where reason ∈ `{on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep, network-offline}` |
 | `slot.fire_failed` | `cli:schedule_tick` | `{slot_key, slot_type, target_local, error}` (subprocess spawn failed) |
 | `schedule.tick.completed` | `cli:schedule_tick` | `{fired: [slot_key,...], skipped: [...], duration_ms}` |
 
@@ -293,7 +295,11 @@ The PR for Plan 5's design phase includes:
 
 - Should the dispatcher's tick frequency be 5 min (default) or configurable in `schedule.yaml`? Current proposal: hardcoded 5 min, revisit if pmset-wake users want tighter granularity.
 - Should `slot.fired` events be emitted by the runner script (after the session actually starts) rather than the dispatcher (which only spawns the subprocess)? Current proposal: emit from dispatcher (matches "I attempted to fire" semantics); a separate `session.started` event from the runner can be added later if needed for finer-grained observability.
-- pmset on Apple Silicon: does the hardware reliably wake from `wakeorpoweron` when on battery and the lid is closed? Validation step in the implementation plan; if no, document the AC-required limitation.
+- Should the network-readiness retry budget (currently hardcoded 30s = 6 × 5s) be tunable in `schedule.yaml`? Defer to user feedback after Plan 5 lands.
+
+### Resolved during 2026-05-04 review
+
+- ~~pmset on Apple Silicon battery + lid-closed wake reliability~~ — **resolved: it doesn't wake reliably.** Modern MacBooks enter standby with wake timers suppressed when on battery + lid closed; `wakeorpoweron` only works dependably on AC. §5 reframed accordingly: scout-app's power-state banner is the primary defense; pmset wake-schedule is opt-in for AC-power scenarios with documented limitations.
 
 ## 15. References
 

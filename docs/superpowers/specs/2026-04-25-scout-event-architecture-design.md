@@ -135,7 +135,7 @@ The schedule dispatcher (`scoutctl schedule tick`, introduced in Plan 5 / `2026-
 | Kind | Source | Payload fields | When emitted |
 |---|---|---|---|
 | `slot.fired` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `target_utc`, `runner`, `pid_spawned` | The dispatcher spawned the runner subprocess for this slot |
-| `slot.skipped` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `reason` | The slot was due but skipped; `reason ∈ {on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep}` |
+| `slot.skipped` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `reason` | The slot was due but skipped; `reason ∈ {on_miss=skip, collapsed-into=<key>, stale-after-window, cooldown_active, laptop-asleep, network-offline}` |
 | `slot.fire_failed` | `cli:schedule_tick` | `slot_key`, `slot_type`, `target_local`, `error` | Subprocess spawn failed (runner script missing, lock contention, etc.) |
 | `schedule.tick.completed` | `cli:schedule_tick` | `fired: [slot_key,...]`, `skipped: [...]`, `duration_ms` | Every tick, after all per-slot evaluations |
 
@@ -338,6 +338,14 @@ Examples of opportunistic questions:
 The user replies async via whichever channel they prefer; the next scheduled run picks up the reply via the connector's inbound listener and updates the KG. **The N cap is the throttle**: never overwhelming, always making forward progress on graph quality. Calibrate `N` per user engagement style; some users will tolerate 5/run, others need 1/week.
 
 **Multi-conversation context preservation.** Multiple parallel async threads stay distinct via durable thread/channel IDs. Scout never loses context between a question fired Tuesday morning and the answer received Wednesday evening. Each open question is an event in the store with `kind: scout.question.asked`; the matching reply (when received) is `kind: scout.question.answered` with the source event ID in payload.
+
+**Reply-binding via platform quote/thread features.** When Scout fires multiple questions in one wrap-up message (`N` up to 5 per run depending on user calibration), the inbound connector cannot disambiguate user replies by content — *"she's on the design team"* could plausibly answer any of three "who is X?" questions in the same thread. The disambiguation contract is **the platform's native reply primitive**:
+
+- **Telegram inbound connector.** When emitting `scout.question.asked`, the outbound side records the Telegram message ID returned by `sendMessage`. The inbound webhook handler reads `update.message.reply_to_message.message_id` on incoming user messages; if present, looks up the matching `scout.question.asked` event by message ID; emits `scout.question.answered` with `source_question_id: <ulid>` filled. If absent (the user replied in the thread without quoting), the connector emits `scout.message.received` with no question binding and the next session's planner classifies whether to interpret it as a question answer (with explicit ambiguity disclosure) or a free-form note.
+- **Slack inbound connector.** Same pattern using `thread_ts` (the parent message timestamp) — Slack's "Reply in thread" preserves the parent linkage. Each `scout.question.asked` records the Slack `ts` of the outbound message; inbound replies to that `ts` bind unambiguously.
+- **Email inbound.** Standard `In-Reply-To` / `References` headers carry the binding.
+
+The user-facing implication: when Scout asks two or three questions in one DM, the user must use the platform's "Reply" / "Quote" feature on the specific question they're answering, not just send a free-form follow-up. The wrap-up message text instructs users to do this on first encounter ("To answer, tap the question and reply / quote-reply"), and `connectors.yaml` includes the canonical instruction string per platform so it stays consistent across runs. Free-form replies stay parseable but with a flagged ambiguity that the next session's planner resolves, possibly by re-asking with a single explicit question if confidence is low.
 
 ### Interactive escalation (when async isn't enough)
 
