@@ -52,9 +52,7 @@ struct SlotEditForm: View {
             DisclosureGroup("Advanced") { advancedSection }.padding(.top, 8)
             actionBar
         }
-        .padding()
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-        .cornerRadius(8)
+        .padding(20)
     }
 
     // MARK: - Private helpers
@@ -71,7 +69,11 @@ struct SlotEditForm: View {
     private var slotKeyField: some View {
         if isNewDraft {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Slot key").font(.callout).foregroundStyle(.secondary)
+                Text("Slot key")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
                 TextField("new-slot-1", text: $draft.key)
                     .textFieldStyle(.roundedBorder)
                 if let err = SlotDraft.validateSlotKey(draft.key) {
@@ -93,7 +95,11 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var timeAndWeekdaysSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Time").font(.callout).foregroundStyle(.secondary)
+            Text("Time")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
             TextField("HH:MM", text: $draft.firesAtLocal)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 120)
@@ -102,7 +108,11 @@ struct SlotEditForm: View {
             }
         }
         VStack(alignment: .leading, spacing: 4) {
-            Text("Weekdays").font(.callout).foregroundStyle(.secondary)
+            Text("Weekdays")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
             HStack(spacing: 4) {
                 ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { day in
                     Toggle(day, isOn: Binding(
@@ -123,7 +133,11 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var onMissSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("On miss").font(.callout).foregroundStyle(.secondary)
+            Text("On miss")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
             Picker("", selection: $draft.onMiss) {
                 Text("Fire").tag(OnMissPolicy.fire)
                 Text("Skip").tag(OnMissPolicy.skip)
@@ -137,7 +151,11 @@ struct SlotEditForm: View {
     @ViewBuilder
     private var cooldownSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Cooldown (minutes)").font(.callout).foregroundStyle(.secondary)
+            Text("Cooldown (minutes)")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
             Stepper(value: $draft.cooldownMinutes, in: 0...720, step: 15) {
                 Text("\(draft.cooldownMinutes)")
             }
@@ -149,20 +167,32 @@ struct SlotEditForm: View {
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Runner").font(.callout).foregroundStyle(.secondary)
+                Text("Runner")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
                 TextField("run-scout.sh", text: $draft.runner)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Missed window (hours)").font(.callout).foregroundStyle(.secondary)
+                Text("Missed window (hours)")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
                 Stepper(value: $draft.missedWindowHours, in: 1...12) {
                     Text("\(draft.missedWindowHours)")
                 }
                 .frame(width: 200)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Type").font(.callout).foregroundStyle(.secondary)
+                Text("Type")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
                 Picker("", selection: $draft.type) {
                     ForEach(SlotType.allCases, id: \.self) { t in
                         Text(t.rawValue.capitalized).tag(t)
@@ -171,7 +201,11 @@ struct SlotEditForm: View {
                 .pickerStyle(.segmented)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Runtime").font(.callout).foregroundStyle(.secondary)
+                Text("Runtime")
+                    .font(DS.sans(11, weight: .medium))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundStyle(DS.Ink.p3)
                 Picker("", selection: $draft.runtime) {
                     Text("Local").tag(SlotRuntime.local)
                     Text("Remote (Plan 7)").tag(SlotRuntime.remote)
@@ -205,13 +239,21 @@ struct SlotEditForm: View {
                 }
             }
             .disabled(!isNewDraft && !draft.isDirty(against: liveSlot))
-            Button("Save") {
+            Button {
                 if Self.requiresTypeChangeConfirmation(draft: draft, live: liveSlot) {
                     isConfirmingTypeChange = true
                 } else {
                     Task { await performSave() }
                 }
+            } label: {
+                Text("Save")
+                    .font(DS.sans(13, weight: .medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
+                    .foregroundStyle(DS.Paper.base)
             }
+            .buttonStyle(.plain)
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
         }
