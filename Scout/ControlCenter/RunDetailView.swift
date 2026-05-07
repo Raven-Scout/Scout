@@ -107,12 +107,29 @@ struct RunDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Retry") {
-                Task { try? await state.runnerService.retry(run: run, bypassBudget: false) }
+                Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: false) }
             }
             Button("Retry (bypass budget)") {
-                Task { try? await state.runnerService.retry(run: run, bypassBudget: true) }
+                Task { await state.fireNow(slotKey: defaultSlotKey(for: run.type), bypassBudget: true) }
             }
             Button("Cancel", role: .cancel) { }
+        }
+    }
+
+    /// Map a `RunType` to a representative slot-key for retry.
+    /// TODO(plan-6): Persist the originating slot-key on the `Run` record so
+    /// retrying an `evening-consolidation` re-fires that slot specifically
+    /// instead of the morning one. Plan 5 collapsed RunType to slot-type-aligned
+    /// vocabulary, which made the consolidation/dreaming slot-key lossy at
+    /// retry time. The defaults below pick one slot per family.
+    private func defaultSlotKey(for type: RunType) -> String {
+        switch type {
+        case .morningBriefing:  return "morning-briefing"
+        case .weekendBriefing:  return "weekend-briefing"
+        case .consolidation:    return "morning-consolidation"
+        case .dreaming:         return "dreaming-evening"
+        case .research:         return "research"
+        case .manual:           return "morning-briefing"
         }
     }
 }

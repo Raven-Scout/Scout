@@ -4,12 +4,14 @@ import SwiftUI
 /// column with the hero / schedule / heatmap / sessions, and a rail with
 /// budget, repo state, signals, and keyboard hints.
 struct ControlCenterView: View {
+    @EnvironmentObject var state: AppState
     @State private var dayFilter: Date? = nil
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    PowerStateBanner(service: state.powerStateService)
                     ConnectorAlertBanner()
                     header
                     HStack(alignment: .top, spacing: 32) {
@@ -228,9 +230,8 @@ struct SignalsRailCard: View {
 
         // Dreaming: report on the most recent dreaming run within the last
         // 36h so the message tracks reality (success vs. miss vs. failure).
-        let dreamingTypes: Set<RunType> = [.dreamingNightly, .dreamingWeekend6am, .dreamingWeekend7am]
         let cutoff = now.addingTimeInterval(-36 * 3600)
-        let recentDreaming = runs.first { dreamingTypes.contains($0.type) && $0.startedAt >= cutoff }
+        let recentDreaming = runs.first { $0.type == .dreaming && $0.startedAt >= cutoff }
         if let d = recentDreaming {
             let when = d.startedAt.formatted(.relative(presentation: .named))
             switch d.status {
@@ -257,7 +258,7 @@ struct SignalsRailCard: View {
             default:
                 break
             }
-        } else if state.scheduleService.upcoming.contains(where: { dreamingTypes.contains($0.type) }) {
+        } else if state.scheduleService.upcoming.contains(where: { $0.type == .dreaming }) {
             // Schedule exists but nothing fired in the last 36h — likely a
             // missed window worth surfacing.
             out.append(Signal(

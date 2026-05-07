@@ -53,7 +53,7 @@ struct UpcomingStripView: View {
                 .padding(.trailing, 10)
             Button("Run now") {
                 Task {
-                    try? await state.runnerService.runNow(type: up.type, bypassBudget: false)
+                    await state.fireNow(slotKey: up.slotKey, bypassBudget: false)
                 }
             }
             .buttonStyle(.plain)
@@ -93,7 +93,7 @@ struct UpcomingStripView: View {
     }
 
     private var emptyState: some View {
-        Text("No schedule found in ~/Library/LaunchAgents/")
+        Text("No upcoming runs returned by scoutctl.")
             .font(DS.serif(13))
             .foregroundStyle(DS.Ink.p3)
             .italic()
@@ -102,7 +102,7 @@ struct UpcomingStripView: View {
 
     private var footerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Heartbeat dispatcher runs every 30 min when budget permits.")
+            Text("Schedule polled from `scoutctl schedule list-upcoming` every 60 s.")
                 .font(DS.sans(12))
                 .foregroundStyle(DS.Ink.p3)
             if !state.scheduleService.upcoming.contains(where: { $0.type == .research }) {

@@ -32,7 +32,7 @@ struct SessionLogServiceTests {
     @Test func parseFilename_dreamingNightly() {
         let url = URL(fileURLWithPath: "/x/dreaming-2026-04-18_22-00.log")
         let parsed = SessionLogService.parseFilename(url, timeZone: Self.ny)
-        #expect(parsed?.type == .dreamingNightly)
+        #expect(parsed?.type == .dreaming)
         #expect(parsed?.runnerScript == "run-dreaming.sh")
     }
 
@@ -380,16 +380,11 @@ struct SessionLogServiceTests {
     @Test func orphanAfter_briefingsAndConsolidations6h() {
         #expect(RunType.morningBriefing.orphanAfter == 6 * 3600)
         #expect(RunType.weekendBriefing.orphanAfter == 6 * 3600)
-        #expect(RunType.consolidation11am.orphanAfter == 6 * 3600)
-        #expect(RunType.consolidation1pm.orphanAfter == 6 * 3600)
-        #expect(RunType.consolidation5pm.orphanAfter == 6 * 3600)
-        #expect(RunType.consolidation7pm.orphanAfter == 6 * 3600)
+        #expect(RunType.consolidation.orphanAfter == 6 * 3600)
     }
 
     @Test func orphanAfter_dreaming12h() {
-        #expect(RunType.dreamingNightly.orphanAfter == 12 * 3600)
-        #expect(RunType.dreamingWeekend6am.orphanAfter == 12 * 3600)
-        #expect(RunType.dreamingWeekend7am.orphanAfter == 12 * 3600)
+        #expect(RunType.dreaming.orphanAfter == 12 * 3600)
     }
 }
 

@@ -104,33 +104,19 @@ final class SessionLogService: ObservableObject {
                 // not as a generic "manual run".
                 switch hour {
                 case ..<10: return .weekendBriefing
-                case 10..<12: return .consolidation11am
-                case 12..<15: return .consolidation1pm
-                case 15..<18: return .consolidation5pm
-                default: return .consolidation7pm
+                default:    return .consolidation
                 }
             }
             switch hour {
             case 8:  return .morningBriefing
-            case 11: return .consolidation11am
-            case 13: return .consolidation1pm
-            case 17: return .consolidation5pm
-            case 19: return .consolidation7pm
             // Off-slot weekday runs still belong to the briefing/consolidation
             // family — pick the closest scheduled bucket so the prefix filter
             // ("briefing"/"consolidation") still catches the run's commits.
             case ..<10: return .morningBriefing
-            case 10..<12: return .consolidation11am
-            case 12..<15: return .consolidation1pm
-            case 15..<18: return .consolidation5pm
-            default: return .consolidation7pm
+            default:    return .consolidation
             }
         case "dreaming":
-            if isWeekend {
-                if hour == 6 { return .dreamingWeekend6am }
-                if hour == 7 { return .dreamingWeekend7am }
-            }
-            return .dreamingNightly
+            return .dreaming
         case "research":
             return .research
         default:
@@ -403,12 +389,10 @@ extension RunType {
     var costTrackerKey: String {
         switch self {
         case .morningBriefing, .weekendBriefing: return "briefing"
-        case .consolidation11am, .consolidation1pm, .consolidation5pm, .consolidation7pm:
-            return "consolidation"
-        case .dreamingNightly, .dreamingWeekend6am, .dreamingWeekend7am:
-            return "dreaming"
-        case .research: return "research"
-        case .manual: return "manual"
+        case .consolidation: return "consolidation"
+        case .dreaming:      return "dreaming"
+        case .research:      return "research"
+        case .manual:        return "manual"
         }
     }
 
@@ -418,12 +402,10 @@ extension RunType {
     var commitsPrefix: String {
         switch self {
         case .morningBriefing, .weekendBriefing: return "briefing"
-        case .consolidation11am, .consolidation1pm, .consolidation5pm, .consolidation7pm:
-            return "consolidation"
-        case .dreamingNightly, .dreamingWeekend6am, .dreamingWeekend7am:
-            return "dreaming"
-        case .research: return "research"
-        case .manual: return ""
+        case .consolidation: return "consolidation"
+        case .dreaming:      return "dreaming"
+        case .research:      return "research"
+        case .manual:        return ""
         }
     }
 }
@@ -436,11 +418,9 @@ extension RunType {
         switch self {
         case .research:
             return 2 * 3600
-        case .morningBriefing, .weekendBriefing,
-             .consolidation11am, .consolidation1pm,
-             .consolidation5pm, .consolidation7pm:
+        case .morningBriefing, .weekendBriefing, .consolidation:
             return 6 * 3600
-        case .dreamingNightly, .dreamingWeekend6am, .dreamingWeekend7am:
+        case .dreaming:
             return 12 * 3600
         case .manual:
             return 6 * 3600

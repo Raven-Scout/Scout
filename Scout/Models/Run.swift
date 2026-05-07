@@ -1,15 +1,14 @@
 import Foundation
 
+/// Run-type vocabulary for Scout sessions. Plan 5 collapsed the time-tagged
+/// consolidation/dreaming variants to slot-type-aligned cases — slot keys
+/// like `morning-consolidation` and `evening-consolidation` both map to
+/// `.consolidation` here, and the schedule row already shows the time.
 enum RunType: String, CaseIterable, Codable, Sendable {
     case morningBriefing
     case weekendBriefing
-    case consolidation11am
-    case consolidation1pm
-    case consolidation5pm
-    case consolidation7pm
-    case dreamingNightly
-    case dreamingWeekend6am
-    case dreamingWeekend7am
+    case consolidation
+    case dreaming
     case research
     case manual
 }
@@ -45,20 +44,36 @@ enum RunStatus: String, Codable, Sendable {
 extension RunType {
     /// Human-readable name without embedded times — the schedule rows already
     /// show the time, so the display label only needs to convey the kind of
-    /// work ("Consolidation", "Briefing") rather than "consolidation7pm".
+    /// work ("Consolidation", "Briefing").
     var displayName: String {
         switch self {
         case .morningBriefing:    return "Morning briefing"
         case .weekendBriefing:    return "Weekend briefing"
-        case .consolidation11am,
-             .consolidation1pm,
-             .consolidation5pm,
-             .consolidation7pm:   return "Consolidation"
-        case .dreamingNightly:    return "Dreaming"
-        case .dreamingWeekend6am,
-             .dreamingWeekend7am: return "Weekend dreaming"
+        case .consolidation:      return "Consolidation"
+        case .dreaming:           return "Dreaming"
         case .research:           return "Research"
         case .manual:             return "Manual run"
+        }
+    }
+}
+
+extension RunType {
+    /// Map a slot key (emitted by `scoutctl schedule list-upcoming`) to a
+    /// RunType. Returns nil for unknown keys so the Schedule v2 UI can skip
+    /// rows it doesn't understand instead of forcing them into `.manual`.
+    init?(slotKey: String) {
+        switch slotKey {
+        case "morning-briefing":   self = .morningBriefing
+        case "weekend-briefing":   self = .weekendBriefing
+        case "morning-consolidation",
+             "midday-consolidation",
+             "afternoon-consolidation",
+             "evening-consolidation": self = .consolidation
+        case "dreaming-evening",
+             "dreaming-nightly",
+             "dreaming-weekend-morning": self = .dreaming
+        case "research":           self = .research
+        default: return nil
         }
     }
 }

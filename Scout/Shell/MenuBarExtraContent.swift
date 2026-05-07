@@ -9,6 +9,7 @@ struct MenuBarExtraContent: View {
         Divider()
         scheduleSection
         Divider()
+        Button("Install wake-schedule…") { installWakeSchedule() }
         Button("Open Control Center") { openMainWindow() }
         Button("Open Scout folder in Finder") {
             let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Scout")
@@ -36,7 +37,7 @@ struct MenuBarExtraContent: View {
         } else {
             ForEach(Array(upc), id: \.id) { u in
                 Button("\(u.scheduledAt.formatted(.dateTime.hour().minute())) · \(u.type.rawValue) — Run now") {
-                    Task { try? await state.runnerService.runNow(type: u.type, bypassBudget: false) }
+                    Task { await state.fireNow(slotKey: u.slotKey, bypassBudget: false) }
                 }
             }
         }
@@ -46,6 +47,20 @@ struct MenuBarExtraContent: View {
         NSApp.activate(ignoringOtherApps: true)
         if let win = NSApp.windows.first(where: { $0.title == "Scout" }) {
             win.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Run `scoutctl schedule install-wake-schedule` interactively. Plan 5
+    /// makes the launchd wake schedule a property of the engine, not the
+    /// app — this menu item is the discoverable handle for re-installing it.
+    private func installWakeSchedule() {
+        Task {
+            _ = try? await state.runner.run(
+                executable: state.scoutctlExecutable,
+                arguments: ["scoutctl", "schedule", "install-wake-schedule"],
+                environment: [:],
+                workingDirectory: state.scoutDirectory
+            )
         }
     }
 }
