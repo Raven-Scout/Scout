@@ -16,7 +16,7 @@ final class AppState: ObservableObject {
     let sessionLogService: SessionLogService
     let scheduleService: ScheduleService
     let powerStateService: PowerStateService
-    let scheduleEditorService: ScheduleEditorService
+    let scheduleEditService: ScheduleEditService
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
@@ -80,14 +80,14 @@ final class AppState: ObservableObject {
             argumentsPrefix: scoutctlArgsPrefix
         )
         let power = PowerStateService(runner: runner)
-        let editor = ScheduleEditorService(
-            repoDirectory: scoutDir.appendingPathComponent("launchd"),
-            agentsDirectory: FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/LaunchAgents"),
-            userUid: getuid(),
-            launchctl: SystemLaunchctlClient(runner: runner),
-            git: git,
-            fileEvents: watcher
+        let canonical = scoutDir
+            .appendingPathComponent(".scout-state")
+            .appendingPathComponent("schedule.yaml")
+        let scheduleEditService = ScheduleEditService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            canonicalSchedulePath: canonical,
+            argumentsPrefix: scoutctlArgsPrefix
         )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
@@ -114,7 +114,7 @@ final class AppState: ObservableObject {
         self.sessionLogService = logs
         self.scheduleService = sched
         self.powerStateService = power
-        self.scheduleEditorService = editor
+        self.scheduleEditService = scheduleEditService
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.actionItemsDocumentService = docService
@@ -134,12 +134,6 @@ final class AppState: ObservableObject {
                 sched.start()
                 power.start()
             }
-            // Plan 5: Schedules tab is hidden pending Plan 6 rewrite (see
-            // SchedulesView placeholder). Skip both loadAll and startWatching
-            // so the FileWatcher doesn't thrash on burst plist deletions
-            // (the symptom that froze the UI when 14 legacy plists were
-            // removed in one batch). Restore both calls when Plan 6 lands
-            // a schedule.yaml editor.
             await self?.recomputeMenuStatus()
 
             // Run environment check; publish result.

@@ -10,12 +10,7 @@ struct SidebarView: View {
             Section {
                 sidebarRow(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
                 sidebarRow(.actionItems,   label: "Action Items",   system: "checklist")
-                // Schedules tab hidden in Plan 5 — the launchd-plist editor model
-                // it was built around no longer matches reality (only schedule-tick
-                // and heartbeat plists exist; slots live in schedule.yaml). Plan 6
-                // will rewrite this surface as a schedule.yaml editor. The .schedules
-                // case stays in SidebarItem for state-restore compat; MainWindowView
-                // routes it to a placeholder.
+                sidebarRow(.schedules,     label: "Schedules",      system: "calendar.badge.clock")
             } header: {
                 Text("Scout")
                     .font(DS.sans(11, weight: .medium))

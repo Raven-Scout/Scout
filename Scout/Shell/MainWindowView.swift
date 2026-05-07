@@ -21,7 +21,7 @@ struct MainWindowView: View {
                 .environmentObject(appState.actionItemsEnvState)
             case .schedules:
                 SchedulesView()
-                    .environmentObject(appState.scheduleEditorService)
+                    .environmentObject(appState.scheduleEditService)
             case .settings:
                 SettingsView()
             }
