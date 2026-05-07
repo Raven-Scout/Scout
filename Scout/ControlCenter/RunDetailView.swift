@@ -129,7 +129,10 @@ struct RunDetailView: View {
         case .consolidation:    return "morning-consolidation"
         case .dreaming:         return "dreaming-evening"
         case .research:         return "research"
-        case .manual:           return "morning-briefing"
+        // .manual: route to the engine's manual slot type — schedule v2 has no
+        // default manual slot, so this may resolve to a no-op until users add
+        // one. Avoids silently re-firing as a briefing.
+        case .manual:           return "manual"
         }
     }
 }

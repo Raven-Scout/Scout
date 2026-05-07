@@ -2,8 +2,12 @@ import Testing
 import Foundation
 @testable import Scout
 
-/// Mock `ProcessRunner` that returns a canned stdout payload. Records the
-/// invocation so tests can assert the args passed to scoutctl.
+/// Mock `ProcessRunner` that returns canned stdout payloads from a FIFO
+/// queue — each `run(...)` consumes one entry. Tests that exercise multi-
+/// refresh sequences (e.g. "valid then malformed") rely on the queue so
+/// they can drive the same service instance through a sequence of stubbed
+/// outputs without juggling instances. If the queue is exhausted, the last
+/// payload is reused — most single-refresh tests just push one entry.
 actor StubScheduleRunner: ProcessRunner {
     struct Call: Sendable {
         let executable: URL
@@ -11,11 +15,16 @@ actor StubScheduleRunner: ProcessRunner {
     }
 
     private(set) var calls: [Call] = []
-    private let payload: Data
+    private var outputs: [Data]
     private let exitCode: Int32
 
     init(stdout: String, exitCode: Int32 = 0) {
-        self.payload = stdout.data(using: .utf8) ?? Data()
+        self.outputs = [stdout.data(using: .utf8) ?? Data()]
+        self.exitCode = exitCode
+    }
+
+    init(stdouts: [String], exitCode: Int32 = 0) {
+        self.outputs = stdouts.map { $0.data(using: .utf8) ?? Data() }
         self.exitCode = exitCode
     }
 
@@ -24,11 +33,21 @@ actor StubScheduleRunner: ProcessRunner {
         environment: [String: String], workingDirectory: URL?
     ) async throws -> ProcessResult {
         await record(executable: executable, arguments: arguments)
-        return await ProcessResult(exitCode: exitCode, stdout: payload, stderr: Data())
+        let payload = await consume()
+        return ProcessResult(exitCode: exitCode, stdout: payload, stderr: Data())
     }
 
     private func record(executable: URL, arguments: [String]) {
         calls.append(.init(executable: executable, arguments: arguments))
+    }
+
+    private func consume() -> Data {
+        // Pop from the front; reuse the last entry if exhausted so callers
+        // that don't care about the queue (single-refresh tests) keep working.
+        if outputs.count > 1 {
+            return outputs.removeFirst()
+        }
+        return outputs.first ?? Data()
     }
 }
 
@@ -106,38 +125,21 @@ struct ScheduleServiceTests {
     }
 
     @Test func refreshWithMalformedJSONLeavesUpcomingUnchanged() async {
-        // First refresh: populate with valid data.
-        let goodRunner = StubScheduleRunner(stdout: Self.validJSON)
+        // Queue: first refresh returns valid JSON; second returns garbage.
+        // The service should keep the last-good `upcoming` instead of
+        // resetting to `[]` when decoding throws.
+        let runner = StubScheduleRunner(stdouts: [Self.validJSON, "{not valid json"])
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
-            runner: goodRunner,
+            runner: runner,
             argumentsPrefix: ["scoutctl"]
         )
         await service.refresh()
-        let snapshot = service.upcoming
-        #expect(!snapshot.isEmpty)
-
-        // Swap in a malformed payload runner (separate service instance because
-        // the runner is private; the @Published value is what we care about).
-        let badRunner = StubScheduleRunner(stdout: "{not valid json")
-        let service2 = ScheduleService(
-            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
-            runner: badRunner,
-            argumentsPrefix: ["scoutctl"]
-        )
-        // Manually seed the second service's upcoming via a successful refresh
-        // first, then break it — exercises the "swallow on error, keep last" path.
-        let combinedRunner = StubScheduleRunner(stdout: Self.validJSON)
-        let svc = ScheduleService(
-            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
-            runner: combinedRunner,
-            argumentsPrefix: ["scoutctl"]
-        )
-        await svc.refresh()
-        let lastGood = svc.upcoming
+        let lastGood = service.upcoming
         #expect(!lastGood.isEmpty)
 
-        _ = service2 // silence unused warning
+        await service.refresh()  // malformed payload — should be swallowed.
+        #expect(service.upcoming == lastGood)
     }
 
     @Test func refreshSwallowsRunnerErrors() async {
@@ -149,6 +151,23 @@ struct ScheduleServiceTests {
         // Should not crash or throw; upcoming stays at default (empty).
         await service.refresh()
         #expect(service.upcoming.isEmpty)
+    }
+
+    @Test func startIsIdempotent() async {
+        // Calling start() twice in a row should not crash and should not
+        // orphan a still-firing timer. After stop(), the timer reference
+        // is cleared.
+        let runner = StubScheduleRunner(stdout: Self.validJSON)
+        let service = ScheduleService(
+            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
+            runner: runner,
+            argumentsPrefix: ["scoutctl"]
+        )
+        service.start()
+        service.start()
+        service.stop()
+        // No assertion on internal pollTimer — relying on no-crash + the
+        // implementation's invalidate-before-reassign guard.
     }
 
     @Test func refreshSkipsUnknownSlotKeys() async {

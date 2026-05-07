@@ -151,10 +151,17 @@ final class AppState: ObservableObject {
         startNotificationWatch()
     }
 
-    /// Fire a slot immediately via `scoutctl schedule fire-now <slot-key>`.
+    /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
+    /// bypassing the engine's daily-spend gate via `--bypass-budget`.
+    ///
     /// Plan 5 removed in-app dispatch — the engine now owns slot routing,
     /// scout-app just shells out. Errors are swallowed for parity with the
     /// old `runnerService.runNow` (which also returned `try? await`).
+    ///
+    /// `bypassBudget: true` is used by `RunDetailView` for the "force retry"
+    /// path — a manual override that lets a slot fire even when the day's
+    /// budget has already been spent. Default `false` for normal upcoming-strip
+    /// run-now buttons (which respect the budget gate).
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
         var args = ["scoutctl", "schedule", "fire-now", slotKey]
         if bypassBudget { args.append("--bypass-budget") }

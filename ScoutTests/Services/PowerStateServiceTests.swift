@@ -60,4 +60,23 @@ struct PowerStateServiceTests {
         let result = PowerStateService.parsePmsetOutput(sample)
         #expect(result == .onBattery(level: 0.52))
     }
+
+    @Test @MainActor func startIsIdempotent() {
+        // Calling start() twice should not crash and should not orphan a
+        // still-firing timer. After stop(), the service is back to a
+        // quiescent state. Relies on the invalidate-before-reassign guard
+        // in start().
+        struct NoopRunner: ProcessRunner {
+            func run(
+                executable: URL, arguments: [String],
+                environment: [String: String], workingDirectory: URL?
+            ) async throws -> ProcessResult {
+                ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+            }
+        }
+        let service = PowerStateService(runner: NoopRunner())
+        service.start()
+        service.start()
+        service.stop()
+    }
 }

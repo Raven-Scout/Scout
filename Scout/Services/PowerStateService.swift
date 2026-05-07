@@ -23,6 +23,8 @@ final class PowerStateService: ObservableObject {
     }
 
     func start() {
+        pollTimer?.invalidate()  // idempotency guard — drop any prior timer so
+                                 // a double-call doesn't orphan a still-firing one.
         Task { await self.refresh() }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
