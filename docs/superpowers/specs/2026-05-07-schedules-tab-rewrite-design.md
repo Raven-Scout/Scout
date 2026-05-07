@@ -49,7 +49,7 @@ Plan 6 is **UI-only**. No new engine semantics; one tiny additive engine field (
 
 **Read path (scout-app → engine).** A new `ScheduleEditService` shells out to `scoutctl schedule list --json` on tab appear and after every successful save. JSON shape is the existing one — slot records as emitted by `cli.py:cli_schedule_list`. No new endpoint.
 
-**Write path (scout-app → file).** `ScheduleEditService.save([Slot])` composes the entire YAML, writes to a temp file in the same directory, runs `scoutctl schedule validate --target <tmpfile>`, atomic-renames onto canonical, then re-reads via `scoutctl schedule list --json`. Atomic rename means the dispatcher's 5-minute tick reads either the pre-edit or post-edit file, never partial.
+**Write path (scout-app → file).** `ScheduleEditService.save([Slot])` composes the entire YAML, writes to a temp file in the same directory, **checks that the canonical file's mtime hasn't advanced since load** (see §7.6), runs `scoutctl schedule validate --target <tmpfile>`, atomic-renames onto canonical via `FileManager.replaceItemAt(_:withItemAt:)`, then re-reads via `scoutctl schedule list --json`. Atomic rename means the dispatcher's 5-minute tick reads either the pre-edit or post-edit file, never partial. The mtime check prevents clobbering a concurrent manual edit (e.g., the user edited `schedule.yaml` from Vim while the tab was open).
 
 **`validate --target` flag** (additive engine change, lands in the Plan 6 engine PR). Today's `scoutctl schedule validate` reads from `~/Scout/.scout-state/schedule.yaml` or engine defaults; the new flag accepts an optional path argument so the editor can validate a candidate before committing. Implementation is two lines wrapping the existing `load_schedule(path)` call. Default behavior (no `--target`) is unchanged.
 
@@ -78,6 +78,19 @@ SchedulesView (root)
 ```
 
 Single-expansion model: at most one slot expanded at a time, controlled by `@State expandedSlotKey: String?` lifted to `SchedulesView`. Tapping a different row collapses the previous one. If a draft is dirty, switching prompts "Discard unsaved changes to X?".
+
+**Empty state.** When `slots.isEmpty` (the user deleted every slot, or first launch into a vault that's never had `scoutctl schedule init` run), `SchedulesView` renders a `ContentUnavailableView`:
+
+```
+Title:   "No scheduled slots"
+Symbol:  calendar.badge.plus
+Body:    "Add a slot to start scheduling Scout runs. Or run
+          `scoutctl schedule init` from the terminal to seed the
+          plugin defaults (10 standard slots)."
+Action:  "+ Add slot" button (mirrors the toolbar action)
+```
+
+The toolbar's `+ Add slot` button is always present regardless of empty state.
 
 ### 4.1 New Swift files
 
@@ -209,31 +222,62 @@ Don't auto-delete the slot's tracker entry on slot delete. Preserves the audit t
 
 ```
 1. ScheduleEditService.save(allSlots: [Slot])
-2. Compose new YAML text via Yams + raw-file-merge to preserve header comments
-3. Write to tmpfile in same directory: schedule.yaml.<uuid>.tmp
-4. Run scoutctl schedule validate --target <tmpfile>
+2. Stale-check: compare loadedMtime (captured at last reload) with the live
+   canonical file's mtime. If live > loaded → throw StaleScheduleError; UI
+   surfaces "modified externally" banner; user must reload before retry. (§7.6)
+3. Compose new YAML text via Yams + header-comment splice (header-only; §7.2)
+4. Write to tmpfile in same directory: schedule.yaml.<uuid>.tmp
+   • Bracket the rest of save() with defer { try? FileManager.default
+     .removeItem(at: tmpURL) } so an unwritten or unclaimed tmpfile is
+     always cleaned up regardless of throw / early return.
+5. Run scoutctl schedule validate --target <tmpfile>
    ├── exit 0  → continue
    └── exit !0 → throw with stderr text, leave canonical untouched
-5. Atomic rename tmp → schedule.yaml (POSIX rename = atomic on same FS)
-6. Re-read via scoutctl schedule list --json (single source of truth)
-7. Publish to @Published var slots → UI refreshes
+6. FileManager.replaceItemAt(canonicalURL, withItemAt: tmpURL,
+                             backupItemName: nil,
+                             options: [.usingNewMetadataOnly])
+   This is the atomic-rename API — consumes tmpfile (so the defer no-ops
+   cleanly), writes canonical in one step, falls back to copy-and-delete
+   only if the source and destination are on different volumes (which they
+   never are because we always write tmp into the same dir).
+7. Re-read via scoutctl schedule list --json (single source of truth) +
+   re-capture mtime for the next save's stale-check.
+8. Publish to @Published var slots → UI refreshes.
 ```
 
-Same-directory tmpfile + atomic rename is required (cross-FS rename is not atomic on macOS).
+Same-directory tmpfile is required so `replaceItemAt` stays on its fast atomic-rename path (cross-volume falls back to copy-and-delete, which loses atomicity).
 
-### 7.2 Comment preservation
+### 7.2 Comment preservation — header only
 
-The defaults `schedule.yaml` has a 12-line header comment block. Naive Yams round-trip drops them.
+The defaults `schedule.yaml` has a 12-line header comment block (license-style — links to the spec doc, names the slot-type vocabulary, explains slot keys are user-renameable). Naive Yams round-trip drops them.
 
-Approach: read raw text, parse to dict, mutate, re-emit slot blocks via Yams, splice back into the original byte stream so leading comments and per-slot blank-line separators survive.
+**Scope: preserve the header only.** Inline comments inside slot blocks (e.g., `budget_usd: 10  # test`) are lost when saving via the UI. Block-form anchors / merge keys are also lost. This is an explicit tradeoff to avoid byte-stream splicing fragility.
 
-If the structural splice fails (manual user edits broke the section markers), fall back to a pure Yams emit + log a warning. Better to lose comments than refuse to save.
+**Algorithm:**
+
+```swift
+// On read:
+let raw = try String(contentsOf: canonical)
+let header = raw.range(of: #"^.*?(?=\nslots:)"#, options: .regularExpression)
+                 .map { String(raw[$0]) } ?? ""
+
+// On save:
+let body = try Yams.dump(object: ["schema_version": 1, "slots": slotsDict])
+let combined = header + "\n" + body
+try combined.write(to: tmpURL, atomically: false, encoding: .utf8)
+```
+
+The regex `^.*?(?=\nslots:)` matches greedy-up-to but not including `\nslots:`. If the file has no `\nslots:` line (somehow malformed), header is empty and we proceed with a pure Yams dump — better than refusing to save.
+
+**What we're explicitly not doing:** structural splicing of individual slot blocks, anchor/merge-key preservation, inline-comment retention. A doc-string at the top of `ScheduleEditService.save()` notes this constraint so future contributors don't expect more.
+
+**Why this is acceptable:** the canonical seed comes from `engine/scout/defaults/schedule.yaml` (no inline comments in the defaults). Power users who add inline comments via Vim get them preserved across reads and dispatcher ticks; they only get rewritten if those users go through the UI editor for that slot. A future Plan can revisit if real users hit this.
 
 ### 7.3 Concurrency
 
 - **Read side (dispatcher reading schedule.yaml every 5 min):** atomic rename → no problem.
 - **Write side (two simultaneous Saves):** scout-app is single-window. UI gates Save behind "no dirty draft conflict on this slot" so racing yourself isn't possible.
-- **Manual edits in Vim while scout-app has unsaved drafts:** the post-Save reload will surface the divergence (the user's manual edits lose to the app's Save). App-owned-while-open semantics.
+- **Manual edits in Vim while scout-app has unsaved drafts:** the mtime stale-check (§7.6) blocks the Save and forces a reload. The user's terminal edits are preserved; the app's draft survives in memory until the user discards it via Reload's "discard drafts" prompt.
 
 ### 7.4 Reload triggers
 
@@ -248,6 +292,31 @@ If `scoutctl schedule validate` rejects the candidate:
 - The Save button reverts to enabled (so you can retry after fixing).
 - A red banner appears at the top of the expanded form with the engine's stderr text verbatim.
 - The draft is **not** discarded — your in-progress edit survives the failure.
+
+### 7.6 External-edit guard (mtime stale-check)
+
+**Problem.** Tab open in the editor → user terminal-edits `schedule.yaml` (Vim, `scoutctl schedule init --force`, etc.) → user returns to the app and saves a draft → the app's serialized state silently overwrites the terminal edit.
+
+**Solution.** `ScheduleEditService` captures the canonical file's mtime at every reload (tab `.onAppear`, post-Save, post-Delete). On the next Save attempt:
+
+```swift
+let liveMtime = try FileManager.default.attributesOfItem(atPath: canonical.path)[.modificationDate] as! Date
+guard liveMtime <= self.loadedMtime else {
+    throw StaleScheduleError(loadedAt: self.loadedMtime, modifiedAt: liveMtime)
+}
+```
+
+If stale → throw → UI catches → renders a yellow banner at the top of the slot list:
+
+> *`schedule.yaml` was modified externally at 14:32. Your draft is preserved in memory. Click **Reload** to bring in the external changes (Reload prompts to discard or keep dirty drafts).*
+
+**Banner controls:**
+- **Reload now** → re-runs `scoutctl schedule list --json`, captures fresh mtime, prompts "Discard drafts on slot X?" if any draft is dirty.
+- **Dismiss** → keeps the banner hidden until the next stale Save attempt.
+
+**Race window.** There's still a microsecond gap between `attributesOfItem(...)` and `replaceItemAt`. If the dispatcher tick or a manual edit lands inside that window, the app silently wins. Acceptable: the dispatcher only ever reads, and a human edit landing in a microsecond is implausible. Hardening to true atomicity would require `O_EXCL`-style locking which YAML editors don't honor.
+
+**What this guard does NOT cover:** if the user opens the tab, leaves it open for an hour, and during that hour the dispatcher fires a slot — the dispatcher reads-only so mtime doesn't change. The mtime stale-check fires only on writes. Read-only dispatcher activity is invisible to the editor (and irrelevant — neither party is trying to mutate the same byte).
 
 ## 8. Runtime field + Plan 7 forward-compat
 
@@ -300,10 +369,13 @@ For the FOLLOWUPS.md "Plan 7" entry:
 - `save` invokes validate-then-rename and returns success on exit 0.
 - `save` surfaces stderr text and leaves canonical file untouched on exit ≠ 0.
 - `save` is atomic — write a slow runner that sleeps; assert canonical's pre-save bytes are intact during the write window. (Uses temp dir, not real vault.)
-- `save` preserves header comments — feed YAML with a 12-line header comment, edit one slot, assert the header survives byte-for-byte.
-- `save` falls back to pure-Yams emit + warning when structural splice fails (corrupt section markers).
+- `save` preserves header comments — feed YAML with a 12-line header comment, edit one slot, assert the header (everything up to `\nslots:`) survives byte-for-byte.
+- `save` falls back to pure-Yams emit when no `\nslots:` anchor is found (malformed input).
+- `save` cleans up the tmpfile on every exit path (success, validate-failure, throw, stale-mtime). Test inspects the directory after each scenario.
+- `save` blocks on stale mtime — load with mtime t0, externally `touch` the file to t1, attempt save, expect `StaleScheduleError`, assert canonical's bytes unchanged.
+- `save` succeeds when mtime is unchanged.
 - `delete` removes the slot and rewrites the file.
-- Reload after save returns fresh data (mock returns updated `list --json` payload).
+- Reload after save returns fresh data + re-captures mtime for the next stale-check.
 
 ### 9.2 Form / view-level — `ScoutTests/Schedules/SlotEditFormTests.swift` (new)
 
@@ -315,6 +387,8 @@ For the FOLLOWUPS.md "Plan 7" entry:
 - Delete confirmation alert names the slot key.
 - New-slot draft prefills with collision-bumped key (`new-slot-1` → `new-slot-2` if first taken).
 - New-slot Revert removes the in-memory row without touching disk.
+- Empty-state view appears when `slots.isEmpty`; `+ Add slot` button in the empty state inserts the first draft and exits the empty state.
+- Stale-edit banner appears after a `StaleScheduleError`; "Reload now" prompts to discard dirty drafts; "Dismiss" hides the banner.
 
 ### 9.3 Integration / smoke — `ScoutTests/Integration/ScheduleEditE2ETest.swift` (new, opt-in)
 
@@ -353,11 +427,13 @@ Skipped unless `SCOUT_DATA_DIR` is set + points at a real vault. Reads canonical
 
 ## 11. Risks
 
-**Comment preservation in YAML round-trip.** Approach is documented (raw-text-merge with Yams fallback) but needs a real test against the production `~/Scout/.scout-state/schedule.yaml` to confirm. Mitigation: pure-Yams fallback ensures saves never fail — they only lose comments in the worst case.
+**Inline comments inside slot blocks lost via UI saves.** Explicit tradeoff (see §7.2). Header comments preserved; slot-internal `# foo` comments dropped. Mitigation: the canonical seed has no inline slot comments; power users editing in Vim only lose comments on slots they subsequently round-trip through the UI editor.
+
+**Race window between mtime check and `replaceItemAt`.** Microsecond gap during which a concurrent write could land between the stale-check and the rename, and the app would silently win. Mitigation: dispatcher reads-only; human-write-in-a-microsecond is implausible. True atomicity would require advisory locking that the YAML editors used in practice don't honor.
+
+**Stale draft after long idle.** User leaves the tab open for hours; the dispatcher fires (read-only, mtime unchanged) but the user's mental model of "what slots exist" stays accurate. No risk to the dispatcher; risk only if the user ALSO edits in the terminal during that idle window — caught by the §7.6 stale-check.
 
 **`scoutctl` discovery from scout-app at runtime.** `ScheduleEditService` needs the same `scoutctlExecutable: URL` that `AppState` already wires for `ScheduleService`. Re-use that wiring; no new path resolution logic.
-
-**No FS watcher means stale list if user edits YAML in Vim concurrently.** Acceptable. The reload-after-save and reload-on-tab-appear catch the common cases; concurrent terminal edits + UI session is a niche scenario the legacy tab also struggled with.
 
 **Atomic rename across snapshot drives.** macOS Time Machine snapshots can occasionally make rename non-atomic if the source and target are on different APFS volumes. Mitigation: tmpfile is always in the same directory as canonical, which is always on the same volume.
 
@@ -382,3 +458,7 @@ Skipped unless `SCOUT_DATA_DIR` is set + points at a real vault. Reads canonical
 | 6 | Layout | Single column with inline expand | Master/detail; list + modal sheet |
 | 7 | Remote-execution scope | Reserved field, Plan 7 implementation | Pull into Plan 6 |
 | 8 | Engine-side change for tmpfile validation | Add `validate --target <path>` flag (additive) | Mv-canonical-then-validate; skip engine validate, rely solely on Swift-side checks |
+| 9 | Concurrent external edits during open tab | mtime stale-check on Save; banner + Reload flow (§7.6) | No-op (silent overwrite); FS watcher; advisory locking |
+| 10 | YAML comment preservation strategy | Header-only via regex anchor on `\nslots:` (§7.2) | Structural slot-block byte-splicing; pure Yams (no header) |
+| 11 | Tmpfile lifetime guarantee | `defer { removeItem }` + `FileManager.replaceItemAt` (§7.1) | Manual cleanup on each branch; rely on OS temp eviction |
+| 12 | Empty-state UX (slots.isEmpty) | `ContentUnavailableView` with `+ Add slot` action (§4) | Blank list (silent); error-styled banner |
