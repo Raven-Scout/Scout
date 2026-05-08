@@ -25,3 +25,6 @@ Package.resolved
 
 # Claude Code
 .claude/
+
+# Brainstorming visual companion (superpowers skill)
+.superpowers/

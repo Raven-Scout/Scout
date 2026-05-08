@@ -204,6 +204,66 @@ appears (e.g., a packaged `.app` bundling the engine).
   reproduces, evaluate alternatives (file-handle hold + truncate-write
   vs. rename) before locking in atomic-rename as the v0.4 invariant.
 
+### tests/integration/test_action_items_watch.py — silent-crash failure mode (Plan 3)
+
+- **(minor)** `_read_until` doesn't check `proc.poll()` and stderr is
+  captured to a `PIPE` that's never surfaced on assertion failure. If
+  `scoutctl action-items watch` exits immediately (import error,
+  CLI-arg drift, missing watchdog), the test waits the full 10s and
+  then fails with `assert "completed" in ""` — uninformative.
+  Cleanup: short-circuit the read loop on `proc.poll() is not None`
+  and include `proc.stderr.read()` in the assertion message so a
+  broken CLI fails fast and points at the real cause. Not blocking;
+  the test is reliable when the CLI is healthy. Surfaced by code
+  review on commit `5624cbc`.
+
+### scout.action_items.watch (Plan 3 — landed in plan-3 branch)
+
+- **(minor)** `_parse_text` writes a tempfile and calls
+  `parser.parse_file(Path)` rather than parsing a string directly. Two
+  tempfile cycles per diff. Invisible at personal scale, but if the
+  parser ever grows a `parse_text(str)` overload, `_parse_text` becomes
+  a one-liner pass-through and the helper can disappear. Don't preempt
+  — wait for the parser to evolve.
+- **(minor)** The `# type: ignore[override]` on `_Handler.on_modified`
+  in `watch.py` is opaque. A single inline word — "watchdog stubs
+  widen `event` to `FileSystemEvent`" — would orient the next reader
+  without growing the comment.
+
+### scout.action_items.render.render_changes (Plan 3 — landed in plan-3 branch)
+
+- **(minor)** In color mode, `render_changes` constructs a fresh
+  `rich.console.Console` + `StringIO` per event. Sub-millisecond at
+  personal scale (1–50 events per file change), so not a real
+  bottleneck. If Task 3's watcher ever surfaces large batched diffs
+  in profiling, hoist the `Console` outside the loop or switch to
+  `console.capture()`.
+
+### scout.action_items.diff (Plan 3 — landed in plan-3 branch)
+
+- **(important)** `_compare`'s status-transition logic collapses
+  `ActionItem.status` (which ranges over `{open, done, in_progress,
+  watching}` per `parser.py`) into a binary `done`/not-`done` view:
+  `kind = "completed" if curr.status == "done" else "reopened"`. This
+  means transitions like `in_progress → watching` or `open → watching`
+  also emit `reopened`, which can produce misleading watch output for
+  pure section reshuffles. The plan's tests cover only `open ↔ done`,
+  so the bug doesn't surface in unit testing. Two reasonable fixes
+  before the v0.5 event store consumes these:
+  - Suppress emit unless one side is `done` (`open → in_progress`
+    silent), or
+  - Introduce a `status_changed` event with `extras={"old", "new"}`
+    for non-`done` shuffles. Note this expands the renderer's
+    vocabulary (Plan 3 Task 2) by one kind.
+
+  Surfaced by code review on commit `c6b3d77`. Decide before v0.5's
+  event-store substitution forces the audit anyway.
+- **(minor)** `ChangeEvent.item_id: str` uses `""` as a sentinel for
+  unprefixed lines. `str | None` would model absence more honestly
+  but ripples through every consumer (renderer, future event-store
+  serializer). Worth revisiting when v0.5 forces a wider event-shape
+  audit.
+
 ### v0.5+ event store (Plan 6+ implementation; vision spec §"Egress failure handling")
 
 - **(minor)** `scoutctl connector dead-letter retry <event_id>` re-emit
@@ -333,3 +393,37 @@ above). Build a `MockProcessRunner` queue stub that returns canned
 JSON for `scoutctl schedule list` / `show` / `validate` — the pattern
 landed in `ScoutTests/Services/ScheduleServiceTests.swift` is the
 template.
+
+## Plan 7 followup — Schedules table responsive resizing (minor)
+
+Plan 7 shipped a clean DS-aligned Schedules tab with master/detail layout
+(`NavigationSplitView`), but the Table view's 6 fixed-width columns
+(NAME flexible · TYPE 140 · TIME 70 · DAYS 250 · ON MISS 90 · COOLDOWN 90,
++ 5×16pt spacing + 32pt horizontal padding ≈ 752pt + NAME) overflow
+when the user drags the master/detail divider to make the master pane
+narrow. The current commit puts a `.lineLimit(1)` + `.fixedSize` on the
+NAME slot-key text so rows stay tight rather than wrapping into
+multi-line giants — but the visual is rough at narrow widths (columns
+clip past the right edge; text bleeds out).
+
+Acceptable today (it only manifests when the user actively drags the
+split). Three options for a future polish plan:
+
+1. **Hide low-priority columns below a width threshold.** ON MISS and
+   COOLDOWN drop out first; DAYS' inline label disappears next; NAME
+   stays. Use `GeometryReader` or `@Environment(\.horizontalSizeClass)`
+   semantics to decide.
+2. **Switch to a horizontally-scrollable inner ScrollView.** Keeps all
+   columns visible but adds a horizontal scroll affordance.
+3. **Auto-fall-back to Cards view at narrow widths.** Cards are already
+   adaptive (`LazyVGrid(.adaptive(min: 240))`) and degrade to single
+   column gracefully. Switch view mode programmatically when the
+   master pane width drops below ~720pt.
+
+Recommendation: **option 1**. Cleanest for power users who'll regularly
+adjust the split; preserves the at-a-glance density Jordan asked for.
+Implementation is contained: `SchedulesMasterTable` reads the geometry
+of its own frame and conditionally hides cells.
+
+Not blocking the Plan 7 merge. File its own scoped plan when this
+becomes annoying enough to warrant a session.

@@ -4,9 +4,9 @@ A macOS companion app for the [Scout](https://github.com/jordanrburger/scout-plu
 
 Scout is an autonomous knowledge-management and daily-briefing system that runs as scheduled Claude Code sessions. The plugin does the work; this app gives you a native interface on top of whatever Scout produces in `~/Scout/`:
 
-- **Control Center** — sessions activity, upcoming schedule, recent runs with cost/status, usage heatmap.
+- **Control Center** — sessions activity, upcoming schedule, recent runs with cost/status, usage heatmap, on-battery banner.
 - **Action Items** — today's to-do list rendered from the daily markdown file, with inline comments and deep links to Linear / GitHub PRs / Slack threads.
-- **Schedules** — full CRUD on the `com.scout.*.plist` launchd agents: edit fire times, add a new schedule, pause or remove existing ones. Saves to both the live copy in `~/Library/LaunchAgents/` and the repo copy in `~/Scout/launchd/`, reloads via `launchctl`, and commits the repo change.
+- **Schedules** — full CRUD editor for `~/Scout/.scout-state/schedule.yaml`. Master/detail layout with Table + Cards view toggle, type-color palette (briefing/consolidation/dreaming/research/manual), filter chips, live header. Atomic saves via `scoutctl schedule validate --target` with mtime stale-check + header-comment preservation. Click a row to edit its time, weekdays, on-miss policy, cooldown, runner, etc.
 
 ## Install (prebuilt DMG)
 
@@ -66,13 +66,14 @@ Cmd+, opens Settings. A few fields are worth filling in:
 ```
 Scout/                 # main target source
   ActionItems/         # parser, writer, views for daily action-items markdown
-  ControlCenter/       # sessions dashboard
-  Models/              # shared types (Run, Schedule, CalendarFire, …)
-  Schedules/           # list + detail views for launchd schedules
-  Services/            # file watcher, git, launchctl, plist I/O, schedule editor
+  ControlCenter/       # sessions dashboard, upcoming-runs strip, on-battery banner
+  Models/              # shared types (Run, Slot, UpcomingRun, Schedule, …)
+  Schedules/           # master/detail editor for ~/Scout/.scout-state/schedule.yaml
+  Services/            # file watcher, git, launchctl, plist I/O, ScheduleEditService
   Shell/               # AppState, sidebar, main window, settings
-ScoutTests/            # unit + integration tests (~120 tests)
-docs/                  # design specs
+  Utilities/           # DesignSystem (DS namespace) + helpers
+ScoutTests/            # unit + integration tests (~220 @Test funcs / ~37 suites)
+docs/                  # design specs + implementation plans
 ```
 
 ## Development
@@ -87,7 +88,7 @@ Or a specific suite:
 
 ```bash
 xcodebuild test -scheme Scout -destination 'platform=macOS' \
-  -only-testing:ScoutTests/ScheduleEditorServiceSaveTests
+  -only-testing:ScoutTests/ScheduleEditServiceTests
 ```
 
 The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-items files used by the suite. Nothing in them references a real person or incident.
@@ -104,17 +105,20 @@ Set `SKIP_RELEASE=1` to build the DMG locally without tagging or uploading.
 
 ## Relationship to the plugin
 
-The plugin writes; the app reads (and occasionally writes back via CLI shims for action-item comments and schedule edits). The plugin owns:
+The plugin writes; the app reads (and occasionally writes back via `scoutctl` for action-item comments and schedule edits). The plugin owns:
 
-- Session scheduling via `com.scout.*.plist` launchd agents.
+- Schedule definition at `~/Scout/.scout-state/schedule.yaml` (10 default slots — briefings, consolidations, dreaming, research). The dispatcher fires every 5 minutes via the single `com.scout.schedule-tick.plist` launchd agent.
+- Heartbeat agent `com.scout.heartbeat.plist` for opportunistic catch-up runs.
 - Daily action-items markdown at `~/Scout/action-items/action-items-YYYY-MM-DD.md`.
-- Session logs at `~/Scout/.scout-logs/*.log`.
+- Session logs at `~/Scout/.scout-logs/*.jsonl` (connector calls, schedule events, session tokens).
 - Usage tracking at `~/Scout/.scout-logs/usage-tracker.jsonl`.
 - Commit history in `~/Scout/.git`.
 
 The app is a pure consumer of all of the above, plus:
 
-- Saves comment edits via the plugin's `action-items/add_comment.py` CLI.
-- Saves schedule edits by writing plists directly and running `launchctl bootout`/`bootstrap`.
+- Reads upcoming slots via `scoutctl schedule list-upcoming --json` (every 60s) for the Control Center strip.
+- Reads + writes `~/Scout/.scout-state/schedule.yaml` via `scoutctl schedule list --json` and atomic-rename writes validated by `scoutctl schedule validate --target` from the Schedules tab editor.
+- Saves comment edits via the plugin's action-items writer.
+- Triggers a slot manually via `scoutctl schedule fire-now <slot-key>` (the Fire-now button in the Schedules detail pane and the Run-now button in the Upcoming strip).
 
 If the plugin isn't installed, the app still builds and runs; it just shows empty views.
