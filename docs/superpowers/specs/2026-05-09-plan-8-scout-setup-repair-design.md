@@ -223,6 +223,8 @@ Read by stage 1 (pre-flight version delta) and written by stage 7 (version bump)
 - `templates/run-dreaming.sh.tmpl` — same `SCOUT_FORCE_MODE` change.
 - `templates/run-research.sh.tmpl` — verify already correct; minor cleanup.
 - `engine/scout/cli.py` — register `bootstrap install`, `bootstrap upgrade`, `bootstrap doctor`, `schedule install-all`, `schedule install-cron`, `schedule install-heartbeat-plist`.
+- `engine/scout/schedule.py:47` — drop the stale "Reserved for Plan 7" comment on `SlotRuntime.REMOTE`. Replace with: `# Reserved for a future plan (remote routine integration via Anthropic routines API); not yet wired. Loader accepts; dispatcher rejects.`
+- `engine/scout/scripts/schedule_tick.py:387–395` — update the `runtime: remote` rejection error message to drop the "reserved for Plan 7" claim. New message: `"slot {slot_key!r} has runtime: remote, which is not yet implemented. Remote routine integration is reserved for a future plan. Edit ~/Scout/.scout-state/schedule.yaml and set runtime: local, or delete the slot."`
 - `plugin.json` — add `commands/scout-update.md`; bump `version` to `0.4.0`.
 
 ### 5.3 Delete
@@ -348,6 +350,7 @@ Output: green (all checks pass) / yellow (warnings) / red (errors). Exit code: 0
 ## 10. Out of scope (deferred to later plans)
 
 - **Plan 9 — dreaming-proposals as canonical edit log + reverse-promotion.** Make `dreaming-proposals.md` the structured source of truth for vault-side SKILL.md edits, replacing 3-way merge for proposal-driven changes. Add reverse-promotion: detect when vault edits to phase content represent a generalizable improvement, surface them as a proposed plugin PR.
+- **Remote slot execution (`runtime: remote`) — needs its own plan, number TBD.** Originally labeled "Plan 7" in `engine/scout/schedule.py:47` and `schedule_tick.py:387` when Plan 5 was being written. Plan 7 ended up scoped to the schedules tab visual rewrite, so the labels became stale. Plan 8 fixes the labels (see §5.2) but does not implement remote execution. Implementation is a substantial standalone effort: Anthropic routines API integration, auth/key flow, schedule translation, status sync (scout-app cannot observe remote stdout), failure handling, cost surfacing in usage telemetry, and the gating question of which slot types can run remote (sandboxed routines cannot use `gh` CLI per project conventions, so any GitHub-writing slot stays local). Schedule for whenever Jordan wants — likely after Plan 9.
 - **Plan 11+ — Runner unification.** Replace `run-{scout,dreaming,research}.sh` body with a one-liner `exec scoutctl run <mode> "$@"` shim; move locking/budget/prompt logic into the engine. Categories 1 and 1b collapse to category 1.
 - **Cat 5 implementation — Vault-generated runtime files.** When Scout starts authoring its own hooks/connectors, decide on identification mechanism (manifest? path convention? frontmatter marker?) so `/scout-update` knows to leave them alone.
 - **Cat 6 implementation — Plugin-managed databases.** When Scout adopts sqlite/duckdb for ACID-transactional local storage, pipeline stage 2 (schema migrations) gets populated.
@@ -367,3 +370,4 @@ Output: green (all checks pass) / yellow (warnings) / red (errors). Exit code: 0
 - **Q3 — File ownership taxonomy:** Cat 1 / 1b / 2 / 3 / 4 with futures cat 5 / 6 reserved as design-extensibility constraints.
 - **Q4 — Cat 4 conflict policy:** 3-way merge with `.scout-state/last-assembled/` snapshots. Plan 9 will layer dreaming-proposal-as-edit-log on top.
 - **Q5 — Linux:** In scope. New `scoutctl schedule install-cron` parallels `install-plist`. `install-all` is the platform-agnostic wrapper.
+- **Q6 — Remote slot execution:** Not folded into Plan 8 scope (too large). Plan 8 cleans up the stale "Plan 7" labels in `schedule.py:47` and `schedule_tick.py:387–395` so they no longer claim a plan number that doesn't own the work. Implementation gets its own plan slot (likely after Plan 9), TBD.
