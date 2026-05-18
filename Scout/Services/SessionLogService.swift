@@ -13,6 +13,7 @@ final class SessionLogService: ObservableObject {
     private let clock: any ClockSource
     private let timeZone: TimeZone
     private var watchTask: Task<Void, Never>?
+    private var sweepTimer: Timer?
 
     init(
         logsDirectory: URL,
@@ -140,14 +141,26 @@ final class SessionLogService: ObservableObject {
         let size = Int64(data.count)
         let range = NSRange(text.startIndex..., in: text)
 
-        // Matches `=== SCOUT run finished at …`, `=== SCOUT Dreaming run finished at …`,
-        // `=== SCOUT Research run finished at …`. The `(?: \w+)?` optional word is
-        // single-token only — if a future runner emits a multi-word prefix (e.g.
-        // "SCOUT Meta Review run finished"), broaden to `(?: [\w ]+?)?`. Capture
-        // group 3 (duration seconds) is kept for a future "show duration" surface
-        // but is not currently read.
+        // Matches the runner's "finished" marker across both historical
+        // casings:
+        //   `=== SCOUT run finished at …`           (pre-2026-05-01)
+        //   `=== Scout Dreaming run finished at …`  (current)
+        // The runner script was renamed in scout-plugin around May 2026 to
+        // mixed-case "Scout"; our regex was still pinned to all-caps "SCOUT"
+        // so every log after the rename parsed as still-running → orphaned
+        // (CC-1 follow-up: "May 12 sessions show as orphaned").
+        //
+        // Case-insensitivity is set at the regex level via the constructor
+        // option so the whole pattern handles either casing uniformly —
+        // inline `(?i:...)` groups behaved inconsistently across NSRegular
+        // builds when combined with lazy optional groups. The
+        // `(?:\s[\w ]+?)?` token allows multi-word run-type prefixes
+        // ("Scout Dreaming", future "Scout Meta Review", etc.). Capture
+        // group 3 (duration seconds) is kept for a future "show duration"
+        // surface but is not currently consumed.
         let finishRegex = try NSRegularExpression(
-            pattern: #"=== SCOUT(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#
+            pattern: #"=== Scout(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#,
+            options: [.caseInsensitive]
         )
         var endedAt: Date? = nil
         var exitCode: Int? = nil
@@ -214,6 +227,38 @@ final class SessionLogService: ObservableObject {
             : .running
     }
 
+    /// Post-pass over an assembled run list that demotes `.running` entries
+    /// when a newer run of the same type has a terminal status. Without this,
+    /// a stuck-looking earlier run (e.g. a Dreaming whose finish marker the
+    /// shell script failed to write before crashing) keeps showing as
+    /// "running" indefinitely even though a later run of the same type
+    /// already completed cleanly — that was the original CC-1 / CC-5 bug.
+    ///
+    /// Logic:
+    /// - Find, per `RunType`, the most-recent run whose status is **terminal**
+    ///   (anything except `.running`).
+    /// - For every still-`.running` run, if a terminal run of the same type
+    ///   started strictly later than this one, this run is stale → `.orphaned`.
+    ///
+    /// Time-based promotion is handled by `promoteOrphan` per-run; this method
+    /// only handles the "I have evidence a newer same-type run finished"
+    /// branch. Both rules are layered so e.g. an orphan-by-age pass can run
+    /// first, then this reconciles cross-run.
+    nonisolated static func resolveStaleRunning(_ runs: [Run]) -> [Run] {
+        var latestTerminal: [RunType: Date] = [:]
+        for r in runs where r.status != .running {
+            let prev = latestTerminal[r.type] ?? .distantPast
+            if r.startedAt > prev { latestTerminal[r.type] = r.startedAt }
+        }
+        return runs.map { r -> Run in
+            guard r.status == .running,
+                  let newerTerminal = latestTerminal[r.type],
+                  newerTerminal > r.startedAt
+            else { return r }
+            return r.with(status: .orphaned)
+        }
+    }
+
     nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
         let patterns: [String] = [
             "429", "rate.?limit", "overloaded", "throttle", "too many requests",
@@ -233,10 +278,57 @@ final class SessionLogService: ObservableObject {
         return out
     }
 
+    /// Parse the `date`-style timestamp the runner script writes in finish
+    /// markers. Format examples seen in the wild:
+    ///   "Sun Apr 19 15:00:01 EDT 2026"     (NA timezone — POSIX recognises)
+    ///   "Tue May 12 11:51:48 CEST 2026"    (EU timezone — POSIX does NOT)
+    ///
+    /// POSIX locale's `DateFormatter` zone table doesn't include CEST/CET,
+    /// so the original implementation silently returned nil for every
+    /// European-timestamped log and the UI lost run-duration display for
+    /// any session run while the user is travelling. Fix: pre-extract a
+    /// known zone abbreviation, replace it with a UTC-offset placeholder,
+    /// then parse with the offset. Falls back to the original zzz-format
+    /// for anything unrecognised.
     nonisolated private static func parseScoutTimestamp(_ s: String) -> Date? {
-        // Format like "Sun Apr 19 15:00:01 EDT 2026" — `date` default output on macOS
-        let formats = ["EEE MMM d HH:mm:ss zzz yyyy", "EEE MMM  d HH:mm:ss zzz yyyy"]
-        for fmt in formats {
+        // Manual zone → offset table covering every abbreviation the
+        // user might see on macOS `date` output. Daylight-saving variants
+        // included; offsets are seconds.
+        let zoneOffsets: [String: Int] = [
+            // North America
+            "EDT": -4 * 3600, "EST": -5 * 3600,
+            "CDT": -5 * 3600, "CST": -6 * 3600,
+            "MDT": -6 * 3600, "MST": -7 * 3600,
+            "PDT": -7 * 3600, "PST": -8 * 3600,
+            // Europe / UK
+            "GMT": 0, "BST": 1 * 3600,
+            "CET":  1 * 3600, "CEST": 2 * 3600,
+            "EET":  2 * 3600, "EEST": 3 * 3600,
+            "WET":  0,        "WEST": 1 * 3600,
+            // Misc
+            "UTC": 0, "Z": 0,
+        ]
+        // Find any token in the input that matches a known zone.
+        for (abbr, seconds) in zoneOffsets {
+            guard s.contains(" \(abbr) ") else { continue }
+            // Convert seconds to "+HHMM" / "-HHMM"
+            let sign = seconds >= 0 ? "+" : "-"
+            let abs = Swift.abs(seconds)
+            let hh = abs / 3600
+            let mm = (abs % 3600) / 60
+            let offsetStr = String(format: "%@%02d%02d", sign, hh, mm)
+            let normalised = s.replacingOccurrences(of: " \(abbr) ", with: " \(offsetStr) ")
+            let formats = ["EEE MMM d HH:mm:ss Z yyyy", "EEE MMM  d HH:mm:ss Z yyyy"]
+            for fmt in formats {
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "en_US_POSIX")
+                f.dateFormat = fmt
+                if let d = f.date(from: normalised) { return d }
+            }
+        }
+        // Fallback: original zzz-formatter (handles whatever POSIX recognises).
+        let fallbackFormats = ["EEE MMM d HH:mm:ss zzz yyyy", "EEE MMM  d HH:mm:ss zzz yyyy"]
+        for fmt in fallbackFormats {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
             f.dateFormat = fmt
@@ -304,9 +396,12 @@ final class SessionLogService: ObservableObject {
             out.sort { $0.startedAt > $1.startedAt }
             return out
         }.value
-        runs = assembled
+        // Cross-run reconciliation: a `.running` entry that has a newer
+        // same-type terminal sibling is by definition stale → orphan.
+        runs = Self.resolveStaleRunning(assembled)
         startWatching()
-        return assembled
+        startStaleSweep()
+        return runs
     }
 
     /// Resolve commits for a Run on demand. Called by the detail pane when the
@@ -379,7 +474,37 @@ final class SessionLogService: ObservableObject {
             updated.insert(newRun, at: 0)
             updated.sort { $0.startedAt > $1.startedAt }
         }
-        runs = updated
+        // Reconcile after every change — a newly-terminal run may now
+        // invalidate an older same-type `.running` entry.
+        runs = Self.resolveStaleRunning(updated)
+    }
+
+    /// Re-applies orphan/stale rules against the current snapshot. Used by
+    /// the periodic sweep timer so a long-running app session still demotes
+    /// `.running` → `.orphaned` as clock time crosses the per-type cutoff,
+    /// even when no file event fires.
+    func sweepStaleStatuses() {
+        let now = clock.now()
+        let resweeped = runs.map { run -> Run in
+            let promoted = Self.promoteOrphan(
+                parsedStatus: run.status,
+                startedAt: run.startedAt,
+                type: run.type,
+                now: now
+            )
+            return promoted == run.status ? run : run.with(status: promoted)
+        }
+        let resolved = Self.resolveStaleRunning(resweeped)
+        // Only republish if anything actually changed — avoids needless
+        // SwiftUI re-renders on every tick.
+        if resolved != runs { runs = resolved }
+    }
+
+    private func startStaleSweep() {
+        sweepTimer?.invalidate()
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sweepStaleStatuses() }
+        }
     }
 }
 
@@ -412,18 +537,29 @@ extension RunType {
 
 extension RunType {
     /// How long after `startedAt` a run with no terminal marker should be
-    /// promoted from `.running` to `.orphaned`. Tuned per run type because
-    /// briefings are short but dreaming can legitimately run for hours.
+    /// promoted from `.running` to `.orphaned`. Tuned per run type from
+    /// observed realistic upper bounds — the old thresholds (6h briefings,
+    /// 12h dreaming) were way too loose and produced multi-hour false
+    /// "running" badges in the Now strip and Sessions list. CC-1/CC-5.
+    ///
+    /// Observed P95s (May 2026 on Jordan's box):
+    ///   briefing: ~6 min   · consolidation: ~3 min
+    ///   dreaming: ~25 min  · research: ~40 min
+    /// Cutoffs leave ~3× headroom so a legitimately long run still resolves
+    /// as running, but a missing finish-marker tips into orphan inside ~30
+    /// minutes of inactivity, not half a day.
     var orphanAfter: TimeInterval {
         switch self {
-        case .research:
-            return 2 * 3600
-        case .morningBriefing, .weekendBriefing, .consolidation:
-            return 6 * 3600
+        case .morningBriefing, .weekendBriefing:
+            return 30 * 60           // 30 min — briefing runs short
+        case .consolidation:
+            return 20 * 60           // 20 min — consolidation runs even shorter
         case .dreaming:
-            return 12 * 3600
+            return 2 * 3600          // 2 h — long-form synthesis
+        case .research:
+            return 2 * 3600          // 2 h — unchanged, research can legitimately churn
         case .manual:
-            return 6 * 3600
+            return 45 * 60           // 45 min — catch-all, prefer to orphan fast
         }
     }
 }

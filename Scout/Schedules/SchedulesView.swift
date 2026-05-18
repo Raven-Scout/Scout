@@ -86,23 +86,12 @@ struct SchedulesView: View {
                     selectedSlotKey: $selectedSlotKey
                 )
             case .timeline:
-                timelinePlaceholder
+                SchedulesTimelineView(
+                    slots: filteredSlots,
+                    selectedSlotKey: $selectedSlotKey
+                )
             }
         }
-    }
-
-    private var timelinePlaceholder: some View {
-        VStack(spacing: 8) {
-            Spacer()
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 32))
-                .foregroundStyle(DS.Ink.p4)
-            Text("Timeline view coming in a future plan")
-                .font(DS.sans(13))
-                .foregroundStyle(DS.Ink.p3)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder

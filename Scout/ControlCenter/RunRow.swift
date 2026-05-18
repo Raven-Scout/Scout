@@ -1,9 +1,15 @@
 import SwiftUI
 
-/// Editorial session row: status icon → name/when → status → commits → cost.
-/// No boxes; hairline rules do the separation.
+/// Editorial session row: status icon → name/when → status → commits → cost
+/// → reveal chevron. No boxes; hairline rules do the separation. CC-8:
+/// added selection highlight + hover chevron + pointing cursor so the
+/// row is obviously interactive (previous version gave no signal that
+/// tapping would do anything).
 struct RunRow: View {
     let run: Run
+    var isSelected: Bool = false
+
+    @State private var hovering: Bool = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
@@ -35,10 +41,27 @@ struct RunRow: View {
                 .font(DS.mono(11.5))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 80, alignment: .trailing)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(hovering || isSelected ? DS.Ink.p2 : DS.Ink.p4.opacity(0.5))
+                .frame(width: 16, alignment: .trailing)
         }
         .padding(.vertical, 10)
+        .padding(.horizontal, 8)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6).fill(DS.Accent.wash.opacity(0.55))
+            } else if hovering {
+                RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk.opacity(0.6))
+            }
+        }
         .overlay(alignment: .bottom) { EditorialRule() }
         .contentShape(Rectangle())
+        .onHover { h in
+            hovering = h
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .help("Open run detail")
     }
 
     private var manualBadge: some View {

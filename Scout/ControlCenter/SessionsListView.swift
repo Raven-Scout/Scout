@@ -2,13 +2,20 @@ import SwiftUI
 
 /// Sessions table — editorial card with search + type filter and a flat row
 /// layout (status icon · name/when · status · commits · cost).
+///
+/// CC-8: previously used `NavigationLink` to push detail into a stack,
+/// which buried the sessions list. Now exposes a tap callback so the
+/// parent (ControlCenterView) can open the detail as a side panel — and
+/// surfaces selected-row highlight + a hover chevron so the row is
+/// obviously clickable.
 struct SessionsListView: View {
     @EnvironmentObject var state: AppState
     var dayFilter: Date?
+    let onSelect: (Run) -> Void
+    let selectedRunID: Run.ID?
 
     @State private var typeFilter: Set<RunType> = Set(RunType.allCases)
     @State private var search: String = ""
-    @State private var selected: Run.ID? = nil
 
     var filtered: [Run] {
         let cal = Calendar.current
@@ -31,8 +38,8 @@ struct SessionsListView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(filtered.prefix(30)) { run in
-                        NavigationLink(value: run.id) {
-                            RunRow(run: run)
+                        Button { onSelect(run) } label: {
+                            RunRow(run: run, isSelected: selectedRunID == run.id)
                         }
                         .buttonStyle(.plain)
                     }
@@ -40,11 +47,6 @@ struct SessionsListView: View {
             }
         }
         .editorialCard(padding: 18)
-        .navigationDestination(for: Run.ID.self) { id in
-            if let r = filtered.first(where: { $0.id == id }) {
-                RunDetailView(run: r)
-            }
-        }
     }
 
     private var header: some View {

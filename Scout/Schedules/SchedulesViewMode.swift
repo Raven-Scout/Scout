@@ -12,14 +12,10 @@ enum SchedulesViewMode: String, CaseIterable, Identifiable, Hashable {
     /// The default view when no scene-storage value exists.
     static let `default`: SchedulesViewMode = .table
 
-    /// Timeline is reserved for a future plan; the segmented picker still
-    /// shows the segment, but selection routes to a placeholder pane.
-    var isAvailable: Bool {
-        switch self {
-        case .table, .cards: return true
-        case .timeline:      return false
-        }
-    }
+    /// All three views are available — Timeline ships in the Scout.html
+    /// design parity revamp with full gap-collapse, NOW marker, and
+    /// alternating-side card layout.
+    var isAvailable: Bool { true }
 
     /// Display label for the segmented picker.
     var displayName: String {

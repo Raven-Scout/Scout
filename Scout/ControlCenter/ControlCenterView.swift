@@ -3,32 +3,147 @@ import SwiftUI
 /// Editorial status console. Two-column page on wide windows: a primary
 /// column with the hero / schedule / heatmap / sessions, and a rail with
 /// budget, repo state, signals, and keyboard hints.
+///
+/// CC-8: run detail now opens as a right-side panel (preserving the
+/// sessions list) and can be expanded to fill the main area on demand.
+/// ⌘⇧F toggles expand/collapse, ⌘. closes.
 struct ControlCenterView: View {
     @EnvironmentObject var state: AppState
     @State private var dayFilter: Date? = nil
+    @State private var detail: DetailPresentation? = nil
+
+    /// How the right-side detail panel is being shown — collapsed (alongside
+    /// the rail), side (alongside the primary column), or full (overlays the
+    /// whole main area).
+    enum DetailPresentation: Equatable {
+        case side(Run)
+        case full(Run)
+
+        var run: Run {
+            switch self {
+            case .side(let r): return r
+            case .full(let r): return r
+            }
+        }
+        var isFull: Bool { if case .full = self { return true } else { return false } }
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    PowerStateBanner(service: state.powerStateService)
-                    ConnectorAlertBanner()
-                    header
-                    HStack(alignment: .top, spacing: 32) {
-                        primaryColumn
-                            .frame(maxWidth: .infinity, alignment: .leading)
+        ZStack(alignment: .topTrailing) {
+            mainSurface
+            if let detail, detail.isFull {
+                fullScreenDetail(detail.run)
+                    .transition(.opacity)
+            }
+        }
+        .background(
+            Group {
+                Button("") { closeDetail() }
+                    .keyboardShortcut(".", modifiers: .command)
+                Button("") { toggleExpansion() }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+            .opacity(0)
+            .frame(width: 0, height: 0)
+        )
+        .animation(.easeInOut(duration: 0.18), value: detail)
+    }
+
+    @ViewBuilder
+    private var mainSurface: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                PowerStateBanner(service: state.powerStateService)
+                ConnectorAlertBanner()
+                header
+                HStack(alignment: .top, spacing: 28) {
+                    primaryColumn
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if case .side(let run) = detail {
+                        sideDetail(run)
+                            .frame(width: 460)
+                    } else {
                         rail
                             .frame(width: 320)
                     }
                 }
-                .frame(maxWidth: 1120, alignment: .leading)
-                .padding(.horizontal, 42)
-                .padding(.top, 28)
-                .padding(.bottom, 64)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .background(DS.Paper.base)
+            .frame(maxWidth: 1180, alignment: .leading)
+            .padding(.horizontal, 42)
+            .padding(.top, 28)
+            .padding(.bottom, 64)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
+        .background(DS.Paper.base)
+    }
+
+    // MARK: - Detail panels
+
+    private func sideDetail(_ run: Run) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            detailHeader(run: run, isExpanded: false)
+            EditorialRule()
+            RunDetailView(run: run)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(DS.Paper.raised)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                .shadow(color: DS.Neumorphic.shadow.opacity(0.4), radius: 8, x: -2, y: 4)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func fullScreenDetail(_ run: Run) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            detailHeader(run: run, isExpanded: true)
+            EditorialRule()
+            RunDetailView(run: run)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(DS.Paper.base)
+    }
+
+    private func detailHeader(run: Run, isExpanded: Bool) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button { closeDetail() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(DS.Ink.p3)
+            .help("Close (⌘.)")
+
+            Text(run.displayName)
+                .font(DS.serif(16, weight: .medium))
+                .foregroundStyle(DS.Ink.p1)
+            Spacer()
+            Button { toggleExpansion() } label: {
+                Image(systemName: isExpanded
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12))
+                    .foregroundStyle(DS.Ink.p3)
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func closeDetail() {
+        detail = nil
+    }
+
+    private func toggleExpansion() {
+        guard let d = detail else { return }
+        detail = d.isFull ? .side(d.run) : .full(d.run)
+    }
+
+    /// Called by `SessionsListView` (via callback) when a row is tapped.
+    fileprivate func openDetail(_ run: Run) {
+        detail = .side(run)
     }
 
     // MARK: - Header
@@ -55,7 +170,11 @@ struct ControlCenterView: View {
             NowStripView()
             UpcomingStripView()
             ActivityHeatmapView(dayFilter: $dayFilter)
-            SessionsListView(dayFilter: dayFilter)
+            SessionsListView(
+                dayFilter: dayFilter,
+                onSelect: { run in openDetail(run) },
+                selectedRunID: detail?.run.id
+            )
         }
     }
 

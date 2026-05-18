@@ -44,6 +44,20 @@ final class AppState: ObservableObject {
         let watcher = FileWatcher()
         let runner = SystemProcessRunner()
 
+        // Resolve scoutctl explicitly. When Scout.app launches from Finder
+        // (or via `open`), its PATH is the LaunchServices default
+        // (`/usr/bin:/bin:/usr/sbin:/sbin`) — homebrew, miniconda, pipx,
+        // and the scout-plugin bin dir are all absent. `/usr/bin/env
+        // scoutctl` then fails silently inside ScheduleService.refresh
+        // (caught by the do/catch), leaving the upcoming strip empty.
+        //
+        // Pick the first concrete scoutctl on disk so we don't depend on
+        // GUI app PATH inheritance at all. Falls back to `/usr/bin/env`
+        // only if no known path exists (then ScheduleService surfaces the
+        // exec error via its `lastError` publisher so the UI can show
+        // "scoutctl not found").
+        let scoutctlResolved = AppState.resolveScoutctlPath()
+
         let git = GitService(repoURL: scoutDir, runner: runner)
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
@@ -68,12 +82,8 @@ final class AppState: ObservableObject {
         // polls `scoutctl schedule list-upcoming --json` every 60 s and renders
         // the upcoming-runs strip. Fire-now goes through `scoutctl schedule
         // fire-now <slot-key>` via the shared `runner`.
-        //
-        // `/usr/bin/env scoutctl` lets us resolve scoutctl via $PATH instead of
-        // pinning to a conda/homebrew install path that may shift between
-        // machines. Mirrors the ActionItemsWriter `python3` invocation pattern.
-        let scoutctlExe = URL(fileURLWithPath: "/usr/bin/env")
-        let scoutctlArgsPrefix = ["scoutctl"]
+        let scoutctlExe = scoutctlResolved.executable
+        let scoutctlArgsPrefix = scoutctlResolved.argsPrefix
         let sched = ScheduleService(
             scoutctl: scoutctlExe,
             runner: runner,
@@ -168,6 +178,46 @@ final class AppState: ObservableObject {
             arguments: args,
             environment: [:],
             workingDirectory: scoutDirectory
+        )
+    }
+
+    /// Where scoutctl lives + how to invoke it. Used by the constructor to
+    /// wire ScheduleService and ScheduleEditService at startup.
+    struct ScoutctlInvocation {
+        /// Executable to launch. If we found scoutctl on disk this is its
+        /// absolute path; otherwise `/usr/bin/env` and we lean on $PATH.
+        let executable: URL
+        /// Args inserted before the user's args. Empty when `executable`
+        /// is scoutctl itself; `["scoutctl"]` when we fell back to
+        /// `/usr/bin/env`.
+        let argsPrefix: [String]
+    }
+
+    /// Try known install paths in priority order. The scout-plugin repo's
+    /// own `bin/` is preferred because it's the canonical source of truth;
+    /// after that we walk the locations the user is likely to have
+    /// installed scoutctl via (miniconda, pipx, homebrew, /usr/local). If
+    /// none exist, fall back to `/usr/bin/env scoutctl` so a user with
+    /// scoutctl on PATH (e.g. running from Xcode-inherited env) still
+    /// works.
+    static func resolveScoutctlPath() -> ScoutctlInvocation {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates: [URL] = [
+            home.appendingPathComponent("scout-plugin/bin/scoutctl"),
+            home.appendingPathComponent("miniconda3/bin/scoutctl"),
+            home.appendingPathComponent(".local/bin/scoutctl"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/scoutctl"),
+            URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+        ]
+        let fm = FileManager.default
+        for url in candidates {
+            if fm.isExecutableFile(atPath: url.path) {
+                return ScoutctlInvocation(executable: url, argsPrefix: [])
+            }
+        }
+        return ScoutctlInvocation(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            argsPrefix: ["scoutctl"]
         )
     }
 

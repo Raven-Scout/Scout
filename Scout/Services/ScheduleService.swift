@@ -12,16 +12,28 @@ import Combine
 @MainActor
 final class ScheduleService: ObservableObject {
     @Published private(set) var upcoming: [UpcomingRun] = []
+    /// Most recent error surface for the UI. `nil` when the last refresh
+    /// succeeded. Previously every error was swallowed silently and the
+    /// user saw an empty heartbeat strip with no clue why (e.g. scoutctl
+    /// not on the GUI app's PATH).
+    @Published private(set) var lastError: String? = nil
 
     private let runner: any ProcessRunner
     private let scoutctl: URL
     private let argumentsPrefix: [String]
+    private let clock: any ClockSource
     private var pollTimer: Timer?
 
-    init(scoutctl: URL, runner: any ProcessRunner, argumentsPrefix: [String] = []) {
+    init(
+        scoutctl: URL,
+        runner: any ProcessRunner,
+        argumentsPrefix: [String] = [],
+        clock: any ClockSource = SystemClock()
+    ) {
         self.scoutctl = scoutctl
         self.runner = runner
         self.argumentsPrefix = argumentsPrefix
+        self.clock = clock
     }
 
     func start() {
@@ -43,6 +55,12 @@ final class ScheduleService: ObservableObject {
     /// only writes `self.upcoming` while back on `@MainActor`. Errors are
     /// swallowed — the next tick retries. Plan 6+ adds a UI banner for
     /// persistent failures.
+    ///
+    /// Post-processing (CC-2 / CC-3): scoutctl emits entries in insertion
+    /// order (by slot, not by time). The Control Center wants strict
+    /// chronological order with past entries dropped, so every consumer
+    /// (NowStripView.nextColumn, UpcomingStripView, StatusBarView) can take
+    /// `upcoming.first` and get the soonest fire.
     func refresh() async {
         do {
             let output = try await runner.run(
@@ -52,16 +70,40 @@ final class ScheduleService: ObservableObject {
                 workingDirectory: nil
             )
             let parsed = try JSONDecoder().decode([RawUpcomingRun].self, from: output.stdout)
-            self.upcoming = parsed.compactMap { raw in
+            let decoded = parsed.compactMap { raw in
                 UpcomingRun(
                     slotKey: raw.slot_key,
                     slotType: raw.slot_type,
                     scheduledAtUTC: raw.scheduled_at_utc
                 )
             }
+            let now = clock.now()
+            self.upcoming = decoded
+                .filter { $0.scheduledAt > now }
+                .sorted { $0.scheduledAt < $1.scheduledAt }
+            self.lastError = nil
         } catch {
+            // Make the failure visible. The UpcomingStripView reads
+            // `lastError` and renders a banner; the previous behaviour
+            // (silent swallow) left users staring at an empty list with
+            // no signal that scoutctl wasn't reachable.
+            self.lastError = formatRunnerError(error)
             return
         }
+    }
+
+    /// Render an exec/decode error into a single-line message the user can
+    /// actually act on. Keeps PATH-not-found visible as the most likely
+    /// real-world failure mode without dragging in OS-error machinery.
+    private func formatRunnerError(_ error: Error) -> String {
+        let text = String(describing: error)
+        if text.contains("ENOENT") || text.contains("No such file") {
+            return "scoutctl not found — check that scout-plugin is installed."
+        }
+        if text.contains("ProcessResult") || text.contains("exitCode") {
+            return "scoutctl returned an error. Try `scoutctl schedule list-upcoming --json` in a terminal."
+        }
+        return "Couldn't load schedule: \(text.prefix(160))"
     }
 
     /// Wire format from `scoutctl schedule list-upcoming --json`. Snake-case

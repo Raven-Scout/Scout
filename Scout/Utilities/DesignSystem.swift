@@ -144,26 +144,139 @@ private extension NSColor {
     }
 }
 
-// MARK: - Shared surfaces
+// MARK: - Neumorphic shadow recipes
 
-/// Editorial card chrome. Uses the raised paper fill with a hairline rule —
-/// no drop shadows (they eat scroll perf).
-struct EditorialCard: ViewModifier {
-    var padding: CGFloat = 16
+extension DS {
+    /// Dual-direction soft-extrude shadow tones. Top-left highlight + bottom-right
+    /// shadow, on the warm paper base. Matches the handoff bundle's --nm-hi /
+    /// --nm-sh CSS tokens (see Scout.html design tokens).
+    enum Neumorphic {
+        static let shadow   = Color(fallbackLight: .sRGB(0.510, 0.430, 0.330, 0.22),
+                                    fallbackDark:  .sRGB(0.000, 0.000, 0.000, 0.55))
+        static let shadow2  = Color(fallbackLight: .sRGB(0.510, 0.430, 0.330, 0.14),
+                                    fallbackDark:  .sRGB(0.000, 0.000, 0.000, 0.35))
+        static let highlight = Color(fallbackLight: .sRGB(1.000, 0.988, 0.961, 0.95),
+                                     fallbackDark:  .sRGB(1.000, 0.980, 0.940, 0.04))
+    }
+}
+
+/// Soft extruded surface — top-left highlight + bottom-right shadow. Used for
+/// raised buttons, chips, pdots, and cards.
+struct NeumorphicRaised: ViewModifier {
+    var cornerRadius: CGFloat = 8
+    var small: Bool = false
+
+    func body(content: Content) -> some View {
+        let shadowRadius: CGFloat   = small ? 5 : 10
+        let highlightRadius: CGFloat = small ? 3 : 8
+        let offset: CGFloat         = small ? 2 : 4
+        return content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(DS.Paper.base)
+                    .shadow(color: DS.Neumorphic.shadow, radius: shadowRadius, x: offset, y: offset)
+                    .shadow(color: DS.Neumorphic.highlight, radius: highlightRadius, x: -offset, y: -offset)
+            )
+    }
+}
+
+/// Inset/pressed surface — used for trays, segment backgrounds, fields, and
+/// the active state on chips and sidebar items. SwiftUI can't do true inset
+/// shadows, so this approximates it with a darker recessed fill + hairline.
+struct NeumorphicPressed: ViewModifier {
     var cornerRadius: CGFloat = 8
 
     func body(content: Content) -> some View {
         content
-            .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: cornerRadius).fill(DS.Paper.raised))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(DS.Paper.sunk)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .strokeBorder(DS.Neumorphic.shadow2, lineWidth: 0.5)
+                    )
+            )
     }
 }
 
 extension View {
-    func editorialCard(padding: CGFloat = 16, cornerRadius: CGFloat = 8) -> some View {
-        modifier(EditorialCard(padding: padding, cornerRadius: cornerRadius))
+    /// Apply a soft extruded surface — used for raised chrome on the warm
+    /// paper canvas.
+    func neumorphicRaised(cornerRadius: CGFloat = 8, small: Bool = false) -> some View {
+        modifier(NeumorphicRaised(cornerRadius: cornerRadius, small: small))
+    }
+
+    /// Apply a recessed surface — used for trays, inputs, and active segmented
+    /// chrome (the "pushed-in" state).
+    func neumorphicPressed(cornerRadius: CGFloat = 8) -> some View {
+        modifier(NeumorphicPressed(cornerRadius: cornerRadius))
+    }
+}
+
+/// The warm radial canvas backdrop. Two soft tinted ellipses fade into the
+/// base paper — gives the window depth without competing with foreground type.
+struct PaperBackdrop: View {
+    var body: some View {
+        ZStack {
+            DS.Paper.base
+            RadialGradient(
+                colors: [
+                    Color(fallbackLight: .sRGB(0.83, 0.81, 0.92, 0.45),
+                          fallbackDark:  .sRGB(0.20, 0.18, 0.30, 0.45)),
+                    .clear
+                ],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 760
+            )
+            RadialGradient(
+                colors: [
+                    Color(fallbackLight: .sRGB(0.95, 0.85, 0.62, 0.40),
+                          fallbackDark:  .sRGB(0.25, 0.18, 0.10, 0.40)),
+                    .clear
+                ],
+                center: .bottomTrailing,
+                startRadius: 0,
+                endRadius: 680
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - Shared surfaces
+
+/// Editorial card chrome. Uses the raised paper fill with a hairline rule —
+/// no drop shadows on heavy scroll-containers (they eat scroll perf). Pass
+/// `neumorphic: true` for the soft extruded variant used in hero/dashboard
+/// surfaces where shadow cost is acceptable.
+struct EditorialCard: ViewModifier {
+    var padding: CGFloat = 16
+    var cornerRadius: CGFloat = 8
+    var neumorphic: Bool = false
+
+    func body(content: Content) -> some View {
+        let base = content
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        if neumorphic {
+            return AnyView(
+                base
+                    .background(RoundedRectangle(cornerRadius: cornerRadius).fill(DS.Paper.raised))
+                    .neumorphicRaised(cornerRadius: cornerRadius, small: true)
+            )
+        }
+        return AnyView(
+            base
+                .background(RoundedRectangle(cornerRadius: cornerRadius).fill(DS.Paper.raised))
+                .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+        )
+    }
+}
+
+extension View {
+    func editorialCard(padding: CGFloat = 16, cornerRadius: CGFloat = 8, neumorphic: Bool = false) -> some View {
+        modifier(EditorialCard(padding: padding, cornerRadius: cornerRadius, neumorphic: neumorphic))
     }
 }
 

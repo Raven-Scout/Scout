@@ -131,20 +131,88 @@ struct ActionItemsView: View {
         .padding(.bottom, 22)
     }
 
-    /// Preamble paragraph — the briefing's opening voice. Serif, max 72ch,
-    /// muted a half-step from headline ink.
+    /// Preamble — Scout writes 2–3 dense paragraphs at the top of every
+    /// daily file. Each one starts with a bolded headline and trails into a
+    /// wall of body text that, rendered flat, drowned everything below.
+    ///
+    /// Redesign: render each paragraph as a collapsible "update card" with
+    /// the headline always visible and the body hidden behind a chevron.
+    /// Reordered chronologically (earliest update at the top, latest just
+    /// before the synthesis "This run's headline" card at the bottom) —
+    /// Scout writes the file newest-at-top, which reads backwards as a
+    /// timeline. The synthesis card stays last and defaults to expanded.
     private func preamble(_ parts: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { _, p in
-                InlineMarkdownText(p)
-                    .font(DS.serif(15.5))
-                    .foregroundStyle(DS.Ink.p2)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 720, alignment: .leading)
+        let ordered = reorderedPreamble(parts)
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(ordered.enumerated()), id: \.offset) { idx, raw in
+                let split = splitPreamble(raw)
+                PreambleCard(
+                    headline: split.headline,
+                    body: split.body,
+                    defaultExpanded: idx == ordered.count - 1
+                )
             }
         }
+        .frame(maxWidth: 760, alignment: .leading)
         .padding(.bottom, 20)
+    }
+
+    /// Sort the parser's raw paragraphs into the reading order described
+    /// above: timestamped updates earliest → latest, synthesis headline
+    /// pinned at the end. Detection of the headline is by leading
+    /// `**This run's headline` text, which is the convention Scout's plugin
+    /// uses for the final synthesis paragraph (see
+    /// `action-items-YYYY-MM-DD.md` files written by run-briefing.sh).
+    fileprivate func reorderedPreamble(_ parts: [String]) -> [String] {
+        guard !parts.isEmpty else { return [] }
+        var rest = parts
+        var headlineParagraph: String? = nil
+        if let headlineIdx = rest.lastIndex(where: { isHeadlineParagraph($0) }) {
+            headlineParagraph = rest.remove(at: headlineIdx)
+        }
+        // Scout writes newest-update-at-top; reversing yields chronological.
+        let chronological = Array(rest.reversed())
+        if let h = headlineParagraph {
+            return chronological + [h]
+        }
+        return chronological
+    }
+
+    private func isHeadlineParagraph(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        return trimmed.hasPrefix("**this run's headline")
+            || trimmed.hasPrefix("**this run’s headline")  // curly-apostrophe variant
+    }
+
+    /// Lift the leading `**…**` markdown bold span out of a preamble
+    /// paragraph and treat it as the headline; everything after becomes the
+    /// collapsible body. Falls back to "first sentence" + "rest" if no
+    /// leading bold exists.
+    fileprivate func splitPreamble(_ raw: String) -> (headline: String, body: String) {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("**") {
+            // Find the closing `**` that isn't immediately back-to-back.
+            var idx = s.index(s.startIndex, offsetBy: 2)
+            while idx < s.endIndex {
+                if let closeRange = s.range(of: "**", range: idx..<s.endIndex) {
+                    let head = String(s[s.index(s.startIndex, offsetBy: 2)..<closeRange.lowerBound])
+                    let rest = String(s[closeRange.upperBound...])
+                        .trimmingCharacters(in: .whitespaces)
+                    // Strip a leading period or em-dash separator from the body
+                    // so the headline doesn't appear to dangle.
+                    let cleaned = rest.drop(while: { ".—– ".contains($0) })
+                    return (head.trimmingCharacters(in: .whitespaces), String(cleaned))
+                }
+                idx = s.index(after: idx)
+            }
+        }
+        // No leading bold — split on the first sentence boundary.
+        if let dot = s.firstIndex(where: { $0 == "." || $0 == ":" }) {
+            let head = String(s[..<dot])
+            let body = String(s[s.index(after: dot)...]).trimmingCharacters(in: .whitespaces)
+            return (head, body)
+        }
+        return (s, "")
     }
 
     private var environmentBanner: some View {
@@ -251,9 +319,88 @@ struct ActionItemsView: View {
     }
 
     private func filteredSections(_ doc: ActionItemsDocument) -> [ActionSection] {
-        doc.sections.filter { s in
+        // Consolidate every `[x]` task across the day into the Done section
+        // first, then apply the kind filter. The markdown file still owns
+        // canonical task placement (per scout-plugin); this is a pure
+        // display reorganization so urgent/todo/watching stay focused on
+        // open work and the user has a single bottom drawer for "finished
+        // today".
+        let consolidated = consolidateDoneTasks(doc.sections)
+        return consolidated.filter { s in
             filter.kinds.isEmpty || filter.kinds.contains(s.kind)
         }
+    }
+
+    /// Move every done task out of its source section and into the Done
+    /// section. Sections that lose all their tasks keep their headers and
+    /// non-task content (bullets, tables, subheads) so the page structure
+    /// stays intact. If the source markdown didn't define a Done section
+    /// (e.g. brand-new daily file), one is synthesized at the end.
+    ///
+    /// Stable: preserves source order for non-done tasks; appends collected
+    /// done tasks in the same source order they were discovered, so the
+    /// Done section reads top-down through the day's sections.
+    fileprivate func consolidateDoneTasks(_ sections: [ActionSection]) -> [ActionSection] {
+        var out: [ActionSection] = []
+        var collectedDone: [ActionTask] = []
+        var doneSectionIndex: Int? = nil
+
+        for section in sections {
+            switch section.kind {
+            case .done:
+                // Remember slot — we'll merge `collectedDone` into it
+                // after the pass.
+                doneSectionIndex = out.count
+                out.append(section)
+            case .focus, .meetings, .digest, .neutral:
+                // Non-task sections: leave alone.
+                out.append(section)
+            case .urgent, .todo, .watching, .personal:
+                let openTasks = section.tasks.filter { !$0.done }
+                let doneTasks = section.tasks.filter { $0.done }
+                collectedDone.append(contentsOf: doneTasks)
+                out.append(ActionSection(
+                    id: section.id,
+                    emoji: section.emoji,
+                    title: section.title,
+                    kind: section.kind,
+                    tasks: openTasks,
+                    bullets: section.bullets,
+                    tables: section.tables,
+                    subheads: section.subheads
+                ))
+            }
+        }
+
+        guard !collectedDone.isEmpty else { return out }
+
+        if let idx = doneSectionIndex {
+            let original = out[idx]
+            out[idx] = ActionSection(
+                id: original.id,
+                emoji: original.emoji,
+                title: original.title,
+                kind: .done,
+                tasks: original.tasks + collectedDone,
+                bullets: original.bullets,
+                tables: original.tables,
+                subheads: original.subheads
+            )
+        } else {
+            // No Done section in the source — synthesize one so the
+            // collected items don't disappear.
+            out.append(ActionSection(
+                id: UUID(),
+                emoji: "✅",
+                title: "Recently Completed",
+                kind: .done,
+                tasks: collectedDone,
+                bullets: [],
+                tables: [],
+                subheads: []
+            ))
+        }
+        return out
     }
 
     private func filtered(_ section: ActionSection) -> ActionSection {

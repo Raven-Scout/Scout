@@ -67,10 +67,40 @@ struct ConnectorHealthMatrix: Equatable, Sendable {
     }
 
     /// Success rate across all sessions (0.0–1.0). Returns 0 for a
-    /// never-called connector.
+    /// never-called connector. Kept for callers that want the macro view;
+    /// the rail card now uses `visibleHealthRate` so the % matches the
+    /// chart cells the user can actually see.
     func successRate(connector: String) -> Double {
         guard let t = totals[connector], t.total > 0 else { return 0.0 }
         return Double(t.ok) / Double(t.total)
+    }
+
+    /// Health rate across a specific set of visible sessions (typically the
+    /// last 5 shown in the rail card). Returns nil when the connector wasn't
+    /// called in any visible session — distinct from "called and failed", so
+    /// the UI can render "—" instead of a misleading 0%.
+    ///
+    /// Definition: of the visible sessions where the connector *was* called,
+    /// what fraction succeeded fully? `.absent` cells (connector not invoked)
+    /// are excluded from both numerator and denominator — they're neutral,
+    /// not failures. This makes the % match what the user sees in the chart:
+    /// 3 ok / 1 error / 1 absent reads as 3/4 = 75%, not 60% (which would
+    /// punish absence) and not 100% (which would over-credit).
+    ///
+    /// CC-7: fixes the long-standing "100% on the right but the chart isn't
+    /// 100%" mismatch where the old rate spanned the full 14-day window.
+    func visibleHealthRate(connector: String, in sessions: [Session]) -> Double? {
+        var called = 0
+        var ok = 0
+        for s in sessions {
+            switch cell(connector: connector, sessionId: s.id) {
+            case .ok:        called += 1; ok += 1
+            case .partial,
+                 .error:     called += 1
+            case .absent:    break
+            }
+        }
+        return called == 0 ? nil : Double(ok) / Double(called)
     }
 
     private static func bucket(ok: Int, total: Int) -> Cell {

@@ -23,10 +23,10 @@ struct SchedulesViewModeTests {
         #expect(SchedulesViewMode.allCases.contains(.timeline))
     }
 
-    @Test("isAvailable — table and cards are available, timeline is not")
+    @Test("isAvailable — all three modes are available after Scout.html parity revamp")
     func test_is_available() {
         #expect(SchedulesViewMode.table.isAvailable == true)
         #expect(SchedulesViewMode.cards.isAvailable == true)
-        #expect(SchedulesViewMode.timeline.isAvailable == false)
+        #expect(SchedulesViewMode.timeline.isAvailable == true)
     }
 }

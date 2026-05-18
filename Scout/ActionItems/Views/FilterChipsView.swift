@@ -139,7 +139,9 @@ struct FilterChipsView: View {
             .frame(height: 26)
             .background {
                 if selected {
-                    RoundedRectangle(cornerRadius: 6).fill(DS.Paper.raised)
+                    // Selected chip uses a recessed paper fill — visually maps to the
+                    // neumorphic-pressed state from the design tokens.
+                    RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk)
                         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                 }
             }

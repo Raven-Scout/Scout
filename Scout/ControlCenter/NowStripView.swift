@@ -6,14 +6,19 @@ struct NowStripView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        HStack(spacing: 0) {
+        // CC-Hero: previous HStack used the default `.center` alignment,
+        // which let the column dividers (flexible-height Rectangles) stretch
+        // the card to ~360 px while pushing the actual text content into
+        // vertical centre. Pin to `.top` and give the dividers a fixed
+        // height so the card's height tracks the text content (~70 px).
+        HStack(alignment: .top, spacing: 0) {
             column(label: "Now") { nowColumn }
             divider
             column(label: "Today") { todayColumn }
             divider
             column(label: "Next up") { nextColumn }
         }
-        .editorialCard(padding: 18)
+        .editorialCard(padding: 14)
     }
 
     // MARK: - Column layout helper
@@ -24,32 +29,45 @@ struct NowStripView: View {
                 .font(DS.sans(10.5, weight: .medium))
                 .tracking(0.08 * 10.5)
                 .foregroundStyle(DS.Ink.p4)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 18)
     }
 
     private var divider: some View {
-        Rectangle().fill(DS.Rule.soft).frame(width: 0.5)
-            .padding(.vertical, 4)
+        Rectangle()
+            .fill(DS.Rule.soft)
+            .frame(width: 0.5, height: 56)
     }
 
     // MARK: - Columns
 
     @ViewBuilder private var nowColumn: some View {
-        let latest = state.sessionLogService.runs.first
+        // CC-1: prefer a *fresh* running run if one exists; otherwise fall
+        // through stale/orphaned heads to the most-recent run that actually
+        // resolved. Without this, a session whose finish marker the runner
+        // failed to write would latch the hero on "running · started 4 h ago"
+        // even though a later run of the same type already completed cleanly.
+        let runs = state.sessionLogService.runs
+        let live = runs.first { $0.status == .running }
+        let resolved = runs.first { $0.status != .running && $0.status != .orphaned }
         VStack(alignment: .leading, spacing: 4) {
-            if let r = latest, r.status == .running {
+            if let r = live {
                 bigName(r.displayName)
                 sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
-            } else if let r = latest {
+            } else if let r = resolved {
                 bigName(r.displayName)
                 sub(
                     "\(tick(for: r.status)) \(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")",
                     color: r.status == .success ? DS.Status.ok : DS.Status.err
                 )
+            } else if let r = runs.first {
+                // Only orphaned entries on record — say so explicitly rather
+                // than pretending the latest is fine.
+                bigName(r.displayName)
+                sub("orphaned · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Ink.p4)
             } else {
                 bigName("No runs yet")
                 sub("Scout is quiet", color: DS.Ink.p4)
@@ -68,10 +86,15 @@ struct NowStripView: View {
     }
 
     @ViewBuilder private var nextColumn: some View {
-        // Defensive filter: a scheduled run is by definition not "manual",
-        // so even if inferRunType regresses, never bubble .manual into the
-        // "Next up" headline.
-        let next = state.scheduleService.upcoming.first { $0.type != .manual }
+        // CC-2: `upcoming` is now sorted by `scheduledAt` ascending and has
+        // past entries already filtered out by ScheduleService, so the first
+        // non-manual entry is the actual soonest scheduled run. Defensive
+        // `> Date()` check kept in case the array is briefly stale during a
+        // refresh tick.
+        let now = Date()
+        let next = state.scheduleService.upcoming.first {
+            $0.type != .manual && $0.scheduledAt > now
+        }
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
                 bigName(u.type.displayName)

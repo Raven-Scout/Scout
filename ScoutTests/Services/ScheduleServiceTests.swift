@@ -51,6 +51,20 @@ actor StubScheduleRunner: ProcessRunner {
     }
 }
 
+/// Fixed clock pinned before the May 2026 test fixtures so the
+/// "drop past entries" filter introduced for CC-2/CC-3 doesn't strip the
+/// hard-coded fixture dates as the wall clock marches forward. Anchor:
+/// 2026-04-01 UTC — before every `scheduled_at_utc` in this file.
+struct FixedScheduleClock: ClockSource {
+    func now() -> Date {
+        var c = DateComponents()
+        c.year = 2026; c.month = 4; c.day = 1
+        c.hour = 0; c.minute = 0; c.second = 0
+        c.timeZone = TimeZone(identifier: "UTC")
+        return Calendar(identifier: .gregorian).date(from: c) ?? .distantPast
+    }
+}
+
 /// Mock that throws to exercise error swallowing.
 struct ThrowingRunner: ProcessRunner {
     struct E: Error {}
@@ -84,17 +98,22 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         await service.refresh()
         let upcoming = service.upcoming
         #expect(upcoming.count == 3)
-        #expect(upcoming[0].slotKey == "morning-briefing")
-        #expect(upcoming[0].type == .morningBriefing)
+        // CC-2/CC-3: ScheduleService now sorts chronologically and filters
+        // past entries. With FixedScheduleClock pinned at 2026-04-01, all
+        // three fixture entries are future, and they come back in
+        // soonest-first order: 5/7 22:30 → 5/7 23:00 → 5/8 12:00.
+        #expect(upcoming[0].slotKey == "dreaming-evening")
+        #expect(upcoming[0].type == .dreaming)
         #expect(upcoming[1].slotKey == "evening-consolidation")
         #expect(upcoming[1].type == .consolidation)
-        #expect(upcoming[2].slotKey == "dreaming-evening")
-        #expect(upcoming[2].type == .dreaming)
+        #expect(upcoming[2].slotKey == "morning-briefing")
+        #expect(upcoming[2].type == .morningBriefing)
     }
 
     @Test func refreshPassesExpectedArguments() async {
@@ -102,7 +121,8 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         await service.refresh()
         let calls = await runner.calls
@@ -118,7 +138,8 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         await service.refresh()
         #expect(service.upcoming.isEmpty)
@@ -132,7 +153,8 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         await service.refresh()
         let lastGood = service.upcoming
@@ -161,7 +183,8 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         service.start()
         service.start()
@@ -185,7 +208,8 @@ struct ScheduleServiceTests {
         let service = ScheduleService(
             scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
             runner: runner,
-            argumentsPrefix: ["scoutctl"]
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
         )
         await service.refresh()
         // Only the known slot key survives compactMap.

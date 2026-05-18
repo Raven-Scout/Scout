@@ -127,6 +127,57 @@ actor ClaudeSessionService {
         return best?.0
     }
 
+    /// Aggregate tool-use counts across multiple runs. Used by the Usage rail
+    /// card to surface "today's" tool calls, file edits, bash invocations,
+    /// etc. — stats that previously lived only inside the per-run Tools tab.
+    ///
+    /// CC-6: extends the Usage card past the bare token totals so the user
+    /// can see *what kind of work* Scout did today, not just how much
+    /// inference it ran.
+    func aggregateStats(for runs: [Run]) async -> AggregateStats {
+        var totalCalls = 0
+        var byTool: [String: Int] = [:]
+        var filesEdited: Set<String> = []
+        var filesWritten: Set<String> = []
+        var filesRead: Set<String> = []
+        for run in runs {
+            guard let a = await activity(for: run) else { continue }
+            totalCalls += a.calls.count
+            for c in a.calls { byTool[c.name, default: 0] += 1 }
+            for f in a.filesEdited  { filesEdited.insert(f) }
+            for f in a.filesWritten { filesWritten.insert(f) }
+            for f in a.filesRead    { filesRead.insert(f) }
+        }
+        return AggregateStats(
+            totalToolCalls: totalCalls,
+            byTool: byTool,
+            uniqueFilesEdited: filesEdited.count,
+            uniqueFilesWritten: filesWritten.count,
+            uniqueFilesRead: filesRead.count
+        )
+    }
+
+    struct AggregateStats: Equatable, Sendable {
+        var totalToolCalls: Int
+        var byTool: [String: Int]
+        var uniqueFilesEdited: Int
+        var uniqueFilesWritten: Int
+        var uniqueFilesRead: Int
+
+        var bashCalls: Int   { byTool["Bash"] ?? 0 }
+        var webFetches: Int  { byTool["WebFetch"] ?? 0 }
+        var webSearches: Int { byTool["WebSearch"] ?? 0 }
+
+        /// Total file mutations (edits + writes — same path counted twice if
+        /// it appears in both sets, intentional).
+        var fileMutations: Int { uniqueFilesEdited + uniqueFilesWritten }
+
+        /// Top 3 tools by call count for the compact "today" summary.
+        var topTools: [(name: String, count: Int)] {
+            byTool.sorted { $0.value > $1.value }.prefix(3).map { (name: $0.key, count: $0.value) }
+        }
+    }
+
     // MARK: - Parsing
 
     private nonisolated static func parse(url: URL) throws -> ClaudeSessionActivity {

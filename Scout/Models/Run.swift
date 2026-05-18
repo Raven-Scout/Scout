@@ -120,6 +120,19 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     var wasManuallyTriggered: Bool {
         source == .manual || source == .retry || type == .manual
     }
+
+    /// Copy with a different `status`. Used by the stale-running reconciler
+    /// (`SessionLogService.resolveStaleRunning`) to demote a stuck `.running`
+    /// run to `.orphaned` without rebuilding every field by hand.
+    func with(status: RunStatus) -> Run {
+        Run(
+            id: id, type: type, runnerScript: runnerScript, source: source,
+            scheduledAt: scheduledAt, startedAt: startedAt, endedAt: endedAt,
+            status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
+            logPath: logPath, logSizeBytes: logSizeBytes,
+            errorsDetected: errorsDetected, commits: commits, retryOf: retryOf
+        )
+    }
 }
 
 #if DEBUG

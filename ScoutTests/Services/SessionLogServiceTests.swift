@@ -102,6 +102,44 @@ struct SessionLogServiceTests {
         #expect(body.endedAt != nil)
     }
 
+    /// CC-1 follow-up: scout-plugin renamed its log marker from
+    /// `=== SCOUT` (all-caps) to `=== Scout` (titlecase) around May 2026.
+    /// The parser regex was pinned to all-caps and silently failed on every
+    /// new log, causing recent runs to render as `.orphaned` even when they
+    /// finished cleanly. Both casings must parse to `.success`.
+    @Test func parseBody_titlecaseScoutFinishMarker() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dreaming-2026-05-12_11-36.log")
+        try """
+        === Scout Dreaming run starting at Tue May 12 11:36:44 CEST 2026 ===
+        did some dreaming
+        === Scout Dreaming run finished at Tue May 12 11:51:48 CEST 2026 (exit code: 0, duration: 904s) ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.status == .success)
+        #expect(body.exitCode == 0)
+        #expect(body.endedAt != nil)
+    }
+
+    /// Same idea but for the simple "Scout" prefix (no run-type suffix) —
+    /// matches what `run-scout.sh` emits for briefings/consolidations.
+    @Test func parseBody_titlecaseScoutWithoutSuffix() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-05-18_09-17.log")
+        try """
+        === Scout run starting at Mon May 18 09:17:15 CEST 2026 ===
+        briefing
+        === Scout run finished at Mon May 18 09:23:01 CEST 2026 (exit code: 0, duration: 346s) ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.status == .success)
+        #expect(body.exitCode == 0)
+    }
+
     @Test func parseBody_researchFinished() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("research-2026-04-20_10-00.log")
@@ -377,14 +415,63 @@ struct SessionLogServiceTests {
         #expect(RunType.research.orphanAfter == 2 * 3600)
     }
 
-    @Test func orphanAfter_briefingsAndConsolidations6h() {
-        #expect(RunType.morningBriefing.orphanAfter == 6 * 3600)
-        #expect(RunType.weekendBriefing.orphanAfter == 6 * 3600)
-        #expect(RunType.consolidation.orphanAfter == 6 * 3600)
+    // CC-1: thresholds tightened from "guard against false running" → "actually
+    // believe a finish marker was written by now". Old: 6 h briefing,
+    // 12 h dreaming, 6 h manual. New: realistic per-type bounds with ~3×
+    // headroom over observed P95.
+    @Test func orphanAfter_briefings30m() {
+        #expect(RunType.morningBriefing.orphanAfter == 30 * 60)
+        #expect(RunType.weekendBriefing.orphanAfter == 30 * 60)
     }
 
-    @Test func orphanAfter_dreaming12h() {
-        #expect(RunType.dreaming.orphanAfter == 12 * 3600)
+    @Test func orphanAfter_consolidation20m() {
+        #expect(RunType.consolidation.orphanAfter == 20 * 60)
+    }
+
+    @Test func orphanAfter_dreaming2h() {
+        #expect(RunType.dreaming.orphanAfter == 2 * 3600)
+    }
+
+    @Test func orphanAfter_manual45m() {
+        #expect(RunType.manual.orphanAfter == 45 * 60)
+    }
+
+    // CC-1: resolveStaleRunning demotes a `.running` run when a newer
+    // same-type run already finished — the previous version only handled
+    // time-based promotion, which missed sessions whose finish marker the
+    // shell script crashed before writing.
+    @Test func resolveStaleRunning_demotesOlderRunningWhenNewerTerminalExists() {
+        let now = Date()
+        let oldRunning = Run.make(
+            type: .dreaming,
+            startedAt: now.addingTimeInterval(-3600),  // 1 h ago — under the 2 h cutoff
+            status: .running
+        )
+        let newerSuccess = Run.make(
+            type: .dreaming,
+            startedAt: now.addingTimeInterval(-1800),  // 30 min ago, finished
+            status: .success
+        )
+        let out = SessionLogService.resolveStaleRunning([newerSuccess, oldRunning])
+        let resolvedOld = out.first { $0.id == oldRunning.id }
+        #expect(resolvedOld?.status == .orphaned)
+    }
+
+    @Test func resolveStaleRunning_keepsRunningWhenNoNewerSameTypeTerminal() {
+        let now = Date()
+        let onlyRunning = Run.make(
+            type: .dreaming,
+            startedAt: now.addingTimeInterval(-600),
+            status: .running
+        )
+        let differentTypeTerminal = Run.make(
+            type: .consolidation,
+            startedAt: now.addingTimeInterval(-300),
+            status: .success
+        )
+        let out = SessionLogService.resolveStaleRunning([differentTypeTerminal, onlyRunning])
+        let stillRunning = out.first { $0.id == onlyRunning.id }
+        #expect(stillRunning?.status == .running)
     }
 }
 
