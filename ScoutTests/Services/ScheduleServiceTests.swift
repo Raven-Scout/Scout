@@ -162,6 +162,38 @@ struct ScheduleServiceTests {
 
         await service.refresh()  // malformed payload — should be swallowed.
         #expect(service.upcoming == lastGood)
+        // lastError carries an actionable snippet, not just "not valid JSON".
+        let err = service.lastError ?? ""
+        #expect(err.contains("wasn't JSON"), "got: \(err)")
+        #expect(err.contains("{not valid json"), "got: \(err)")
+    }
+
+    @Test func formatDecodeFailureIncludesStdoutSnippet() {
+        let stdout = "Traceback (most recent call last):\n  File foo".data(using: .utf8)!
+        let msg = ScheduleService.formatDecodeFailure(stdout: stdout, stderr: Data())
+        #expect(msg.contains("Traceback"))
+        #expect(msg.contains("wasn't JSON"))
+        // Multi-line stdout should be flattened to one line.
+        #expect(!msg.contains("\n"))
+    }
+
+    @Test func formatDecodeFailureFallsBackToStderr() {
+        let stderr = "scoutctl: error: no such option: --json".data(using: .utf8)!
+        let msg = ScheduleService.formatDecodeFailure(stdout: Data(), stderr: stderr)
+        #expect(msg.contains("no such option"))
+        #expect(msg.contains("stderr"))
+    }
+
+    @Test func formatDecodeFailureReportsEmpty() {
+        let msg = ScheduleService.formatDecodeFailure(stdout: Data(), stderr: Data())
+        #expect(msg.contains("empty output"))
+    }
+
+    @Test func previewBytesTruncatesAndAppendsEllipsis() {
+        let long = String(repeating: "x", count: 500).data(using: .utf8)!
+        let preview = ScheduleService.previewBytes(long, max: 50)
+        #expect(preview.count == 51, "expected 50 chars + ellipsis, got \(preview.count)")
+        #expect(preview.hasSuffix("…"))
     }
 
     @Test func refreshSwallowsRunnerErrors() async {

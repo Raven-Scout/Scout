@@ -5,25 +5,18 @@ import Foundation
 @Suite("ActionItems end-to-end integration")
 @MainActor
 struct ActionItemsIntegrationTests {
-    @Test func writerInvokesRealCLIAndViewPicksUpChange() async throws {
-        // Skip if python3 isn't available in the environment.
-        guard Self.python3Available() else { return }
+    @Test func writerInvokesRealScoutctlAndViewPicksUpChange() async throws {
+        // Skip if scoutctl isn't available in the environment — common on
+        // bare CI runners. Local dev should always have it on PATH.
+        guard let scoutctl = Self.findScoutctl() else { return }
 
-        // 1. Temp directory with a real action-items file.
+        // 1. Temp data dir with the action-items subdir scoutctl expects.
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let aiDir = base.appendingPathComponent("action-items")
         try FileManager.default.createDirectory(at: aiDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
 
-        // 2. Copy the three real CLIs in.
-        for name in ActionItemsEnvironmentCheck.requiredScripts {
-            let src = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Scout/action-items/\(name)")
-            let dst = aiDir.appendingPathComponent(name)
-            try FileManager.default.copyItem(at: src, to: dst)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
-        }
-
-        // 3. Write a trivial MD.
+        // 2. Write a trivial MD.
         let mdURL = aiDir.appendingPathComponent("action-items-2026-04-20.md")
         let initial = """
         # Action Items — 2026-04-20
@@ -34,16 +27,18 @@ struct ActionItemsIntegrationTests {
         """
         try initial.write(to: mdURL, atomically: true, encoding: .utf8)
 
-        // 4. Mount the service.
+        // 3. Mount the service.
         let service = ActionItemsDocumentService(directory: aiDir, fileEvents: FileWatcher())
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
             timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 4, day: 20
         ))!
         try await service.load(date: date)
 
-        // 5. Invoke the writer.
+        // 4. Invoke the writer via real scoutctl. The PATH positional arg
+        // tells scoutctl which daily file to mutate; its grandparent is the
+        // implicit data dir, so we don't need SCOUT_DATA_DIR.
         let writer = ActionItemsWriter(
-            python3: URL(fileURLWithPath: "/usr/bin/env"),
+            scoutctl: scoutctl,
             actionItemsDirectory: aiDir,
             scoutDirectory: base,
             runner: SystemProcessRunner(),
@@ -54,7 +49,7 @@ struct ActionItemsIntegrationTests {
             displayedDate: date
         )
 
-        // 6. Wait for FSEvents + reparse.
+        // 5. Wait for FSEvents + reparse.
         var tries = 0
         while tries < 40 {
             try await Task.sleep(nanoseconds: 50_000_000)
@@ -68,11 +63,22 @@ struct ActionItemsIntegrationTests {
         Issue.record("Comment never appeared in reparsed document; final state: \(service.state)")
     }
 
-    private static func python3Available() -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = ["python3", "--version"]
-        p.standardOutput = Pipe(); p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+    /// Probe common install paths (mirroring AppState.resolveScoutctlPath)
+    /// and fall back to PATH via `/usr/bin/env which scoutctl`.
+    private static func findScoutctl() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates: [URL] = [
+            home.appendingPathComponent("scout-plugin/bin/scoutctl"),
+            home.appendingPathComponent("miniconda3/bin/scoutctl"),
+            home.appendingPathComponent(".local/bin/scoutctl"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/scoutctl"),
+            URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+        ]
+        for url in candidates {
+            if FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
     }
 }

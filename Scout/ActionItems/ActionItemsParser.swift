@@ -173,6 +173,13 @@ extension ActionItemsParser {
 
         let taskRe = try NSRegularExpression(pattern: #"^(\s*)- \[([ xX])\] (.+?)\s*$"#)
         let commentRe = try NSRegularExpression(pattern: #"^(\s+)>\s+([A-Za-z][A-Za-z0-9._-]*)(?:\s+\(([^)]+)\))?\s*:\s*(.+?)\s*$"#)
+        /// Sub-bullet comment shape written by `scoutctl action-items
+        /// add-comment` since v0.4: `  - <author>: <text>` (indented dash
+        /// rather than blockquote). Author prefix is optional — bare
+        /// `  - <text>` falls through to the bullet path and is treated as
+        /// task body, not a comment. v0.5.2 added this so comments written
+        /// through scoutctl actually round-trip into the app's reparse.
+        let subBulletCommentRe = try NSRegularExpression(pattern: #"^(\s+)-\s+([A-Za-z][A-Za-z0-9._-]*)\s*:\s*(.+?)\s*$"#)
         /// Obsidian inline-comment style: ``  //==<< text >>==//``.
         /// Attaches to the preceding task the same way ``> …`` comments do.
         /// Accepts an optional leading bullet marker (``-``/``*``/``+``) so
@@ -295,6 +302,34 @@ extension ActionItemsParser {
                 var updated = last
                 let newComment = TaskComment(author: author, timestamp: ts, text: body)
                 updated = ActionTask(
+                    id: last.id,
+                    lineNumber: last.lineNumber,
+                    done: last.done,
+                    subject: last.subject,
+                    plainSubject: last.plainSubject,
+                    body: last.body,
+                    comments: last.comments + [newComment],
+                    deepLinks: last.deepLinks,
+                    snoozedUntil: last.snoozedUntil,
+                    carriedInFrom: last.carriedInFrom
+                )
+                currentTasks[currentTasks.count - 1] = updated
+                i += 1; continue
+            }
+
+            // Sub-bullet comment line attached to the last task: scoutctl
+            // writes `  - <author>: <text>`. Distinct from the blockquote
+            // form above. Match must run BEFORE the bare-bullet `bulletRe`
+            // path so `  - jordan: hello` becomes a comment rather than a
+            // sub-task body.
+            if inSection,
+               let last = currentTasks.last,
+               let cm = subBulletCommentRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let nsLine = line as NSString
+                let author = nsLine.substring(with: cm.range(at: 2))
+                let body = nsLine.substring(with: cm.range(at: 3))
+                let newComment = TaskComment(author: author, timestamp: "", text: body)
+                let updated = ActionTask(
                     id: last.id,
                     lineNumber: last.lineNumber,
                     done: last.done,

@@ -216,10 +216,9 @@ struct ActionItemsView: View {
     }
 
     private var environmentBanner: some View {
-        let missing = envCheck.result.missingScripts.joined(separator: ", ")
         return HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-            Text("Action Items writes disabled — \(envCheck.result.python3Path == nil ? "python3 not found" : "missing: \(missing)")")
+            Text("Action Items writes disabled — \(envCheck.result.message ?? "scoutctl unavailable")")
         }
         .font(DS.sans(11))
         .foregroundStyle(.white)
@@ -450,5 +449,5 @@ final class ActionItemsWriterBox: ObservableObject {
 /// Publishes the environment check result so the view's banner can react.
 @MainActor
 final class ActionItemsEnvironmentState: ObservableObject {
-    @Published var result: ActionItemsEnvironmentResult = .init(ok: true, python3Path: nil, missingScripts: [])
+    @Published var result: ActionItemsEnvironmentResult = .okResult
 }

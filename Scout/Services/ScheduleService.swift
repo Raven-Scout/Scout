@@ -62,13 +62,20 @@ final class ScheduleService: ObservableObject {
     /// (NowStripView.nextColumn, UpcomingStripView, StatusBarView) can take
     /// `upcoming.first` and get the soonest fire.
     func refresh() async {
+        let output: ProcessResult
         do {
-            let output = try await runner.run(
+            output = try await runner.run(
                 executable: scoutctl,
                 arguments: argumentsPrefix + ["schedule", "list-upcoming", "--window", "24", "--json"],
                 environment: [:],
                 workingDirectory: nil
             )
+        } catch {
+            // Exec failed entirely (scoutctl not on path, etc.).
+            self.lastError = formatRunnerError(error)
+            return
+        }
+        do {
             let parsed = try JSONDecoder().decode([RawUpcomingRun].self, from: output.stdout)
             let decoded = parsed.compactMap { raw in
                 UpcomingRun(
@@ -83,18 +90,20 @@ final class ScheduleService: ObservableObject {
                 .sorted { $0.scheduledAt < $1.scheduledAt }
             self.lastError = nil
         } catch {
-            // Make the failure visible. The UpcomingStripView reads
-            // `lastError` and renders a banner; the previous behaviour
-            // (silent swallow) left users staring at an empty list with
-            // no signal that scoutctl wasn't reachable.
-            self.lastError = formatRunnerError(error)
-            return
+            // Decode failed: scoutctl ran but stdout wasn't the JSON we
+            // expected. Surface a snippet of what was actually returned so
+            // the user can tell whether it's a stale scoutctl, a stdout
+            // log leak, or a real schema drift. The earlier message ("not
+            // valid JSON") gave no actionable signal.
+            self.lastError = Self.formatDecodeFailure(
+                stdout: output.stdout, stderr: output.stderr
+            )
         }
     }
 
-    /// Render an exec/decode error into a single-line message the user can
-    /// actually act on. Keeps PATH-not-found visible as the most likely
-    /// real-world failure mode without dragging in OS-error machinery.
+    /// Render an exec error (process failed to even run) into a single-line
+    /// message. Keeps PATH-not-found visible as the most likely real-world
+    /// failure mode without dragging in OS-error machinery.
     private func formatRunnerError(_ error: Error) -> String {
         let text = String(describing: error)
         if text.contains("ENOENT") || text.contains("No such file") {
@@ -103,7 +112,41 @@ final class ScheduleService: ObservableObject {
         if text.contains("ProcessResult") || text.contains("exitCode") {
             return "scoutctl returned an error. Try `scoutctl schedule list-upcoming --json` in a terminal."
         }
-        return "Couldn't load schedule: \(text.prefix(160))"
+        return "scoutctl exec failed: \(text.prefix(160))"
+    }
+
+    /// Build an actionable error message when scoutctl ran but its stdout
+    /// didn't decode as the expected JSON. Includes the first ~200 chars of
+    /// stdout (and stderr when stdout is empty) so field reports surface
+    /// the actual response rather than a generic "not valid JSON" string.
+    static func formatDecodeFailure(stdout: Data, stderr: Data) -> String {
+        let snippet = previewBytes(stdout, max: 200)
+        if snippet.isEmpty {
+            let errSnippet = previewBytes(stderr, max: 200)
+            if errSnippet.isEmpty {
+                return "scoutctl returned empty output. Try `scoutctl schedule list-upcoming --json` in a terminal."
+            }
+            return "scoutctl returned no JSON. stderr: \(errSnippet)"
+        }
+        return "scoutctl output wasn't JSON: \(snippet)"
+    }
+
+    /// Turn the first `max` bytes of a Data into a single-line debug snippet:
+    /// best-effort UTF-8 decode, newlines collapsed to spaces, trimmed. Used
+    /// by both ScheduleService and ScheduleEditService when reporting decode
+    /// failures back to the user.
+    static func previewBytes(_ data: Data, max: Int) -> String {
+        guard !data.isEmpty else { return "" }
+        let slice = data.prefix(max)
+        let raw = String(data: slice, encoding: .utf8) ?? "<binary>"
+        let oneLine = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        if data.count > max {
+            return oneLine + "…"
+        }
+        return oneLine
     }
 
     /// Wire format from `scoutctl schedule list-upcoming --json`. Snake-case

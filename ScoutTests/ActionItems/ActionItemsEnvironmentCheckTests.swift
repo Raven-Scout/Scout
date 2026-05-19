@@ -4,37 +4,72 @@ import Foundation
 
 @Suite("ActionItemsEnvironmentCheck")
 struct ActionItemsEnvironmentCheckTests {
-    @Test func passesWhenPythonAndAllScriptsExist() async throws {
-        let dir = try Self.tmpActionItems()
-        defer { try? FileManager.default.removeItem(at: dir.deletingLastPathComponent()) }
-
-        let check = ActionItemsEnvironmentCheck(actionItemsDirectory: dir, runner: SystemProcessRunner())
+    @Test func passesWhenScoutctlActionItemsHelpExitsZero() async throws {
+        let runner = StubRunner(result: ProcessResult(
+            exitCode: 0,
+            stdout: "Usage: scoutctl action-items …".data(using: .utf8)!,
+            stderr: Data()
+        ))
+        let check = ActionItemsEnvironmentCheck(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            runner: runner
+        )
         let result = try await check.run()
         #expect(result.ok)
-        #expect(result.python3Path != nil)
-        #expect(result.missingScripts.isEmpty)
+        #expect(result.message == nil)
     }
 
-    @Test func failsWhenScriptsMissing() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        let check = ActionItemsEnvironmentCheck(actionItemsDirectory: dir, runner: SystemProcessRunner())
+    @Test func failsWithStaleScoutctlMessage() async throws {
+        // Old scoutctl with no `action-items` group — surfaces as
+        // "no such command" on stderr.
+        let runner = StubRunner(result: ProcessResult(
+            exitCode: 2,
+            stdout: Data(),
+            stderr: "Error: no such command 'action-items'".data(using: .utf8)!
+        ))
+        let check = ActionItemsEnvironmentCheck(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            runner: runner
+        )
         let result = try await check.run()
         #expect(!result.ok)
-        #expect(result.missingScripts.sorted() == ["add_comment.py", "mark_done.py", "snooze.py"])
+        #expect(result.message?.contains("too old") == true)
     }
 
-    private static func tmpActionItems() throws -> URL {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let dir = base.appendingPathComponent("action-items")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        for name in ["add_comment.py", "mark_done.py", "snooze.py"] {
-            let path = dir.appendingPathComponent(name)
-            try "#!/usr/bin/env python3\nprint('stub')\n".write(to: path, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+    @Test func failsWithGenericMessageOnOtherErrors() async throws {
+        let runner = StubRunner(result: ProcessResult(
+            exitCode: 5,
+            stdout: Data(),
+            stderr: "Traceback (something else)".data(using: .utf8)!
+        ))
+        let check = ActionItemsEnvironmentCheck(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            runner: runner
+        )
+        let result = try await check.run()
+        #expect(!result.ok)
+        #expect(result.message?.contains("Traceback") == true)
+    }
+
+    @Test func failsWhenScoutctlNotFound() async throws {
+        struct ThrowingRunner: ProcessRunner {
+            func run(executable: URL, arguments: [String], environment: [String : String], workingDirectory: URL?) async throws -> ProcessResult {
+                throw NSError(domain: NSPOSIXErrorDomain, code: 2, userInfo: nil)  // ENOENT
+            }
         }
-        return dir
+        let check = ActionItemsEnvironmentCheck(
+            scoutctl: URL(fileURLWithPath: "/nonexistent/scoutctl"),
+            runner: ThrowingRunner()
+        )
+        let result = try await check.run()
+        #expect(!result.ok)
+        #expect(result.message?.contains("scoutctl not found") == true)
+    }
+}
+
+struct StubRunner: ProcessRunner {
+    let result: ProcessResult
+    func run(executable: URL, arguments: [String], environment: [String : String], workingDirectory: URL?) async throws -> ProcessResult {
+        result
     }
 }

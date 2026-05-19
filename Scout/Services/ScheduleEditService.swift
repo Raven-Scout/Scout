@@ -26,6 +26,11 @@ final class ScheduleEditService: ObservableObject {
     /// Reads the live schedule via `scoutctl schedule list --json`, decodes,
     /// publishes. Captures the canonical file's mtime for the stale-check
     /// performed by save().
+    ///
+    /// When the JSON decode fails, throws an NSError whose
+    /// `localizedDescription` includes a snippet of scoutctl's actual stdout
+    /// so the user can tell what scoutctl printed instead of JSON (stale
+    /// version, stdout log leak, etc.) rather than just "not valid JSON".
     func loadAll() async throws {
         let result = try await runner.run(
             executable: scoutctl,
@@ -33,10 +38,20 @@ final class ScheduleEditService: ObservableObject {
             environment: [:],
             workingDirectory: nil
         )
-        let decoded = try JSONDecoder().decode([Slot].self, from: result.stdout)
-        self.slots = decoded
-        self.loadedMtime = (try? FileManager.default
-            .attributesOfItem(atPath: canonicalSchedulePath.path)[.modificationDate]) as? Date
+        do {
+            let decoded = try JSONDecoder().decode([Slot].self, from: result.stdout)
+            self.slots = decoded
+            self.loadedMtime = (try? FileManager.default
+                .attributesOfItem(atPath: canonicalSchedulePath.path)[.modificationDate]) as? Date
+        } catch {
+            throw NSError(
+                domain: "ScheduleEditService.loadAll",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: ScheduleService.formatDecodeFailure(
+                    stdout: result.stdout, stderr: result.stderr
+                )]
+            )
+        }
     }
 
     /// Writes the candidate slots to canonical.

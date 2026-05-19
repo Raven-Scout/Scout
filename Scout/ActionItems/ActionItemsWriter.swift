@@ -22,26 +22,41 @@ enum WriteOp: Sendable {
         }
     }
 
-    /// CLI name for this op. Relative to the action-items/ directory.
-    var cliScript: String {
+    /// scoutctl subcommand under `action-items`.
+    fileprivate var scoutctlSubcommand: String {
         switch self {
-        case .addComment: return "add_comment.py"
-        case .markDone, .reopen: return "mark_done.py"
-        case .snooze: return "snooze.py"
+        case .addComment:        return "add-comment"
+        case .markDone, .reopen: return "mark-done"
+        case .snooze:            return "snooze"
         }
     }
 
-    func cliArguments(scriptPath: URL, dateISO: String) -> [String] {
-        var args = ["python3", scriptPath.path, dateISO, "--subject", subject]
+    /// Build the scoutctl arg list. `dailyFilePath` is the absolute path of
+    /// the action-items markdown file we're writing into; scoutctl uses it
+    /// as the positional `[PATH]` arg and decodes the date from the filename.
+    ///
+    /// Notes vs the pre-v0.5.2 legacy-script invocation:
+    /// - We embed the author inline in the comment body (`<author>: <text>`)
+    ///   because scoutctl's `add-comment` doesn't accept an `--author` flag.
+    ///   ActionItemsParser already tolerates this format.
+    /// - Reopen routes through `mark-done --undo`. scoutctl doesn't currently
+    ///   expose `--undo` (BACKLOG: add scoutctl mark-done --undo); the call
+    ///   will fail with a clear "no such option" error until the plugin
+    ///   catches up.
+    fileprivate func scoutctlArguments(dailyFilePath: URL) -> [String] {
+        var args = ["action-items", scoutctlSubcommand, dailyFilePath.path]
+        args += ["--subject", subject]
         switch self {
         case .addComment(_, let text, let author):
-            args += ["--text", text, "--author", author, "--inline"]
+            args += ["--comment", "\(author): \(text)"]
         case .reopen:
             args += ["--undo"]
         case .markDone:
             break
         case .snooze(_, let until):
-            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"; fmt.timeZone = TimeZone(identifier: "America/New_York")
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            fmt.timeZone = TimeZone(identifier: "America/New_York")
             args += ["--until", fmt.string(from: until)]
         }
         return args
@@ -67,8 +82,16 @@ struct WriteResult: Sendable {
     let stderr: String
 }
 
+/// Serializes action-item mutations through `scoutctl action-items <op>`.
+///
+/// v0.5.2 rewrite: previously shelled out to standalone Python scripts at
+/// `~/Scout/action-items/{add_comment,mark_done,snooze}.py`. Those scripts
+/// are legacy — modern scout-plugin installs ship the same logic only via
+/// the `scoutctl action-items` subcommands. Friend-install bug surfaced
+/// the dependency; now the app only needs scoutctl on disk.
 actor ActionItemsWriter {
-    private let python3: URL
+    private let scoutctl: URL
+    private let argumentsPrefix: [String]
     private let actionItemsDirectory: URL
     private let scoutDirectory: URL
     private let runner: any ProcessRunner
@@ -81,13 +104,15 @@ actor ActionItemsWriter {
     private var tail: Task<Void, Never>?
 
     init(
-        python3: URL,
+        scoutctl: URL,
+        argumentsPrefix: [String] = [],
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
         gitService: GitService?
     ) {
-        self.python3 = python3
+        self.scoutctl = scoutctl
+        self.argumentsPrefix = argumentsPrefix
         self.actionItemsDirectory = actionItemsDirectory
         self.scoutDirectory = scoutDirectory
         self.runner = runner
@@ -99,20 +124,19 @@ actor ActionItemsWriter {
     @discardableResult
     func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
         let previous = tail
-        let task = Task { [runner, python3, actionItemsDirectory, scoutDirectory, gitService] in
-            _ = await previous?.value  // wait for predecessor to finish
+        let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
+            _ = await previous?.value
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
-                python3: python3,
+                scoutctl: scoutctl,
+                argumentsPrefix: argumentsPrefix,
                 actionItemsDirectory: actionItemsDirectory,
                 scoutDirectory: scoutDirectory,
                 runner: runner,
                 gitService: gitService
             )
         }
-        // Chain the tail as a non-throwing observer so the next submission
-        // waits regardless of whether this one succeeds.
         tail = Task { _ = try? await task.value }
         return try await task.value
     }
@@ -120,21 +144,24 @@ actor ActionItemsWriter {
     private static func perform(
         op: WriteOp,
         displayedDate: Date,
-        python3: URL,
+        scoutctl: URL,
+        argumentsPrefix: [String],
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
         gitService: GitService?
     ) async throws -> WriteResult {
-        let script = actionItemsDirectory.appendingPathComponent(op.cliScript)
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"; fmt.timeZone = TimeZone(identifier: "America/New_York")
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.timeZone = TimeZone(identifier: "America/New_York")
         let dateISO = fmt.string(from: displayedDate)
+        let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
 
         let result: ProcessResult
         do {
             result = try await runner.run(
-                executable: python3,
-                arguments: op.cliArguments(scriptPath: script, dateISO: dateISO),
+                executable: scoutctl,
+                arguments: argumentsPrefix + op.scoutctlArguments(dailyFilePath: dailyFile),
                 environment: [:],
                 workingDirectory: scoutDirectory
             )
@@ -163,7 +190,8 @@ actor ActionItemsWriter {
         case 3: return .ambiguous
         case 1, 4, 5: return .other
         default:
-            if stderr.lowercased().contains("no module named") || stderr.contains("command not found") {
+            let s = stderr.lowercased()
+            if s.contains("no such option") || s.contains("no module named") || s.contains("command not found") {
                 return .environment
             }
             return .other

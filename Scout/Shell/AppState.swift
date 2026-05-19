@@ -107,7 +107,8 @@ final class AppState: ObservableObject {
 
         let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: watcher)
         let writerActor = ActionItemsWriter(
-            python3: URL(fileURLWithPath: "/usr/bin/env"),
+            scoutctl: scoutctlExe,
+            argumentsPrefix: scoutctlArgsPrefix,
             actionItemsDirectory: actionItemsDir,
             scoutDirectory: scoutDir,
             runner: runner,
@@ -148,7 +149,8 @@ final class AppState: ObservableObject {
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
-                actionItemsDirectory: actionItemsDir,
+                scoutctl: scoutctlExe,
+                argumentsPrefix: scoutctlArgsPrefix,
                 runner: runner
             )
             if let result = try? await check.run() {
