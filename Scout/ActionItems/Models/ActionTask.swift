@@ -49,4 +49,41 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.carriedInFrom = carriedInFrom
         self.indentLevel = indentLevel
     }
+
+    /// Shortest reliable substring scoutctl's `--subject` matcher can use to
+    /// identify this task in the source markdown. Convention in Scout-written
+    /// action items is `**<bold subject>** _(<italic body>)_`; the bold
+    /// portion is the identity and the italic portion is body/context.
+    ///
+    /// Sending the *full* plainSubject to scoutctl fails for tasks with
+    /// italicized trailers because the substring match has to find the
+    /// whole prose verbatim, and underscores / parens / em-dashes drift.
+    /// Trim to the bold portion when one exists; otherwise split plainSubject
+    /// at the first known body-separator. v0.5.3 quick fix for issue #10.
+    var matchableSubject: String {
+        if let bold = Self.firstBoldRun(in: subject), !bold.isEmpty {
+            return ActionItemsParser.plainSubject(bold)
+        }
+        return Self.trimAtBodySeparator(plainSubject)
+    }
+
+    private static func firstBoldRun(in raw: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"\*\*(.+?)\*\*"#) else { return nil }
+        let range = NSRange(raw.startIndex..., in: raw)
+        guard let m = re.firstMatch(in: raw, range: range),
+              let r = Range(m.range(at: 1), in: raw) else { return nil }
+        return String(raw[r])
+    }
+
+    private static func trimAtBodySeparator(_ s: String) -> String {
+        // Common separators Scout uses between the subject head and its body.
+        // Order matters — italic-open `_(` is the most common in real action
+        // items today, so check it first.
+        for sep in [" _(", " — ", " – "] {
+            if let r = s.range(of: sep) {
+                return String(s[..<r.lowerBound])
+            }
+        }
+        return s
+    }
 }

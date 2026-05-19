@@ -97,7 +97,7 @@ struct TaskCardView: View {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
                     do {
                         let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                        try await onOp(.addComment(subject: task.plainSubject, text: text, author: author))
+                        try await onOp(.addComment(subject: task.matchableSubject, text: text, author: author))
                         await MainActor.run { inlineError = nil }
                     } catch let err as ActionItemsWriterError {
                         await MainActor.run { inlineError = describe(err) }
