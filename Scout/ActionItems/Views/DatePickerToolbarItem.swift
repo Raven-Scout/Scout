@@ -4,6 +4,8 @@ struct DatePickerToolbarItem: View {
     @Binding var date: Date
     let todayET: Date
 
+    @State private var calendarPopoverOpen = false
+
     var body: some View {
         HStack(spacing: 6) {
             Button {
@@ -12,9 +14,15 @@ struct DatePickerToolbarItem: View {
                 }
             } label: { Image(systemName: "chevron.left") }
 
-            DatePicker("", selection: $date, displayedComponents: .date)
-                .datePickerStyle(.compact)
-                .labelsHidden()
+            Button { calendarPopoverOpen.toggle() } label: {
+                Text(formattedDate).monospacedDigit()
+            }
+            .popover(isPresented: $calendarPopoverOpen, arrowEdge: .bottom) {
+                DatePicker("", selection: $date, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .labelsHidden()
+                    .padding(12)
+            }
 
             Button {
                 if let d = Calendar(identifier: .iso8601).date(byAdding: .day, value: 1, to: date) {
@@ -28,5 +36,11 @@ struct DatePickerToolbarItem: View {
                     .controlSize(.small)
             }
         }
+    }
+
+    private var formattedDate: String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "d. M. yyyy"
+        return fmt.string(from: date)
     }
 }
