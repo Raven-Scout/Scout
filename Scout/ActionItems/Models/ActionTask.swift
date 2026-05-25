@@ -29,6 +29,12 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     /// the brittle `--subject` substring path. `nil` for legacy unprefixed
     /// lines — those still go through the subject-matching fallback.
     let shortPrefix: String?
+    /// Source section kind recorded in the snoozed-until marker
+    /// (`  - snoozed-until: YYYY-MM-DD (from-kind: <kind>)`). Lets the
+    /// renderer keep an urgent task visually urgent after it carries forward
+    /// into the target day's `🛌 Snoozed` section, which the section header
+    /// alone would render as `.neutral`.
+    let snoozedFromKind: ActionSection.Kind?
 
     init(
         id: UUID,
@@ -42,7 +48,8 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         snoozedUntil: Date?,
         carriedInFrom: Date?,
         indentLevel: Int = 0,
-        shortPrefix: String? = nil
+        shortPrefix: String? = nil,
+        snoozedFromKind: ActionSection.Kind? = nil
     ) {
         self.id = id
         self.lineNumber = lineNumber
@@ -56,6 +63,7 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.carriedInFrom = carriedInFrom
         self.indentLevel = indentLevel
         self.shortPrefix = shortPrefix
+        self.snoozedFromKind = snoozedFromKind
     }
 
     /// Shortest reliable substring scoutctl's `--subject` matcher can use to

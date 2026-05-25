@@ -125,11 +125,82 @@ struct ActionItemsWriterTests {
         let until = Calendar(identifier: .iso8601).date(from: DateComponents(
             timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 5, day: 21
         ))!
-        _ = try? await writer.submit(.snooze(subject: "X", shortPrefix: nil, until: until), displayedDate: Date())
+        _ = try? await writer.submit(
+            .snooze(subject: "X", shortPrefix: nil, until: until, fromKind: nil),
+            displayedDate: Date()
+        )
         let call = try #require(await recorder.calls.first)
         #expect(call.arguments.contains("snooze"))
         #expect(call.arguments.contains("--until"))
         #expect(call.arguments.contains("2026-05-21"))
+        #expect(!call.arguments.contains("--from-kind"))
+    }
+
+    @Test func snoozeForwardsFromKindWhenProvided() async throws {
+        let recorder = RecordingRunner()
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder,
+            gitService: nil
+        )
+        let until = Calendar(identifier: .iso8601).date(from: DateComponents(
+            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 5, day: 21
+        ))!
+        _ = try? await writer.submit(
+            .snooze(subject: "X", shortPrefix: "A3F7", until: until, fromKind: "urgent"),
+            displayedDate: Date()
+        )
+        let call = try #require(await recorder.calls.first)
+        #expect(call.arguments.contains("--from-kind"))
+        let idx = call.arguments.firstIndex(of: "--from-kind")!
+        #expect(call.arguments[idx + 1] == "urgent")
+    }
+
+    @Test func deleteCommentRoutesByIdAndIndex() async throws {
+        let recorder = RecordingRunner()
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder,
+            gitService: nil
+        )
+        _ = try? await writer.submit(
+            .deleteComment(subject: "X", shortPrefix: "A3F7", selector: .index(2)),
+            displayedDate: Date()
+        )
+        let call = try #require(await recorder.calls.first)
+        #expect(call.arguments.contains("delete-comment"))
+        #expect(call.arguments.contains("--by-id"))
+        #expect(call.arguments.contains("A3F7"))
+        #expect(call.arguments.contains("--index"))
+        let idx = call.arguments.firstIndex(of: "--index")!
+        #expect(call.arguments[idx + 1] == "2")
+    }
+
+    @Test func editCommentForwardsNewText() async throws {
+        let recorder = RecordingRunner()
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder,
+            gitService: nil
+        )
+        _ = try? await writer.submit(
+            .editComment(subject: "X", shortPrefix: nil, selector: .text("legal"), newText: "legal cleared"),
+            displayedDate: Date()
+        )
+        let call = try #require(await recorder.calls.first)
+        #expect(call.arguments.contains("edit-comment"))
+        #expect(call.arguments.contains("--subject"))
+        #expect(call.arguments.contains("--text"))
+        let textIdx = call.arguments.firstIndex(of: "--text")!
+        #expect(call.arguments[textIdx + 1] == "legal")
+        let newTextIdx = call.arguments.firstIndex(of: "--new-text")!
+        #expect(call.arguments[newTextIdx + 1] == "legal cleared")
     }
 
     @Test func serializesConcurrentSubmissions() async throws {

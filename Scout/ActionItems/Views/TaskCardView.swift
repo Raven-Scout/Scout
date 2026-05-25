@@ -32,18 +32,24 @@ struct TaskCardView: View {
     /// relationship reads at a glance. Sized down, no halo, no meta rail.
     private var isNested: Bool { task.indentLevel > 0 }
 
+    /// Kind used for visual treatment (gutter color, snooze action, etc.).
+    /// Honors the source-section hint recorded by `scoutctl snooze --from-kind`
+    /// so an urgent task that carries forward into the target day's `🛌 Snoozed`
+    /// section stays visually urgent instead of demoting to `.neutral` gray.
+    var effectiveKind: ActionSection.Kind { task.snoozedFromKind ?? kind }
+
     // MARK: - Gutter
 
     private var gutter: some View {
         VStack(spacing: 8) {
             Circle()
-                .fill(DS.priorityColor(kind))
+                .fill(DS.priorityColor(effectiveKind))
                 .frame(width: isNested ? 6 : 10, height: isNested ? 6 : 10)
-                .shadow(color: DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), radius: 0, y: 0)
+                .shadow(color: DS.priorityColor(effectiveKind).opacity(task.done ? 0 : 0.20), radius: 0, y: 0)
                 .overlay {
                     if !isNested {
                         Circle()
-                            .strokeBorder(DS.priorityColor(kind).opacity(task.done ? 0 : 0.20), lineWidth: 3)
+                            .strokeBorder(DS.priorityColor(effectiveKind).opacity(task.done ? 0 : 0.20), lineWidth: 3)
                             .frame(width: 16, height: 16)
                     }
                 }
@@ -71,7 +77,24 @@ struct TaskCardView: View {
             }
 
             if !task.comments.isEmpty {
-                CommentListView(comments: task.comments)
+                CommentListView(
+                    comments: task.comments,
+                    onEdit: { index, newText in
+                        await runOp(.editComment(
+                            subject: task.matchableSubject,
+                            shortPrefix: task.shortPrefix,
+                            selector: .index(index),
+                            newText: newText
+                        ))
+                    },
+                    onDelete: { index in
+                        await runOp(.deleteComment(
+                            subject: task.matchableSubject,
+                            shortPrefix: task.shortPrefix,
+                            selector: .index(index)
+                        ))
+                    }
+                )
             }
 
             if !task.deepLinks.isEmpty {
@@ -80,30 +103,22 @@ struct TaskCardView: View {
 
             TaskActionsView(
                 task: task,
+                kind: effectiveKind,
                 displayedDate: displayedDate,
                 scoutDirectory: scoutDirectory
             ) { op in
-                do {
-                    try await onOp(op)
-                    await MainActor.run { inlineError = nil }
-                } catch let err as ActionItemsWriterError {
-                    await MainActor.run { inlineError = describe(err) }
-                } catch {
-                    await MainActor.run { inlineError = error.localizedDescription }
-                }
+                await runOp(op)
             }
 
             if !task.done {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
-                    do {
-                        let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                        try await onOp(.addComment(subject: task.matchableSubject, shortPrefix: task.shortPrefix, text: text, author: author))
-                        await MainActor.run { inlineError = nil }
-                    } catch let err as ActionItemsWriterError {
-                        await MainActor.run { inlineError = describe(err) }
-                    } catch {
-                        await MainActor.run { inlineError = error.localizedDescription }
-                    }
+                    let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+                    await runOp(.addComment(
+                        subject: task.matchableSubject,
+                        shortPrefix: task.shortPrefix,
+                        text: text,
+                        author: author
+                    ))
                 }
             }
 
@@ -188,6 +203,21 @@ struct TaskCardView: View {
     }
 
     // MARK: - Helpers
+
+    /// Dispatches a write through `onOp` and threads any failure into the
+    /// inline error label. Used by every mutation surface inside the card
+    /// (actions row, comment composer, comment edit/delete) so the
+    /// error-handling shape stays in one place.
+    private func runOp(_ op: WriteOp) async {
+        do {
+            try await onOp(op)
+            await MainActor.run { inlineError = nil }
+        } catch let err as ActionItemsWriterError {
+            await MainActor.run { inlineError = describe(err) }
+        } catch {
+            await MainActor.run { inlineError = error.localizedDescription }
+        }
+    }
 
     private func describe(_ err: ActionItemsWriterError) -> String {
         switch err {

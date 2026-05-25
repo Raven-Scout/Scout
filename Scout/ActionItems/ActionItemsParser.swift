@@ -200,6 +200,22 @@ extension ActionItemsParser {
         /// task body, not a comment. v0.5.2 added this so comments written
         /// through scoutctl actually round-trip into the app's reparse.
         let subBulletCommentRe = try NSRegularExpression(pattern: #"^(\s+)-\s+([A-Za-z][A-Za-z0-9._-]*)\s*:\s*(.+?)\s*$"#)
+        /// scoutctl's snooze marker: `  - snoozed-until: YYYY-MM-DD`,
+        /// optionally followed by `(from-kind: <kind>)`. Captured as task
+        /// metadata (`task.snoozedUntil`, `task.snoozedFromKind`) rather than
+        /// a user comment — without this carve-out it'd render as a comment
+        /// from author "snoozed-until", which is just noise.
+        let snoozeSubBulletRe = try NSRegularExpression(
+            pattern: #"^\s+-\s+snoozed-until:\s*(\d{4}-\d{2}-\d{2})(?:\s*\(from-kind:\s*([A-Za-z]+)\))?\s*$"#
+        )
+        /// `_(carried in from YYYY-MM-DD)_` annotation extended with an
+        /// optional `, was <kind>` tail. A future consolidation pass can
+        /// emit the tail so the target-day's renderer recovers the source
+        /// section's priority on a carried-in task. The base regex remains
+        /// permissive so today's bare annotations continue to parse.
+        let carryInFromKindRe = try NSRegularExpression(
+            pattern: #"_\(carried in from \d{4}-\d{2}-\d{2}(?:[^)]*?,\s*was\s+([A-Za-z]+))?\)_"#
+        )
         /// Obsidian inline-comment style: ``  //==<< text >>==//``.
         /// Attaches to the preceding task the same way ``> …`` comments do.
         /// Accepts an optional leading bullet marker (``-``/``*``/``+``) so
@@ -297,9 +313,15 @@ extension ActionItemsParser {
                     snoozedUntil = snoozeDateFmt.date(from: String(body[r]))
                 }
                 var carriedInFrom: Date? = nil
+                var carryInKind: ActionSection.Kind? = nil
                 if let cm = carryInRe.firstMatch(in: body, range: NSRange(location: 0, length: (body as NSString).length)),
                    let r = Range(cm.range(at: 1), in: body) {
                     carriedInFrom = snoozeDateFmt.date(from: String(body[r]))
+                }
+                if let cm = carryInFromKindRe.firstMatch(in: body, range: NSRange(location: 0, length: (body as NSString).length)),
+                   cm.range(at: 1).location != NSNotFound,
+                   let r = Range(cm.range(at: 1), in: body) {
+                    carryInKind = ActionSection.Kind(rawValue: String(body[r]).lowercased())
                 }
                 currentTasks.append(ActionTask(
                     id: UUID(),
@@ -313,7 +335,8 @@ extension ActionItemsParser {
                     snoozedUntil: snoozedUntil,
                     carriedInFrom: carriedInFrom,
                     indentLevel: indentLevelFor(indent),
-                    shortPrefix: shortPrefix
+                    shortPrefix: shortPrefix,
+                    snoozedFromKind: carryInKind
                 ))
                 i += 1; continue
             }
@@ -340,7 +363,43 @@ extension ActionItemsParser {
                     snoozedUntil: last.snoozedUntil,
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
-                    shortPrefix: last.shortPrefix
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: last.snoozedFromKind
+                )
+                currentTasks[currentTasks.count - 1] = updated
+                i += 1; continue
+            }
+
+            // Sub-bullet snooze marker: `  - snoozed-until: YYYY-MM-DD
+            // [(from-kind: KIND)]`. Promote the date/kind onto the task
+            // record and consume the line — falling through to
+            // subBulletCommentRe would otherwise expose it as a comment from
+            // author "snoozed-until".
+            if inSection,
+               let last = currentTasks.last,
+               let sm = snoozeSubBulletRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let nsLine = line as NSString
+                let dateStr = nsLine.substring(with: sm.range(at: 1))
+                let parsedDate = snoozeDateFmt.date(from: dateStr)
+                var parsedKind: ActionSection.Kind? = nil
+                if sm.range(at: 2).location != NSNotFound {
+                    let kindStr = nsLine.substring(with: sm.range(at: 2)).lowercased()
+                    parsedKind = ActionSection.Kind(rawValue: kindStr)
+                }
+                let updated = ActionTask(
+                    id: last.id,
+                    lineNumber: last.lineNumber,
+                    done: last.done,
+                    subject: last.subject,
+                    plainSubject: last.plainSubject,
+                    body: last.body,
+                    comments: last.comments,
+                    deepLinks: last.deepLinks,
+                    snoozedUntil: parsedDate ?? last.snoozedUntil,
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: parsedKind ?? last.snoozedFromKind
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -370,7 +429,8 @@ extension ActionItemsParser {
                     snoozedUntil: last.snoozedUntil,
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
-                    shortPrefix: last.shortPrefix
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: last.snoozedFromKind
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -396,7 +456,8 @@ extension ActionItemsParser {
                     snoozedUntil: last.snoozedUntil,
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
-                    shortPrefix: last.shortPrefix
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: last.snoozedFromKind
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue

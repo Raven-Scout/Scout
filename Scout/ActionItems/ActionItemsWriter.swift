@@ -1,32 +1,56 @@
 import Foundation
 
+/// Selector identifying which comment under a task to act on.
+enum CommentSelector: Sendable, Equatable {
+    /// 1-based index, counting only user-authored sub-bullets (the
+    /// `snoozed-until` marker is filtered).
+    case index(Int)
+    /// Case-insensitive substring of the comment body.
+    case text(String)
+}
+
 enum WriteOp: Sendable {
     case addComment(subject: String, shortPrefix: String?, text: String, author: String)
+    case deleteComment(subject: String, shortPrefix: String?, selector: CommentSelector)
+    case editComment(subject: String, shortPrefix: String?, selector: CommentSelector, newText: String)
     case markDone(subject: String, shortPrefix: String?)
     case reopen(subject: String, shortPrefix: String?)
-    case snooze(subject: String, shortPrefix: String?, until: Date)
+    /// `fromKind` is the source section's `ActionSection.Kind.rawValue` (e.g.
+    /// "urgent", "todo"). Passed to scoutctl as `--from-kind` so the marker
+    /// remembers the original priority. ``nil`` for legacy callers.
+    case snooze(subject: String, shortPrefix: String?, until: Date, fromKind: String?)
 
     var verb: String {
         switch self {
-        case .addComment: return "comment"
-        case .markDone:   return "mark-done"
-        case .reopen:     return "reopen"
-        case .snooze:     return "snooze"
+        case .addComment:    return "comment"
+        case .deleteComment: return "delete-comment"
+        case .editComment:   return "edit-comment"
+        case .markDone:      return "mark-done"
+        case .reopen:        return "reopen"
+        case .snooze:        return "snooze"
         }
     }
 
     var subject: String {
         switch self {
-        case .addComment(let s, _, _, _), .markDone(let s, _),
-             .reopen(let s, _), .snooze(let s, _, _):
+        case .addComment(let s, _, _, _),
+             .deleteComment(let s, _, _),
+             .editComment(let s, _, _, _),
+             .markDone(let s, _),
+             .reopen(let s, _),
+             .snooze(let s, _, _, _):
             return s
         }
     }
 
     var shortPrefix: String? {
         switch self {
-        case .addComment(_, let p, _, _), .markDone(_, let p),
-             .reopen(_, let p), .snooze(_, let p, _):
+        case .addComment(_, let p, _, _),
+             .deleteComment(_, let p, _),
+             .editComment(_, let p, _, _),
+             .markDone(_, let p),
+             .reopen(_, let p),
+             .snooze(_, let p, _, _):
             return p
         }
     }
@@ -35,6 +59,8 @@ enum WriteOp: Sendable {
     fileprivate var scoutctlSubcommand: String {
         switch self {
         case .addComment:        return "add-comment"
+        case .deleteComment:     return "delete-comment"
+        case .editComment:       return "edit-comment"
         case .markDone, .reopen: return "mark-done"
         case .snooze:            return "snooze"
         }
@@ -67,17 +93,32 @@ enum WriteOp: Sendable {
         switch self {
         case .addComment(_, _, let text, let author):
             args += ["--comment", "\(author): \(text)"]
+        case .deleteComment(_, _, let selector):
+            args += Self.selectorArguments(selector)
+        case .editComment(_, _, let selector, let newText):
+            args += Self.selectorArguments(selector)
+            args += ["--new-text", newText]
         case .reopen:
             args += ["--undo"]
         case .markDone:
             break
-        case .snooze(_, _, let until):
+        case .snooze(_, _, let until, let fromKind):
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
             fmt.timeZone = TimeZone(identifier: "America/New_York")
             args += ["--until", fmt.string(from: until)]
+            if let fromKind, !fromKind.isEmpty {
+                args += ["--from-kind", fromKind]
+            }
         }
         return args
+    }
+
+    private static func selectorArguments(_ s: CommentSelector) -> [String] {
+        switch s {
+        case .index(let n):   return ["--index", String(n)]
+        case .text(let body): return ["--text", body]
+        }
     }
 }
 

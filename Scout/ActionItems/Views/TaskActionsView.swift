@@ -5,6 +5,7 @@ import SwiftUI
 /// `.act / .act.primary` language.
 struct TaskActionsView: View {
     let task: ActionTask
+    let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
     let onOp: (WriteOp) async -> Void
@@ -28,7 +29,12 @@ struct TaskActionsView: View {
                     }
                     .popover(isPresented: $showingSnooze) {
                         SnoozePopoverView(sourceDate: displayedDate) { target in
-                            await onOp(.snooze(subject: task.matchableSubject, shortPrefix: task.shortPrefix, until: target))
+                            await onOp(.snooze(
+                                subject: task.matchableSubject,
+                                shortPrefix: task.shortPrefix,
+                                until: target,
+                                fromKind: kind.rawValue
+                            ))
                             showingSnooze = false
                         } onCancel: {
                             showingSnooze = false

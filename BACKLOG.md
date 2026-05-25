@@ -8,6 +8,39 @@ nice-to-haves.
 
 ## Shipped
 
+### 2026-05-25
+- **Action Items "Soon" cluster — delete/edit comments + custom snooze date
+  + preserve original section kind.** Four backlog items shipped together:
+  - `scoutctl action-items delete-comment` and `edit-comment` are new CLI
+    verbs (with paired Python tests). Both take `--by-id` / `--subject` for
+    the task and `--index` / `--text` for the specific comment; delete drops
+    the line atomically, edit preserves the original indent + author prefix
+    and replaces only the body. The `snoozed-until` marker is filtered from
+    the selector index so `--index 1` always points at the first real
+    user-authored comment.
+  - `CommentListView` grows a hover-revealed pencil/trash row per comment.
+    Edit flips the row into a `TextEditor` with `⌘↵` to save; delete
+    confirms via an `.alert` and then routes through the new
+    `WriteOp.deleteComment` / `WriteOp.editComment` cases on
+    `ActionItemsWriter`. Git history is the archive (writer already
+    commits each op path-scoped).
+  - `SnoozePopoverView` gains an "Other date…" row that pivots the popover
+    into a graphical `DatePicker` panel. The earlier macOS-26 epoch-leak
+    bug is sidestepped by initializing the picker's `@State` to
+    `.distantPast` and lazy-seeding to *tomorrow* inside the custom panel's
+    `onAppear` — the picker never relies on an `init`-time `State` value.
+  - `scoutctl action-items snooze` accepts `--from-kind <kind>` which
+    records the source section as `(from-kind: urgent)` in the
+    `snoozed-until` marker. The app passes the current section's
+    `ActionSection.Kind.rawValue` on every snooze, the parser extracts the
+    hint (and the carry-in line's optional `, was urgent` tail) into a new
+    `ActionTask.snoozedFromKind` field, and `TaskCardView.effectiveKind`
+    uses it for the gutter color. An urgent task that lands under
+    `## 🛌 Snoozed` on the target day now keeps its visual urgency.
+    *Follow-up:* the consolidation skill side (emitting the `, was <kind>`
+    tail on the carry-in line in the target day's file) is still
+    out-of-scope here — captured in BACKLOG below.
+
 ### 2026-04-22
 - **Usage Rail Card + Connector Health (Phase 1).** `BudgetRailCard` replaced
   by `UsageRailCard` — reads tokens from a new `.scout-logs/session-tokens.jsonl`
@@ -48,23 +81,16 @@ nice-to-haves.
 ## Action Items view (Scout.app)
 
 ### Soon
-- **Delete / archive comments from a card.** Comments can only be added right
-  now. Want an inline delete affordance per comment that removes the line
-  from the markdown (git history is the archive). Probably needs a
-  ``--delete-comment`` mode on ``add_comment.py`` or a new
-  ``delete_comment.py`` that finds the comment by subject + index or text.
-- **Edit a comment in-place.** Same shape as delete — kill and re-insert via
-  the CLI.
-- **Custom date option on Snooze.** Current popover is preset-only
-  (Tomorrow / +3d / +1w / +2w / +1mo). Add an "Other date…" row that opens
-  a nested picker. Previous attempt tripped a macOS 26 ``State(initialValue:)``
-  bug inside ``.popover`` (the wrapper read as the reference-date epoch
-  2001-01-01 UTC → ``--until 2000-12-31``); whichever pattern we pick needs
-  to avoid that.
-- **Preserve original section kind when snoozing.** A snoozed urgent task
-  currently lands under ``## 🛌 Snoozed`` (kind = ``.neutral``, gray accent)
-  on the target day. Would be nicer if an urgent task stays visually urgent
-  when it carries in.
+- **Consolidation-side `, was <kind>` carry-in tail.** The app-side half of
+  the section-kind preservation shipped 2026-05-25 — `scoutctl snooze`
+  records `(from-kind: <kind>)` on the source-day marker and the parser
+  reads both that and an optional `, was <kind>` tail on the carry-in
+  line. The remaining work is teaching the consolidation / morning-briefing
+  skill to emit `_(carried in from YYYY-MM-DD, was urgent)_` (or
+  equivalent) instead of the bare `_(carried in from YYYY-MM-DD)_` when
+  the source had a `(from-kind: …)` marker. Once that lands, a task
+  snoozed from `🔴 Urgent` on Monday and rendered under `🛌 Snoozed` on
+  Wednesday will keep its urgent gutter without any further app changes.
 
 ### Nice-to-have
 - **Launch Claude — broader terminal + shell support.** Today the Ghostty
