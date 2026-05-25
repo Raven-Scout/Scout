@@ -120,6 +120,10 @@ struct SnoozePopoverView: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                // Matches the unstyled "Send" button in
+                // CommentComposerView — Adam's UI pass (eb88094) targeted
+                // toggles/segmented controls, leaving primary-action buttons
+                // on the system style. Stay consistent with that.
                 Button("Snooze") { commitCustom() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(submitting || customDate <= sourceDate)
