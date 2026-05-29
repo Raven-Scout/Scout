@@ -67,25 +67,33 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// Shortest reliable substring scoutctl's `--subject` matcher can use to
-    /// identify this task in the source markdown. scoutctl matches via
-    /// `by_subject.lower() in raw_line.lower()` — i.e., against the raw
-    /// markdown including `[label](url)` and `[[wikilinks]]`. So the match
-    /// key must also be raw — stripping markdown on the app side guarantees
-    /// the substring won't appear verbatim in the source line.
+    /// identify this task. scoutctl matches via
+    /// `by_subject.lower() in item.title.lower()` where `item.title` is the
+    /// **cleaned** title — `[#XXXX]` prefix removed, `**` removed, status
+    /// emoji at start removed, priority emoji removed anywhere, and
+    /// strikethrough unwrapped (see `engine/scout/action_items/parser.py`).
+    /// So Scout's needle has to mirror those same cleanups, otherwise we
+    /// send a substring that exists in the raw markdown but not in the title.
     ///
     /// Convention in Scout-written action items is `**<bold subject>**
-    /// _(<italic body>)_`; the bold portion is the identity. Take it raw.
-    /// For unstyled lines, fall back to plainSubject trimmed at the first
-    /// known body separator.
+    /// _(<italic body>)_`; the bold portion is the identity. We extract it
+    /// (which already drops the `**` markers since the regex captures
+    /// inside), then apply the same emoji + strikethrough cleanups scoutctl
+    /// does. For unstyled lines, fall back to plainSubject trimmed at the
+    /// first known body separator.
     ///
-    /// v0.5.3 quick fix for issue #10; v0.5.4 stops stripping inner markdown
-    /// after seeing the same failure mode on tasks containing `[PR #X](url)`
-    /// links inside the bold subject.
+    /// v0.5.3/v0.5.4 chased subject-matching failures by tweaking what we
+    /// kept raw; v0.6.0 instead aligns with scout-plugin commit 3071486
+    /// which moved subject-matching off `raw_line` and onto the cleaned
+    /// title. The `🔴` in `**🔴 Merge …**` was the trigger.
     var matchableSubject: String {
+        let raw: String
         if let bold = Self.firstBoldRun(in: subject), !bold.isEmpty {
-            return bold
+            raw = bold
+        } else {
+            raw = Self.trimAtBodySeparator(plainSubject)
         }
-        return Self.trimAtBodySeparator(plainSubject)
+        return Self.cleanForScoutctlMatch(raw)
     }
 
     private static func firstBoldRun(in raw: String) -> String? {
@@ -94,6 +102,39 @@ struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         guard let m = re.firstMatch(in: raw, range: range),
               let r = Range(m.range(at: 1), in: raw) else { return nil }
         return String(raw[r])
+    }
+
+    /// Apply the same cleanups scoutctl's parser applies to the title field
+    /// it matches `--subject` against. Keep in sync with
+    /// `engine/scout/action_items/parser.py`.
+    private static func cleanForScoutctlMatch(_ s: String) -> String {
+        // STRIKETHROUGH: `~~text~~` → `text` (scoutctl regex `~~(.+?)~~`).
+        var out = s
+        if let re = try? NSRegularExpression(pattern: #"~~(.+?)~~"#) {
+            let mutableOut = NSMutableString(string: out)
+            re.replaceMatches(
+                in: mutableOut,
+                range: NSRange(location: 0, length: mutableOut.length),
+                withTemplate: "$1"
+            )
+            out = mutableOut as String
+        }
+        // PRIORITY_EMOJI: 🔴 / 🟡 / 🟢 removed anywhere.
+        for emoji in ["🔴", "🟡", "🟢"] {
+            out = out.replacingOccurrences(of: emoji, with: "")
+        }
+        // STATUS_EMOJI: ✅ / 🔄 / ❓ / ⬜ removed only at start (after trim).
+        out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        for emoji in ["✅", "🔄", "❓", "⬜"] where out.hasPrefix(emoji) {
+            out = String(out.dropFirst(emoji.count))
+            break
+        }
+        // Collapse double spaces left behind by the emoji removals so the
+        // substring matches even when scoutctl's title has its own collapse.
+        while out.contains("  ") {
+            out = out.replacingOccurrences(of: "  ", with: " ")
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func trimAtBodySeparator(_ s: String) -> String {

@@ -17,9 +17,9 @@ struct MatchableSubjectTests {
     }
 
     @Test func preservesInnerMarkdownInBoldPortion() {
-        // scoutctl matches against the *raw* source line — `[[MKT-301]]` is
-        // present verbatim in the file, so the substring we send must keep
-        // the brackets too. v0.5.4 fix: do NOT strip inner markdown.
+        // scoutctl's cleaned title keeps `[[wikilinks]]` and `[label](url)`
+        // verbatim — its parser doesn't reduce them. So Scout's needle must
+        // keep the brackets too, otherwise the substring lookup misses.
         let task = make(
             subject: "**Reply to MJ on [[MKT-301]] with consolidated GA-scope answer** _(carries from 5/15…)_",
             plainSubject: "Reply to MJ on MKT-301 with consolidated GA-scope answer _(carries from 5/15…)_"
@@ -28,17 +28,49 @@ struct MatchableSubjectTests {
     }
 
     @Test func preservesMarkdownLinkInBoldPortion() {
-        // The screenshot case from issue #10 / v0.5.3 follow-up: bold subject
-        // contains `[PR #N (text)](url)`. v0.5.3 stripped the link → sent
-        // "Close PR #5526 (AI-3079 sandboxId metadata) with note" which
-        // doesn't appear verbatim in the raw line (the raw line has the
-        // brackets + URL). v0.5.4 keeps it raw so scoutctl can substring-
-        // match it directly.
+        // The screenshot case from issue #10: bold subject contains
+        // `[PR #N (text)](url)`. scoutctl's title also keeps the link raw,
+        // so we have to keep it too — stripping it would yield a substring
+        // that doesn't exist in the title.
         let task = make(
             subject: "**🔥 🆕 Close [PR #5526 (AI-3079 sandboxId metadata)](https://github.com/keboola/ui/pull/5526) with re-implement-on-OTel note** _(promoted 7:04 AM ET 5/20…)_",
             plainSubject: "🔥 🆕 Close PR #5526 (AI-3079 sandboxId metadata) with re-implement-on-OTel note _(promoted 7:04 AM ET 5/20…)_"
         )
         #expect(task.matchableSubject == "🔥 🆕 Close [PR #5526 (AI-3079 sandboxId metadata)](https://github.com/keboola/ui/pull/5526) with re-implement-on-OTel note")
+    }
+
+    @Test func stripsPriorityEmojiInsideBold() {
+        // The 2026-05-28 regression: scout-plugin commit 3071486 moved
+        // `--subject` matching from `raw_line` onto the cleaned title, which
+        // strips PRIORITY_EMOJI (🔴/🟡/🟢) anywhere. Scout was still sending
+        // the raw bold including 🔴, so the substring lookup missed every
+        // urgent task with a markdown link in the title. Mirror scoutctl's
+        // cleanup here.
+        let task = make(
+            subject: "[#OIDC-MERGE] **🔴 Merge [mcp-server PR #546](https://github.com/keboola/mcp-server/pull/546) (AI-3295)** _(APPROVED…)_",
+            plainSubject: "🔴 Merge mcp-server PR #546 (AI-3295) _(APPROVED…)_"
+        )
+        #expect(task.matchableSubject == "Merge [mcp-server PR #546](https://github.com/keboola/mcp-server/pull/546) (AI-3295)")
+    }
+
+    @Test func stripsLeadingStatusEmoji() {
+        // STATUS_EMOJI (✅/🔄/❓/⬜) is anchored to the start of scoutctl's
+        // cleaned title. If Scout extracts a bold portion that begins with
+        // one, drop it so the substring matches.
+        let task = make(
+            subject: "**✅ DONE 12:01 PM ET** — Jordan merged himself.",
+            plainSubject: "✅ DONE 12:01 PM ET — Jordan merged himself."
+        )
+        #expect(task.matchableSubject == "DONE 12:01 PM ET")
+    }
+
+    @Test func unwrapsStrikethrough() {
+        // STRIKETHROUGH `~~foo~~` is reduced to `foo` in scoutctl's title.
+        let task = make(
+            subject: "**~~Send report~~** _(superseded by Jordan)_",
+            plainSubject: "Send report _(superseded by Jordan)_"
+        )
+        #expect(task.matchableSubject == "Send report")
     }
 
     @Test func trimsAtItalicParenWhenNoBold() {
