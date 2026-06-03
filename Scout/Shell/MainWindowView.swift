@@ -5,14 +5,23 @@ struct MainWindowView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(spacing: 0) {
-            NavigationSplitView {
-                SidebarView(selection: $selection)
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
-            } detail: {
-                detail
-                    .background(PaperBackdrop())
-            }
+        // The NavigationSplitView must be the root view of the window — not
+        // wrapped in a VStack. On macOS 26, embedding it in an intermediate
+        // container makes the root NSHostingView absorb the theme frame's
+        // safe-area corner insets directly; toggling the sidebar then fires a
+        // KVO-driven `invalidateSafeAreaCornerInsets()` →
+        // `setNeedsUpdateConstraints:` mid-layout, which AppKit asserts on
+        // (issue #9). The status bar is delivered as a bottom safe-area inset
+        // instead, which keeps the split view on the native titlebar/sidebar
+        // layout path while rendering the same persistent bottom strip.
+        NavigationSplitView {
+            SidebarView(selection: $selection)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+        } detail: {
+            detail
+                .background(PaperBackdrop())
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
         }
     }

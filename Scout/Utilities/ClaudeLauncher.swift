@@ -29,6 +29,7 @@ enum ClaudeLauncher {
     enum LaunchError: LocalizedError {
         case ghosttyNotInstalled
         case claudeDesktopNotInstalled
+        case claudeCLINotFound
         case scriptWriteFailed(String)
         case urlBuildFailed
 
@@ -38,6 +39,8 @@ enum ClaudeLauncher {
                 return "Ghostty.app isn't installed. Install it from https://ghostty.org to use this option."
             case .claudeDesktopNotInstalled:
                 return "Claude.app isn't installed. Download Claude Desktop from https://claude.ai/download to use this option."
+            case .claudeCLINotFound:
+                return "Couldn't find the `claude` CLI. Install it from https://claude.com/claude-code or run `which claude` from a terminal to confirm it's on your PATH."
             case .scriptWriteFailed(let msg):
                 return "Couldn't prepare Claude launch helper: \(msg)"
             case .urlBuildFailed:
@@ -105,25 +108,80 @@ enum ClaudeLauncher {
             throw LaunchError.ghosttyNotInstalled
         }
 
+        // Scout.app inherits launchd's minimal PATH (/usr/bin:/bin:…). Both
+        // spawn paths below propagate that env to their child (tmux ships
+        // client env to the server for new windows; Ghostty's --command=
+        // script runs under bash without sourcing init). So a bare `claude`
+        // wouldn't be found even though the user can run it interactively.
+        // Resolve once, pass the absolute path to both code paths.
+        guard let claudePath = resolveClaudePath() else {
+            throw LaunchError.claudeCLINotFound
+        }
+
         // Preferred: if the user runs tmux inside Ghostty (very common
         // setup, pushed by Ghostty's `command = tmux new-session -A` config
         // pattern), spawn a new tmux window directly in their session and
         // activate Ghostty. This is the only reliable way to get a fresh
         // terminal surface on macOS when Ghostty's secondary-instance
         // handler routes -e/--command= args through the primary window.
-        if launchViaTmux(cwd: cwd) {
+        if launchViaTmux(claudePath: claudePath, cwd: cwd) {
             activateGhostty(ghosttyURL: ghosttyURL)
             return
         }
 
         // Fallback: no tmux server → open a fresh Ghostty window with our
         // command via --command= (overrides the user's configured command).
-        try launchFreshGhosttyWindow(ghosttyURL: ghosttyURL, cwd: cwd)
+        try launchFreshGhosttyWindow(
+            ghosttyURL: ghosttyURL,
+            claudePath: claudePath,
+            cwd: cwd
+        )
+    }
+
+    /// Common install locations for the `claude` CLI. Probed in order so
+    /// Anthropic's `~/.local/bin` installer default wins over a Homebrew
+    /// path that might be stale.
+    private static let claudePaths: [String] = [
+        (NSString(string: "~/.local/bin/claude") as NSString).expandingTildeInPath,
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+    ]
+
+    /// Resolve `claude` to an absolute path, or nil if it can't be found.
+    /// Probes well-known locations first, then falls back to asking the
+    /// user's login shell — which picks up mise/asdf/nvm-style installs
+    /// that put `claude` under a per-version-manager bin dir.
+    private static func resolveClaudePath() -> String? {
+        if let direct = claudePaths.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) {
+            return direct
+        }
+        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: shellPath)
+        // -l + -c sources the login init files (.zprofile / .bash_profile)
+        // so PATH from the user's shell setup is available for `command -v`.
+        task.arguments = ["-lc", "command -v claude"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let resolved = (String(data: data, encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolved.isEmpty ? nil : resolved
     }
 
     /// Returns true if a tmux session was found and a `claude` window was
     /// successfully spawned in it.
-    private static func launchViaTmux(cwd: URL) -> Bool {
+    private static func launchViaTmux(claudePath: String, cwd: URL) -> Bool {
         guard let tmuxPath = tmuxPaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return false }
@@ -143,7 +201,7 @@ enum ClaudeLauncher {
             "-t", "\(session):",
             "-c", cwd.path,
             "-n", "claude",
-            "claude",
+            claudePath,
         ]
         task.standardOutput = Pipe()
         task.standardError = Pipe()
@@ -207,11 +265,16 @@ enum ClaudeLauncher {
         }
     }
 
-    private static func launchFreshGhosttyWindow(ghosttyURL: URL, cwd: URL) throws {
+    private static func launchFreshGhosttyWindow(
+        ghosttyURL: URL,
+        claudePath: String,
+        cwd: URL
+    ) throws {
         let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("scout-launch-claude-\(UUID().uuidString).sh")
         do {
-            try makeGhosttyScript(cwd: cwd).write(to: scriptURL, atomically: true, encoding: .utf8)
+            try makeGhosttyScript(claudePath: claudePath, cwd: cwd)
+                .write(to: scriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: NSNumber(value: 0o755)],
                 ofItemAtPath: scriptURL.path
@@ -236,10 +299,15 @@ enum ClaudeLauncher {
         }
     }
 
-    private static func makeGhosttyScript(cwd: URL) -> String {
+    private static func makeGhosttyScript(claudePath: String, cwd: URL) -> String {
         let cwdEsc = cwd.path
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        let claudeEsc = claudePath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        // Ghostty inherits Scout's minimal launchd PATH, so we exec `claude`
+        // by absolute path rather than relying on PATH lookup.
         return """
         #!/bin/bash
         cd "\(cwdEsc)" || exit 1
@@ -247,7 +315,7 @@ enum ClaudeLauncher {
         echo "Scout: action-item context copied to your clipboard."
         echo "When Claude prompts you, paste (Cmd+V) and press Enter to send."
         echo
-        exec claude
+        exec "\(claudeEsc)"
         """
     }
 
