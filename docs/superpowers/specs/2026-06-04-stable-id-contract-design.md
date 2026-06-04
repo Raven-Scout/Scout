@@ -102,7 +102,7 @@ checksum-guarded; Python + Swift tests assert identical
 - **Hand-editability under outage:** preserved (item 7).
 
 ## Milestones
-- **M1 — Deterministic coverage (plugin):** add `scoutctl action-items backfill-prefixes "$DAILY_FILE"` as a post-session step in `run-scout.sh.tmpl`, `run-dreaming.sh.tmpl`, `run-research.sh.tmpl`, ordered **before** the session's vault git commit so minted prefixes land in the same commit. Independently shippable; delivers the user-visible fix.
+- **M1 — Deterministic coverage (plugin):** add a post-session `backfill-prefixes` step to **`run-scout.sh.tmpl`** — the sole runner that produces action-items (briefing/consolidation; dreaming/research write proposals/KB, not task lines). The session makes its own git commits *inside* the Claude session, so the backfill runs after the session and commits the minted prefixes in a dedicated `chore(action-items): backfill stable [#XXXX] prefixes` commit. Idempotent (no diff → no commit). Independently shippable; delivers the user-visible fix.
 - **M2 — App safety-net (scout-app):** in `ActionItemsWriter`, backfill-once-then-retry-`--by-id` on unprefixed-line / `noMatch` writes; write-path only, never on load. Independently shippable.
 - **M3 — Cross-language contract test:** corpus + Python test + Swift `ParserContractTests` + checksum guard.
 - **M4 — Doc + close #10:** finalize this doc, link the M1–M3 PRs, close #10.
