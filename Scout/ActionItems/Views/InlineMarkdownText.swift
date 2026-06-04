@@ -35,7 +35,10 @@ struct InlineMarkdownText: View {
 
     private static func attributedString(for raw: String) -> AttributedString {
         if let hit = cache[raw] { return hit }
-        let rewritten = rewriteWikilinks(raw)
+        // Linkify GitHub refs before wikilinks: the linkifier protects existing
+        // markdown links / wikilinks, and rewriteWikilinks then leaves the
+        // GitHub `[label](https://…)` links untouched.
+        let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(raw))
         let computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
         if cache.count >= cacheCap { cache.removeAll(keepingCapacity: true) }
         cache[raw] = computed
