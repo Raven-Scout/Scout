@@ -6,18 +6,21 @@ import SwiftUI
 struct SlotTableRow: View {
     let slot: Slot
     let isSelected: Bool
+    /// Width of the flexible NAME column, computed by `SchedulesMasterTable`
+    /// from the available pane width so rows align with the header.
+    let nameWidth: CGFloat
 
     var body: some View {
-        HStack(spacing: 16) {
-            nameCell.frame(maxWidth: .infinity, alignment: .leading)
-            typeCell.frame(width: 140, alignment: .leading)
-            timeCell.frame(width: 70, alignment: .leading)
-            daysCell.frame(width: 250, alignment: .leading)
-            onMissCell.frame(width: 90, alignment: .leading)
-            cooldownCell.frame(width: 90, alignment: .leading)
+        HStack(spacing: SchedulesColumns.spacing) {
+            nameCell.frame(width: nameWidth, alignment: .leading)
+            typeCell.frame(width: SchedulesColumns.type, alignment: .leading)
+            timeCell.frame(width: SchedulesColumns.time, alignment: .leading)
+            daysCell.frame(width: SchedulesColumns.days, alignment: .leading)
+            onMissCell.frame(width: SchedulesColumns.onMiss, alignment: .leading)
+            cooldownCell.frame(width: SchedulesColumns.cooldown, alignment: .leading)
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, SchedulesColumns.hPadding)
         .background(rowBackground)
         .overlay(alignment: .leading) {
             if isSelected {
@@ -43,7 +46,7 @@ struct SlotTableRow: View {
                 .font(DS.mono(13))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .truncationMode(.tail)
             Image(systemName: "lock.fill")
                 .font(.system(size: 10))
                 .foregroundStyle(DS.Ink.p4)
