@@ -133,7 +133,7 @@ struct SlotEditForm: View {
                             )
                             .foregroundStyle(isOn ? DS.Paper.base : DS.Ink.p2)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                 }
             }
             if let err = SlotDraft.validateWeekdays(Array(draft.weekdays)) {
@@ -269,7 +269,7 @@ struct SlotEditForm: View {
                     .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 6))
                     .foregroundStyle(DS.Paper.base)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(draft.firstError != nil || (!isNewDraft && !draft.isDirty(against: liveSlot)))
         }

@@ -67,6 +67,6 @@ struct SchedulesHeader: View {
             .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 7))
             .foregroundStyle(DS.Paper.base)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 }

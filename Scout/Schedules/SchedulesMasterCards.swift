@@ -33,6 +33,6 @@ struct SchedulesMasterCards: View {
         } label: {
             SlotCard(slot: slot, isSelected: isSelected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 }

@@ -110,7 +110,7 @@ struct ControlCenterView: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 12, weight: .medium))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
             .help("Close (⌘.)")
 
@@ -125,7 +125,7 @@ struct ControlCenterView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(DS.Ink.p3)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
         }
         .padding(.horizontal, 14)

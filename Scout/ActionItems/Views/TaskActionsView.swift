@@ -140,7 +140,7 @@ struct TaskActionsView: View {
                 }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .onHover { hovering in
             // Lightweight hover feedback via system cursor — no state churn.
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }

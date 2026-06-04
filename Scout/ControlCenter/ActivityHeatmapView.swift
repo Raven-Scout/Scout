@@ -62,7 +62,7 @@ struct ActivityHeatmapView: View {
                             }
                         }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
             }
         }
         .padding(2)

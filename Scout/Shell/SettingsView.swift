@@ -297,6 +297,6 @@ private struct SettingsToggle: View {
             .frame(width: 36, height: 20)
             .animation(.easeInOut(duration: 0.15), value: isOn)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 }

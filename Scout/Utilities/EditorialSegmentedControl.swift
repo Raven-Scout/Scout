@@ -26,7 +26,7 @@ struct EditorialSegmentedControl<Value: Hashable>: View {
                         )
                         .foregroundStyle(selection == option.value ? DS.Paper.base : DS.Ink.p2)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
             }
         }
         .padding(2)

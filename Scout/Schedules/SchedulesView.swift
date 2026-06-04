@@ -136,7 +136,7 @@ struct SchedulesView: View {
             }
             .buttonStyle(.borderedProminent)
             Button("Dismiss") { staleBannerVisible = false }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.horizontal, 24)
@@ -151,7 +151,7 @@ struct SchedulesView: View {
             Text(text).font(DS.sans(13)).foregroundStyle(DS.Ink.p1)
             Spacer()
             Button("Dismiss") { errorMessage = nil }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .foregroundStyle(DS.Ink.p3)
         }
         .padding(.horizontal, 24)
