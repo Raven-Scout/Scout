@@ -32,6 +32,7 @@ struct SectionView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.top, 12)
             }
         }
         .padding(.bottom, 12)
