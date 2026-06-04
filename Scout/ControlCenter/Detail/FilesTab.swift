@@ -79,7 +79,7 @@ struct FilesTab: View {
             } label: {
                 Image(systemName: "arrow.up.right.square")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .foregroundStyle(.secondary)
             .help("Reveal in Finder")
         }

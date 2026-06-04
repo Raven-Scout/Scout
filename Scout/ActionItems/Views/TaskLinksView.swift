@@ -17,7 +17,7 @@ struct TaskLinksView: View {
                     } label: {
                         chipBody(for: link)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                     .help(link.openURL.absoluteString)
                 }
             }

@@ -71,6 +71,6 @@ struct SidebarView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 }

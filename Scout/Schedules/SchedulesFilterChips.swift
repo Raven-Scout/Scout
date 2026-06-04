@@ -72,6 +72,6 @@ struct SchedulesFilterChips: View {
             )
             .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 }

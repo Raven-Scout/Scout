@@ -74,7 +74,7 @@ struct FilterChipsView: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 
     // MARK: - Chips
@@ -146,7 +146,7 @@ struct FilterChipsView: View {
                 }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 
     // MARK: - Toggle logic

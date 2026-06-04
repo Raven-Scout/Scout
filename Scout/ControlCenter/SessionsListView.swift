@@ -41,7 +41,7 @@ struct SessionsListView: View {
                         Button { onSelect(run) } label: {
                             RunRow(run: run, isSelected: selectedRunID == run.id)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plainHit)
                     }
                 }
             }

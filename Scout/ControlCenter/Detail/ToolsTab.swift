@@ -71,7 +71,7 @@ struct ToolsTab: View {
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
     }
 
     private func callList(_ activity: ClaudeSessionActivity) -> some View {

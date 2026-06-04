@@ -202,7 +202,7 @@ struct SchedulesTimelineView: View {
                     cardContents(slot: slot, ring: ring)
                         .frame(width: cardW)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .overlay(alignment: .leading) {
                     Rectangle()
                         .fill(ring.opacity(0.85))

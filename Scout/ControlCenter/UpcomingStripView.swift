@@ -57,7 +57,7 @@ struct UpcomingStripView: View {
                     await state.fireNow(slotKey: up.slotKey, bypassBudget: false)
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .font(DS.sans(11, weight: .medium))
             .foregroundStyle(DS.Ink.p2)
             .padding(.horizontal, 8)

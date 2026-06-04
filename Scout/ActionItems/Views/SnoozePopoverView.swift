@@ -66,12 +66,12 @@ struct SnoozePopoverView: View {
                 .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .disabled(submitting)
 
             Divider().padding(.horizontal, 8)
             Button("Cancel", action: onCancel)
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .foregroundStyle(.secondary)
                 .font(.caption)
                 .padding(.horizontal, 12)
@@ -92,7 +92,7 @@ struct SnoozePopoverView: View {
                 } label: {
                     Image(systemName: "chevron.left").font(.system(size: 10))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .foregroundStyle(.secondary)
                 Text("Pick a date")
                     .font(.caption.weight(.semibold))
@@ -118,7 +118,7 @@ struct SnoozePopoverView: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel", action: onCancel)
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                     .foregroundStyle(.secondary)
                 // Matches the unstyled "Send" button in
                 // CommentComposerView — Adam's UI pass (eb88094) targeted
@@ -168,7 +168,7 @@ struct SnoozePopoverView: View {
             .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .disabled(submitting)
     }
 

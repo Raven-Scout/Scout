@@ -39,7 +39,7 @@ struct ConnectorAlertBanner: View {
             .padding(.vertical, 8)
             .background(Color(red: 0.75, green: 0.15, blue: 0.15))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             popoverContent(alerts: alerts)
         }
