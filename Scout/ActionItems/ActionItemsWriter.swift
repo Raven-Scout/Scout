@@ -55,6 +55,20 @@ enum WriteOp: Sendable {
         }
     }
 
+    /// Return a copy of this op with its short prefix replaced. Used by the
+    /// writer's safety-net to promote an unprefixed op to `--by-id` after a
+    /// just-in-time backfill mints a prefix for the target line.
+    func withShortPrefix(_ prefix: String) -> WriteOp {
+        switch self {
+        case .addComment(let s, _, let t, let a): return .addComment(subject: s, shortPrefix: prefix, text: t, author: a)
+        case .deleteComment(let s, _, let sel):   return .deleteComment(subject: s, shortPrefix: prefix, selector: sel)
+        case .editComment(let s, _, let sel, let n): return .editComment(subject: s, shortPrefix: prefix, selector: sel, newText: n)
+        case .markDone(let s, _):                 return .markDone(subject: s, shortPrefix: prefix)
+        case .reopen(let s, _):                   return .reopen(subject: s, shortPrefix: prefix)
+        case .snooze(let s, _, let u, let fk):    return .snooze(subject: s, shortPrefix: prefix, until: u, fromKind: fk)
+        }
+    }
+
     /// scoutctl subcommand under `action-items`.
     fileprivate var scoutctlSubcommand: String {
         switch self {

@@ -255,6 +255,19 @@ struct ActionItemsWriterTests {
         }
     }
 
+    @Test func withShortPrefixReplacesPrefixPreservingPayload() {
+        let op = WriteOp.addComment(subject: "Subj", shortPrefix: nil, text: "hi", author: "jordan")
+        let promoted = op.withShortPrefix("AB12")
+        #expect(promoted.shortPrefix == "AB12")
+        #expect(promoted.subject == "Subj")
+        if case .addComment(_, _, let text, let author) = promoted {
+            #expect(text == "hi")
+            #expect(author == "jordan")
+        } else {
+            Issue.record("case changed unexpectedly")
+        }
+    }
+
     @Test func classifiesNoSuchOptionAsEnvironment() async throws {
         // Old scoutctl: doesn't know `--undo`. Surfaces as "no such option";
         // writer classifies it as `.environment` so the UI banner can prompt
