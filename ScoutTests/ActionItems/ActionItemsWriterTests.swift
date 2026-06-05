@@ -255,6 +255,75 @@ struct ActionItemsWriterTests {
         }
     }
 
+    @Test func withShortPrefixReplacesPrefixPreservingPayload() {
+        let op = WriteOp.addComment(subject: "Subj", shortPrefix: nil, text: "hi", author: "jordan")
+        let promoted = op.withShortPrefix("AB12")
+        #expect(promoted.shortPrefix == "AB12")
+        #expect(promoted.subject == "Subj")
+        if case .addComment(_, _, let text, let author) = promoted {
+            #expect(text == "hi")
+            #expect(author == "jordan")
+        } else {
+            Issue.record("case changed unexpectedly")
+        }
+    }
+
+    @Test func backfillsThenRetriesByIdOnNoMatchForUnprefixedOp() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Scout-\(UUID().uuidString)")
+        let ai = dir.appendingPathComponent("action-items")
+        try FileManager.default.createDirectory(at: ai, withIntermediateDirectories: true)
+        let date = Calendar(identifier: .iso8601).date(from: DateComponents(
+            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 4, day: 20))!
+        let daily = ai.appendingPathComponent("action-items-2026-04-20.md")
+        try "- [ ] **Ship it** — now".write(to: daily, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let recorder = RecordingRunner()
+        recorder.scripted = [
+            ProcessResult(exitCode: 2, stdout: Data(), stderr: Data("no open task matched subject".utf8)),
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // backfill
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // retry
+        ]
+        recorder.onCall = { call in
+            if call.arguments.contains("backfill-prefixes") {
+                try? "- [ ] [#QW34] **Ship it** — now".write(to: daily, atomically: true, encoding: .utf8)
+            }
+        }
+
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: ai, scoutDirectory: dir, runner: recorder, gitService: nil)
+
+        _ = try await writer.submit(
+            .markDone(subject: "Ship it", shortPrefix: nil),
+            displayedDate: date, recoveryLineNumber: 1)
+
+        let calls = await recorder.calls
+        #expect(calls.count == 3)
+        #expect(calls[1].arguments.contains("backfill-prefixes"))
+        #expect(calls[2].arguments.contains("--by-id"))
+        #expect(calls[2].arguments.contains("QW34"))
+    }
+
+    @Test func readsShortPrefixAtLineNumber() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ai-\(UUID().uuidString).md")
+        let md = """
+        # Title
+
+        ## 🔴 Urgent
+
+        - [ ] [#AB12] **First** — body
+        - [ ] **Unprefixed** — body
+        """
+        try md.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 5) == "AB12")
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 6) == nil)
+        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 999) == nil)
+    }
+
     @Test func classifiesNoSuchOptionAsEnvironment() async throws {
         // Old scoutctl: doesn't know `--undo`. Surfaces as "no such option";
         // writer classifies it as `.environment` so the UI banner can prompt
@@ -294,8 +363,23 @@ struct ActionItemsWriterTests {
 actor RecordingRunner: ProcessRunner {
     struct Call: Sendable { let executable: URL; let arguments: [String]; let env: [String: String] }
     var calls: [Call] = []
+    /// Scripted FIFO results. When non-empty, each `run` pops the next result;
+    /// once exhausted (or never set) it falls back to a canned success. This
+    /// keeps existing tests — which never set `scripted` — passing unchanged.
+    nonisolated(unsafe) var scripted: [ProcessResult] = []
+    /// Per-call side-effect hook, fired (with the recorded call) before the
+    /// result is returned. Lets a test mutate a real file when it sees a
+    /// particular invocation (e.g. a `backfill-prefixes` call).
+    nonisolated(unsafe) var onCall: (@Sendable (Call) -> Void)?
+    private var scriptIndex = 0
     func run(executable: URL, arguments: [String], environment: [String : String], workingDirectory: URL?) async throws -> ProcessResult {
-        calls.append(.init(executable: executable, arguments: arguments, env: environment))
+        let call = Call(executable: executable, arguments: arguments, env: environment)
+        calls.append(call)
+        onCall?(call)
+        if scriptIndex < scripted.count {
+            defer { scriptIndex += 1 }
+            return scripted[scriptIndex]
+        }
         return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
     }
 }
