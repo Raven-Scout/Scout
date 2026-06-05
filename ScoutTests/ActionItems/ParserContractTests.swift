@@ -10,6 +10,9 @@ struct ParserContractTests {
     /// Must equal the canonical scout-plugin corpus digest (Task M3.3).
     /// If this fails, the two corpus copies have drifted — re-copy from the
     /// plugin, do not edit only one side.
+    /// On an intentional corpus change: re-copy the canonical corpus into both
+    /// repos, then update this digest to the output of
+    /// `shasum -a 256 ScoutTests/Fixtures/parser-corpus.json`.
     static let canonicalSHA256 = "0096de04d68c7898b5419ba703b390b899d25cefe1a31a5e841c5089d80318a6"
 
     struct Corpus: Decodable {
@@ -51,7 +54,13 @@ struct ParserContractTests {
         let url = URL(fileURLWithPath: "/tmp/action-items-2026-04-20.md")
         for e in entries {
             let text = "# T\n\n## 🔴 Urgent\n\n\(e.line)\n"
-            let doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
+            let doc: ActionItemsDocument
+            do {
+                doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
+            } catch {
+                Issue.record("\(e.name): threw \(error)")
+                continue
+            }
             let tasks = doc.sections.flatMap { $0.tasks }
             guard let t = tasks.first, tasks.count == 1 else {
                 Issue.record("\(e.name): expected exactly one task, got \(tasks.count)")
