@@ -8,7 +8,7 @@ struct TaskActionsView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
-    let onOp: (WriteOp) async -> Void
+    let onOp: (WriteOp, Int?) async -> Void
 
     @State private var showingSnooze = false
     @State private var launchError: String?
@@ -18,11 +18,11 @@ struct TaskActionsView: View {
             HStack(spacing: 4) {
                 if task.done {
                     actButton("Reopen", systemImage: "arrow.uturn.backward", style: .plain) {
-                        Task { await onOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+                        Task { await onOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix), task.lineNumber) }
                     }
                 } else {
                     actButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
-                        Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+                        Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix), task.lineNumber) }
                     }
                     actButton("Snooze", systemImage: "moon.zzz", style: .plain) {
                         showingSnooze = true
@@ -34,7 +34,7 @@ struct TaskActionsView: View {
                                 shortPrefix: task.shortPrefix,
                                 until: target,
                                 fromKind: kind.rawValue
-                            ))
+                            ), task.lineNumber)
                             showingSnooze = false
                         } onCancel: {
                             showingSnooze = false

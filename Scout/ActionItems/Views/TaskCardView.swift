@@ -13,7 +13,7 @@ struct TaskCardView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
-    let onOp: (WriteOp) async throws -> Void
+    let onOp: (WriteOp, Int?) async throws -> Void
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -24,7 +24,7 @@ struct TaskCardView: View {
         kind: ActionSection.Kind,
         displayedDate: Date,
         scoutDirectory: URL,
-        onOp: @escaping (WriteOp) async throws -> Void
+        onOp: @escaping (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
         self.kind = kind
@@ -266,7 +266,7 @@ struct TaskCardView: View {
                 kind: effectiveKind,
                 displayedDate: displayedDate,
                 scoutDirectory: scoutDirectory
-            ) { op in
+            ) { op, _ in
                 await runOp(op)
             }
 
@@ -327,7 +327,7 @@ struct TaskCardView: View {
     /// inline error label.
     private func runOp(_ op: WriteOp) async {
         do {
-            try await onOp(op)
+            try await onOp(op, task.lineNumber)
             await MainActor.run { inlineError = nil }
         } catch let err as ActionItemsWriterError {
             await MainActor.run { inlineError = describe(err) }

@@ -308,9 +308,9 @@ struct ActionItemsView: View {
 
     // MARK: - Actions
 
-    private func handleOp(_ op: WriteOp) async throws {
+    private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
         do {
-            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate)
+            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate, recoveryLineNumber: lineNumber)
             await MainActor.run { docService.reparseCurrent() }
         } catch let err as ActionItemsWriterError {
             if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {

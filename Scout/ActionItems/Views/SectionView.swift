@@ -4,7 +4,7 @@ struct SectionView: View {
     let section: ActionSection
     let displayedDate: Date
     let scoutDirectory: URL
-    let onOp: (WriteOp) async throws -> Void
+    let onOp: (WriteOp, Int?) async throws -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
