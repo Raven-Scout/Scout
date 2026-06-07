@@ -16,11 +16,32 @@ struct ExtractShortPrefixTests {
         #expect(rest == "**subject** body")
     }
 
-    @Test func rejectsForbiddenCrockfordChars() {
-        // Crockford excludes I, L, O, U to avoid visual ambiguity.
-        for bad in ["[#ILOU] subj", "[#ABCI] subj", "[#abcd] subj", "[#A3F] subj", "[#A3F77] subj"] {
+    @Test func rejectsInvalidTags() {
+        // New grammar: 2–8 [A-Z0-9] with >=1 letter. These must all return nil.
+        for bad in [
+            "[#abcd] subj",      // lowercase
+            "[#A] subj",         // too short (<2)
+            "[#ABCDEFGHI] subj", // too long (>8)
+            "[#555] subj",       // pure digits (reserved for GitHub refs)
+            "[#0000] subj",      // pure digits
+            "[#A-3] subj",       // punctuation
+        ] {
             let (prefix, _) = ActionItemsParser.extractShortPrefix(bad)
             #expect(prefix == nil, "expected nil for \(bad); got \(prefix ?? "nil")")
+        }
+    }
+
+    @Test func acceptsVariableLengthSemanticTags() {
+        // Previously-rejected shapes that the widened grammar now accepts:
+        // non-Crockford letters (I/L/O/U), and lengths other than 4.
+        for (input, expected) in [
+            ("[#ILOU] subj", "ILOU"),   // non-Crockford letters
+            ("[#A3F] subj", "A3F"),     // 3 chars
+            ("[#AI3026] subj", "AI3026"), // 6 chars, contains I
+            ("[#5864M] subj", "5864M"), // digit-led, has a letter
+        ] {
+            let (prefix, _) = ActionItemsParser.extractShortPrefix(input)
+            #expect(prefix == expected, "expected \(expected) for \(input); got \(prefix ?? "nil")")
         }
     }
 
