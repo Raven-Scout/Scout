@@ -52,4 +52,33 @@ struct CLILauncherTests {
         #expect(ClaudeLauncher.resolveClaudePath(override: notExe.path) == nil)
         #expect(ClaudeLauncher.resolveClaudePath(override: "/no/such/path/claude") == nil)
     }
+
+    // MARK: - custom command expansion
+
+    @Test func shellQuote_wrapsAndEscapesSingleQuotes() {
+        #expect(ClaudeLauncher.shellQuote("/usr/bin/claude") == "'/usr/bin/claude'")
+        #expect(ClaudeLauncher.shellQuote("/a b/claude") == "'/a b/claude'")
+        // Embedded single quote: ' -> '\'' (close, escaped quote, reopen)
+        #expect(ClaudeLauncher.shellQuote("a'b") == "'a'\\''b'")
+        // Newline in path (legal on HFS+, rare but possible)
+        #expect(ClaudeLauncher.shellQuote("a\nb") == "'a\nb'")
+        // Adjacent single quotes
+        #expect(ClaudeLauncher.shellQuote("a''b") == "'a'\\'''\\''b'")
+    }
+
+    @Test func expandCustomCommand_substitutesQuotedPlaceholders() {
+        let out = ClaudeLauncher.expandCustomCommand(
+            template: "kitty -d {cwd} -e {claude}",
+            claudePath: "/opt/claude",
+            cwd: "/Users/me/Scout")
+        #expect(out == "kitty -d '/Users/me/Scout' -e '/opt/claude'")
+    }
+
+    @Test func expandCustomCommand_handlesSpacesAndRepeats() {
+        let out = ClaudeLauncher.expandCustomCommand(
+            template: "{claude} --cwd {cwd} ; echo {cwd}",
+            claudePath: "/a b/claude",
+            cwd: "/c d")
+        #expect(out == "'/a b/claude' --cwd '/c d' ; echo '/c d'")
+    }
 }

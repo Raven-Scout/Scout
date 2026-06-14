@@ -88,6 +88,24 @@ enum ClaudeLauncher {
         return out
     }
 
+    // MARK: - Command builders (pure, unit-tested)
+
+    /// POSIX single-quote a string so it survives as one shell argument,
+    /// regardless of spaces or metacharacters. Embedded single quotes are
+    /// closed, backslash-escaped, and reopened (`'\''`).
+    static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Expand a custom launch-command template. `{claude}` and `{cwd}` are
+    /// replaced with shell-quoted values, so the user writes them unquoted:
+    /// e.g. `kitty -d {cwd} -e {claude}`.
+    static func expandCustomCommand(template: String, claudePath: String, cwd: String) -> String {
+        template
+            .replacingOccurrences(of: "{claude}", with: shellQuote(claudePath))
+            .replacingOccurrences(of: "{cwd}", with: shellQuote(cwd))
+    }
+
     // MARK: - Ghostty
 
     private static let ghosttyBundleID = "com.mitchellh.ghostty"
