@@ -3,6 +3,7 @@ import SwiftUI
 struct MainWindowView: View {
     @State private var selection: SidebarItem = .controlCenter
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var proposalsService: ProposalsDocumentService
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not
@@ -15,7 +16,7 @@ struct MainWindowView: View {
         // instead, which keeps the split view on the native titlebar/sidebar
         // layout path while rendering the same persistent bottom strip.
         NavigationSplitView {
-            SidebarView(selection: $selection)
+            SidebarView(selection: $selection, proposalsBadge: proposalsService.pendingCount)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             detail
@@ -42,6 +43,10 @@ struct MainWindowView: View {
         case .schedules:
             SchedulesView()
                 .environmentObject(appState.scheduleEditService)
+        case .proposals:
+            ProposalsView()
+                .environmentObject(appState.proposalsDocumentService)
+                .environmentObject(appState.proposalsWriterBox)
         case .settings:
             SettingsView()
         }
@@ -49,7 +54,7 @@ struct MainWindowView: View {
 }
 
 enum SidebarItem: Hashable {
-    case controlCenter, actionItems, schedules, settings
+    case controlCenter, actionItems, schedules, proposals, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
@@ -57,6 +62,7 @@ enum SidebarItem: Hashable {
         case .controlCenter: return "control"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
+        case .proposals:     return "proposals"
         case .settings:      return "settings"
         }
     }

@@ -34,6 +34,10 @@ final class AppState: ObservableObject {
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
+    // Proposals (dreaming-proposals.md review)
+    let proposalsDocumentService: ProposalsDocumentService
+    let proposalsWriterBox: ProposalsWriterBox
+
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
@@ -117,6 +121,15 @@ final class AppState: ObservableObject {
         let writerBox = ActionItemsWriterBox(writer: writerActor)
         let envState = ActionItemsEnvironmentState()
 
+        let proposalsFileURL = scoutDir.appendingPathComponent("dreaming-proposals.md")
+        let proposalsDoc = ProposalsDocumentService(fileURL: proposalsFileURL, fileEvents: watcher)
+        let proposalsWriter = ProposalsWriter(
+            fileURL: proposalsFileURL,
+            scoutDirectory: scoutDir,
+            gitService: git
+        )
+        let proposalsWriterBox = ProposalsWriterBox(writer: proposalsWriter)
+
         self.fileWatcher = watcher
         self.gitService = git
         self.trackerService = tracker
@@ -131,6 +144,8 @@ final class AppState: ObservableObject {
         self.actionItemsDocumentService = docService
         self.actionItemsWriterBox = writerBox
         self.actionItemsEnvState = envState
+        self.proposalsDocumentService = proposalsDoc
+        self.proposalsWriterBox = proposalsWriterBox
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
         self.runner = runner
@@ -144,6 +159,9 @@ final class AppState: ObservableObject {
             await MainActor.run {
                 sched.start()
                 power.start()
+                // Load proposals at launch so the sidebar badge is populated
+                // before the user opens the Proposals section.
+                proposalsDoc.load()
             }
             await self?.recomputeMenuStatus()
 

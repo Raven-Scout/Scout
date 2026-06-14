@@ -5,6 +5,9 @@ import SwiftUI
 /// language from Scout.html.
 struct SidebarView: View {
     @Binding var selection: SidebarItem
+    /// Count of proposals awaiting a decision — drives the badge on the
+    /// Proposals row. Hidden when zero.
+    var proposalsBadge: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -12,6 +15,7 @@ struct SidebarView: View {
             row(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
             row(.actionItems,   label: "Action Items",   system: "checklist")
             row(.schedules,     label: "Schedules",      system: "calendar.badge.clock")
+            row(.proposals,     label: "Proposals",      system: "lightbulb", badge: proposalsBadge)
             Spacer().frame(height: 10)
             groupLabel("App")
             row(.settings,      label: "Settings",       system: "gearshape")
@@ -43,7 +47,7 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func row(_ item: SidebarItem, label: String, system: String) -> some View {
+    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0) -> some View {
         let isActive = selection == item
         Button {
             selection = item
@@ -57,6 +61,14 @@ struct SidebarView: View {
                     .font(DS.sans(13))
                     .foregroundStyle(isActive ? DS.Ink.p1 : DS.Ink.p2)
                 Spacer(minLength: 0)
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(DS.sans(10.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 18, minHeight: 16)
+                        .background(Capsule().fill(DS.Accent.fill))
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)

@@ -9,6 +9,7 @@ struct ScoutApp: App {
         WindowGroup("Scout") {
             MainWindowView()
                 .environmentObject(appState)
+                .environmentObject(appState.proposalsDocumentService)
                 .frame(minWidth: 1100, minHeight: 640)
         }
         .commands {
