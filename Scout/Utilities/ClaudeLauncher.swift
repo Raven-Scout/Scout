@@ -106,6 +106,64 @@ enum ClaudeLauncher {
             .replacingOccurrences(of: "{cwd}", with: shellQuote(cwd))
     }
 
+    /// Escape a string for embedding inside a double-quoted shell token:
+    /// backslash first, then the double quote.
+    static func shellDoubleQuoteEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Escape a string so it can be embedded inside an AppleScript string
+    /// literal in NSAppleScript source. Only `\` and `"` need escaping; the
+    /// sequences `\\` and `\"` are honoured by NSAppleScript/osascript on
+    /// macOS, even though they aren't in the AppleScript Language Guide. To
+    /// embed a literal newline/tab, use AppleScript string concatenation
+    /// instead — those escapes are not defined for AppleScript strings.
+    static func appleScriptEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// The shell command run inside Terminal.app / iTerm2: cd to the working
+    /// dir, print the clipboard-paste hint, then exec claude. Mirrors
+    /// `makeGhosttyScript`'s double-quote escaping.
+    static func makeTerminalShellCommand(claudePath: String, cwd: String) -> String {
+        let cwdEsc = shellDoubleQuoteEscape(cwd)
+        let claudeEsc = shellDoubleQuoteEscape(claudePath)
+        return "cd \"\(cwdEsc)\" && clear && "
+            + "echo 'Scout: action-item context copied to your clipboard. Paste with Cmd+V.' && "
+            + "exec \"\(claudeEsc)\""
+    }
+
+    /// Build the AppleScript that opens a new Terminal.app window running the
+    /// claude session. The returned string is ready to pass to
+    /// `NSAppleScript(source:)` — already fully escaped, do not re-escape.
+    static func makeTerminalAppScript(claudePath: String, cwd: String) -> String {
+        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd))
+        return """
+        tell application "Terminal"
+          activate
+          do script "\(cmd)"
+        end tell
+        """
+    }
+
+    /// Build the AppleScript that opens a new iTerm2 window running the claude
+    /// session. The returned string is ready to pass to `NSAppleScript(source:)`
+    /// — already fully escaped, do not re-escape.
+    static func makeITermScript(claudePath: String, cwd: String) -> String {
+        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd))
+        return """
+        tell application "iTerm"
+          activate
+          set newWindow to (create window with default profile)
+          tell current session of newWindow
+            write text "\(cmd)"
+          end tell
+        end tell
+        """
+    }
+
     // MARK: - Ghostty
 
     private static let ghosttyBundleID = "com.mitchellh.ghostty"
