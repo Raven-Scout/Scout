@@ -114,7 +114,7 @@ enum ClaudeLauncher {
         // script runs under bash without sourcing init). So a bare `claude`
         // wouldn't be found even though the user can run it interactively.
         // Resolve once, pass the absolute path to both code paths.
-        guard let claudePath = resolveClaudePath() else {
+        guard let claudePath = resolveClaudePath(override: "") else {
             throw LaunchError.claudeCLINotFound
         }
 
@@ -148,10 +148,17 @@ enum ClaudeLauncher {
     ]
 
     /// Resolve `claude` to an absolute path, or nil if it can't be found.
-    /// Probes well-known locations first, then falls back to asking the
-    /// user's login shell — which picks up mise/asdf/nvm-style installs
-    /// that put `claude` under a per-version-manager bin dir.
-    private static func resolveClaudePath() -> String? {
+    ///
+    /// - If `override` is non-empty, it is authoritative: returned only if it
+    ///   is an executable file, otherwise nil (so a typo'd override surfaces a
+    ///   "not found" error instead of being masked by the probe fallback).
+    /// - If `override` is empty, probe well-known locations, then ask the
+    ///   user's login shell (picks up mise/asdf/nvm-style installs).
+    static func resolveClaudePath(override: String) -> String? {
+        let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return FileManager.default.isExecutableFile(atPath: trimmed) ? trimmed : nil
+        }
         if let direct = claudePaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) {
