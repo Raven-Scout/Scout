@@ -60,4 +60,27 @@ struct TaskChipTests {
         // .github chips lead — the point is the kind ordering across groups.
         #expect(chips.map(\.glyph) == [.github, .github, .linear, .slack, .carry])
     }
+
+    @Test func prChipCarriesPRUrls() {
+        let chips = TaskChip.chips(for: task(links: [pr("keboola/crm", 925)]))
+        let prChip = chips.first { $0.label == "1 PR" }
+        #expect(prChip?.links.map(\.url) == [URL(string: "https://github.com/keboola/crm/pull/925")!])
+    }
+
+    @Test func repoChipOpensRepoHomepage() {
+        let chips = TaskChip.chips(for: task(links: [pr("keboola/crm", 925)]))
+        let repoChip = chips.first { $0.label == "keboola/crm" }
+        #expect(repoChip?.links.map(\.url) == [URL(string: "https://github.com/keboola/crm")!])
+    }
+
+    @Test func multiPRChipListsEachPR() {
+        let chips = TaskChip.chips(for: task(links: [pr("a/b", 1), pr("a/b", 2)]))
+        let prChip = chips.first { $0.label == "2 PRs" }
+        #expect(prChip?.links.count == 2)
+    }
+
+    @Test func carryChipHasNoLinks() {
+        let chips = TaskChip.chips(for: task(links: []), carriedLabel: "Jun 2")
+        #expect(chips.first?.links.isEmpty == true)
+    }
 }
