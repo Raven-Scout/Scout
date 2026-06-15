@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// A task in the Action Items List. Top-level tasks render as a collapsible
 /// card — a scannable header (priority stripe · prefix · title · source chips ·
@@ -139,19 +140,58 @@ struct TaskCardView: View {
     private var chipRow: some View {
         HStack(spacing: 6) {
             ForEach(chips) { chip in
-                HStack(spacing: 4) {
-                    Image(systemName: chipGlyph(chip.glyph))
-                        .font(.system(size: 9))
-                    Text(chip.label)
-                        .font(DS.mono(10.5))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(DS.Ink.p3)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(EditorialChipBackground())
+                chipView(for: chip)
             }
         }
+    }
+
+    /// Renders a chip per its targets: static text (0 links), a button that
+    /// opens directly (1 link), or a dropdown listing each target (>1 links).
+    @ViewBuilder
+    private func chipView(for chip: TaskChip) -> some View {
+        switch chip.links.count {
+        case 0:
+            chipBody(for: chip)
+        case 1:
+            Button {
+                NSWorkspace.shared.open(chip.links[0].url)
+            } label: {
+                chipBody(for: chip)
+            }
+            .buttonStyle(.plainHit)
+            .help(chip.links[0].url.absoluteString)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        default:
+            Menu {
+                ForEach(chip.links) { link in
+                    Button(link.label) { NSWorkspace.shared.open(link.url) }
+                }
+            } label: {
+                chipBody(for: chip)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
+    }
+
+    private func chipBody(for chip: TaskChip) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: chipGlyph(chip.glyph))
+                .font(.system(size: 9))
+            Text(chip.label)
+                .font(DS.mono(10.5))
+                .lineLimit(1)
+        }
+        .foregroundStyle(DS.Ink.p3)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(EditorialChipBackground())
     }
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
