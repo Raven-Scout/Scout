@@ -10,6 +10,10 @@ struct TaskActionsView: View {
     let scoutDirectory: URL
     let onOp: @MainActor (WriteOp) async -> Void
 
+    @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
+    @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
+    @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+
     @State private var showingSnooze = false
     @State private var launchError: String?
 
@@ -56,9 +60,14 @@ struct TaskActionsView: View {
     private var launchClaudeMenu: some View {
         Menu {
             Button {
-                launch(.ghostty(cwd: scoutDirectory))
+                let config = CLIConfig(
+                    claudePathOverride: claudeCLIPath,
+                    terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
+                    customCommand: customLaunchCommand
+                )
+                launch(.cli(cwd: scoutDirectory, config: config))
             } label: {
-                Label("Ghostty → tmux + Claude Code", systemImage: "terminal")
+                Label(cliMenuLabel, systemImage: "terminal")
             }
             Divider()
             Button {
@@ -92,6 +101,15 @@ struct TaskActionsView: View {
         .fixedSize()
         .onHover { hovering in
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+
+    private var cliMenuLabel: String {
+        switch CLITerminal(rawValue: cliTerminal) ?? .auto {
+        case .auto:        return "Launch Claude Code (Auto)"
+        case .terminalApp: return "Open in Terminal.app → Claude Code"
+        case .iterm2:      return "Open in iTerm2 → Claude Code"
+        case .custom:      return "Open in custom terminal → Claude Code"
         }
     }
 
@@ -145,16 +163,5 @@ struct TaskActionsView: View {
             // Lightweight hover feedback via system cursor — no state churn.
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
-    }
-
-    private func launchClaude() {
-        let escaped = task.plainSubject
-            .replacingOccurrences(of: #"\"#, with: #"\\"#)
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "$", with: "\\$")
-        GhosttyLauncher.openNewTab(
-            cwd: scoutDirectory,
-            runningCommand: "claude \"Help me make progress on this action item: \(escaped)\""
-        )
     }
 }

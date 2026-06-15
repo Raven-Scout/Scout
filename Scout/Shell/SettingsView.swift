@@ -15,6 +15,10 @@ struct SettingsView: View {
     @AppStorage("authorName")      private var authorName: String = "user"
     @AppStorage("notifyOnFailure")   private var notifyOnFailure: Bool = true
     @AppStorage("notifyOnRateLimit") private var notifyOnRateLimit: Bool = true
+    @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
+    @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
+    @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+    @State private var detectedClaudePath: String?
 
     var body: some View {
         ScrollView {
@@ -49,6 +53,48 @@ struct SettingsView: View {
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.sunk))
+                        }
+                    }
+                }
+
+                section(label: "Claude Code") {
+                    SettingsCard {
+                        SettingsField(
+                            label: "Claude binary path",
+                            help: "Absolute path to the `claude` CLI. Leave blank to auto-detect (`~/.local/bin`, Homebrew, then your login shell)."
+                        ) {
+                            SettingsInput(
+                                text: $claudeCLIPath,
+                                placeholder: detectedClaudePath ?? "Auto-detect")
+                        }
+                        SettingsRow(
+                            title: "Open Claude Code in",
+                            help: "Which terminal the Launch Claude → Claude Code option uses. Auto prefers Ghostty/tmux and falls back to Terminal.app."
+                        ) {
+                            Picker("", selection: $cliTerminal) {
+                                ForEach(CLITerminal.allCases) { t in
+                                    Text(t.displayName).tag(t.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                        }
+                        if cliTerminal == CLITerminal.custom.rawValue {
+                            SettingsField(
+                                label: "Custom launch command",
+                                help: "Shell command run via your login shell. `{cwd}` and `{claude}` are inserted as quoted arguments. Example: `kitty -d {cwd} -e {claude}`."
+                            ) {
+                                SettingsInput(
+                                    text: $customLaunchCommand,
+                                    placeholder: "kitty -d {cwd} -e {claude}")
+                                if customLaunchCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text("Required — enter a command, or Launch Claude → Claude Code will have nothing to run.")
+                                        .font(DS.sans(11.5))
+                                        .foregroundStyle(DS.Status.warn)
+                                        .padding(.top, 4)
+                                }
+                            }
                         }
                     }
                 }
@@ -109,6 +155,12 @@ struct SettingsView: View {
             .padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .task {
+            let detected = await Task.detached {
+                ClaudeLauncher.resolveClaudePath(override: "")
+            }.value
+            detectedClaudePath = detected
+        }
     }
 
     // MARK: - Atoms
@@ -161,8 +213,27 @@ struct SettingsView: View {
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        #if DEBUG
+        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh;
+        // dev builds keep the xcodeproj default (1.0), which reads like a real
+        // release. Mark them as dev and show the build time so it's obvious
+        // which local build is running.
+        return "\(v) (\(b)) · dev · \(buildTimestamp)"
+        #else
         return "\(v) (\(b))"
+        #endif
     }
+
+    #if DEBUG
+    private var buildTimestamp: String {
+        guard let exe = Bundle.main.executableURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path),
+              let date = attrs[.modificationDate] as? Date else { return "?" }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return fmt.string(from: date)
+    }
+    #endif
 
     private var bundleId: String {
         Bundle.main.bundleIdentifier ?? "com.scout.Scout"
