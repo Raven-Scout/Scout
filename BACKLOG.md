@@ -93,20 +93,32 @@ nice-to-haves.
   Wednesday will keep its urgent gutter without any further app changes.
 
 ### Nice-to-have
-- **Launch Claude — broader terminal + shell support.** Today the Ghostty
-  path requires the exact setup it was written against: Ghostty.app, tmux
-  running at `/tmp/tmux-$UID/default`, and a session to attach to (the
-  launcher falls back to `open -na Ghostty.app --args --command=…` for
-  users without tmux, but the tmux path is what's actually been tested).
-  Expand to: (a) iTerm2 (has a mature AppleScript dictionary — `tell app
-  "iTerm" to create window with default profile`); (b) Terminal.app via a
-  `.command` file drop (most reliable baseline for users with nothing
-  else); (c) kitty (`kitty --single-instance --title=… holdtty=yes`); (d)
-  non-tmux Ghostty users on macOS (verify the `--command=` fallback
-  actually renders a fresh window when the primary Ghostty instance
-  hasn't set a `command = tmux …` override). Probably wants a
-  preferences dropdown: *"Launch Claude Code in: Ghostty+tmux / Ghostty /
-  iTerm2 / Terminal"* rather than auto-detection.
+- **Launch Claude — broader terminal + shell support.** *Mostly addressed
+  by #12:* Settings now offers a "Open Claude Code in" picker —
+  Auto / Terminal.app / iTerm2 / Custom command — plus a custom `claude`
+  binary path override. Auto prefers Ghostty/tmux and falls back to
+  Terminal.app. iTerm2 and Terminal.app launch via AppleScript; kitty /
+  WezTerm / any other terminal (and any future Linux/Windows host) are
+  covered by the custom-command template (`{cwd}` / `{claude}`).
+  *Remaining follow-ups:* (a) verify the non-tmux Ghostty `--command=`
+  fallback renders a fresh window when the primary instance hasn't set a
+  `command = tmux …` override; (b) consider a `.command`-file drop as an
+  alternative to AppleScript for Terminal.app (avoids the Automation
+  permission prompt).
+- **Launch Claude — resolve `claude` path off the main thread.** Follow-up
+  from the #12 code review. `ClaudeLauncher.resolveClaudePath(override:)`
+  runs synchronously on the main thread; when no override is set *and*
+  `claude` isn't at a probed location, the login-shell fallback
+  (`$SHELL -lc "command -v claude"` + `waitUntilExit()`) can block the UI
+  for ~50–300 ms. Pre-existing (carried over from the old `launchGhostty`)
+  but #12 widened the surface (Terminal.app / iTerm2 targets now hit it
+  too). The naive fix — offloading the whole `launch` off-main — is unsafe
+  because `NSAppleScript.executeAndReturnError` **must** run on the main
+  thread. Correct fix: make the launch path async, resolve the path on a
+  background executor, then hop back to the main actor for the
+  NSWorkspace / NSAppleScript invocation. (The Settings placeholder probe
+  is already off-main via `Task.detached`; this is only about the launch
+  path.)
 - **Task-relevant cwd for Launch Claude.** Currently every Ghostty launch
   opens in `~/Scout`. If the task's deep links include a GitHub PR URL
   (e.g. `github.com/acme/mcp-server/pull/42`), we could try common clone
