@@ -15,6 +15,10 @@ struct SettingsView: View {
     @AppStorage("authorName")      private var authorName: String = "user"
     @AppStorage("notifyOnFailure")   private var notifyOnFailure: Bool = true
     @AppStorage("notifyOnRateLimit") private var notifyOnRateLimit: Bool = true
+    @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
+    @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
+    @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+    @State private var detectedClaudePath: String?
 
     var body: some View {
         ScrollView {
@@ -49,6 +53,42 @@ struct SettingsView: View {
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.sunk))
+                        }
+                    }
+                }
+
+                section(label: "Claude Code") {
+                    SettingsCard {
+                        SettingsField(
+                            label: "Claude binary path",
+                            help: "Absolute path to the `claude` CLI. Leave blank to auto-detect (`~/.local/bin`, Homebrew, then your login shell)."
+                        ) {
+                            SettingsInput(
+                                text: $claudeCLIPath,
+                                placeholder: detectedClaudePath ?? "Auto-detect")
+                        }
+                        SettingsRow(
+                            title: "Open Claude Code in",
+                            help: "Which terminal the Launch Claude → Claude Code option uses. Auto prefers Ghostty/tmux and falls back to Terminal.app."
+                        ) {
+                            Picker("", selection: $cliTerminal) {
+                                ForEach(CLITerminal.allCases) { t in
+                                    Text(t.displayName).tag(t.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                        }
+                        if cliTerminal == CLITerminal.custom.rawValue {
+                            SettingsField(
+                                label: "Custom launch command",
+                                help: "Shell command run via your login shell. `{cwd}` and `{claude}` are inserted as quoted arguments. Example: `kitty -d {cwd} -e {claude}`."
+                            ) {
+                                SettingsInput(
+                                    text: $customLaunchCommand,
+                                    placeholder: "kitty -d {cwd} -e {claude}")
+                            }
                         }
                     }
                 }
@@ -108,6 +148,12 @@ struct SettingsView: View {
             .padding(.top, 28)
             .padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .task {
+            let detected = await Task.detached {
+                ClaudeLauncher.resolveClaudePath(override: "")
+            }.value
+            detectedClaudePath = detected
         }
     }
 
