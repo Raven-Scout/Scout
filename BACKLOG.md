@@ -93,6 +93,14 @@ nice-to-haves.
   Wednesday will keep its urgent gutter without any further app changes.
 
 ### Nice-to-have
+- **Settings → "Test launch" button for Claude Code.** Surfaced during #12
+  smoke testing. A button in the Claude Code card that attempts a launch
+  with the current config (path + terminal) right where you configure it,
+  so you can validate the `claude` path, terminal target, and Automation
+  permission without going to an action item and hitting an error. Would
+  also be the natural place to confirm a custom command works. Deferred
+  from #12 to keep that PR scoped; the empty-custom case now shows inline
+  validation in the meantime.
 - **Launch Claude — broader terminal + shell support.** *Mostly addressed
   by #12:* Settings now offers a "Open Claude Code in" picker —
   Auto / Terminal.app / iTerm2 / Custom command — plus a custom `claude`

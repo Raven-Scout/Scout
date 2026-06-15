@@ -88,6 +88,12 @@ struct SettingsView: View {
                                 SettingsInput(
                                     text: $customLaunchCommand,
                                     placeholder: "kitty -d {cwd} -e {claude}")
+                                if customLaunchCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text("Required — enter a command, or Launch Claude → Claude Code will have nothing to run.")
+                                        .font(DS.sans(11.5))
+                                        .foregroundStyle(DS.Status.warn)
+                                        .padding(.top, 4)
+                                }
                             }
                         }
                     }
@@ -207,8 +213,27 @@ struct SettingsView: View {
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        #if DEBUG
+        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh;
+        // dev builds keep the xcodeproj default (1.0), which reads like a real
+        // release. Mark them as dev and show the build time so it's obvious
+        // which local build is running.
+        return "\(v) (\(b)) · dev · \(buildTimestamp)"
+        #else
         return "\(v) (\(b))"
+        #endif
     }
+
+    #if DEBUG
+    private var buildTimestamp: String {
+        guard let exe = Bundle.main.executableURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path),
+              let date = attrs[.modificationDate] as? Date else { return "?" }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm"
+        return fmt.string(from: date)
+    }
+    #endif
 
     private var bundleId: String {
         Bundle.main.bundleIdentifier ?? "com.scout.Scout"
