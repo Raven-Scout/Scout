@@ -1,6 +1,6 @@
 # Scout.app
 
-A macOS companion app for the [Scout](https://github.com/jordanrburger/scout-plugin) Claude Code plugin.
+A macOS companion app for the [Scout](https://github.com/Raven-Scout/scout-plugin) Claude Code plugin.
 
 Scout is an autonomous knowledge-management and daily-briefing system that runs as scheduled Claude Code sessions. The plugin does the work; this app gives you a native interface on top of whatever Scout produces in `~/Scout/`:
 
@@ -12,12 +12,12 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 The fastest path if you just want to run the app:
 
-1. Go to the [Releases](https://github.com/jordanrburger/Scout/releases) page and download the latest `Scout-*.dmg`.
+1. Go to the [Releases](https://github.com/Raven-Scout/Scout/releases) page and download the latest `Scout-*.dmg`.
 2. Open the DMG and drag **Scout.app** into the **Applications** folder.
 3. First launch only: macOS will refuse because the build is ad-hoc signed (no paid Apple Developer cert). Right-click **Scout.app** in `/Applications` → **Open** → **Open**. After that it launches normally.
 4. Press ⌘, to open Settings and fill in your Linear workspace and author name.
 
-The app expects a Scout instance at `~/Scout/`. Install the [scout-plugin](https://github.com/jordanrburger/scout-plugin) into Claude Code and run `/scout-setup` first if you don't have one yet.
+The app expects a Scout instance at `~/Scout/`. Install the [scout-plugin](https://github.com/Raven-Scout/scout-plugin) into Claude Code and run `/scout-setup` first if you don't have one yet.
 
 ## Requirements (for building from source)
 
