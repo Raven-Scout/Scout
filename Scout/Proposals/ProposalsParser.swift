@@ -1,118 +1,122 @@
 import Foundation
 
-/// Parses `dreaming-proposals.md` into a list of ``Proposal`` values.
+/// Parses a single dreaming-proposal file (one file in `dreaming-proposals/`)
+/// into a ``Proposal``.
 ///
-/// The file has a `# Dreaming Proposals` title, a `## How It Works` section,
-/// and a `## Proposals` section under which each proposal is a level-3
-/// `### <code> — <title>` heading. The parser collects only the level-3
-/// sections; everything above the first `###` (the intro / how-it-works prose)
-/// is ignored. Pure function — no I/O — so it is trivially unit-testable.
+/// A proposal file is YAML frontmatter between `---` fences, followed by the
+/// body:
 ///
-/// `nonisolated` because it is pure logic with no shared state: the app target
-/// defaults to `MainActor` isolation, but the parser must be callable from the
-/// `ProposalsWriter` actor and from background contexts without isolation hops.
+/// ```
+/// ---
+/// date: 2026-06-15
+/// title: Research priority-preemption
+/// status: Pending (auto-apply after 2026-06-18)
+/// target: RESEARCH.md
+/// ---
+///
+/// # 2026-06-15 — Research priority-preemption
+/// **Trigger:** …
+/// ```
+///
+/// Pure functions — no I/O — so they are trivially unit-testable. `nonisolated`
+/// because the parser must be callable from background contexts and the
+/// `MainActor`-isolated document service alike.
 nonisolated enum ProposalsParser {
 
-    /// Parse the full markdown text of the proposals file.
-    static func parse(text: String) -> [Proposal] {
+    /// Parse one proposal file's contents into a ``Proposal``, or `nil` if the
+    /// text has no `---` frontmatter (i.e. it is not a proposal file — e.g. the
+    /// legacy `dreaming-proposals.md` index, README, etc.).
+    static func parseFile(contents: String, fileURL: URL) -> Proposal? {
+        guard let (frontmatter, body) = splitFrontmatter(contents) else { return nil }
+        let fields = parseFrontmatterFields(frontmatter)
+        let stem = fileURL.deletingPathExtension().lastPathComponent
+
+        let date = fields["date"]?.nonEmpty ?? datePrefix(of: stem) ?? ""
+        let title = fields["title"]?.nonEmpty ?? stem
+        let status = ProposalStatus.parse(fields["status"] ?? "")
+        let cleanBody = stripLeadingHeading(body).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return Proposal(
+            fileURL: fileURL,
+            date: date,
+            title: title,
+            status: status,
+            bodyMarkdown: cleanBody
+        )
+    }
+
+    // MARK: - Frontmatter
+
+    /// Split `---\n<frontmatter>\n---\n<body>`. Returns `nil` when the text does
+    /// not open with a `---` fence or the closing fence is missing.
+    static func splitFrontmatter(_ text: String) -> (frontmatter: String, body: String)? {
         let lines = text.components(separatedBy: "\n")
-        var proposals: [Proposal] = []
-
-        var i = 0
+        guard let first = lines.first,
+              first.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+        var frontmatter: [String] = []
+        var i = 1
         while i < lines.count {
-            guard isProposalHeading(lines[i]) else { i += 1; continue }
-            let headingLine = lines[i]
-
-            // Collect body lines until the next proposal heading, a level-2
-            // heading (`## …`), or EOF.
-            var bodyLines: [String] = []
-            var j = i + 1
-            while j < lines.count {
-                let line = lines[j]
-                if isProposalHeading(line) || isSectionBoundary(line) { break }
-                bodyLines.append(line)
-                j += 1
+            if lines[i].trimmingCharacters(in: .whitespaces) == "---" {
+                let body = i + 1 < lines.count
+                    ? lines[(i + 1)...].joined(separator: "\n")
+                    : ""
+                return (frontmatter.joined(separator: "\n"), body)
             }
-
-            let (code, title) = splitHeading(headingLine)
-            let (statusValue, bodyMarkdown) = extractStatus(from: bodyLines)
-            proposals.append(Proposal(
-                headingLine: headingLine,
-                code: code,
-                title: title,
-                status: ProposalStatus.parse(statusValue ?? ""),
-                bodyMarkdown: bodyMarkdown
-            ))
-            i = j
+            frontmatter.append(lines[i])
+            i += 1
         }
-        return proposals
+        return nil  // no closing fence
     }
 
-    // MARK: - Line classification
-
-    /// A proposal heading is a level-3 ATX heading (`### …`). Level-4+ headings
-    /// inside a body (`#### …`) are not section starts.
-    static func isProposalHeading(_ line: String) -> Bool {
-        line.hasPrefix("### ")
-    }
-
-    /// A `## …` (or `# …`) heading ends the proposals stream — proposals never
-    /// nest under each other and the file's structural sections are level-2.
-    private static func isSectionBoundary(_ line: String) -> Bool {
-        (line.hasPrefix("## ") || line.hasPrefix("# ")) && !line.hasPrefix("### ")
-    }
-
-    // MARK: - Heading
-
-    /// Split `### P-… — Title` into `(code, title)`. Recognizes both the
-    /// em-dash separator (` — `, the convention in real files) and the ASCII
-    /// hyphen fallback (` - `). Without a separator the whole heading is the
-    /// title and the code is empty.
-    static func splitHeading(_ headingLine: String) -> (code: String, title: String) {
-        var text = headingLine
-        if text.hasPrefix("### ") { text = String(text.dropFirst(4)) }
-        text = text.trimmingCharacters(in: .whitespaces)
-
-        for separator in [" — ", " – ", " - "] {
-            if let range = text.range(of: separator) {
-                let code = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let title = String(text[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                return (code, title)
+    /// Parse simple `key: value` frontmatter lines. Keys are lowercased; the
+    /// value keeps everything after the first colon (so a value may itself
+    /// contain colons), with surrounding double quotes stripped.
+    static func parseFrontmatterFields(_ frontmatter: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for line in frontmatter.components(separatedBy: "\n") {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            guard !key.isEmpty else { continue }
+            var value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
             }
+            out[key] = value
         }
-        return ("", text)
+        return out
     }
 
-    // MARK: - Status
+    // MARK: - Body
 
-    /// Pull the first `**Status:**` line out of the body lines, returning its
-    /// value plus the remaining body (status line removed) trimmed of leading/
-    /// trailing blank lines.
-    static func extractStatus(from bodyLines: [String]) -> (value: String?, body: String) {
-        var statusValue: String?
-        var remaining: [String] = []
-        for line in bodyLines {
-            if statusValue == nil, let value = Self.statusValue(in: line) {
-                statusValue = value
-                continue  // drop the status line from the rendered body
-            }
-            remaining.append(line)
+    /// Drop a leading `# …` H1 (and any blank lines before it) from the body —
+    /// per-file proposals repeat the title as an H1, which the card already
+    /// shows in its header. A `## …` subheading is left intact.
+    static func stripLeadingHeading(_ body: String) -> String {
+        var lines = body.components(separatedBy: "\n")
+        while let first = lines.first,
+              first.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeFirst()
         }
-        let body = remaining
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (statusValue, body)
+        if let first = lines.first, first.hasPrefix("# "), !first.hasPrefix("## ") {
+            lines.removeFirst()
+        }
+        return lines.joined(separator: "\n")
     }
 
-    /// If `line` is a `**Status:** <value>` marker, return `<value>`.
-    static func statusValue(in line: String) -> String? {
-        guard let re = try? NSRegularExpression(
-            pattern: #"^\s*\*\*\s*Status\s*:\s*\*\*\s*(.*)$"#,
-            options: [.caseInsensitive]
-        ) else { return nil }
-        let ns = line as NSString
-        guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
-              m.range(at: 1).location != NSNotFound else { return nil }
-        return ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+    /// First `yyyy-MM-dd` at the start of a filename stem (the naming
+    /// convention `YYYY-MM-DD-slug`), used when frontmatter omits `date`.
+    static func datePrefix(of stem: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}"#) else { return nil }
+        let ns = stem as NSString
+        guard let m = re.firstMatch(in: stem, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return ns.substring(with: m.range)
+    }
+}
+
+private extension String {
+    /// `nil` when the string is empty after trimming, else self — lets
+    /// frontmatter fallbacks treat `title:` (blank) the same as a missing key.
+    var nonEmpty: String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }

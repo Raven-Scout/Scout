@@ -121,10 +121,20 @@ final class AppState: ObservableObject {
         let writerBox = ActionItemsWriterBox(writer: writerActor)
         let envState = ActionItemsEnvironmentState()
 
-        let proposalsFileURL = scoutDir.appendingPathComponent("dreaming-proposals.md")
-        let proposalsDoc = ProposalsDocumentService(fileURL: proposalsFileURL, fileEvents: watcher)
+        // Per-file proposals live in `dreaming-proposals/` (the sibling
+        // `dreaming-proposals.md` is just an index). The folder is overridable
+        // via the `dreamingProposalsPath` setting; takes effect on next launch.
+        let proposalsDirURL: URL = {
+            let override = UserDefaults.standard
+                .string(forKey: "dreamingProposalsPath")?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let override, !override.isEmpty {
+                return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+            }
+            return scoutDir.appendingPathComponent("dreaming-proposals")
+        }()
+        let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: watcher)
         let proposalsWriter = ProposalsWriter(
-            fileURL: proposalsFileURL,
             scoutDirectory: scoutDir,
             gitService: git
         )

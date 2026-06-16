@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// A proposal decision the app can write back to the file.
+/// A proposal decision the app can write back to a proposal file.
 enum ProposalDecision: Sendable, Equatable {
     case approve
     case decline
@@ -13,25 +13,24 @@ enum ProposalDecision: Sendable, Equatable {
 }
 
 enum ProposalsWriterError: Error, Equatable {
-    /// No section with the given heading line was found in the file.
-    case proposalNotFound(headingLine: String)
-    /// The section was found but had no `**Status:**` line to replace.
-    case statusLineNotFound(headingLine: String)
+    /// The file had no `---` YAML frontmatter to carry a `status:` field.
+    case frontmatterNotFound(file: String)
+    /// Frontmatter was present but had no `status:` line to replace.
+    case statusFieldNotFound(file: String)
     case readFailed(String)
     case writeFailed(String)
 }
 
-/// Serializes proposal status mutations to `dreaming-proposals.md`.
+/// Serializes proposal status mutations to per-file proposals in
+/// `dreaming-proposals/`.
 ///
 /// There is no `scoutctl` command for proposals — they are plain markdown that
 /// dreaming sessions read and write directly — so the app edits the file in
-/// place: locate the target section by its exact heading line, replace the
-/// first `**Status:**` line within it, write the file atomically, then commit
-/// just that file to the vault's git (matching how action-items writes and
-/// dreaming runs commit every change). Submissions are strictly serialized so
-/// two quick clicks can't interleave reads and writes of the same file.
+/// place: replace the `status:` value in the file's YAML frontmatter, write
+/// atomically, then commit just that file to the vault's git. The leading
+/// status word (`Approved` / `Rejected`) is what the next dreaming run keys on.
+/// Submissions are strictly serialized so two quick clicks can't interleave.
 actor ProposalsWriter {
-    private let fileURL: URL
     private let scoutDirectory: URL
     private let gitService: GitServiceProtocol?
     private let now: @Sendable () -> Date
@@ -41,28 +40,26 @@ actor ProposalsWriter {
     private var tail: Task<Void, Never>?
 
     init(
-        fileURL: URL,
         scoutDirectory: URL,
         gitService: GitServiceProtocol?,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.fileURL = fileURL
         self.scoutDirectory = scoutDirectory
         self.gitService = gitService
         self.now = now
     }
 
-    /// Apply a decision to the proposal identified by `headingLine`. Returns
-    /// after the file is written and the git commit (best-effort) completes.
-    func decide(_ decision: ProposalDecision, headingLine: String, code: String) async throws {
+    /// Apply a decision to the proposal at `fileURL`. `label` is used only for
+    /// the git commit message. Returns after the file is written and the git
+    /// commit (best-effort) completes.
+    func decide(_ decision: ProposalDecision, fileURL: URL, label: String) async throws {
         let previous = tail
-        let task = Task { [fileURL, scoutDirectory, gitService, now] in
+        let task = Task { [scoutDirectory, gitService, now] in
             _ = await previous?.value
             return try await Self.perform(
                 decision: decision,
-                headingLine: headingLine,
-                code: code,
                 fileURL: fileURL,
+                label: label,
                 scoutDirectory: scoutDirectory,
                 gitService: gitService,
                 now: now
@@ -74,9 +71,8 @@ actor ProposalsWriter {
 
     private static func perform(
         decision: ProposalDecision,
-        headingLine: String,
-        code: String,
         fileURL: URL,
+        label: String,
         scoutDirectory: URL,
         gitService: GitServiceProtocol?,
         now: @Sendable () -> Date
@@ -90,7 +86,11 @@ actor ProposalsWriter {
 
         let stamp = isoDate(now())
         let newStatusValue = "\(decision.statusWord) (\(stamp), via Scout app)"
-        let updated = try rewrite(text: text, headingLine: headingLine, newStatusValue: newStatusValue)
+        let updated = try rewriteFrontmatterStatus(
+            text: text,
+            newStatusValue: newStatusValue,
+            file: fileURL.lastPathComponent
+        )
 
         // Nothing to do if the status is already exactly what we'd write.
         guard updated != text else { return }
@@ -101,7 +101,6 @@ actor ProposalsWriter {
             throw ProposalsWriterError.writeFailed(error.localizedDescription)
         }
 
-        let label = code.isEmpty ? headingLine : code
         let relativePath = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths(
             [relativePath],
@@ -111,42 +110,36 @@ actor ProposalsWriter {
 
     // MARK: - Pure rewrite (unit-tested directly)
 
-    /// Replace the `**Status:**` value of the section whose heading line equals
-    /// `headingLine`. Only that one line changes — the body, code fences, and
-    /// every other section are left byte-for-byte identical. Throws if the
-    /// section or its status line cannot be found.
-    static func rewrite(text: String, headingLine: String, newStatusValue: String) throws -> String {
-        // Preserve the file's trailing-newline shape by splitting on "\n" and
-        // rejoining; a trailing "" element round-trips a final newline.
+    /// Replace the `status:` value inside the file's YAML frontmatter. Only that
+    /// one line changes — the body and every other frontmatter field are left
+    /// byte-for-byte identical, and the line's leading indentation is preserved.
+    /// Throws if there is no frontmatter or no `status:` field within it.
+    static func rewriteFrontmatterStatus(
+        text: String,
+        newStatusValue: String,
+        file: String
+    ) throws -> String {
         var lines = text.components(separatedBy: "\n")
-        let wantedHeading = headingLine.trimmingCharacters(in: .whitespaces)
-
-        guard let headingIndex = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == wantedHeading
-        }) else {
-            throw ProposalsWriterError.proposalNotFound(headingLine: headingLine)
+        guard let first = lines.first,
+              first.trimmingCharacters(in: .whitespaces) == "---" else {
+            throw ProposalsWriterError.frontmatterNotFound(file: file)
         }
 
-        // Scan the section body for the first `**Status:**` line.
-        var k = headingIndex + 1
-        while k < lines.count {
-            let line = lines[k]
-            if ProposalsParser.isProposalHeading(line) { break }
-            if (line.hasPrefix("## ") || line.hasPrefix("# ")) && !line.hasPrefix("### ") { break }
-            if ProposalsParser.statusValue(in: line) != nil {
-                lines[k] = rebuildStatusLine(original: line, newValue: newStatusValue)
-                return lines.joined(separator: "\n")
+        var i = 1
+        while i < lines.count {
+            // Closing fence ends the frontmatter without finding `status:`.
+            if lines[i].trimmingCharacters(in: .whitespaces) == "---" { break }
+            if let colon = lines[i].firstIndex(of: ":") {
+                let key = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                if key == "status" {
+                    let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
+                    lines[i] = "\(leading)status: \(newStatusValue)"
+                    return lines.joined(separator: "\n")
+                }
             }
-            k += 1
+            i += 1
         }
-        throw ProposalsWriterError.statusLineNotFound(headingLine: headingLine)
-    }
-
-    /// Rebuild a status line, preserving the original leading indentation and
-    /// the canonical `**Status:**` label, swapping only the value.
-    private static func rebuildStatusLine(original: String, newValue: String) -> String {
-        let leadingWhitespace = String(original.prefix(while: { $0 == " " || $0 == "\t" }))
-        return "\(leadingWhitespace)**Status:** \(newValue)"
+        throw ProposalsWriterError.statusFieldNotFound(file: file)
     }
 
     // MARK: - Helpers

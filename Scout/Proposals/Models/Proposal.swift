@@ -1,25 +1,35 @@
 import Foundation
 
-/// A single dreaming proposal parsed from `dreaming-proposals.md`.
+/// A single dreaming proposal, parsed from one file in the
+/// `dreaming-proposals/` directory.
 ///
-/// Each proposal is a `### <code> — <title>` section followed by a
-/// `**Status:**` line and free-form markdown body. `headingLine` is the exact
-/// `### …` source line; it is both the stable identity for SwiftUI and the
-/// match key the writer uses to locate the section when flipping status.
+/// Each file has YAML frontmatter (`title`, `status`, `date`, `target`)
+/// followed by the proposal body (Trigger / Proposed change / Rationale /
+/// Evidence). `fileURL` is the stable identity for SwiftUI and the target the
+/// writer rewrites when flipping `status`.
+///
+/// (Until 2026-05-02 proposals were `### …` sections inside a single
+/// `dreaming-proposals.md`; the vault since splits them per file, and that
+/// single file is now just an index. This model follows the per-file format.)
 nonisolated struct Proposal: Identifiable, Equatable, Sendable {
-    /// Exact `### …` heading line, verbatim from the file.
-    let headingLine: String
-    /// Display code lifted from the heading (e.g. `P-2026-06-13-01`, or a bare
-    /// date for template-style headings). Empty if the heading has no ` — `.
-    let code: String
-    /// Title text after the ` — ` separator (or the whole heading if none).
+    /// Absolute URL of the proposal's markdown file — stable identity + the
+    /// file the writer rewrites.
+    let fileURL: URL
+    /// Date string from frontmatter `date:`, falling back to the filename's
+    /// `YYYY-MM-DD` prefix. Shown as the card's code chip.
+    let date: String
+    /// Title from frontmatter `title:`, falling back to the filename stem.
     let title: String
-    /// Parsed status.
+    /// Parsed lifecycle status (frontmatter `status:`).
     let status: ProposalStatus
-    /// Everything in the section except the heading and the `**Status:**` line.
+    /// Proposal body — everything after the frontmatter, with a leading
+    /// duplicate `# …` heading stripped (the title shows in the card header).
     let bodyMarkdown: String
 
-    var id: String { headingLine }
+    var id: String { fileURL.path }
+
+    /// Header chip — the date reads like the old `code` the card renders.
+    var code: String { date }
 
     var isAwaitingDecision: Bool { status.isAwaitingDecision }
 

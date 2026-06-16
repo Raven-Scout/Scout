@@ -2,104 +2,86 @@ import Testing
 import Foundation
 @testable import Scout
 
+// A per-file proposal: frontmatter (with `status:`) + body with a code fence.
 private let writerFixture = """
-## Proposals
+---
+date: 2026-06-13
+title: Add a risk-scoped PR re-resolution step
+status: Proposed (awaiting Adam approval)
+target: SKILL.md
+parent: [[dreaming-proposals]]
+---
 
-### P-2026-06-13-01 — Add a risk-scoped PR re-resolution step
-
-**Status:** Proposed (awaiting Adam approval)
+# 2026-06-13 — Add a risk-scoped PR re-resolution step
 
 **Problem.** SKILL.md anchored on one PR.
 
 ```bash
 gh pr list --repo <repo> --search "<keyword>"
 ```
-
-### P-2026-06-10-02 — Tighten the budget gate
-
-**Status:** Pending (auto-apply after 2026-06-13)
-
-**Trigger:** repeated overruns.
 """
 
-private let heading1 = "### P-2026-06-13-01 — Add a risk-scoped PR re-resolution step"
-private let heading2 = "### P-2026-06-10-02 — Tighten the budget gate"
-
-@Suite("ProposalsWriter.rewrite (pure)")
+@Suite("ProposalsWriter.rewriteFrontmatterStatus (pure)")
 struct ProposalsWriterRewriteTests {
 
-    @Test func replacesOnlyTheTargetStatusLine() throws {
-        let out = try ProposalsWriter.rewrite(
+    @Test func replacesOnlyTheFrontmatterStatusValue() throws {
+        let out = try ProposalsWriter.rewriteFrontmatterStatus(
             text: writerFixture,
-            headingLine: heading1,
-            newStatusValue: "Approved (2026-06-14, via Scout app)"
+            newStatusValue: "Approved (2026-06-14, via Scout app)",
+            file: "p.md"
         )
-        // Target flipped.
-        #expect(out.contains("**Status:** Approved (2026-06-14, via Scout app)"))
-        // The other proposal's status is untouched.
-        #expect(out.contains("**Status:** Pending (auto-apply after 2026-06-13)"))
-        // The proposed status is gone (exactly one status changed).
-        #expect(!out.contains("**Status:** Proposed (awaiting Adam approval)"))
+        #expect(out.contains("status: Approved (2026-06-14, via Scout app)"))
+        #expect(!out.contains("status: Proposed (awaiting Adam approval)"))
+        // Other frontmatter fields untouched.
+        #expect(out.contains("title: Add a risk-scoped PR re-resolution step"))
+        #expect(out.contains("target: SKILL.md"))
     }
 
     @Test func leavesBodyAndCodeFenceByteIdentical() throws {
-        let out = try ProposalsWriter.rewrite(
+        let out = try ProposalsWriter.rewriteFrontmatterStatus(
             text: writerFixture,
-            headingLine: heading1,
-            newStatusValue: "Rejected (2026-06-14, via Scout app)"
+            newStatusValue: "Rejected (2026-06-14, via Scout app)",
+            file: "p.md"
         )
         #expect(out.contains(#"gh pr list --repo <repo> --search "<keyword>""#))
         #expect(out.contains("**Problem.** SKILL.md anchored on one PR."))
-        #expect(out.contains("**Trigger:** repeated overruns."))
+        #expect(out.contains("# 2026-06-13 — Add a risk-scoped PR re-resolution step"))
     }
 
     @Test func reparsingTheRewriteReflectsTheNewStatus() throws {
-        let out = try ProposalsWriter.rewrite(
+        let out = try ProposalsWriter.rewriteFrontmatterStatus(
             text: writerFixture,
-            headingLine: heading2,
-            newStatusValue: "Approved (2026-06-14, via Scout app)"
+            newStatusValue: "Approved (2026-06-14, via Scout app)",
+            file: "p.md"
         )
-        let proposals = ProposalsParser.parse(text: out)
-        let target = try #require(proposals.first { $0.headingLine == heading2 })
-        #expect(target.status == .approved)
-        // The first proposal is still awaiting.
-        let other = try #require(proposals.first { $0.headingLine == heading1 })
-        #expect(other.status == .proposed)
+        let p = try #require(ProposalsParser.parseFile(
+            contents: out, fileURL: URL(fileURLWithPath: "/x/2026-06-13-pr.md")))
+        #expect(p.status == .approved)
     }
 
-    @Test func unknownHeadingThrows() {
+    @Test func noFrontmatterThrows() {
         #expect(throws: ProposalsWriterError.self) {
-            try ProposalsWriter.rewrite(
-                text: writerFixture,
-                headingLine: "### P-9999-99-99-99 — Does not exist",
-                newStatusValue: "Approved"
+            try ProposalsWriter.rewriteFrontmatterStatus(
+                text: "# Just a heading\n\nbody",
+                newStatusValue: "Approved",
+                file: "p.md"
             )
         }
     }
 
-    @Test func sectionWithoutStatusLineThrows() {
-        let text = """
-        ### P-1 — No status here
-
-        Just a body, no status marker.
-        """
+    @Test func frontmatterWithoutStatusFieldThrows() {
+        let text = "---\ndate: 2026-06-13\ntitle: t\n---\n\nbody"
         #expect(throws: ProposalsWriterError.self) {
-            try ProposalsWriter.rewrite(
-                text: text,
-                headingLine: "### P-1 — No status here",
-                newStatusValue: "Approved"
-            )
+            try ProposalsWriter.rewriteFrontmatterStatus(
+                text: text, newStatusValue: "Approved", file: "p.md")
         }
     }
 
     @Test func preservesIndentationOnStatusLine() throws {
-        let text = "### P-1 — Indented status\n\n  **Status:** Proposed\n"
-        let out = try ProposalsWriter.rewrite(
-            text: text,
-            headingLine: "### P-1 — Indented status",
-            newStatusValue: "Approved (x)"
-        )
-        #expect(out.contains("  **Status:** Approved (x)"))
+        let text = "---\n  status: Proposed\n---\nbody"
+        let out = try ProposalsWriter.rewriteFrontmatterStatus(
+            text: text, newStatusValue: "Approved (x)", file: "p.md")
+        #expect(out.contains("  status: Approved (x)"))
     }
 }
 
@@ -114,13 +96,19 @@ struct ProposalsWriterE2ETests {
         return Calendar(identifier: .gregorian).date(from: c)!
     }
 
-    @Test func approveWritesStatusAndCommitsScopedToFile() async throws {
+    private func makeProposalDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("proposals-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("dreaming-proposals"),
+            withIntermediateDirectories: true)
+        return dir
+    }
 
-        let fileURL = dir.appendingPathComponent("dreaming-proposals.md")
+    @Test func approveWritesFrontmatterStatusAndCommitsScopedToFile() async throws {
+        let repo = try makeProposalDir()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let fileURL = repo.appendingPathComponent("dreaming-proposals/2026-06-13-pr-recheck.md")
         try writerFixture.write(to: fileURL, atomically: true, encoding: .utf8)
 
         // rev-parse(0) → add(0) → diff(1=dirty) → commit(0)
@@ -130,35 +118,29 @@ struct ProposalsWriterE2ETests {
             ProcessResult(exitCode: 1, stdout: Data(), stderr: Data()),
             ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
         ])
-        let git = GitService(repoURL: dir, runner: runner)
+        let git = GitService(repoURL: repo, runner: runner)
         let writer = ProposalsWriter(
-            fileURL: fileURL,
-            scoutDirectory: dir,
+            scoutDirectory: repo,
             gitService: git,
             now: { Self.fixedDate() }
         )
 
-        try await writer.decide(.approve, headingLine: heading1, code: "P-2026-06-13-01")
+        try await writer.decide(.approve, fileURL: fileURL, label: "PR re-resolution")
 
-        // File now carries the approved status with the fixed-date stamp.
         let written = try String(contentsOf: fileURL, encoding: .utf8)
-        #expect(written.contains("**Status:** Approved (2026-06-14, via Scout app)"))
-        #expect(written.contains("**Status:** Pending (auto-apply after 2026-06-13)"))
+        #expect(written.contains("status: Approved (2026-06-14, via Scout app)"))
 
-        // The commit is scoped to the proposals file and carries the verb+code.
         let commit = try #require(runner.calls.last)
         #expect(commit.arguments.contains("commit"))
-        #expect(commit.arguments.contains("app: approve proposal P-2026-06-13-01"))
-        #expect(commit.arguments.contains("dreaming-proposals.md"))
+        #expect(commit.arguments.contains("app: approve proposal PR re-resolution"))
+        // Commit is scoped to the per-file proposal path under the repo.
+        #expect(commit.arguments.contains("dreaming-proposals/2026-06-13-pr-recheck.md"))
     }
 
     @Test func declineWritesRejectedStatus() async throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("proposals-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        let fileURL = dir.appendingPathComponent("dreaming-proposals.md")
+        let repo = try makeProposalDir()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let fileURL = repo.appendingPathComponent("dreaming-proposals/2026-06-13-pr-recheck.md")
         try writerFixture.write(to: fileURL, atomically: true, encoding: .utf8)
 
         let runner = ScriptedRunner(scripted: [
@@ -167,41 +149,32 @@ struct ProposalsWriterE2ETests {
             ProcessResult(exitCode: 1, stdout: Data(), stderr: Data()),
             ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
         ])
-        let git = GitService(repoURL: dir, runner: runner)
-        let writer = ProposalsWriter(
-            fileURL: fileURL,
-            scoutDirectory: dir,
-            gitService: git,
-            now: { Self.fixedDate() }
-        )
+        let git = GitService(repoURL: repo, runner: runner)
+        let writer = ProposalsWriter(scoutDirectory: repo, gitService: git, now: { Self.fixedDate() })
 
-        try await writer.decide(.decline, headingLine: heading2, code: "P-2026-06-10-02")
+        try await writer.decide(.decline, fileURL: fileURL, label: "PR re-resolution")
 
         let written = try String(contentsOf: fileURL, encoding: .utf8)
-        #expect(written.contains("**Status:** Rejected (2026-06-14, via Scout app)"))
-        let proposals = ProposalsParser.parse(text: written)
-        #expect(proposals.first { $0.headingLine == heading2 }?.status == .rejected)
+        #expect(written.contains("status: Rejected (2026-06-14, via Scout app)"))
+        let p = ProposalsParser.parseFile(contents: written, fileURL: fileURL)
+        #expect(p?.status == .rejected)
     }
 
-    @Test func unknownHeadingThrowsAndDoesNotCommit() async throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("proposals-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        let fileURL = dir.appendingPathComponent("dreaming-proposals.md")
-        try writerFixture.write(to: fileURL, atomically: true, encoding: .utf8)
+    @Test func fileWithoutFrontmatterThrowsAndDoesNotCommit() async throws {
+        let repo = try makeProposalDir()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let fileURL = repo.appendingPathComponent("dreaming-proposals/index.md")
+        let original = "# Index, no frontmatter\n"
+        try original.write(to: fileURL, atomically: true, encoding: .utf8)
 
         let runner = ScriptedRunner(scripted: [])
-        let git = GitService(repoURL: dir, runner: runner)
-        let writer = ProposalsWriter(fileURL: fileURL, scoutDirectory: dir, gitService: git)
+        let git = GitService(repoURL: repo, runner: runner)
+        let writer = ProposalsWriter(scoutDirectory: repo, gitService: git)
 
         await #expect(throws: ProposalsWriterError.self) {
-            try await writer.decide(.approve, headingLine: "### Nope — missing", code: "X")
+            try await writer.decide(.approve, fileURL: fileURL, label: "index")
         }
-        // No git invoked, and the file is unchanged.
         #expect(runner.calls.isEmpty)
-        let written = try String(contentsOf: fileURL, encoding: .utf8)
-        #expect(written == writerFixture)
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == original)
     }
 }
