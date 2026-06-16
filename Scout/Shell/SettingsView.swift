@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+    @AppStorage("dreamingProposalsPath") private var dreamingProposalsPath: String = ""
     @State private var detectedClaudePath: String?
 
     var body: some View {
@@ -95,6 +96,19 @@ struct SettingsView: View {
                                         .padding(.top, 4)
                                 }
                             }
+                        }
+                    }
+                }
+
+                section(label: "Proposals") {
+                    SettingsCard {
+                        SettingsField(
+                            label: "Dreaming proposals folder",
+                            help: "Folder of per-file dreaming proposals the Proposals tab reads. Leave blank to use `~/Scout/dreaming-proposals`. Takes effect after restarting Scout."
+                        ) {
+                            SettingsInput(
+                                text: $dreamingProposalsPath,
+                                placeholder: "~/Scout/dreaming-proposals")
                         }
                     }
                 }

@@ -30,11 +30,11 @@ struct ProposalsView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([docService.fileURL])
+                    NSWorkspace.shared.activateFileViewerSelecting([docService.directoryURL])
                 } label: {
                     Image(systemName: "folder")
                 }
-                .help("Reveal dreaming-proposals.md in Finder")
+                .help("Reveal the dreaming-proposals folder in Finder")
             }
         }
         .onAppear { docService.load() }
@@ -82,7 +82,7 @@ struct ProposalsView: View {
         case .missing:
             emptyState(
                 icon: "tray",
-                message: "No proposals file yet. Dreaming runs write proposals to dreaming-proposals.md when they process feedback."
+                message: "No dreaming-proposals folder found. Dreaming runs write per-proposal files into dreaming-proposals/ when they process feedback. You can point Scout at a different folder in Settings."
             )
         case .failed(let err):
             Text("Couldn't load proposals: \(err)")
@@ -171,8 +171,8 @@ struct ProposalsView: View {
     private func decide(_ proposal: Proposal, _ decision: ProposalDecision) async throws {
         try await writerBox.writer.decide(
             decision,
-            headingLine: proposal.headingLine,
-            code: proposal.code
+            fileURL: proposal.fileURL,
+            label: proposal.title
         )
         docService.reload()
     }
