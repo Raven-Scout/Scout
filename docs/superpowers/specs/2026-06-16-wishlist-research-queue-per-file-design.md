@@ -146,6 +146,28 @@ Approved sequence: **schema → plugin + migration → app.**
 
 ---
 
+## Revision 2026-06-17 (learned during execution)
+
+Two corrections to sub-project 2, discovered when implementing:
+- **Workflow prose is owned by `phases/`, not the vault.** The plugin
+  *assembles* each vault's `DREAMING.md`/`RESEARCH.md` from phase files
+  (`phases/modes/wishlist.md`, `phases/research/research-targets.md`) and
+  3-way-merges them on upgrade. So the per-file prose edits go in `phases/`
+  — editing a vault's assembled `DREAMING.md` directly would be clobbered.
+- **Existing-user data migration is an engine step.** Decision: port the
+  migration into the engine and run it idempotently in the `/scout-update`
+  upgrade pipeline's **migrations** stage (so all users convert on upgrade),
+  rather than prose-driven self-migration.
+
+Status of the three sub-projects:
+1. Schema — done (this doc).
+2. Plugin + migration — Jordan's vault migrated (done); the plugin
+   distribution (phase prose + templates + engine upgrade-migration) is
+   planned in `docs/superpowers/plans/2026-06-17-wishlist-research-per-file-plugin-distribution.md`.
+   The migration prototype is committed in scout-plugin
+   (`scripts/migrate_wishlist_research.py`, 16 tests).
+3. App tabs — not started (follows the distribution work).
+
 ## Testing posture
 
 - scout-plugin: the skill/template changes are prose; validate by a dry
