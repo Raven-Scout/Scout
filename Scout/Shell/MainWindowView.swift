@@ -16,7 +16,10 @@ struct MainWindowView: View {
         // instead, which keeps the split view on the native titlebar/sidebar
         // layout path while rendering the same persistent bottom strip.
         NavigationSplitView {
-            SidebarView(selection: $selection, proposalsBadge: proposalsService.pendingCount)
+            SidebarView(selection: $selection,
+                        proposalsBadge: proposalsService.pendingCount,
+                        wishlistBadge: appState.wishlistDocumentService.activeCount,
+                        researchBadge: appState.researchDocumentService.activeCount)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             detail
@@ -47,6 +50,14 @@ struct MainWindowView: View {
             ProposalsView()
                 .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(appState.proposalsWriterBox)
+        case .wishlist:
+            PerFileListView(config: .wishlist)
+                .environmentObject(appState.wishlistDocumentService)
+                .environmentObject(appState.perFileWriterBox)
+        case .research:
+            PerFileListView(config: .research)
+                .environmentObject(appState.researchDocumentService)
+                .environmentObject(appState.perFileWriterBox)
         case .settings:
             SettingsView()
         }
@@ -54,7 +65,7 @@ struct MainWindowView: View {
 }
 
 enum SidebarItem: Hashable {
-    case controlCenter, actionItems, schedules, proposals, settings
+    case controlCenter, actionItems, schedules, proposals, wishlist, research, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
@@ -63,6 +74,8 @@ enum SidebarItem: Hashable {
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
         case .proposals:     return "proposals"
+        case .wishlist:      return "wishlist"
+        case .research:      return "research"
         case .settings:      return "settings"
         }
     }

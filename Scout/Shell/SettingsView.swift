@@ -19,6 +19,8 @@ struct SettingsView: View {
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
     @AppStorage("dreamingProposalsPath") private var dreamingProposalsPath: String = ""
+    @AppStorage("wishlistPath")          private var wishlistPath: String = ""
+    @AppStorage("researchQueuePath")     private var researchQueuePath: String = ""
     @State private var detectedClaudePath: String?
 
     var body: some View {
@@ -109,6 +111,27 @@ struct SettingsView: View {
                             SettingsInput(
                                 text: $dreamingProposalsPath,
                                 placeholder: "~/Scout/dreaming-proposals")
+                        }
+                    }
+                }
+
+                section(label: "Wishlist & Research") {
+                    SettingsCard {
+                        SettingsField(
+                            label: "Wishlist folder",
+                            help: "Per-file wishlist items the Wishlist tab reads. Blank = `~/Scout/docs/wishlist`. Takes effect after restarting Scout."
+                        ) {
+                            SettingsInput(
+                                text: $wishlistPath,
+                                placeholder: "~/Scout/docs/wishlist")
+                        }
+                        SettingsField(
+                            label: "Research queue folder",
+                            help: "Per-file research topics the Research tab reads. Blank = `~/Scout/knowledge-base/research-queue`. Takes effect after restarting Scout."
+                        ) {
+                            SettingsInput(
+                                text: $researchQueuePath,
+                                placeholder: "~/Scout/knowledge-base/research-queue")
                         }
                     }
                 }
