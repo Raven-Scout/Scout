@@ -187,12 +187,14 @@ final class AppState: ObservableObject {
 
         // Forward child-service changes so AppState.objectWillChange fires when
         // wishlist/research item counts update (drives sidebar badge reactivity).
+        // DispatchQueue.main avoids badge lag that can occur with RunLoop.main
+        // during modal run-loop tracking.
         wishlistDoc.objectWillChange
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         researchDoc.objectWillChange
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 

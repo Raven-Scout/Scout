@@ -9,7 +9,7 @@ import SwiftUI
 struct AddItemSheet: View {
     let config: PerFileTabConfig
     /// (title, priority, body, optionalFieldValue) — optional is source/area per config.
-    let onSubmit: (String, ItemPriority, String, String?) async -> Void
+    let onSubmit: (String, ItemPriority, String, String?) async throws -> Void
     let onCancel: () -> Void
 
     @State private var title: String = ""
@@ -17,9 +17,10 @@ struct AddItemSheet: View {
     @State private var bodyText: String = ""
     @State private var optionalValue: String = ""
     @State private var submitting = false
+    @State private var errorText: String?
 
     init(config: PerFileTabConfig,
-         onSubmit: @escaping (String, ItemPriority, String, String?) async -> Void,
+         onSubmit: @escaping (String, ItemPriority, String, String?) async throws -> Void,
          onCancel: @escaping () -> Void) {
         self.config = config
         self.onSubmit = onSubmit
@@ -69,6 +70,12 @@ struct AddItemSheet: View {
                     )
             }
 
+            if let errorText {
+                Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.err)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
@@ -99,10 +106,16 @@ struct AddItemSheet: View {
 
     private func submit() {
         guard canSubmit else { return }
+        errorText = nil
         submitting = true
         let optional = optionalValue.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
-            await onSubmit(title, priority, bodyText, optional.isEmpty ? nil : optional)
+            do {
+                try await onSubmit(title, priority, bodyText, optional.isEmpty ? nil : optional)
+            } catch {
+                errorText = error.localizedDescription
+                submitting = false
+            }
         }
     }
 }

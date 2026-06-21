@@ -22,7 +22,7 @@ struct ItemStatusPill: View {
         case .open:         return DS.Priority.todo
         case .inProgress:   return DS.SlotType.consolidation
         case .done:         return DS.Status.ok
-        case .dropped:      return DS.Ink.p3
+        case .dropped:      return DS.Status.err  // terminal "decided against" — red like Proposals' rejected
         case .unknown:      return DS.Ink.p3
         }
     }

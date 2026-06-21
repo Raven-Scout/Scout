@@ -45,7 +45,7 @@ struct PerFileListView: View {
         }
         .sheet(isPresented: $showingAdd) {
             AddItemSheet(config: config, onSubmit: { title, priority, body, optional in
-                await addItem(title: title, priority: priority, body: body, optional: optional)
+                try await addItem(title: title, priority: priority, body: body, optional: optional)
             }, onCancel: { showingAdd = false })
         }
         .onAppear { docService.load() }
@@ -176,7 +176,7 @@ struct PerFileListView: View {
 
     // MARK: - Actions
 
-    private func addItem(title: String, priority: ItemPriority, body: String, optional: String?) async {
+    private func addItem(title: String, priority: ItemPriority, body: String, optional: String?) async throws {
         var source: String?
         var area: String?
         switch config.optionalField {
@@ -184,7 +184,7 @@ struct PerFileListView: View {
         case .source: source = optional
         case .area: area = optional
         }
-        _ = try? await writerBox.writer.addItem(
+        _ = try await writerBox.writer.addItem(
             title: title, priority: priority, body: body,
             source: source, area: area,
             in: docService.directoryURL, noun: config.addNoun
