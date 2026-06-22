@@ -8,6 +8,10 @@ struct SidebarView: View {
     /// Count of proposals awaiting a decision — drives the badge on the
     /// Proposals row. Hidden when zero.
     var proposalsBadge: Int = 0
+    /// Count of active wishlist items — drives the badge on the Wishlist row.
+    var wishlistBadge: Int = 0
+    /// Count of active research topics — drives the badge on the Research row.
+    var researchBadge: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -15,7 +19,9 @@ struct SidebarView: View {
             row(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
             row(.actionItems,   label: "Action Items",   system: "checklist")
             row(.schedules,     label: "Schedules",      system: "calendar.badge.clock")
-            row(.proposals,     label: "Proposals",      system: "lightbulb", badge: proposalsBadge)
+            row(.proposals,     label: "Proposals",      system: "lightbulb",        badge: proposalsBadge)
+            row(.wishlist,      label: "Wishlist",       system: "star",             badge: wishlistBadge)
+            row(.research,      label: "Research",       system: "magnifyingglass",  badge: researchBadge)
             Spacer().frame(height: 10)
             groupLabel("App")
             row(.settings,      label: "Settings",       system: "gearshape")
