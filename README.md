@@ -122,3 +122,15 @@ The app is a pure consumer of all of the above, plus:
 - Triggers a slot manually via `scoutctl schedule fire-now <slot-key>` (the Fire-now button in the Schedules detail pane and the Run-now button in the Upcoming strip).
 
 If the plugin isn't installed, the app still builds and runs; it just shows empty views.
+
+## License & legal
+
+This app is open-source under the [MIT License](LICENSE).
+
+Scout is local-first and collects no data of its own — the macOS app only reads and writes files in your local `~/Scout/` folder. See the project's shared legal documents:
+
+- **Privacy Policy** — https://raven-scout.github.io/scout-plugin/privacy.html
+- **Terms of Use** — https://raven-scout.github.io/scout-plugin/terms.html
+- **[Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md)** · **[Code of Conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md)**
+
+Scout is an independent project, not affiliated with Anthropic, Microsoft, Keboola, or any other company.
