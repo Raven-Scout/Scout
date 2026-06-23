@@ -30,7 +30,7 @@ struct ActionItemsIntegrationTests {
         // 3. Mount the service.
         let service = ActionItemsDocumentService(directory: aiDir, fileEvents: FileWatcher())
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
-            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 4, day: 20
+            timeZone: TimeZone.current, year: 2026, month: 4, day: 20
         ))!
         try await service.load(date: date)
 

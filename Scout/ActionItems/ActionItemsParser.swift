@@ -141,11 +141,8 @@ extension ActionItemsParser {
         // --- date from filename ---
         let stem = sourceURL.deletingPathExtension().lastPathComponent  // "action-items-2026-04-20"
         let dateString = stem.replacingOccurrences(of: "action-items-", with: "")
-        let isoFmt = DateFormatter()
-        isoFmt.calendar = Calendar(identifier: .iso8601)
-        isoFmt.dateFormat = "yyyy-MM-dd"
-        isoFmt.timeZone = TimeZone(identifier: "America/New_York")
-        guard let date = isoFmt.date(from: dateString) else {
+        // Local timezone, matching the engine's date.today() file naming (#46).
+        guard let date = ActionItemsDay.date(fromStem: dateString) else {
             throw ParseError.invalidDateInFilename
         }
 
@@ -229,7 +226,7 @@ extension ActionItemsParser {
         let sectionRe = try NSRegularExpression(pattern: #"^## (\S+?)\s+(.+?)\s*$"#)
         let snoozeSuffixRe = try NSRegularExpression(pattern: #"\s*(?:—|–|-)\s*🛌 Snoozed until (\d{4}-\d{2}-\d{2})$"#)
         let carryInRe = try NSRegularExpression(pattern: #"_\(carried in from (\d{4}-\d{2}-\d{2})\)_"#)
-        let snoozeDateFmt = DateFormatter(); snoozeDateFmt.dateFormat = "yyyy-MM-dd"; snoozeDateFmt.timeZone = TimeZone(identifier: "America/New_York")
+        let snoozeDateFmt = DateFormatter(); snoozeDateFmt.dateFormat = "yyyy-MM-dd"; snoozeDateFmt.timeZone = .current
 
         while i < lines.count {
             let line = lines[i]
