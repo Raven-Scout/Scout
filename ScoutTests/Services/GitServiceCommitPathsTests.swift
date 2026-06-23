@@ -48,6 +48,53 @@ struct GitServiceCommitPathsTests {
         #expect(commit.arguments.contains("launchd/b.plist"))
     }
 
+    @Test func retriesAddOnIndexLockContentionThenCommits() async throws {
+        // #48: a concurrent plugin git process can hold .git/index.lock. The
+        // `add` must retry-with-backoff through transient lock contention
+        // instead of silently no-op'ing (which would leave the change
+        // uncommitted and clobberable).
+        let lock = ProcessResult(
+            exitCode: 128, stdout: Data(),
+            stderr: Data("fatal: Unable to create '/r/.git/index.lock': File exists.\nAnother git process seems to be running".utf8)
+        )
+        let ok = ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+        let dirty = ProcessResult(exitCode: 1, stdout: Data(), stderr: Data())
+        let runner = ScriptedRunner(scripted: [
+            ok,     // rev-parse
+            lock,   // add attempt 1 → lock
+            lock,   // add attempt 2 → lock
+            ok,     // add attempt 3 → success
+            dirty,  // diff --cached --quiet → dirty
+            ok,     // commit
+        ])
+        let git = GitService(repoURL: URL(fileURLWithPath: "/r"), runner: runner,
+                             maxLockRetries: 3, lockBackoff: { _ in })
+        try await git.commitPaths(["f"], message: "m")
+
+        let addCalls = runner.calls.filter { $0.arguments.contains("add") }
+        #expect(addCalls.count == 3)
+        #expect(runner.calls.contains { $0.arguments.contains("commit") })
+    }
+
+    @Test func throwsWhenIndexLockNeverClears() async throws {
+        // After exhausting retries the persistent failure must surface (throw),
+        // not silently no-op.
+        let lock = ProcessResult(
+            exitCode: 128, stdout: Data(),
+            stderr: Data("Unable to create '.git/index.lock': File exists".utf8)
+        )
+        let ok = ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+        let runner = ScriptedRunner(scripted: [
+            ok,    // rev-parse
+            lock, lock, lock,  // add: initial + 2 retries, all locked
+        ])
+        let git = GitService(repoURL: URL(fileURLWithPath: "/r"), runner: runner,
+                             maxLockRetries: 2, lockBackoff: { _ in })
+        await #expect(throws: GitServiceError.self) {
+            try await git.commitPaths(["f"], message: "m")
+        }
+    }
+
     @Test func throwsOnCommitFailure() async throws {
         let runner = ScriptedRunner(scripted: [
             ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),

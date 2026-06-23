@@ -77,29 +77,32 @@ actor ProposalsWriter {
         gitService: GitServiceProtocol?,
         now: @Sendable () -> Date
     ) async throws {
-        let text: String
-        do {
-            text = try String(contentsOf: fileURL, encoding: .utf8)
-        } catch {
-            throw ProposalsWriterError.readFailed(error.localizedDescription)
-        }
-
         let stamp = isoDate(now())
         let newStatusValue = "\(decision.statusWord) (\(stamp), via Scout app)"
-        let updated = try rewriteFrontmatterStatus(
-            text: text,
-            newStatusValue: newStatusValue,
-            file: fileURL.lastPathComponent
-        )
+
+        // Read-modify-write guarded against a concurrent plugin write clobbering
+        // the file in our read→write window (issue #48): re-reads and reapplies
+        // the status rewrite if the file changes mid-flight.
+        let didWrite: Bool
+        do {
+            didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
+                try rewriteFrontmatterStatus(
+                    text: text,
+                    newStatusValue: newStatusValue,
+                    file: fileURL.lastPathComponent
+                )
+            }
+        } catch let e as GuardedFileWrite.Failure {
+            switch e {
+            case .read(let m): throw ProposalsWriterError.readFailed(m)
+            case .write(let m): throw ProposalsWriterError.writeFailed(m)
+            case .conflictPersisted:
+                throw ProposalsWriterError.writeFailed("\(fileURL.lastPathComponent) changed repeatedly under concurrent writes")
+            }
+        }
 
         // Nothing to do if the status is already exactly what we'd write.
-        guard updated != text else { return }
-
-        do {
-            try updated.write(to: fileURL, atomically: true, encoding: .utf8)
-        } catch {
-            throw ProposalsWriterError.writeFailed(error.localizedDescription)
-        }
+        guard didWrite else { return }
 
         let relativePath = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths(
