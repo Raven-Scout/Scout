@@ -198,7 +198,7 @@ struct SnoozePopoverView: View {
             .date(byAdding: .day, value: days, to: sourceDate) else { return "" }
         let fmt = DateFormatter()
         fmt.dateFormat = "EEE MMM d"
-        fmt.timeZone = TimeZone(identifier: "America/New_York")
+        fmt.timeZone = .current
         return fmt.string(from: d)
     }
 }

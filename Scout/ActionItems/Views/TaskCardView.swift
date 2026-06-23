@@ -396,7 +396,7 @@ struct TaskCardView: View {
     }
 
     private func dateShort(_ d: Date) -> String {
-        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"; fmt.timeZone = TimeZone(identifier: "America/New_York")
+        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"; fmt.timeZone = .current
         return fmt.string(from: d)
     }
 }

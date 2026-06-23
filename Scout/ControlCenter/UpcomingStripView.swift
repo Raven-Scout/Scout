@@ -29,6 +29,21 @@ struct UpcomingStripView: View {
                 }
             }
 
+            if let fireErr = state.fireNowError {
+                // #45: a failed "Run now" used to be swallowed silently. Surface
+                // it inline so the user knows the dispatch didn't take.
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(DS.Status.warn)
+                    Text(fireErr)
+                        .font(DS.mono(11))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 10)
+            }
+
             EditorialRule().padding(.top, 10)
 
             footerRow

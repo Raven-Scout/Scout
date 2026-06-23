@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DatePickerToolbarItem: View {
     @Binding var date: Date
-    let todayET: Date
+    let today: Date
 
     @State private var calendarPopoverOpen = false
 
@@ -30,8 +30,8 @@ struct DatePickerToolbarItem: View {
                 }
             } label: { Image(systemName: "chevron.right") }
 
-            if !Calendar.current.isDate(date, inSameDayAs: todayET) {
-                Button("Today") { date = todayET }
+            if !Calendar.current.isDate(date, inSameDayAs: today) {
+                Button("Today") { date = today }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }

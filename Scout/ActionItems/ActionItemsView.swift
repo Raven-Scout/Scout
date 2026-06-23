@@ -8,7 +8,7 @@ struct ActionItemsView: View {
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
-    @State private var displayedDate: Date = Self.todayET()
+    @State private var displayedDate: Date = Self.today()
     @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
     @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
     @State private var toast: String?
@@ -44,7 +44,7 @@ struct ActionItemsView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                DatePickerToolbarItem(date: $displayedDate, todayET: Self.todayET())
+                DatePickerToolbarItem(date: $displayedDate, today: Self.today())
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -248,7 +248,7 @@ struct ActionItemsView: View {
     }
 
     private func missingState(url: URL) -> some View {
-        let isFuture = displayedDate > Self.todayET()
+        let isFuture = displayedDate > Self.today()
         return VStack(spacing: 14) {
             Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
                 .font(.largeTitle)
@@ -264,8 +264,8 @@ struct ActionItemsView: View {
                 if let prev = Calendar(identifier: .iso8601).date(byAdding: .day, value: -1, to: displayedDate) {
                     Button("Previous day") { displayedDate = prev }
                 }
-                if !Calendar.current.isDate(displayedDate, inSameDayAs: Self.todayET()) {
-                    Button("Today") { displayedDate = Self.todayET() }
+                if !Calendar.current.isDate(displayedDate, inSameDayAs: Self.today()) {
+                    Button("Today") { displayedDate = Self.today() }
                         .buttonStyle(.bordered)
                 }
             }
@@ -288,7 +288,7 @@ struct ActionItemsView: View {
     private func longDate(_ d: Date) -> String {
         let fmt = DateFormatter()
         fmt.dateFormat = "EEEE, MMMM d"
-        fmt.timeZone = TimeZone(identifier: "America/New_York")
+        fmt.timeZone = .current
         return fmt.string(from: d)
     }
 
@@ -302,7 +302,7 @@ struct ActionItemsView: View {
 
     private func shortDate(_ d: Date) -> String {
         let fmt = DateFormatter(); fmt.dateStyle = .medium
-        fmt.timeZone = TimeZone(identifier: "America/New_York")
+        fmt.timeZone = .current
         return fmt.string(from: d)
     }
 
@@ -457,11 +457,10 @@ struct ActionItemsView: View {
         )
     }
 
-    private static func todayET() -> Date {
-        let cal = Calendar(identifier: .iso8601)
-        var comps = cal.dateComponents(in: TimeZone(identifier: "America/New_York")!, from: Date())
-        comps.hour = 0; comps.minute = 0; comps.second = 0; comps.nanosecond = 0
-        return cal.date(from: comps) ?? Date()
+    /// Start of *today* in the user's local timezone — matching the engine's
+    /// daily-file naming (#46). Formerly hardcoded to Eastern.
+    private static func today() -> Date {
+        ActionItemsDay.today()
     }
 }
 

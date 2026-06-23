@@ -14,7 +14,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
-            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 4, day: 20
+            timeZone: TimeZone.current, year: 2026, month: 4, day: 20
         ))!
         _ = try? await writer.submit(.addComment(
             subject: "Engage on PROJ-123",
@@ -123,7 +123,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         let until = Calendar(identifier: .iso8601).date(from: DateComponents(
-            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 5, day: 21
+            timeZone: TimeZone.current, year: 2026, month: 5, day: 21
         ))!
         _ = try? await writer.submit(
             .snooze(subject: "X", shortPrefix: nil, until: until, fromKind: nil),
@@ -146,7 +146,7 @@ struct ActionItemsWriterTests {
             gitService: nil
         )
         let until = Calendar(identifier: .iso8601).date(from: DateComponents(
-            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 5, day: 21
+            timeZone: TimeZone.current, year: 2026, month: 5, day: 21
         ))!
         _ = try? await writer.submit(
             .snooze(subject: "X", shortPrefix: "A3F7", until: until, fromKind: "urgent"),
@@ -274,7 +274,7 @@ struct ActionItemsWriterTests {
         let ai = dir.appendingPathComponent("action-items")
         try FileManager.default.createDirectory(at: ai, withIntermediateDirectories: true)
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
-            timeZone: TimeZone(identifier: "America/New_York"), year: 2026, month: 4, day: 20))!
+            timeZone: TimeZone.current, year: 2026, month: 4, day: 20))!
         let daily = ai.appendingPathComponent("action-items-2026-04-20.md")
         try "- [ ] **Ship it** — now".write(to: daily, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -322,6 +322,49 @@ struct ActionItemsWriterTests {
         #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 5) == "AB12")
         #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 6) == nil)
         #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 999) == nil)
+    }
+
+    @Test func commitsScopedToDailyFileNotAddAll() async throws {
+        // #44: the writer must commit only the daily action-items file it just
+        // wrote (`git add -- <path>` / `git commit … -- <path>`), never a repo
+        // wide `git add -A` that sweeps in a concurrent plugin session's
+        // uncommitted work. Mirrors PerFileItemWriter/ProposalsWriter.
+        let vault = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Scout-\(UUID().uuidString)")
+        let ai = vault.appendingPathComponent("action-items")
+        try FileManager.default.createDirectory(at: ai, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: vault) }
+
+        let recorder = RecordingRunner()
+        // scoutctl op (0), then git: rev-parse(0) add(0) diff(1=dirty) commit(0)
+        recorder.scripted = [
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+            ProcessResult(exitCode: 1, stdout: Data(), stderr: Data()),
+            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+        ]
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: ai,
+            scoutDirectory: vault,
+            runner: recorder,
+            gitService: GitService(repoURL: vault, runner: recorder)
+        )
+        _ = try await writer.submit(
+            .markDone(subject: "Ship it", shortPrefix: "A3F7"),
+            displayedDate: Date()
+        )
+
+        let calls = await recorder.calls
+        let addCall = try #require(calls.first { $0.arguments.contains("add") })
+        #expect(!addCall.arguments.contains("-A"))
+        #expect(addCall.arguments.contains("--"))
+        let dailyRel = try #require(
+            addCall.arguments.first { $0.hasPrefix("action-items/action-items-") && $0.hasSuffix(".md") }
+        )
+        let commitCall = try #require(calls.first { $0.arguments.contains("commit") })
+        #expect(commitCall.arguments.contains(dailyRel))
     }
 
     @Test func classifiesNoSuchOptionAsEnvironment() async throws {

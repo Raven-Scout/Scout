@@ -8,6 +8,11 @@ final class AppState: ObservableObject {
 
     @Published var menuBarStatus: MenuBarStatus = .idle
 
+    /// Last "Run now" (fire-now) failure, surfaced to the UI. Set when a
+    /// `scoutctl schedule fire-now` invocation throws or exits non-zero;
+    /// cleared on the next successful fire (issue #45 — previously swallowed).
+    @Published var fireNowError: String? = nil
+
     // Existing Control Center services
     let fileWatcher: FileWatcher
     let trackerService: UsageTrackerService
@@ -26,6 +31,10 @@ final class AppState: ObservableObject {
     // without each consumer constructing its own runner.
     let runner: any ProcessRunner
     let scoutctlExecutable: URL
+    /// Args inserted before scoutctl subcommands. Empty when `scoutctlExecutable`
+    /// is scoutctl itself; `["scoutctl"]` when we fell back to `/usr/bin/env`.
+    /// Every scoutctl shell-out must use this — see `fireNowArguments`.
+    let scoutctlArgumentsPrefix: [String]
 
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
@@ -184,6 +193,7 @@ final class AppState: ObservableObject {
         self.actionItemsDirectory = actionItemsDir
         self.runner = runner
         self.scoutctlExecutable = scoutctlExe
+        self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
 
         // Forward child-service changes so AppState.objectWillChange fires when
         // wishlist/research item counts update (drives sidebar badge reactivity).
@@ -245,15 +255,45 @@ final class AppState: ObservableObject {
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
-        var args = ["scoutctl", "schedule", "fire-now", slotKey]
-        if bypassBudget { args.append("--bypass-budget") }
-        _ = try? await runner.run(
-            executable: scoutctlExecutable,
-            arguments: args,
-            environment: [:],
-            workingDirectory: scoutDirectory
+        let args = Self.fireNowArguments(
+            argumentsPrefix: scoutctlArgumentsPrefix,
+            slotKey: slotKey,
+            bypassBudget: bypassBudget
         )
+        do {
+            let result = try await runner.run(
+                executable: scoutctlExecutable,
+                arguments: args,
+                environment: [:],
+                workingDirectory: scoutDirectory
+            )
+            if result.exitCode != 0 {
+                let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                fireNowError = "Run now failed (exit \(result.exitCode))"
+                    + (detail.isEmpty ? "" : ": \(detail)")
+            } else {
+                fireNowError = nil
+            }
+        } catch {
+            fireNowError = "Run now failed: \(error.localizedDescription)"
+        }
         await scheduleService.refresh()
+    }
+
+    /// Build the argv for `scoutctl schedule fire-now`. argv[0] must be the
+    /// resolved `argumentsPrefix` (empty for an absolute scoutctl path,
+    /// `["scoutctl"]` for the `/usr/bin/env` fallback) — never a hardcoded
+    /// "scoutctl", which an absolute-path executable would receive as a bogus
+    /// subcommand (issue #45).
+    nonisolated static func fireNowArguments(
+        argumentsPrefix: [String],
+        slotKey: String,
+        bypassBudget: Bool
+    ) -> [String] {
+        var args = argumentsPrefix + ["schedule", "fire-now", slotKey]
+        if bypassBudget { args.append("--bypass-budget") }
+        return args
     }
 
     /// Where scoutctl lives + how to invoke it. Used by the constructor to

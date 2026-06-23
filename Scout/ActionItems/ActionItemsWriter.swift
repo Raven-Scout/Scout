@@ -117,10 +117,7 @@ enum WriteOp: Sendable {
         case .markDone:
             break
         case .snooze(_, _, let until, let fromKind):
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyy-MM-dd"
-            fmt.timeZone = TimeZone(identifier: "America/New_York")
-            args += ["--until", fmt.string(from: until)]
+            args += ["--until", ActionItemsDay.stem(for: until)]
             if let fromKind, !fromKind.isEmpty {
                 args += ["--from-kind", fromKind]
             }
@@ -252,10 +249,7 @@ actor ActionItemsWriter {
         runner: any ProcessRunner,
         gitService: GitService?
     ) async throws -> WriteResult {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(identifier: "America/New_York")
-        let dateISO = fmt.string(from: displayedDate)
+        let dateISO = ActionItemsDay.stem(for: displayedDate)
         let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
 
         let result: ProcessResult
@@ -292,7 +286,8 @@ actor ActionItemsWriter {
                     let retryStderr = String(data: retry.stderr, encoding: .utf8) ?? ""
                     if retry.exitCode == 0 {
                         let slug = Self.slugify(op.subject)
-                        try? await gitService?.commitAll(message: "action-items: \(op.verb) \(slug)")
+                        let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
+                        try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
                         return WriteResult(stderr: retryStderr)
                     }
                     throw ActionItemsWriterError.cliNonZeroExit(
@@ -305,9 +300,20 @@ actor ActionItemsWriter {
         }
 
         let slug = Self.slugify(op.subject)
-        try? await gitService?.commitAll(message: "action-items: \(op.verb) \(slug)")
+        let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
+        try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
 
         return WriteResult(stderr: stderr)
+    }
+
+    /// Repo-relative path of `fileURL` under `repo`, falling back to the last
+    /// path component if it isn't inside the repo. Mirrors the same helper in
+    /// PerFileItemWriter/ProposalsWriter so every writer commits scoped to the
+    /// single file it touched rather than `git add -A` (issue #44).
+    private static func relativePathInRepo(fileURL: URL, repo: URL) -> String {
+        let full = fileURL.standardizedFileURL.path
+        let prefix = repo.standardizedFileURL.path + "/"
+        return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : fileURL.lastPathComponent
     }
 
     private static func classify(exitCode: Int32, stderr: String) -> ActionItemsWriterError.Classification {

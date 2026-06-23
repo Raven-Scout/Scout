@@ -54,7 +54,11 @@ final class ActionItemsDocumentService: ObservableObject {
     /// sees the change ASAP even if FSEvents is briefly laggy.
     func reparseCurrent() {
         guard let d = currentDate else { return }
-        try? reparse(url: url(for: d))
+        do {
+            try reparse(url: url(for: d))
+        } catch {
+            state = .failed(error)
+        }
     }
 
     private func reparse(url: URL) throws {
@@ -84,17 +88,20 @@ final class ActionItemsDocumentService: ObservableObject {
                 debounce = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     guard let self else { return }
-                    await MainActor.run { try? self.reparse(url: expected) }
+                    await MainActor.run {
+                        do {
+                            try self.reparse(url: expected)
+                        } catch {
+                            self.state = .failed(error)
+                        }
+                    }
                 }
             }
         }
     }
 
     func url(for date: Date) -> URL {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(identifier: "America/New_York")
-        return directory.appendingPathComponent("action-items-\(fmt.string(from: date)).md")
+        directory.appendingPathComponent("action-items-\(ActionItemsDay.stem(for: date)).md")
     }
 
     deinit { watchTask?.cancel() }
