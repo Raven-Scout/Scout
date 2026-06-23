@@ -3,10 +3,29 @@ import Foundation
 final class GitService: @unchecked Sendable {
     private let repoURL: URL
     private let runner: any ProcessRunner
+    /// How many times to retry an index-locking git op (`add`/`commit`) when
+    /// `.git/index.lock` is contended by a concurrent (plugin) git process.
+    private let maxLockRetries: Int
+    /// Backoff between lock retries, given the 1-based attempt number.
+    /// Injectable so tests don't actually sleep.
+    private let lockBackoff: @Sendable (Int) async -> Void
 
-    init(repoURL: URL, runner: any ProcessRunner) {
+    init(
+        repoURL: URL,
+        runner: any ProcessRunner,
+        maxLockRetries: Int = 3,
+        lockBackoff: @escaping @Sendable (Int) async -> Void = GitService.defaultLockBackoff
+    ) {
         self.repoURL = repoURL
         self.runner = runner
+        self.maxLockRetries = maxLockRetries
+        self.lockBackoff = lockBackoff
+    }
+
+    /// 50 ms × attempt (50, 100, 150 …) — short enough to clear a transient
+    /// lock from a sibling git process, bounded by `maxLockRetries`.
+    static let defaultLockBackoff: @Sendable (Int) async -> Void = { attempt in
+        try? await Task.sleep(nanoseconds: UInt64(attempt) * 50_000_000)
     }
 
     /// List commits in the given time range whose subject starts with `prefix`.
@@ -107,6 +126,9 @@ final class GitService: @unchecked Sendable {
 enum GitServiceError: Error, Equatable {
     case gitExitNonZero(Int)
     case commitFailed(exitCode: Int32, stderr: String)
+    /// `.git/index.lock` stayed contended after `maxLockRetries` retries — a
+    /// concurrent git process (plugin session) wouldn't release it (#48).
+    case indexLockContended(stderr: String)
 }
 
 protocol GitServiceProtocol: Sendable {
@@ -128,13 +150,9 @@ extension GitService {
         )
         guard checkRepo.exitCode == 0 else { return }
 
-        // Stage all changes.
-        _ = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["git", "-C", repoURL.path, "add", "-A"],
-            environment: [:],
-            workingDirectory: repoURL
-        )
+        // Stage all changes (retry through transient index.lock contention).
+        let add = try await runGitLockRetried(["-C", repoURL.path, "add", "-A"])
+        if add.exitCode != 0 { throw Self.failure(for: add) }
 
         // If nothing is staged (e.g. clean tree or only ignored files), skip.
         let diffIndex = try await runner.run(
@@ -145,12 +163,49 @@ extension GitService {
         )
         if diffIndex.exitCode == 0 { return }  // exit 0 means no staged diff
 
-        _ = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["git", "-C", repoURL.path, "commit", "-m", message],
-            environment: [:],
-            workingDirectory: repoURL
-        )
+        let commit = try await runGitLockRetried(["-C", repoURL.path, "commit", "-m", message])
+        if commit.exitCode != 0 { throw Self.failure(for: commit) }
+    }
+
+    /// Run `git <args>` retrying on `.git/index.lock` contention with backoff,
+    /// up to `maxLockRetries`. Returns the final `ProcessResult` (which may
+    /// still be a failure if the lock never cleared — callers inspect
+    /// `exitCode` and surface via ``failure(for:)``).
+    private func runGitLockRetried(_ args: [String]) async throws -> ProcessResult {
+        var attempt = 0
+        while true {
+            let result = try await runner.run(
+                executable: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["git"] + args,
+                environment: [:],
+                workingDirectory: repoURL
+            )
+            if result.exitCode == 0
+                || attempt >= maxLockRetries
+                || !Self.isIndexLockContention(result) {
+                return result
+            }
+            attempt += 1
+            await lockBackoff(attempt)
+        }
+    }
+
+    /// True when a non-zero git result is an `.git/index.lock` collision —
+    /// another git process holds the index lock.
+    static func isIndexLockContention(_ result: ProcessResult) -> Bool {
+        guard result.exitCode != 0 else { return false }
+        let stderr = (String(data: result.stderr, encoding: .utf8) ?? "").lowercased()
+        return stderr.contains("index.lock") || stderr.contains("another git process")
+    }
+
+    /// Map a failed git result to the right error — `.indexLockContended` for a
+    /// persistent lock collision, `.commitFailed` otherwise.
+    private static func failure(for result: ProcessResult) -> GitServiceError {
+        let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+        if isIndexLockContention(result) {
+            return .indexLockContended(stderr: stderr)
+        }
+        return .commitFailed(exitCode: result.exitCode, stderr: stderr)
     }
 
     /// Commit only the given paths with the given message. Any unrelated
@@ -170,11 +225,12 @@ extension GitService {
         )
         guard checkRepo.exitCode == 0 else { return }
 
-        _ = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["git", "-C", repo, "add", "--"] + relPaths,
-            environment: [:], workingDirectory: repoURL
-        )
+        // Stage the named paths, retrying through transient index.lock
+        // contention. A persistent add failure is surfaced (was silently
+        // ignored, which let the diff check below see "nothing staged" and
+        // no-op — leaving the change uncommitted and clobberable, #48).
+        let add = try await runGitLockRetried(["-C", repo, "add", "--"] + relPaths)
+        if add.exitCode != 0 { throw Self.failure(for: add) }
 
         let diff = try await runner.run(
             executable: URL(fileURLWithPath: "/usr/bin/env"),
@@ -183,15 +239,8 @@ extension GitService {
         )
         if diff.exitCode == 0 { return }
 
-        let commit = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["git", "-C", repo, "commit", "-m", message, "--"] + relPaths,
-            environment: [:], workingDirectory: repoURL
-        )
-        if commit.exitCode != 0 {
-            let stderr = String(data: commit.stderr, encoding: .utf8) ?? ""
-            throw GitServiceError.commitFailed(exitCode: commit.exitCode, stderr: stderr)
-        }
+        let commit = try await runGitLockRetried(["-C", repo, "commit", "-m", message, "--"] + relPaths)
+        if commit.exitCode != 0 { throw Self.failure(for: commit) }
     }
 }
 

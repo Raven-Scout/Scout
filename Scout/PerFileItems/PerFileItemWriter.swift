@@ -78,14 +78,25 @@ actor PerFileItemWriter {
 
     private static func performResolve(resolution: ItemResolution, fileURL: URL, label: String,
                                        scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
-        let text: String
-        do { text = try String(contentsOf: fileURL, encoding: .utf8) }
-        catch { throw PerFileItemWriterError.readFailed(error.localizedDescription) }
-        let updated = try rewriteFrontmatterStatus(text: text, newStatusValue: resolution.status.frontmatterValue,
-                                                   file: fileURL.lastPathComponent)
-        guard updated != text else { return }
-        do { try updated.write(to: fileURL, atomically: true, encoding: .utf8) }
-        catch { throw PerFileItemWriterError.writeFailed(error.localizedDescription) }
+        // Read-modify-write guarded against a concurrent plugin write clobbering
+        // the file in our read→write window (issue #48): if the file changes,
+        // GuardedFileWrite re-reads and reapplies the status flip.
+        let didWrite: Bool
+        do {
+            didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
+                try rewriteFrontmatterStatus(text: text,
+                                             newStatusValue: resolution.status.frontmatterValue,
+                                             file: fileURL.lastPathComponent)
+            }
+        } catch let e as GuardedFileWrite.Failure {
+            switch e {
+            case .read(let m): throw PerFileItemWriterError.readFailed(m)
+            case .write(let m): throw PerFileItemWriterError.writeFailed(m)
+            case .conflictPersisted:
+                throw PerFileItemWriterError.writeFailed("\(fileURL.lastPathComponent) changed repeatedly under concurrent writes")
+            }
+        }
+        guard didWrite else { return }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: "app: mark \(label) \(resolution.word)")
     }
