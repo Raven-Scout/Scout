@@ -33,12 +33,28 @@ struct PerFileItemWriterPureTests {
         #expect(text.contains("area: \"kg\""))
         #expect(!text.contains("source:"))
     }
-    @Test func rewriteStatusPreservesRest() throws {
+    @Test func rewriteFieldReplacesStatusPreservesRest() throws {
         let text = "---\ntitle: X\nstatus: open\npriority: high\n---\n\n# X\nbody"
-        let updated = try PerFileItemWriter.rewriteFrontmatterStatus(text: text, newStatusValue: "done", file: "x.md")
+        let updated = try PerFileItemWriter.rewriteFrontmatterField(text: text, key: "status", value: "done", file: "x.md")
         #expect(updated.contains("status: done"))
         #expect(updated.contains("priority: high"))
         #expect(updated.contains("# X\nbody"))
+    }
+
+    @Test func rewriteFieldReplacesPriorityPreservesRest() throws {
+        let text = "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
+        let updated = try PerFileItemWriter.rewriteFrontmatterField(text: text, key: "priority", value: "urgent", file: "x.md")
+        #expect(updated.contains("priority: urgent"))
+        #expect(updated.contains("status: open"))         // untouched
+        #expect(updated.contains("date: 2026-06-10"))     // untouched
+        #expect(updated.contains("# X\nbody"))
+    }
+
+    @Test func rewriteFieldThrowsWhenFieldMissing() throws {
+        let text = "---\ntitle: X\nstatus: open\n---\n\n# X\nbody"  // no priority:
+        #expect(throws: PerFileItemWriterError.fieldNotFound(field: "priority", file: "x.md")) {
+            _ = try PerFileItemWriter.rewriteFrontmatterField(text: text, key: "priority", value: "low", file: "x.md")
+        }
     }
 }
 

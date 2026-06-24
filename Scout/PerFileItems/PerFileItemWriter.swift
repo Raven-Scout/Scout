@@ -12,7 +12,7 @@ enum PerFileItemWriterError: Error, Equatable {
     case readFailed(String)
     case writeFailed(String)
     case frontmatterNotFound(file: String)
-    case statusFieldNotFound(file: String)
+    case fieldNotFound(field: String, file: String)
 }
 
 /// Serializes per-file writes (add new item, resolve to done/dropped) and
@@ -84,9 +84,7 @@ actor PerFileItemWriter {
         let didWrite: Bool
         do {
             didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
-                try rewriteFrontmatterStatus(text: text,
-                                             newStatusValue: resolution.status.frontmatterValue,
-                                             file: fileURL.lastPathComponent)
+                try rewriteFrontmatterField(text: text, key: "status", value: resolution.status.frontmatterValue, file: fileURL.lastPathComponent)
             }
         } catch let e as GuardedFileWrite.Failure {
             switch e {
@@ -136,25 +134,26 @@ actor PerFileItemWriter {
         return candidate
     }
 
-    static func rewriteFrontmatterStatus(text: String, newStatusValue: String, file: String) throws -> String {
+    static func rewriteFrontmatterField(text: String, key: String, value: String, file: String) throws -> String {
         var lines = text.components(separatedBy: "\n")
         guard let first = lines.first, first.trimmingCharacters(in: .whitespaces) == "---" else {
             throw PerFileItemWriterError.frontmatterNotFound(file: file)
         }
+        let wantedKey = key.lowercased()
         var i = 1
         while i < lines.count {
             if lines[i].trimmingCharacters(in: .whitespaces) == "---" { break }
             if let colon = lines[i].firstIndex(of: ":") {
-                let key = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                if key == "status" {
+                let k = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                if k == wantedKey {
                     let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
-                    lines[i] = "\(leading)status: \(newStatusValue)"
+                    lines[i] = "\(leading)\(key): \(value)"
                     return lines.joined(separator: "\n")
                 }
             }
             i += 1
         }
-        throw PerFileItemWriterError.statusFieldNotFound(file: file)
+        throw PerFileItemWriterError.fieldNotFound(field: key, file: file)
     }
 
     private static func isoDate(_ date: Date) -> String {
