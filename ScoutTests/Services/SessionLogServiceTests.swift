@@ -199,6 +199,41 @@ struct SessionLogServiceTests {
         #expect(body.status == .skippedConcurrency)
     }
 
+    @Test func parseBody_concurrencySkipMixedCaseInstanceName() throws {
+        // #31: scout-plugin renamed the runner banner from all-caps "SCOUT" to
+        // mixed-case "Scout" (the same rename the finish-marker regex already
+        // handles). The concurrency-skip marker `=== Another Scout session
+        // running …` must still classify as .skippedConcurrency — not fall
+        // through to a phantom .running session.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-04-20_11-04.log")
+        try """
+        === Scout run starting at Mon Apr 20 11:04:02 EDT 2026 ===
+        === Another Scout session running (PID 42392) — skipping ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.status == .skippedConcurrency)
+    }
+
+    @Test func parseBody_concurrencySkipCustomInstanceName() throws {
+        // #31: the marker is `=== Another {{INSTANCE_NAME}} session running …`
+        // where INSTANCE_NAME is install-configurable. Matching must key off the
+        // stable template wrapper, not a hardcoded instance name, so a custom
+        // instance ("Raven") still classifies as .skippedConcurrency.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-04-20_11-05.log")
+        try """
+        === Raven run starting at Mon Apr 20 11:05:02 EDT 2026 ===
+        === Another Raven session running (PID 42392) — skipping ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.status == .skippedConcurrency)
+    }
+
     @Test func parseBody_budgetSkipWinsOverFinishLine() throws {
         // Guards the status-chain precedence: when a log contains BOTH a
         // skip marker AND a finish line with exit 0, the marker must win.
