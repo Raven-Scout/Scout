@@ -44,14 +44,31 @@ actor PerFileItemWriter {
     }
 
     func resolve(_ resolution: ItemResolution, fileURL: URL, label: String) async throws {
+        try await setStatus(resolution.status, fileURL: fileURL, label: label)
+    }
+
+    func setStatus(_ status: ItemStatus, fileURL: URL, label: String) async throws {
         let previous = tail
+        let message = Self.statusCommitMessage(status, label: label)
+        let value = status.frontmatterValue
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
-            return try await Self.performResolve(resolution: resolution, fileURL: fileURL, label: label,
-                                                 scoutDirectory: scoutDirectory, gitService: gitService)
+            return try await Self.performFieldWrite(
+                fileURL: fileURL, key: "status", value: value, commitMessage: message,
+                scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
+    }
+
+    static func statusCommitMessage(_ status: ItemStatus, label: String) -> String {
+        switch status {
+        case .open:        return "app: reopen \(label)"
+        case .inProgress:  return "app: start \(label)"
+        case .done:        return "app: mark \(label) done"
+        case .dropped:     return "app: mark \(label) dropped"
+        case .unknown(let raw): return "app: set \(label) status to \(raw)"
+        }
     }
 
     func setPriority(_ priority: ItemPriority, fileURL: URL, label: String) async throws {
@@ -107,13 +124,6 @@ actor PerFileItemWriter {
         guard didWrite else { return }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
         try? await gitService?.commitPaths([rel], message: commitMessage)
-    }
-
-    private static func performResolve(resolution: ItemResolution, fileURL: URL, label: String,
-                                       scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
-        try await performFieldWrite(fileURL: fileURL, key: "status", value: resolution.status.frontmatterValue,
-                                    commitMessage: "app: mark \(label) \(resolution.word)",
-                                    scoutDirectory: scoutDirectory, gitService: gitService)
     }
 
     // MARK: - pure helpers

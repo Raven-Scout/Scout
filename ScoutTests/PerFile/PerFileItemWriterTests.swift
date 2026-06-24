@@ -148,4 +148,35 @@ struct PerFileItemWriterE2ETests {
         #expect(commit.arguments.contains("app: set X priority to urgent"))
         #expect(commit.arguments.contains("docs/wishlist/2026-06-10-x.md"))
     }
+
+    @Test func setStatusStartFlipsOpenToInProgress() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let runner = okRunner()
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
+        try await writer.setStatus(.inProgress, fileURL: fileURL, label: "X")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8).contains("status: in-progress"))
+        #expect(try #require(runner.calls.last).arguments.contains("app: start X"))
+    }
+
+    @Test func setStatusReopenFlipsDroppedToOpen() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: dropped\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let runner = okRunner()
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
+        try await writer.setStatus(.open, fileURL: fileURL, label: "X")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8).contains("status: open"))
+        #expect(try #require(runner.calls.last).arguments.contains("app: reopen X"))
+    }
+
+    @Test func statusCommitMessageMapping() {
+        #expect(PerFileItemWriter.statusCommitMessage(.open, label: "T") == "app: reopen T")
+        #expect(PerFileItemWriter.statusCommitMessage(.inProgress, label: "T") == "app: start T")
+        #expect(PerFileItemWriter.statusCommitMessage(.done, label: "T") == "app: mark T done")
+        #expect(PerFileItemWriter.statusCommitMessage(.dropped, label: "T") == "app: mark T dropped")
+    }
 }
