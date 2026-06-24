@@ -20,4 +20,9 @@ struct PerFileTabConfigTests {
         #expect(c.pathOverrideKey == "researchQueuePath")
         #expect(c.optionalField.label == "Area")
     }
+    @Test func priorityVocabPerTab() {
+        #expect(PerFileTabConfig.research.priorities == [.urgent, .high, .medium, .low])
+        #expect(PerFileTabConfig.wishlist.priorities == [.high, .medium, .low])
+        #expect(!PerFileTabConfig.wishlist.priorities.contains(.urgent))  // wishlist has no urgent
+    }
 }
