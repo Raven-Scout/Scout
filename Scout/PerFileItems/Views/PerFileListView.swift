@@ -120,9 +120,14 @@ struct PerFileListView: View {
                 )
             }
             ForEach(awaiting) { item in
-                PerFileItemCardView(item: item, optionalLabel: config.optionalField.label) { resolution in
-                    try await resolve(item, resolution)
-                }
+                PerFileItemCardView(
+                    item: item,
+                    optionalLabel: config.optionalField.label,
+                    priorityOptions: config.priorities,
+                    onChangePriority: { try await changePriority(item, $0) },
+                    onChangeStatus: { try await changeStatus(item, $0) },
+                    onResolve: { try await resolve(item, $0) }
+                )
             }
             if !resolved.isEmpty {
                 resolvedSection(resolved)
@@ -152,7 +157,12 @@ struct PerFileListView: View {
 
             if resolvedExpanded {
                 ForEach(resolved) { item in
-                    PerFileItemCardView(item: item, optionalLabel: config.optionalField.label) { _ in }
+                    PerFileItemCardView(
+                        item: item,
+                        optionalLabel: config.optionalField.label,
+                        onChangeStatus: { try await changeStatus(item, $0) },
+                        onResolve: { _ in }
+                    )
                 }
             }
         }
@@ -195,6 +205,16 @@ struct PerFileListView: View {
 
     private func resolve(_ item: PerFileItem, _ resolution: ItemResolution) async throws {
         try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.title)
+        docService.reload()
+    }
+
+    private func changePriority(_ item: PerFileItem, _ priority: ItemPriority) async throws {
+        try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.title)
+        docService.reload()
+    }
+
+    private func changeStatus(_ item: PerFileItem, _ status: ItemStatus) async throws {
+        try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.title)
         docService.reload()
     }
 }
