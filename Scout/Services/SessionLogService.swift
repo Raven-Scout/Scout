@@ -155,7 +155,20 @@ final class SessionLogService: ObservableObject {
         options: [.caseInsensitive]
     )
     private static let timeoutRegex = try! NSRegularExpression(pattern: #"=== TIMEOUT:"#)
-    private static let concurrencyRegex = try! NSRegularExpression(pattern: #"=== Another SCOUT session running"#)
+    // `=== Another {{INSTANCE_NAME}} session running (PID …) — skipping ===`.
+    // INSTANCE_NAME is install-configurable and was renamed all-caps "SCOUT" →
+    // mixed-case "Scout" in the scout-plugin runner templates — the same rename
+    // `finishRegex` above already handles. This regex was missed: it stayed
+    // case-sensitive and pinned to literal "SCOUT", so a post-rename (or
+    // custom-instance) concurrency-skip log failed to match and fell through to
+    // a phantom `.running` session (issue #31). Match the stable template
+    // wrapper case-insensitively and without pinning the instance name.
+    // (`finishRegex` still pins the literal "Scout" instance name — correct for
+    // the default install, but the same latent limitation for custom instances.)
+    private static let concurrencyRegex = try! NSRegularExpression(
+        pattern: #"=== Another .+? session running"#,
+        options: [.caseInsensitive]
+    )
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
     private static let rateLimitRegex = try! NSRegularExpression(pattern: #"Rate limit detected"#)
 
