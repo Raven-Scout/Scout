@@ -28,6 +28,13 @@ struct ControlCenterView: View {
         var isFull: Bool { if case .full = self { return true } else { return false } }
     }
 
+    /// True while a `.side` run-detail panel is open. The side panel is rendered
+    /// inside `primaryColumn` next to the Sessions list (issue #54), so the rail
+    /// hides in this mode — it's mutually exclusive with the side detail.
+    private var isShowingSideDetail: Bool {
+        if case .side = detail { return true } else { return false }
+    }
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
             mainSurface
@@ -59,10 +66,11 @@ struct ControlCenterView: View {
                 HStack(alignment: .top, spacing: 28) {
                     primaryColumn
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if case .side(let run) = detail {
-                        sideDetail(run)
-                            .frame(width: 460)
-                    } else {
+                    // The side run-detail is rendered inside primaryColumn next
+                    // to the Sessions list (issue #54) so it tracks that section
+                    // rather than anchoring to the top of the whole column. The
+                    // rail therefore shows whenever a side detail isn't open.
+                    if !isShowingSideDetail {
                         rail
                             .frame(width: 320)
                     }
@@ -170,11 +178,21 @@ struct ControlCenterView: View {
             NowStripView()
             UpcomingStripView()
             ActivityHeatmapView(dayFilter: $dayFilter)
-            SessionsListView(
-                dayFilter: dayFilter,
-                onSelect: { run in openDetail(run) },
-                selectedRunID: detail?.run.id
-            )
+            // Sessions list + side detail share their own row so the detail
+            // panel sits beside the Sessions section instead of spanning the
+            // full content height from the top (issue #54).
+            HStack(alignment: .top, spacing: 28) {
+                SessionsListView(
+                    dayFilter: dayFilter,
+                    onSelect: { run in openDetail(run) },
+                    selectedRunID: detail?.run.id
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if case .side(let run) = detail {
+                    sideDetail(run)
+                        .frame(width: 460)
+                }
+            }
         }
     }
 
