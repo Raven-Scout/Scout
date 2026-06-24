@@ -130,4 +130,22 @@ struct PerFileItemWriterE2ETests {
         #expect(commit.arguments.contains("app: mark X done"))
         #expect(commit.arguments.contains("docs/wishlist/2026-06-10-x.md"))
     }
+
+    @Test func setPriorityRewritesFieldAndCommitsScoped() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let dir = vault.appendingPathComponent("docs/wishlist")
+        let fileURL = dir.appendingPathComponent("2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: open\npriority: medium\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let runner = okRunner()
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
+        try await writer.setPriority(.urgent, fileURL: fileURL, label: "X")
+        let written = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(written.contains("priority: urgent"))
+        #expect(written.contains("status: open"))
+        let commit = try #require(runner.calls.last)
+        #expect(commit.arguments.contains("commit"))
+        #expect(commit.arguments.contains("app: set X priority to urgent"))
+        #expect(commit.arguments.contains("docs/wishlist/2026-06-10-x.md"))
+    }
 }

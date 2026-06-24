@@ -54,6 +54,19 @@ actor PerFileItemWriter {
         return try await task.value
     }
 
+    func setPriority(_ priority: ItemPriority, fileURL: URL, label: String) async throws {
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            return try await Self.performFieldWrite(
+                fileURL: fileURL, key: "priority", value: priority.rawValue,
+                commitMessage: "app: set \(label) priority to \(priority.rawValue)",
+                scoutDirectory: scoutDirectory, gitService: gitService)
+        }
+        tail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
     // MARK: - perform (off-actor)
 
     @discardableResult
@@ -76,15 +89,12 @@ actor PerFileItemWriter {
         return dest
     }
 
-    private static func performResolve(resolution: ItemResolution, fileURL: URL, label: String,
-                                       scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
-        // Read-modify-write guarded against a concurrent plugin write clobbering
-        // the file in our read→write window (issue #48): if the file changes,
-        // GuardedFileWrite re-reads and reapplies the status flip.
+    private static func performFieldWrite(fileURL: URL, key: String, value: String, commitMessage: String,
+                                          scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
         let didWrite: Bool
         do {
             didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
-                try rewriteFrontmatterField(text: text, key: "status", value: resolution.status.frontmatterValue, file: fileURL.lastPathComponent)
+                try rewriteFrontmatterField(text: text, key: key, value: value, file: fileURL.lastPathComponent)
             }
         } catch let e as GuardedFileWrite.Failure {
             switch e {
@@ -96,7 +106,14 @@ actor PerFileItemWriter {
         }
         guard didWrite else { return }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
-        try? await gitService?.commitPaths([rel], message: "app: mark \(label) \(resolution.word)")
+        try? await gitService?.commitPaths([rel], message: commitMessage)
+    }
+
+    private static func performResolve(resolution: ItemResolution, fileURL: URL, label: String,
+                                       scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
+        try await performFieldWrite(fileURL: fileURL, key: "status", value: resolution.status.frontmatterValue,
+                                    commitMessage: "app: mark \(label) \(resolution.word)",
+                                    scoutDirectory: scoutDirectory, gitService: gitService)
     }
 
     // MARK: - pure helpers
