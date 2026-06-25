@@ -12,7 +12,7 @@ enum PerFileItemWriterError: Error, Equatable {
     case readFailed(String)
     case writeFailed(String)
     case frontmatterNotFound(file: String)
-    case statusFieldNotFound(file: String)
+    case fieldNotFound(field: String, file: String)
 }
 
 /// Serializes per-file writes (add new item, resolve to done/dropped) and
@@ -44,11 +44,41 @@ actor PerFileItemWriter {
     }
 
     func resolve(_ resolution: ItemResolution, fileURL: URL, label: String) async throws {
+        try await setStatus(resolution.status, fileURL: fileURL, label: label)
+    }
+
+    func setStatus(_ status: ItemStatus, fileURL: URL, label: String) async throws {
+        let previous = tail
+        let message = Self.statusCommitMessage(status, label: label)
+        let value = status.frontmatterValue
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            return try await Self.performFieldWrite(
+                fileURL: fileURL, key: "status", value: value, commitMessage: message,
+                scoutDirectory: scoutDirectory, gitService: gitService)
+        }
+        tail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    static func statusCommitMessage(_ status: ItemStatus, label: String) -> String {
+        switch status {
+        case .open:        return "app: reopen \(label)"
+        case .inProgress:  return "app: start \(label)"
+        case .done:        return "app: mark \(label) done"
+        case .dropped:     return "app: mark \(label) dropped"
+        case .unknown(let raw): return "app: set \(label) status to \(raw)"
+        }
+    }
+
+    func setPriority(_ priority: ItemPriority, fileURL: URL, label: String) async throws {
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
-            return try await Self.performResolve(resolution: resolution, fileURL: fileURL, label: label,
-                                                 scoutDirectory: scoutDirectory, gitService: gitService)
+            return try await Self.performFieldWrite(
+                fileURL: fileURL, key: "priority", value: priority.rawValue,
+                commitMessage: "app: set \(label) priority to \(priority.rawValue)",
+                scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
@@ -76,17 +106,12 @@ actor PerFileItemWriter {
         return dest
     }
 
-    private static func performResolve(resolution: ItemResolution, fileURL: URL, label: String,
-                                       scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
-        // Read-modify-write guarded against a concurrent plugin write clobbering
-        // the file in our read→write window (issue #48): if the file changes,
-        // GuardedFileWrite re-reads and reapplies the status flip.
+    private static func performFieldWrite(fileURL: URL, key: String, value: String, commitMessage: String,
+                                          scoutDirectory: URL, gitService: GitServiceProtocol?) async throws {
         let didWrite: Bool
         do {
             didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
-                try rewriteFrontmatterStatus(text: text,
-                                             newStatusValue: resolution.status.frontmatterValue,
-                                             file: fileURL.lastPathComponent)
+                try rewriteFrontmatterField(text: text, key: key, value: value, file: fileURL.lastPathComponent)
             }
         } catch let e as GuardedFileWrite.Failure {
             switch e {
@@ -98,7 +123,7 @@ actor PerFileItemWriter {
         }
         guard didWrite else { return }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
-        try? await gitService?.commitPaths([rel], message: "app: mark \(label) \(resolution.word)")
+        try? await gitService?.commitPaths([rel], message: commitMessage)
     }
 
     // MARK: - pure helpers
@@ -136,25 +161,26 @@ actor PerFileItemWriter {
         return candidate
     }
 
-    static func rewriteFrontmatterStatus(text: String, newStatusValue: String, file: String) throws -> String {
+    static func rewriteFrontmatterField(text: String, key: String, value: String, file: String) throws -> String {
         var lines = text.components(separatedBy: "\n")
         guard let first = lines.first, first.trimmingCharacters(in: .whitespaces) == "---" else {
             throw PerFileItemWriterError.frontmatterNotFound(file: file)
         }
+        let wantedKey = key.lowercased()
         var i = 1
         while i < lines.count {
             if lines[i].trimmingCharacters(in: .whitespaces) == "---" { break }
             if let colon = lines[i].firstIndex(of: ":") {
-                let key = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                if key == "status" {
+                let k = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                if k == wantedKey {
                     let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
-                    lines[i] = "\(leading)status: \(newStatusValue)"
+                    lines[i] = "\(leading)\(key): \(value)"
                     return lines.joined(separator: "\n")
                 }
             }
             i += 1
         }
-        throw PerFileItemWriterError.statusFieldNotFound(file: file)
+        throw PerFileItemWriterError.fieldNotFound(field: key, file: file)
     }
 
     private static func isoDate(_ date: Date) -> String {

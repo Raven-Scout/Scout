@@ -1,11 +1,37 @@
 import SwiftUI
 
-/// Small color-coded capsule for a per-file item's priority. Follows the
-/// same editorial chip family as `ProposalStatusPill`.
+/// Small color-coded capsule for a per-file item's priority. Read-only by
+/// default; when `options` is non-empty it becomes a Menu for changing the
+/// priority (issue #41).
 struct ItemPriorityPill: View {
     let priority: ItemPriority
+    var options: [ItemPriority] = []
+    var onSelect: ((ItemPriority) -> Void)? = nil
 
     var body: some View {
+        if options.isEmpty || onSelect == nil {
+            capsule
+        } else {
+            Menu {
+                ForEach(options, id: \.self) { opt in
+                    Button {
+                        if opt != priority { onSelect?(opt) }
+                    } label: {
+                        if opt == priority { Label(opt.displayName, systemImage: "checkmark") }
+                        else { Text(opt.displayName) }
+                    }
+                }
+            } label: {
+                capsule
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Change priority")
+        }
+    }
+
+    private var capsule: some View {
         Text(priority.displayName.uppercased())
             .font(DS.sans(10, weight: .semibold))
             .tracking(0.06 * 10)

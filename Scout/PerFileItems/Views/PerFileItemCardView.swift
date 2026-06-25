@@ -1,17 +1,18 @@
 import SwiftUI
 
-/// One per-file Wishlist/Research item rendered as an editorial card: header
-/// (date chip + title + priority pill + status pill), optional source/area
-/// line, markdown body, and — for active items — Done / Drop actions. Owns
-/// its in-flight + error state so a slow or failed write surfaces on the card.
+/// One per-file Wishlist/Research item as an editorial card. Active items can
+/// change priority (pill menu), Start (→ in-progress), or resolve (Done/Drop);
+/// resolved items can Reopen (issue #41). Owns its busy + error state.
 struct PerFileItemCardView: View {
     let item: PerFileItem
-    /// Display label for the optional source/area field (e.g. "Source", "Area").
     let optionalLabel: String?
-    /// Performs the write. Throws so the card can show an inline error.
+    /// Priorities offered in the pill menu (empty → read-only pill).
+    var priorityOptions: [ItemPriority] = []
+    var onChangePriority: @MainActor (ItemPriority) async throws -> Void = { _ in }
+    var onChangeStatus: @MainActor (ItemStatus) async throws -> Void = { _ in }
     let onResolve: @MainActor (ItemResolution) async throws -> Void
 
-    @State private var inFlight: ItemResolution?
+    @State private var isWriting = false
     @State private var errorText: String?
 
     var body: some View {
@@ -25,9 +26,7 @@ struct PerFileItemCardView: View {
             if !item.bodyBlocks.isEmpty {
                 MarkdownBodyView(blocks: item.bodyBlocks)
             }
-            if item.isActive {
-                actions
-            }
+            actions
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
                     .font(DS.sans(11))
@@ -43,9 +42,7 @@ struct PerFileItemCardView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 if !item.date.isEmpty {
-                    Text(item.date)
-                        .font(DS.mono(11))
-                        .foregroundStyle(DS.Ink.p4)
+                    Text(item.date).font(DS.mono(11)).foregroundStyle(DS.Ink.p4)
                 }
                 Text(item.title)
                     .font(DS.serif(17, weight: .medium))
@@ -53,70 +50,78 @@ struct PerFileItemCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            ItemPriorityPill(priority: item.priority)
+            if item.isActive && !priorityOptions.isEmpty {
+                ItemPriorityPill(priority: item.priority, options: priorityOptions) { newPriority in
+                    perform { try await onChangePriority(newPriority) }
+                }
+                .disabled(isWriting)
+            } else {
+                ItemPriorityPill(priority: item.priority)
+            }
             ItemStatusPill(status: item.status)
         }
     }
 
-    // MARK: - Actions
-
     private var optionalValue: String? { item.source ?? item.area }
 
+    // MARK: - Actions
+
+    @ViewBuilder
     private var actions: some View {
         HStack(spacing: 6) {
-            resolveButton("Done", systemImage: "checkmark", resolution: .done, primary: true)
-            resolveButton("Drop", systemImage: "xmark", resolution: .dropped, primary: false)
+            if item.isActive {
+                if item.status == .open {
+                    actionButton("Start", systemImage: "play.fill", tint: DS.Ink.p2) {
+                        try await onChangeStatus(.inProgress)
+                    }
+                }
+                actionButton("Done", systemImage: "checkmark", tint: DS.Status.ok) {
+                    try await onResolve(.done)
+                }
+                actionButton("Drop", systemImage: "xmark", tint: DS.Ink.p3) {
+                    try await onResolve(.dropped)
+                }
+            } else {
+                actionButton("Reopen", systemImage: "arrow.uturn.backward", tint: DS.Ink.p2) {
+                    try await onChangeStatus(.open)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
     }
 
     @ViewBuilder
-    private func resolveButton(
-        _ label: String,
-        systemImage: String,
-        resolution: ItemResolution,
-        primary: Bool
-    ) -> some View {
-        let isBusy = inFlight == resolution
-        Button { resolve(resolution) } label: {
+    private func actionButton(_ label: String, systemImage: String, tint: Color,
+                              _ op: @escaping @MainActor () async throws -> Void) -> some View {
+        Button { perform(op) } label: {
             HStack(spacing: 5) {
-                if isBusy {
-                    ProgressView().controlSize(.small).frame(width: 12, height: 12)
-                } else {
-                    Image(systemName: systemImage).font(.system(size: 10))
-                }
+                Image(systemName: systemImage).font(.system(size: 10))
                 Text(label).font(DS.sans(11.5, weight: .medium))
             }
-            .foregroundStyle(primary ? DS.Status.ok : DS.Ink.p3)
+            .foregroundStyle(tint)
             .padding(.horizontal, 12)
             .frame(height: 26)
             .background {
                 RoundedRectangle(cornerRadius: 5)
                     .fill(DS.Paper.raised)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .strokeBorder(primary ? DS.Status.ok.opacity(0.4) : DS.Rule.hard, lineWidth: 0.5)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.hard, lineWidth: 0.5))
             }
         }
         .buttonStyle(.plainHit)
-        .disabled(inFlight != nil)
+        .disabled(isWriting)
         .onHover { hovering in
-            if hovering, inFlight == nil { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if hovering, !isWriting { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }
 
-    private func resolve(_ resolution: ItemResolution) {
-        inFlight = resolution
+    private func perform(_ op: @escaping @MainActor () async throws -> Void) {
+        isWriting = true
         errorText = nil
         Task {
-            do {
-                try await onResolve(resolution)
-            } catch {
-                errorText = "Couldn't update the file — \(error.localizedDescription)"
-            }
-            inFlight = nil
+            do { try await op() }
+            catch { errorText = "Couldn't update the file — \(error.localizedDescription)" }
+            isWriting = false
         }
     }
 }
