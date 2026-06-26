@@ -14,7 +14,7 @@ The fastest path if you just want to run the app:
 
 1. Go to the [Releases](https://github.com/Raven-Scout/Scout/releases) page and download the latest `Scout-*.dmg`.
 2. Open the DMG and drag **Scout.app** into the **Applications** folder.
-3. First launch only: macOS will refuse because the build is ad-hoc signed (no paid Apple Developer cert). Right-click **Scout.app** in `/Applications` → **Open** → **Open**. After that it launches normally.
+3. Launch it. Scout is signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
 4. Press ⌘, to open Settings and fill in your Linear workspace and author name.
 
 The app expects a Scout instance at `~/Scout/`. Install the [scout-plugin](https://github.com/Raven-Scout/scout-plugin) into Claude Code and run `/scout-setup` first if you don't have one yet.
@@ -95,7 +95,7 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) ad-hoc-signed DMG, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Example:
+Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples it via Apple, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release.sh`). Example:
 
 ```bash
 scripts/release.sh 0.2.0

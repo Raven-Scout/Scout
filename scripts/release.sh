@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build a Release Scout.app, package it as a DMG, and publish as a GitHub
-# Release on the current repo. Ad-hoc signed — first launch on the target
-# machine needs right-click → Open → Open to clear Gatekeeper.
+# Build a Release Scout.app, sign it with Developer ID + hardened runtime,
+# notarize it with Apple, staple the ticket, package it as a DMG, and publish
+# as a GitHub Release. A notarized + stapled app opens with a normal
+# double-click — no Gatekeeper right-click dance for downloaders.
 #
 # Release notes are auto-generated from `git log <prev-tag>..HEAD`, grouped
 # by conventional-commit prefix (feat / fix / other), followed by the
@@ -10,7 +11,21 @@
 # Usage:
 #   scripts/release.sh 0.1.0
 #
-# Requirements: xcodebuild, hdiutil, gh (logged in, with write access to the repo).
+# Requirements: xcodebuild, hdiutil, codesign, xcrun (notarytool + stapler),
+# gh (logged in, with write access to the repo).
+#
+# Signing / notarization config (override via env if your setup differs):
+#   SCOUT_SIGN_IDENTITY   codesign identity   (default: "Developer ID Application")
+#   SCOUT_NOTARY_PROFILE  notarytool profile  (default: "scout-notary")
+# The default identity substring resolves as long as exactly one "Developer ID
+# Application" cert is in the keychain. Set the notary profile up once with:
+#   xcrun notarytool store-credentials "scout-notary" \
+#     --apple-id <you@email> --team-id <TEAMID> --password <app-specific-pw>
+#
+# Escape hatches (for local iteration):
+#   SKIP_NOTARIZE=1  build + sign + DMG, but skip the Apple round-trip
+#                    (the app will NOT be stapled — Gatekeeper will still block it)
+#   SKIP_RELEASE=1   do everything except tag/push/upload to GitHub
 
 set -euo pipefail
 
@@ -22,15 +37,31 @@ BUILD_DIR="$REPO_ROOT/build"
 RELEASE_DIR="$BUILD_DIR/release"
 DMG="$RELEASE_DIR/Scout-$VERSION.dmg"
 
+SIGN_IDENTITY="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
+NOTARY_PROFILE="${SCOUT_NOTARY_PROFILE:-scout-notary}"
+
+# Fail fast if the signing identity isn't in the keychain — otherwise we'd
+# burn a full universal build before codesign errors out at the end.
+if ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
+  echo "✗ No codesigning identity matching \"$SIGN_IDENTITY\" found in keychain." >&2
+  echo "  Create one in Xcode → Settings → Accounts → Manage Certificates →" >&2
+  echo "  + → Developer ID Application, or set SCOUT_SIGN_IDENTITY to match." >&2
+  exit 1
+fi
+
 echo "→ Cleaning previous build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$RELEASE_DIR"
 
-echo "→ Building Release configuration (universal, ad-hoc signed) at v$VERSION"
+echo "→ Building Release configuration (universal, unsigned) at v$VERSION"
 # Stamp MARKETING_VERSION + CURRENT_PROJECT_VERSION into Info.plist so the
 # About panel and Settings → About both read the real release tag instead
 # of the xcodeproj default of `1.0 (1)`. Build number is the commit count
 # on HEAD — monotonic and reproducible without a state file.
+#
+# Build with signing disabled and sign explicitly below: the build step never
+# reaches for a provisioning profile, and we control the exact Developer ID
+# identity + hardened-runtime flags applied to the shipped artifact.
 BUILD_NUMBER="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
 xcodebuild \
   -project "$REPO_ROOT/Scout.xcodeproj" \
@@ -40,11 +71,8 @@ xcodebuild \
   -derivedDataPath "$BUILD_DIR" \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  CODE_SIGN_IDENTITY="-" \
-  CODE_SIGN_STYLE=Manual \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGNING_ALLOWED=NO \
-  DEVELOPMENT_TEAM="" \
   ONLY_ACTIVE_ARCH=NO \
   ARCHS="arm64 x86_64" \
   clean build >/dev/null
@@ -55,8 +83,31 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
-echo "→ Codesigning Scout.app ad-hoc"
-codesign --force --deep --sign - "$APP"
+echo "→ Signing Scout.app with Developer ID + hardened runtime"
+# --options runtime enables the hardened runtime (required for notarization);
+# --timestamp embeds a secure timestamp so the signature stays valid past the
+# signing cert's expiry. The bundle has no nested frameworks/helpers, so one
+# signature on the .app is sufficient (no --deep, which Apple now discourages).
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+codesign --verify --strict --verbose=2 "$APP"
+
+if [[ "${SKIP_NOTARIZE:-0}" == "1" ]]; then
+  echo "→ SKIP_NOTARIZE=1 set; skipping notarization (app will NOT be stapled)."
+else
+  echo "→ Notarizing with Apple (profile: $NOTARY_PROFILE) — this can take a few minutes"
+  # notarytool wants an archive, not a raw .app — zip the bundle preserving its
+  # top-level dir, submit, and block until Apple returns a terminal status.
+  ZIP="$BUILD_DIR/Scout-$VERSION-notarize.zip"
+  ditto -c -k --keepParent "$APP" "$ZIP"
+  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  # stapler fails loudly if notarization was rejected (Invalid), so it doubles
+  # as the gate that notarization actually succeeded. To inspect a rejection:
+  #   xcrun notarytool log <submission-id> --keychain-profile "$NOTARY_PROFILE"
+  echo "→ Stapling notarization ticket to Scout.app"
+  xcrun stapler staple "$APP"
+  # Confirm Gatekeeper will accept the stapled app offline.
+  spctl --assess --type execute --verbose=2 "$APP"
+fi
 
 echo "→ Packaging as DMG"
 # Stage directory with the app and a symlink to /Applications so the DMG
@@ -158,7 +209,7 @@ NOTES="$BUILD_DIR/release-notes.md"
   echo
   echo "1. Download \`Scout-$VERSION.dmg\` from the Assets below."
   echo "2. Open the DMG and drag **Scout.app** into the **Applications** folder."
-  echo "3. The first time you launch it, macOS will refuse because the build is ad-hoc signed. Right-click Scout.app in /Applications → **Open** → **Open**. After that it launches normally."
+  echo "3. Launch it. Scout is signed with a Developer ID and notarized by Apple, so it opens with a normal double-click."
   echo
   echo "## Configure"
   echo
