@@ -413,9 +413,11 @@ struct ActionItemsView: View {
             )
         } else {
             // No Done section in the source — synthesize one so the
-            // collected items don't disappear.
+            // collected items don't disappear. Stable id (not a fresh UUID
+            // per reparse) so it keeps its identity across writes and doesn't
+            // reset the scroll position.
             out.append(ActionSection(
-                id: UUID(),
+                id: ActionItemsParser.stableID("section|synthesized-done"),
                 emoji: "✅",
                 title: "Recently Completed",
                 kind: .done,

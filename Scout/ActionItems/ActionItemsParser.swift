@@ -1,7 +1,25 @@
+import CryptoKit
 import Foundation
 
 enum ActionItemsParser {
     // Parser entry point + helpers land over the next tasks.
+
+    /// Deterministic ``UUID`` derived from a stable content key.
+    ///
+    /// Sections and tasks need identities that survive a reparse, otherwise
+    /// every comment/snooze write (which triggers `reparseCurrent()`) mints
+    /// fresh random UUIDs, SwiftUI can't diff the list against the previous
+    /// render, and the `ScrollView` snaps back to the top mid-edit. Hashing a
+    /// content+position key into the 16 bytes of a UUID gives the same row the
+    /// same identity across reparses, so SwiftUI updates in place and the
+    /// scroll offset holds. MD5 is used purely as a 128-bit content hash here
+    /// — there is no security dependency on it.
+    static func stableID(_ key: String) -> UUID {
+        let digest = Insecure.MD5.hash(data: Data(key.utf8))
+        let b = Array(digest)  // MD5 is exactly 16 bytes — one UUID's worth.
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
+    }
 }
 
 extension ActionItemsParser {
@@ -171,8 +189,11 @@ extension ActionItemsParser {
         func flushSection() {
             flushTable()
             if inSection {
+                // Stable identity: section index + kind + title. Survives a
+                // reparse so SwiftUI diffs in place instead of resetting the
+                // scroll position on every write. See `stableID`.
                 sections.append(ActionSection(
-                    id: UUID(),
+                    id: stableID("section|\(sections.count)|\(currentKind.rawValue)|\(currentTitle)"),
                     emoji: currentEmoji,
                     title: currentTitle,
                     kind: currentKind,
@@ -324,8 +345,13 @@ extension ActionItemsParser {
                    let r = Range(cm.range(at: 1), in: body) {
                     carryInKind = ActionSection.Kind(rawValue: String(body[r]).lowercased())
                 }
+                // Stable identity: owning-section index + task index within
+                // that section + subject. Adding a comment to a task doesn't
+                // change any of these, so the row keeps its identity across
+                // the reparse the write triggers and the scroll holds. See
+                // `stableID`.
                 currentTasks.append(ActionTask(
-                    id: UUID(),
+                    id: stableID("task|\(sections.count)|\(currentTasks.count)|\(subject)"),
                     lineNumber: i + 1,
                     done: done,
                     subject: subject,
