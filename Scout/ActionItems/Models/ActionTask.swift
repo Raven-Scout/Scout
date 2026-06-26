@@ -1,7 +1,12 @@
 import Foundation
 
 struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
-    /// Ephemeral; regenerated on each parse. Do not persist.
+    /// Deterministic across reparses: derived by `ActionItemsParser.stableID`
+    /// from the task's owning-section index, its index within that section,
+    /// and its subject. This stability is what lets SwiftUI diff the list in
+    /// place after a write-triggered reparse instead of resetting the scroll
+    /// position. Not a durable/persisted identifier — editing the subject or
+    /// reordering tasks re-derives it. Do not persist.
     let id: UUID
     /// 1-based line number in the source file (for diagnostics).
     let lineNumber: Int

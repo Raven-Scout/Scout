@@ -132,6 +132,63 @@ struct ActionItemsParserTests {
         let t = try #require(doc.sections.flatMap { $0.tasks }.first)
         #expect(t.shortPrefix == nil)
     }
+
+    // MARK: - Stable identity across reparses (#62)
+
+    /// Markdown the stability tests reparse. Two urgent tasks + one to-do,
+    /// mirroring the shape a daily file has while the user is working through
+    /// it.
+    private static let stableDoc = """
+    # Monday, April 20
+
+    ## 🔴 Urgent
+
+    - [ ] **First task** — needs attention
+    - [ ] **Second task** — also important
+
+    ## 🟡 To Do
+
+    - [ ] **Third task** — when you get to it
+    """
+    private static let stableURL = URL(fileURLWithPath: "/tmp/action-items-2026-04-20.md")
+
+    /// A clean reparse of identical text must reproduce identical section and
+    /// task IDs — this is the property that lets SwiftUI diff in place rather
+    /// than rebuild the list and reset the scroll position.
+    @Test func idsAreStableAcrossIdenticalReparses() throws {
+        let bytes = Self.stableDoc.utf8.count
+        let a = try ActionItemsParser.parse(text: Self.stableDoc, sourceURL: Self.stableURL, sourceBytes: bytes)
+        let b = try ActionItemsParser.parse(text: Self.stableDoc, sourceURL: Self.stableURL, sourceBytes: bytes)
+        #expect(a.sections.map(\.id) == b.sections.map(\.id))
+        #expect(a.sections.flatMap(\.tasks).map(\.id) == b.sections.flatMap(\.tasks).map(\.id))
+    }
+
+    /// Adding a comment under a task (the scoutctl `add-comment` sub-bullet
+    /// shape) shifts every following line number, but must not change any
+    /// row's identity: the commented task keeps its ID and gains the comment,
+    /// and all other sections/tasks keep their IDs too.
+    @Test func insertingACommentKeepsRowIDsStable() throws {
+        let before = try ActionItemsParser.parse(
+            text: Self.stableDoc, sourceURL: Self.stableURL, sourceBytes: Self.stableDoc.utf8.count)
+
+        let withComment = Self.stableDoc.replacingOccurrences(
+            of: "- [ ] **First task** — needs attention",
+            with: "- [ ] **First task** — needs attention\n  - jordan: looking into it"
+        )
+        let after = try ActionItemsParser.parse(
+            text: withComment, sourceURL: Self.stableURL, sourceBytes: withComment.utf8.count)
+
+        // The commented task: same identity, now carrying the comment.
+        let firstBefore = before.sections[0].tasks[0]
+        let firstAfter = after.sections[0].tasks[0]
+        #expect(firstBefore.id == firstAfter.id)
+        #expect(firstBefore.comments.isEmpty)
+        #expect(firstAfter.comments.count == 1)
+
+        // Every other row keeps its identity despite shifted line numbers.
+        #expect(before.sections.map(\.id) == after.sections.map(\.id))
+        #expect(before.sections.flatMap(\.tasks).map(\.id) == after.sections.flatMap(\.tasks).map(\.id))
+    }
 }
 
 /// Type anchor so Bundle(for:) finds the ScoutTests test bundle.
