@@ -12,6 +12,10 @@ struct ActionSection: Identifiable, Equatable, Hashable, Sendable {
         let rows: [[String]]
     }
 
+    /// Deterministic across reparses: derived by `ActionItemsParser.stableID`
+    /// from the section's index, kind, and title, so SwiftUI keeps the section
+    /// identity stable through write-triggered reparses (avoiding a scroll
+    /// reset). Not a durable identifier — renaming/reordering re-derives it.
     let id: UUID
     /// Section heading emoji (e.g. "🔴"), or empty for plain-title sections.
     let emoji: String
