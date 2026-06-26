@@ -79,7 +79,8 @@ extension ActionItemsParser {
     /// Regexes mirror ``action-items/render.py``:
     ///   - Linear: ``\b[A-Z]{2,10}-\d+\b`` (any Linear team prefix)
     ///   - GitHub PR: ``https://github\.com/([\w.\-]+)/([\w.\-]+)/pull/(\d+)``
-    ///   - Slack: ``https://[\w.\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s)"']+)?``
+    ///   - Slack: ``(?:https://)?[\w.\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s)"']+)?``
+    ///            (scheme optional — sessions sometimes write bare hosts; normalized to https)
     static func detectDeepLinks(in text: String) -> [TaskDeepLink] {
         struct Hit { let range: Range<String.Index>; let link: TaskDeepLink }
         var hits: [Hit] = []
@@ -108,8 +109,11 @@ extension ActionItemsParser {
                   let url = URL(string: String(t[full])) else { return nil }
             return .githubPR(repo: "\(t[r1])/\(t[r2])", number: n, rawURL: url)
         }
-        scan(#"https://[\w.\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s)\"']+)?"#) { m, t in
-            guard let r = Range(m.range, in: t), let url = URL(string: String(t[r])) else { return nil }
+        scan(#"(?:https://)?[\w.\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s)\"']+)?"#) { m, t in
+            guard let r = Range(m.range, in: t) else { return nil }
+            var raw = String(t[r])
+            if !raw.hasPrefix("https://") { raw = "https://" + raw }  // normalize scheme-less hosts
+            guard let url = URL(string: raw) else { return nil }
             return .slackThread(url)
         }
 

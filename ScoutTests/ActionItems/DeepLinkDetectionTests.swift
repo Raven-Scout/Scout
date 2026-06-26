@@ -37,6 +37,31 @@ struct DeepLinkDetectionTests {
         if case .slackThread = links.first! {} else { Issue.record("expected slackThread") }
     }
 
+    @Test func detectsSchemelessSlackThread() {
+        // Sessions sometimes write the source as a bare host with no scheme, e.g.
+        // "Slack attachment `keboolaglobal.slack.com/archives/C094NK1JPJB/p1779784363387259`".
+        let text = "Slack attachment keboolaglobal.slack.com/archives/C094NK1JPJB/p1779784363387259"
+        let links = ActionItemsParser.detectDeepLinks(in: text)
+        #expect(links.count == 1)
+        if case .slackThread(let url) = links.first! {
+            // The scheme must be normalized to https so the link is openable.
+            #expect(url.scheme == "https")
+            #expect(url.absoluteString == "https://keboolaglobal.slack.com/archives/C094NK1JPJB/p1779784363387259")
+        } else {
+            Issue.record("expected slackThread")
+        }
+    }
+
+    @Test func dedupesSchemedAndSchemelessSlackThread() {
+        // The same thread written once with and once without a scheme is one link.
+        let text = """
+        https://acme-co.slack.com/archives/C01/p1700000000123456 \
+        and again acme-co.slack.com/archives/C01/p1700000000123456
+        """
+        let links = ActionItemsParser.detectDeepLinks(in: text)
+        #expect(links.count == 1)
+    }
+
     @Test func returnsEmptyForPlainText() {
         #expect(ActionItemsParser.detectDeepLinks(in: "Call mechanic about oil change.").isEmpty)
     }
