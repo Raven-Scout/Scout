@@ -95,7 +95,7 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples it via Apple, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release.sh`). Example:
+Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples **both the app and the DMG** via Apple, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release.sh`). Example:
 
 ```bash
 scripts/release.sh 0.2.0
