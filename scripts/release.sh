@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build a Release Scout.app, sign it with Developer ID + hardened runtime,
-# notarize it with Apple, staple the ticket, package it as a DMG, and publish
-# as a GitHub Release. A notarized + stapled app opens with a normal
-# double-click — no Gatekeeper right-click dance for downloaders.
+# notarize and staple both the app and the DMG it ships in, then publish as a
+# GitHub Release. A notarized + stapled app opens with a normal double-click,
+# and a notarized DMG mounts without a Gatekeeper prompt — no right-click dance
+# for downloaders.
 #
 # Release notes are auto-generated from `git log <prev-tag>..HEAD`, grouped
 # by conventional-commit prefix (feat / fix / other), followed by the
@@ -23,8 +24,8 @@
 #     --apple-id <you@email> --team-id <TEAMID> --password <app-specific-pw>
 #
 # Escape hatches (for local iteration):
-#   SKIP_NOTARIZE=1  build + sign + DMG, but skip the Apple round-trip
-#                    (the app will NOT be stapled — Gatekeeper will still block it)
+#   SKIP_NOTARIZE=1  build + sign + DMG, but skip the Apple round-trips
+#                    (neither app nor DMG is stapled — Gatekeeper will still block)
 #   SKIP_RELEASE=1   do everything except tag/push/upload to GitHub
 
 set -euo pipefail
@@ -48,6 +49,15 @@ if ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
   echo "  + → Developer ID Application, or set SCOUT_SIGN_IDENTITY to match." >&2
   exit 1
 fi
+
+# Submit $1 to Apple's notary service, wait for a verdict, then staple the
+# ticket onto $2. stapler fails loudly on a rejected (Invalid) submission, so it
+# doubles as the success gate. To inspect a rejection:
+#   xcrun notarytool log <submission-id> --keychain-profile "$NOTARY_PROFILE"
+notarize_and_staple() {
+  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$2"
+}
 
 echo "→ Cleaning previous build"
 rm -rf "$BUILD_DIR"
@@ -92,19 +102,15 @@ codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 if [[ "${SKIP_NOTARIZE:-0}" == "1" ]]; then
-  echo "→ SKIP_NOTARIZE=1 set; skipping notarization (app will NOT be stapled)."
+  echo "→ SKIP_NOTARIZE=1 set; skipping notarization (app + DMG will NOT be stapled)."
 else
-  echo "→ Notarizing with Apple (profile: $NOTARY_PROFILE) — this can take a few minutes"
+  echo "→ Notarizing Scout.app (profile: $NOTARY_PROFILE) — this can take a few minutes"
   # notarytool wants an archive, not a raw .app — zip the bundle preserving its
-  # top-level dir, submit, and block until Apple returns a terminal status.
+  # top-level dir. Stapling the app means it launches offline even after a user
+  # copies it out of the DMG into /Applications.
   ZIP="$BUILD_DIR/Scout-$VERSION-notarize.zip"
   ditto -c -k --keepParent "$APP" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-  # stapler fails loudly if notarization was rejected (Invalid), so it doubles
-  # as the gate that notarization actually succeeded. To inspect a rejection:
-  #   xcrun notarytool log <submission-id> --keychain-profile "$NOTARY_PROFILE"
-  echo "→ Stapling notarization ticket to Scout.app"
-  xcrun stapler staple "$APP"
+  notarize_and_staple "$ZIP" "$APP"
   # Confirm Gatekeeper will accept the stapled app offline.
   spctl --assess --type execute --verbose=2 "$APP"
 fi
@@ -127,6 +133,19 @@ hdiutil create \
 
 echo "→ DMG ready: $DMG"
 ls -lh "$DMG" | awk '{print "  size:", $5}'
+
+if [[ "${SKIP_NOTARIZE:-0}" != "1" ]]; then
+  echo "→ Signing + notarizing the DMG so it also mounts without a Gatekeeper prompt"
+  # Sign the container itself (timestamp, but no hardened runtime — that flag is
+  # for executables, not disk images), then notarize + staple the DMG so the
+  # download is verifiable offline and skips the "downloaded from the Internet"
+  # mount prompt.
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+  notarize_and_staple "$DMG" "$DMG"
+  # Disk images assess as type "open" (not "execute"); the primary-signature
+  # context is required for non-app artifacts.
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+fi
 
 if [[ "${SKIP_RELEASE:-0}" == "1" ]]; then
   echo "→ SKIP_RELEASE=1 set; not tagging or uploading."
