@@ -15,13 +15,19 @@ final class SessionLogService: ObservableObject {
     private var watchTask: Task<Void, Never>?
     private var sweepTimer: Timer?
 
+    /// Where parsed-log results are cached between launches. `nil` (production
+    /// default) resolves to the per-user caches directory; tests inject a temp
+    /// URL for isolation.
+    private let parseCacheURLOverride: URL?
+
     init(
         logsDirectory: URL,
         trackerService: UsageTrackerService,
         gitService: GitService? = nil,
         fileEvents: any FileSystemEventSource,
         clock: any ClockSource = SystemClock(),
-        timeZone: TimeZone = .current
+        timeZone: TimeZone = .current,
+        parseCacheURL: URL? = nil
     ) {
         self.logsDirectory = logsDirectory
         self.trackerService = trackerService
@@ -29,6 +35,7 @@ final class SessionLogService: ObservableObject {
         self.fileEvents = fileEvents
         self.clock = clock
         self.timeZone = timeZone
+        self.parseCacheURLOverride = parseCacheURL
     }
 
     // MARK: - Filename parsing
@@ -127,7 +134,7 @@ final class SessionLogService: ObservableObject {
 
     // MARK: - Body parsing
 
-    struct ParsedBody: Equatable, Sendable {
+    struct ParsedBody: Equatable, Sendable, Codable {
         let endedAt: Date?
         let exitCode: Int?
         let status: RunStatus
@@ -355,7 +362,7 @@ final class SessionLogService: ObservableObject {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: logsDirectory,
-            includingPropertiesForKeys: [.fileSizeKey],
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             runs = []
@@ -365,15 +372,35 @@ final class SessionLogService: ObservableObject {
         // stalled by the per-file parsing loop (hundreds of files).
         // Commits are NOT fetched here — they're resolved lazily via
         // `commits(for:)` when the user opens a Run's detail pane.
-        let logURLs = entries.filter { $0.pathExtension == "log" }
+        // Identity (size + mtime) per log file keys the on-disk parse cache, so a
+        // relaunch re-parses only new or still-growing logs instead of the whole
+        // (unbounded) history — the launch-time CPU hang.
+        let logMetas: [LogFileMeta] = entries
+            .filter { $0.pathExtension == "log" }
+            .compactMap { url in
+                let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                guard let size = rv?.fileSize, let mtime = rv?.contentModificationDate else { return nil }
+                return LogFileMeta(url: url, name: url.lastPathComponent,
+                                   sizeBytes: Int64(size), modifiedAt: mtime)
+            }
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
         let tz = timeZone
+        let cacheURL = parseCacheURLOverride ?? Self.defaultParseCacheURL()
         let assembled = await Task.detached { () -> [Run] in
+            // Reuse cached parses for unchanged logs; parse only the rest.
+            let cache = Self.loadParseCache(at: cacheURL)
+            let resolved = Self.resolveCachedBodies(files: logMetas, cache: cache) { meta in
+                guard let filename = Self.parseFilename(meta.url, timeZone: tz) else { return nil }
+                return try? Self.parseBody(at: meta.url, filename: filename)
+            }
+            Self.saveParseCache(resolved.updatedCache, at: cacheURL)
+
             var out: [Run] = []
-            for url in logURLs {
+            for meta in logMetas {
+                let url = meta.url
                 guard let filename = Self.parseFilename(url, timeZone: tz) else { continue }
-                guard let body = try? Self.parseBody(at: url, filename: filename) else { continue }
+                guard let body = resolved.bodies[meta.name] else { continue }
                 let cost = await tracker.cost(
                     matching: filename.type.costTrackerKey,
                     near: filename.startedAt,

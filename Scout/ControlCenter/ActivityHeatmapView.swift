@@ -300,7 +300,7 @@ struct ActivityHeatmapView: View {
 
     // MARK: - Cell building
 
-    private struct HeatmapCell {
+    struct HeatmapCell {
         let date: Date
         let successes: Int
         let failures: Int
@@ -308,22 +308,45 @@ struct ActivityHeatmapView: View {
         var hasFailure: Bool { failures > 0 }
     }
 
-    private func buildCells(range: HeatmapRange) -> [HeatmapCell] {
-        let runs = state.sessionLogService.runs
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: Date())
-        let dayCount = range.days
-        let start = cal.date(byAdding: .day, value: -(dayCount - 1), to: today)!
-        return (0..<dayCount).map { offset in
-            let day = cal.date(byAdding: .day, value: offset, to: start)!
-            let dayRuns = runs.filter { cal.isDate($0.startedAt, inSameDayAs: day) }
-            let ok = dayRuns.filter { $0.status == .success }.count
-            let bad = dayRuns.filter {
-                [.failure, .timeout, .rateLimited].contains($0.status)
-            }.count
-            let cost = dayRuns.compactMap(\.cost).reduce(Decimal(0), +)
-            return HeatmapCell(date: day, successes: ok, failures: bad, cost: cost)
+    /// Pure, testable cell builder. Buckets runs by start-of-day **once**
+    /// (O(runs)) then indexes each day in O(1) — instead of scanning every run
+    /// per day with `Calendar.isDate(_:inSameDayAs:)` (O(days×runs) of expensive
+    /// ICU calendar calls), which pinned the main thread for seconds on the
+    /// year range (the Activity-heatmap hang).
+    static func heatmapCells(
+        runs: [Run], dayCount: Int, calendar: Calendar, today: Date
+    ) -> [HeatmapCell] {
+        let start = calendar.date(byAdding: .day, value: -(dayCount - 1), to: today)!
+        let failStatuses: Set<RunStatus> = [.failure, .timeout, .rateLimited]
+        // Single O(runs) pass: tally each run into its start-of-day bucket.
+        var byDay: [Date: (succ: Int, fail: Int, cost: Decimal)] = [:]
+        for run in runs {
+            let key = calendar.startOfDay(for: run.startedAt)
+            var bucket = byDay[key] ?? (0, 0, Decimal(0))
+            if run.status == .success {
+                bucket.succ += 1
+            } else if failStatuses.contains(run.status) {
+                bucket.fail += 1
+            }
+            if let c = run.cost { bucket.cost += c }
+            byDay[key] = bucket
         }
+        // O(days) lookups instead of O(days×runs) Calendar.isDate scans.
+        return (0..<dayCount).map { offset in
+            let day = calendar.date(byAdding: .day, value: offset, to: start)!
+            let b = byDay[calendar.startOfDay(for: day)] ?? (0, 0, Decimal(0))
+            return HeatmapCell(date: day, successes: b.succ, failures: b.fail, cost: b.cost)
+        }
+    }
+
+    private func buildCells(range: HeatmapRange) -> [HeatmapCell] {
+        let cal = Calendar.current
+        return Self.heatmapCells(
+            runs: state.sessionLogService.runs,
+            dayCount: range.days,
+            calendar: cal,
+            today: cal.startOfDay(for: Date())
+        )
     }
 }
 
