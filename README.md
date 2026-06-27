@@ -133,4 +133,4 @@ Scout is local-first and collects no data of its own — the macOS app only read
 - **Terms of Use** — https://raven-scout.github.io/scout-plugin/terms.html
 - **[Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md)** · **[Code of Conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md)**
 
-Scout is an independent project, not affiliated with Anthropic, Microsoft, Keboola, or any other company.
+Scout is an independent project, not affiliated with Anthropic, Microsoft, or any other company.

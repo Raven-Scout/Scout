@@ -6,7 +6,7 @@ import Foundation
 struct ProposalStatusTests {
 
     @Test func classifiesLeadingWordCaseInsensitively() {
-        #expect(ProposalStatus.parse("Proposed (awaiting Adam approval)") == .proposed)
+        #expect(ProposalStatus.parse("Proposed (awaiting Alex approval)") == .proposed)
         #expect(ProposalStatus.parse("approved") == .approved)
         #expect(ProposalStatus.parse("APPROVED (2026-06-14, via Scout app)") == .approved)
         #expect(ProposalStatus.parse("Rejected") == .rejected)
