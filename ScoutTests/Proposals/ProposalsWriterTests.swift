@@ -7,7 +7,7 @@ private let writerFixture = """
 ---
 date: 2026-06-13
 title: Add a risk-scoped PR re-resolution step
-status: Proposed (awaiting Adam approval)
+status: Proposed (awaiting Alex approval)
 target: SKILL.md
 parent: [[dreaming-proposals]]
 ---
@@ -31,7 +31,7 @@ struct ProposalsWriterRewriteTests {
             file: "p.md"
         )
         #expect(out.contains("status: Approved (2026-06-14, via Scout app)"))
-        #expect(!out.contains("status: Proposed (awaiting Adam approval)"))
+        #expect(!out.contains("status: Proposed (awaiting Alex approval)"))
         // Other frontmatter fields untouched.
         #expect(out.contains("title: Add a risk-scoped PR re-resolution step"))
         #expect(out.contains("target: SKILL.md"))

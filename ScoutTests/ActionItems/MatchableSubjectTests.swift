@@ -10,10 +10,10 @@ struct MatchableSubjectTests {
         // italic body and scoutctl fails to substring-match it. Bold-only
         // matches reliably.
         let task = make(
-            subject: "**🔥 🆕 Update kai-pricing-calculator-app with per-client conversion levers + margin maximizer** _(net-new from Kai's pricing meeting 6-7 AM ET; Jordan already iterating during meeting)_",
-            plainSubject: "🔥 🆕 Update kai-pricing-calculator-app with per-client conversion levers + margin maximizer _(net-new from Kai's pricing meeting 6-7 AM ET; Jordan already iterating during meeting)_"
+            subject: "**🔥 🆕 Update the pricing calculator app with per-client conversion levers + margin maximizer** _(net-new from the pricing review 6-7 AM ET; Alex already iterating during meeting)_",
+            plainSubject: "🔥 🆕 Update the pricing calculator app with per-client conversion levers + margin maximizer _(net-new from the pricing review 6-7 AM ET; Alex already iterating during meeting)_"
         )
-        #expect(task.matchableSubject == "🔥 🆕 Update kai-pricing-calculator-app with per-client conversion levers + margin maximizer")
+        #expect(task.matchableSubject == "🔥 🆕 Update the pricing calculator app with per-client conversion levers + margin maximizer")
     }
 
     @Test func preservesInnerMarkdownInBoldPortion() {
@@ -33,10 +33,10 @@ struct MatchableSubjectTests {
         // so we have to keep it too — stripping it would yield a substring
         // that doesn't exist in the title.
         let task = make(
-            subject: "**🔥 🆕 Close [PR #5526 (AI-3079 sandboxId metadata)](https://github.com/keboola/ui/pull/5526) with re-implement-on-OTel note** _(promoted 7:04 AM ET 5/20…)_",
-            plainSubject: "🔥 🆕 Close PR #5526 (AI-3079 sandboxId metadata) with re-implement-on-OTel note _(promoted 7:04 AM ET 5/20…)_"
+            subject: "**🔥 🆕 Close [PR #5526 (PROJ-3079 sandboxId metadata)](https://github.com/example-org/ui/pull/5526) with re-implement-on-OTel note** _(promoted 7:04 AM ET 5/20…)_",
+            plainSubject: "🔥 🆕 Close PR #5526 (PROJ-3079 sandboxId metadata) with re-implement-on-OTel note _(promoted 7:04 AM ET 5/20…)_"
         )
-        #expect(task.matchableSubject == "🔥 🆕 Close [PR #5526 (AI-3079 sandboxId metadata)](https://github.com/keboola/ui/pull/5526) with re-implement-on-OTel note")
+        #expect(task.matchableSubject == "🔥 🆕 Close [PR #5526 (PROJ-3079 sandboxId metadata)](https://github.com/example-org/ui/pull/5526) with re-implement-on-OTel note")
     }
 
     @Test func stripsPriorityEmojiInsideBold() {
@@ -47,10 +47,10 @@ struct MatchableSubjectTests {
         // urgent task with a markdown link in the title. Mirror scoutctl's
         // cleanup here.
         let task = make(
-            subject: "[#OIDC-MERGE] **🔴 Merge [mcp-server PR #546](https://github.com/keboola/mcp-server/pull/546) (AI-3295)** _(APPROVED…)_",
-            plainSubject: "🔴 Merge mcp-server PR #546 (AI-3295) _(APPROVED…)_"
+            subject: "[#OIDC-MERGE] **🔴 Merge [mcp-server PR #546](https://github.com/example-org/mcp-server/pull/546) (PROJ-3295)** _(APPROVED…)_",
+            plainSubject: "🔴 Merge mcp-server PR #546 (PROJ-3295) _(APPROVED…)_"
         )
-        #expect(task.matchableSubject == "Merge [mcp-server PR #546](https://github.com/keboola/mcp-server/pull/546) (AI-3295)")
+        #expect(task.matchableSubject == "Merge [mcp-server PR #546](https://github.com/example-org/mcp-server/pull/546) (PROJ-3295)")
     }
 
     @Test func stripsLeadingStatusEmoji() {
@@ -58,8 +58,8 @@ struct MatchableSubjectTests {
         // cleaned title. If Scout extracts a bold portion that begins with
         // one, drop it so the substring matches.
         let task = make(
-            subject: "**✅ DONE 12:01 PM ET** — Jordan merged himself.",
-            plainSubject: "✅ DONE 12:01 PM ET — Jordan merged himself."
+            subject: "**✅ DONE 12:01 PM ET** — Alex merged himself.",
+            plainSubject: "✅ DONE 12:01 PM ET — Alex merged himself."
         )
         #expect(task.matchableSubject == "DONE 12:01 PM ET")
     }
@@ -67,8 +67,8 @@ struct MatchableSubjectTests {
     @Test func unwrapsStrikethrough() {
         // STRIKETHROUGH `~~foo~~` is reduced to `foo` in scoutctl's title.
         let task = make(
-            subject: "**~~Send report~~** _(superseded by Jordan)_",
-            plainSubject: "Send report _(superseded by Jordan)_"
+            subject: "**~~Send report~~** _(superseded by Alex)_",
+            plainSubject: "Send report _(superseded by Alex)_"
         )
         #expect(task.matchableSubject == "Send report")
     }

@@ -20,7 +20,7 @@ struct ActionItemsWriterTests {
             subject: "Engage on PROJ-123",
             shortPrefix: nil,
             text: "Paging reviewer.",
-            author: "jordan"
+            author: "alex"
         ), displayedDate: date)
 
         let call = try #require(await recorder.calls.first)
@@ -29,7 +29,7 @@ struct ActionItemsWriterTests {
             "action-items", "add-comment",
             "/tmp/Scout/action-items/action-items-2026-04-20.md",
             "--subject", "Engage on PROJ-123",
-            "--comment", "jordan: Paging reviewer."
+            "--comment", "alex: Paging reviewer."
         ])
     }
 
@@ -256,13 +256,13 @@ struct ActionItemsWriterTests {
     }
 
     @Test func withShortPrefixReplacesPrefixPreservingPayload() {
-        let op = WriteOp.addComment(subject: "Subj", shortPrefix: nil, text: "hi", author: "jordan")
+        let op = WriteOp.addComment(subject: "Subj", shortPrefix: nil, text: "hi", author: "alex")
         let promoted = op.withShortPrefix("AB12")
         #expect(promoted.shortPrefix == "AB12")
         #expect(promoted.subject == "Subj")
         if case .addComment(_, _, let text, let author) = promoted {
             #expect(text == "hi")
-            #expect(author == "jordan")
+            #expect(author == "alex")
         } else {
             Issue.record("case changed unexpectedly")
         }

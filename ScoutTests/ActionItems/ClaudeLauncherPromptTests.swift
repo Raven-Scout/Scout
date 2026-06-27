@@ -27,7 +27,7 @@ struct ClaudeLauncherPromptTests {
         let task = makeTask(
             plainSubject: "Investigate pager storm",
             comments: [
-                TaskComment(author: "jordan", timestamp: "2026-04-20 10:00 AM ET",
+                TaskComment(author: "alex", timestamp: "2026-04-20 10:00 AM ET",
                             text: "Saw three alerts in ten minutes."),
                 TaskComment(author: "priya", timestamp: "",
                             text: "Probably related to the queue drain we shipped."),
@@ -35,7 +35,7 @@ struct ClaudeLauncherPromptTests {
         )
         let out = ClaudeLauncher.prompt(for: task)
         #expect(out.contains("Prior comments:"))
-        #expect(out.contains("- jordan (2026-04-20 10:00 AM ET): Saw three alerts in ten minutes."))
+        #expect(out.contains("- alex (2026-04-20 10:00 AM ET): Saw three alerts in ten minutes."))
         #expect(out.contains("- priya: Probably related to the queue drain we shipped."))
     }
 
