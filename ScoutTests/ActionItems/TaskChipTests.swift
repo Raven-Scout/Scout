@@ -26,8 +26,8 @@ struct TaskChipTests {
     }
 
     @Test func surfacesRepoOnlyWhenSingleRepo() {
-        let same = TaskChip.chips(for: task(links: [pr("keboola/mcp-server", 1), pr("keboola/mcp-server", 2)]))
-        #expect(same.contains { $0.label == "keboola/mcp-server" })
+        let same = TaskChip.chips(for: task(links: [pr("example-org/mcp-server", 1), pr("example-org/mcp-server", 2)]))
+        #expect(same.contains { $0.label == "example-org/mcp-server" })
 
         let mixed = TaskChip.chips(for: task(links: [pr("a/b", 1), pr("c/d", 2)]))
         #expect(!mixed.contains { $0.glyph == .github && $0.label.contains("/") })
@@ -35,7 +35,7 @@ struct TaskChipTests {
 
     @Test func linearAndSlackChips() {
         let chips = TaskChip.chips(for: task(links: [
-            .linear(id: "AI-1"),
+            .linear(id: "PROJ-1"),
             .slackThread(URL(string: "https://x.slack.com/archives/C/p1")!),
         ]))
         #expect(chips.contains { $0.glyph == .linear && $0.label == "Linear" })
@@ -51,7 +51,7 @@ struct TaskChipTests {
         let chips = TaskChip.chips(
             for: task(links: [
                 .slackThread(URL(string: "https://x.slack.com/archives/C/p1")!),
-                .linear(id: "AI-1"),
+                .linear(id: "PROJ-1"),
                 pr("a/b", 1),
             ]),
             carriedLabel: "Jun 2"
@@ -62,15 +62,15 @@ struct TaskChipTests {
     }
 
     @Test func prChipCarriesPRUrls() {
-        let chips = TaskChip.chips(for: task(links: [pr("keboola/crm", 925)]))
+        let chips = TaskChip.chips(for: task(links: [pr("example-org/crm", 925)]))
         let prChip = chips.first { $0.label == "1 PR" }
-        #expect(prChip?.links.map(\.url) == [URL(string: "https://github.com/keboola/crm/pull/925")!])
+        #expect(prChip?.links.map(\.url) == [URL(string: "https://github.com/example-org/crm/pull/925")!])
     }
 
     @Test func repoChipOpensRepoHomepage() {
-        let chips = TaskChip.chips(for: task(links: [pr("keboola/crm", 925)]))
-        let repoChip = chips.first { $0.label == "keboola/crm" }
-        #expect(repoChip?.links.map(\.url) == [URL(string: "https://github.com/keboola/crm")!])
+        let chips = TaskChip.chips(for: task(links: [pr("example-org/crm", 925)]))
+        let repoChip = chips.first { $0.label == "example-org/crm" }
+        #expect(repoChip?.links.map(\.url) == [URL(string: "https://github.com/example-org/crm")!])
     }
 
     @Test func multiPRChipListsEachPR() {

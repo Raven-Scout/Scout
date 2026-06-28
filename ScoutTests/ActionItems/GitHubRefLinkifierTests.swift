@@ -5,18 +5,18 @@ import Foundation
 @Suite("GitHub ref linkifier")
 struct GitHubRefLinkifierTests {
     @Test func linkifiesQualifiedRef() {
-        let out = GitHubRefLinkifier.linkify("See keboola/mcp-server#553 for details.")
-        #expect(out == "See [keboola/mcp-server#553](https://github.com/keboola/mcp-server/issues/553) for details.")
+        let out = GitHubRefLinkifier.linkify("See example-org/mcp-server#553 for details.")
+        #expect(out == "See [example-org/mcp-server#553](https://github.com/example-org/mcp-server/issues/553) for details.")
     }
 
     @Test func linkifiesBareRefsWhenSingleRepoInferable() {
         // The issue #17 example: bare #NNN refs plus a single repo slug mention.
         let out = GitHubRefLinkifier.linkify(
-            "Triage mcp-server review requests — #555 (bump GH Actions), #498, #553 in keboola/mcp-server"
+            "Triage mcp-server review requests — #555 (bump GH Actions), #498, #553 in example-org/mcp-server"
         )
-        #expect(out.contains("[#555](https://github.com/keboola/mcp-server/issues/555)"))
-        #expect(out.contains("[#498](https://github.com/keboola/mcp-server/issues/498)"))
-        #expect(out.contains("[#553](https://github.com/keboola/mcp-server/issues/553)"))
+        #expect(out.contains("[#555](https://github.com/example-org/mcp-server/issues/555)"))
+        #expect(out.contains("[#498](https://github.com/example-org/mcp-server/issues/498)"))
+        #expect(out.contains("[#553](https://github.com/example-org/mcp-server/issues/553)"))
     }
 
     @Test func leavesBareRefsPlainWhenNoRepo() {
@@ -69,10 +69,10 @@ struct GitHubRefLinkifierTests {
     }
 
     @Test func doesNotTouchWikilink() {
-        let input = "Context [[issue-tracker]] for keboola/mcp-server#1."
+        let input = "Context [[issue-tracker]] for example-org/mcp-server#1."
         let out = GitHubRefLinkifier.linkify(input)
         #expect(out.contains("[[issue-tracker]]"))
-        #expect(out.contains("[keboola/mcp-server#1](https://github.com/keboola/mcp-server/issues/1)"))
+        #expect(out.contains("[example-org/mcp-server#1](https://github.com/example-org/mcp-server/issues/1)"))
     }
 
     @Test func doesNotTouchInlineCode() {

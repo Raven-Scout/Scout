@@ -56,11 +56,11 @@ struct TaskBodyParserTests {
     }
 
     @Test func pullsTrailingWikilinkCluster() {
-        let body = "The point. Tooling: [[some-skill]] skill. [[ai-costs]] [[kai-backend]] [[people/martin-vasko]]"
+        let body = "The point. Tooling: [[some-skill]] skill. [[cost-tracking]] [[backend-service]] [[people/sam-rivera]]"
         let blocks = TaskBodyParser.blocks(from: body)
         #expect(blocks == [
             .paragraph(label: nil, text: "The point. Tooling: [[some-skill]] skill."),
-            .links(["ai-costs", "kai-backend", "people/martin-vasko"]),
+            .links(["cost-tracking", "backend-service", "people/sam-rivera"]),
         ])
     }
 
@@ -71,16 +71,16 @@ struct TaskBodyParserTests {
     }
 
     @Test func realisticBodyDecomposesIntoBlocks() {
-        let body = "**Overnight progress:** ten sessions audited the pipelines. **Why:** [[AI-2619]] ruled out drift, leaving a residual. **5-step checklist:** (1) split LS traces; (2) redo per-stack; (3) verify child runs; (4) grep prod Helm; (5) carve out non-Kai. **Caveat:** OTel never emits cost. [[ai-costs]] [[kai-backend]] [[evals]]"
+        let body = "**Overnight progress:** ten sessions audited the pipelines. **Why:** [[PROJ-2619]] ruled out drift, leaving a residual. **5-step checklist:** (1) split trace spans; (2) redo per-stack; (3) verify child runs; (4) grep prod Helm; (5) carve out non-core. **Caveat:** OTel never emits cost. [[cost-tracking]] [[backend-service]] [[evals]]"
         let blocks = TaskBodyParser.blocks(from: body)
         #expect(blocks.count == 5)
         guard case .paragraph(label: "Overnight progress", _) = blocks[0] else { Issue.record("0"); return }
         guard case .paragraph(label: "Why", _) = blocks[1] else { Issue.record("1"); return }
         guard case .steps(label: "5-step checklist", let items) = blocks[2] else { Issue.record("2"); return }
         #expect(items.count == 5)
-        #expect(items[0] == "split LS traces")
+        #expect(items[0] == "split trace spans")
         guard case .paragraph(label: "Caveat", _) = blocks[3] else { Issue.record("3"); return }
         guard case .links(let targets) = blocks[4] else { Issue.record("4"); return }
-        #expect(targets == ["ai-costs", "kai-backend", "evals"])
+        #expect(targets == ["cost-tracking", "backend-service", "evals"])
     }
 }

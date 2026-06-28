@@ -439,7 +439,7 @@ extension ActionItemsParser {
             // Sub-bullet comment line attached to the last task: scoutctl
             // writes `  - <author>: <text>`. Distinct from the blockquote
             // form above. Match must run BEFORE the bare-bullet `bulletRe`
-            // path so `  - jordan: hello` becomes a comment rather than a
+            // path so `  - alex: hello` becomes a comment rather than a
             // sub-task body.
             if inSection,
                let last = currentTasks.last,

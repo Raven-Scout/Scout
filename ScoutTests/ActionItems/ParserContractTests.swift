@@ -13,7 +13,7 @@ struct ParserContractTests {
     /// On an intentional corpus change: re-copy the canonical corpus into both
     /// repos, then update this digest to the output of
     /// `shasum -a 256 ScoutTests/Fixtures/parser-corpus.json`.
-    static let canonicalSHA256 = "4ebe8ae34a5b945bb5165ebd6bb6b818986c2cafec0ad30910bfd3fcb66e21a1"
+    static let canonicalSHA256 = "745dc8f886c52cd3a2273a2f5fd76934782492b159a6f63ab0d9e6978114511f"
 
     struct Corpus: Decodable {
         let entries: [Entry]

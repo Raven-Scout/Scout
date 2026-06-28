@@ -14,18 +14,18 @@ struct PerFileItemWriterPureTests {
     }
     @Test func renderEmitsQuotedFrontmatterAndStrippableBody() throws {
         let text = PerFileItemWriter.renderItemFile(title: "Build a config: store", status: .open,
-            priority: .high, date: "2026-06-19", source: "Jordan DM", area: nil, body: "The body.")
+            priority: .high, date: "2026-06-19", source: "Alex DM", area: nil, body: "The body.")
         #expect(text.hasPrefix("---\n"))
         #expect(text.contains("title: \"Build a config: store\""))   // colon -> quoted
         #expect(text.contains("status: open"))
         #expect(text.contains("priority: high"))
         #expect(text.contains("date: 2026-06-19"))
-        #expect(text.contains("source: \"Jordan DM\""))
+        #expect(text.contains("source: \"Alex DM\""))
         #expect(!text.contains("area:"))
         #expect(text.contains("\n# Build a config: store\n"))
         // round-trips through the parser
         let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: URL(fileURLWithPath: "/tmp/x.md")))
-        #expect(item.title == "Build a config: store" && item.status == .open && item.priority == .high && item.source == "Jordan DM")
+        #expect(item.title == "Build a config: store" && item.status == .open && item.priority == .high && item.source == "Alex DM")
     }
     @Test func renderResearchAreaNoSource() {
         let text = PerFileItemWriter.renderItemFile(title: "T", status: .open, priority: .urgent,
@@ -85,10 +85,10 @@ struct PerFileItemWriterE2ETests {
         let runner = okRunner()
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
         let url = try await writer.addItem(title: "Alpha thing", priority: .high, body: "do alpha",
-                                           source: "Jordan DM", area: nil, in: dir, noun: "wishlist item")
+                                           source: "Alex DM", area: nil, in: dir, noun: "wishlist item")
         #expect(url.lastPathComponent == "2026-06-19-alpha-thing.md")
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(written.contains("status: open") && written.contains("priority: high") && written.contains("source: \"Jordan DM\""))
+        #expect(written.contains("status: open") && written.contains("priority: high") && written.contains("source: \"Alex DM\""))
         let commit = try #require(runner.calls.last)
         #expect(commit.arguments.contains("commit"))
         #expect(commit.arguments.contains("app: add wishlist item Alpha thing"))

@@ -173,7 +173,7 @@ struct ActionItemsParserTests {
 
         let withComment = Self.stableDoc.replacingOccurrences(
             of: "- [ ] **First task** — needs attention",
-            with: "- [ ] **First task** — needs attention\n  - jordan: looking into it"
+            with: "- [ ] **First task** — needs attention\n  - alex: looking into it"
         )
         let after = try ActionItemsParser.parse(
             text: withComment, sourceURL: Self.stableURL, sourceBytes: withComment.utf8.count)

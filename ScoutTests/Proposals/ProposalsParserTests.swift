@@ -8,7 +8,7 @@ private let proposalFixture = """
 ---
 date: 2026-06-13
 title: Add a risk-scoped PR re-resolution step
-status: Proposed (awaiting Adam approval)
+status: Proposed (awaiting Alex approval)
 target: SKILL.md
 parent: [[dreaming-proposals]]
 ---
@@ -49,7 +49,7 @@ struct ProposalsParserTests {
             let text = "---\nstatus: \(raw)\ntitle: t\n---\nbody"
             return ProposalsParser.parseFile(contents: text, fileURL: url("2026-01-01-x.md"))!.status
         }
-        #expect(status("Proposed (awaiting Adam approval)") == .proposed)
+        #expect(status("Proposed (awaiting Alex approval)") == .proposed)
         #expect(status("Pending (auto-apply after 2026-06-18)") == .pending(autoApplyDate: "2026-06-18"))
         #expect(status("Approved — 2026-06-02") == .approved)
         #expect(status("Rejected") == .rejected)

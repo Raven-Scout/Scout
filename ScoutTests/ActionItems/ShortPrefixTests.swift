@@ -100,7 +100,7 @@ struct ActionItemsParseWithPrefixTests {
         ## 🔴 Urgent
 
         - [ ] [#ABCD] **A task** body
-          > jordan: a blockquote comment
+          > alex: a blockquote comment
         """
         let doc = try ActionItemsParser.parse(
             text: md,
