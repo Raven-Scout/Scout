@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// The center pane: views and edits a single knowledge-base file. Source editing
 /// for `.md`/`.yaml`, a rendered preview for markdown. Saves go through
