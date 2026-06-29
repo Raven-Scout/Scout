@@ -27,22 +27,24 @@ struct KBGraphCanvas: View {
     }
 
     var body: some View {
-        ForceDirectedGraph(states: state) {
+        // Grape renders node symbols and text labels at a fixed pixel size — the
+        // viewport zoom only spreads node positions apart, it does NOT scale
+        // symbols/text. To get Obsidian-like behavior (zoom in → bigger, readable
+        // labels) we read the live zoom and multiply node radius + label font by
+        // it. `state` is Observable, so a pinch re-renders and re-rasterizes the
+        // labels at the new size.
+        let z = min(5.0, max(0.6, Double(state.modelTransform.scale)))
+        return ForceDirectedGraph(states: state) {
             Series(graph.nodes) { node in
                 NodeMark(id: node.id)
                     .symbol(Circle())
-                    .symbolSize(radius: radius(node))
+                    .symbolSize(radius: radius(node) * z)
                     .foregroundStyle(node.group.color)
                     .stroke()
-                    // Use the Text-annotation overload (not a View closure): Text
-                    // labels are drawn on the graph canvas and scale with the
-                    // viewport transform, so zooming enlarges them (Obsidian-like).
-                    // A View-closure annotation renders in screen space and stays
-                    // a fixed tiny size no matter the zoom.
                     .annotation(alignment: .bottom, offset: .init(dx: 0, dy: 1)) { () -> Text? in
                         guard node.isCenter || node.degree >= labelMinDegree else { return nil }
                         return Text(node.label)
-                            .font(DS.sans(node.isCenter ? 9 : 8,
+                            .font(DS.sans(CGFloat((node.isCenter ? 9.0 : 8.0) * z),
                                           weight: node.isCenter ? .bold : .medium))
                             .foregroundColor(DS.Ink.p1)
                     }
@@ -63,8 +65,9 @@ struct KBGraphCanvas: View {
         }
     }
 
+    /// Base node radius (multiplied by the live zoom in `body`).
     private func radius(_ node: KBGraphNode) -> Double {
-        node.isCenter ? 6 : max(4, min(8, 4 + Double(node.degree) * 0.6))
+        node.isCenter ? 3.6 : max(2.4, min(4.6, 2.4 + Double(node.degree) * 0.35))
     }
 }
 
