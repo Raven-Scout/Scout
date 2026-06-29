@@ -28,6 +28,9 @@ struct KBRightPanel: View {
                 KBLocalGraphView(graph: service.localGraph(around: relPath),
                                  onNavigate: onNavigate)
                     .padding(.bottom, 8)
+                    // Rebuild (fresh simulation, re-centered) whenever the open
+                    // note changes, so the graph always reflects the current page.
+                    .id(relPath)
             }
         }
         .frame(maxHeight: .infinity)

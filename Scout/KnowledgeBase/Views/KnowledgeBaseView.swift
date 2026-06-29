@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Knowledge Base tab: a file browser + editor + links/graph panel over
 /// `~/Scout/knowledge-base/`. Left is the tree (with full-text search and "New
@@ -16,6 +17,8 @@ struct KnowledgeBaseView: View {
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
+    /// Width of the Links/Graph panel — drag its left edge to resize. Persisted.
+    @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
 
     private var selectedNode: KBNode? {
         guard let selectedPath else { return nil }
@@ -28,10 +31,10 @@ struct KnowledgeBaseView: View {
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let node = selectedNode, node.isEditable {
-                divider
+                PaneResizeHandle(width: $rightPanelWidth, minWidth: 220, maxWidth: 640)
                 KBRightPanel(relPath: node.relativePath, service: service,
                              onNavigate: { navigate(toPath: $0) })
-                    .frame(width: 300)
+                    .frame(width: CGFloat(rightPanelWidth))
             }
         }
         .onAppear { service.load() }
@@ -320,5 +323,42 @@ struct KBNewFileSheet: View {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         onCreate(trimmed, selectedURL)
+    }
+}
+
+/// A draggable vertical divider that resizes the pane to its right. Drag left to
+/// widen, right to narrow; shows a resize cursor on hover. Width is clamped to
+/// [minWidth, maxWidth].
+struct PaneResizeHandle: View {
+    @Binding var width: Double
+    let minWidth: Double
+    let maxWidth: Double
+
+    @State private var dragStartWidth: Double? = nil
+
+    var body: some View {
+        Rectangle()
+            .fill(DS.Rule.soft)
+            .frame(width: 0.5)
+            .overlay(
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(coordinateSpace: .global)
+                            .onChanged { value in
+                                let base = dragStartWidth ?? width
+                                if dragStartWidth == nil { dragStartWidth = width }
+                                // Divider sits on the pane's left edge: dragging
+                                // left (negative dx) widens the pane.
+                                width = min(maxWidth, max(minWidth, base - Double(value.translation.width)))
+                            }
+                            .onEnded { _ in dragStartWidth = nil }
+                    )
+            )
     }
 }
