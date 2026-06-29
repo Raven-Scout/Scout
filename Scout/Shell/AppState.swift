@@ -47,6 +47,10 @@ final class AppState: ObservableObject {
     let proposalsDocumentService: ProposalsDocumentService
     let proposalsWriterBox: ProposalsWriterBox
 
+    // Reply Drafts (drafts/ review — prepared replies the user owes)
+    let replyDraftsDocumentService: ReplyDraftsDocumentService
+    let replyDraftsWriterBox: ReplyDraftsWriterBox
+
     // Per-file Wishlist + Research tabs
     let wishlistDocumentService: PerFileDocumentService
     let researchDocumentService: PerFileDocumentService
@@ -154,6 +158,23 @@ final class AppState: ObservableObject {
         )
         let proposalsWriterBox = ProposalsWriterBox(writer: proposalsWriter)
 
+        // Reply drafts live in `drafts/` (the sibling `drafts/README.md` is just
+        // a doc with no frontmatter, so the parser skips it). The folder is
+        // overridable via the `replyDraftsPath` setting; takes effect on next
+        // launch. Mirrors the dreamingProposalsPath pattern.
+        let replyDraftsDirURL: URL = {
+            let override = UserDefaults.standard
+                .string(forKey: "replyDraftsPath")?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let override, !override.isEmpty {
+                return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+            }
+            return scoutDir.appendingPathComponent("drafts")
+        }()
+        let replyDraftsDoc = ReplyDraftsDocumentService(directoryURL: replyDraftsDirURL, fileEvents: watcher)
+        let replyDraftsWriter = ReplyDraftsWriter(scoutDirectory: scoutDir, gitService: git)
+        let replyDraftsWriterBox = ReplyDraftsWriterBox(writer: replyDraftsWriter)
+
         // Per-file Wishlist + Research: resolve directory (override key or default
         // relative path under scoutDir), matching the dreamingProposalsPath pattern.
         func perFileDir(_ config: PerFileTabConfig) -> URL {
@@ -186,6 +207,8 @@ final class AppState: ObservableObject {
         self.actionItemsEnvState = envState
         self.proposalsDocumentService = proposalsDoc
         self.proposalsWriterBox = proposalsWriterBox
+        self.replyDraftsDocumentService = replyDraftsDoc
+        self.replyDraftsWriterBox = replyDraftsWriterBox
         self.wishlistDocumentService = wishlistDoc
         self.researchDocumentService = researchDoc
         self.perFileWriterBox = perFileWriterBox
@@ -207,6 +230,10 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        replyDraftsDoc.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
@@ -222,6 +249,8 @@ final class AppState: ObservableObject {
                 // Load wishlist + research so their badges are ready on launch.
                 wishlistDoc.load()
                 researchDoc.load()
+                // Load reply drafts so the badge is ready on launch.
+                replyDraftsDoc.load()
             }
             await self?.recomputeMenuStatus()
 

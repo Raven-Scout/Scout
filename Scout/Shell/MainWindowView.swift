@@ -18,6 +18,7 @@ struct MainWindowView: View {
         NavigationSplitView {
             SidebarView(selection: $selection,
                         proposalsBadge: proposalsService.pendingCount,
+                        replyDraftsBadge: appState.replyDraftsDocumentService.pendingCount,
                         wishlistBadge: appState.wishlistDocumentService.activeCount,
                         researchBadge: appState.researchDocumentService.activeCount)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
@@ -50,6 +51,10 @@ struct MainWindowView: View {
             ProposalsView()
                 .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(appState.proposalsWriterBox)
+        case .replyDrafts:
+            RepliesView()
+                .environmentObject(appState.replyDraftsDocumentService)
+                .environmentObject(appState.replyDraftsWriterBox)
         case .wishlist:
             PerFileListView(config: .wishlist)
                 .environmentObject(appState.wishlistDocumentService)
@@ -65,7 +70,7 @@ struct MainWindowView: View {
 }
 
 enum SidebarItem: Hashable {
-    case controlCenter, actionItems, schedules, proposals, wishlist, research, settings
+    case controlCenter, actionItems, schedules, proposals, replyDrafts, wishlist, research, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
@@ -74,6 +79,7 @@ enum SidebarItem: Hashable {
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
         case .proposals:     return "proposals"
+        case .replyDrafts:   return "replies"
         case .wishlist:      return "wishlist"
         case .research:      return "research"
         case .settings:      return "settings"
