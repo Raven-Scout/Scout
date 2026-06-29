@@ -63,3 +63,52 @@ jobs:
             TestResults.xcresult
             xcodebuild.log
           if-no-files-found: ignore
+
+  app:
+    name: Build app artifact
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select newest Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode_*.app 2>/dev/null \
+            | grep -E '/Xcode_[0-9.]+\.app$' | sort -V | tail -1)"
+          if [ -n "$newest" ]; then
+            echo "Selecting $newest"
+            sudo xcode-select -s "$newest/Contents/Developer"
+          else
+            echo "No Xcode_<version>.app found; using image default."
+          fi
+
+      # Unsigned Release build. The app runs locally after the download's
+      # quarantine flag is cleared (see the PR notes for the xattr command).
+      - name: Build Scout.app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Scout.xcodeproj \
+            -scheme Scout \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee build-app.log
+
+      # ditto preserves the bundle's symlinks/permissions; upload-artifact then
+      # wraps this zip (so the download unzips to Scout.zip → Scout.app).
+      - name: Package Scout.app
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent Scout.app "$GITHUB_WORKSPACE/Scout.zip"
+
+      - name: Upload Scout.app
+        uses: actions/upload-artifact@v7
+        with:
+          name: Scout-app
+          path: Scout.zip
+          if-no-files-found: error
