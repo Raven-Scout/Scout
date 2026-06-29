@@ -135,3 +135,62 @@ struct KBMarkdownPreviewParserTests {
         #expect(blocks.contains(.prose("below")))
     }
 }
+
+@Suite("KBMarkdownPreview tables")
+struct KBMarkdownPreviewTableTests {
+    @Test func detectsSeparatorButNotHorizontalRule() {
+        #expect(KBMarkdownPreview.isTableSeparator("|---|---|"))
+        #expect(KBMarkdownPreview.isTableSeparator("| :--- | ---: |"))
+        #expect(!KBMarkdownPreview.isTableSeparator("---"))      // hr, no pipe
+        #expect(!KBMarkdownPreview.isTableSeparator("| a | b |")) // content row
+    }
+    @Test func splitsRowDroppingOuterPipes() {
+        #expect(KBMarkdownPreview.splitRow("| Name | Role | Email |") == ["Name", "Role", "Email"])
+    }
+    @Test func splitsRowHonoringEscapedPipeInWikilink() {
+        // `[[people\|Jordan]]` — the escaped pipe is cell content, not a column break.
+        let cells = KBMarkdownPreview.splitRow("| Jan | sees [[people\\|Jordan]] | x |")
+        #expect(cells == ["Jan", "sees [[people|Jordan]]", "x"])
+    }
+    @Test func parsesTableBlockWithPaddedRows() {
+        let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 |"
+        let blocks = KBMarkdownPreview.parse(md)
+        #expect(blocks == [
+            .table(headers: ["A", "B", "C"], rows: [["1", "2", "3"], ["4", "5", ""]])
+        ])
+    }
+    @Test func tableEndsAtBlankLine() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n\nafter"
+        let blocks = KBMarkdownPreview.parse(md)
+        #expect(blocks.contains(.table(headers: ["A", "B"], rows: [["1", "2"]])))
+        #expect(blocks.contains(.prose("after")))
+    }
+}
+
+@Suite("KBMarkdownPreview metadata collapse")
+struct KBMarkdownPreviewPartitionTests {
+    @Test func collapsesChangelogAfterTitle() {
+        let blocks = KBMarkdownPreview.parse(
+            "# People\n**Last updated:** today\n**Prev:** yesterday\n\nReal intro.\n\n## Team")
+        let parts = KBMarkdownPreview.partition(blocks)
+        #expect(parts.title == .heading(level: 1, text: "People"))
+        // The changelog para collapses into history; the intro stays in the body.
+        #expect(parts.history.count == 1)
+        #expect(parts.rest.contains(.prose("Real intro.")))
+        #expect(parts.rest.contains(.heading(level: 2, text: "Team")))
+        #expect(!parts.rest.contains { KBMarkdownPreview.isMetadata($0) })
+    }
+    @Test func noTitleNoCollapseWhenPlain() {
+        let blocks = KBMarkdownPreview.parse("Just a normal note.\n\nSecond paragraph.")
+        let parts = KBMarkdownPreview.partition(blocks)
+        #expect(parts.title == nil)
+        #expect(parts.history.isEmpty)
+        #expect(parts.rest.count == 2)
+    }
+    @Test func identifiesMetadataProse() {
+        #expect(KBMarkdownPreview.isMetadata(.prose("**Parent:** [[knowledge-base]]")))
+        #expect(KBMarkdownPreview.isMetadata(.prose("**Prev:** 2026-05-20 ...")))
+        #expect(!KBMarkdownPreview.isMetadata(.prose("Normal text **bold** inside")))
+        #expect(!KBMarkdownPreview.isMetadata(.heading(level: 1, text: "Title")))
+    }
+}

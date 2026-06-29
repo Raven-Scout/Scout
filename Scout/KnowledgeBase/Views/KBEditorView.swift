@@ -20,7 +20,10 @@ struct KBEditorView: View {
     @State private var draft: String = ""
     @State private var originalText: String = ""
     @State private var baseline: Date? = nil
-    @State private var mode: Mode = .edit
+    // Business users read first: markdown opens rendered, editing is one click
+    // away. loadFile() forces .edit for non-markdown (YAML) where there is no
+    // preview renderer.
+    @State private var mode: Mode = .preview
     @State private var isSaving = false
     @State private var errorMessage: String? = nil
     @State private var showConflict = false
