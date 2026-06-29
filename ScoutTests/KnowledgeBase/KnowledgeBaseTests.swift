@@ -307,6 +307,72 @@ struct KBDocSegmentTests {
         let out = KBDocSegment.replaceCell(in: src, sourceLine: 12, col: 0, value: "a|b")
         #expect(out.contains(#"| a\|b | 2 |"#))
     }
+
+    @Test func replaceLinesAcceptsMultilineReplacement() {
+        let segs = KBDocSegment.segments(from: src)
+        let para = segs.first { $0.kind == .paragraph }!
+        let out = KBDocSegment.replaceLines(in: src, start: para.lineStart, end: para.lineEnd,
+                                            with: "Line one\nLine two")
+        #expect(out.contains("Line one\nLine two"))
+        #expect(out.contains("# Title"))
+    }
+
+    @Test func replaceLinesOutOfRangeIsNoOp() {
+        #expect(KBDocSegment.replaceLines(in: src, start: 999, end: 1000, with: "x") == src)
+    }
+
+    @Test func replaceCellOutOfRangeIsNoOp() {
+        #expect(KBDocSegment.replaceCell(in: src, sourceLine: 12, col: 9, value: "x") == src)
+        #expect(KBDocSegment.replaceCell(in: src, sourceLine: 999, col: 0, value: "x") == src)
+    }
+
+    @Test func codeFenceIsOneSegmentIncludingFences() {
+        let doc = "before\n\n```swift\nlet x = 1\n```\n\nafter"
+        let segs = KBDocSegment.segments(from: doc)
+        let code = segs.first { $0.kind == .code }
+        #expect(code?.raw == "```swift\nlet x = 1\n```")
+        #expect(segs.contains { $0.kind == .paragraph && $0.raw == "before" })
+        #expect(segs.contains { $0.kind == .paragraph && $0.raw == "after" })
+    }
+
+    @Test func blockquoteGroupsConsecutiveLines() {
+        let doc = "> line a\n> line b\n\nnormal"
+        let segs = KBDocSegment.segments(from: doc)
+        let quote = segs.first { $0.kind == .quote }
+        #expect(quote?.lineStart == 0 && quote?.lineEnd == 1)
+    }
+
+    @Test func multilineParagraphSpansLines() {
+        let doc = "one\ntwo\nthree"
+        let segs = KBDocSegment.segments(from: doc)
+        #expect(segs.count == 1)
+        #expect(segs[0].kind == .paragraph)
+        #expect(segs[0].lineStart == 0 && segs[0].lineEnd == 2)
+    }
+}
+
+@Suite("KnowledgeBaseFileWriter symlink paths")
+struct KBWriterSymlinkTests {
+    @Test func relativePathResolvesSymlinkedRepo() throws {
+        let fm = FileManager.default
+        let real = fm.temporaryDirectory.appendingPathComponent("kbreal-\(UUID().uuidString)")
+        let kb = real.appendingPathComponent("knowledge-base")
+        try fm.createDirectory(at: kb, withIntermediateDirectories: true)
+        let file = kb.appendingPathComponent("people.md")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        let link = fm.temporaryDirectory.appendingPathComponent("kblink-\(UUID().uuidString)")
+        try fm.createSymbolicLink(at: link, withDestinationURL: real)
+        defer { try? fm.removeItem(at: link); try? fm.removeItem(at: real) }
+
+        // Repo via symlink, file via the real (symlink-resolved) path — the exact
+        // mismatch that produced "people.md is outside the knowledge base".
+        #expect(KnowledgeBaseFileWriter.relativePathInRepo(fileURL: file, repo: link)
+                == "knowledge-base/people.md")
+        // Both via the symlink path.
+        let fileViaLink = link.appendingPathComponent("knowledge-base/people.md")
+        #expect(KnowledgeBaseFileWriter.relativePathInRepo(fileURL: fileViaLink, repo: link)
+                == "knowledge-base/people.md")
+    }
 }
 
 @Suite("KBMarkdownPreview metadata collapse")
