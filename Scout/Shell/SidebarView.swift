@@ -22,6 +22,7 @@ struct SidebarView: View {
             row(.proposals,     label: "Proposals",      system: "lightbulb",        badge: proposalsBadge)
             row(.wishlist,      label: "Wishlist",       system: "star",             badge: wishlistBadge)
             row(.research,      label: "Research",       system: "magnifyingglass",  badge: researchBadge)
+            row(.knowledgeBase, label: "Knowledge Base", system: "books.vertical")
             Spacer().frame(height: 10)
             groupLabel("App")
             row(.settings,      label: "Settings",       system: "gearshape")
