@@ -52,6 +52,10 @@ final class AppState: ObservableObject {
     let researchDocumentService: PerFileDocumentService
     let perFileWriterBox: PerFileItemWriterBox
 
+    // Knowledge Base (browse + edit ~/Scout/knowledge-base/)
+    let knowledgeBaseService: KnowledgeBaseService
+    let knowledgeBaseWriterBox: KnowledgeBaseWriterBox
+
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
@@ -170,6 +174,11 @@ final class AppState: ObservableObject {
         let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: git)
         let perFileWriterBox = PerFileItemWriterBox(writer: perFileWriter)
 
+        // Knowledge Base: tree service over `knowledge-base/` + whole-file writer.
+        let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: watcher)
+        let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
+        let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
+
         self.fileWatcher = watcher
         self.gitService = git
         self.trackerService = tracker
@@ -189,6 +198,8 @@ final class AppState: ObservableObject {
         self.wishlistDocumentService = wishlistDoc
         self.researchDocumentService = researchDoc
         self.perFileWriterBox = perFileWriterBox
+        self.knowledgeBaseService = kbService
+        self.knowledgeBaseWriterBox = kbWriterBox
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
         self.runner = runner
