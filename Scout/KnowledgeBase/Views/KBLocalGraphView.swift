@@ -37,7 +37,7 @@ struct KBGraphCanvas: View {
         } force: {
             .manyBody(strength: -28)
             .center()
-            .link(originalLength: 42, stiffness: .weightedByDegree { _, _ in 1.0 })
+            .link(originalLength: 42.0, stiffness: .weightedByDegree { _, _ in 1.0 })
         }
         .graphOverlay { proxy in
             Rectangle().fill(.clear).contentShape(Rectangle())
