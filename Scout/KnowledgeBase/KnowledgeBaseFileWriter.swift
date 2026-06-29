@@ -28,7 +28,9 @@ actor KnowledgeBaseFileWriter {
     private var tail: Task<Void, Never>?
 
     init(scoutDirectory: URL, gitService: GitServiceProtocol?) {
-        self.scoutDirectory = scoutDirectory
+        // Resolve symlinks so the in-KB guard and repo-relative paths match the
+        // tree's symlink-resolved file URLs (see KnowledgeBaseService.init).
+        self.scoutDirectory = scoutDirectory.resolvingSymlinksInPath()
         self.gitService = gitService
     }
 
@@ -107,8 +109,8 @@ actor KnowledgeBaseFileWriter {
     /// defense against a crafted selection escaping the KB root.
     private func ensureInsideKB(_ url: URL) throws {
         let kbRoot = scoutDirectory.appendingPathComponent("knowledge-base")
-            .standardizedFileURL.path + "/"
-        let resolved = url.standardizedFileURL.path
+            .resolvingSymlinksInPath().path + "/"
+        let resolved = url.resolvingSymlinksInPath().path
         if !(resolved + "/").hasPrefix(kbRoot) && resolved + "/" != kbRoot {
             throw KBWriterError.outsideKnowledgeBase(url.lastPathComponent)
         }
@@ -223,8 +225,8 @@ actor KnowledgeBaseFileWriter {
     }
 
     static func relativePathInRepo(fileURL: URL, repo: URL) -> String {
-        let full = fileURL.standardizedFileURL.path
-        let prefix = repo.standardizedFileURL.path + "/"
+        let full = fileURL.resolvingSymlinksInPath().path
+        let prefix = repo.resolvingSymlinksInPath().path + "/"
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : fileURL.lastPathComponent
     }
 }

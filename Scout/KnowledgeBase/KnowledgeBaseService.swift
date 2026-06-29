@@ -40,8 +40,14 @@ final class KnowledgeBaseService: ObservableObject {
     private static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
 
     init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
-        self.scoutDirectory = scoutDirectory
-        self.kbDirectory = scoutDirectory.appendingPathComponent("knowledge-base")
+        // `contentsOfDirectory(at:)` returns symlink-resolved file URLs, so
+        // resolve the root too. Otherwise, when ~/Scout is a symlink, the tree's
+        // node URLs (real path) and this root (symlink path) mismatch — breaking
+        // relative-path stripping and the writer's in-KB guard ("people.md is
+        // outside the knowledge base").
+        let resolved = scoutDirectory.resolvingSymlinksInPath()
+        self.scoutDirectory = resolved
+        self.kbDirectory = resolved.appendingPathComponent("knowledge-base")
         self.fileEvents = fileEvents
     }
 
