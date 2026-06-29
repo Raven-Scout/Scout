@@ -22,6 +22,7 @@ struct KBOverviewView: View {
         let stats = service.graphStats()
         let present = Set(service.tree.flatMap(\.allFiles).map(\.relativePath))
         let links = Self.quickLinks.filter { present.contains($0.path) }
+        let kbGraph = service.fullGraph()
 
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
@@ -55,6 +56,19 @@ struct KBOverviewView: View {
                                 .buttonStyle(.plainHit)
                             }
                         }
+                    }
+                }
+
+                if kbGraph.edges.count > 0 {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("MAP").font(DS.sans(10, weight: .semibold)).tracking(0.6)
+                            .foregroundStyle(DS.Ink.p4)
+                        KBGraphCanvas(graph: kbGraph, onNavigate: onNavigate, labelMinDegree: 4)
+                            .frame(height: 440)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk.opacity(0.4)))
+                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                        KBGraphLegend(groups: Array(Set(kbGraph.nodes.map(\.group)))
+                            .sorted { $0.label < $1.label })
                     }
                 }
 

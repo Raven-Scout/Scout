@@ -262,6 +262,27 @@ final class KnowledgeBaseService: ObservableObject {
         return (notes, edgeSet.count)
     }
 
+    /// The whole-KB graph: every markdown note plus the unique wikilink edges
+    /// between them. Feeds the global graph on the overview.
+    func fullGraph() -> KBGraph {
+        var edgeSet = Set<KBGraphEdge>()
+        for (from, targets) in index.outByFile {
+            for t in targets {
+                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
+                let (a, b) = from < to ? (from, to) : (to, from)
+                edgeSet.insert(KBGraphEdge(from: a, to: b))
+            }
+        }
+        var degree: [String: Int] = [:]
+        for e in edgeSet { degree[e.from, default: 0] += 1; degree[e.to, default: 0] += 1 }
+        let nodes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map { file in
+            KBGraphNode(id: file.relativePath, label: file.displayName,
+                        group: KBEntityGroup.of(file.relativePath),
+                        degree: degree[file.relativePath] ?? 0, isCenter: false)
+        }
+        return KBGraph(nodes: nodes, edges: Array(edgeSet))
+    }
+
     /// Full-text search across note names and contents, returning a snippet for
     /// the first matching line. Capped at 30 hits.
     func searchContent(_ query: String) -> [KBSearchHit] {

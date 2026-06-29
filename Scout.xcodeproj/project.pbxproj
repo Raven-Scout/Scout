@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BEEE45A02F9599AB0078191D /* Grape in Frameworks */ = {isa = PBXBuildFile; productRef = BEEE45A22F9599AB0078191D /* Grape */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BEEE456A2F9599AA0078191D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -39,6 +43,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BEEE45A02F9599AB0078191D /* Grape in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -89,6 +94,9 @@
 				BEEE45562F95613D0078191D /* Scout */,
 			);
 			name = Scout;
+			packageProductDependencies = (
+				BEEE45A22F9599AB0078191D /* Grape */,
+			);
 			productName = Scout;
 			productReference = BEEE45542F95613D0078191D /* Scout.app */;
 			productType = "com.apple.product-type.application";
@@ -142,6 +150,9 @@
 			);
 			mainGroup = BEEE454B2F95613D0078191D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BEEE45552F95613D0078191D /* Products */;
 			projectDirPath = "";
@@ -194,6 +205,25 @@
 			targetProxy = BEEE456A2F9599AA0078191D /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SwiftGraphs/Grape";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BEEE45A22F9599AB0078191D /* Grape */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */;
+			productName = Grape;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		BEEE455D2F95613E0078191D /* Debug */ = {

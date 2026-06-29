@@ -236,26 +236,24 @@ struct KBServiceGraphTests {
     }
 }
 
-@Suite("KB local graph layout")
-struct KBLayoutTests {
-    @Test func singleNodeCentred() {
-        let g = KBGraph(nodes: [KBGraphNode(id: "a", label: "a", group: .other, degree: 0, isCenter: true)],
-                        edges: [])
-        #expect(KBLocalGraphView.computeLayout(g)["a"] == CGPoint(x: 0.5, y: 0.5))
-    }
-    @Test func multiNodePositionsInUnitBox() {
-        let nodes = [
-            KBGraphNode(id: "a", label: "a", group: .other, degree: 2, isCenter: true),
-            KBGraphNode(id: "b", label: "b", group: .other, degree: 1, isCenter: false),
-            KBGraphNode(id: "c", label: "c", group: .other, degree: 1, isCenter: false),
-        ]
-        let edges = [KBGraphEdge(from: "a", to: "b"), KBGraphEdge(from: "a", to: "c")]
-        let pos = KBLocalGraphView.computeLayout(KBGraph(nodes: nodes, edges: edges), iterations: 60)
-        #expect(pos.count == 3)
-        for (_, p) in pos {
-            #expect(p.x >= 0 && p.x <= 1)
-            #expect(p.y >= 0 && p.y <= 1)
-        }
+@MainActor
+@Suite("KnowledgeBaseService full graph")
+struct KBFullGraphTests {
+    @Test func fullGraphHasAllNotesAndEdges() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kbfull-\(UUID().uuidString)")
+        let kb = root.appendingPathComponent("knowledge-base")
+        try FileManager.default.createDirectory(at: kb, withIntermediateDirectories: true)
+        try "# A\nlinks [[b]]".write(to: kb.appendingPathComponent("a.md"), atomically: true, encoding: .utf8)
+        try "# B\nno links".write(to: kb.appendingPathComponent("b.md"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
+        svc.load()
+        let g = svc.fullGraph()
+        #expect(g.nodes.count == 2)
+        #expect(g.edges.count == 1)
+        #expect(g.nodes.allSatisfy { !$0.isCenter })
     }
 }
 
