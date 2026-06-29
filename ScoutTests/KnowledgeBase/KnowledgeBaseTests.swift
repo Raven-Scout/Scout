@@ -167,6 +167,98 @@ struct KBMarkdownPreviewTableTests {
     }
 }
 
+@Suite("KB wikilink extraction")
+struct KBWikilinkExtractionTests {
+    @Test func extractsTargetsBeforePipeDeduped() {
+        let links = KnowledgeBaseService.extractWikilinks(
+            "see [[groupon]] and [[people|Alias]] and [[groupon]] again")
+        #expect(links == ["groupon", "people"])
+    }
+    @Test func ignoresEmptyAndMalformed() {
+        #expect(KnowledgeBaseService.extractWikilinks("no links here").isEmpty)
+        #expect(KnowledgeBaseService.extractWikilinks("[[ ]]").isEmpty)
+    }
+}
+
+@MainActor
+@Suite("KnowledgeBaseService graph")
+struct KBServiceGraphTests {
+    /// A small linked KB: people ←→ scout/groupon, with groupon → scout too.
+    private func makeLinkedKB() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kbgraph-\(UUID().uuidString)")
+        let kb = root.appendingPathComponent("knowledge-base")
+        let projects = kb.appendingPathComponent("projects")
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        try "# People\nWorks on [[groupon]] and [[scout]]."
+            .write(to: kb.appendingPathComponent("people.md"), atomically: true, encoding: .utf8)
+        try "# Scout\nLed by [[people|Someone]]."
+            .write(to: projects.appendingPathComponent("scout.md"), atomically: true, encoding: .utf8)
+        try "# Groupon\nWith [[people]] and related to [[scout]]."
+            .write(to: projects.appendingPathComponent("groupon.md"), atomically: true, encoding: .utf8)
+        return root
+    }
+
+    @Test func resolvesLinksBacklinksAndLocalGraph() throws {
+        let root = try makeLinkedKB()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
+        svc.load()
+
+        #expect(svc.resolveWikilink("scout") == "knowledge-base/projects/scout.md")
+        #expect(svc.resolveWikilink("nonexistent") == nil)
+
+        let out = svc.outgoingLinks(for: "knowledge-base/people.md")
+        #expect(Set(out.map(\.target)) == ["groupon", "scout"])
+        #expect(out.allSatisfy { $0.resolved != nil })
+
+        let back = Set(svc.backlinks(for: "knowledge-base/people.md").map(\.path))
+        #expect(back == ["knowledge-base/projects/scout.md", "knowledge-base/projects/groupon.md"])
+
+        let g = svc.localGraph(around: "knowledge-base/people.md")
+        #expect(g.nodes.count == 3)
+        #expect(g.nodes.contains { $0.id == "knowledge-base/people.md" && $0.isCenter })
+        #expect(!g.edges.isEmpty)
+
+        let stats = svc.graphStats()
+        #expect(stats.notes == 3)
+        #expect(stats.links == 3)   // people–scout, people–groupon, scout–groupon
+    }
+
+    @Test func contentSearchReturnsSnippet() throws {
+        let root = try makeLinkedKB()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
+        svc.load()
+        let hits = svc.searchContent("groupon")
+        #expect(hits.contains { $0.path == "knowledge-base/projects/groupon.md" })
+        #expect(hits.contains { $0.path == "knowledge-base/people.md" })
+    }
+}
+
+@Suite("KB local graph layout")
+struct KBLayoutTests {
+    @Test func singleNodeCentred() {
+        let g = KBGraph(nodes: [KBGraphNode(id: "a", label: "a", group: .other, degree: 0, isCenter: true)],
+                        edges: [])
+        #expect(KBLocalGraphView.computeLayout(g)["a"] == CGPoint(x: 0.5, y: 0.5))
+    }
+    @Test func multiNodePositionsInUnitBox() {
+        let nodes = [
+            KBGraphNode(id: "a", label: "a", group: .other, degree: 2, isCenter: true),
+            KBGraphNode(id: "b", label: "b", group: .other, degree: 1, isCenter: false),
+            KBGraphNode(id: "c", label: "c", group: .other, degree: 1, isCenter: false),
+        ]
+        let edges = [KBGraphEdge(from: "a", to: "b"), KBGraphEdge(from: "a", to: "c")]
+        let pos = KBLocalGraphView.computeLayout(KBGraph(nodes: nodes, edges: edges), iterations: 60)
+        #expect(pos.count == 3)
+        for (_, p) in pos {
+            #expect(p.x >= 0 && p.x <= 1)
+            #expect(p.y >= 0 && p.y <= 1)
+        }
+    }
+}
+
 @Suite("KBMarkdownPreview metadata collapse")
 struct KBMarkdownPreviewPartitionTests {
     @Test func collapsesChangelogAfterTitle() {

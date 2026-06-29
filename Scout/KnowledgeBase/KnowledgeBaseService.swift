@@ -19,6 +19,9 @@ final class KnowledgeBaseService: ObservableObject {
 
     @Published private(set) var tree: [KBNode] = []
     @Published private(set) var state: State = .idle
+    /// Wikilink graph index, rebuilt on every reparse. Powers backlinks,
+    /// in-app wikilink navigation and the local graph.
+    @Published private(set) var index: KBIndex = .empty
 
     /// The scout directory; the KB lives in its `knowledge-base/` subfolder.
     let scoutDirectory: URL
@@ -69,6 +72,7 @@ final class KnowledgeBaseService: ObservableObject {
             return
         }
         tree = Self.buildChildren(of: kbDirectory, scoutDirectory: scoutDirectory)
+        index = Self.buildIndex(tree: tree, scoutDirectory: scoutDirectory)
         state = .loaded
     }
 
@@ -118,6 +122,170 @@ final class KnowledgeBaseService: ObservableObject {
         let full = url.standardizedFileURL.path
         let prefix = scoutDirectory.standardizedFileURL.path + "/"
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : url.lastPathComponent
+    }
+
+    // MARK: - Graph index
+
+    /// Build the wikilink index from the current tree: a stem→path map plus each
+    /// file's outgoing link targets. Reads every note once (cheap for a KB of a
+    /// few hundred KB); reused for backlinks, navigation and the graph.
+    nonisolated static func buildIndex(tree: [KBNode], scoutDirectory: URL) -> KBIndex {
+        let files = tree.flatMap(\.allFiles).filter { $0.ext == "md" }
+        var stemToPath: [String: String] = [:]
+        var outByFile: [String: [String]] = [:]
+        for file in files {
+            stemToPath[file.displayName.lowercased()] = file.relativePath
+        }
+        for file in files {
+            guard let text = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
+            outByFile[file.relativePath] = extractWikilinks(text)
+        }
+        return KBIndex(stemToPath: stemToPath, outByFile: outByFile)
+    }
+
+    /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
+    /// `|`), de-duplicated, preserving original case and first-seen order.
+    nonisolated static func extractWikilinks(_ text: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]"#) else { return [] }
+        let ns = text as NSString
+        var seen = Set<String>()
+        var result: [String] = []
+        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            let raw = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            if !raw.isEmpty, seen.insert(raw.lowercased()).inserted { result.append(raw) }
+        }
+        return result
+    }
+
+    /// Resolve a wikilink target (e.g. `groupon`, possibly with spaces) to a
+    /// repo-relative path, or nil if no matching note exists.
+    func resolveWikilink(_ target: String) -> String? {
+        index.stemToPath[target.lowercased()]
+    }
+
+    /// Outgoing links of a note, each with its resolved target (nil = dangling).
+    func outgoingLinks(for relPath: String) -> [KBLink] {
+        (index.outByFile[relPath] ?? []).map {
+            KBLink(target: $0, resolved: index.stemToPath[$0.lowercased()])
+        }
+    }
+
+    /// Notes that link to `relPath`, with a one-line excerpt around the link.
+    func backlinks(for relPath: String) -> [KBBacklink] {
+        let targetStem = (KBNode.displayName(forPath: relPath)).lowercased()
+        var results: [KBBacklink] = []
+        for (from, targets) in index.outByFile {
+            guard from != relPath else { continue }
+            guard targets.contains(where: { index.stemToPath[$0.lowercased()] == relPath }) else { continue }
+            let url = scoutDirectory.appendingPathComponent(from)
+            let excerpt = Self.excerpt(in: url, mentioning: targetStem)
+            results.append(KBBacklink(path: from,
+                                      name: KBNode.displayName(forPath: from),
+                                      excerpt: excerpt))
+        }
+        return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func excerpt(in url: URL, mentioning stem: String) -> String {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        let needle = "[[" + stem
+        let line = text.components(separatedBy: "\n")
+            .first { $0.lowercased().contains(needle) }
+        return (line ?? "").trimmingCharacters(in: .whitespaces).prefix(140).description
+    }
+
+    /// Build the local subgraph centred on `relPath`: BFS over undirected
+    /// wikilink edges out to `depth` hops, capped at `maxNodes` by degree.
+    func localGraph(around relPath: String, depth: Int = 2, maxNodes: Int = 26) -> KBGraph {
+        // Full undirected edge set.
+        var edgeSet = Set<KBGraphEdge>()
+        for (from, targets) in index.outByFile {
+            for t in targets {
+                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
+                // Normalize direction so duplicates collapse.
+                let (a, b) = from < to ? (from, to) : (to, from)
+                edgeSet.insert(KBGraphEdge(from: a, to: b))
+            }
+        }
+        // Adjacency.
+        var adj: [String: Set<String>] = [:]
+        for e in edgeSet {
+            adj[e.from, default: []].insert(e.to)
+            adj[e.to, default: []].insert(e.from)
+        }
+        // BFS from center.
+        var visited: Set<String> = [relPath]
+        var frontier: [String] = [relPath]
+        for _ in 0..<max(1, depth) {
+            var next: [String] = []
+            for node in frontier {
+                for n in adj[node] ?? [] where !visited.contains(n) {
+                    visited.insert(n); next.append(n)
+                }
+            }
+            frontier = next
+        }
+        // Degree across the full graph.
+        let degree: (String) -> Int = { adj[$0]?.count ?? 0 }
+
+        // Cap: always keep the center, then the highest-degree neighbours.
+        var kept = Array(visited)
+        if kept.count > maxNodes {
+            kept = [relPath] + kept.filter { $0 != relPath }
+                .sorted { degree($0) > degree($1) }
+                .prefix(maxNodes - 1)
+        }
+        let keptSet = Set(kept)
+
+        let nodes = kept.map { path in
+            KBGraphNode(id: path,
+                        label: KBNode.displayName(forPath: path),
+                        group: KBEntityGroup.of(path),
+                        degree: degree(path),
+                        isCenter: path == relPath)
+        }
+        let edges = edgeSet.filter { keptSet.contains($0.from) && keptSet.contains($0.to) }
+        return KBGraph(nodes: nodes, edges: Array(edges))
+    }
+
+    /// Count of notes and unique links across the whole KB (for the overview).
+    func graphStats() -> (notes: Int, links: Int) {
+        let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.count
+        var edgeSet = Set<KBGraphEdge>()
+        for (from, targets) in index.outByFile {
+            for t in targets {
+                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
+                let (a, b) = from < to ? (from, to) : (to, from)
+                edgeSet.insert(KBGraphEdge(from: a, to: b))
+            }
+        }
+        return (notes, edgeSet.count)
+    }
+
+    /// Full-text search across note names and contents, returning a snippet for
+    /// the first matching line. Capped at 30 hits.
+    func searchContent(_ query: String) -> [KBSearchHit] {
+        let q = query.lowercased()
+        guard q.count >= 2 else { return [] }
+        var hits: [KBSearchHit] = []
+        for file in tree.flatMap(\.allFiles) where file.ext == "md" {
+            let nameMatch = file.displayName.lowercased().contains(q)
+                || file.relativePath.lowercased().contains(q)
+            guard let text = try? String(contentsOf: file.url, encoding: .utf8) else {
+                if nameMatch {
+                    hits.append(KBSearchHit(path: file.relativePath, name: file.displayName, snippet: ""))
+                }
+                continue
+            }
+            if let line = text.components(separatedBy: "\n").first(where: { $0.lowercased().contains(q) }) {
+                hits.append(KBSearchHit(path: file.relativePath, name: file.displayName,
+                                        snippet: line.trimmingCharacters(in: .whitespaces).prefix(120).description))
+            } else if nameMatch {
+                hits.append(KBSearchHit(path: file.relativePath, name: file.displayName, snippet: ""))
+            }
+            if hits.count >= 30 { break }
+        }
+        return hits
     }
 
     // MARK: - Watching

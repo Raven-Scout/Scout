@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Knowledge Base tab: a two-pane file browser + editor over
-/// `~/Scout/knowledge-base/`. Left is the file tree (with search and "New
-/// note"); right edits the selected file. All writes go through
+/// Knowledge Base tab: a file browser + editor + links/graph panel over
+/// `~/Scout/knowledge-base/`. Left is the tree (with full-text search and "New
+/// note"); center reads/edits the selected file (or shows an overview); right
+/// shows the note's links and local graph. All writes go through
 /// `KnowledgeBaseFileWriter` (atomic + git-committed).
 struct KnowledgeBaseView: View {
     @EnvironmentObject var service: KnowledgeBaseService
@@ -11,6 +12,8 @@ struct KnowledgeBaseView: View {
     @State private var selectedPath: String? = nil
     @State private var expanded: Set<String> = []
     @State private var searchQuery: String = ""
+    @State private var searchHits: [KBSearchHit] = []
+    @State private var searchTask: Task<Void, Never>? = nil
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
 
@@ -21,13 +24,18 @@ struct KnowledgeBaseView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            leftPane
-                .frame(width: 268)
-            Rectangle().fill(DS.Rule.soft).frame(width: 0.5)
-            rightPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            leftPane.frame(width: 268)
+            divider
+            centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let node = selectedNode, node.isEditable {
+                divider
+                KBRightPanel(relPath: node.relativePath, service: service,
+                             onNavigate: { navigate(toPath: $0) })
+                    .frame(width: 300)
+            }
         }
         .onAppear { service.load() }
+        .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
             KBNewFileSheet(
                 directories: Self.directories(in: service.tree, kbRoot: service.kbDirectory),
@@ -41,6 +49,8 @@ struct KnowledgeBaseView: View {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
     }
+
+    private var divider: some View { Rectangle().fill(DS.Rule.soft).frame(width: 0.5) }
 
     // MARK: - Left pane
 
@@ -110,21 +120,22 @@ struct KnowledgeBaseView: View {
     }
 
     private var searchResults: some View {
-        let q = searchQuery.lowercased()
-        let matches = service.tree.flatMap(\.allFiles)
-            .filter { $0.displayName.lowercased().contains(q) || $0.relativePath.lowercased().contains(q) }
-            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        return ScrollView {
+        ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
-                if matches.isEmpty {
-                    Text("No matches").font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
+                if searchHits.isEmpty {
+                    Text(searchQuery.count < 2 ? "Type to search…" : "No results")
+                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
                         .padding(.horizontal, 12).padding(.vertical, 10)
                 }
-                ForEach(matches) { node in
-                    Button { selectFromSearch(node) } label: {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(node.displayName).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                            Text(node.relativePath).font(DS.mono(10)).foregroundStyle(DS.Ink.p4).lineLimit(1)
+                ForEach(searchHits) { hit in
+                    Button { navigate(toPath: hit.path) } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(hit.name).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                            Text(hit.path).font(DS.mono(10)).foregroundStyle(DS.Ink.p4).lineLimit(1)
+                            if !hit.snippet.isEmpty {
+                                Text(hit.snippet).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                    .lineLimit(2).multilineTextAlignment(.leading)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -137,10 +148,10 @@ struct KnowledgeBaseView: View {
         }
     }
 
-    // MARK: - Right pane
+    // MARK: - Center pane
 
     @ViewBuilder
-    private var rightPane: some View {
+    private var centerPane: some View {
         if let node = selectedNode, node.isEditable {
             KBEditorView(
                 node: node,
@@ -152,11 +163,15 @@ struct KnowledgeBaseView: View {
                 }
             )
             .id(node.id)
+            .environment(\.kbWikilinkHandler, { target in
+                if let path = service.resolveWikilink(target) {
+                    navigate(toPath: path)
+                    return true
+                }
+                return false
+            })
         } else {
-            emptyState(icon: "doc.richtext",
-                       title: "Select a note",
-                       detail: "Pick a file from the tree to read or edit it.")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) })
         }
     }
 
@@ -173,14 +188,24 @@ struct KnowledgeBaseView: View {
 
     // MARK: - Actions
 
-    private func selectFromSearch(_ node: KBNode) {
-        // Expand ancestors so the file is visible when search clears.
-        let parts = node.relativePath.components(separatedBy: "/")
-        for i in 1..<max(1, parts.count) {
-            expanded.insert(parts[0..<i].joined(separator: "/"))
+    /// Select a note by path, expanding its ancestor folders and clearing search.
+    private func navigate(toPath path: String) {
+        let parts = path.components(separatedBy: "/")
+        if parts.count > 1 {
+            for i in 1..<parts.count { expanded.insert(parts[0..<i].joined(separator: "/")) }
         }
-        selectedPath = node.relativePath
+        selectedPath = path
         searchQuery = ""
+    }
+
+    private func scheduleSearch(_ query: String) {
+        searchTask?.cancel()
+        guard query.count >= 2 else { searchHits = []; return }
+        searchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+            searchHits = service.searchContent(query)
+        }
     }
 
     /// Directory the New-note sheet defaults to: the folder of the current
@@ -203,12 +228,7 @@ struct KnowledgeBaseView: View {
                 await MainActor.run {
                     service.reload()
                     showNewFile = false
-                    let rel = KnowledgeBaseService.relativePath(of: dest, in: service.scoutDirectory)
-                    let parts = rel.components(separatedBy: "/")
-                    for i in 1..<max(1, parts.count) {
-                        expanded.insert(parts[0..<i].joined(separator: "/"))
-                    }
-                    selectedPath = rel
+                    navigate(toPath: KnowledgeBaseService.relativePath(of: dest, in: service.scoutDirectory))
                 }
             } catch {
                 await MainActor.run { errorMessage = describe(error); showNewFile = false }

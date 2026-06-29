@@ -46,4 +46,11 @@ nonisolated struct KBNode: Identifiable, Equatable, Hashable {
         case .directory: return children.flatMap(\.allFiles)
         }
     }
+
+    /// Display name (extension stripped) for an arbitrary repo-relative path —
+    /// used by graph/backlink code that works with paths, not nodes.
+    static func displayName(forPath relPath: String) -> String {
+        let base = (relPath as NSString).lastPathComponent
+        return (base as NSString).deletingPathExtension
+    }
 }
