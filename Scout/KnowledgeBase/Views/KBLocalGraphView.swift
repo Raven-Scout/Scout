@@ -65,9 +65,11 @@ struct KBGraphCanvas: View {
         }
     }
 
-    /// Base node radius (multiplied by the live zoom in `body`).
+    /// Base node radius (multiplied by the live zoom in `body`). Kept generous
+    /// so the node is an easy target for the drag-to-reposition gesture — the
+    /// drag hit area is derived from the symbol size.
     private func radius(_ node: KBGraphNode) -> Double {
-        node.isCenter ? 3.6 : max(2.4, min(4.6, 2.4 + Double(node.degree) * 0.35))
+        node.isCenter ? 5.2 : max(3.4, min(6.2, 3.4 + Double(node.degree) * 0.4))
     }
 }
 
