@@ -257,6 +257,58 @@ struct KBFullGraphTests {
     }
 }
 
+@Suite("KBDocSegment parse + splice")
+struct KBDocSegmentTests {
+    private let src = """
+    ---
+    type: person
+    ---
+    # Title
+
+    First para.
+
+    - item one
+    - item two
+
+    | A | B |
+    |---|---|
+    | 1 | 2 |
+    """
+
+    @Test func parsesSegmentsWithLineRanges() {
+        let segs = KBDocSegment.segments(from: src)
+        #expect(segs.contains { $0.kind == .frontmatter && $0.lineStart == 0 && $0.lineEnd == 2 })
+        #expect(segs.contains { $0.kind == .heading(1) && $0.lineStart == 3 })
+        #expect(segs.contains { $0.kind == .paragraph && $0.raw == "First para." })
+        #expect(segs.filter { $0.kind == .list }.count == 2)
+        let table = segs.first { $0.kind == .table }
+        #expect(table?.headers == ["A", "B"])
+        #expect(table?.rows == [["1", "2"]])
+        #expect(table?.rowLines == [12])
+    }
+
+    @Test func replaceLinesRewritesOnlyThatBlock() {
+        let segs = KBDocSegment.segments(from: src)
+        let para = segs.first { $0.kind == .paragraph }!
+        let out = KBDocSegment.replaceLines(in: src, start: para.lineStart, end: para.lineEnd, with: "Edited para.")
+        #expect(out.contains("Edited para."))
+        #expect(!out.contains("First para."))
+        #expect(out.contains("# Title"))          // untouched
+        #expect(out.contains("| 1 | 2 |"))        // untouched
+    }
+
+    @Test func replaceCellRewritesOneCell() {
+        let out = KBDocSegment.replaceCell(in: src, sourceLine: 12, col: 1, value: "99")
+        #expect(out.contains("| 1 | 99 |"))
+        #expect(!out.contains("| 1 | 2 |"))
+    }
+
+    @Test func replaceCellEscapesPipes() {
+        let out = KBDocSegment.replaceCell(in: src, sourceLine: 12, col: 0, value: "a|b")
+        #expect(out.contains(#"| a\|b | 2 |"#))
+    }
+}
+
 @Suite("KBMarkdownPreview metadata collapse")
 struct KBMarkdownPreviewPartitionTests {
     @Test func collapsesChangelogAfterTitle() {

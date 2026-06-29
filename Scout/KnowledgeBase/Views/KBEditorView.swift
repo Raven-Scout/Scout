@@ -20,10 +20,10 @@ struct KBEditorView: View {
     @State private var draft: String = ""
     @State private var originalText: String = ""
     @State private var baseline: Date? = nil
-    // Markdown opens in the live "Rich" editor (styled but still markdown);
-    // Read (rendered) and Source (raw) are one toggle away. loadFile() forces
-    // Source for non-markdown (YAML).
-    @State private var mode: Mode = .rich
+    // Markdown opens in "Read": rendered, but you edit in place (double-click a
+    // block/cell). Rich (live markdown) and Source (raw) are one toggle away.
+    // loadFile() forces Source for non-markdown (YAML).
+    @State private var mode: Mode = .read
     @State private var isSaving = false
     @State private var errorMessage: String? = nil
     @State private var showConflict = false
@@ -163,10 +163,9 @@ struct KBEditorView: View {
         } else {
             switch mode {
             case .read:
-                ScrollView {
-                    KBMarkdownPreview(source: draft)
-                        .padding(.horizontal, 24).padding(.vertical, 18)
-                }
+                // Rendered, but editable in place: double-click a paragraph,
+                // heading, list item or table cell to edit just that piece.
+                KBEditableView(source: $draft)
             case .rich:
                 KBLiveEditor(text: $draft)
             case .source:
