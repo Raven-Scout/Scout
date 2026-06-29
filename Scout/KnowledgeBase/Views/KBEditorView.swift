@@ -15,15 +15,15 @@ struct KBEditorView: View {
     /// Called after a rename — parent re-selects the file at its new URL.
     let onRenamed: (URL) -> Void
 
-    private enum Mode: String { case preview, edit }
+    private enum Mode: String { case read, rich, source }
 
     @State private var draft: String = ""
     @State private var originalText: String = ""
     @State private var baseline: Date? = nil
-    // Business users read first: markdown opens rendered, editing is one click
-    // away. loadFile() forces .edit for non-markdown (YAML) where there is no
-    // preview renderer.
-    @State private var mode: Mode = .preview
+    // Markdown opens in the live "Rich" editor (styled but still markdown);
+    // Read (rendered) and Source (raw) are one toggle away. loadFile() forces
+    // Source for non-markdown (YAML).
+    @State private var mode: Mode = .rich
     @State private var isSaving = false
     @State private var errorMessage: String? = nil
     @State private var showConflict = false
@@ -94,7 +94,10 @@ struct KBEditorView: View {
                 EditorialSegmentedControl(
                     selection: Binding(get: { mode },
                                        set: { mode = $0 }),
-                    options: [(label: "Preview", value: .preview), (label: "Edit", value: .edit)]
+                    options: [(label: "Read", value: .read),
+                              (label: "Rich", value: .rich),
+                              (label: "Source", value: .source)],
+                    minSegmentWidth: 54
                 )
             }
 
@@ -155,13 +158,20 @@ struct KBEditorView: View {
 
     @ViewBuilder
     private var content: some View {
-        if isMarkdown && mode == .preview {
-            ScrollView {
-                KBMarkdownPreview(source: draft)
-                    .padding(.horizontal, 24).padding(.vertical, 18)
-            }
-        } else {
+        if !isMarkdown {
             KBSourceEditor(text: $draft)
+        } else {
+            switch mode {
+            case .read:
+                ScrollView {
+                    KBMarkdownPreview(source: draft)
+                        .padding(.horizontal, 24).padding(.vertical, 18)
+                }
+            case .rich:
+                KBLiveEditor(text: $draft)
+            case .source:
+                KBSourceEditor(text: $draft)
+            }
         }
     }
 
@@ -173,7 +183,7 @@ struct KBEditorView: View {
         originalText = text
         baseline = GuardedFileWrite.fsModificationDate(node.url)
         externallyChanged = false
-        if !isMarkdown { mode = .edit }
+        if !isMarkdown { mode = .source }
     }
 
     /// Compare the open file's on-disk mtime against our baseline. Silently
