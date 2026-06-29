@@ -370,30 +370,28 @@ struct KBMarkdownPreview: View {
     }
 }
 
-/// A GitHub-style table rendered as a grid. Columns are capped so a verbose cell
-/// wraps rather than stretching the row; the whole grid scrolls horizontally
-/// when the column total exceeds the reading column.
+/// A GitHub-style table. Each column gets a fixed width (narrow for IDs, capped
+/// for verbose columns which then wrap); rows are `HStack`s whose height follows
+/// the tallest cell, so a long cell can't overflow onto neighbouring rows (the
+/// failure mode of `Grid` with multiline cells). Scrolls horizontally when the
+/// column total exceeds the reading column.
 struct KBTableBlockView: View {
     let headers: [String]
     let rows: [[String]]
 
-    private let maxColumnWidth: CGFloat = 280
+    private let minColumnWidth: CGFloat = 70
+    private let maxColumnWidth: CGFloat = 300
+    private let hPad: CGFloat = 10
+    private let charWidth: CGFloat = 6.5
 
     var body: some View {
+        let widths = columnWidths()
         ScrollView(.horizontal, showsIndicators: true) {
-            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
-                        cell(h, header: true, background: DS.Paper.sunk)
-                    }
-                }
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, value in
-                            cell(value, header: false,
-                                 background: rowIdx.isMultiple(of: 2) ? .clear : DS.Paper.sunk.opacity(0.35))
-                        }
-                    }
+            VStack(alignment: .leading, spacing: 0) {
+                row(headers, widths: widths, header: true, background: DS.Paper.sunk)
+                ForEach(Array(rows.enumerated()), id: \.offset) { idx, cells in
+                    row(cells, widths: widths, header: false,
+                        background: idx.isMultiple(of: 2) ? .clear : DS.Paper.sunk.opacity(0.35))
                 }
             }
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
@@ -401,17 +399,37 @@ struct KBTableBlockView: View {
         }
     }
 
-    private func cell(_ text: String, header: Bool, background: Color) -> some View {
+    private func row(_ cells: [String], widths: [CGFloat], header: Bool, background: Color) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(widths.enumerated()), id: \.offset) { i, width in
+                cell(i < cells.count ? cells[i] : "", header: header, width: width)
+            }
+        }
+        .background(background)
+        .overlay(alignment: .bottom) { Rectangle().fill(DS.Rule.soft).frame(height: 0.5) }
+    }
+
+    private func cell(_ text: String, header: Bool, width: CGFloat) -> some View {
         InlineMarkdownText(text)
             .font(header ? DS.sans(12, weight: .semibold) : DS.serif(12.5))
             .foregroundStyle(header ? DS.Ink.p1 : DS.Ink.p2)
             .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: maxColumnWidth, alignment: .leading)
-            .padding(.horizontal, 10)
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, hPad)
             .padding(.vertical, 6)
-            .frame(maxHeight: .infinity, alignment: .topLeading)
-            .background(background)
-            .overlay(alignment: .bottom) { Rectangle().fill(DS.Rule.soft).frame(height: 0.5) }
+            .frame(width: width, alignment: .topLeading)
+    }
+
+    /// Per-column width from the longest cell, clamped to [min, max]; verbose
+    /// columns hit the cap and wrap. Padding is added on top of the text width.
+    private func columnWidths() -> [CGFloat] {
+        (0..<headers.count).map { c in
+            var maxChars = headers[c].count
+            for cells in rows where c < cells.count {
+                maxChars = max(maxChars, cells[c].count)
+            }
+            let textWidth = min(maxColumnWidth, max(minColumnWidth, CGFloat(maxChars) * charWidth))
+            return textWidth + hPad * 2
+        }
     }
 }

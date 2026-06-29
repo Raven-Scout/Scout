@@ -9,9 +9,22 @@ struct KBGraphCanvas: View {
     let onNavigate: (String) -> Void
     /// Only label nodes at/above this degree (keeps a dense global graph legible).
     /// The center is always labeled.
-    var labelMinDegree: Int = 1
+    let labelMinDegree: Int
 
-    @State private var state = ForceDirectedGraphState(initialIsRunning: true)
+    @State private var state: ForceDirectedGraphState
+
+    init(graph: KBGraph, onNavigate: @escaping (String) -> Void,
+         labelMinDegree: Int = 1, initialScale: Double = 1.8) {
+        self.graph = graph
+        self.onNavigate = onNavigate
+        self.labelMinDegree = labelMinDegree
+        // Start zoomed in so node labels are legible without manual pinching;
+        // the simulation runs (initialIsRunning) and the user can pan/zoom.
+        _state = State(initialValue: ForceDirectedGraphState(
+            initialIsRunning: true,
+            initialModelTransform: .identity.scale(by: initialScale)
+        ))
+    }
 
     var body: some View {
         ForceDirectedGraph(states: state) {
@@ -24,10 +37,11 @@ struct KBGraphCanvas: View {
                     .annotation(node.label, alignment: .bottom, offset: .init(dx: 0, dy: 1)) {
                         if node.isCenter || node.degree >= labelMinDegree {
                             Text(node.label)
-                                .font(DS.sans(node.isCenter ? 10 : 9,
-                                              weight: node.isCenter ? .semibold : .regular))
-                                .foregroundStyle(DS.Ink.p2)
+                                .font(DS.sans(node.isCenter ? 9 : 8,
+                                              weight: node.isCenter ? .bold : .medium))
+                                .foregroundStyle(DS.Ink.p1)
                                 .lineLimit(1)
+                                .fixedSize()
                         }
                     }
             }
@@ -35,9 +49,9 @@ struct KBGraphCanvas: View {
                 LinkMark(from: edge.from, to: edge.to)
             }
         } force: {
-            .manyBody(strength: -28)
+            .manyBody(strength: -45)
             .center()
-            .link(originalLength: 42.0, stiffness: .weightedByDegree { _, _ in 1.0 })
+            .link(originalLength: 26.0, stiffness: .weightedByDegree { _, _ in 1.0 })
         }
         .graphOverlay { proxy in
             Rectangle().fill(.clear).contentShape(Rectangle())
@@ -48,7 +62,7 @@ struct KBGraphCanvas: View {
     }
 
     private func radius(_ node: KBGraphNode) -> Double {
-        node.isCenter ? 9 : max(4, min(10, 4 + Double(node.degree)))
+        node.isCenter ? 6 : max(4, min(8, 4 + Double(node.degree) * 0.6))
     }
 }
 
