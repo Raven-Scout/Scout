@@ -34,15 +34,17 @@ struct KBGraphCanvas: View {
                     .symbolSize(radius: radius(node))
                     .foregroundStyle(node.group.color)
                     .stroke()
-                    .annotation(node.label, alignment: .bottom, offset: .init(dx: 0, dy: 1)) {
-                        if node.isCenter || node.degree >= labelMinDegree {
-                            Text(node.label)
-                                .font(DS.sans(node.isCenter ? 9 : 8,
-                                              weight: node.isCenter ? .bold : .medium))
-                                .foregroundStyle(DS.Ink.p1)
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
+                    // Use the Text-annotation overload (not a View closure): Text
+                    // labels are drawn on the graph canvas and scale with the
+                    // viewport transform, so zooming enlarges them (Obsidian-like).
+                    // A View-closure annotation renders in screen space and stays
+                    // a fixed tiny size no matter the zoom.
+                    .annotation(alignment: .bottom, offset: .init(dx: 0, dy: 1)) { () -> Text? in
+                        guard node.isCenter || node.degree >= labelMinDegree else { return nil }
+                        return Text(node.label)
+                            .font(DS.sans(node.isCenter ? 9 : 8,
+                                          weight: node.isCenter ? .bold : .medium))
+                            .foregroundColor(DS.Ink.p1)
                     }
             }
             Series(graph.edges) { edge in
