@@ -64,4 +64,11 @@ struct DraftChannelTests {
         #expect(!DraftChannel.slack.usesSubject)
         #expect(!DraftChannel.whatsapp.usesSubject)
     }
+
+    @Test func openActionLabelIsChannelSpecific() {
+        #expect(DraftChannel.email.openActionLabel == "Open in Gmail")
+        #expect(DraftChannel.slack.openActionLabel == "Open in Slack")
+        #expect(DraftChannel.linear.openActionLabel == "Open in Linear")
+        #expect(DraftChannel.github.openActionLabel == "Open in GitHub")
+    }
 }

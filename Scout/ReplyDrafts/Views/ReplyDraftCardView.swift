@@ -340,7 +340,7 @@ struct ReplyDraftCardView: View {
                     copyBody()
                 }
                 if !draft.threadRef.isEmpty {
-                    actButton("Open thread", systemImage: "arrow.up.right.square") {
+                    actButton(draft.channel.openActionLabel, systemImage: "arrow.up.right.square") {
                         openThread()
                     }
                 }

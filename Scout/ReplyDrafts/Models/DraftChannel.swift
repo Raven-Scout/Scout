@@ -46,6 +46,19 @@ nonisolated enum DraftChannel: Equatable, Sendable {
         }
     }
 
+    /// Label for the "open the original thread" button — channel-specific so it
+    /// reads "Open in Gmail" / "Open in Slack" etc.
+    var openActionLabel: String {
+        switch self {
+        case .email:    return "Open in Gmail"
+        case .slack:    return "Open in Slack"
+        case .linear:   return "Open in Linear"
+        case .github:   return "Open in GitHub"
+        case .whatsapp: return "Open in WhatsApp"
+        case .other:    return "Open thread"
+        }
+    }
+
     /// True for channels whose drafts carry a meaningful `subject:` (email
     /// subject, PR/issue title). Chat channels omit it.
     var usesSubject: Bool {
