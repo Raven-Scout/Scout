@@ -50,6 +50,8 @@ final class AppState: ObservableObject {
     // Reply Drafts (drafts/ review — prepared replies the user owes)
     let replyDraftsDocumentService: ReplyDraftsDocumentService
     let replyDraftsWriterBox: ReplyDraftsWriterBox
+    /// Per-draft AI assistant chat (shells out to the user's `claude` CLI).
+    let replyChatService: ReplyChatService
 
     // Per-file Wishlist + Research tabs
     let wishlistDocumentService: PerFileDocumentService
@@ -175,6 +177,15 @@ final class AppState: ObservableObject {
         let replyDraftsWriter = ReplyDraftsWriter(scoutDirectory: scoutDir, gitService: git)
         let replyDraftsWriterBox = ReplyDraftsWriterBox(writer: replyDraftsWriter)
 
+        // Per-draft AI chat shells out to the user's claude CLI (their license).
+        let claudeResolved = AppState.resolveClaudePath()
+        let replyChat = ReplyChatService(
+            runner: runner,
+            claude: claudeResolved.executable,
+            claudeArgsPrefix: claudeResolved.argsPrefix,
+            workingDirectory: scoutDir
+        )
+
         // Per-file Wishlist + Research: resolve directory (override key or default
         // relative path under scoutDir), matching the dreamingProposalsPath pattern.
         func perFileDir(_ config: PerFileTabConfig) -> URL {
@@ -209,6 +220,7 @@ final class AppState: ObservableObject {
         self.proposalsWriterBox = proposalsWriterBox
         self.replyDraftsDocumentService = replyDraftsDoc
         self.replyDraftsWriterBox = replyDraftsWriterBox
+        self.replyChatService = replyChat
         self.wishlistDocumentService = wishlistDoc
         self.researchDocumentService = researchDoc
         self.perFileWriterBox = perFileWriterBox
@@ -362,6 +374,27 @@ final class AppState: ObservableObject {
         return ScoutctlInvocation(
             executable: URL(fileURLWithPath: "/usr/bin/env"),
             argsPrefix: ["scoutctl"]
+        )
+    }
+
+    /// Locate the `claude` CLI the same way we locate scoutctl — the per-draft
+    /// chat shells out to it so it runs on the user's own Claude license. Tries
+    /// known install paths; falls back to `/usr/bin/env claude` if none exist.
+    static func resolveClaudePath() -> ScoutctlInvocation {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates: [URL] = [
+            home.appendingPathComponent(".local/bin/claude"),
+            home.appendingPathComponent(".claude/local/claude"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
+            URL(fileURLWithPath: "/usr/local/bin/claude"),
+        ]
+        let fm = FileManager.default
+        for url in candidates where fm.isExecutableFile(atPath: url.path) {
+            return ScoutctlInvocation(executable: url, argsPrefix: [])
+        }
+        return ScoutctlInvocation(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            argsPrefix: ["claude"]
         )
     }
 

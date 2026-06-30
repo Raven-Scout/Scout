@@ -55,6 +55,7 @@ struct MainWindowView: View {
             RepliesView()
                 .environmentObject(appState.replyDraftsDocumentService)
                 .environmentObject(appState.replyDraftsWriterBox)
+                .environmentObject(appState.replyChatService)
         case .wishlist:
             PerFileListView(config: .wishlist)
                 .environmentObject(appState.wishlistDocumentService)

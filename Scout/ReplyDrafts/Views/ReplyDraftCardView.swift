@@ -7,6 +7,7 @@ import AppKit
 /// pasteboard, Open thread opens the original conversation, and Mark sent /
 /// Dismiss only flip the file's `status:`.
 struct ReplyDraftCardView: View {
+    @EnvironmentObject var chat: ReplyChatService
     let draft: ReplyDraft
     /// Performs a status write. Throws so the card can show an inline error.
     let onAction: @MainActor (DraftAction) async throws -> Void
@@ -20,6 +21,8 @@ struct ReplyDraftCardView: View {
     @State private var fillingID: String?
     @State private var summaryExpanded = false
     @State private var threadExpanded = false
+    @State private var chatExpanded = false
+    @State private var chatInput = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -30,6 +33,7 @@ struct ReplyDraftCardView: View {
             if draft.isAwaitingAction && !draft.inputs.isEmpty {
                 inputsSection
             }
+            chatSection
             actions
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
@@ -255,6 +259,74 @@ struct ReplyDraftCardView: View {
             }
             fillingID = nil
         }
+    }
+
+    // MARK: - AI assistant chat
+
+    private var chatSection: some View {
+        DisclosureGroup(isExpanded: $chatExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(chat.messages(for: draft.tag)) { chatBubble($0) }
+                HStack(spacing: 6) {
+                    TextField("Ask about this topic…", text: $chatInput, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .font(DS.sans(12.5))
+                        .lineLimit(1...5)
+                        .onSubmit { sendChat() }
+                    Button { sendChat() } label: {
+                        if chat.isBusy(draft.tag) {
+                            ProgressView().controlSize(.small).frame(width: 12, height: 12)
+                        } else {
+                            Image(systemName: "paperplane.fill").font(.system(size: 11))
+                        }
+                    }
+                    .buttonStyle(.plainHit)
+                    .disabled(chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chat.isBusy(draft.tag))
+                }
+                .padding(.top, 4)
+                Text("Runs on your Claude license · won't send anything")
+                    .font(DS.sans(10))
+                    .foregroundStyle(DS.Ink.p4)
+            }
+            .padding(.top, 8)
+        } label: {
+            disclosureLabel("Ask AI about this topic", systemImage: "bubble.left.and.bubble.right")
+        }
+        .tint(DS.Ink.p3)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(DS.Paper.raised)
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+        }
+    }
+
+    @ViewBuilder
+    private func chatBubble(_ msg: ChatMessage) -> some View {
+        let isUser = msg.role == .user
+        HStack {
+            if isUser { Spacer(minLength: 24) }
+            Text(msg.text)
+                .font(DS.serif(12.5))
+                .foregroundStyle(msg.role == .error ? DS.Status.err : DS.Ink.p1)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isUser ? DS.Accent.wash : DS.Paper.sunk)
+                }
+            if !isUser { Spacer(minLength: 24) }
+        }
+    }
+
+    private func sendChat() {
+        let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !chat.isBusy(draft.tag) else { return }
+        chatInput = ""
+        Task { await chat.send(text: text, about: draft) }
     }
 
     // MARK: - Actions
