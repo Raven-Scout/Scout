@@ -39,6 +39,7 @@ nonisolated enum ReplyDraftsParser {
         let channel = DraftChannel.parse(fields["channel"] ?? "")
         let loopType = fields["loop_type"] ?? ""
         let to = fields["to"] ?? ""
+        let cc = fields["cc"]?.nonEmpty
         let threadRef = fields["thread_ref"] ?? ""
         let subject = fields["subject"]?.nonEmpty
         let status = DraftStatus.parse(fields["status"] ?? "")
@@ -52,6 +53,7 @@ nonisolated enum ReplyDraftsParser {
             channel: channel,
             loopType: loopType,
             to: to,
+            cc: cc,
             threadRef: threadRef,
             subject: subject,
             status: status,

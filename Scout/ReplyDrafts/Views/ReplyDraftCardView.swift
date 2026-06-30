@@ -44,6 +44,12 @@ struct ReplyDraftCardView: View {
                     .font(DS.serif(17, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
+                if let cc = draft.cc {
+                    Text("Cc \(cc)")
+                        .font(DS.sans(11.5))
+                        .foregroundStyle(DS.Ink.p4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if draft.showsSubject, let subject = draft.subject {
                     Text(subject)
                         .font(DS.sans(12.5))

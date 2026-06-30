@@ -8,6 +8,7 @@ tag: NAHSEND
 channel: email
 loop_type: direct-debt
 to: "Jan Novák <jan@firma.cz>"
+cc: "Petra Malá <petra@firma.cz>"
 thread_ref: "https://mail.google.com/mail/u/0/#inbox/abc123"
 subject: "Re: Rozpočet Q3"
 status: draft
@@ -33,6 +34,7 @@ struct ReplyDraftsParserTests {
         #expect(d.channel == .email)
         #expect(d.loopType == "direct-debt")
         #expect(d.to == "Jan Novák <jan@firma.cz>")
+        #expect(d.cc == "Petra Malá <petra@firma.cz>")
         #expect(d.threadRef == "https://mail.google.com/mail/u/0/#inbox/abc123")
         #expect(d.subject == "Re: Rozpočet Q3")
         #expect(d.status == .draft)
@@ -70,6 +72,8 @@ struct ReplyDraftsParserTests {
         #expect(d.channel == .slack)
         #expect(d.subject == nil)
         #expect(!d.showsSubject)
+        // No cc: line → nil.
+        #expect(d.cc == nil)
     }
 
     @Test func promiseAnsweredCarriesContextRef() throws {

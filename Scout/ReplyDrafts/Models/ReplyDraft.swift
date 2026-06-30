@@ -24,6 +24,8 @@ nonisolated struct ReplyDraft: Identifiable, Equatable, Sendable {
     let loopType: String
     /// `to:` — recipient (name + address/handle when known).
     let to: String
+    /// `cc:` — other thread recipients to keep on the reply (email/PR); nil if none.
+    let cc: String?
     /// `thread_ref:` — link/permalink/thread id to the original conversation.
     let threadRef: String
     /// `subject:` — email subject or PR/issue title; nil for chat channels.
