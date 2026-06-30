@@ -29,9 +29,79 @@ final class ReplyChatService: ObservableObject {
         self.workingDirectory = workingDirectory
     }
 
+    /// The draft tag currently being delivered (Slack send / Gmail draft).
+    @Published private(set) var deliveringTag: String?
+
+    /// A delivery action driven from the app — performed by shelling out to the
+    /// user's `claude` CLI, since only a Claude session can reach Slack/Gmail MCP.
+    enum DeliveryKind: Equatable, Sendable { case slackSend, gmailDraft }
+
     func messages(for tag: String) -> [ChatMessage] { threads[tag] ?? [] }
 
     func isBusy(_ tag: String) -> Bool { busyTag == tag }
+
+    func isDelivering(_ tag: String) -> Bool { deliveringTag == tag }
+
+    /// Perform a delivery for `draft` via the claude CLI. Slack actually sends
+    /// (confirm in the UI first); email only creates a Gmail draft. Returns
+    /// whether it succeeded and a short message to surface on the card.
+    func deliver(_ kind: DeliveryKind, draft: ReplyDraft) async -> (ok: Bool, message: String) {
+        guard deliveringTag == nil else { return (false, "Busy — try again in a moment.") }
+        deliveringTag = draft.tag
+        defer { deliveringTag = nil }
+
+        let prompt = Self.deliveryPrompt(kind, draft: draft)
+        let args = claudeArgsPrefix + ["-p", prompt, "--permission-mode", "auto", "--model", "sonnet"]
+        do {
+            let result = try await runner.run(
+                executable: claude, arguments: args, environment: [:], workingDirectory: workingDirectory
+            )
+            let out = (String(data: result.stdout, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let ok = result.exitCode == 0 && out.uppercased().contains("OK ")
+            if ok {
+                return (true, kind == .slackSend
+                    ? "Sent via Slack."
+                    : "Gmail draft created — review and send it in Gmail.")
+            }
+            return (false, "Failed: " + (out.isEmpty ? "no output from claude" : out))
+        } catch {
+            return (false, "Couldn't run claude — \(error.localizedDescription)")
+        }
+    }
+
+    /// Build the precise single-shot instruction for a delivery action.
+    nonisolated static func deliveryPrompt(_ kind: DeliveryKind, draft: ReplyDraft) -> String {
+        switch kind {
+        case .slackSend:
+            return """
+            Using the Slack MCP tools, SEND the following message EXACTLY as written (do not change a \
+            single word) as a reply in the Slack conversation identified by this reference: \
+            \(draft.threadRef). Intended recipient: \(draft.to). If you cannot resolve the channel/thread \
+            from the reference, search Slack to find it. Send nothing else.
+
+            MESSAGE:
+            \(draft.bodyMarkdown)
+
+            After sending, output exactly "OK SENT" on success, or "FAILED: <reason>" if you could not \
+            send. Do not perform any other action.
+            """
+        case .gmailDraft:
+            return """
+            Using the Gmail MCP tools, CREATE A DRAFT — do NOT send — replying within the email thread \
+            referenced by: \(draft.threadRef).
+            To: \(draft.to)
+            Cc: \(draft.cc ?? "(none)")
+            Subject: \(draft.subject ?? "(reply)")
+            Use this body EXACTLY (do not change wording):
+
+            \(draft.bodyMarkdown)
+
+            After creating the draft, output exactly "OK DRAFT" on success, or "FAILED: <reason>". \
+            Never send the email — only create the draft.
+            """
+        }
+    }
 
     /// Send a user message about `draft` and append the assistant's reply.
     func send(text: String, about draft: ReplyDraft) async {

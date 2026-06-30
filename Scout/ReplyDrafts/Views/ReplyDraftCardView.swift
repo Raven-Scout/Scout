@@ -23,6 +23,8 @@ struct ReplyDraftCardView: View {
     @State private var threadExpanded = false
     @State private var chatExpanded = false
     @State private var chatInput = ""
+    @State private var confirmingSlack = false
+    @State private var deliveryNote: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -332,24 +334,77 @@ struct ReplyDraftCardView: View {
     // MARK: - Actions
 
     private var actions: some View {
-        HStack(spacing: 6) {
-            actButton(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                copyBody()
-            }
-            if !draft.threadRef.isEmpty {
-                actButton("Open thread", systemImage: "arrow.up.right.square") {
-                    openThread()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                actButton(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                    copyBody()
+                }
+                if !draft.threadRef.isEmpty {
+                    actButton("Open thread", systemImage: "arrow.up.right.square") {
+                        openThread()
+                    }
+                }
+                Spacer(minLength: 0)
+                if draft.isAwaitingAction {
+                    deliveryButton
+                    statusButton("Mark sent", systemImage: "checkmark", action: .markSent, tint: DS.Status.ok)
+                    statusButton("Dismiss", systemImage: "xmark", action: .dismiss, tint: DS.Ink.p3)
+                } else {
+                    statusButton("Reopen", systemImage: "arrow.uturn.backward", action: .reopen, tint: DS.Ink.p3)
                 }
             }
-            Spacer(minLength: 0)
-            if draft.isAwaitingAction {
-                statusButton("Mark sent", systemImage: "paperplane", action: .markSent, tint: DS.Status.ok)
-                statusButton("Dismiss", systemImage: "xmark", action: .dismiss, tint: DS.Ink.p3)
-            } else {
-                statusButton("Reopen", systemImage: "arrow.uturn.backward", action: .reopen, tint: DS.Ink.p3)
+            if let deliveryNote {
+                Text(deliveryNote)
+                    .font(DS.sans(11))
+                    .foregroundStyle(deliveryNote.hasPrefix("Failed") || deliveryNote.hasPrefix("Couldn't") ? DS.Status.err : DS.Status.ok)
             }
         }
         .padding(.top, 2)
+        .confirmationDialog(
+            "Send this reply to \(draft.to) via Slack?",
+            isPresented: $confirmingSlack,
+            titleVisibility: .visible
+        ) {
+            Button("Send via Slack", role: .destructive) { deliver(.slackSend) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This sends the message now — it can't be unsent.")
+        }
+    }
+
+    /// Channel-conditional delivery button: Slack actually sends (after a
+    /// confirm); email creates a Gmail draft to review and send from Gmail.
+    @ViewBuilder
+    private var deliveryButton: some View {
+        let busy = chat.isDelivering(draft.tag)
+        switch draft.channel {
+        case .slack:
+            Button { confirmingSlack = true } label: {
+                chrome(label: "Send via Slack", systemImage: "paperplane.fill", tint: DS.Accent.ink, busy: busy)
+            }
+            .buttonStyle(.plainHit)
+            .disabled(busy)
+        case .email:
+            Button { deliver(.gmailDraft) } label: {
+                chrome(label: "Create Gmail draft", systemImage: "envelope", tint: DS.Accent.ink, busy: busy)
+            }
+            .buttonStyle(.plainHit)
+            .disabled(busy)
+        default:
+            EmptyView()
+        }
+    }
+
+    private func deliver(_ kind: ReplyChatService.DeliveryKind) {
+        deliveryNote = nil
+        Task {
+            let result = await chat.deliver(kind, draft: draft)
+            deliveryNote = result.message
+            // A successful Slack send closes the loop; mark the draft sent.
+            if result.ok && kind == .slackSend {
+                try? await onAction(.markSent)
+            }
+        }
     }
 
     /// A local (non-writing) action button — Copy / Open thread.

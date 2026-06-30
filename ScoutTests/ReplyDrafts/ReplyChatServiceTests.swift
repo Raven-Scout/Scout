@@ -30,6 +30,23 @@ struct ReplyChatServiceTests {
         #expect(p.contains("Do NOT send anything"))            // safety framing
     }
 
+    @Test func slackDeliveryPromptSendsVerbatimAndExpectsAck() {
+        let p = ReplyChatService.deliveryPrompt(.slackSend, draft: draft())
+        #expect(p.contains("SEND"))
+        #expect(p.contains("Slack"))
+        #expect(p.contains(draft().threadRef))
+        #expect(p.contains(draft().bodyMarkdown))
+        #expect(p.contains("OK SENT"))
+    }
+
+    @Test func gmailDeliveryPromptCreatesDraftNeverSends() {
+        let p = ReplyChatService.deliveryPrompt(.gmailDraft, draft: draft())
+        #expect(p.contains("CREATE A DRAFT"))
+        #expect(p.contains("do NOT send") || p.contains("Never send"))
+        #expect(p.contains("Cc: Jakub <j@slsp.sk>"))
+        #expect(p.contains("OK DRAFT"))
+    }
+
     @Test func errorTurnsAreOmittedFromConversation() {
         let p = ReplyChatService.buildPrompt(
             draft: draft(),
