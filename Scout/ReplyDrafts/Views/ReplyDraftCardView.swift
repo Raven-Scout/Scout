@@ -119,7 +119,7 @@ struct ReplyDraftCardView: View {
 
     private var inputsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Doplň před odesláním (\(draft.inputs.count))")
+            Text("Fill in before sending (\(draft.inputs.count))")
                 .font(DS.sans(11, weight: .semibold))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p3)
@@ -130,7 +130,7 @@ struct ReplyDraftCardView: View {
                         .foregroundStyle(DS.Ink.p2)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 6) {
-                        TextField("Tvoje doplnění…", text: binding(for: input.id), axis: .vertical)
+                        TextField("Your input…", text: binding(for: input.id), axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                             .font(DS.sans(12.5))
                             .lineLimit(1...4)
@@ -139,7 +139,7 @@ struct ReplyDraftCardView: View {
                             if fillingID == input.id {
                                 ProgressView().controlSize(.small).frame(width: 12, height: 12)
                             } else {
-                                Text("Doplnit").font(DS.sans(11.5, weight: .medium))
+                                Text("Fill in").font(DS.sans(11.5, weight: .medium))
                             }
                         }
                         .buttonStyle(.plainHit)
