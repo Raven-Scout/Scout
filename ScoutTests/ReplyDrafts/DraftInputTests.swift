@@ -36,7 +36,7 @@ struct DraftInputTests {
             fileURL: URL(fileURLWithPath: "/x/T.md"), tag: "T", channel: .email,
             loopType: "direct-debt", to: "a@b.cz", cc: nil, threadRef: "u",
             subject: "s", status: .draft, created: "2026-06-30", contextAnswerRef: nil,
-            bodyMarkdown: "Hi [TBD: pick a date] — thanks"
+            bodyMarkdown: "Hi [TBD: pick a date] — thanks", summary: nil, relatedMessages: []
         )
         #expect(d.inputs.count == 1)
         #expect(d.inputs[0].prompt == "pick a date")
