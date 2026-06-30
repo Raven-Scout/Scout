@@ -46,6 +46,52 @@ struct ReplyDraftsParserTests {
         #expect(d.showsSubject)
     }
 
+    @Test func contextBlockIsSplitFromSendableBody() throws {
+        let text = """
+        ---
+        tag: CTX1
+        channel: email
+        to: "a@b.cz"
+        thread_ref: "u"
+        status: draft
+        created: 2026-06-30
+        ---
+
+        Ahoj, posílám odpověď.
+
+        <!-- scout:context -->
+        ## Summary
+
+        Lucia se ptá na možnosti granulárních rolí; míč je na tobě.
+
+        ## Thread
+
+        - [2026-05-26] Lucia Hallonová: shrnula tři varianty řešení
+        - [2026-05-22] Vojta (you): feature není na roadmapě
+        """
+        let d = try #require(ReplyDraftsParser.parseFile(
+            contents: text, fileURL: URL(fileURLWithPath: "/x/CTX1.md")))
+        // Sendable body excludes the context block (Copy stays clean).
+        #expect(d.bodyMarkdown == "Ahoj, posílám odpověď.")
+        #expect(!d.bodyMarkdown.contains("scout:context"))
+        #expect(!d.bodyMarkdown.contains("Summary"))
+        // Summary parsed.
+        #expect(d.summary == "Lucia se ptá na možnosti granulárních rolí; míč je na tobě.")
+        // Messages parsed.
+        #expect(d.relatedMessages.count == 2)
+        #expect(d.relatedMessages[0].date == "2026-05-26")
+        #expect(d.relatedMessages[0].sender == "Lucia Hallonová")
+        #expect(d.relatedMessages[0].text == "shrnula tři varianty řešení")
+        #expect(d.relatedMessages[1].sender == "Vojta (you)")
+    }
+
+    @Test func draftWithoutContextHasNoSummaryOrMessages() throws {
+        let url = URL(fileURLWithPath: "/x/drafts/NAHSEND.md")
+        let d = try #require(ReplyDraftsParser.parseFile(contents: fullFixture, fileURL: url))
+        #expect(d.summary == nil)
+        #expect(d.relatedMessages.isEmpty)
+    }
+
     @Test func noFrontmatterReturnsNil() {
         // The drafts/README.md doc has no frontmatter and must be skipped.
         let readme = "# Reply Drafts\n\nThis directory holds prepared replies.\n"

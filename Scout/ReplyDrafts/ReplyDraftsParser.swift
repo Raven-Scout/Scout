@@ -45,7 +45,11 @@ nonisolated enum ReplyDraftsParser {
         let status = DraftStatus.parse(fields["status"] ?? "")
         let created = fields["date"]?.nonEmpty ?? fields["created"]?.nonEmpty ?? datePrefix(of: stem) ?? ""
         let contextAnswerRef = fields["context_answer_ref"]?.nonEmpty
-        let cleanBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Split the post-frontmatter text into the sendable reply (before the
+        // marker) and the context block (after it). The marker keeps the
+        // summary + thread out of what Copy/Mark-sent treat as the email.
+        let (sendable, context) = splitContext(body)
 
         return ReplyDraft(
             fileURL: fileURL,
@@ -59,8 +63,58 @@ nonisolated enum ReplyDraftsParser {
             status: status,
             created: created,
             contextAnswerRef: contextAnswerRef,
-            bodyMarkdown: cleanBody
+            bodyMarkdown: sendable.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: context.flatMap { parseSummary($0)?.nonEmpty },
+            relatedMessages: context.map { parseMessages($0) } ?? []
         )
+    }
+
+    // MARK: - Context block (summary + thread)
+
+    /// Marker separating the sendable reply from the thread-context block.
+    static let contextMarker = "<!-- scout:context -->"
+
+    /// Split post-frontmatter text at ``contextMarker``. Returns (sendable body,
+    /// context block or nil if there is no marker).
+    static func splitContext(_ body: String) -> (sendable: String, context: String?) {
+        guard let r = body.range(of: contextMarker) else { return (body, nil) }
+        return (String(body[..<r.lowerBound]), String(body[r.upperBound...]))
+    }
+
+    /// Text under a `## Summary` heading, up to the next `## ` heading.
+    static func parseSummary(_ context: String) -> String? {
+        sectionBody(context, heading: "## Summary")
+    }
+
+    /// Parse `- [YYYY-MM-DD] Sender: text` lines under a `## Thread` heading.
+    static func parseMessages(_ context: String) -> [DraftMessage] {
+        guard let section = sectionBody(context, heading: "## Thread") else { return [] }
+        guard let re = try? NSRegularExpression(pattern: #"^\s*-\s*\[([^\]]*)\]\s*([^:]+):\s*(.*)$"#) else { return [] }
+        var out: [DraftMessage] = []
+        for (i, line) in section.components(separatedBy: "\n").enumerated() {
+            let ns = line as NSString
+            guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { continue }
+            out.append(DraftMessage(
+                date: ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces),
+                sender: ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces),
+                text: ns.substring(with: m.range(at: 3)).trimmingCharacters(in: .whitespaces),
+                id: "\(i)"
+            ))
+        }
+        return out
+    }
+
+    /// Body of a `## <heading>` section, up to the next `## ` heading or end.
+    private static func sectionBody(_ text: String, heading: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == heading }) else { return nil }
+        var collected: [String] = []
+        for line in lines[(start + 1)...] {
+            if line.hasPrefix("## ") { break }
+            collected.append(line)
+        }
+        let body = collected.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? nil : body
     }
 
     // MARK: - Frontmatter

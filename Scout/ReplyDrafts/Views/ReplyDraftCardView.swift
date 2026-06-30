@@ -18,12 +18,15 @@ struct ReplyDraftCardView: View {
     @State private var copied = false
     @State private var inputValues: [String: String] = [:]
     @State private var fillingID: String?
+    @State private var summaryExpanded = false
+    @State private var threadExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             metaLine
             bodyPanel
+            contextSection
             if draft.isAwaitingAction && !draft.inputs.isEmpty {
                 inputsSection
             }
@@ -113,6 +116,79 @@ struct ReplyDraftCardView: View {
                     .fill(DS.Paper.sunk)
                     .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
             }
+    }
+
+    // MARK: - Context (summary + thread)
+
+    @ViewBuilder
+    private var contextSection: some View {
+        if draft.summary != nil || !draft.relatedMessages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if let summary = draft.summary {
+                    DisclosureGroup(isExpanded: $summaryExpanded) {
+                        Text(summary)
+                            .font(DS.serif(13))
+                            .foregroundStyle(DS.Ink.p2)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    } label: {
+                        disclosureLabel("Summary", systemImage: "sparkles")
+                    }
+                }
+                if !draft.relatedMessages.isEmpty {
+                    DisclosureGroup(isExpanded: $threadExpanded) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(draft.relatedMessages) { messageRow($0) }
+                        }
+                        .padding(.top, 8)
+                    } label: {
+                        disclosureLabel("Thread (\(draft.relatedMessages.count))", systemImage: "text.bubble")
+                    }
+                }
+            }
+            .tint(DS.Ink.p3)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(DS.Paper.sunk)
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+            }
+        }
+    }
+
+    private func disclosureLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).font(.system(size: 11))
+            Text(title)
+                .font(DS.sans(11.5, weight: .semibold))
+                .tracking(0.04 * 11.5)
+        }
+        .foregroundStyle(DS.Ink.p3)
+        .contentShape(Rectangle())
+    }
+
+    private func messageRow(_ msg: DraftMessage) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(msg.sender)
+                    .font(DS.sans(11.5, weight: .semibold))
+                    .foregroundStyle(DS.Ink.p2)
+                if !msg.date.isEmpty {
+                    Text(msg.date)
+                        .font(DS.mono(10.5))
+                        .foregroundStyle(DS.Ink.p4)
+                }
+            }
+            Text(msg.text)
+                .font(DS.serif(12.5))
+                .foregroundStyle(DS.Ink.p2)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Fill-in inputs

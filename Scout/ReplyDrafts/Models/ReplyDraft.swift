@@ -37,8 +37,15 @@ nonisolated struct ReplyDraft: Identifiable, Equatable, Sendable {
     /// `context_answer_ref:` — for `promise-answered`, the answer that unblocked
     /// the reply; nil otherwise.
     let contextAnswerRef: String?
-    /// The drafted reply body — everything after the frontmatter, trimmed.
+    /// The drafted reply body — the **sendable** message only (everything after
+    /// the frontmatter and before the `<!-- scout:context -->` marker).
     let bodyMarkdown: String
+    /// AI-generated one-paragraph summary of what the thread/topic is about,
+    /// from the context block. nil when the draft carries no context block.
+    let summary: String?
+    /// Prior messages on the topic, from the context block — shown in the
+    /// collapsible "Thread" section. Empty when none.
+    let relatedMessages: [DraftMessage]
 
     var id: String { fileURL.path }
 
