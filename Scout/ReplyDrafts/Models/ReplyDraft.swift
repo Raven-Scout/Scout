@@ -44,6 +44,9 @@ nonisolated struct ReplyDraft: Identifiable, Equatable, Sendable {
 
     var isAwaitingAction: Bool { status.isAwaitingAction }
 
+    /// Fill-in slots (`[TBD: …]` markers) the user still needs to resolve.
+    var inputs: [DraftInput] { DraftInput.extract(from: bodyMarkdown) }
+
     /// Header chip — the tag reads like a code label.
     var code: String { tag }
 

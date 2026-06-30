@@ -82,6 +82,42 @@ actor ReplyDraftsWriter {
         return try await task.value
     }
 
+    /// Fill one `[TBD: …]` placeholder in the draft body with the user's value,
+    /// writing it into the file so the reply reads cleanly. Status is untouched
+    /// (the draft stays a draft). `label` is used for the git commit message.
+    func fill(placeholder: String, value: String, fileURL: URL, label: String) async throws {
+        let previous = tail
+        let task = Task { [scoutDirectory, gitService] in
+            _ = await previous?.value
+            let didWrite: Bool
+            do {
+                didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
+                    Self.fillPlaceholder(text: text, placeholder: placeholder, value: value)
+                }
+            } catch let e as GuardedFileWrite.Failure {
+                switch e {
+                case .read(let m): throw ReplyDraftsWriterError.readFailed(m)
+                case .write(let m): throw ReplyDraftsWriterError.writeFailed(m)
+                case .conflictPersisted:
+                    throw ReplyDraftsWriterError.writeFailed("\(fileURL.lastPathComponent) changed repeatedly under concurrent writes")
+                }
+            }
+            guard didWrite else { return }
+            let rel = Self.relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
+            try? await gitService?.commitPaths([rel], message: "app: fill input in reply draft \(label)")
+        }
+        tail = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    /// Replace the FIRST occurrence of `placeholder` with `value`. Returns the
+    /// text unchanged when the placeholder isn't present (idempotent no-op —
+    /// e.g. a concurrent fill already resolved it).
+    static func fillPlaceholder(text: String, placeholder: String, value: String) -> String {
+        guard let range = text.range(of: placeholder) else { return text }
+        return text.replacingCharacters(in: range, with: value)
+    }
+
     private static func perform(
         action: DraftAction,
         fileURL: URL,

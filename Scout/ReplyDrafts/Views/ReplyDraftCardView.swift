@@ -10,16 +10,23 @@ struct ReplyDraftCardView: View {
     let draft: ReplyDraft
     /// Performs a status write. Throws so the card can show an inline error.
     let onAction: @MainActor (DraftAction) async throws -> Void
+    /// Fills a `[TBD: …]` placeholder with a value, writing it into the body.
+    let onFill: @MainActor (_ placeholder: String, _ value: String) async throws -> Void
 
     @State private var inFlight: DraftAction?
     @State private var errorText: String?
     @State private var copied = false
+    @State private var inputValues: [String: String] = [:]
+    @State private var fillingID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             metaLine
             bodyPanel
+            if draft.isAwaitingAction && !draft.inputs.isEmpty {
+                inputsSection
+            }
             actions
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
@@ -106,6 +113,72 @@ struct ReplyDraftCardView: View {
                     .fill(DS.Paper.sunk)
                     .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
             }
+    }
+
+    // MARK: - Fill-in inputs
+
+    private var inputsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Doplň před odesláním (\(draft.inputs.count))")
+                .font(DS.sans(11, weight: .semibold))
+                .tracking(0.06 * 11)
+                .foregroundStyle(DS.Ink.p3)
+            ForEach(draft.inputs) { input in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(input.prompt)
+                        .font(DS.sans(12))
+                        .foregroundStyle(DS.Ink.p2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        TextField("Tvoje doplnění…", text: binding(for: input.id), axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .font(DS.sans(12.5))
+                            .lineLimit(1...4)
+                            .onSubmit { applyFill(input) }
+                        Button { applyFill(input) } label: {
+                            if fillingID == input.id {
+                                ProgressView().controlSize(.small).frame(width: 12, height: 12)
+                            } else {
+                                Text("Doplnit").font(DS.sans(11.5, weight: .medium))
+                            }
+                        }
+                        .buttonStyle(.plainHit)
+                        .disabled(trimmed(input.id).isEmpty || fillingID != nil)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(DS.Accent.wash)
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.Accent.ink.opacity(0.25), lineWidth: 0.5))
+        }
+    }
+
+    private func binding(for id: String) -> Binding<String> {
+        Binding(get: { inputValues[id] ?? "" }, set: { inputValues[id] = $0 })
+    }
+
+    private func trimmed(_ id: String) -> String {
+        (inputValues[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func applyFill(_ input: DraftInput) {
+        let value = trimmed(input.id)
+        guard !value.isEmpty, fillingID == nil else { return }
+        fillingID = input.id
+        errorText = nil
+        Task {
+            do {
+                try await onFill(input.placeholder, value)
+                inputValues[input.id] = nil
+            } catch {
+                errorText = "Couldn't fill in — \(error.localizedDescription)"
+            }
+            fillingID = nil
+        }
     }
 
     // MARK: - Actions

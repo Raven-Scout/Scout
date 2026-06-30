@@ -71,6 +71,32 @@ struct ReplyDraftsWriterRewriteTests {
     }
 }
 
+@Suite("ReplyDraftsWriter.fillPlaceholder (pure)")
+struct ReplyDraftsFillTests {
+
+    @Test func replacesFirstOccurrenceWithValue() {
+        let text = "Potvrdím termín [TBD: ověřit čas] a ozvu se."
+        let out = ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: ověřit čas]", value: "ve čtvrtek 14:00")
+        #expect(out == "Potvrdím termín ve čtvrtek 14:00 a ozvu se.")
+        #expect(!out.contains("[TBD"))
+    }
+
+    @Test func missingPlaceholderReturnsUnchanged() {
+        let text = "Nothing to fill here."
+        let out = ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: x]", value: "y")
+        #expect(out == text)
+    }
+
+    @Test func onlyFirstOccurrenceReplaced() {
+        let text = "[TBD: a] then [TBD: a]"
+        let out = ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: a]", value: "X")
+        #expect(out == "X then [TBD: a]")
+    }
+}
+
 @Suite("ReplyDraftsWriter end-to-end (file + git commit)")
 struct ReplyDraftsWriterE2ETests {
 

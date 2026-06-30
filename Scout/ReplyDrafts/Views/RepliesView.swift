@@ -112,9 +112,11 @@ struct RepliesView: View {
                 )
             }
             ForEach(awaiting) { draft in
-                ReplyDraftCardView(draft: draft) { action in
-                    try await apply(draft, action)
-                }
+                ReplyDraftCardView(
+                    draft: draft,
+                    onAction: { action in try await apply(draft, action) },
+                    onFill: { placeholder, value in try await fill(draft, placeholder, value) }
+                )
             }
             if !resolved.isEmpty {
                 resolvedSection(resolved)
@@ -144,9 +146,11 @@ struct RepliesView: View {
 
             if resolvedExpanded {
                 ForEach(resolved) { draft in
-                    ReplyDraftCardView(draft: draft) { action in
-                        try await apply(draft, action)
-                    }
+                    ReplyDraftCardView(
+                        draft: draft,
+                        onAction: { action in try await apply(draft, action) },
+                        onFill: { placeholder, value in try await fill(draft, placeholder, value) }
+                    )
                 }
             }
         }
@@ -173,6 +177,16 @@ struct RepliesView: View {
     private func apply(_ draft: ReplyDraft, _ action: DraftAction) async throws {
         try await writerBox.writer.apply(
             action,
+            fileURL: draft.fileURL,
+            label: draft.tag
+        )
+        docService.reload()
+    }
+
+    private func fill(_ draft: ReplyDraft, _ placeholder: String, _ value: String) async throws {
+        try await writerBox.writer.fill(
+            placeholder: placeholder,
+            value: value,
             fileURL: draft.fileURL,
             label: draft.tag
         )
