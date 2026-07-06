@@ -10,7 +10,15 @@
 # standard install + configure boilerplate.
 #
 # Usage:
-#   scripts/release.sh 0.1.0
+#   scripts/release.sh            # auto-pick version from commits (see below)
+#   scripts/release.sh 0.1.0      # explicit version (overrides the rule)
+#
+# Version rule: the next version is derived from the conventional-commit
+# prefixes already used across the repo (and grouped in the changelog below).
+# Any `feat:` commit since the latest v* tag ⇒ minor bump; otherwise
+# (fix / perf / refactor / docs / chore / …) ⇒ patch bump. Pass an explicit
+# version to override — e.g. a major/pre-1.0 bump; the script warns if the
+# override disagrees with the rule but proceeds with what you passed.
 #
 # Requirements: xcodebuild, hdiutil, codesign, xcrun (notarytool + stapler),
 # gh (logged in, with write access to the repo).
@@ -30,7 +38,44 @@
 
 set -euo pipefail
 
-VERSION="${1:?usage: release.sh <version> (e.g. 0.1.0)}"
+# ─────────────────────────────────────────────────────────────────────────────
+# Version selection (feat → minor, else → patch; explicit arg overrides)
+# ─────────────────────────────────────────────────────────────────────────────
+LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+
+# Print the rule-recommended next version given the latest v*.*.* tag. Reads the
+# commit subjects since that tag: a `feat:` (optionally scoped / breaking, e.g.
+# `feat(kb):` or `feat!:`) bumps the minor and zeroes the patch; anything else
+# bumps the patch. First-ever release (no tag) starts at 0.1.0.
+recommend_version() {
+  local latest="${1:-}"
+  if [[ -z "$latest" ]]; then echo "0.1.0"; return; fi
+  local base="${latest#v}"
+  local maj="${base%%.*}"
+  local rest="${base#*.}"
+  local min="${rest%%.*}"
+  local pat="${rest#*.}"
+  local subjects
+  subjects="$(git log "${latest}..HEAD" --no-merges --format='%s' 2>/dev/null || true)"
+  if printf '%s\n' "$subjects" | grep -qE '^feat(\(.*\))?!?:'; then
+    echo "${maj}.$((min + 1)).0"
+  else
+    echo "${maj}.${min}.$((pat + 1))"
+  fi
+}
+
+RECOMMENDED="$(recommend_version "$LATEST_TAG")"
+
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+  VERSION="$1"
+  if [[ "$VERSION" != "$RECOMMENDED" ]]; then
+    echo "⚠ Version $VERSION overrides the rule-recommended $RECOMMENDED" >&2
+    echo "  (feat→minor, else→patch, from commits since ${LATEST_TAG:-<none>})." >&2
+  fi
+else
+  VERSION="$RECOMMENDED"
+  echo "→ Auto-selected v$VERSION (feat→minor, else→patch) from commits since ${LATEST_TAG:-<none>}"
+fi
 TAG="v$VERSION"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
