@@ -206,11 +206,11 @@ struct KBServiceGraphTests {
         return root
     }
 
-    @Test func resolvesLinksBacklinksAndLocalGraph() throws {
+    @Test func resolvesLinksBacklinksAndLocalGraph() async throws {
         let root = try makeLinkedKB()
         defer { try? FileManager.default.removeItem(at: root) }
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
-        svc.load()
+        await svc.reparseAndWait()
 
         #expect(svc.resolveWikilink("scout") == "knowledge-base/projects/scout.md")
         #expect(svc.resolveWikilink("nonexistent") == nil)
@@ -232,11 +232,11 @@ struct KBServiceGraphTests {
         #expect(stats.links == 3)   // people–scout, people–atlas, scout–atlas
     }
 
-    @Test func contentSearchReturnsSnippet() throws {
+    @Test func contentSearchReturnsSnippet() async throws {
         let root = try makeLinkedKB()
         defer { try? FileManager.default.removeItem(at: root) }
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
-        svc.load()
+        await svc.reparseAndWait()
         let hits = svc.searchContent("atlas")
         #expect(hits.contains { $0.path == "knowledge-base/projects/atlas.md" })
         #expect(hits.contains { $0.path == "knowledge-base/people.md" })
@@ -246,7 +246,7 @@ struct KBServiceGraphTests {
 @MainActor
 @Suite("KnowledgeBaseService full graph")
 struct KBFullGraphTests {
-    @Test func fullGraphHasAllNotesAndEdges() throws {
+    @Test func fullGraphHasAllNotesAndEdges() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kbfull-\(UUID().uuidString)")
         let kb = root.appendingPathComponent("knowledge-base")
@@ -256,7 +256,7 @@ struct KBFullGraphTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
-        svc.load()
+        await svc.reparseAndWait()
         let g = svc.fullGraph()
         #expect(g.nodes.count == 2)
         #expect(g.edges.count == 1)

@@ -30,6 +30,7 @@ final class KnowledgeBaseService: ObservableObject {
 
     private let fileEvents: any FileSystemEventSource
     private var watchTask: Task<Void, Never>?
+    private var reparseTask: Task<Void, Never>?
 
     /// Directory entries never surfaced in the tree.
     private static let ignoredNames: Set<String> = [
@@ -67,19 +68,43 @@ final class KnowledgeBaseService: ObservableObject {
         try? String(contentsOf: url, encoding: .utf8)
     }
 
+    /// Await the currently scheduled reparse — used by tests (and anyone who
+    /// needs the tree/index to reflect disk right now).
+    func reparseAndWait() async {
+        reparse()
+        await reparseTask?.value
+    }
+
     // MARK: - Tree building
 
+    /// Rebuild tree + index. The directory walk and the per-note reads run off
+    /// the main actor (a few hundred notes means hundreds of disk reads — doing
+    /// that on the main actor on every FSEvent froze the UI, same class of
+    /// problem as the activity-heatmap fix); only publishing hops back to main.
     private func reparse() {
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: kbDirectory.path, isDirectory: &isDir),
-              isDir.boolValue else {
-            tree = []
-            state = .missing(kbDirectory)
-            return
+        reparseTask?.cancel()
+        let kbDir = kbDirectory
+        let scoutDir = scoutDirectory
+        reparseTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { () -> (tree: [KBNode], index: KBIndex)? in
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: kbDir.path, isDirectory: &isDir),
+                      isDir.boolValue else { return nil }
+                let tree = KnowledgeBaseService.buildChildren(of: kbDir, scoutDirectory: scoutDir)
+                let index = KnowledgeBaseService.buildIndex(tree: tree, scoutDirectory: scoutDir)
+                return (tree, index)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            if let result {
+                self.tree = result.tree
+                self.index = result.index
+                self.state = .loaded
+            } else {
+                self.tree = []
+                self.index = .empty
+                self.state = .missing(kbDir)
+            }
         }
-        tree = Self.buildChildren(of: kbDirectory, scoutDirectory: scoutDirectory)
-        index = Self.buildIndex(tree: tree, scoutDirectory: scoutDirectory)
-        state = .loaded
     }
 
     /// Recursively build the sorted child nodes of `directory`. Directories sort
@@ -132,21 +157,24 @@ final class KnowledgeBaseService: ObservableObject {
 
     // MARK: - Graph index
 
-    /// Build the wikilink index from the current tree: a stem→path map plus each
-    /// file's outgoing link targets. Reads every note once (cheap for a KB of a
-    /// few hundred KB); reused for backlinks, navigation and the graph.
+    /// Build the wikilink index from the current tree: a stem→path map, each
+    /// file's outgoing link targets, and the note text itself. Reads every note
+    /// exactly once (off the main actor, via `reparse`); the cached text serves
+    /// backlink excerpts and full-text search without further disk I/O.
     nonisolated static func buildIndex(tree: [KBNode], scoutDirectory: URL) -> KBIndex {
         let files = tree.flatMap(\.allFiles).filter { $0.ext == "md" }
         var stemToPath: [String: String] = [:]
         var outByFile: [String: [String]] = [:]
+        var textByFile: [String: String] = [:]
         for file in files {
             stemToPath[file.displayName.lowercased()] = file.relativePath
         }
         for file in files {
             guard let text = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
+            textByFile[file.relativePath] = text
             outByFile[file.relativePath] = extractWikilinks(text)
         }
-        return KBIndex(stemToPath: stemToPath, outByFile: outByFile)
+        return KBIndex(stemToPath: stemToPath, outByFile: outByFile, textByFile: textByFile)
     }
 
     /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
@@ -179,14 +207,14 @@ final class KnowledgeBaseService: ObservableObject {
     }
 
     /// Notes that link to `relPath`, with a one-line excerpt around the link.
+    /// Serves everything from the index — no disk reads.
     func backlinks(for relPath: String) -> [KBBacklink] {
         let targetStem = (KBNode.displayName(forPath: relPath)).lowercased()
         var results: [KBBacklink] = []
         for (from, targets) in index.outByFile {
             guard from != relPath else { continue }
             guard targets.contains(where: { index.stemToPath[$0.lowercased()] == relPath }) else { continue }
-            let url = scoutDirectory.appendingPathComponent(from)
-            let excerpt = Self.excerpt(in: url, mentioning: targetStem)
+            let excerpt = Self.excerpt(in: index.textByFile[from] ?? "", mentioning: targetStem)
             results.append(KBBacklink(path: from,
                                       name: KBNode.displayName(forPath: from),
                                       excerpt: excerpt))
@@ -194,8 +222,7 @@ final class KnowledgeBaseService: ObservableObject {
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private static func excerpt(in url: URL, mentioning stem: String) -> String {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+    private static func excerpt(in text: String, mentioning stem: String) -> String {
         let needle = "[[" + stem
         let line = text.components(separatedBy: "\n")
             .first { $0.lowercased().contains(needle) }
@@ -291,8 +318,9 @@ final class KnowledgeBaseService: ObservableObject {
         return KBGraph(nodes: nodes, edges: Array(edgeSet))
     }
 
-    /// Full-text search across note names and contents, returning a snippet for
-    /// the first matching line. Capped at 30 hits.
+    /// Full-text search across note names and contents (from the index's cached
+    /// text — no disk reads), returning a snippet for the first matching line.
+    /// Capped at 30 hits.
     func searchContent(_ query: String) -> [KBSearchHit] {
         let q = query.lowercased()
         guard q.count >= 2 else { return [] }
@@ -300,7 +328,7 @@ final class KnowledgeBaseService: ObservableObject {
         for file in tree.flatMap(\.allFiles) where file.ext == "md" {
             let nameMatch = file.displayName.lowercased().contains(q)
                 || file.relativePath.lowercased().contains(q)
-            guard let text = try? String(contentsOf: file.url, encoding: .utf8) else {
+            guard let text = index.textByFile[file.relativePath] else {
                 if nameMatch {
                     hits.append(KBSearchHit(path: file.relativePath, name: file.displayName, snippet: ""))
                 }
@@ -335,5 +363,8 @@ final class KnowledgeBaseService: ObservableObject {
         }
     }
 
-    deinit { watchTask?.cancel() }
+    deinit {
+        watchTask?.cancel()
+        reparseTask?.cancel()
+    }
 }

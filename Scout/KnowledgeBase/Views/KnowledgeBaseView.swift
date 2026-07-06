@@ -106,13 +106,17 @@ struct KnowledgeBaseView: View {
     @ViewBuilder
     private var treeOrState: some View {
         switch service.state {
+        case .idle, .loading:
+            // First scan runs off the main actor — show nothing rather than
+            // flashing "Empty knowledge base" before it lands.
+            Spacer()
         case .missing:
             emptyState(icon: "folder.badge.questionmark",
                        title: "No knowledge base",
                        detail: "Expected \(service.kbDirectory.path). Install the scout-plugin and run /scout-setup.")
         case .failed(let msg):
             emptyState(icon: "exclamationmark.triangle", title: "Couldn't read the knowledge base", detail: msg)
-        default:
+        case .loaded:
             if service.tree.isEmpty {
                 emptyState(icon: "doc.text", title: "Empty knowledge base",
                            detail: "No notes yet. Use + to create the first one.")

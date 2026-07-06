@@ -88,10 +88,13 @@ nonisolated struct KBGraph: Equatable {
     static let empty = KBGraph(nodes: [], edges: [])
 }
 
-/// Precomputed wikilink index: each note's display stem → its path, and each
-/// note's outgoing link targets (original case). Rebuilt on every reparse.
+/// Precomputed wikilink index: each note's display stem → its path, each note's
+/// outgoing link targets (original case), and the note text itself (read once
+/// per reparse; serves backlink excerpts and full-text search without disk
+/// I/O). Rebuilt on every reparse.
 nonisolated struct KBIndex: Equatable {
     let stemToPath: [String: String]
     let outByFile: [String: [String]]
-    static let empty = KBIndex(stemToPath: [:], outByFile: [:])
+    let textByFile: [String: String]
+    static let empty = KBIndex(stemToPath: [:], outByFile: [:], textByFile: [:])
 }
