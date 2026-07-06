@@ -96,7 +96,7 @@ struct KBLiveEditor: NSViewRepresentable {
             NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         }
         static func headingSize(_ level: Int) -> CGFloat {
-            switch level { case 1: return 23; case 2: return 19; case 3: return 16.5; default: return 14.5 }
+            KBMarkdownLexer.headingSize(level)
         }
 
         private var faint: NSColor { NSColor(DS.Ink.p4) }

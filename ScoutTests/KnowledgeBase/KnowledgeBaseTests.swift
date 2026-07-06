@@ -91,79 +91,37 @@ struct KnowledgeBaseServiceTreeTests {
     }
 }
 
-@Suite("KBMarkdownPreview parser")
-struct KBMarkdownPreviewParserTests {
-    @Test func splitsFrontmatter() {
-        let text = "---\ntitle: X\ntags: a\n---\n\n# Heading\nbody"
-        let (fm, body) = KBMarkdownPreview.splitFrontmatter(text)
-        #expect(fm == ["title: X", "tags: a"])
-        #expect(body == "# Heading\nbody")
-    }
-    @Test func noFrontmatterWhenAbsent() {
-        let (fm, body) = KBMarkdownPreview.splitFrontmatter("# Heading\nbody")
-        #expect(fm == nil)
-        #expect(body == "# Heading\nbody")
-    }
-    @Test func unterminatedFenceTreatedAsBody() {
-        let (fm, _) = KBMarkdownPreview.splitFrontmatter("---\ntitle: X\nno closing")
-        #expect(fm == nil)
-    }
+@Suite("KBMarkdownLexer")
+struct KBMarkdownLexerTests {
     @Test func parsesHeadingLevels() {
-        #expect(KBMarkdownPreview.parseHeading("## Sub") == .heading(level: 2, text: "Sub"))
-        #expect(KBMarkdownPreview.parseHeading("###### Deep") == .heading(level: 6, text: "Deep"))
-        #expect(KBMarkdownPreview.parseHeading("#NoSpace") == nil)        // needs a space
-        #expect(KBMarkdownPreview.parseHeading("####### TooDeep") == nil) // 7 hashes invalid
+        #expect(KBMarkdownLexer.heading("## Sub")?.level == 2)
+        #expect(KBMarkdownLexer.heading("## Sub")?.text == "Sub")
+        #expect(KBMarkdownLexer.heading("###### Deep")?.level == 6)
+        #expect(KBMarkdownLexer.heading("#NoSpace") == nil)        // needs a space
+        #expect(KBMarkdownLexer.heading("####### TooDeep") == nil) // 7 hashes invalid
     }
     @Test func parsesUnorderedAndOrderedLists() {
-        #expect(KBMarkdownPreview.parseListItem("- item") == .listItem(depth: 0, ordinal: nil, text: "item"))
-        #expect(KBMarkdownPreview.parseListItem("  - nested") == .listItem(depth: 1, ordinal: nil, text: "nested"))
-        #expect(KBMarkdownPreview.parseListItem("1. first") == .listItem(depth: 0, ordinal: "1.", text: "first"))
-        #expect(KBMarkdownPreview.parseListItem("plain") == nil)
+        let bullet = KBMarkdownLexer.listItem("- item")
+        #expect(bullet?.depth == 0 && bullet?.ordinal == nil && bullet?.text == "item")
+        let nested = KBMarkdownLexer.listItem("  - nested")
+        #expect(nested?.depth == 1 && nested?.text == "nested")
+        let ordered = KBMarkdownLexer.listItem("1. first")
+        #expect(ordered?.ordinal == "1." && ordered?.text == "first")
+        #expect(KBMarkdownLexer.listItem("plain") == nil)
     }
-    @Test func parseProducesMixedBlocks() {
-        let blocks = KBMarkdownPreview.parse("# Title\n\npara one\n\n- a\n- b\n\n```\ncode\n```\n\n> quote")
-        #expect(blocks.contains(.heading(level: 1, text: "Title")))
-        #expect(blocks.contains(.prose("para one")))
-        #expect(blocks.contains(.listItem(depth: 0, ordinal: nil, text: "a")))
-        #expect(blocks.contains(.code("code")))
-        #expect(blocks.contains(.quote("quote")))
-    }
-    @Test func horizontalRuleBecomesRuleBlock() {
-        let blocks = KBMarkdownPreview.parse("above\n\n---\n\nbelow")
-        #expect(blocks.contains(.rule))
-        #expect(blocks.contains(.prose("above")))
-        #expect(blocks.contains(.prose("below")))
-    }
-}
-
-@Suite("KBMarkdownPreview tables")
-struct KBMarkdownPreviewTableTests {
     @Test func detectsSeparatorButNotHorizontalRule() {
-        #expect(KBMarkdownPreview.isTableSeparator("|---|---|"))
-        #expect(KBMarkdownPreview.isTableSeparator("| :--- | ---: |"))
-        #expect(!KBMarkdownPreview.isTableSeparator("---"))      // hr, no pipe
-        #expect(!KBMarkdownPreview.isTableSeparator("| a | b |")) // content row
+        #expect(KBMarkdownLexer.isTableSeparator("|---|---|"))
+        #expect(KBMarkdownLexer.isTableSeparator("| :--- | ---: |"))
+        #expect(!KBMarkdownLexer.isTableSeparator("---"))      // hr, no pipe
+        #expect(!KBMarkdownLexer.isTableSeparator("| a | b |")) // content row
     }
     @Test func splitsRowDroppingOuterPipes() {
-        #expect(KBMarkdownPreview.splitRow("| Name | Role | Email |") == ["Name", "Role", "Email"])
+        #expect(KBMarkdownLexer.splitRow("| Name | Role | Email |") == ["Name", "Role", "Email"])
     }
     @Test func splitsRowHonoringEscapedPipeInWikilink() {
         // `[[people\|Priya]]` — the escaped pipe is cell content, not a column break.
-        let cells = KBMarkdownPreview.splitRow("| Alex | sees [[people\\|Priya]] | x |")
+        let cells = KBMarkdownLexer.splitRow("| Alex | sees [[people\\|Priya]] | x |")
         #expect(cells == ["Alex", "sees [[people|Priya]]", "x"])
-    }
-    @Test func parsesTableBlockWithPaddedRows() {
-        let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 |"
-        let blocks = KBMarkdownPreview.parse(md)
-        #expect(blocks == [
-            .table(headers: ["A", "B", "C"], rows: [["1", "2", "3"], ["4", "5", ""]])
-        ])
-    }
-    @Test func tableEndsAtBlankLine() {
-        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n\nafter"
-        let blocks = KBMarkdownPreview.parse(md)
-        #expect(blocks.contains(.table(headers: ["A", "B"], rows: [["1", "2"]])))
-        #expect(blocks.contains(.prose("after")))
     }
 }
 
@@ -349,6 +307,26 @@ struct KBDocSegmentTests {
         #expect(quote?.lineStart == 0 && quote?.lineEnd == 1)
     }
 
+    @Test func tablePadsAndTruncatesRaggedRows() {
+        let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 |"
+        let table = KBDocSegment.segments(from: md).first { $0.kind == .table }
+        #expect(table?.headers == ["A", "B", "C"])
+        #expect(table?.rows == [["1", "2", "3"], ["4", "5", ""]])
+    }
+
+    @Test func tableEndsAtBlankLine() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n\nafter"
+        let segs = KBDocSegment.segments(from: md)
+        let table = segs.first { $0.kind == .table }
+        #expect(table?.rows == [["1", "2"]])
+        #expect(segs.contains { $0.kind == .paragraph && $0.raw == "after" })
+    }
+
+    @Test func unterminatedFrontmatterIsNotFrontmatter() {
+        let segs = KBDocSegment.segments(from: "---\ntitle: X\nno closing")
+        #expect(!segs.contains { $0.kind == .frontmatter })
+    }
+
     @Test func multilineParagraphSpansLines() {
         let doc = "one\ntwo\nthree"
         let segs = KBDocSegment.segments(from: doc)
@@ -382,30 +360,31 @@ struct KBWriterSymlinkTests {
     }
 }
 
-@Suite("KBMarkdownPreview metadata collapse")
-struct KBMarkdownPreviewPartitionTests {
+@Suite("KBDocSegment metadata collapse")
+struct KBDocSegmentPartitionTests {
     @Test func collapsesChangelogAfterTitle() {
-        let blocks = KBMarkdownPreview.parse(
-            "# People\n**Last updated:** today\n**Prev:** yesterday\n\nReal intro.\n\n## Team")
-        let parts = KBMarkdownPreview.partition(blocks)
-        #expect(parts.title == .heading(level: 1, text: "People"))
-        // The changelog para collapses into history; the intro stays in the body.
-        #expect(parts.history.count == 1)
-        #expect(parts.rest.contains(.prose("Real intro.")))
-        #expect(parts.rest.contains(.heading(level: 2, text: "Team")))
-        #expect(!parts.rest.contains { KBMarkdownPreview.isMetadata($0) })
+        let segs = KBDocSegment.segments(from:
+            "# People\n**Last updated:** today\n\n**Prev:** yesterday\n\nReal intro.\n\n## Team")
+        let parts = KBDocSegment.partition(segs)
+        #expect(parts.title?.kind == .heading(1))
+        // The changelog paragraphs collapse into history; the intro stays in the body.
+        #expect(parts.history.count == 2)
+        #expect(parts.rest.contains { $0.kind == .paragraph && $0.raw == "Real intro." })
+        #expect(parts.rest.contains { $0.kind == .heading(2) })
+        #expect(!parts.rest.contains { KBDocSegment.isMetadata($0) })
     }
     @Test func noTitleNoCollapseWhenPlain() {
-        let blocks = KBMarkdownPreview.parse("Just a normal note.\n\nSecond paragraph.")
-        let parts = KBMarkdownPreview.partition(blocks)
+        let segs = KBDocSegment.segments(from: "Just a normal note.\n\nSecond paragraph.")
+        let parts = KBDocSegment.partition(segs)
         #expect(parts.title == nil)
         #expect(parts.history.isEmpty)
         #expect(parts.rest.count == 2)
     }
-    @Test func identifiesMetadataProse() {
-        #expect(KBMarkdownPreview.isMetadata(.prose("**Parent:** [[knowledge-base]]")))
-        #expect(KBMarkdownPreview.isMetadata(.prose("**Prev:** 2026-05-20 ...")))
-        #expect(!KBMarkdownPreview.isMetadata(.prose("Normal text **bold** inside")))
-        #expect(!KBMarkdownPreview.isMetadata(.heading(level: 1, text: "Title")))
+    @Test func identifiesMetadataParagraphs() {
+        let segs = KBDocSegment.segments(from:
+            "**Parent:** [[knowledge-base]]\n\nNormal text **bold** inside\n\n# Title")
+        #expect(KBDocSegment.isMetadata(segs[0]))
+        #expect(!KBDocSegment.isMetadata(segs[1]))
+        #expect(!KBDocSegment.isMetadata(segs[2]))   // heading, not prose
     }
 }

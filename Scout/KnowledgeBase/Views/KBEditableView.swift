@@ -15,7 +15,7 @@ struct KBEditableView: View {
 
     var body: some View {
         let segs = KBDocSegment.segments(from: source)
-        let parts = partition(segs)
+        let parts = KBDocSegment.partition(segs)
         ScrollView {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -166,40 +166,14 @@ struct KBEditableView: View {
         .padding(10).neumorphicPressed(cornerRadius: 6)
     }
 
-    // MARK: - Partition (collapse leading frontmatter + changelog)
-
-    private func partition(_ segs: [KBDocSegment]) -> (title: KBDocSegment?, history: [KBDocSegment], rest: [KBDocSegment]) {
-        var title: KBDocSegment? = nil
-        var history: [KBDocSegment] = []
-        var rest: [KBDocSegment] = []
-        var leading = true
-        for seg in segs {
-            if leading {
-                if title == nil, history.isEmpty, case .heading(let lvl) = seg.kind, lvl == 1 {
-                    title = seg; continue
-                }
-                if seg.kind == .frontmatter || isMetadata(seg) { history.append(seg); continue }
-                leading = false
-            }
-            rest.append(seg)
-        }
-        return (title, history, rest)
-    }
-
-    private func isMetadata(_ seg: KBDocSegment) -> Bool {
-        guard seg.kind == .paragraph else { return false }
-        let t = seg.raw.trimmingCharacters(in: .whitespaces)
-        return t.hasPrefix("**Last updated:**") || t.hasPrefix("**Prev:**") || t.hasPrefix("**Parent:**")
-    }
-
     // MARK: - Text helpers
 
     private func headingText(_ raw: String) -> String {
         let t = raw.trimmingCharacters(in: .whitespaces)
-        return String(t.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+        return KBMarkdownLexer.heading(t)?.text ?? t
     }
     private func headingSize(_ level: Int) -> CGFloat {
-        switch level { case 1: return 23; case 2: return 18.5; case 3: return 16; default: return 14.5 }
+        KBMarkdownLexer.headingSize(level)
     }
     private func stripFence(_ raw: String) -> String {
         var lines = raw.components(separatedBy: "\n")
@@ -208,18 +182,10 @@ struct KBEditableView: View {
         return lines.joined(separator: "\n")
     }
     private func listParts(_ raw: String) -> (ordinal: String, text: String, depth: Int) {
-        let leadingWS = raw.prefix { $0 == " " || $0 == "\t" }
-        let depth = leadingWS.reduce(0) { $0 + ($1 == "\t" ? 1 : 0) } + (leadingWS.filter { $0 == " " }.count / 2)
-        let content = raw[leadingWS.endIndex...]
-        if let first = content.first, "-*+".contains(first), content.dropFirst().first == " " {
-            return ("•", String(content.dropFirst(2)).trimmingCharacters(in: .whitespaces), depth)
+        guard let item = KBMarkdownLexer.listItem(raw) else {
+            return ("•", raw.trimmingCharacters(in: .whitespaces), 0)
         }
-        let digits = content.prefix { $0.isNumber }
-        if !digits.isEmpty, content[digits.endIndex...].first == "." {
-            let after = content[digits.endIndex...].dropFirst()
-            return ("\(digits).", String(after).trimmingCharacters(in: .whitespaces), depth)
-        }
-        return ("•", String(content).trimmingCharacters(in: .whitespaces), depth)
+        return (item.ordinal ?? "•", item.text, item.depth)
     }
 }
 

@@ -55,17 +55,17 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
             }
 
             // Table.
-            if t.contains("|"), i + 1 < lines.count, KBMarkdownPreview.isTableSeparator(lines[i + 1]) {
+            if t.contains("|"), i + 1 < lines.count, KBMarkdownLexer.isTableSeparator(lines[i + 1]) {
                 let start = i
-                let headers = KBMarkdownPreview.splitRow(line)
+                let headers = KBMarkdownLexer.splitRow(line)
                 var rows: [[String]] = []
                 var rowLines: [Int] = []
                 var j = i + 2
                 while j < lines.count {
                     let rt = lines[j].trimmingCharacters(in: .whitespaces)
                     if rt.isEmpty || !rt.contains("|") { break }
-                    if KBMarkdownPreview.isTableSeparator(lines[j]) { j += 1; continue }
-                    var cells = KBMarkdownPreview.splitRow(lines[j])
+                    if KBMarkdownLexer.isTableSeparator(lines[j]) { j += 1; continue }
+                    var cells = KBMarkdownLexer.splitRow(lines[j])
                     if cells.count < headers.count {
                         cells += Array(repeating: "", count: headers.count - cells.count)
                     } else if cells.count > headers.count {
@@ -82,10 +82,8 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
             if t == "---" || t == "***" || t == "___" { segs.append(make(.rule, i, i)); i += 1; continue }
 
             // Heading.
-            if KBMarkdownPreview.parseHeading(t) != nil {
-                var level = 0
-                for c in t { if c == "#" { level += 1 } else { break } }
-                segs.append(make(.heading(level), i, i)); i += 1; continue
+            if let h = KBMarkdownLexer.heading(t) {
+                segs.append(make(.heading(h.level), i, i)); i += 1; continue
             }
 
             // Blockquote (consecutive `>` lines).
@@ -96,7 +94,7 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
             }
 
             // List item (one line each).
-            if KBMarkdownPreview.parseListItem(line) != nil { segs.append(make(.list, i, i)); i += 1; continue }
+            if KBMarkdownLexer.listItem(line) != nil { segs.append(make(.list, i, i)); i += 1; continue }
 
             // Paragraph: consecutive "normal" lines.
             var j = i
@@ -104,13 +102,46 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
                 let lt = lines[j].trimmingCharacters(in: .whitespaces)
                 if lt.isEmpty || lt.hasPrefix("#") || lt.hasPrefix(">") || lt.hasPrefix("```")
                     || lt == "---" || lt == "***" || lt == "___" { break }
-                if KBMarkdownPreview.parseListItem(lines[j]) != nil { break }
-                if lt.contains("|"), j + 1 < lines.count, KBMarkdownPreview.isTableSeparator(lines[j + 1]) { break }
+                if KBMarkdownLexer.listItem(lines[j]) != nil { break }
+                if lt.contains("|"), j + 1 < lines.count, KBMarkdownLexer.isTableSeparator(lines[j + 1]) { break }
                 j += 1
             }
             segs.append(make(.paragraph, i, j - 1)); i = max(j, i + 1)
         }
         return segs
+    }
+
+    // MARK: - Partition (collapse leading frontmatter + changelog)
+
+    /// Split parsed segments into a leading title (first H1), the contiguous
+    /// frontmatter/changelog segments that head the document (collapsed into
+    /// the "History & properties" disclosure), and the rest.
+    static func partition(_ segs: [KBDocSegment]) -> (title: KBDocSegment?, history: [KBDocSegment], rest: [KBDocSegment]) {
+        var title: KBDocSegment? = nil
+        var history: [KBDocSegment] = []
+        var rest: [KBDocSegment] = []
+        var leading = true
+        for seg in segs {
+            if leading {
+                if title == nil, history.isEmpty, case .heading(let lvl) = seg.kind, lvl == 1 {
+                    title = seg; continue
+                }
+                if seg.kind == .frontmatter || isMetadata(seg) { history.append(seg); continue }
+                leading = false
+            }
+            rest.append(seg)
+        }
+        return (title, history, rest)
+    }
+
+    /// A paragraph segment is "metadata" when it's the file's changelog/parent
+    /// header (`**Last updated:**`, `**Prev:**`, `**Parent:**`).
+    static func isMetadata(_ seg: KBDocSegment) -> Bool {
+        guard seg.kind == .paragraph else { return false }
+        let t = seg.raw.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("**Last updated:**")
+            || t.hasPrefix("**Prev:**")
+            || t.hasPrefix("**Parent:**")
     }
 
     // MARK: - Splicing
@@ -129,7 +160,7 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
     static func replaceCell(in source: String, sourceLine: Int, col: Int, value: String) -> String {
         var lines = source.components(separatedBy: "\n")
         guard sourceLine >= 0, sourceLine < lines.count else { return source }
-        var cells = KBMarkdownPreview.splitRow(lines[sourceLine])
+        var cells = KBMarkdownLexer.splitRow(lines[sourceLine])
         guard col < cells.count else { return source }
         cells[col] = value.trimmingCharacters(in: .whitespaces)
         let escaped = cells.map { $0.replacingOccurrences(of: "|", with: "\\|") }
