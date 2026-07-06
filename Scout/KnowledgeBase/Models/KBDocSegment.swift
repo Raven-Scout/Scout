@@ -116,6 +116,10 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
     /// Split parsed segments into a leading title (first H1), the contiguous
     /// frontmatter/changelog segments that head the document (collapsed into
     /// the "History & properties" disclosure), and the rest.
+    ///
+    /// The H1 becomes the title even when frontmatter/changelog lines precede
+    /// it — KB notes routinely open with `type:` frontmatter, and the title
+    /// must render above the collapsed metadata, not below it.
     static func partition(_ segs: [KBDocSegment]) -> (title: KBDocSegment?, history: [KBDocSegment], rest: [KBDocSegment]) {
         var title: KBDocSegment? = nil
         var history: [KBDocSegment] = []
@@ -123,7 +127,7 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
         var leading = true
         for seg in segs {
             if leading {
-                if title == nil, history.isEmpty, case .heading(let lvl) = seg.kind, lvl == 1 {
+                if title == nil, case .heading(let lvl) = seg.kind, lvl == 1 {
                     title = seg; continue
                 }
                 if seg.kind == .frontmatter || isMetadata(seg) { history.append(seg); continue }

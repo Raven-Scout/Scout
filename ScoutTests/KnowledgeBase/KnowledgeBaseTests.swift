@@ -381,6 +381,17 @@ struct KBDocSegmentPartitionTests {
         #expect(parts.rest.contains { $0.kind == .heading(2) })
         #expect(!parts.rest.contains { KBDocSegment.isMetadata($0) })
     }
+    @Test func titleRisesAboveFrontmatter() {
+        // Frontmatter is segment 0, but the H1 must still become the title so
+        // the metadata disclosure renders below it, not above.
+        let segs = KBDocSegment.segments(from:
+            "---\ntype: person\n---\n# Alex\n**Last updated:** today\n\nIntro.")
+        let parts = KBDocSegment.partition(segs)
+        #expect(parts.title?.kind == .heading(1))
+        #expect(parts.history.count == 2)   // frontmatter + changelog line
+        #expect(parts.history.contains { $0.kind == .frontmatter })
+        #expect(parts.rest.contains { $0.kind == .paragraph && $0.raw == "Intro." })
+    }
     @Test func noTitleNoCollapseWhenPlain() {
         let segs = KBDocSegment.segments(from: "Just a normal note.\n\nSecond paragraph.")
         let parts = KBDocSegment.partition(segs)
