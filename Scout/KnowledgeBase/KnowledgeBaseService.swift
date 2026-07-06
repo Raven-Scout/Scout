@@ -32,13 +32,15 @@ final class KnowledgeBaseService: ObservableObject {
     private var watchTask: Task<Void, Never>?
     private var reparseTask: Task<Void, Never>?
 
-    /// Directory entries never surfaced in the tree.
-    private static let ignoredNames: Set<String> = [
+    /// Directory entries never surfaced in the tree. `nonisolated`: read by the
+    /// detached tree build in `buildChildren`.
+    private nonisolated static let ignoredNames: Set<String> = [
         ".git", ".obsidian", ".scout-cache", ".scout-logs", ".scout-state",
         "node_modules", ".DS_Store",
     ]
-    /// File extensions the tree shows (and the editor can open).
-    private static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
+    /// File extensions the tree shows (and the editor can open). `nonisolated`:
+    /// read by the detached tree build in `buildChildren`.
+    private nonisolated static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
 
     init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
         // `contentsOfDirectory(at:)` returns symlink-resolved file URLs, so
@@ -77,6 +79,12 @@ final class KnowledgeBaseService: ObservableObject {
 
     // MARK: - Tree building
 
+    private nonisolated enum ReparseOutcome {
+        case missing
+        case failed(String)
+        case loaded([KBNode], KBIndex)
+    }
+
     /// Rebuild tree + index. The directory walk and the per-note reads run off
     /// the main actor (a few hundred notes means hundreds of disk reads — doing
     /// that on the main actor on every FSEvent froze the UI, same class of
@@ -86,23 +94,32 @@ final class KnowledgeBaseService: ObservableObject {
         let kbDir = kbDirectory
         let scoutDir = scoutDirectory
         reparseTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> (tree: [KBNode], index: KBIndex)? in
+            let result = await Task.detached(priority: .userInitiated) { () -> ReparseOutcome in
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: kbDir.path, isDirectory: &isDir),
-                      isDir.boolValue else { return nil }
+                      isDir.boolValue else { return .missing }
+                // Distinguish "directory exists but can't be read" (permissions,
+                // sandbox) from a genuinely empty knowledge base.
+                do { _ = try FileManager.default.contentsOfDirectory(atPath: kbDir.path) }
+                catch { return .failed(error.localizedDescription) }
                 let tree = KnowledgeBaseService.buildChildren(of: kbDir, scoutDirectory: scoutDir)
                 let index = KnowledgeBaseService.buildIndex(tree: tree, scoutDirectory: scoutDir)
-                return (tree, index)
+                return .loaded(tree, index)
             }.value
             guard let self, !Task.isCancelled else { return }
-            if let result {
-                self.tree = result.tree
-                self.index = result.index
+            switch result {
+            case .loaded(let tree, let index):
+                self.tree = tree
+                self.index = index
                 self.state = .loaded
-            } else {
+            case .missing:
                 self.tree = []
                 self.index = .empty
                 self.state = .missing(kbDir)
+            case .failed(let message):
+                self.tree = []
+                self.index = .empty
+                self.state = .failed(message)
             }
         }
     }
@@ -276,7 +293,7 @@ final class KnowledgeBaseService: ObservableObject {
         // BFS from center.
         var visited: Set<String> = [relPath]
         var frontier: [String] = [relPath]
-        for _ in 0..<max(1, depth) {
+        for _ in 0..<max(0, depth) {
             var next: [String] = []
             for node in frontier {
                 for n in adj[node] ?? [] where !visited.contains(n) {

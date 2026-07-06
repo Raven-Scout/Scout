@@ -51,6 +51,14 @@ struct KBLiveEditor: NSViewRepresentable {
         return scroll
     }
 
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        // Selector observers auto-unregister on dealloc (macOS ≥ 10.11), but
+        // remove promptly so a lingering coordinator stops restyle work as soon
+        // as the editor goes away (mode switch, note change).
+        NotificationCenter.default.removeObserver(coordinator)
+        coordinator.cancelPendingRestyle()
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = scroll.documentView as? NSTextView else { return }
@@ -85,6 +93,11 @@ struct KBLiveEditor: NSViewRepresentable {
 
         @objc func didScroll(_ note: Notification) {
             scheduleHighlight()
+        }
+
+        func cancelPendingRestyle() {
+            restyleItem?.cancel()
+            restyleItem = nil
         }
 
         /// Debounce restyling so typing/scrolling in a large note stays smooth.
