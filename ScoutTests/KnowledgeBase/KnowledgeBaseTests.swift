@@ -174,6 +174,13 @@ struct KBWikilinkExtractionTests {
             "see [[atlas]] and [[people|Alias]] and [[atlas]] again")
         #expect(links == ["atlas", "people"])
     }
+    @Test func extractsTargetBeforeEscapedPipe() {
+        // Table cells write the alias separator as `\|` so the pipe isn't a
+        // column break — the target must still resolve.
+        let links = KnowledgeBaseService.extractWikilinks(
+            #"| Alex | sees [[people\|Priya]] and [[projects\|the roadmap]] |"#)
+        #expect(links == ["people", "projects"])
+    }
     @Test func ignoresEmptyAndMalformed() {
         #expect(KnowledgeBaseService.extractWikilinks("no links here").isEmpty)
         #expect(KnowledgeBaseService.extractWikilinks("[[ ]]").isEmpty)

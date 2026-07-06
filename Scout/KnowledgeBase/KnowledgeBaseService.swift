@@ -151,8 +151,10 @@ final class KnowledgeBaseService: ObservableObject {
 
     /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
     /// `|`), de-duplicated, preserving original case and first-seen order.
+    /// The alias separator may be escaped as `\|` — the form the KB writes
+    /// inside table cells so the pipe isn't taken as a column break.
     nonisolated static func extractWikilinks(_ text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]"#) else { return [] }
+        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]"#) else { return [] }
         let ns = text as NSString
         var seen = Set<String>()
         var result: [String] = []
