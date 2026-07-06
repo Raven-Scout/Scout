@@ -201,47 +201,45 @@ struct KBEditorView: View {
 
     private func save() {
         guard isDirty, !isSaving else { return }
-        isSaving = true
-        let contents = draft
-        let captured = baseline
-        Task {
-            do {
-                try await writer.save(fileURL: node.url, contents: contents,
-                                      baseline: captured, label: node.displayName)
-                await MainActor.run {
-                    originalText = contents
-                    baseline = GuardedFileWrite.fsModificationDate(node.url)
-                    externallyChanged = false
-                    isSaving = false
-                }
-            } catch KBWriterError.conflict {
-                await MainActor.run { isSaving = false; showConflict = true }
-            } catch {
-                await MainActor.run { isSaving = false; errorMessage = describe(error) }
-            }
-        }
+        performSave(baseline: baseline)
     }
 
     /// Overwrite despite a detected conflict — re-baseline to the current disk
     /// mtime so the guard passes, then save.
     private func forceSave() {
-        let contents = draft
-        let current = GuardedFileWrite.fsModificationDate(node.url)
+        performSave(baseline: GuardedFileWrite.fsModificationDate(node.url))
+    }
+
+    private func performSave(baseline captured: Date?) {
         isSaving = true
+        let contents = draft
         Task {
             do {
                 try await writer.save(fileURL: node.url, contents: contents,
-                                      baseline: current, label: node.displayName)
-                await MainActor.run {
-                    originalText = contents
-                    baseline = GuardedFileWrite.fsModificationDate(node.url)
-                    externallyChanged = false
-                    isSaving = false
-                }
+                                      baseline: captured, label: node.displayName)
+                await MainActor.run { markSaved(contents) }
+            } catch KBWriterError.conflict {
+                await MainActor.run { isSaving = false; showConflict = true }
             } catch {
-                await MainActor.run { isSaving = false; errorMessage = describe(error) }
+                await MainActor.run {
+                    // A commit failure means the file itself was written —
+                    // reflect the saved state, then surface the git problem.
+                    if case KBWriterError.commitFailed = error {
+                        markSaved(contents)
+                    } else {
+                        isSaving = false
+                    }
+                    errorMessage = KBWriterError.message(for: error)
+                }
             }
         }
+    }
+
+    private func markSaved(_ contents: String) {
+        originalText = contents
+        baseline = GuardedFileWrite.fsModificationDate(node.url)
+        externallyChanged = false
+        isSaving = false
     }
 
     private func performDelete() {
@@ -250,7 +248,11 @@ struct KBEditorView: View {
                 try await writer.delete(fileURL: node.url, label: node.displayName)
                 await MainActor.run { service.reload(); onDeleted() }
             } catch {
-                await MainActor.run { errorMessage = describe(error) }
+                await MainActor.run {
+                    // The removal itself succeeded when only the commit failed.
+                    if case KBWriterError.commitFailed = error { service.reload(); onDeleted() }
+                    errorMessage = KBWriterError.message(for: error)
+                }
             }
         }
     }
@@ -262,7 +264,12 @@ struct KBEditorView: View {
                 let dest = try await writer.rename(fileURL: node.url, to: newName)
                 await MainActor.run { service.reload(); onRenamed(dest); showRename = false }
             } catch {
-                await MainActor.run { errorMessage = describe(error); showRename = false }
+                await MainActor.run {
+                    // The move itself succeeded when only the commit failed.
+                    if case KBWriterError.commitFailed = error { service.reload() }
+                    errorMessage = KBWriterError.message(for: error)
+                    showRename = false
+                }
             }
         }
     }
@@ -283,18 +290,6 @@ struct KBEditorView: View {
         .padding(20).frame(width: 360)
     }
 
-    private func describe(_ error: Error) -> String {
-        switch error {
-        case KBWriterError.alreadyExists(let n): return "A file named \(n) already exists."
-        case KBWriterError.notFound(let n): return "\(n) no longer exists."
-        case KBWriterError.writeFailed(let m): return m
-        case KBWriterError.readFailed(let m): return m
-        case KBWriterError.outsideKnowledgeBase(let n): return "\(n) is outside the knowledge base."
-        case KBWriterError.emptyName: return "The name can't be empty."
-        case KBWriterError.conflict(let f): return "\(f) changed on disk."
-        default: return error.localizedDescription
-        }
-    }
 }
 
 /// Plain-text source editor with a monospaced font over the recessed paper

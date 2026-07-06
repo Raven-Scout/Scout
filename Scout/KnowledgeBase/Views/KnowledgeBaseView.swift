@@ -238,17 +238,13 @@ struct KnowledgeBaseView: View {
                     navigate(toPath: KnowledgeBaseService.relativePath(of: dest, in: service.scoutDirectory))
                 }
             } catch {
-                await MainActor.run { errorMessage = describe(error); showNewFile = false }
+                await MainActor.run {
+                    // The file itself was created when only the commit failed.
+                    if case KBWriterError.commitFailed = error { service.reload() }
+                    errorMessage = KBWriterError.message(for: error)
+                    showNewFile = false
+                }
             }
-        }
-    }
-
-    private func describe(_ error: Error) -> String {
-        switch error {
-        case KBWriterError.alreadyExists(let n): return "A file named \(n) already exists."
-        case KBWriterError.emptyName: return "The name can't be empty."
-        case KBWriterError.writeFailed(let m): return m
-        default: return error.localizedDescription
         }
     }
 

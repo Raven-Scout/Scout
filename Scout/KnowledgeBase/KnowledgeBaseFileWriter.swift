@@ -5,13 +5,35 @@ enum KBWriterError: Error, Equatable {
     case emptyName
     case alreadyExists(String)
     case notFound(String)
-    case readFailed(String)
     case writeFailed(String)
     /// The file changed on disk since the editor loaded it (a scout-plugin
     /// session or another editor wrote it). Surfaced rather than clobbered so
     /// the user can reload and reconcile.
     case conflict(file: String)
     case outsideKnowledgeBase(String)
+    /// The file operation succeeded but the scoped git commit didn't (e.g.
+    /// `.git/index.lock` contention while a plugin session runs). Surfaced so
+    /// the user knows the change is on disk but uncommitted — a later plugin
+    /// sync could otherwise clobber or resurrect it silently.
+    case commitFailed(String)
+
+    /// User-facing alert message.
+    var userMessage: String {
+        switch self {
+        case .emptyName: return "The name can't be empty."
+        case .alreadyExists(let n): return "A file named \(n) already exists."
+        case .notFound(let n): return "\(n) no longer exists."
+        case .writeFailed(let m): return m
+        case .conflict(let f): return "\(f) changed on disk."
+        case .outsideKnowledgeBase(let n): return "\(n) is outside the knowledge base."
+        case .commitFailed(let m): return "The change was written, but the git commit failed: \(m)"
+        }
+    }
+
+    /// User-facing message for any error a writer call can throw.
+    static func message(for error: Error) -> String {
+        (error as? KBWriterError)?.userMessage ?? error.localizedDescription
+    }
 }
 
 /// Serializes knowledge-base file mutations (save, create, delete, rename) and
@@ -142,7 +164,7 @@ actor KnowledgeBaseFileWriter {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }
         let rel = relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
-        try? await gitService?.commitPaths([rel], message: "app: edit \(label)")
+        try await commitOrThrow(gitService, paths: [rel], message: "app: edit \(label)")
     }
 
     private static func performCreate(
@@ -162,7 +184,7 @@ actor KnowledgeBaseFileWriter {
             throw KBWriterError.writeFailed(error.localizedDescription)
         }
         let rel = relativePathInRepo(fileURL: dest, repo: scoutDirectory)
-        try? await gitService?.commitPaths([rel], message: "app: create \(rel)")
+        try await commitOrThrow(gitService, paths: [rel], message: "app: create \(rel)")
         return dest
     }
 
@@ -178,7 +200,7 @@ actor KnowledgeBaseFileWriter {
         do { try fm.removeItem(at: fileURL) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
         // `git add -- <path>` stages the deletion (git ≥ 2.0).
-        try? await gitService?.commitPaths([rel], message: "app: delete \(label)")
+        try await commitOrThrow(gitService, paths: [rel], message: "app: delete \(label)")
     }
 
     private static func performRename(
@@ -203,8 +225,19 @@ actor KnowledgeBaseFileWriter {
         let newRel = relativePathInRepo(fileURL: dest, repo: scoutDirectory)
         do { try fm.moveItem(at: fileURL, to: dest) }
         catch { throw KBWriterError.writeFailed(error.localizedDescription) }
-        try? await gitService?.commitPaths([oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
+        try await commitOrThrow(gitService, paths: [oldRel, newRel], message: "app: rename \(oldRel) → \(newRel)")
         return dest
+    }
+
+    /// Commit the given paths, converting a git failure into `.commitFailed`
+    /// instead of discarding it — the file op already succeeded, so callers
+    /// treat this error as "written but uncommitted" and tell the user.
+    private static func commitOrThrow(
+        _ gitService: GitServiceProtocol?, paths: [String], message: String
+    ) async throws {
+        guard let gitService else { return }
+        do { try await gitService.commitPaths(paths, message: message) }
+        catch { throw KBWriterError.commitFailed(error.localizedDescription) }
     }
 
     // MARK: - pure helpers
