@@ -37,6 +37,16 @@ struct KnowledgeBaseView: View {
                     .frame(width: CGFloat(rightPanelWidth))
             }
         }
+        // In-app wikilink navigation for every pane (editor, backlink excerpts,
+        // search snippets): resolve against the index, fall back to the default
+        // Linear/Obsidian opening when the target isn't a KB note.
+        .environment(\.kbWikilinkHandler, { target in
+            if let path = service.resolveWikilink(target) {
+                navigate(toPath: path)
+                return true
+            }
+            return false
+        })
         .onAppear { service.load() }
         .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
@@ -147,7 +157,8 @@ struct KnowledgeBaseView: View {
                             Text(hit.name).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
                             Text(hit.path).font(DS.mono(10)).foregroundStyle(DS.Ink.p4).lineLimit(1)
                             if !hit.snippet.isEmpty {
-                                Text(hit.snippet).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                InlineMarkdownText(hit.snippet)
+                                    .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
                                     .lineLimit(2).multilineTextAlignment(.leading)
                             }
                         }
@@ -178,13 +189,6 @@ struct KnowledgeBaseView: View {
                 onOverview: { selectedPath = nil }
             )
             .id(node.id)
-            .environment(\.kbWikilinkHandler, { target in
-                if let path = service.resolveWikilink(target) {
-                    navigate(toPath: path)
-                    return true
-                }
-                return false
-            })
         } else {
             KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) })
         }

@@ -73,7 +73,8 @@ struct KBRightPanel: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bl.name).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
                                     if !bl.excerpt.isEmpty {
-                                        Text(bl.excerpt).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                        InlineMarkdownText(bl.excerpt)
+                                            .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
                                             .lineLimit(2).multilineTextAlignment(.leading)
                                     }
                                 }
