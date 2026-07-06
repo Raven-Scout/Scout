@@ -286,9 +286,17 @@ struct KBDocSegmentTests {
         #expect(KBDocSegment.replaceLines(in: src, start: 999, end: 1000, with: "x") == src)
     }
 
-    @Test func replaceCellOutOfRangeIsNoOp() {
-        #expect(KBDocSegment.replaceCell(in: src, sourceLine: 12, col: 9, value: "x") == src)
+    @Test func replaceCellOutOfRangeLineIsNoOp() {
         #expect(KBDocSegment.replaceCell(in: src, sourceLine: 999, col: 0, value: "x") == src)
+        #expect(KBDocSegment.replaceCell(in: src, sourceLine: 12, col: -1, value: "x") == src)
+    }
+
+    @Test func replaceCellPadsRaggedRow() {
+        // Header has 3 columns but the source row only 2 — the parser pads the
+        // display row, and editing that padded cell must land in the file.
+        let doc = "| A | B | C |\n|---|---|---|\n| 4 | 5 |"
+        let out = KBDocSegment.replaceCell(in: doc, sourceLine: 2, col: 2, value: "6")
+        #expect(out.hasSuffix("| 4 | 5 | 6 |"))
     }
 
     @Test func codeFenceIsOneSegmentIncludingFences() {

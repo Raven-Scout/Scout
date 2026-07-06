@@ -157,11 +157,17 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
     /// Rewrite a single table cell on `sourceLine`, re-escaping `|` so the pipe
     /// stays cell content (not a column break) — matching how the KB writes
     /// `[[people\|Alias]]` inside cells.
+    ///
+    /// A ragged source row is padded with empty cells up to `col`: the parser
+    /// pads short rows for display, so the user can double-click a padded cell
+    /// and the edit must land instead of being silently dropped.
     static func replaceCell(in source: String, sourceLine: Int, col: Int, value: String) -> String {
         var lines = source.components(separatedBy: "\n")
-        guard sourceLine >= 0, sourceLine < lines.count else { return source }
+        guard sourceLine >= 0, sourceLine < lines.count, col >= 0 else { return source }
         var cells = KBMarkdownLexer.splitRow(lines[sourceLine])
-        guard col < cells.count else { return source }
+        if col >= cells.count {
+            cells += Array(repeating: "", count: col - cells.count + 1)
+        }
         cells[col] = value.trimmingCharacters(in: .whitespaces)
         let escaped = cells.map { $0.replacingOccurrences(of: "|", with: "\\|") }
         lines[sourceLine] = "| " + escaped.joined(separator: " | ") + " |"
