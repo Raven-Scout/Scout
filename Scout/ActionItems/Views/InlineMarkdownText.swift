@@ -2,9 +2,26 @@ import SwiftUI
 import Foundation
 import AppKit
 
+/// Optional in-app handler for `[[wikilink]]` clicks. When set and it returns
+/// `true`, the click is considered handled in-app (e.g. the Knowledge Base
+/// navigates to the target note); otherwise `InlineMarkdownText` falls back to
+/// its default Linear/Obsidian opening. Nil everywhere except the KB, so other
+/// surfaces keep their existing behavior.
+private struct KBWikilinkHandlerKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Bool)? = nil
+}
+
+extension EnvironmentValues {
+    var kbWikilinkHandler: ((String) -> Bool)? {
+        get { self[KBWikilinkHandlerKey.self] }
+        set { self[KBWikilinkHandlerKey.self] = newValue }
+    }
+}
+
 struct InlineMarkdownText: View {
     let raw: String
     private let attributed: AttributedString
+    @Environment(\.kbWikilinkHandler) private var kbWikilinkHandler
 
     init(_ raw: String) {
         self.raw = raw
@@ -64,6 +81,9 @@ struct InlineMarkdownText: View {
 
     private func openWikilink(target: String) -> OpenURLAction.Result {
         let decoded = target.removingPercentEncoding ?? target
+        // In-app navigation first (Knowledge Base). If the handler resolves the
+        // target it returns true and we stop; otherwise fall back to Linear/Obsidian.
+        if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
         let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
         if linearRe.firstMatch(in: decoded, range: NSRange(location: 0, length: (decoded as NSString).length)) != nil {
             let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
