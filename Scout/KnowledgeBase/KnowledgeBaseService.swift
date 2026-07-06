@@ -169,12 +169,32 @@ final class KnowledgeBaseService: ObservableObject {
         for file in files {
             stemToPath[file.displayName.lowercased()] = file.relativePath
         }
+        var typeByFile: [String: String] = [:]
         for file in files {
             guard let text = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
             textByFile[file.relativePath] = text
             outByFile[file.relativePath] = extractWikilinks(text)
+            typeByFile[file.relativePath] = frontmatterType(text)
         }
-        return KBIndex(stemToPath: stemToPath, outByFile: outByFile, textByFile: textByFile)
+        return KBIndex(stemToPath: stemToPath, outByFile: outByFile,
+                       textByFile: textByFile, typeByFile: typeByFile)
+    }
+
+    /// The `type:` value from a note's leading YAML frontmatter (lowercased),
+    /// or nil. This is the ontology entity type the plugin writes — the
+    /// authoritative signal for graph grouping, ahead of path heuristics.
+    nonisolated static func frontmatterType(_ text: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+        for line in lines.dropFirst() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "---" { break }
+            if t.hasPrefix("type:") {
+                let value = t.dropFirst("type:".count).trimmingCharacters(in: .whitespaces).lowercased()
+                return value.isEmpty ? nil : value
+            }
+        }
+        return nil
     }
 
     /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
@@ -229,19 +249,24 @@ final class KnowledgeBaseService: ObservableObject {
         return (line ?? "").trimmingCharacters(in: .whitespaces).prefix(140).description
     }
 
-    /// Build the local subgraph centred on `relPath`: BFS over undirected
-    /// wikilink edges out to `depth` hops, capped at `maxNodes` by degree.
-    func localGraph(around relPath: String, depth: Int = 2, maxNodes: Int = 26) -> KBGraph {
-        // Full undirected edge set.
+    /// Unique undirected wikilink edges across the whole KB (direction
+    /// normalized so `A→B` and `B→A` collapse into one edge).
+    private func undirectedEdges() -> Set<KBGraphEdge> {
         var edgeSet = Set<KBGraphEdge>()
         for (from, targets) in index.outByFile {
             for t in targets {
                 guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
-                // Normalize direction so duplicates collapse.
                 let (a, b) = from < to ? (from, to) : (to, from)
                 edgeSet.insert(KBGraphEdge(from: a, to: b))
             }
         }
+        return edgeSet
+    }
+
+    /// Build the local subgraph centred on `relPath`: BFS over undirected
+    /// wikilink edges out to `depth` hops, capped at `maxNodes` by degree.
+    func localGraph(around relPath: String, depth: Int = 2, maxNodes: Int = 26) -> KBGraph {
+        let edgeSet = undirectedEdges()
         // Adjacency.
         var adj: [String: Set<String>] = [:]
         for e in edgeSet {
@@ -275,7 +300,7 @@ final class KnowledgeBaseService: ObservableObject {
         let nodes = kept.map { path in
             KBGraphNode(id: path,
                         label: KBNode.displayName(forPath: path),
-                        group: KBEntityGroup.of(path),
+                        group: KBEntityGroup.of(path, type: index.typeByFile[path]),
                         degree: degree(path),
                         isCenter: path == relPath)
         }
@@ -286,33 +311,18 @@ final class KnowledgeBaseService: ObservableObject {
     /// Count of notes and unique links across the whole KB (for the overview).
     func graphStats() -> (notes: Int, links: Int) {
         let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.count
-        var edgeSet = Set<KBGraphEdge>()
-        for (from, targets) in index.outByFile {
-            for t in targets {
-                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
-                let (a, b) = from < to ? (from, to) : (to, from)
-                edgeSet.insert(KBGraphEdge(from: a, to: b))
-            }
-        }
-        return (notes, edgeSet.count)
+        return (notes, undirectedEdges().count)
     }
 
     /// The whole-KB graph: every markdown note plus the unique wikilink edges
     /// between them. Feeds the global graph on the overview.
     func fullGraph() -> KBGraph {
-        var edgeSet = Set<KBGraphEdge>()
-        for (from, targets) in index.outByFile {
-            for t in targets {
-                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
-                let (a, b) = from < to ? (from, to) : (to, from)
-                edgeSet.insert(KBGraphEdge(from: a, to: b))
-            }
-        }
+        let edgeSet = undirectedEdges()
         var degree: [String: Int] = [:]
         for e in edgeSet { degree[e.from, default: 0] += 1; degree[e.to, default: 0] += 1 }
         let nodes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map { file in
             KBGraphNode(id: file.relativePath, label: file.displayName,
-                        group: KBEntityGroup.of(file.relativePath),
+                        group: KBEntityGroup.of(file.relativePath, type: index.typeByFile[file.relativePath]),
                         degree: degree[file.relativePath] ?? 0, isCenter: false)
         }
         return KBGraph(nodes: nodes, edges: Array(edgeSet))

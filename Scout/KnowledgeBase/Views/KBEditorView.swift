@@ -19,7 +19,13 @@ struct KBEditorView: View {
 
     @State private var draft: String = ""
     @State private var originalText: String = ""
-    @State private var baseline: Date? = nil
+    /// Text on disk when the file was loaded — the save conflict guard compares
+    /// content, not mtime, so coarse filesystem timestamps can't hide a change.
+    /// nil = the file was missing/unreadable at load.
+    @State private var baselineContents: String? = nil
+    /// Disk mtime at load — a cheap trigger for external-change detection (the
+    /// content compare confirms before flagging).
+    @State private var baselineDate: Date? = nil
     // Markdown opens in "Read": rendered, but you edit in place (double-click a
     // block/cell). Rich (live markdown) and Source (raw) are one toggle away.
     // loadFile() forces Source for non-markdown (YAML).
@@ -177,21 +183,29 @@ struct KBEditorView: View {
     // MARK: - Actions
 
     private func loadFile() {
-        let text = service.readFile(node.url) ?? ""
-        draft = text
-        originalText = text
-        baseline = GuardedFileWrite.fsModificationDate(node.url)
+        let text = service.readFile(node.url)
+        draft = text ?? ""
+        originalText = draft
+        baselineContents = text
+        baselineDate = GuardedFileWrite.fsModificationDate(node.url)
         externallyChanged = false
         if !isMarkdown { mode = .source }
     }
 
-    /// Compare the open file's on-disk mtime against our baseline. Silently
-    /// reloads if the user has no unsaved edits; otherwise flags the banner.
+    /// Detect an external change to the open file: the mtime is the cheap
+    /// trigger, a content compare confirms (so the app's own atomic save or a
+    /// same-content touch doesn't flag). Silently reloads if the user has no
+    /// unsaved edits; otherwise flags the banner.
     private func detectExternalChange() {
+        guard !isSaving else { return }
         guard FileManager.default.fileExists(atPath: node.url.path) else { return }
         let current = GuardedFileWrite.fsModificationDate(node.url)
-        guard let current, let baseline,
-              abs(current.timeIntervalSince(baseline)) > 0.0005 else { return }
+        guard let current, current != baselineDate else { return }
+        let diskText = service.readFile(node.url)
+        guard diskText != baselineContents else {
+            baselineDate = current   // content unchanged — just track the new mtime
+            return
+        }
         if isDirty {
             externallyChanged = true
         } else {
@@ -201,22 +215,22 @@ struct KBEditorView: View {
 
     private func save() {
         guard isDirty, !isSaving else { return }
-        performSave(baseline: baseline)
+        performSave(baseline: baselineContents)
     }
 
-    /// Overwrite despite a detected conflict — re-baseline to the current disk
-    /// mtime so the guard passes, then save.
+    /// Overwrite despite a detected conflict — re-baseline to what's on disk
+    /// right now so the guard passes, then save.
     private func forceSave() {
-        performSave(baseline: GuardedFileWrite.fsModificationDate(node.url))
+        performSave(baseline: service.readFile(node.url))
     }
 
-    private func performSave(baseline captured: Date?) {
+    private func performSave(baseline captured: String?) {
         isSaving = true
         let contents = draft
         Task {
             do {
                 try await writer.save(fileURL: node.url, contents: contents,
-                                      baseline: captured, label: node.displayName)
+                                      baselineContents: captured, label: node.displayName)
                 await MainActor.run { markSaved(contents) }
             } catch KBWriterError.conflict {
                 await MainActor.run { isSaving = false; showConflict = true }
@@ -237,7 +251,8 @@ struct KBEditorView: View {
 
     private func markSaved(_ contents: String) {
         originalText = contents
-        baseline = GuardedFileWrite.fsModificationDate(node.url)
+        baselineContents = contents
+        baselineDate = GuardedFileWrite.fsModificationDate(node.url)
         externallyChanged = false
         isSaving = false
     }

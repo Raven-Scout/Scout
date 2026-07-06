@@ -6,22 +6,33 @@ struct KBOverviewView: View {
     @ObservedObject var service: KnowledgeBaseService
     let onNavigate: (String) -> Void
 
-    /// Canonical hub notes, in display order. Filtered to those present on disk.
-    private static let quickLinks: [(path: String, label: String, icon: String)] = [
-        ("knowledge-base/knowledge-base.md", "Index",        "book.closed"),
-        ("knowledge-base/people.md",         "People",       "person.2"),
-        ("knowledge-base/issues.md",         "Issues",       "exclamationmark.triangle"),
-        ("knowledge-base/projects/projects.md", "Projects",  "folder"),
-        ("knowledge-base/channels.md",       "Channels",     "number"),
-        ("knowledge-base/research-queue.md", "Research",     "magnifyingglass"),
-        ("knowledge-base/review-queue.md",   "Review",       "checkmark.circle"),
-        ("knowledge-base/ontology/schema.yaml", "Ontology",  "square.grid.3x3"),
+    /// Canonical hub notes, in display order. Each resolves by its note stem
+    /// through the wikilink index (so a moved hub still gets a tile), with an
+    /// exact-path fallback for non-markdown files the index doesn't cover.
+    /// Hubs that resolve to nothing on disk are hidden.
+    private static let quickLinks: [(stem: String, fallbackPath: String, label: String, icon: String)] = [
+        ("knowledge-base",  "knowledge-base/knowledge-base.md",    "Index",    "book.closed"),
+        ("people",          "knowledge-base/people.md",            "People",   "person.2"),
+        ("issues",          "knowledge-base/issues.md",            "Issues",   "exclamationmark.triangle"),
+        ("projects",        "knowledge-base/projects/projects.md", "Projects", "folder"),
+        ("channels",        "knowledge-base/channels.md",          "Channels", "number"),
+        ("research-queue",  "knowledge-base/research-queue.md",    "Research", "magnifyingglass"),
+        ("review-queue",    "knowledge-base/review-queue.md",      "Review",   "checkmark.circle"),
+        ("schema",          "knowledge-base/ontology/schema.yaml", "Ontology", "square.grid.3x3"),
     ]
 
     var body: some View {
         let stats = service.graphStats()
         let present = Set(service.tree.flatMap(\.allFiles).map(\.relativePath))
-        let links = Self.quickLinks.filter { present.contains($0.path) }
+        let links: [(path: String, label: String, icon: String)] = Self.quickLinks.compactMap { ql in
+            if let resolved = service.resolveWikilink(ql.stem), present.contains(resolved) {
+                return (resolved, ql.label, ql.icon)
+            }
+            if present.contains(ql.fallbackPath) {
+                return (ql.fallbackPath, ql.label, ql.icon)
+            }
+            return nil
+        }
         let kbGraph = service.fullGraph()
 
         ScrollView {

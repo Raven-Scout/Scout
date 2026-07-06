@@ -1,20 +1,31 @@
 import SwiftUI
 
-/// Entity category of a knowledge-base note, derived from its path. Drives the
-/// node color in the local graph and the legend. Kept deliberately small so the
-/// graph reads as a map, not a stoplight.
+/// Entity category of a knowledge-base note. Drives the node color in the
+/// local graph and the legend. Kept deliberately small so the graph reads as a
+/// map, not a stoplight.
 nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
     case people, projects, issues, channels, ontology, research, other
 
-    /// Classify a note by its repo-relative path.
-    static func of(_ relPath: String) -> KBEntityGroup {
-        let p = relPath.lowercased()
-        if p.contains("/people") || p.hasSuffix("people.md") { return .people }
-        if p.contains("/projects/") || p.hasSuffix("projects.md") { return .projects }
-        if p.contains("issue") { return .issues }
-        if p.contains("channel") { return .channels }
-        if p.contains("/ontology/") { return .ontology }
-        if p.contains("research") || p.contains("review") { return .research }
+    /// Classify a note. The ontology `type:` the plugin writes in frontmatter
+    /// wins; the path fallback (whole components, not substrings — so
+    /// `tissue-sampling.md` is not an issue) covers hub notes without one.
+    static func of(_ relPath: String, type: String? = nil) -> KBEntityGroup {
+        switch type {
+        case "person": return .people
+        case "project": return .projects
+        case "task": return .issues
+        default: break
+        }
+        let components = relPath.lowercased().split(separator: "/").map(String.init)
+        let stem = components.last.map { ($0 as NSString).deletingPathExtension } ?? ""
+        let dirs = components.dropLast()
+        if dirs.contains("people") || stem == "people" { return .people }
+        if dirs.contains("projects") || stem == "projects" { return .projects }
+        if dirs.contains("issues") || stem == "issues" { return .issues }
+        if dirs.contains("channels") || stem == "channels" { return .channels }
+        if dirs.contains("ontology") { return .ontology }
+        if dirs.contains("research-queue") || dirs.contains("review-queue")
+            || stem == "research-queue" || stem == "review-queue" { return .research }
         return .other
     }
 
@@ -89,12 +100,14 @@ nonisolated struct KBGraph: Equatable {
 }
 
 /// Precomputed wikilink index: each note's display stem → its path, each note's
-/// outgoing link targets (original case), and the note text itself (read once
-/// per reparse; serves backlink excerpts and full-text search without disk
-/// I/O). Rebuilt on every reparse.
+/// outgoing link targets (original case), the note text itself (read once per
+/// reparse; serves backlink excerpts and full-text search without disk I/O),
+/// and the note's frontmatter `type:` (drives graph grouping). Rebuilt on
+/// every reparse.
 nonisolated struct KBIndex: Equatable {
     let stemToPath: [String: String]
     let outByFile: [String: [String]]
     let textByFile: [String: String]
-    static let empty = KBIndex(stemToPath: [:], outByFile: [:], textByFile: [:])
+    let typeByFile: [String: String]
+    static let empty = KBIndex(stemToPath: [:], outByFile: [:], textByFile: [:], typeByFile: [:])
 }

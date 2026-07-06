@@ -56,14 +56,15 @@ actor KnowledgeBaseFileWriter {
         self.gitService = gitService
     }
 
-    /// Overwrite `fileURL` with `contents`, but only if its modification date
-    /// still matches `baseline` (the mtime captured when the editor loaded it).
-    /// A `nil` baseline means "the file didn't exist at load" — used when saving
-    /// a freshly created note. Commits the single path on success.
+    /// Overwrite `fileURL` with `contents`, but only if what's on disk still
+    /// matches `baselineContents` (the text captured when the editor loaded
+    /// it). Comparing content — not mtime — stays correct on filesystems with
+    /// coarse timestamp granularity. A `nil` baseline means "the file didn't
+    /// exist (or wasn't readable) at load". Commits the single path on success.
     func save(
         fileURL: URL,
         contents: String,
-        baseline: Date?,
+        baselineContents: String?,
         label: String
     ) async throws {
         try ensureInsideKB(fileURL)
@@ -71,7 +72,7 @@ actor KnowledgeBaseFileWriter {
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.performSave(
-                fileURL: fileURL, contents: contents, baseline: baseline,
+                fileURL: fileURL, contents: contents, baselineContents: baselineContents,
                 label: label, scoutDirectory: scoutDirectory, gitService: gitService)
         }
         tail = Task { _ = try? await task.value }
@@ -132,8 +133,8 @@ actor KnowledgeBaseFileWriter {
     private func ensureInsideKB(_ url: URL) throws {
         let kbRoot = scoutDirectory.appendingPathComponent("knowledge-base")
             .resolvingSymlinksInPath().path + "/"
-        let resolved = url.resolvingSymlinksInPath().path
-        if !(resolved + "/").hasPrefix(kbRoot) && resolved + "/" != kbRoot {
+        let resolved = url.resolvingSymlinksInPath().path + "/"
+        guard resolved.hasPrefix(kbRoot) else {
             throw KBWriterError.outsideKnowledgeBase(url.lastPathComponent)
         }
     }
@@ -141,18 +142,18 @@ actor KnowledgeBaseFileWriter {
     // MARK: - perform (off-actor)
 
     private static func performSave(
-        fileURL: URL, contents: String, baseline: Date?, label: String,
+        fileURL: URL, contents: String, baselineContents: String?, label: String,
         scoutDirectory: URL, gitService: GitServiceProtocol?
     ) async throws {
         let fm = FileManager.default
         let exists = fm.fileExists(atPath: fileURL.path)
         if exists {
-            // Conflict check: the file must not have changed since the editor
-            // captured `baseline`. A nil baseline on an existing file means the
-            // caller couldn't read the mtime — treat as a conflict to be safe.
-            guard let baseline else { throw KBWriterError.conflict(file: fileURL.lastPathComponent) }
-            let current = GuardedFileWrite.fsModificationDate(fileURL)
-            if let current, abs(current.timeIntervalSince(baseline)) > 0.0005 {
+            // Conflict check: what's on disk must still be what the editor
+            // loaded. A nil baseline on an existing file means the caller
+            // couldn't read it at load — treat as a conflict to be safe.
+            guard let baselineContents,
+                  let current = try? String(contentsOf: fileURL, encoding: .utf8),
+                  current == baselineContents else {
                 throw KBWriterError.conflict(file: fileURL.lastPathComponent)
             }
         }

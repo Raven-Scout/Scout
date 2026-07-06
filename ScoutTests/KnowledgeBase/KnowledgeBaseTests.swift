@@ -222,6 +222,28 @@ struct KBFullGraphTests {
     }
 }
 
+@Suite("KB entity grouping")
+struct KBEntityGroupTests {
+    @Test func frontmatterTypeWins() {
+        #expect(KBEntityGroup.of("knowledge-base/personal/alex.md", type: "person") == .people)
+        #expect(KBEntityGroup.of("knowledge-base/note.md", type: "project") == .projects)
+        #expect(KBEntityGroup.of("knowledge-base/note.md", type: "task") == .issues)
+    }
+    @Test func pathFallbackMatchesWholeComponents() {
+        #expect(KBEntityGroup.of("knowledge-base/people/alex.md") == .people)
+        #expect(KBEntityGroup.of("knowledge-base/issues.md") == .issues)
+        #expect(KBEntityGroup.of("knowledge-base/ontology/schema.yaml") == .ontology)
+        #expect(KBEntityGroup.of("knowledge-base/review-queue.md") == .research)
+        // Substrings must not match: "tissue-sampling" is not an issue.
+        #expect(KBEntityGroup.of("knowledge-base/notes/tissue-sampling.md") == .other)
+    }
+    @Test func extractsFrontmatterType() {
+        #expect(KnowledgeBaseService.frontmatterType("---\ntype: Person\n---\n# X") == "person")
+        #expect(KnowledgeBaseService.frontmatterType("# X\ntype: person") == nil)
+        #expect(KnowledgeBaseService.frontmatterType("---\nname: x\n---\nbody") == nil)
+    }
+}
+
 @Suite("KBDocSegment parse + splice")
 struct KBDocSegmentTests {
     private let src = """
