@@ -148,9 +148,9 @@ struct KBMarkdownPreviewTableTests {
         #expect(KBMarkdownPreview.splitRow("| Name | Role | Email |") == ["Name", "Role", "Email"])
     }
     @Test func splitsRowHonoringEscapedPipeInWikilink() {
-        // `[[people\|Jordan]]` — the escaped pipe is cell content, not a column break.
-        let cells = KBMarkdownPreview.splitRow("| Jan | sees [[people\\|Jordan]] | x |")
-        #expect(cells == ["Jan", "sees [[people|Jordan]]", "x"])
+        // `[[people\|Priya]]` — the escaped pipe is cell content, not a column break.
+        let cells = KBMarkdownPreview.splitRow("| Alex | sees [[people\\|Priya]] | x |")
+        #expect(cells == ["Alex", "sees [[people|Priya]]", "x"])
     }
     @Test func parsesTableBlockWithPaddedRows() {
         let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 |"
@@ -171,8 +171,8 @@ struct KBMarkdownPreviewTableTests {
 struct KBWikilinkExtractionTests {
     @Test func extractsTargetsBeforePipeDeduped() {
         let links = KnowledgeBaseService.extractWikilinks(
-            "see [[groupon]] and [[people|Alias]] and [[groupon]] again")
-        #expect(links == ["groupon", "people"])
+            "see [[atlas]] and [[people|Alias]] and [[atlas]] again")
+        #expect(links == ["atlas", "people"])
     }
     @Test func ignoresEmptyAndMalformed() {
         #expect(KnowledgeBaseService.extractWikilinks("no links here").isEmpty)
@@ -183,19 +183,19 @@ struct KBWikilinkExtractionTests {
 @MainActor
 @Suite("KnowledgeBaseService graph")
 struct KBServiceGraphTests {
-    /// A small linked KB: people ←→ scout/groupon, with groupon → scout too.
+    /// A small linked KB: people ←→ scout/atlas, with atlas → scout too.
     private func makeLinkedKB() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kbgraph-\(UUID().uuidString)")
         let kb = root.appendingPathComponent("knowledge-base")
         let projects = kb.appendingPathComponent("projects")
         try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
-        try "# People\nWorks on [[groupon]] and [[scout]]."
+        try "# People\nWorks on [[atlas]] and [[scout]]."
             .write(to: kb.appendingPathComponent("people.md"), atomically: true, encoding: .utf8)
         try "# Scout\nLed by [[people|Someone]]."
             .write(to: projects.appendingPathComponent("scout.md"), atomically: true, encoding: .utf8)
-        try "# Groupon\nWith [[people]] and related to [[scout]]."
-            .write(to: projects.appendingPathComponent("groupon.md"), atomically: true, encoding: .utf8)
+        try "# Atlas\nWith [[people]] and related to [[scout]]."
+            .write(to: projects.appendingPathComponent("atlas.md"), atomically: true, encoding: .utf8)
         return root
     }
 
@@ -209,11 +209,11 @@ struct KBServiceGraphTests {
         #expect(svc.resolveWikilink("nonexistent") == nil)
 
         let out = svc.outgoingLinks(for: "knowledge-base/people.md")
-        #expect(Set(out.map(\.target)) == ["groupon", "scout"])
+        #expect(Set(out.map(\.target)) == ["atlas", "scout"])
         #expect(out.allSatisfy { $0.resolved != nil })
 
         let back = Set(svc.backlinks(for: "knowledge-base/people.md").map(\.path))
-        #expect(back == ["knowledge-base/projects/scout.md", "knowledge-base/projects/groupon.md"])
+        #expect(back == ["knowledge-base/projects/scout.md", "knowledge-base/projects/atlas.md"])
 
         let g = svc.localGraph(around: "knowledge-base/people.md")
         #expect(g.nodes.count == 3)
@@ -222,7 +222,7 @@ struct KBServiceGraphTests {
 
         let stats = svc.graphStats()
         #expect(stats.notes == 3)
-        #expect(stats.links == 3)   // people–scout, people–groupon, scout–groupon
+        #expect(stats.links == 3)   // people–scout, people–atlas, scout–atlas
     }
 
     @Test func contentSearchReturnsSnippet() throws {
@@ -230,8 +230,8 @@ struct KBServiceGraphTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
         svc.load()
-        let hits = svc.searchContent("groupon")
-        #expect(hits.contains { $0.path == "knowledge-base/projects/groupon.md" })
+        let hits = svc.searchContent("atlas")
+        #expect(hits.contains { $0.path == "knowledge-base/projects/atlas.md" })
         #expect(hits.contains { $0.path == "knowledge-base/people.md" })
     }
 }

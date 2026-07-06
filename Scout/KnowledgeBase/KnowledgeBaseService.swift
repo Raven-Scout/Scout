@@ -163,7 +163,7 @@ final class KnowledgeBaseService: ObservableObject {
         return result
     }
 
-    /// Resolve a wikilink target (e.g. `groupon`, possibly with spaces) to a
+    /// Resolve a wikilink target (e.g. `atlas`, possibly with spaces) to a
     /// repo-relative path, or nil if no matching note exists.
     func resolveWikilink(_ target: String) -> String? {
         index.stemToPath[target.lowercased()]
