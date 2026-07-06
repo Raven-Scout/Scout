@@ -14,6 +14,9 @@ struct KBEditorView: View {
     let onDeleted: () -> Void
     /// Called after a rename — parent re-selects the file at its new URL.
     let onRenamed: (URL) -> Void
+    /// Called when the user clicks the breadcrumb root — parent clears the
+    /// selection, returning to the overview (stats + global graph).
+    let onOverview: () -> Void
 
     private enum Mode: String { case read, rich, source }
 
@@ -140,9 +143,21 @@ struct KBEditorView: View {
         return HStack(spacing: 4) {
             ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
                 if i > 0 { Text("/").font(DS.sans(11)).foregroundStyle(DS.Ink.p4) }
-                Text((part as NSString).deletingPathExtension.isEmpty ? part : (i == parts.count - 1 ? (part as NSString).deletingPathExtension : part))
-                    .font(DS.sans(11, weight: i == parts.count - 1 ? .semibold : .regular))
-                    .foregroundStyle(i == parts.count - 1 ? DS.Ink.p1 : DS.Ink.p3)
+                if i == 0 {
+                    // Root crumb navigates back to the overview.
+                    Button(action: onOverview) {
+                        Text(part)
+                            .font(DS.sans(11))
+                            .foregroundStyle(DS.Accent.ink)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Back to overview")
+                } else {
+                    Text((part as NSString).deletingPathExtension.isEmpty ? part : (i == parts.count - 1 ? (part as NSString).deletingPathExtension : part))
+                        .font(DS.sans(11, weight: i == parts.count - 1 ? .semibold : .regular))
+                        .foregroundStyle(i == parts.count - 1 ? DS.Ink.p1 : DS.Ink.p3)
+                }
             }
         }
     }

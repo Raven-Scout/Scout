@@ -63,6 +63,13 @@ struct KnowledgeBaseView: View {
                 Text("Knowledge Base")
                     .font(DS.serif(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
                 Spacer()
+                if selectedPath != nil {
+                    Button { selectedPath = nil } label: {
+                        Image(systemName: "house").font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(DS.Ink.p3)
+                    }
+                    .buttonStyle(.plainHit).help("Back to overview")
+                }
                 Button { showNewFile = true } label: {
                     Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
@@ -167,7 +174,8 @@ struct KnowledgeBaseView: View {
                 onDeleted: { selectedPath = nil },
                 onRenamed: { url in
                     selectedPath = KnowledgeBaseService.relativePath(of: url, in: service.scoutDirectory)
-                }
+                },
+                onOverview: { selectedPath = nil }
             )
             .id(node.id)
             .environment(\.kbWikilinkHandler, { target in
