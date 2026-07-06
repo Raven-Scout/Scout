@@ -12,9 +12,24 @@ struct KBEditableView: View {
     @State private var editing: Int? = nil        // lineStart of the segment being edited
     @State private var buffer: String = ""
     @State private var showMeta = false
+    @State private var cache = SegmentCache()
+
+    /// Memoizes the segment parse: `body` re-evaluates on every editing/
+    /// disclosure state change, but the parse only depends on the source text.
+    final class SegmentCache {
+        private var source: String = ""
+        private var segs: [KBDocSegment] = []
+        func segments(for source: String) -> [KBDocSegment] {
+            if source != self.source {
+                self.source = source
+                self.segs = KBDocSegment.segments(from: source)
+            }
+            return segs
+        }
+    }
 
     var body: some View {
-        let segs = KBDocSegment.segments(from: source)
+        let segs = cache.segments(for: source)
         let parts = KBDocSegment.partition(segs)
         ScrollView {
             HStack(spacing: 0) {
