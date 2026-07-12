@@ -2,17 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make action items readable — a clean, short bold title with a smaller
-description below and machine ids demoted to relation chips — by fixing the app
-renderer and tightening the engine's authoring prompt, with no data-contract
-change.
+> **Reworked 2026-07-12** per Adam's PR review: titles are generated clean at
+> the source and machine refs move to a separate `Refs:` block — there is **no
+> app-side display cleaner**. The previous revision's `TaskDisplayText` tasks
+> are gone. Engine track ships first.
 
-**Architecture:** Two independent tracks. The **app track** (scout-app, Tasks
-1–5) fixes the markdown renderer, adds a display-only cleaning helper that strips
-machine noise while keeping names inline, and rebuilds the card layout. The
-**engine track** (scout-plugin, Task 6) rewrites the generation prompt so new
-files are clean at the source. The parser, `parser-corpus.json`, and the scoutctl
-write path are untouched.
+**Goal:** Make action items readable — a clean, short bold title with a smaller
+description below and machine ids demoted to relation chips — by fixing the
+*source* (the engine's authoring prompt: clean titles, refs in a dedicated
+sub-bullet, carry-forward normalization) and teaching the app to render the new
+shape verbatim (markdown fix, Refs-block recognition, card layout).
+
+**Architecture:** Two tracks, engine first. The **engine track** (scout-plugin,
+Task 1) rewrites the generation prompt so titles are short natural imperatives,
+all machine refs land in a `- Refs:` sub-bullet, and carried-forward items are
+rewritten into the new shape (this is the corpus migration — there is no other).
+The **app track** (scout-app, Tasks 2–5) fixes the markdown renderer, adds
+additive sub-line recognition for the Refs block (same mechanism as comment
+sub-lines), adds entity/cross-ref chip kinds, and rebuilds the card layout to
+render `subject`/`body` **verbatim**. The main-line 4-field parse contract,
+`parser-corpus.json`, and the scoutctl write path are untouched.
 
 **Tech Stack:** Swift / SwiftUI (scout-app), Swift Testing (`import Testing`),
 `AttributedString(markdown:)`, `NSRegularExpression`; Markdown prompt file
@@ -20,12 +29,17 @@ write path are untouched.
 
 ## Global Constraints
 
-- **Do NOT change** `ActionTask.plainSubject`, `ActionTask.matchableSubject`,
-  `cleanForScoutctlMatch`, `ActionItemsParser`, or
-  `ScoutTests/Fixtures/parser-corpus.json`. These feed the scoutctl `--subject`
-  matcher and the checksum-guarded cross-language parser contract. The new
-  display cleaner is a **separate, additive projection** that never touches the
-  write path.
+- **Do NOT change** the main-line subject/body split (`splitSubjectBody`),
+  `ActionTask.plainSubject`, `ActionTask.matchableSubject`,
+  `cleanForScoutctlMatch`, or `ScoutTests/Fixtures/parser-corpus.json`. These
+  feed the scoutctl `--subject` matcher and the checksum-guarded cross-language
+  parser contract. Refs-block recognition is **additive sub-line handling**
+  (like the v0.4 comment shape) — it must not alter any existing corpus case's
+  4-field output.
+- **No display cleaning.** Nothing in the app may strip, rewrite, or normalize
+  `subject`/`body` for display. If a legacy line looks messy, it renders messy
+  until the engine's carry-forward normalizes it. Do not reintroduce
+  `TaskDisplayText` in any form.
 - **Test framework:** Swift Testing — `import Testing`, `@testable import Scout`,
   `@Suite`, `@Test`, `#expect(...)`. Mirror `ScoutTests/ActionItems/MatchableSubjectTests.swift`.
 - **Running tests:** run the WHOLE `ScoutTests` target. `-only-testing:ScoutTests/ActionItems`
@@ -45,20 +59,131 @@ write path are untouched.
 
 ## File Structure
 
-**scout-app**
-- Modify `Scout/ActionItems/Views/InlineMarkdownText.swift` — markdown parse fix (Task 1).
-- Create `Scout/ActionItems/Models/TaskDisplayText.swift` — display cleaner (Tasks 2–3).
-- Create `ScoutTests/ActionItems/TaskDisplayTextTests.swift` — cleaner tests (Tasks 2–3).
-- Modify `ScoutTests/ActionItems/InlineMarkdownTextTests.swift` (create) — markdown fix test (Task 1).
-- Modify `Scout/ActionItems/Views/TaskCardView.swift` — new card layout (Task 4).
-- Modify `Scout/ActionItems/Views/BoardCardView.swift`, `Scout/ActionItems/Views/SectionView.swift`, `Scout/ActionItems/Views/DigestView.swift` — clean title on other surfaces (Task 5).
-
 **scout-plugin**
-- Modify `phases/core/action-items.md` — authoring prompt rewrite (Task 6).
+- Modify `phases/core/action-items.md` — authoring prompt rewrite: title rules,
+  `Refs:` block, carry-forward normalization (Task 1).
+
+**scout-app**
+- Modify `Scout/ActionItems/Views/InlineMarkdownText.swift` — markdown parse fix (Task 2).
+- Create `ScoutTests/ActionItems/InlineMarkdownTextTests.swift` — markdown fix test (Task 2).
+- Modify `Scout/ActionItems/ActionItemsParser.swift` — `Refs:` sub-line recognition (Task 3).
+- Modify `Scout/ActionItems/Models/TaskDeepLink.swift` + `Scout/ActionItems/Models/ActionTask.swift` — entity/cross-ref link kinds, refs storage (Task 3).
+- Create `ScoutTests/ActionItems/RefsBlockTests.swift` — parser + token tests (Task 3).
+- Modify `Scout/ActionItems/Views/TaskChip.swift` (+ `TaskChipTests`) — entity/cross-ref chips (Task 4).
+- Modify `Scout/ActionItems/Views/TaskCardView.swift` — new card layout (Task 5).
 
 ---
 
-## Task 1: Fix the inline-markdown renderer (`_italic_` + throw fallback)
+## Task 1: Rewrite the engine authoring prompt (scout-plugin) — the fix
+
+**Files:**
+- Modify: `../scout-plugin/phases/core/action-items.md` (Action Items File
+  Format ~48-92, Hard Rule region ~107-111, carry-forward rules)
+
+**Interfaces:**
+- No code interface. The prompt is prose the LLM follows when generating the
+  daily file. No change to `parser.py`, `render.py`, `scout.ids`, or
+  `parser-corpus.json` — the new shape is a valid instance of the unchanged
+  4-field contract.
+
+**Design:** Titles are generated clean (no stripping anywhere, ever). All
+machine refs move to a single `- Refs:` sub-bullet. Carried-forward items are
+rewritten into the new shape — this is the whole migration story. Ships as its
+own scout-plugin PR.
+
+- [ ] **Step 1: Add the title + Refs hard rule after the canonical shape (after line 111)**
+
+Insert this block in `phases/core/action-items.md` immediately after the
+"Canonical task line shape" paragraph:
+
+```markdown
+### Hard Rule — Clean Title, Prose Body, Refs Block
+
+The **bold segment is the human-readable title** and must read as a short
+natural imperative phrase — what to do, in plain words. Keep it scannable
+(aim for a single line).
+
+The bold title MUST NOT contain any of:
+- the `[#TAG]` (it sits *before* the bold, never inside it);
+- Linear ids (`PROJ-1234`), GitHub refs (`#1234`, `owner/repo#1234`), or
+  cross-reference hashtags (`#SHORTCODE`);
+- status words ("MERGED", "DEPLOYED", "created + self-assigned", "done→todo");
+- dates, times, or quoted snippets;
+- emoji of any kind (including priority 🔴🟡🟢);
+- an internal ` — ` / ` – ` separator (that dash separates title from body).
+
+The **body** (after the ` — ` separator, plus `- Source:` / `- Context:`
+sub-bullets) is human prose: status, dates, quotes, context. Entity wikilinks
+(`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads
+naturally in a sentence. Bare machine ids never appear in the body prose.
+
+**All machine refs go in ONE `- Refs:` sub-bullet** directly under the task
+line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks,
+cross-reference hashtags, and entity wikilinks that are pure references (not
+part of a sentence). Omit the sub-bullet when a task has no refs.
+
+**Priority is expressed only by which section the item lives in** (🔴 Urgent /
+🟡 To Do / 🟢 Watching). Do NOT prepend a priority emoji to a task line.
+
+Good vs bad (anonymized):
+
+    ✅  - [ ] [#REPLYX] **Reply to Alex about her purchase question** — She said 1/8–1/2; still open per the sweep. Loop in [[people/priya|Priya]] on onboarding.
+    ✅    - Refs: [[people/alex]] · [[PROJ-3026]] · example-org/repo#7056 · #XREF
+    ❌  - [ ] [#REPLYX] 🟡 **Reply to Alex — purchase Q still open (Thu 4:55 PM: "1/8 to 1/2") PROJ-3026** _(carries)_ — …
+```
+
+- [ ] **Step 2: Add the carry-forward normalization rule**
+
+In the carry-forward section of the same file (where verbatim-tag copying is
+specified), add:
+
+```markdown
+**Carry-forward rewrites the item into the canonical shape.** When carrying an
+open item into today's file: keep the `[#TAG]` verbatim and preserve every
+fact, but re-author the line — clean title per the hard rule above, narrative
+into the body, all machine refs consolidated into the `- Refs:` sub-bullet,
+no inline priority emoji. Do NOT preserve legacy formatting for its own sake.
+This is how the corpus converges; there is no other migration.
+```
+
+- [ ] **Step 3: Update the file-format examples (lines 57-85)**
+
+Update the canonical examples to model the new shape: no inline priority
+emoji, no ids in title or body prose, a `- Refs:` sub-bullet on at least one
+example. Keep the `**[Item title]** — [Description]` skeleton.
+
+- [ ] **Step 4: Verify the self-check grep still holds**
+
+The `[#TAG]` self-check grep (lines 123-128) matches the leading tag, which is
+unchanged: `- [ ] [#REPLYX] **…**` still contains ` [#REPLYX] ` → passes.
+
+- [ ] **Step 5: Contract check**
+
+The new shape is a valid instance of the unchanged 4-field contract (subject =
+clean bold, body = post-dash remainder; the Refs sub-bullet is a sub-line the
+Python parser already ignores for main-line fields).
+
+Run (in `../scout-plugin`): `pytest engine/tests/unit/test_parser_contract.py engine/tests/unit/test_parser_corpus_checksum.py -q`
+Expected: PASS (contract + checksum unchanged).
+
+- [ ] **Step 6: Manual generation check**
+
+Regenerate (or hand-write) one section using the new rules and eyeball: titles
+short/natural, refs in the block, no inline emoji. Then simulate a
+carry-forward over one legacy messy item (hand-run the prompt against it) and
+eyeball the normalization output.
+
+- [ ] **Step 7: Commit (in scout-plugin)**
+
+```bash
+cd ../scout-plugin
+git add phases/core/action-items.md
+git commit -m "feat(action-items): clean generated titles; machine refs -> Refs block; carry-forward normalizes"
+```
+
+---
+
+## Task 2: Fix the inline-markdown renderer (`_italic_` + throw fallback)
 
 **Files:**
 - Modify: `Scout/ActionItems/Views/InlineMarkdownText.swift:53-63`
@@ -73,7 +198,7 @@ write path are untouched.
 throw, so a legit `_italic_` (e.g. `_(net-new from the review)_`) can render as
 literal underscores. The correct sibling call site
 (`ControlCenter/Detail/SummaryTab.swift:140`) already uses
-`.inlineOnlyPreservingWhitespace`. Match it.
+`.inlineOnlyPreservingWhitespace`. Match it. Independent of everything else.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -162,326 +287,111 @@ git commit -m "fix(action-items): render _italic_ markdown (inline-only syntax, 
 
 ---
 
-## Task 2: `TaskDisplayText.clean` — the core string cleaner
+## Task 3: Recognize the `Refs:` sub-bullet (parser + model)
 
 **Files:**
-- Create: `Scout/ActionItems/Models/TaskDisplayText.swift`
-- Test: `ScoutTests/ActionItems/TaskDisplayTextTests.swift` (create)
+- Modify: `Scout/ActionItems/ActionItemsParser.swift` (sub-line handling,
+  ~lines 220-245 region where comment shapes are recognized)
+- Modify: `Scout/ActionItems/Models/TaskDeepLink.swift` (new cases),
+  `Scout/ActionItems/Models/ActionTask.swift` (refs storage)
+- Test: `ScoutTests/ActionItems/RefsBlockTests.swift` (create)
 
 **Interfaces:**
-- Produces: `TaskDisplayText.clean(_ raw: String, linearIDs: Set<String>) -> String`
-  — pure, total (any input → a valid, possibly-empty string).
+- Produces: `TaskDeepLink.entity(path: String, label: String?)` and
+  `TaskDeepLink.crossRef(tag: String)` cases (with `id`, `title`, destination
+  handling mirroring the existing cases at `TaskDeepLink.swift:4-34`).
+- Produces: Refs-block tokens merged into `ActionTask.deepLinks` (chips read
+  from there already); the Refs line excluded from `body`/prose.
 
-**Behavior (order matters):** strip residual `[#..]` bracket tokens; drop
-Linear-id-shaped wikilinks (`[[PROJ-3026]]`) but keep name wikilinks
-(`[[people/alex|Alex]]`); drop bare Linear ids passed in `linearIDs` (they have a
-chip); drop cross-ref hashtags (`#XREF`, ≥1 letter — leaves numeric `#123`
-GitHub refs alone); drop priority/status emoji anywhere; drop only the
-`_(carries …)_` / `_(carried in from …)_` italic markers (keep other italics);
-normalize dangling dash separators + whitespace. Markdown emphasis markers
-(`**`, `_`, `~~`, other `[[..]]`, `[..](..)`) are KEPT so `InlineMarkdownText`
-still renders them.
+**Design:** Mirror the existing comment-sub-line recognizers
+(`ActionItemsParser.swift:220-245`): an indented `- Refs: …` line attaches to
+the preceding task instead of rendering as body text or a comment. Tokens are
+` · `-separated; each token runs through `detectDeepLinks` first (Linear /
+GitHub / Slack), then the two new shapes: `[[entity]]` / `[[entity|Label]]`
+wikilink refs and `#XREF` cross-ref hashtags. An unrecognized token becomes a
+plain-text token (rendered as an inert chip in Task 4) — nothing is dropped.
 
-- [ ] **Step 1: Write the failing tests**
+**TDD steps:**
 
-Create `ScoutTests/ActionItems/TaskDisplayTextTests.swift`:
-
-```swift
-import Testing
-import Foundation
-@testable import Scout
-
-@Suite("Task display text — clean")
-struct TaskDisplayTextCleanTests {
-    private func clean(_ s: String, _ ids: Set<String> = []) -> String {
-        TaskDisplayText.clean(s, linearIDs: ids)
-    }
-
-    @Test func stripsBracketTags() {
-        #expect(clean("[#REPLYX] Reply to Alex") == "Reply to Alex")
-        #expect(clean("[#3502] Ship the fix") == "Ship the fix")   // numeric bracket noise
-    }
-
-    @Test func stripsPriorityAndStatusEmoji() {
-        #expect(clean("🔴 🆕 Reply to Alex") == "Reply to Alex")
-        #expect(clean("✅ Merge the PR") == "Merge the PR")
-    }
-
-    @Test func dropsChippedBareLinearIDsButKeepsProse() {
-        #expect(clean("Follow up on PROJ-3026 with Alex", ["PROJ-3026"]) == "Follow up on with Alex")
-    }
-
-    @Test func dropsLinearWikilinksKeepsNameWikilinks() {
-        #expect(clean("Sync — [[PROJ-3026]]", ["PROJ-3026"]) == "Sync")
-        #expect(clean("Loop in [[people/priya|Priya]] on onboarding")
-                == "Loop in [[people/priya|Priya]] on onboarding")   // name kept verbatim
-    }
-
-    @Test func dropsCrossRefHashtagsNotNumericRefs() {
-        #expect(clean("Escalate the risk #XREF") == "Escalate the risk")
-        #expect(clean("See PR example-org/repo#123") == "See PR example-org/repo#123") // numeric ref kept
-    }
-
-    @Test func dropsCarryMarkerKeepsOtherItalics() {
-        #expect(clean("Reply to Alex _(carries 7/3→7/6; per sweep)_") == "Reply to Alex")
-        #expect(clean("Ship it _(net-new from the review)_") == "Ship it _(net-new from the review)_")
-    }
-
-    @Test func keepsBoldMarkup() {
-        #expect(clean("**Reply to Alex**") == "**Reply to Alex**")
-    }
-
-    @Test func totalOnEmptyAndPlain() {
-        #expect(clean("") == "")
-        #expect(clean("Just a plain sentence.") == "Just a plain sentence.")
-    }
-}
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: FAIL to compile — `TaskDisplayText` does not exist yet.
-
-- [ ] **Step 3: Write the implementation**
-
-Create `Scout/ActionItems/Models/TaskDisplayText.swift`:
-
-```swift
-import Foundation
-
-/// Display-only projection of a task's title/description. Strips machine noise
-/// that has zero human value — ids, priority/status emoji, carry markers — while
-/// KEEPING markdown emphasis (so `InlineMarkdownText` renders bold/italic) and
-/// KEEPING `[[entity|Name]]` wikilinks that are not Linear-id shaped (a name
-/// reads naturally in a sentence).
-///
-/// SEPARATE from `ActionTask.plainSubject` / `matchableSubject`, which feed the
-/// scoutctl `--subject` matcher + the cross-language parser contract and MUST
-/// NOT change. `TaskDisplayText` never touches the write path.
-enum TaskDisplayText {
-    /// Core cleaner. Pure `String -> String`. `linearIDs` = Linear ids that
-    /// already have a chip, so they can be removed from prose without losing
-    /// navigation.
-    static func clean(_ raw: String, linearIDs: Set<String>) -> String {
-        var s = raw
-
-        // 1. Residual bracketed id tokens: `[#TAG]` (defensive — the parser
-        //    already strips the leading one) and pure-numeric `[#3502]` noise.
-        s = replace(s, #"\[#[A-Z0-9]+\]"#, "")
-
-        // 2. Linear-id WIKILINKS: `[[PROJ-3026]]` / `[[PROJ-3026|alias]]` whose
-        //    target is Linear-id shaped → drop (a Linear chip carries them).
-        //    Name wikilinks are kept.
-        s = removeLinearWikilinks(s)
-
-        // 3. Bare Linear ids that have a chip.
-        for id in linearIDs {
-            s = replace(s, #"\b"# + NSRegularExpression.escapedPattern(for: id) + #"\b"#, "")
-        }
-
-        // 4. Cross-ref hashtags: 2–8 [A-Z0-9] with ≥1 letter (`#XREF`). The
-        //    ≥1-letter rule leaves numeric `#123` GitHub refs clickable-inline.
-        s = replace(s, #"(?<![\w/])#(?=[A-Z0-9]{2,8}\b)[A-Z0-9]*[A-Z][A-Z0-9]*\b"#, "")
-
-        // 5. Priority + status/marker emoji anywhere.
-        for e in ["🔴", "🟡", "🟢", "✅", "🔄", "❓", "⬜", "🆕", "🔥", "🛌"] {
-            s = s.replacingOccurrences(of: e, with: "")
-        }
-
-        // 6. Carry/snooze italic markers ONLY. Legit italics are kept.
-        s = replace(s, #"_\((?:carries|carried in from)[^)]*\)_"#, "")
-
-        // 7. Normalize: drop dangling dash separators left by removals, collapse
-        //    runs of whitespace, trim.
-        s = replace(s, #"\s*[—–]\s*$"#, "")
-        s = replace(s, #"^\s*[—–]\s*"#, "")
-        while s.contains("  ") { s = s.replacingOccurrences(of: "  ", with: " ") }
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Helpers
-
-    private static func replace(_ s: String, _ pattern: String, _ template: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
-        let m = NSMutableString(string: s)
-        re.replaceMatches(in: m, range: NSRange(location: 0, length: m.length), withTemplate: template)
-        return m as String
-    }
-
-    private static let linearShape = try? NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
-
-    private static func removeLinearWikilinks(_ s: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]"#),
-              let shape = linearShape else { return s }
-        let ns = s as NSString
-        var result = s
-        for m in re.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
-            let target = ns.substring(with: m.range(at: 1))
-            let isLinear = shape.firstMatch(
-                in: target, range: NSRange(location: 0, length: (target as NSString).length)
-            ) != nil
-            if isLinear {
-                result = (result as NSString).replacingCharacters(in: m.range, with: "")
-            }
-        }
-        return result
-    }
-}
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: PASS for all `TaskDisplayTextCleanTests`.
-
+- [ ] **Step 1: Write failing tests** (`RefsBlockTests.swift`): a task followed
+  by `  - Refs: [[people/alex]] · [[PROJ-3026]] · example-org/repo#7056 · #XREF`
+  yields (a) the four refs on the task (entity, linear, githubPR, crossRef),
+  (b) a `body` that does NOT contain the Refs text, (c) no comment created for
+  the line. Add: a malformed token (`??garbage`) surfaces as a plain token;
+  a task with no Refs line parses exactly as before (regression guard against
+  the comment carve-outs at parser lines ~225-231).
+- [ ] **Step 2:** Run — expect FAIL (line currently parses as body/comment).
+- [ ] **Step 3:** Add the `Refs:` recognizer + `TaskDeepLink` cases + token
+  parsing. Keep the recognizer's regex anchored like the comment recognizers
+  so ordinary `- Source:` / `- Context:` sub-bullets are untouched.
+- [ ] **Step 4:** Run — expect PASS, full `ScoutTests` green, and
+  `ParserContractTests` untouched/green (main-line contract unaffected).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add Scout/ActionItems/Models/TaskDisplayText.swift ScoutTests/ActionItems/TaskDisplayTextTests.swift
-git commit -m "feat(action-items): add TaskDisplayText.clean display cleaner"
+git add Scout/ActionItems/ActionItemsParser.swift Scout/ActionItems/Models/TaskDeepLink.swift Scout/ActionItems/Models/ActionTask.swift ScoutTests/ActionItems/RefsBlockTests.swift
+git commit -m "feat(action-items): parse the Refs: sub-bullet into deep links (entity + cross-ref kinds)"
 ```
 
 ---
 
-## Task 3: `TaskDisplayText.title` / `.description` / `.chippedLinearIDs`
+## Task 4: Entity + cross-ref chips
 
 **Files:**
-- Modify: `Scout/ActionItems/Models/TaskDisplayText.swift`
-- Test: `ScoutTests/ActionItems/TaskDisplayTextTests.swift`
+- Modify: `Scout/ActionItems/Views/TaskChip.swift`
+- Test: extend `ScoutTests/ActionItems/TaskChipTests.swift`
 
 **Interfaces:**
-- Consumes: `TaskDisplayText.clean(_:linearIDs:)` (Task 2); `ActionTask`
-  (`subject`, `body`, `deepLinks`).
-- Produces:
-  - `TaskDisplayText.title(for: ActionTask) -> String`
-  - `TaskDisplayText.description(for: ActionTask) -> String`
-  - `TaskDisplayText.chippedLinearIDs(_ task: ActionTask) -> Set<String>`
+- Consumes: the new `TaskDeepLink.entity` / `.crossRef` cases (Task 3).
+- Produces: chips for them — entity chip opens the KB note in the KB tab
+  (reuse the KB-tab deep-link mechanism from the 2026-07-06 KB work);
+  cross-ref chip scrolls to the referenced item when it exists in the current
+  file, renders inert otherwise.
 
-- [ ] **Step 1: Write the failing tests**
+**Steps:**
 
-Append to `ScoutTests/ActionItems/TaskDisplayTextTests.swift`:
-
-```swift
-@Suite("Task display text — title/description")
-struct TaskDisplayTextTaskTests {
-    private func task(subject: String, body: String = "", links: [TaskDeepLink] = []) -> ActionTask {
-        ActionTask(
-            id: UUID(), lineNumber: 1, done: false, subject: subject, plainSubject: subject,
-            body: body, comments: [], deepLinks: links, snoozedUntil: nil, carriedInFrom: nil
-        )
-    }
-
-    @Test func titleStripsNoiseFromSubject() {
-        let t = task(
-            subject: "🟡 **Reply to Alex** _(carries 7/3→7/6)_",
-            links: []
-        )
-        #expect(TaskDisplayText.title(for: t) == "**Reply to Alex**")
-    }
-
-    @Test func descriptionStripsChippedLinearIDFromBody() {
-        let t = task(
-            subject: "**Sync with Priya**",
-            body: "Confirm PROJ-3026 landed; loop in [[people/priya|Priya]].",
-            links: [.linear(id: "PROJ-3026")]
-        )
-        #expect(TaskDisplayText.description(for: t)
-                == "Confirm landed; loop in [[people/priya|Priya]].")
-    }
-
-    @Test func chippedLinearIDsReflectDeepLinks() {
-        let t = task(subject: "x", links: [.linear(id: "PROJ-3026"), .linear(id: "OPS-12")])
-        #expect(TaskDisplayText.chippedLinearIDs(t) == ["PROJ-3026", "OPS-12"])
-    }
-
-    @Test func emptyBodyDescriptionIsEmpty() {
-        #expect(TaskDisplayText.description(for: task(subject: "x", body: "")) == "")
-    }
-}
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: FAIL to compile — `title`/`description`/`chippedLinearIDs` don't exist.
-
-- [ ] **Step 3: Write the implementation**
-
-Add to `enum TaskDisplayText` in `Scout/ActionItems/Models/TaskDisplayText.swift`
-(above the `// MARK: - Helpers` line):
-
-```swift
-    /// Cleaned title for display (from `subject`).
-    static func title(for task: ActionTask) -> String {
-        clean(task.subject, linearIDs: chippedLinearIDs(task))
-    }
-
-    /// Cleaned description for display (from `body`).
-    static func description(for task: ActionTask) -> String {
-        clean(task.body, linearIDs: chippedLinearIDs(task))
-    }
-
-    /// Linear ids that already surface as a `.linear` chip, so removing them
-    /// from prose loses no navigation.
-    static func chippedLinearIDs(_ task: ActionTask) -> Set<String> {
-        Set(task.deepLinks.compactMap {
-            if case .linear(let id) = $0 { return id } else { return nil }
-        })
-    }
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: PASS for `TaskDisplayTextTaskTests`.
-
+- [ ] **Step 1: Failing tests** — `TaskChip.chips(for:)` on a task with the
+  Task-3 fixture yields one chip per Refs token (coverage rule: N tokens → N
+  chips, plain tokens included); entity chip label is the wikilink label (or
+  last path segment); cross-ref chip label is the bare tag.
+- [ ] **Step 2:** Run — FAIL.
+- [ ] **Step 3:** Implement chip derivation + destinations.
+- [ ] **Step 4:** Run — PASS, full suite green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add Scout/ActionItems/Models/TaskDisplayText.swift ScoutTests/ActionItems/TaskDisplayTextTests.swift
-git commit -m "feat(action-items): add TaskDisplayText title/description/chippedLinearIDs"
+git add Scout/ActionItems/Views/TaskChip.swift ScoutTests/ActionItems/TaskChipTests.swift
+git commit -m "feat(action-items): entity + cross-ref chips from the Refs block"
 ```
 
 ---
 
-## Task 4: Rebuild the `TaskCardView` layout (title + description + chips)
+## Task 5: Rebuild the `TaskCardView` layout (title + description + chips, verbatim)
 
 **Files:**
 - Modify: `Scout/ActionItems/Views/TaskCardView.swift:89-116` (header),
-  `:278-283` (detail body), `:341-367` (nested row)
+  `:341-367` (nested row)
 
 **Interfaces:**
-- Consumes: `TaskDisplayText.title(for:)`, `TaskDisplayText.description(for:)`
-  (Task 3); existing `TaskChip.chips(for:)`, `InlineMarkdownText`, `TaskBodyView`.
+- Consumes: `task.subject` and `task.body` **verbatim**, existing
+  `TaskChip.chips(for:)` (now incl. Task-4 kinds), `InlineMarkdownText`,
+  `TaskBodyView`. **No display-cleaning helper exists or is added.**
 
-**Design:** Collapsed card = clean bold title (`lineLimit 2`) + 2-line
-description teaser (smaller/muted) + chip row. The `#PREFIX` mono chip is
-removed. Expanded = full description via `TaskBodyView` fed the CLEANED body +
-comments + links + actions + composer (unchanged). Priority reads only from the
-existing left stripe (emoji now cleaned out). This is a view-layout change; there
-is no unit test — verified by build, the Task 1–3 tests it consumes, and a visual
-check.
+**Design:** Collapsed card = bold title (`InlineMarkdownText(task.subject)`,
+`lineLimit 2`) + 2-line description teaser (`InlineMarkdownText(task.body)`,
+smaller/muted) + chip row. The `#PREFIX` mono chip is removed from the default
+view. Expanded = full body via `TaskBodyView(rawBody: task.body)` (unchanged) +
+comments + links + actions + composer. Priority reads only from the existing
+left stripe. View-layout change; verified by build, the Task 2–4 tests it
+consumes, and a visual check.
 
-- [ ] **Step 1: Add computed display strings**
-
-In `TaskCardView`, add near the other computed vars (after `effectiveKind`,
-around line 59):
-
-```swift
-    private var displayTitle: String { TaskDisplayText.title(for: task) }
-    private var displayDescription: String { TaskDisplayText.description(for: task) }
-```
-
-- [ ] **Step 2: Replace the header (lines 89-116)**
-
-Replace the entire `private var header: some View { ... }` with:
+- [ ] **Step 1: Replace the header (lines 89-116)**
 
 ```swift
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                InlineMarkdownText(displayTitle)
+                InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                     .strikethrough(task.done, color: DS.Ink.p4)
@@ -494,8 +404,8 @@ Replace the entire `private var header: some View { ... }` with:
                 trailingStatus
                 chevron
             }
-            if !expanded && !displayDescription.isEmpty {
-                InlineMarkdownText(displayDescription)
+            if !expanded && !task.body.isEmpty {
+                InlineMarkdownText(task.body)
                     .font(DS.serif(13))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(2)
@@ -514,220 +424,33 @@ Replace the entire `private var header: some View { ... }` with:
 ```
 
 (This deletes the `if let prefix = task.shortPrefix { Text("#\(prefix)") … }`
-block — the continuity key is hidden from the default view.)
+block — the continuity key is hidden from the default view. The expanded
+detail's `TaskBodyView(rawBody: task.body)` is already correct and unchanged.)
 
-- [ ] **Step 3: Feed the cleaned body to the expanded detail (lines 280-282)**
+- [ ] **Step 2: Nested sub-task row (lines 348-361)** — same treatment:
+`InlineMarkdownText(task.subject)` at 13.5 serif + `InlineMarkdownText(task.body)`
+at 12.5 muted below it, both verbatim.
 
-In `private var detail`, replace:
-
-```swift
-            if !task.body.isEmpty {
-                TaskBodyView(rawBody: task.body)
-            }
-```
-
-with:
-
-```swift
-            if !displayDescription.isEmpty {
-                TaskBodyView(rawBody: displayDescription)
-            }
-```
-
-- [ ] **Step 4: Clean the nested sub-task row (lines 348-361)**
-
-In `private var nestedRow`, replace the two `InlineMarkdownText(task.subject)` /
-`InlineMarkdownText(task.body)` calls with the cleaned forms:
-
-```swift
-                InlineMarkdownText(displayTitle)
-                    .font(DS.serif(13.5))
-                    .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
-                    .strikethrough(task.done, color: DS.Ink.p4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if !displayDescription.isEmpty {
-                    InlineMarkdownText(displayDescription)
-                        .font(DS.serif(12.5))
-                        .foregroundStyle(DS.Ink.p3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-```
-
-- [ ] **Step 5: Build + run the full suite**
+- [ ] **Step 3: Build + run the full suite**
 
 Run: `xcodebuild build -scheme Scout -destination 'platform=macOS'`
 Then: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
 Expected: build succeeds; full suite green (no test references the deleted
 `#prefix` header).
 
-- [ ] **Step 6: Visual verification**
+- [ ] **Step 4: Visual verification**
 
-Launch the app against a day with messy items (use the `/run` skill or open the
-built app). Confirm: titles are short + bold with no emoji/ids/carry markers; a
-smaller description sits below; machine ids appear only as chips; `_italic_` in
-descriptions renders italic; expanding shows the full body + comments + actions.
+Launch the app (use the `/run` skill). Against a *new-shape* file (hand-write
+one if the engine change hasn't shipped): titles short + bold, description
+below, refs as chips, no Refs line in prose, `_italic_` renders italic.
+Against a *legacy* file: items render as-authored (messy but intact — that's
+the contract), nothing crashes, nothing is stripped.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Scout/ActionItems/Views/TaskCardView.swift
-git commit -m "feat(action-items): card = clean title + description + chips; hide #prefix, drop inline emoji"
-```
-
----
-
-## Task 5: Clean titles on the other surfaces + chip-coverage guard test
-
-**Files:**
-- Modify: `Scout/ActionItems/Views/BoardCardView.swift:14-21`,
-  `Scout/ActionItems/Views/SectionView.swift` (focus ~96-139, completedList ~143-174),
-  `Scout/ActionItems/Views/DigestView.swift`
-- Test: `ScoutTests/ActionItems/TaskDisplayTextTests.swift`
-
-**Interfaces:**
-- Consumes: `TaskDisplayText.title(for:)`, `TaskDisplayText.description(for:)`.
-
-**Design:** These surfaces render `task.subject`/`task.body` raw. Swap to the
-cleaned forms so titles are clean everywhere; layouts are unchanged. Then add a
-guard test asserting a bare Linear id present in a chip is removed from prose,
-while a Linear id with NO chip is retained (never silently lost).
-
-- [ ] **Step 1: Write the failing guard test**
-
-Append to `ScoutTests/ActionItems/TaskDisplayTextTests.swift` (inside
-`TaskDisplayTextTaskTests`):
-
-```swift
-    @Test func neverStripsAnUnchippedLinearID() {
-        // PROJ-99 appears in prose but is NOT a deep link → no chip → keep it,
-        // rather than silently deleting a reference with nowhere to land.
-        let t = task(subject: "**Check PROJ-99 status**", links: [])
-        #expect(TaskDisplayText.title(for: t) == "**Check PROJ-99 status**")
-    }
-```
-
-- [ ] **Step 2: Run to verify it passes already (documents the guarantee)**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: PASS — `clean` only strips ids passed in `linearIDs`, and
-`chippedLinearIDs` for this task is empty. This test locks the guarantee in place.
-
-- [ ] **Step 3: Apply cleaned title to `BoardCardView` (lines 14-21)**
-
-Replace `InlineMarkdownText(task.subject)` in the board card title with
-`InlineMarkdownText(TaskDisplayText.title(for: task))`. Leave `lineLimit(3)` and
-the rest as-is.
-
-- [ ] **Step 4: Apply cleaned title to `SectionView` focus + completedList**
-
-In `SectionView.swift`, the `focus` numbered list and `completedList`
-DisclosureGroup each render a task via `InlineMarkdownText(task.subject)` (or the
-focus bullet). Replace each with `InlineMarkdownText(TaskDisplayText.title(for: task))`.
-(Focus bullets that are section `bullets`, not `tasks`, are left unchanged — only
-task rows get the cleaner.)
-
-- [ ] **Step 5: Apply cleaned title to `DigestView`**
-
-Where `DigestView` renders task subjects via `InlineMarkdownText`, swap to
-`TaskDisplayText.title(for: task)`. (Non-task digest bullets stay unchanged.)
-
-- [ ] **Step 6: Build + run the full suite**
-
-Run: `xcodebuild build -scheme Scout -destination 'platform=macOS'`
-Then: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests`
-Expected: build succeeds; full suite green.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add Scout/ActionItems/Views/BoardCardView.swift Scout/ActionItems/Views/SectionView.swift Scout/ActionItems/Views/DigestView.swift ScoutTests/ActionItems/TaskDisplayTextTests.swift
-git commit -m "feat(action-items): clean titles on board/focus/done/digest + chip-coverage guard test"
-```
-
----
-
-## Task 6: Rewrite the engine authoring prompt (scout-plugin)
-
-**Files:**
-- Modify: `../scout-plugin/phases/core/action-items.md` (Action Items File
-  Format ~48-92, Hard Rule region ~107-111)
-
-**Interfaces:**
-- No code interface. The prompt is prose the LLM follows when generating the
-  daily file. No change to `parser.py`, `render.py`, `scout.ids`, or
-  `parser-corpus.json`.
-
-**Design:** Add explicit title-content constraints so the bold segment is a
-short imperative phrase (no ids/status/emoji/dates/internal ` — `), route detail
-to the body/sub-bullets, and forbid inline priority emoji on task lines (priority
-= section placement). Ships as a separate scout-plugin PR.
-
-- [ ] **Step 1: Add a "Task line anatomy" rule after the canonical shape (after line 111)**
-
-Insert this block in `phases/core/action-items.md` immediately after the
-"Canonical task line shape" paragraph (line 111):
-
-```markdown
-### Hard Rule — Title Is a Short Human Phrase; Detail Goes in the Body
-
-The **bold segment is the human-readable title** and must read as a short
-imperative phrase — what to do, in plain words. Keep it scannable (aim for a
-single line).
-
-The bold title MUST NOT contain any of:
-- the `[#TAG]` (it sits *before* the bold, never inside it);
-- Linear ids (`PROJ-1234`), GitHub refs (`#1234`, `owner/repo#1234`), or
-  cross-reference hashtags (`#SHORTCODE`);
-- status words ("MERGED", "DEPLOYED", "created + self-assigned", "done→todo");
-- dates, times, or quoted snippets;
-- emoji of any kind (including priority 🔴🟡🟢);
-- an internal ` — ` / ` – ` separator (that dash separates title from body).
-
-Everything else — status, dates, quotes, Linear/GitHub ids, wikilinks, context —
-goes **after the ` — ` separator** (the body) or into `- Source:` / `- Context:`
-sub-bullets. Ids you reference for linking still belong in the body/sub-bullets,
-never in the title.
-
-**Priority is expressed only by which section the item lives in** (🔴 Urgent /
-🟡 To Do / 🟢 Watching). Do NOT prepend a priority emoji to a task line.
-
-Good vs bad (anonymized):
-
-    ✅  - [ ] [#REPLYX] **Reply to Alex about her purchase question** — She said 1/8–1/2; still open per the sweep. Loop in [[people/priya|Priya]]. [[PROJ-3026]]
-    ❌  - [ ] [#REPLYX] 🟡 **Reply to Alex — purchase Q still open (Thu 4:55 PM: "1/8 to 1/2") PROJ-3026** _(carries)_ — …
-```
-
-- [ ] **Step 2: Update the file-format examples (lines 57-85) to drop inline emoji**
-
-The canonical examples at lines 57, 63, 69, 75, 83 already use the
-`**[Item title]** — [Description]` shape and no inline priority emoji — confirm
-none is added. If any example title carries an emoji or an id, remove it so the
-examples model the new rule.
-
-- [ ] **Step 3: Verify the self-check grep still holds**
-
-The `[#TAG]` self-check grep (lines 123-128) is unaffected — it matches the
-leading tag, which is unchanged. Run it mentally against the good example above:
-`- [ ] [#REPLYX] **…**` still contains ` [#REPLYX] ` → passes.
-
-- [ ] **Step 4: Manual generation check**
-
-Generate (or hand-write) one section using the new rule, then confirm the
-existing parser still splits it correctly (subject = clean bold, body = post-dash
-remainder) by running the plugin's parser tests — they must stay green since the
-format is a valid instance of the unchanged contract:
-
-Run (in `../scout-plugin`): `pytest engine/tests/unit/test_parser_contract.py engine/tests/unit/test_parser_corpus_checksum.py -q`
-Expected: PASS (contract + checksum unchanged).
-
-- [ ] **Step 5: Commit (in scout-plugin)**
-
-```bash
-cd ../scout-plugin
-git add phases/core/action-items.md
-git commit -m "feat(action-items): title is a short human phrase; detail → body; priority = section (no inline emoji)"
+git commit -m "feat(action-items): card = title + description + chips (verbatim render); hide #prefix"
 ```
 
 ---
@@ -735,35 +458,35 @@ git commit -m "feat(action-items): title is a short human phrase; detail → bod
 ## Self-Review
 
 **Spec coverage:**
-- Engine prompt rewrite (short clean title, detail → body, priority = section, no
-  inline emoji) → **Task 6**.
-- Markdown `_italic_` fix → **Task 1**.
-- Display-cleaning helper (strip emoji/ids/carry, keep names) → **Tasks 2–3**.
-- Card layout = title + 2-line description + chips; hide `#TAG`; priority stripe
-  only → **Task 4**.
-- Ids-out-of-prose land in chips; no id vanishes without a chip → **Tasks 3 & 5**
-  (`chippedLinearIDs` + guard test).
-- Clean title on Board/Focus/Done/Digest → **Task 5**.
-- Parser/corpus/contract unchanged + stay green → asserted in **Tasks 1, 4, 5, 6**.
-- No migration (defensive cleaning covers legacy files) → inherent to the cleaner
-  (Task 2 `total` tests cover plain/legacy input).
+- Engine prompt rewrite (clean title, prose body, `Refs:` block, priority =
+  section, carry-forward normalization) → **Task 1**.
+- Markdown `_italic_` fix → **Task 2**.
+- Refs-block recognition, excluded from prose, additive sub-line handling →
+  **Task 3**.
+- Entity + cross-ref chips; every Refs token yields exactly one chip → **Task 4**.
+- Card layout = verbatim title + 2-line description + chips; hide `#TAG`;
+  priority stripe only → **Task 5**.
+- No app-side cleaning anywhere → global constraint; enforced by the absence of
+  any cleaner component.
+- Main-line contract/corpus/scoutctl unchanged + green → asserted in Tasks 1,
+  3, 5.
+- Migration = carry-forward normalization (Task 1 Step 2); legacy render
+  honesty checked in Task 5 Step 4.
 
-**Known limitation (documented, not a gap):** bare GitHub refs (`#7056`,
-`owner/repo#7056`) are NOT detected as deep links, so they have no chip; per the
-coverage guard the cleaner leaves them inline (still clickable via
-`GitHubRefLinkifier`). Chip-ifying GitHub refs is a possible follow-up, out of
-scope here. The engine rule (Task 6) keeps them out of the *title* regardless, so
-they only ever appear in the description prose.
+**Known limitation (documented, not a gap):** until the engine change ships
+and an item is carried once, legacy items render as-authored — messy titles
+included. This is deliberate: the interim is days, and it keeps the app free of
+a second cleaning system. Bare GitHub refs in *legacy* prose remain clickable
+via `GitHubRefLinkifier`; in new files they live in the Refs block as chips.
 
-**Placeholder scan:** none — every code step shows complete code; every command
-shows expected output.
-
-**Type consistency:** `clean(_:linearIDs:)`, `title(for:)`, `description(for:)`,
-`chippedLinearIDs(_:)`, and `attributedString(for:)` are used with identical
-signatures across Tasks 1–5.
+**Placeholder scan:** Tasks 3–4 specify mirrors + interfaces rather than full
+code (parser internals are implemented against the comment-recognizer pattern
+at `ActionItemsParser.swift:220-245` and the `TaskDeepLink` cases at
+`Models/TaskDeepLink.swift:4-34`); Tasks 1, 2, 5 show complete
+content/code.
 
 ## Execution Handoff
 
-App track = Tasks 1–5 (one scout-app PR); engine track = Task 6 (one scout-plugin
-PR). Per the review-first flow, this plan + the spec are pushed to the scout-app
-PR for review before any task is executed.
+Engine track = Task 1 (one scout-plugin PR, ship first); app track = Tasks 2–5
+(one scout-app PR). Per the review-first flow, this reworked plan + spec land
+on the scout-app PR (#76) for re-review before code.
