@@ -139,6 +139,9 @@ struct KBEditableView: View {
             metaText(seg.raw)
         case .table:
             EmptyView()   // handled in segmentView
+        case .scoutComment:
+            InlineMarkdownText(ScoutMarker.body(of: seg.raw) ?? seg.raw)
+                .font(DS.sans(12)).foregroundStyle(DS.Accent.ink)
         }
     }
 
