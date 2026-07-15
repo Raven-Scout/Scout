@@ -40,7 +40,7 @@ struct SectionView: View {
 
     // MARK: - Header
 
-    /// Section header styled after the handoff bundle: small glyph, uppercase
+    /// Section header styled after the handoff bundle: kind marker, uppercase
     /// sans label, monospaced count, optional hint on the right, sitting on a
     /// hairline rule.
     private var header: some View {

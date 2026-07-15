@@ -11,7 +11,7 @@ struct ActionItemsFilter: Equatable {
 }
 
 /// Editorial filter bar. Left: segmented All/Open/Done/Snoozed.
-/// Right: flat chip filters for section kinds, each with a priority dot
+/// Right: flat chip filters for section kinds, each with a kind marker
 /// and a small count badge.
 struct FilterChipsView: View {
     @Binding var filter: ActionItemsFilter
