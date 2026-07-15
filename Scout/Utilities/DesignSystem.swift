@@ -99,21 +99,6 @@ enum DS {
         }
     }
 
-    /// Small glyph shown in section headers (matches the handoff bundle).
-    static func kindGlyph(_ kind: ActionSection.Kind) -> String {
-        switch kind {
-        case .urgent:   return "🔴"
-        case .todo:     return "🟡"
-        case .watching: return "🟢"
-        case .personal: return "🏡"
-        case .focus:    return "💡"
-        case .meetings: return "📅"
-        case .done:     return "✓"
-        case .digest:   return "📋"
-        case .neutral:  return "·"
-        }
-    }
-
     /// SF Symbol shown inside a `KindMarker` for category kinds. Returns nil
     /// for kinds that render as a plain colored dot (the priority axis + neutral).
     static func kindSymbol(_ kind: ActionSection.Kind) -> String? {
