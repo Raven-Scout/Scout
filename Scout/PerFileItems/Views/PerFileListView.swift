@@ -90,7 +90,7 @@ struct PerFileListView: View {
         case .missing:
             emptyState(
                 icon: "tray",
-                message: "No \(config.title.lowercased()) folder found yet. Use ＋ to add the first item."
+                message: "No \(config.title.lowercased()) folder found yet. Use + to add the first item."
             )
         case .failed(let err):
             Text("Couldn't load \(config.title.lowercased()): \(err)")
@@ -110,7 +110,7 @@ struct PerFileListView: View {
         if docService.items.isEmpty {
             emptyState(
                 icon: "sparkles",
-                message: "Nothing here yet. Use ＋ to add a \(config.addNoun)."
+                message: "Nothing here yet. Use + to add a \(config.addNoun)."
             )
         } else {
             if awaiting.isEmpty {
