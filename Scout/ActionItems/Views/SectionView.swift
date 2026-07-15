@@ -44,9 +44,9 @@ struct SectionView: View {
     /// sans label, monospaced count, optional hint on the right, sitting on a
     /// hairline rule.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             KindMarker(kind: section.kind, size: 14)
-                .frame(width: 18, alignment: .leading)
+                .frame(width: 15, alignment: .leading)
                 .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
             Text(section.title.uppercased())
                 .font(DS.sans(12, weight: .medium))

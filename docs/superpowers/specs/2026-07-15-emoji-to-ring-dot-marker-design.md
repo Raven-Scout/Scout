@@ -38,14 +38,17 @@ touching the emoji that the parser and data layer depend on.
 
 ### 1. `KindMarker` view (new)
 
-A small reusable SwiftUI view, concentric, matching the reference screenshot.
+A small reusable SwiftUI view. Two forms, split on whether the kind carries a
+symbol:
 
-- **Geometry:** an outer ring `Circle().strokeBorder(hue.opacity(0.4), lineWidth: 1.5)`
-  at `size`, with centered content.
-- **Center content:**
-  - Priority/neutral kinds → solid `Circle().fill(hue)` at ~0.42·`size`.
-  - Category kinds → `Image(systemName: symbol)` tinted `hue`, sized to fit
-    (~0.55·`size`, `.medium` weight).
+- **Priority / neutral kinds** (dot form) → concentric marker matching the
+  reference screenshot: an outer ring `Circle().strokeBorder(hue.opacity(0.4),
+  lineWidth: 1.5)` around a solid `Circle().fill(hue)` at ~0.42·`size`.
+- **Category kinds** (icon form) → a bare, full-size `Image(systemName: symbol)`
+  tinted `hue` at `size` pt, `.medium` weight, no ring. (Refined from an
+  earlier "symbol inside the ring" idea, which rendered the glyphs too small to
+  read; a bare full-size icon is legible, and the ring then reads specifically
+  as a priority dot.)
 - **Parameters:** `kind: ActionSection.Kind` and `size: CGFloat` (default 14).
 - **Color:** `hue = DS.priorityColor(kind)` — no new colors introduced; light/dark
   handled by the existing palette.
