@@ -113,6 +113,19 @@ enum DS {
         case .neutral:  return "·"
         }
     }
+
+    /// SF Symbol shown inside a `KindMarker` for category kinds. Returns nil
+    /// for kinds that render as a plain colored dot (the priority axis + neutral).
+    static func kindSymbol(_ kind: ActionSection.Kind) -> String? {
+        switch kind {
+        case .urgent, .todo, .watching, .neutral: return nil
+        case .done:     return "checkmark"
+        case .personal: return "house"
+        case .focus:    return "lightbulb"
+        case .meetings: return "calendar"
+        case .digest:   return "list.clipboard"
+        }
+    }
 }
 
 // MARK: - Color bridging
