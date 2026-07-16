@@ -11,6 +11,7 @@ import ServiceManagement
 /// alongside.
 struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage("launchMinimized") private var launchMinimized: Bool = false
     @AppStorage("linearWorkspace") private var linearWorkspace: String = ""
     @AppStorage("authorName")      private var authorName: String = "user"
     @AppStorage("notifyOnFailure")   private var notifyOnFailure: Bool = true
@@ -45,6 +46,12 @@ struct SettingsView: View {
                                         launchAtLogin = (SMAppService.mainApp.status == .enabled)
                                     }
                                 }
+                        }
+                        SettingsRow(
+                            title: "Start in menu bar",
+                            help: "Keep the full window hidden when Scout launches. Use the menu-bar panel until you need it."
+                        ) {
+                            SettingsToggle(isOn: $launchMinimized)
                         }
                         SettingsRow(
                             title: "Scout directory",
@@ -251,10 +258,9 @@ struct SettingsView: View {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         #if DEBUG
-        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh;
-        // dev builds keep the xcodeproj default (1.0), which reads like a real
-        // release. Mark them as dev and show the build time so it's obvious
-        // which local build is running.
+        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh.
+        // Mark dev builds and show the build time so it's obvious which local
+        // build is running even when its marketing version matches a release.
         return "\(v) (\(b)) · dev · \(buildTimestamp)"
         #else
         return "\(v) (\(b))"

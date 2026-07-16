@@ -12,7 +12,10 @@ struct ActionItemsView: View {
     @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
     @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
     @State private var toast: String?
+    @State private var isSelecting = false
+    @State private var selectedTaskIDs: Set<UUID> = []
     @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,6 +28,16 @@ struct ActionItemsView: View {
                     selection: $viewMode,
                     options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
                 )
+                if viewMode == .list, case .loaded = docService.state {
+                    Button {
+                        toggleSelectionMode()
+                    } label: {
+                        Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
+                            .font(DS.sans(11.5, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
@@ -62,8 +75,22 @@ struct ActionItemsView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .bottom) {
+            if isSelecting {
+                bulkCopyBar
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .onAppear { load() }
-        .onChange(of: displayedDate) { _, _ in load() }
+        .onChange(of: displayedDate) { _, _ in
+            endSelectionMode()
+            load()
+        }
+        .onChange(of: viewMode) { _, newValue in
+            if newValue != .list { endSelectionMode() }
+        }
     }
 
     // MARK: - Content
@@ -120,6 +147,7 @@ struct ActionItemsView: View {
                 section: filtered(section),
                 displayedDate: displayedDate,
                 scoutDirectory: scoutDirectory,
+                selection: isSelecting ? $selectedTaskIDs : nil,
                 onOp: handleOp
             )
         }
@@ -321,11 +349,140 @@ struct ActionItemsView: View {
     }
 
     private func setToast(_ text: String) {
-        toast = text
+        if reduceMotion {
+            toast = text
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { toast = text }
+        }
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            await MainActor.run { if toast == text { toast = nil } }
+            await MainActor.run {
+                guard toast == text else { return }
+                if reduceMotion {
+                    toast = nil
+                } else {
+                    withAnimation(.easeIn(duration: 0.15)) { toast = nil }
+                }
+            }
         }
+    }
+
+    // MARK: - Bulk copy
+
+    private var bulkCopyBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(DS.Accent.ink)
+            Text("\(selectedTaskIDs.count) selected")
+                .font(DS.sans(12, weight: .semibold))
+                .foregroundStyle(DS.Ink.p1)
+            Button(allVisibleTasksSelected ? "Clear" : "Select all") {
+                toggleSelectAll()
+            }
+            .buttonStyle(.borderless)
+            .font(DS.sans(11))
+            .help("Select or clear every action item currently visible")
+            Spacer()
+            Button {
+                copySelected(format: .fullContext)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(DS.Accent.fill)
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(selectedTaskIDs.isEmpty)
+            .help("Copy selected items with full context (⌘⇧C)")
+
+            Menu {
+                ForEach([ClaudeLauncher.CopyFormat.concise, .markdownChecklist]) { format in
+                    Button {
+                        copySelected(format: format)
+                    } label: {
+                        Label(format.label, systemImage: format.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 22, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(selectedTaskIDs.isEmpty)
+            .help("Choose a concise or Markdown copy format")
+
+            Button("Done") { endSelectionMode() }
+                .buttonStyle(.borderless)
+                .help("Exit selection mode")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .frame(maxWidth: 620)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThickMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.hard, lineWidth: 0.5))
+                .shadow(color: DS.Neumorphic.shadow.opacity(0.45), radius: 12, y: 6)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Bulk copy controls, \(selectedTaskIDs.count) selected")
+    }
+
+    private var visibleSelectableTasks: [ActionTask] {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return filteredSections(doc)
+            .map(filtered)
+            .filter { ![.focus, .meetings, .digest].contains($0.kind) }
+            .flatMap(\.tasks)
+    }
+
+    private var selectedTasks: [ActionTask] {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return doc.sections.flatMap(\.tasks).filter { selectedTaskIDs.contains($0.id) }
+    }
+
+    private var allVisibleTasksSelected: Bool {
+        let visibleIDs = Set(visibleSelectableTasks.map(\.id))
+        return !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedTaskIDs)
+    }
+
+    private func toggleSelectionMode() {
+        if isSelecting {
+            endSelectionMode()
+        } else if reduceMotion {
+            isSelecting = true
+        } else {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { isSelecting = true }
+        }
+    }
+
+    private func endSelectionMode() {
+        let changes = {
+            isSelecting = false
+            selectedTaskIDs.removeAll()
+        }
+        if reduceMotion { changes() } else { withAnimation(.easeInOut(duration: 0.16), changes) }
+    }
+
+    private func toggleSelectAll() {
+        let visibleIDs = Set(visibleSelectableTasks.map(\.id))
+        if !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedTaskIDs) {
+            selectedTaskIDs.removeAll()
+        } else {
+            selectedTaskIDs.formUnion(visibleIDs)
+        }
+    }
+
+    private func copySelected(format: ClaudeLauncher.CopyFormat) {
+        let tasks = selectedTasks
+        guard !tasks.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            ClaudeLauncher.prompt(for: tasks, format: format),
+            forType: .string
+        )
+        setToast("Copied \(tasks.count) action item\(tasks.count == 1 ? "" : "s") as \(format.label.lowercased()).")
     }
 
     private func load() {

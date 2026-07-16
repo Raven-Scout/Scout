@@ -11,6 +11,30 @@ import AppKit
 /// user can paste it with Cmd+V as a reliable fallback if the platform's
 /// native prefill mechanism is flaky.
 enum ClaudeLauncher {
+    enum CopyFormat: String, CaseIterable, Identifiable {
+        case fullContext
+        case concise
+        case markdownChecklist
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .fullContext:       return "Full context"
+            case .concise:           return "Concise"
+            case .markdownChecklist: return "Markdown checklist"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .fullContext:       return "doc.text"
+            case .concise:           return "text.alignleft"
+            case .markdownChecklist: return "checklist"
+            }
+        }
+    }
+
     enum DesktopMode {
         /// `claude://claude.ai/new` — main chat. Reliably opens a fresh chat
         /// with the prompt prefilled from any screen.
@@ -76,7 +100,46 @@ enum ClaudeLauncher {
     /// Build the prompt text for a task — subject, plus body, recent
     /// comments, and any deep links.
     static func prompt(for task: ActionTask) -> String {
-        var out = "Help me make progress on this action item:\n\n\(task.plainSubject)"
+        prompt(for: task, format: .fullContext)
+    }
+
+    static func prompt(for task: ActionTask, format: CopyFormat) -> String {
+        switch format {
+        case .fullContext:
+            return "Help me make progress on this action item:\n\n" + fullContextBody(for: task)
+        case .concise:
+            return conciseBody(for: task)
+        case .markdownChecklist:
+            return checklistBody(for: task)
+        }
+    }
+
+    static func prompt(for tasks: [ActionTask], format: CopyFormat) -> String {
+        guard let first = tasks.first else { return "" }
+        guard tasks.count > 1 else { return prompt(for: first, format: format) }
+
+        switch format {
+        case .fullContext:
+            let items = tasks.enumerated().map { index, task in
+                "## \(index + 1). \(fullContextBody(for: task))"
+            }
+            return "Help me make progress on these \(tasks.count) action items:\n\n"
+                + items.joined(separator: "\n\n---\n\n")
+        case .concise:
+            return tasks.enumerated()
+                .map {
+                    let body = conciseBody(for: $0.element)
+                        .replacingOccurrences(of: "\n", with: "\n   ")
+                    return "\($0.offset + 1). \(body)"
+                }
+                .joined(separator: "\n\n")
+        case .markdownChecklist:
+            return tasks.map { checklistBody(for: $0) }.joined(separator: "\n")
+        }
+    }
+
+    private static func fullContextBody(for task: ActionTask) -> String {
+        var out = task.plainSubject
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
@@ -96,6 +159,24 @@ enum ClaudeLauncher {
             out += "\n\nLinks:\n\(block)"
         }
         return out
+    }
+
+    private static func conciseBody(for task: ActionTask) -> String {
+        guard !task.body.isEmpty else { return task.plainSubject }
+        return "\(task.plainSubject)\n\(task.body)"
+    }
+
+    private static func checklistBody(for task: ActionTask) -> String {
+        var lines = ["- [\(task.done ? "x" : " ")] \(task.plainSubject)"]
+        if !task.body.isEmpty {
+            lines.append(contentsOf: task.body.split(separator: "\n").map { "  \($0)" })
+        }
+        if !task.deepLinks.isEmpty {
+            lines.append(contentsOf: task.deepLinks.map {
+                "  - [\($0.displayLabel)](\($0.openURL.absoluteString))"
+            })
+        }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Command builders (pure, unit-tested)
