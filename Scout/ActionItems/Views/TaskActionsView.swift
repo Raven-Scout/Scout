@@ -16,6 +16,7 @@ struct TaskActionsView: View {
 
     @State private var showingSnooze = false
     @State private var launchError: String?
+    @State private var didCopy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -45,6 +46,13 @@ struct TaskActionsView: View {
                         }
                     }
                     launchClaudeMenu
+                }
+                actButton(
+                    didCopy ? "Copied" : "Copy",
+                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
+                    style: .plain
+                ) {
+                    copyTaskPrompt()
                 }
             }
             if let launchError {
@@ -119,6 +127,16 @@ struct TaskActionsView: View {
             launchError = nil
         } catch {
             launchError = error.localizedDescription
+        }
+    }
+
+    private func copyTaskPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ClaudeLauncher.prompt(for: task), forType: .string)
+        didCopy = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            didCopy = false
         }
     }
 

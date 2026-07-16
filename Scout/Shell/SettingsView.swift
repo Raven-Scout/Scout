@@ -11,6 +11,7 @@ import ServiceManagement
 /// alongside.
 struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage("launchMinimized") private var launchMinimized: Bool = false
     @AppStorage("linearWorkspace") private var linearWorkspace: String = ""
     @AppStorage("authorName")      private var authorName: String = "user"
     @AppStorage("notifyOnFailure")   private var notifyOnFailure: Bool = true
@@ -45,6 +46,12 @@ struct SettingsView: View {
                                         launchAtLogin = (SMAppService.mainApp.status == .enabled)
                                     }
                                 }
+                        }
+                        SettingsRow(
+                            title: "Launch minimized",
+                            help: "Start with only the menu-bar panel visible. Open the full window whenever you need it."
+                        ) {
+                            SettingsToggle(isOn: $launchMinimized)
                         }
                         SettingsRow(
                             title: "Scout directory",

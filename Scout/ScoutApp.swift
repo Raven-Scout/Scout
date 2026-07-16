@@ -21,7 +21,7 @@ struct ScoutApp: App {
         } label: {
             MenuBarIcon(status: appState.menuBarStatus)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView().environmentObject(appState)
