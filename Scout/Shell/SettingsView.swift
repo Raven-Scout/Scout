@@ -48,8 +48,8 @@ struct SettingsView: View {
                                 }
                         }
                         SettingsRow(
-                            title: "Launch minimized",
-                            help: "Start with only the menu-bar panel visible. Open the full window whenever you need it."
+                            title: "Start in menu bar",
+                            help: "Keep the full window hidden when Scout launches. Use the menu-bar panel until you need it."
                         ) {
                             SettingsToggle(isOn: $launchMinimized)
                         }

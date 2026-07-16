@@ -17,6 +17,7 @@ struct TaskActionsView: View {
     @State private var showingSnooze = false
     @State private var launchError: String?
     @State private var didCopy = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -47,13 +48,7 @@ struct TaskActionsView: View {
                     }
                     launchClaudeMenu
                 }
-                actButton(
-                    didCopy ? "Copied" : "Copy",
-                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
-                    style: .plain
-                ) {
-                    copyTaskPrompt()
-                }
+                copyMenu
             }
             if let launchError {
                 Text(launchError)
@@ -107,9 +102,44 @@ struct TaskActionsView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help("Launch this action item in Claude Code or Claude Desktop")
         .onHover { hovering in
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
+    }
+
+    private var copyMenu: some View {
+        Menu {
+            ForEach(ClaudeLauncher.CopyFormat.allCases) { format in
+                Button {
+                    copyTaskPrompt(format: format)
+                } label: {
+                    Label(format.label, systemImage: format.systemImage)
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10))
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                Text(didCopy ? "Copied" : "Copy")
+                    .font(DS.sans(11.5, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(DS.Ink.p4)
+            }
+            .foregroundStyle(didCopy ? DS.Status.ok : DS.Ink.p3)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .contentShape(Rectangle())
+        } primaryAction: {
+            copyTaskPrompt(format: .fullContext)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Copy full context. Open the menu to choose a concise or Markdown format.")
+        .accessibilityLabel(didCopy ? "Copied action-item context" : "Copy action-item context")
     }
 
     private var cliMenuLabel: String {
@@ -130,9 +160,12 @@ struct TaskActionsView: View {
         }
     }
 
-    private func copyTaskPrompt() {
+    private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(ClaudeLauncher.prompt(for: task), forType: .string)
+        NSPasteboard.general.setString(
+            ClaudeLauncher.prompt(for: task, format: format),
+            forType: .string
+        )
         didCopy = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.5))
@@ -177,6 +210,7 @@ struct TaskActionsView: View {
             }
         }
         .buttonStyle(.plainHit)
+        .help(label)
         .onHover { hovering in
             // Lightweight hover feedback via system cursor — no state churn.
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }

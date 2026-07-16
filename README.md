@@ -6,7 +6,7 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 - **Control Center** — sessions activity, upcoming schedule, recent runs with cost/status, usage heatmap, on-battery banner.
 - **Action Items** — today's to-do list rendered from the daily markdown file, with inline comments and deep links to Linear / GitHub PRs / Slack threads.
-- **Agent handoff** — copy an action item's full context to the clipboard, or launch it directly in Claude Code or Claude Desktop.
+- **Agent handoff** — copy one or several action items as full context, concise text, or a Markdown checklist, or launch directly in Claude Code or Claude Desktop.
 - **Schedules** — full CRUD editor for `~/Scout/.scout-state/schedule.yaml`. Master/detail layout with Table + Cards view toggle, type-color palette (briefing/consolidation/dreaming/research/manual), filter chips, live header. Atomic saves via `scoutctl schedule validate --target` with mtime stale-check + header-comment preservation. Click a row to edit its time, weekdays, on-miss policy, cooldown, runner, etc.
 - **Menu-bar control** — see current status and upcoming runs, fire a run, or open the full Control Center from a compact panel.
 
@@ -59,7 +59,7 @@ Typical workflow: keep "Scout" running from `/Applications` all day, and spin up
 Cmd+, opens Settings. A few fields are worth filling in:
 
 - **Launch Scout at login** — start the app automatically so it's watching your Scout instance all day.
-- **Launch minimized** — start with the full window hidden and use Scout from its menu-bar panel until you need the Control Center.
+- **Start in menu bar** — launch with the full window hidden and use Scout from its compact panel until you need the Control Center.
 - **Scout directory** — read-only display. The app assumes `~/Scout` (the scout-plugin default).
 - **Linear workspace** — your Linear workspace slug (e.g. `acme-co`). Used to build Linear URLs when you click a `[[PROJ-123]]` wikilink or deep link in an action item. Leave blank to open `linear.app` without a workspace.
 - **Your name** — shown next to comments you add to action items. Defaults to `user`.

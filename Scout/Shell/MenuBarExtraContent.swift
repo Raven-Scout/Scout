@@ -6,6 +6,9 @@ import AppKit
 /// full Scout window optional.
 struct MenuBarExtraContent: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+    @State private var hoveredSlotKey: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,6 +30,19 @@ struct MenuBarExtraContent: View {
         .padding(16)
         .frame(width: 340)
         .background(DS.Paper.base)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : -5)
+        .onAppear {
+            state.refreshUrgentActionCount()
+            if reduceMotion {
+                appeared = true
+            } else {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                    appeared = true
+                }
+            }
+        }
+        .onDisappear { appeared = false }
     }
 
     private var header: some View {
@@ -45,6 +61,20 @@ struct MenuBarExtraContent: View {
                     .foregroundStyle(DS.Ink.p4)
             }
             Spacer()
+            if state.urgentActionCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                    Text("\(state.urgentActionCount) urgent")
+                }
+                .font(DS.sans(10.5, weight: .semibold))
+                .foregroundStyle(DS.Priority.urgent)
+                .padding(.horizontal, 7)
+                .frame(height: 24)
+                .background(Capsule().fill(DS.Priority.urgent.opacity(0.1)))
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+                .help("Urgent action items waiting for attention")
+                .accessibilityLabel("\(state.urgentActionCount) urgent action items")
+            }
             Button {
                 openMainWindow()
             } label: {
@@ -53,7 +83,9 @@ struct MenuBarExtraContent: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Open the full Scout window")
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.urgentActionCount)
     }
 
     private var statusCard: some View {
@@ -79,6 +111,8 @@ struct MenuBarExtraContent: View {
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(status.title). \(status.detail)")
     }
 
     private var upcomingSection: some View {
@@ -115,7 +149,8 @@ struct MenuBarExtraContent: View {
     }
 
     private func upcomingRow(_ run: UpcomingRun) -> some View {
-        HStack(spacing: 9) {
+        let isFiring = state.firingSlotKeys.contains(run.slotKey)
+        return HStack(spacing: 9) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.type.displayName)
                     .font(DS.sans(11.5, weight: .medium))
@@ -125,29 +160,60 @@ struct MenuBarExtraContent: View {
                     .foregroundStyle(DS.Ink.p3)
             }
             Spacer()
-            Button("Run now") {
+            Button {
                 Task { await state.fireNow(slotKey: run.slotKey, bypassBudget: false) }
+            } label: {
+                HStack(spacing: 5) {
+                    if isFiring {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                    Text(isFiring ? "Starting…" : "Run now")
+                }
             }
             .buttonStyle(.borderless)
             .font(DS.sans(10.5, weight: .medium))
             .foregroundStyle(DS.Accent.ink)
+            .disabled(isFiring)
+            .help(isFiring ? "This run is being started" : "Start \(run.type.displayName) now")
+            .accessibilityLabel(isFiring ? "Starting \(run.type.displayName)" : "Run \(run.type.displayName) now")
         }
+        .padding(.horizontal, 5)
         .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(hoveredSlotKey == run.slotKey ? DS.Accent.wash.opacity(0.45) : .clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoveredSlotKey = hovering ? run.slotKey : nil
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredSlotKey)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isFiring)
     }
 
     private var footer: some View {
         VStack(spacing: 0) {
             Rectangle().fill(DS.Rule.soft).frame(height: 0.5)
                 .padding(.bottom, 8)
-            HStack(spacing: 4) {
-                footerButton("Finder", systemImage: "folder") {
+            HStack(spacing: 6) {
+                footerButton("Open Scout folder", systemImage: "folder") {
                     NSWorkspace.shared.open(state.scoutDirectory)
                 }
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                        .frame(width: 26, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(DS.Ink.p3)
+                .help("Open Scout settings")
+                .accessibilityLabel("Open Scout settings")
                 footerButton("Install wake schedule", systemImage: "alarm") {
                     installWakeSchedule()
                 }
                 Spacer()
-                footerButton("Quit", systemImage: "power") {
+                footerButton("Quit Scout", systemImage: "power") {
                     NSApp.terminate(nil)
                 }
             }
@@ -156,11 +222,14 @@ struct MenuBarExtraContent: View {
 
     private func footerButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(DS.sans(10.5, weight: .medium))
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 26, height: 24)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(DS.Ink.p3)
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private var currentStatus: (title: String, detail: String, color: Color) {

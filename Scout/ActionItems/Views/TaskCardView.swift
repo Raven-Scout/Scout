@@ -14,6 +14,7 @@ struct TaskCardView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
+    let selection: Binding<Set<UUID>>?
     // `@MainActor` is load-bearing: with default-MainActor + approachable
     // concurrency, a non-isolated async closure type would carry the WriteOp
     // across an isolation boundary as a `sending` value, and the reabstraction
@@ -24,18 +25,21 @@ struct TaskCardView: View {
     @State private var inlineError: String?
     @State private var expanded: Bool
     @State private var showingQuickSnooze = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         task: ActionTask,
         kind: ActionSection.Kind,
         displayedDate: Date,
         scoutDirectory: URL,
+        selection: Binding<Set<UUID>>? = nil,
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
         self.kind = kind
         self.displayedDate = displayedDate
         self.scoutDirectory = scoutDirectory
+        self.selection = selection
         self.onOp = onOp
         // Urgent opens by default — its detail is what you want immediately.
         _expanded = State(initialValue: (task.snoozedFromKind ?? kind) == .urgent)
@@ -71,8 +75,11 @@ struct TaskCardView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
+                )
         )
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2)
@@ -82,6 +89,7 @@ struct TaskCardView: View {
                 .opacity(task.done ? 0.5 : 1)
         }
         .padding(.bottom, 10)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
     }
 
     // MARK: - Header (always visible, scannable)
@@ -89,6 +97,9 @@ struct TaskCardView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if selection != nil {
+                    selectionButton
+                }
                 if let prefix = task.shortPrefix {
                     Text("#\(prefix)")
                         .font(DS.mono(10.5, weight: .medium))
@@ -124,6 +135,7 @@ struct TaskCardView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
+        .help(expanded ? "Collapse action item" : "Expand action item")
     }
 
     private func toggle() { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
@@ -340,6 +352,9 @@ struct TaskCardView: View {
 
     private var nestedRow: some View {
         HStack(alignment: .top, spacing: 10) {
+            if selection != nil {
+                selectionButton
+            }
             Circle()
                 .fill(DS.priorityColor(effectiveKind))
                 .frame(width: 5, height: 5)
@@ -367,6 +382,32 @@ struct TaskCardView: View {
     }
 
     // MARK: - Helpers
+
+    private var isSelected: Bool {
+        selection?.wrappedValue.contains(task.id) == true
+    }
+
+    private var selectionButton: some View {
+        Button {
+            guard let selection else { return }
+            if isSelected {
+                selection.wrappedValue.remove(task.id)
+            } else {
+                selection.wrappedValue.insert(task.id)
+            }
+        } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(isSelected ? "Remove from copy selection" : "Add to copy selection")
+        .accessibilityLabel(isSelected ? "Selected for copying" : "Select for copying")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    }
 
     /// Dispatches a write through `onOp` and threads any failure into the
     /// inline error label.
