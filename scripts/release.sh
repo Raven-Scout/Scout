@@ -111,7 +111,7 @@ mkdir -p "$RELEASE_DIR"
 echo "→ Building Release configuration (universal, unsigned) at v$VERSION"
 # Stamp MARKETING_VERSION + CURRENT_PROJECT_VERSION into Info.plist so the
 # About panel and Settings → About both read the real release tag instead
-# of the xcodeproj default of `1.0 (1)`. Build number is the commit count
+# of relying on the xcodeproj development default. Build number is the commit count
 # on HEAD — monotonic and reproducible without a state file.
 #
 # Build with signing disabled and sign explicitly below: the build step never

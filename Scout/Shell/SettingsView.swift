@@ -258,10 +258,9 @@ struct SettingsView: View {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         #if DEBUG
-        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh;
-        // dev builds keep the xcodeproj default (1.0), which reads like a real
-        // release. Mark them as dev and show the build time so it's obvious
-        // which local build is running.
+        // Release builds get a stamped MARKETING_VERSION via scripts/release.sh.
+        // Mark dev builds and show the build time so it's obvious which local
+        // build is running even when its marketing version matches a release.
         return "\(v) (\(b)) · dev · \(buildTimestamp)"
         #else
         return "\(v) (\(b))"
