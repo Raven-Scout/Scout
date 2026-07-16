@@ -40,14 +40,14 @@ struct SectionView: View {
 
     // MARK: - Header
 
-    /// Section header styled after the handoff bundle: small glyph, uppercase
+    /// Section header styled after the handoff bundle: kind marker, uppercase
     /// sans label, monospaced count, optional hint on the right, sitting on a
     /// hairline rule.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(glyph)
-                .font(DS.sans(13))
-                .frame(width: 18, alignment: .leading)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            KindMarker(kind: section.kind, size: 14)
+                .frame(width: 15, alignment: .leading)
+                .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
             Text(section.title.uppercased())
                 .font(DS.sans(12, weight: .medium))
                 .tracking(0.05 * 12)   // letter-spacing: 0.04em → 0.48
@@ -69,10 +69,6 @@ struct SectionView: View {
         .overlay(alignment: .bottom) {
             EditorialRule()
         }
-    }
-
-    private var glyph: String {
-        section.emoji.isEmpty ? DS.kindGlyph(section.kind) : section.emoji
     }
 
     private var showCount: Bool {
@@ -145,8 +141,8 @@ struct SectionView: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(section.tasks) { t in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("✓")
-                            .font(DS.mono(11))
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(DS.Priority.done)
                         InlineMarkdownText(t.subject)
                             .font(DS.serif(13))

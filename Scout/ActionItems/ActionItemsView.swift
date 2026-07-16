@@ -418,7 +418,7 @@ struct ActionItemsView: View {
             // reset the scroll position.
             out.append(ActionSection(
                 id: ActionItemsParser.stableID("section|synthesized-done"),
-                emoji: "✅",
+                emoji: "",
                 title: "Recently Completed",
                 kind: .done,
                 tasks: collectedDone,
