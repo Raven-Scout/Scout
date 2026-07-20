@@ -200,10 +200,13 @@ struct TaskCardView: View {
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
         switch glyph {
-        case .github: return "arrow.triangle.pull"
-        case .linear: return "circle.grid.2x2"
-        case .slack:  return "bubble.left.and.bubble.right"
-        case .carry:  return "calendar"
+        case .github:   return "arrow.triangle.pull"
+        case .linear:   return "circle.grid.2x2"
+        case .slack:    return "bubble.left.and.bubble.right"
+        case .carry:    return "calendar"
+        case .entity:   return "doc.text"
+        case .crossRef: return "number.square"
+        case .plain:    return "tag"
         }
     }
 

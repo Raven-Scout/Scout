@@ -6,6 +6,8 @@ import Foundation
 struct TaskChip: Identifiable, Equatable {
     enum Glyph: Equatable {
         case github, linear, slack, carry
+        /// Sourced from a task's `- Refs:` sub-bullet.
+        case entity, crossRef, plain
     }
 
     /// A single click target behind a chip. A chip may summarise several links
@@ -85,6 +87,23 @@ struct TaskChip: Identifiable, Equatable {
                 label: slackLinks.count == 1 ? "Slack" : "\(slackLinks.count) Slack",
                 links: slackLinks
             ))
+        }
+
+        // Refs-block kinds: one chip per token, in source order. Entity chips
+        // open the KB note (obsidian URL); cross-ref and plain chips are inert
+        // (no link) — they resolve in-app or carry no target.
+        for link in task.deepLinks {
+            switch link {
+            case .entity:
+                let links = link.openURL.map { [Link(label: link.displayLabel, url: $0)] } ?? []
+                chips.append(TaskChip(glyph: .entity, label: link.displayLabel, links: links))
+            case .crossRef:
+                chips.append(TaskChip(glyph: .crossRef, label: link.displayLabel))
+            case .plainRef:
+                chips.append(TaskChip(glyph: .plain, label: link.displayLabel))
+            case .linear, .githubPR, .slackThread:
+                break   // handled by the grouped kinds above
+            }
         }
 
         if let carried = carriedLabel() {
