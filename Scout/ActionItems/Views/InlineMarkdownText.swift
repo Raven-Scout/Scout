@@ -50,13 +50,20 @@ struct InlineMarkdownText: View {
     private static var cache: [String: AttributedString] = [:]
     private static let cacheCap = 2000
 
-    private static func attributedString(for raw: String) -> AttributedString {
+    static func attributedString(for raw: String) -> AttributedString {
         if let hit = cache[raw] { return hit }
         // Linkify GitHub refs before wikilinks: the linkifier protects existing
         // markdown links / wikilinks, and rewriteWikilinks then leaves the
         // GitHub `[label](https://…)` links untouched.
         let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(raw))
-        let computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
+        // Inline-only + preserve whitespace: matches SummaryTab's call site,
+        // avoids block-level parsing (fewer throws) and the whitespace collapse
+        // that broke `_italic_` under the default `.full` syntax.
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        let computed = (try? AttributedString(markdown: rewritten, options: options))
+            ?? AttributedString(rewritten)
         if cache.count >= cacheCap {
             // Evict an arbitrary half rather than flushing everything: a full
             // clear at the cap means the very next render pass re-parses every
