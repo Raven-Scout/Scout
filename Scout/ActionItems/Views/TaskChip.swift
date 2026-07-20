@@ -42,8 +42,8 @@ struct TaskChip: Identifiable, Equatable {
         var chips: [TaskChip] = []
 
         let prs = task.deepLinks.compactMap { link -> (repo: String, link: Link)? in
-            if case .githubPR(let repo, _, _) = link {
-                return (repo, Link(label: link.displayLabel, url: link.openURL))
+            if case .githubPR(let repo, _, _) = link, let url = link.openURL {
+                return (repo, Link(label: link.displayLabel, url: url))
             }
             return nil
         }
@@ -64,7 +64,7 @@ struct TaskChip: Identifiable, Equatable {
         }
 
         let linearLinks = task.deepLinks.compactMap { link -> Link? in
-            if case .linear = link { return Link(label: link.displayLabel, url: link.openURL) }
+            if case .linear = link, let url = link.openURL { return Link(label: link.displayLabel, url: url) }
             return nil
         }
         if !linearLinks.isEmpty {
@@ -76,7 +76,7 @@ struct TaskChip: Identifiable, Equatable {
         }
 
         let slackLinks = task.deepLinks.compactMap { link -> Link? in
-            if case .slackThread = link { return Link(label: link.displayLabel, url: link.openURL) }
+            if case .slackThread = link, let url = link.openURL { return Link(label: link.displayLabel, url: url) }
             return nil
         }
         if !slackLinks.isEmpty {
