@@ -15,6 +15,27 @@ separately in different block."* ← this revision adopts that.
 track) and `scout-app` (rendering + Refs-block recognition + markdown fix +
 tests).
 
+> **Rebased on #78 / v0.10.0 (2026-07-20).** Re-anchored against merged PR #78
+> ("ring+dot marker + SF Symbol sweep"), which deleted `DS.kindGlyph`, added a
+> `KindMarker` view + `DS.kindSymbol(_:)`, and replaced the section-header
+> color-dots with `KindMarker`. Consequences for this spec, all verified
+> against `main` @ `4106a38`:
+> - **Priority on a task card is the left color stripe** (`DS.priorityColor`),
+>   unchanged by #78. Section *headers* now render their kind via `KindMarker`
+>   (not raw 🔴🟡🟢 dots) — but the daily-file **markdown** section headers
+>   still carry the 🔴/🟡/🟢 emoji the engine writes, so the engine-prompt rule
+>   "priority = section placement" is unaffected. Read "🔴/🟡/🟢 section headers"
+>   below as "the KindMarker-rendered section header + the card's left stripe".
+> - **No collision with #78's `KindMarker`.** The relation `TaskChip` (a model
+>   struct with its own `Glyph` enum) is unrelated to the `KindMarker` view;
+>   the two new chip kinds add `TaskChip.Glyph` cases only.
+> - **Task 5 anchors hold.** `TaskCardView.header` (89-116) and `nestedRow`
+>   (341-367) and the referenced `quickActions`/`trailingStatus`/`DS.serif`/
+>   `DS.Ink` symbols all still exist on v0.10.0; the nested row already renders
+>   `subject`+`body` verbatim. PR #79 ("copy + menu-bar quick control") is still
+>   **open/unmerged**, and `quickActions` already exists on `main` independent
+>   of it, so the plan does not depend on #79.
+
 ## Problem
 
 An action item is one markdown checkbox line — a text blob, canonical in the
@@ -82,8 +103,9 @@ Decisions:
     - Refs: [[people/alex]] · [[PROJ-3026]] · example-org/repo#7056 · #XREF
   ```
   The app renders this block as the relation chip row, never as prose.
-- **Priority:** conveyed by section placement (🔴/🟡/🟢 section headers) and the
-  app's left color stripe only. No inline priority emoji on task lines.
+- **Priority:** conveyed by section placement (the `KindMarker`-rendered
+  section header, post-#78) and the app's left color stripe only. No inline
+  priority emoji on task lines.
 - **`[#TAG]` continuity key:** stays at line-start (machine identity, parser
   already extracts it to `short_prefix`); hidden from the default view.
 - **Carry-forward normalization:** when the engine carries an open item into a

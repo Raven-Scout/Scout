@@ -7,6 +7,20 @@
 > app-side display cleaner**. The previous revision's `TaskDisplayText` tasks
 > are gone. Engine track ships first.
 
+> **Rebased on #78 / v0.10.0 (2026-07-20).** Re-anchored against merged PR #78
+> (`KindMarker` + SF Symbol sweep). Verified against `main` @ `4106a38`:
+> **(1)** Task 5's line anchors still hold — `TaskCardView.header` is 89-116,
+> `nestedRow` is 341-367, and `quickActions`/`trailingStatus`/`chevron`/
+> `DS.serif`/`DS.Ink` all exist; the nested sub-task row *already* renders
+> `subject`+`body` via `InlineMarkdownText`, so Task 5 Step 2 is effectively a
+> no-op. **(2)** PR #79 (copy + menu-bar quick control) is still **open**;
+> `quickActions` exists on `main` independent of it, so nothing here depends on
+> #79. **(3)** No collision between the relation `TaskChip` (model struct +
+> `Glyph` enum) and #78's `KindMarker` view. **(4)** Card priority stays the
+> left `DS.priorityColor` stripe; "section placement" priority reads via the
+> `KindMarker`-rendered section header now, but the daily-file markdown headers
+> still carry 🔴🟡🟢, so the engine prompt in Task 1 is unaffected.
+
 **Goal:** Make action items readable — a clean, short bold title with a smaller
 description below and machine ids demoted to relation chips — by fixing the
 *source* (the engine's authoring prompt: clean titles, refs in a dedicated
