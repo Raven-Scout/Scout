@@ -31,7 +31,7 @@
 - Produces: `ClaudeLauncher.DesktopMode.code(folder: URL)` — new enum case.
 - Produces: `static func makeDesktopURL(prompt: String, mode: DesktopMode) -> URL?` on `ClaudeLauncher` — pure builder consumed by `launchClaudeDesktop` and by Task 2's UI (indirectly via `Target.claudeDesktop`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `ScoutTests/ActionItems/ClaudeDesktopURLTests.swift`:
 
@@ -94,12 +94,12 @@ struct ClaudeDesktopURLTests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/ClaudeDesktopURLTests 2>&1 | grep -iE "error:|Test run with|TEST (SUCCEEDED|FAILED)"`
 Expected: FAIL — compile errors: `makeDesktopURL` is not a member of `ClaudeLauncher`, and `.code(folder:)` is not a member of `DesktopMode`.
 
-- [ ] **Step 3: Implement the enum case and builder**
+- [x] **Step 3: Implement the enum case and builder**
 
 In `Scout/Utilities/ClaudeLauncher.swift`:
 
@@ -164,17 +164,17 @@ paragraph reads:
 /// the main chat, or a Cowork task).
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/ClaudeDesktopURLTests 2>&1 | grep -iE "error:|Test run with|TEST (SUCCEEDED|FAILED)"`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Run the neighboring launcher suites to catch regressions**
+- [x] **Step 5: Run the neighboring launcher suites to catch regressions**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/CLILauncherTests -only-testing:ScoutTests/ClaudeLauncherPromptTests 2>&1 | grep -iE "error:|Test run with|TEST (SUCCEEDED|FAILED)"`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Scout/Utilities/ClaudeLauncher.swift ScoutTests/ActionItems/ClaudeDesktopURLTests.swift
@@ -193,7 +193,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `ClaudeLauncher.DesktopMode.code(folder: URL)` from Task 1 (via the existing `launch(_: ClaudeLauncher.Target)` helper at line 116, which is unchanged).
 
-- [ ] **Step 1: Replace `launchClaudeMenu` with the split control**
+- [x] **Step 1: Replace `launchClaudeMenu` with the split control**
 
 Replace the entire `launchClaudeMenu` computed property (lines 60–105) with:
 
@@ -270,17 +270,17 @@ Notes:
 - `cliMenuLabel` (lines 107–114) and `launch(_:)` (lines 116–123) are unchanged.
 - The hover cursor moves to the enclosing `HStack` so both segments share it.
 
-- [ ] **Step 2: Build**
+- [x] **Step 2: Build**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build -scheme Scout -destination 'platform=macOS' 2>&1 | grep -iE "error:|BUILD (SUCCEEDED|FAILED)"`
 Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 3: Run the launcher test suites**
+- [x] **Step 3: Run the launcher test suites**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/ClaudeDesktopURLTests -only-testing:ScoutTests/CLILauncherTests -only-testing:ScoutTests/ClaudeLauncherPromptTests 2>&1 | grep -iE "error:|Test run with|TEST (SUCCEEDED|FAILED)"`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Scout/ActionItems/Views/TaskActionsView.swift
@@ -295,12 +295,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the whole ScoutTests target**
+- [x] **Step 1: Run the whole ScoutTests target**
 
 Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests 2>&1 | grep -iE "error:|Test run with|TEST (SUCCEEDED|FAILED)"`
 Expected: TEST SUCCEEDED (no regressions).
 
-- [ ] **Step 2: Manual smoke check (needs Jordan or a GUI session)**
+- [x] **Step 2: Manual smoke check (needs Jordan or a GUI session)**
 
 With Claude Desktop installed: open Scout → Action Items → any task →
 click **Launch Claude Code**. Expect Claude Desktop to front on the Code
