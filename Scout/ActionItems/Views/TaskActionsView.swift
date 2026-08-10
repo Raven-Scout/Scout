@@ -57,48 +57,68 @@ struct TaskActionsView: View {
 
     // MARK: - Launch Claude menu
 
+    /// Split control: the primary button launches the default target (a new
+    /// Claude Code session in Claude Desktop); the chevron opens the full menu.
     private var launchClaudeMenu: some View {
-        Menu {
+        HStack(spacing: 0) {
             Button {
-                let config = CLIConfig(
-                    claudePathOverride: claudeCLIPath,
-                    terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
-                    customCommand: customLaunchCommand
-                )
-                launch(.cli(cwd: scoutDirectory, config: config))
+                launch(.claudeDesktop(.code(folder: scoutDirectory)))
             } label: {
-                Label(cliMenuLabel, systemImage: "terminal")
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10))
+                    Text("Launch Claude Code")
+                        .font(DS.sans(11.5, weight: .medium))
+                }
+                .foregroundStyle(DS.Ink.p3)
+                .padding(.leading, 10)
+                .padding(.trailing, 4)
+                .frame(height: 24)
+                .contentShape(Rectangle())
             }
-            Divider()
-            Button {
-                launch(.claudeDesktop(.chat))
+            .buttonStyle(.plainHit)
+
+            Menu {
+                Button {
+                    launch(.claudeDesktop(.code(folder: scoutDirectory)))
+                } label: {
+                    Label("Claude Desktop — new Claude Code session",
+                          systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Divider()
+                Button {
+                    let config = CLIConfig(
+                        claudePathOverride: claudeCLIPath,
+                        terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
+                        customCommand: customLaunchCommand
+                    )
+                    launch(.cli(cwd: scoutDirectory, config: config))
+                } label: {
+                    Label(cliMenuLabel, systemImage: "terminal")
+                }
+                Divider()
+                Button {
+                    launch(.claudeDesktop(.chat))
+                } label: {
+                    Label("Claude Desktop — new Chat", systemImage: "bubble.left.and.bubble.right")
+                }
+                Button {
+                    launch(.claudeDesktop(.cowork))
+                } label: {
+                    Label("Claude Desktop — new Cowork task", systemImage: "person.2")
+                }
             } label: {
-                Label("Claude Desktop — new Chat", systemImage: "bubble.left.and.bubble.right")
-            }
-            Button {
-                launch(.claudeDesktop(.cowork))
-            } label: {
-                Label("Claude Desktop — new Cowork task", systemImage: "person.2")
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 10))
-                Text("Launch Claude")
-                    .font(DS.sans(11.5, weight: .medium))
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8))
                     .foregroundStyle(DS.Ink.p4)
-                    .padding(.leading, 1)
+                    .padding(.horizontal, 6)
+                    .frame(height: 24)
+                    .contentShape(Rectangle())
             }
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .contentShape(Rectangle())
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
         .onHover { hovering in
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
