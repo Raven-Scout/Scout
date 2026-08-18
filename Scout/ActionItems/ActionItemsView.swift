@@ -83,7 +83,14 @@ struct ActionItemsView: View {
     @ViewBuilder
     private var listContent: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // Deliberately VStack, not LazyVStack (#83). A lazy stack estimates
+            // content height from the items it has realized; that estimate sets
+            // the scroll metrics, which set the visible rect, which decides what
+            // realizes next. Through this modifier chain the estimate never
+            // settles, so scrolling pins the main thread at 100% CPU forever. A
+            // day's action items is a bounded list the parser has already fully
+            // materialized, so laziness bought nothing here anyway.
+            VStack(alignment: .leading, spacing: 0) {
                 switch docService.state {
                 case .idle, .loading:
                     ProgressView()
