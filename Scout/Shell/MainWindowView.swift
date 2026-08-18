@@ -1,7 +1,12 @@
+import Foundation
 import SwiftUI
 
 struct MainWindowView: View {
-    @State private var selection: SidebarItem = .controlCenter
+    // Test-harness override (issue #83 repro): boot straight into a tab so
+    // hang trials are scriptable without UI automation. Inert when unset.
+    @State private var selection: SidebarItem =
+        ProcessInfo.processInfo.environment["SCOUT_TEST_BOOT_TAB"] == "actionItems"
+            ? .actionItems : .controlCenter
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
 

@@ -60,8 +60,16 @@ final class AppState: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
-        let scoutDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Scout")
+        // Test-harness override (issue #83 repro): point the app at a scratch
+        // vault so hang trials never touch the real one. Inert when unset.
+        let scoutDir: URL = {
+            if let override = ProcessInfo.processInfo.environment["SCOUT_TEST_VAULT"],
+               !override.isEmpty {
+                return URL(fileURLWithPath: override)
+            }
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Scout")
+        }()
         let actionItemsDir = scoutDir.appendingPathComponent("action-items")
         let watcher = FileWatcher()
         let runner = SystemProcessRunner()
