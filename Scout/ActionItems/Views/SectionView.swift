@@ -20,7 +20,17 @@ struct SectionView: View {
             case .digest:
                 DigestView(section: section)
             default:
-                LazyVStack(alignment: .leading, spacing: 0) {
+                // Deliberately VStack, not LazyVStack (#83, second occurrence).
+                // #84's four-way matrix cleared this inner stack on a 21-task
+                // file, but heavier real content re-enters the same
+                // non-convergent height-estimation loop — measured on macOS 26:
+                // scrolling a 298-task day wedges the lazy build at 100% CPU,
+                // never the VStack build. Sections are bounded and fully
+                // materialized by the parser, so laziness buys nothing here.
+                // The frame alignment below must stay .topLeading: a plain
+                // VStack hugs its widest child, so horizontal alignment is
+                // load-bearing where the width-greedy LazyVStack made it moot.
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(section.tasks) { task in
                         TaskCardView(
                             task: task,
@@ -31,7 +41,7 @@ struct SectionView: View {
                         )
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(.top, 12)
             }
         }
