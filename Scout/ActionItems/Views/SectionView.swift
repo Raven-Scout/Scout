@@ -20,7 +20,13 @@ struct SectionView: View {
             case .digest:
                 DigestView(section: section)
             default:
-                LazyVStack(alignment: .leading, spacing: 0) {
+                // Deliberately VStack, not LazyVStack (#83, second occurrence).
+                // Same non-convergent height-estimation loop #84 fixed one level
+                // up: with enough real task content this lazy stack re-enters the
+                // 100% CPU layout loop on macOS 26. Sections are bounded and the
+                // parser has already materialized every task, so laziness buys
+                // nothing here either.
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(section.tasks) { task in
                         TaskCardView(
                             task: task,
