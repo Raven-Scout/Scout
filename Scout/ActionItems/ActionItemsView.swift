@@ -82,6 +82,49 @@ struct ActionItemsView: View {
 
     @ViewBuilder
     private var listContent: some View {
+        ScrollViewReader { proxy in
+            scrollBody
+                .onAppear { startHarnessAutoscroll(proxy) }
+        }
+    }
+
+    /// Test-harness (issue #83 repro): sweep the visible rect across the lazy
+    /// content the way wheel scrolling does — varied targets and anchors, a mix
+    /// of animated sweeps and jumps. Inert unless SCOUT_TEST_AUTOSCROLL=1.
+    private func startHarnessAutoscroll(_ proxy: ScrollViewProxy) {
+        guard ProcessInfo.processInfo.environment["SCOUT_TEST_AUTOSCROLL"] == "1" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            var targets: [String] = []
+            if case .loaded(let doc) = docService.state {
+                targets = filteredSections(doc).map { "harness-sec-\($0.id)" }
+            }
+            var seq: [(String, UnitPoint)] = []
+            while seq.count < 50 {
+                seq.append(("harness-bottom", .bottom))
+                for (i, t) in targets.enumerated() {
+                    seq.append((t, i % 2 == 0 ? .top : .center))
+                    seq.append(("harness-bottom", .bottom))
+                    seq.append((t, .bottom))
+                    seq.append(("harness-top", .top))
+                }
+                if targets.isEmpty { seq.append(("harness-top", .top)) }
+            }
+            NSLog("SCOUT_TEST_AUTOSCROLL: starting %d moves", seq.count)
+            for (i, move) in seq.enumerated() {
+                if i % 2 == 0 {
+                    withAnimation(.linear(duration: 0.12)) { proxy.scrollTo(move.0, anchor: move.1) }
+                } else {
+                    proxy.scrollTo(move.0, anchor: move.1)
+                }
+                try? await Task.sleep(nanoseconds: 180_000_000)
+            }
+            NSLog("SCOUT_TEST_AUTOSCROLL: completed %d moves", seq.count)
+        }
+    }
+
+    @ViewBuilder
+    private var scrollBody: some View {
         ScrollView {
             // Deliberately VStack, not LazyVStack (#83). A lazy stack estimates
             // content height from the items it has realized; that estimate sets
@@ -119,6 +162,7 @@ struct ActionItemsView: View {
     @ViewBuilder
     private func loadedContent(_ doc: ActionItemsDocument) -> some View {
         dateline
+            .id("harness-top")
         if !doc.preamble.isEmpty {
             preamble(doc.preamble)
         }
@@ -129,7 +173,10 @@ struct ActionItemsView: View {
                 scoutDirectory: scoutDirectory,
                 onOp: handleOp
             )
+            .id("harness-sec-\(section.id)")
         }
+        Color.clear.frame(height: 1)
+            .id("harness-bottom")
     }
 
     // MARK: - Dateline (big serif header + meta on the right)

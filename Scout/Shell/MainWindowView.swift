@@ -33,6 +33,18 @@ struct MainWindowView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
         }
+        .onAppear {
+            // Test-harness (issue #83 repro): switch to Action Items after a
+            // delay, reproducing the sidebar-click transition (the click
+            // handler performs the same `selection =` write). Inert when unset.
+            if let raw = ProcessInfo.processInfo.environment["SCOUT_TEST_SWITCH_TAB_AFTER"],
+               let secs = Double(raw) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
+                    selection = .actionItems
+                }
+            }
+        }
     }
 
     @ViewBuilder
