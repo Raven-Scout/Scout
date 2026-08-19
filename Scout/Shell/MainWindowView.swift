@@ -42,6 +42,7 @@ struct MainWindowView: View {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
                     selection = .actionItems
+                    TestHarness.log("tab-switched to actionItems")
                 }
             }
         }
@@ -81,6 +82,23 @@ struct MainWindowView: View {
                 .environmentObject(appState.knowledgeBaseWriterBox)
         case .settings:
             SettingsView()
+        }
+    }
+}
+
+/// Test-harness (issue #83 repro): marker-file logging, since the unified log
+/// is not readable in this environment. Inert unless SCOUT_TEST_LOG is set.
+enum TestHarness {
+    static func log(_ message: String) {
+        guard let path = ProcessInfo.processInfo.environment["SCOUT_TEST_LOG"],
+              !path.isEmpty else { return }
+        let line = "\(Date()) \(message)\n"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            defer { try? handle.close() }
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+        } else {
+            try? line.write(toFile: path, atomically: true, encoding: .utf8)
         }
     }
 }

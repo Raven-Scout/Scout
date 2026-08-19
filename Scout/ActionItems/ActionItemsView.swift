@@ -110,7 +110,7 @@ struct ActionItemsView: View {
                 }
                 if targets.isEmpty { seq.append(("harness-top", .top)) }
             }
-            NSLog("SCOUT_TEST_AUTOSCROLL: starting %d moves", seq.count)
+            TestHarness.log("autoscroll starting: \(seq.count) moves, \(targets.count) section targets")
             for (i, move) in seq.enumerated() {
                 if i % 2 == 0 {
                     withAnimation(.linear(duration: 0.12)) { proxy.scrollTo(move.0, anchor: move.1) }
@@ -119,7 +119,7 @@ struct ActionItemsView: View {
                 }
                 try? await Task.sleep(nanoseconds: 180_000_000)
             }
-            NSLog("SCOUT_TEST_AUTOSCROLL: completed %d moves", seq.count)
+            TestHarness.log("autoscroll completed: \(seq.count) moves")
         }
     }
 
