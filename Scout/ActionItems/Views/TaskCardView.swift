@@ -87,7 +87,11 @@ struct TaskCardView: View {
     // MARK: - Header (always visible, scannable)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // Computed once per body pass — `chips` walks the task's deep links and
+        // formats the carried-from date, so gating and rendering off two
+        // separate evaluations doubles that work for every card.
+        let chips = self.chips
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let prefix = task.shortPrefix {
                     Text("#\(prefix)")
@@ -108,7 +112,7 @@ struct TaskCardView: View {
                 chevron
             }
             if !chips.isEmpty {
-                chipRow
+                chipRow(chips)
             }
         }
         .padding(14)
@@ -137,7 +141,7 @@ struct TaskCardView: View {
         )
     }
 
-    private var chipRow: some View {
+    private func chipRow(_ chips: [TaskChip]) -> some View {
         HStack(spacing: 6) {
             ForEach(chips) { chip in
                 chipView(for: chip)
@@ -395,8 +399,17 @@ struct TaskCardView: View {
         }
     }
 
+    /// Shared "MMM d" formatter — DateFormatter init is expensive, and this
+    /// runs for every card with a snooze pill or carried-from chip in a render
+    /// pass. MainActor-bound (module default isolation), so sharing is safe.
+    private static let shortDateFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d"
+        fmt.timeZone = .current
+        return fmt
+    }()
+
     private func dateShort(_ d: Date) -> String {
-        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"; fmt.timeZone = .current
-        return fmt.string(from: d)
+        Self.shortDateFormatter.string(from: d)
     }
 }
