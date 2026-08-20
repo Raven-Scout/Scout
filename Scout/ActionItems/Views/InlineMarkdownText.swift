@@ -57,18 +57,33 @@ struct InlineMarkdownText: View {
         // GitHub `[label](https://…)` links untouched.
         let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(raw))
         let computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
-        if cache.count >= cacheCap { cache.removeAll(keepingCapacity: true) }
+        if cache.count >= cacheCap {
+            // Evict an arbitrary half rather than flushing everything: a full
+            // clear at the cap means the very next render pass re-parses every
+            // visible string — the stall this cache exists to prevent.
+            for key in Array(cache.keys.prefix(cacheCap / 2)) {
+                cache.removeValue(forKey: key)
+            }
+        }
         cache[raw] = computed
         return computed
     }
 
+    /// `[[target]]` / `[[target|alias]]` — compiled once; rewriteWikilinks runs
+    /// for every cache miss and regex compilation dominates its cost.
+    private static let wikilinkRe = try! NSRegularExpression(
+        pattern: #"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]"#
+    )
+
+    /// Linear issue key, e.g. `PROJ-1234`.
+    private static let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
+
     /// Replace ``[[target]]`` / ``[[target|alias]]`` with ``[label](scout-wiki://target)``
     /// so AttributedString(markdown:) renders them as clickable links we intercept.
     private static func rewriteWikilinks(_ s: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]"#) else { return s }
         let ns = s as NSString
         var result = s
-        let matches = re.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
+        let matches = wikilinkRe.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
         for m in matches {
             let target = ns.substring(with: m.range(at: 1))
             let label  = m.range(at: 2).location == NSNotFound ? target : ns.substring(with: m.range(at: 2))
@@ -84,8 +99,7 @@ struct InlineMarkdownText: View {
         // In-app navigation first (Knowledge Base). If the handler resolves the
         // target it returns true and we stop; otherwise fall back to Linear/Obsidian.
         if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
-        let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
-        if linearRe.firstMatch(in: decoded, range: NSRange(location: 0, length: (decoded as NSString).length)) != nil {
+        if Self.linearRe.firstMatch(in: decoded, range: NSRange(location: 0, length: (decoded as NSString).length)) != nil {
             let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
             let urlString = workspace.isEmpty
                 ? "https://linear.app/"
