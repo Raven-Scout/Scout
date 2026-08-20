@@ -14,7 +14,17 @@ struct PerFileListView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            // Deliberately VStack, not LazyVStack (#83, fourth occurrence).
+            // Mirrors ProposalsView's swap: the same width-constraining frame
+            // chain re-enters the non-convergent height-estimation loop fixed
+            // in ActionItemsView (#84) and SectionView (#86), and wishlist /
+            // research items are unbounded markdown — PerFileDocumentService
+            // parses every .md in the folder with no cap and materializes all
+            // of it up front, so laziness buys nothing. The .leading alignment
+            // on the maxWidth-920 frame below is now load-bearing: a plain
+            // VStack hugs its widest child, where the width-greedy LazyVStack
+            // made the horizontal alignment moot.
+            VStack(alignment: .leading, spacing: 16) {
                 header
                 content
             }
