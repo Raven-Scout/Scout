@@ -91,13 +91,8 @@ struct TaskCardView: View {
         // formats the carried-from date, so gating and rendering off two
         // separate evaluations doubles that work for every card.
         let chips = self.chips
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if let prefix = task.shortPrefix {
-                    Text("#\(prefix)")
-                        .font(DS.mono(10.5, weight: .medium))
-                        .foregroundStyle(DS.Ink.p4)
-                }
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
@@ -110,6 +105,16 @@ struct TaskCardView: View {
                 if !expanded { quickActions }
                 trailingStatus
                 chevron
+            }
+            if !expanded && !task.body.isEmpty {
+                InlineMarkdownText(task.body)
+                    .font(DS.serif(13))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggle() }
             }
             if !chips.isEmpty {
                 chipRow(chips)
