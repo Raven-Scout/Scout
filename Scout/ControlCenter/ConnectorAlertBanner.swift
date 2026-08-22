@@ -25,7 +25,7 @@ struct ConnectorAlertBanner: View {
             showPopover = true
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("⚠").font(DS.mono(13))
+                Image(systemName: "exclamationmark.triangle").font(DS.mono(13))
                 Text(summary(for: head, moreCount: more))
                     .font(DS.mono(12))
                     .lineLimit(1)

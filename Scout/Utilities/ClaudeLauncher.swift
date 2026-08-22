@@ -2,10 +2,11 @@ import Foundation
 import AppKit
 
 /// Launches an interactive Claude session seeded with the context of an
-/// action item. Two targets are supported — a Claude Code CLI session
+/// action item. Two target families are supported — a Claude Code CLI session
 /// (target is configurable in Settings: Auto prefers Ghostty/tmux and falls
 /// back to Terminal.app; Terminal.app, iTerm2, and a custom command are also
-/// supported), or Claude Desktop's main chat.
+/// supported), or Claude Desktop (a new Claude Code session in the Code tab,
+/// the main chat, or a Cowork task).
 ///
 /// The full action-item context is always copied to the clipboard so the
 /// user can paste it with Cmd+V as a reliable fallback if the platform's
@@ -20,6 +21,11 @@ enum ClaudeLauncher {
         /// currently mountable, and appends to any existing composer text
         /// rather than replacing it.
         case cowork
+        /// `claude://code/new` — new Claude Code session in the Code tab,
+        /// prefilled with the prompt. `folder` becomes the session's working
+        /// directory; Claude Desktop shows a one-time trust confirmation for
+        /// folders adopted via deep link.
+        case code(folder: URL)
     }
 
     enum Target {
@@ -464,22 +470,30 @@ enum ClaudeLauncher {
         ) != nil else {
             throw LaunchError.claudeDesktopNotInstalled
         }
-
-        var components = URLComponents()
-        components.scheme = "claude"
-        switch mode {
-        case .chat:
-            components.host = "claude.ai"
-            components.path = "/new"
-        case .cowork:
-            components.host = "cowork"
-            components.path = "/new"
-        }
-        components.queryItems = [URLQueryItem(name: "q", value: prompt)]
-
-        guard let url = components.url else {
+        guard let url = makeDesktopURL(prompt: prompt, mode: mode) else {
             throw LaunchError.urlBuildFailed
         }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Build the claude:// deep link for a desktop mode. Pure and unit-tested;
+    /// URLComponents handles percent-encoding of the prompt and folder path.
+    /// Routes documented at support.claude.com article 14729294.
+    static func makeDesktopURL(prompt: String, mode: DesktopMode) -> URL? {
+        var components = URLComponents()
+        components.scheme = "claude"
+        components.path = "/new"
+        components.queryItems = [URLQueryItem(name: "q", value: prompt)]
+        switch mode {
+        case .chat:
+            components.host = "claude.ai"
+        case .cowork:
+            components.host = "cowork"
+        case .code(let folder):
+            components.host = "code"
+            components.queryItems?.append(
+                URLQueryItem(name: "folder", value: folder.path))
+        }
+        return components.url
     }
 }
