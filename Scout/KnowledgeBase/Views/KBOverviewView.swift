@@ -33,8 +33,6 @@ struct KBOverviewView: View {
             }
             return nil
         }
-        let kbGraph = service.fullGraph()
-
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -70,20 +68,7 @@ struct KBOverviewView: View {
                     }
                 }
 
-                if kbGraph.edges.count > 0 {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("MAP").font(DS.sans(10, weight: .semibold)).tracking(0.6)
-                            .foregroundStyle(DS.Ink.p4)
-                        KBGraphCanvas(graph: kbGraph, onNavigate: onNavigate,
-                                      labelMinDegree: 3, initialScale: 2.0)
-                            .frame(height: 460)
-                            .frame(maxWidth: 1100)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Paper.sunk.opacity(0.4)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                        KBGraphLegend(groups: Array(Set(kbGraph.nodes.map(\.group)))
-                            .sorted { $0.label < $1.label })
-                    }
-                }
+                KBMapView(service: service, onOpen: onNavigate)
 
                 Text("Pick a note from the tree, or search above. Click a person, project or `[[link]]` to jump between connected notes.")
                     .font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
