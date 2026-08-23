@@ -43,8 +43,19 @@ struct KBMapView: View {
             Text("MAP").font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
             searchField
             breadcrumb
-            canvas
-            KBGraphLegend(groups: Array(Set(shownGraph.nodes.map(\.group))).sorted { $0.label < $1.label })
+            filterBar
+            if baseGraph.nodes.isEmpty {
+                // Vault-empty (no markdown notes at all) — distinct from
+                // "filters removed everything" below.
+                vaultEmptyState
+                capCaption
+            } else if shownGraph.nodes.isEmpty {
+                noMatchState
+            } else {
+                canvas
+                capCaption
+                KBGraphLegend(groups: Array(Set(shownGraph.nodes.map(\.group))).sorted { $0.label < $1.label })
+            }
         }
     }
 
@@ -124,6 +135,64 @@ struct KBMapView: View {
     /// different equal-size selections as the same view).
     private var typesKey: String {
         activeTypes.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    // MARK: filters
+
+    private var filterBar: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(KBEntityGroup.allCases, id: \.self) { g in
+                let on = activeTypes.contains(g)
+                Button {
+                    if on { activeTypes.remove(g) } else { activeTypes.insert(g) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Circle().fill(g.color).frame(width: 7, height: 7)
+                        Text(g.label).font(DS.sans(10.5))
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(on ? DS.Accent.wash : DS.Paper.sunk))
+                    .overlay(Capsule().strokeBorder(on ? DS.Accent.fill.opacity(0.5) : .clear, lineWidth: 1))
+                    .foregroundStyle(on ? DS.Ink.p1 : DS.Ink.p4)
+                }.buttonStyle(.plain)
+            }
+            Toggle("Hide orphans", isOn: $hideOrphans)
+                .toggleStyle(.checkbox).font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+            HStack(spacing: 4) {
+                Text("min links").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)
+                Stepper(value: $minDegree, in: 0...10) {
+                    Text("\(minDegree)").font(DS.mono(11)).foregroundStyle(DS.Ink.p2)
+                }.labelsHidden()
+            }
+        }
+        .frame(maxWidth: 1100, alignment: .leading)
+    }
+
+    private var capCaption: some View {
+        Text("showing \(shownGraph.nodes.count) of \(service.graphStats().notes) notes")
+            .font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
+    }
+
+    private var vaultEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+            Text("No notes yet").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+            Text("Notes added to the knowledge base will appear here as a map.")
+                .font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
+        }
+        .frame(maxWidth: .infinity).frame(height: 200)
+    }
+
+    private var noMatchState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle").font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+            Text("No notes match these filters").font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+            Button("Reset filters") {
+                activeTypes = Set(KBEntityGroup.allCases); hideOrphans = false; minDegree = 0
+            }.buttonStyle(.plain).font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Accent.ink)
+        }
+        .frame(maxWidth: .infinity).frame(height: 200)
     }
 
     // MARK: actions
