@@ -12,6 +12,8 @@ final class AppState: ObservableObject {
     /// `scoutctl schedule fire-now` invocation throws or exits non-zero;
     /// cleared on the next successful fire (issue #45 — previously swallowed).
     @Published var fireNowError: String? = nil
+    @Published private(set) var firingSlotKeys: Set<String> = []
+    @Published private(set) var urgentActionCount: Int = 0
 
     // Existing Control Center services
     let fileWatcher: FileWatcher
@@ -235,6 +237,7 @@ final class AppState: ObservableObject {
                 researchDoc.load()
             }
             await self?.recomputeMenuStatus()
+            self?.refreshUrgentActionCount()
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
@@ -266,6 +269,8 @@ final class AppState: ObservableObject {
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
+        guard firingSlotKeys.insert(slotKey).inserted else { return }
+        defer { firingSlotKeys.remove(slotKey) }
         let args = Self.fireNowArguments(
             argumentsPrefix: scoutctlArgumentsPrefix,
             slotKey: slotKey,
@@ -290,6 +295,32 @@ final class AppState: ObservableObject {
             fireNowError = "Run now failed: \(error.localizedDescription)"
         }
         await scheduleService.refresh()
+    }
+
+    func refreshUrgentActionCount() {
+        let url = actionItemsDirectory
+            .appendingPathComponent("action-items-\(ActionItemsDay.stem(for: ActionItemsDay.today())).md")
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8),
+              let document = try? ActionItemsParser.parse(
+                text: text,
+                sourceURL: url,
+                sourceBytes: data.count
+              ) else {
+            urgentActionCount = 0
+            return
+        }
+        urgentActionCount = Self.urgentOpenCount(in: document)
+    }
+
+    nonisolated static func urgentOpenCount(in document: ActionItemsDocument) -> Int {
+        document.sections.reduce(into: 0) { count, section in
+            count += section.tasks.filter { task in
+                !task.done
+                    && task.snoozedUntil == nil
+                    && (task.snoozedFromKind ?? section.kind) == .urgent
+            }.count
+        }
     }
 
     /// Build the argv for `scoutctl schedule fire-now`. argv[0] must be the
