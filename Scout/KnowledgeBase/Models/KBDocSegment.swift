@@ -103,8 +103,14 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
             // List item (one line each).
             if KBMarkdownLexer.listItem(line) != nil { segs.append(make(.list, i, i)); i += 1; continue }
 
-            // Paragraph: consecutive "normal" lines.
-            var j = i
+            // Paragraph: consecutive "normal" lines. `j` starts at `i + 1`:
+            // every other block kind has already been ruled out above, so line
+            // `i` belongs to this paragraph by construction and the loop only
+            // has to find where the paragraph *ends*. Starting at `i` instead
+            // lets a line that opens with `#` but isn't a valid heading (a bare
+            // `#TAG`, a `#123` ref, 7+ hashes) break on its own first line,
+            // leaving `j == i` and forming the empty range `i...(i-1)` below.
+            var j = i + 1
             while j < lines.count {
                 let lt = lines[j].trimmingCharacters(in: .whitespaces)
                 if lt.isEmpty || lt.hasPrefix("#") || lt.hasPrefix(">") || lt.hasPrefix("```")
@@ -114,7 +120,7 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
                 if lt.contains("|"), j + 1 < lines.count, KBMarkdownLexer.isTableSeparator(lines[j + 1]) { break }
                 j += 1
             }
-            segs.append(make(.paragraph, i, j - 1)); i = max(j, i + 1)
+            segs.append(make(.paragraph, i, j - 1)); i = j
         }
         return segs
     }
