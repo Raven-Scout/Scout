@@ -18,10 +18,25 @@ extension EnvironmentValues {
     }
 }
 
+/// Optional handler for `[#TAG]` chip clicks. Set by the Knowledge Base to run
+/// a tag search; nil everywhere else, where a tag renders as a chip but stays
+/// inert rather than opening something unexpected.
+private struct KBTagHandlerKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var kbTagHandler: ((String) -> Void)? {
+        get { self[KBTagHandlerKey.self] }
+        set { self[KBTagHandlerKey.self] = newValue }
+    }
+}
+
 struct InlineMarkdownText: View {
     let raw: String
     private let attributed: AttributedString
     @Environment(\.kbWikilinkHandler) private var kbWikilinkHandler
+    @Environment(\.kbTagHandler) private var kbTagHandler
 
     init(_ raw: String) {
         self.raw = raw
@@ -32,13 +47,27 @@ struct InlineMarkdownText: View {
         Text(attributed)
             .environment(\.openURL, OpenURLAction { url in
                 if url.scheme == "scout-wiki" {
-                    let host = url.host ?? ""
-                    let target = host.isEmpty ? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) : host
-                    return openWikilink(target: target)
+                    return openWikilink(target: Self.target(of: url))
+                }
+                if url.scheme == KBTag.scheme {
+                    // No handler (outside the KB) → the chip is inert rather
+                    // than falling through to NSWorkspace, which would try to
+                    // open a scout-tag:// URL with no registered app.
+                    guard let kbTagHandler else { return .discarded }
+                    kbTagHandler(Self.target(of: url))
+                    return .handled
                 }
                 NSWorkspace.shared.open(url)
                 return .handled
             })
+    }
+
+    /// The payload of a `scheme://payload` URL, tolerating the parse landing in
+    /// `host` or in `path` depending on the characters involved.
+    private static func target(of url: URL) -> String {
+        let host = url.host ?? ""
+        let raw = host.isEmpty ? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) : host
+        return raw.removingPercentEncoding ?? raw
     }
 
     // MARK: - Memoization
@@ -50,13 +79,20 @@ struct InlineMarkdownText: View {
     private static var cache: [String: AttributedString] = [:]
     private static let cacheCap = 2000
 
-    private static func attributedString(for raw: String) -> AttributedString {
+    /// Internal rather than private so tests can assert on the rendered runs —
+    /// that a tag survives the markdown parse as a `scout-tag://` link and
+    /// carries the chip attributes. Pure function; no other caller.
+    static func attributedString(for raw: String) -> AttributedString {
         if let hit = cache[raw] { return hit }
-        // Linkify GitHub refs before wikilinks: the linkifier protects existing
-        // markdown links / wikilinks, and rewriteWikilinks then leaves the
-        // GitHub `[label](https://…)` links untouched.
-        let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(raw))
-        let computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
+        // Tags first: once a tag is a `[label](scout-tag://…)` link, the GitHub
+        // linkifier's protected ranges cover it. The two can't collide on the
+        // same token anyway — a tag needs a letter, a GitHub ref is all digits
+        // — but ordering it first also keeps a bracketed `[#TAG]` from looking
+        // like a link label to the later passes. Wikilinks last: it only ever
+        // touches `[[…]]`, which neither of the others emits.
+        let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(KBTag.linkify(raw)))
+        var computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
+        styleTagChips(&computed)
         if cache.count >= cacheCap {
             // Evict an arbitrary half rather than flushing everything: a full
             // clear at the cap means the very next render pass re-parses every
@@ -67,6 +103,30 @@ struct InlineMarkdownText: View {
         }
         cache[raw] = computed
         return computed
+    }
+
+    /// Give every `scout-tag://` run the chip treatment: accent ink on an
+    /// accent wash, in a slightly smaller monospace face so a tag reads as an
+    /// object rather than prose.
+    ///
+    /// Note: SwiftUI's inline `backgroundColor` paints a square block — `Text`
+    /// has no corner-radius attribute for a run, and a real rounded capsule
+    /// would mean leaving `Text` for a wrapping layout (which breaks prose
+    /// flow) or baking each chip into an image (which can't carry the link).
+    /// The hair spaces `KBTag` pads the label with supply the inset.
+    private static func styleTagChips(_ s: inout AttributedString) {
+        // Collect first, then mutate. Runs are delimited by attribute equality,
+        // so writing attributes redraws the run boundaries — mutating `s` while
+        // iterating `s.runs` would be walking a collection as it reshapes.
+        let ranges = s.runs.filter { $0.link?.scheme == KBTag.scheme }.map(\.range)
+        for range in ranges {
+            s[range].font = DS.mono(11.5, weight: .medium)
+            s[range].foregroundColor = DS.Accent.ink
+            s[range].backgroundColor = DS.Accent.wash
+            // Markdown links default to underlined accent-blue; a chip is
+            // already visibly clickable, so drop the underline.
+            s[range].underlineStyle = nil
+        }
     }
 
     /// `[[target]]` / `[[target|alias]]` — compiled once; rewriteWikilinks runs
@@ -94,8 +154,8 @@ struct InlineMarkdownText: View {
         return result
     }
 
-    private func openWikilink(target: String) -> OpenURLAction.Result {
-        let decoded = target.removingPercentEncoding ?? target
+    /// `target` arrives already percent-decoded from `target(of:)`.
+    private func openWikilink(target decoded: String) -> OpenURLAction.Result {
         // In-app navigation first (Knowledge Base). If the handler resolves the
         // target it returns true and we stop; otherwise fall back to Linear/Obsidian.
         if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
