@@ -358,17 +358,31 @@ final class KnowledgeBaseService: ObservableObject {
     func searchContent(_ query: String) -> [KBSearchHit] {
         let q = query.lowercased()
         guard q.count >= 2 else { return [] }
+
+        // A query that is exactly a tag (typed, or arrived from a chip click)
+        // matches tag occurrences, not substrings — otherwise `#KAIREL` also
+        // reports every `#KAIRELX` note, and tags are short enough that the
+        // collisions are common.
+        let tag = KBTag.normalized(query.trimmingCharacters(in: .whitespaces))
+        let matches: (String) -> Bool = if let tag {
+            { KBTag.tags(in: $0).contains(tag) }
+        } else {
+            { $0.lowercased().contains(q) }
+        }
+
         var hits: [KBSearchHit] = []
         for file in tree.flatMap(\.allFiles) where file.ext == "md" {
-            let nameMatch = file.displayName.lowercased().contains(q)
-                || file.relativePath.lowercased().contains(q)
+            // A tag query is about content, so don't let a filename that merely
+            // contains the letters masquerade as a hit.
+            let nameMatch = tag == nil && (file.displayName.lowercased().contains(q)
+                || file.relativePath.lowercased().contains(q))
             guard let text = index.textByFile[file.relativePath] else {
                 if nameMatch {
                     hits.append(KBSearchHit(path: file.relativePath, name: file.displayName, snippet: ""))
                 }
                 continue
             }
-            if let line = text.components(separatedBy: "\n").first(where: { $0.lowercased().contains(q) }) {
+            if let line = text.components(separatedBy: "\n").first(where: matches) {
                 hits.append(KBSearchHit(path: file.relativePath, name: file.displayName,
                                         snippet: line.trimmingCharacters(in: .whitespaces).prefix(120).description))
             } else if nameMatch {

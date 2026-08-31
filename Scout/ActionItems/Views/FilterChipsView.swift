@@ -11,7 +11,7 @@ struct ActionItemsFilter: Equatable {
 }
 
 /// Editorial filter bar. Left: segmented All/Open/Done/Snoozed.
-/// Right: flat chip filters for section kinds, each with a priority dot
+/// Right: flat chip filters for section kinds, each with a kind marker
 /// and a small count badge.
 struct FilterChipsView: View {
     @Binding var filter: ActionItemsFilter
@@ -82,7 +82,7 @@ struct FilterChipsView: View {
     private var allChip: some View {
         chipButton(
             label: "All",
-            dot: nil,
+            kind: nil,
             count: nil,
             selected: filter.kinds.isEmpty,
             action: { filter.kinds = [] }
@@ -94,7 +94,7 @@ struct FilterChipsView: View {
         let selected = filter.kinds.contains(kind)
         return chipButton(
             label: label,
-            dot: DS.priorityColor(kind),
+            kind: kind,
             count: nil,
             selected: selected,
             action: { toggle(kind) }
@@ -109,22 +109,15 @@ struct FilterChipsView: View {
     @ViewBuilder
     private func chipButton(
         label: String,
-        dot: Color?,
+        kind: ActionSection.Kind?,
         count: Int?,
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if let dot {
-                    Circle()
-                        .fill(dot)
-                        .frame(width: 8, height: 8)
-                        .overlay(
-                            Circle().strokeBorder(DS.Paper.base.opacity(0.8), lineWidth: 2)
-                                .frame(width: 12, height: 12)
-                        )
-                        .frame(width: 8, height: 8)
+                if let kind {
+                    KindMarker(kind: kind, size: 12)
                 }
                 Text(label)
                     .font(DS.sans(12, weight: .medium))
