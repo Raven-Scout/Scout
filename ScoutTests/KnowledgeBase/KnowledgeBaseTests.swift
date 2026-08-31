@@ -364,6 +364,93 @@ struct KBDocSegmentTests {
         #expect(segs[0].kind == .paragraph)
         #expect(segs[0].lineStart == 0 && segs[0].lineEnd == 2)
     }
+
+    // MARK: - `#` lines that are not valid headings
+
+    /// A line opening with `#` that `KBMarkdownLexer.heading` rejects (no space
+    /// after the hashes, 7+ hashes, a bare `#`) falls through to the paragraph
+    /// branch. The paragraph loop breaks on any `#` prefix, so it used to break
+    /// on its own first line, leaving the segment range `i...(i-1)` — an empty
+    /// ClosedRange, which traps: "Range requires lowerBound <= upperBound".
+    /// That crashed the whole app from `KBEditableView.body` (EXC_BREAKPOINT),
+    /// and Scout's own notes routinely open a paragraph with `#647` or `#SLBETA`.
+    @Test(arguments: [
+        "#projects/scout",      // Obsidian-style nested tag
+        "#SLBETA",              // bare [#TAG] mnemonic
+        "#647 is the ref",      // paragraph opening with a GitHub ref
+        "#nospace",
+        "#",                    // bare hash
+        "##",                   // hashes with no text
+        "####### TooDeep",      // 7 hashes — beyond h6
+        "#!/usr/bin/env bash",
+        "#[[wikilink]]",
+    ])
+    func hashLineThatIsNotAHeadingParsesAsParagraph(_ line: String) {
+        let segs = KBDocSegment.segments(from: "# Title\n\n\(line)\n\nBody.\n")
+
+        // Parsed at all (pre-fix this trapped) and kept verbatim as a paragraph.
+        let para = segs.first { $0.kind == .paragraph && $0.raw == line }
+        #expect(para != nil, "\(line.debugDescription) should be a paragraph")
+        #expect(para?.lineStart == 2 && para?.lineEnd == 2)
+
+        // It must NOT be mistaken for a heading, and the rest of the document
+        // still parses — a swallowed or duplicated line would corrupt the
+        // line ranges that in-place editing splices against.
+        #expect(!segs.contains { $0.kind == .heading(1) && $0.lineStart == 2 })
+        #expect(segs.contains { $0.kind == .heading(1) && $0.lineStart == 0 })
+        #expect(segs.contains { $0.kind == .paragraph && $0.raw == "Body." })
+    }
+
+    /// Consecutive non-heading `#` lines each become their own paragraph, and
+    /// every line is covered exactly once with no gap or overlap.
+    @Test func consecutiveHashLinesEachBecomeASegment() {
+        let doc = "#TAGONE\n#TAGTWO\n#TAGTHREE"
+        let segs = KBDocSegment.segments(from: doc)
+        #expect(segs.count == 3)
+        #expect(segs.map(\.raw) == ["#TAGONE", "#TAGTWO", "#TAGTHREE"])
+        #expect(segs.map(\.lineStart) == [0, 1, 2])
+        #expect(segs.allSatisfy { $0.lineStart == $0.lineEnd })
+    }
+
+    /// A `#` line closes the paragraph *before* it (the boundary the paragraph
+    /// loop's `#` check enforces) and opens a new one. Lines after it are a
+    /// lazy continuation of that new paragraph, which is what CommonMark does
+    /// with a `#` that isn't a valid ATX heading.
+    @Test func hashLineEndsThePrecedingParagraphAndOpensANewOne() {
+        let segs = KBDocSegment.segments(from: "prose line\n#SLBETA\nmore prose")
+        #expect(segs.map(\.raw) == ["prose line", "#SLBETA\nmore prose"])
+        #expect(segs.map(\.lineStart) == [0, 1])
+        #expect(segs.map(\.lineEnd) == [0, 2])
+    }
+
+    /// Every segment's `raw` must round-trip against the source lines it claims,
+    /// for arbitrary line shapes. This is the invariant in-place editing depends
+    /// on: `replaceLines(start:end:)` splices by index, so a segment whose range
+    /// disagrees with its text would write the edit over the wrong lines.
+    @Test func segmentRangesAlwaysMatchTheirSourceLines() {
+        let shapes = [
+            "# H", "###### H6", "####### h7", "#nospace", "#", "##", "#TAG",
+            "> quote", ">nospace", "```", "```swift", "- item", "-nospace",
+            "1. item", "* item", "---", "***", "___", "| a | b |", "|",
+            "plain", "  indented", "", "~~~", "<!-- c -->", "[#TAG] note",
+        ]
+        // Every adjacent pair, so each shape is exercised as both a block
+        // opener and a follower.
+        for a in shapes {
+            for b in shapes {
+                let doc = "\(a)\n\(b)"
+                let lines = doc.components(separatedBy: "\n")
+                for seg in KBDocSegment.segments(from: doc) {
+                    #expect(seg.lineStart <= seg.lineEnd,
+                            "empty range for \(doc.debugDescription)")
+                    #expect(seg.lineStart >= 0 && seg.lineEnd < lines.count,
+                            "out-of-bounds range for \(doc.debugDescription)")
+                    #expect(seg.raw == lines[seg.lineStart...seg.lineEnd].joined(separator: "\n"),
+                            "raw/range mismatch for \(doc.debugDescription)")
+                }
+            }
+        }
+    }
 }
 
 @Suite("KnowledgeBaseFileWriter symlink paths")

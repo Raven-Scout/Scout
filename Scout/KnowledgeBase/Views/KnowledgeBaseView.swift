@@ -47,6 +47,10 @@ struct KnowledgeBaseView: View {
             }
             return false
         })
+        // Clicking a [#TAG] chip searches the KB for that tag: drive the same
+        // search field a typed query uses, so the query is visible, the results
+        // list is the familiar one, and clearing it returns to the tree.
+        .environment(\.kbTagHandler, { tag in searchQuery = "#\(tag)" })
         .onAppear { service.load() }
         .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
