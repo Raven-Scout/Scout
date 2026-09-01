@@ -12,8 +12,14 @@ struct ActionItemsView: View {
     @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
     @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
     @State private var toast: String?
+    @State private var toastTask: Task<Void, Never>?
     @State private var isSelecting = false
     @State private var selectedTaskIDs: Set<UUID> = []
+    /// Cached IDs the bulk bar's Select all / "all selected" check operate
+    /// on. Recomputed only when the document, filter, or selection mode
+    /// changes — never per body evaluation, and never per checkbox tap
+    /// (#83/#88 hot path).
+    @State private var visibleSelectableIDs: Set<UUID> = []
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -91,6 +97,13 @@ struct ActionItemsView: View {
         .onChange(of: viewMode) { _, newValue in
             if newValue != .list { endSelectionMode() }
         }
+        // Selection may only reference tasks that still exist and are still
+        // visible: parser stableIDs are index-derived, so any reparse (every
+        // write op, every watched external rewrite) can invalidate them, and
+        // a filter/search change can hide checked rows that would otherwise
+        // be silently copied.
+        .onChange(of: docService.state) { _, _ in reconcileSelection() }
+        .onChange(of: filter) { _, _ in reconcileSelection() }
     }
 
     // MARK: - Content
@@ -361,10 +374,13 @@ struct ActionItemsView: View {
         } else {
             withAnimation(.easeOut(duration: 0.18)) { toast = text }
         }
-        Task {
+        // Cancel the previous dismiss timer: a text-equality guard alone lets
+        // an earlier identical toast's sleeper dismiss this one early.
+        toastTask?.cancel()
+        toastTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard toast == text else { return }
                 if reduceMotion {
                     toast = nil
                 } else {
@@ -436,12 +452,23 @@ struct ActionItemsView: View {
         .accessibilityLabel("Bulk copy controls, \(selectedTaskIDs.count) selected")
     }
 
+    /// Tasks Select all operates on. Excludes the Done section: its rows sit
+    /// inside a collapsed-by-default disclosure, and "select everything you
+    /// can't see" contradicts the button's promise. Done tasks stay
+    /// individually selectable via their own checkboxes in the drawer.
     private var visibleSelectableTasks: [ActionTask] {
         guard case .loaded(let doc) = docService.state else { return [] }
         return filteredSections(doc)
             .map(filtered)
-            .filter { ![.focus, .meetings, .digest].contains($0.kind) }
+            .filter { ![.focus, .meetings, .digest, .done].contains($0.kind) }
             .flatMap(\.tasks)
+    }
+
+    /// Every task the current filter/search leaves visible, including the
+    /// Done drawer — the widest set a selection is allowed to reference.
+    private var visibleTaskIDs: Set<UUID> {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return Set(filteredSections(doc).map(filtered).flatMap(\.tasks).map(\.id))
     }
 
     private var selectedTasks: [ActionTask] {
@@ -450,14 +477,25 @@ struct ActionItemsView: View {
     }
 
     private var allVisibleTasksSelected: Bool {
-        let visibleIDs = Set(visibleSelectableTasks.map(\.id))
-        return !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedTaskIDs)
+        !visibleSelectableIDs.isEmpty && visibleSelectableIDs.isSubset(of: selectedTaskIDs)
+    }
+
+    /// Re-derive the visible-ID cache and drop selected IDs that no longer
+    /// resolve to a visible task (stale after a reparse, or hidden by a
+    /// filter change) — keeps the bar's count honest and the copy WYSIWYG.
+    private func reconcileSelection() {
+        guard isSelecting else { return }
+        visibleSelectableIDs = Set(visibleSelectableTasks.map(\.id))
+        selectedTaskIDs.formIntersection(visibleTaskIDs)
     }
 
     private func toggleSelectionMode() {
         if isSelecting {
             endSelectionMode()
-        } else if reduceMotion {
+            return
+        }
+        visibleSelectableIDs = Set(visibleSelectableTasks.map(\.id))
+        if reduceMotion {
             isSelecting = true
         } else {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { isSelecting = true }
@@ -473,11 +511,10 @@ struct ActionItemsView: View {
     }
 
     private func toggleSelectAll() {
-        let visibleIDs = Set(visibleSelectableTasks.map(\.id))
-        if !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedTaskIDs) {
+        if allVisibleTasksSelected {
             selectedTaskIDs.removeAll()
         } else {
-            selectedTaskIDs.formUnion(visibleIDs)
+            selectedTaskIDs.formUnion(visibleSelectableIDs)
         }
     }
 

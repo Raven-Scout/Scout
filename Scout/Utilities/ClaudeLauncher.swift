@@ -144,8 +144,15 @@ enum ClaudeLauncher {
         }
     }
 
+    /// Subject line with completion state, for the formats that don't carry a
+    /// `[x]` checkbox — without it a bulk "make progress on these N items"
+    /// prompt presents finished work as open.
+    private static func subjectLine(for task: ActionTask) -> String {
+        task.done ? "\(task.plainSubject) (completed)" : task.plainSubject
+    }
+
     private static func fullContextBody(for task: ActionTask) -> String {
-        var out = task.plainSubject
+        var out = subjectLine(for: task)
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
@@ -168,8 +175,8 @@ enum ClaudeLauncher {
     }
 
     private static func conciseBody(for task: ActionTask) -> String {
-        guard !task.body.isEmpty else { return task.plainSubject }
-        return "\(task.plainSubject)\n\(task.body)"
+        guard !task.body.isEmpty else { return subjectLine(for: task) }
+        return "\(subjectLine(for: task))\n\(task.body)"
     }
 
     private static func checklistBody(for task: ActionTask) -> String {

@@ -220,6 +220,19 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // Keep the menu-bar urgent badge live off the document the app has
+        // already parsed (and re-parses on every write / watched change),
+        // instead of relying solely on the panel's onAppear disk re-read —
+        // MenuBarExtra(.window) does not guarantee onAppear re-fires per open.
+        docService.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] docState in
+                guard case .loaded(let doc) = docState,
+                      ActionItemsDay.stem(for: doc.date) == ActionItemsDay.stem(for: ActionItemsDay.today())
+                else { return }
+                self?.urgentActionCount = Self.urgentOpenCount(in: doc)
+            }
+            .store(in: &cancellables)
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
@@ -269,7 +282,14 @@ final class AppState: ObservableObject {
     /// the heartbeat strip drops the just-fired slot instead of sitting on
     /// the past `scheduled_at` until the next 60 s poll tick.
     func fireNow(slotKey: String, bypassBudget: Bool = false) async {
-        guard firingSlotKeys.insert(slotKey).inserted else { return }
+        guard firingSlotKeys.insert(slotKey).inserted else {
+            // Surface the drop: several UI surfaces can fire the same slot
+            // (upcoming strip, RunDetailView's bypass retry, menu panel) and
+            // only the menu panel disables on firingSlotKeys — a silently
+            // discarded bypass-budget retry looks like it was dispatched.
+            fireNowError = "\(slotKey) is already being started — request ignored."
+            return
+        }
         defer { firingSlotKeys.remove(slotKey) }
         let args = Self.fireNowArguments(
             argumentsPrefix: scoutctlArgumentsPrefix,

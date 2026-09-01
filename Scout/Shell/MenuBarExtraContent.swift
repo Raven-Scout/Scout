@@ -7,6 +7,9 @@ import AppKit
 struct MenuBarExtraContent: View {
     @EnvironmentObject var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismiss
     @State private var appeared = false
     @State private var hoveredSlotKey: String?
 
@@ -199,17 +202,19 @@ struct MenuBarExtraContent: View {
                 .padding(.bottom, 8)
             HStack(spacing: 6) {
                 footerButton("Open Scout folder", systemImage: "folder") {
+                    dismiss()
                     NSWorkspace.shared.open(state.scoutDirectory)
                 }
-                SettingsLink {
-                    Image(systemName: "gearshape")
-                        .frame(width: 26, height: 24)
+                // Not SettingsLink: the window-style panel is non-activating,
+                // so Settings would open behind the frontmost app. Activate
+                // first, then open, and dismiss the panel like a menu would.
+                footerButton("Open Scout settings", systemImage: "gearshape") {
+                    dismiss()
+                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(DS.Ink.p3)
-                .help("Open Scout settings")
-                .accessibilityLabel("Open Scout settings")
                 footerButton("Install wake schedule", systemImage: "alarm") {
+                    dismiss()
                     installWakeSchedule()
                 }
                 Spacer()
@@ -236,21 +241,29 @@ struct MenuBarExtraContent: View {
         guard let latest = state.sessionLogService.runs.first else {
             return ("Ready", "No recent runs", DS.Status.ok)
         }
+        // Exhaustive over RunStatus on purpose (see its doc comment): a new
+        // case must be classified here, not silently shown as a green Ready.
         switch latest.status {
         case .running:
             return ("Running \(latest.displayName)", "Started \(latest.startedAt.formatted(.relative(presentation: .named)))", DS.Accent.fill)
-        case .failure, .timeout, .rateLimited:
+        case .failure, .timeout, .rateLimited, .orphaned:
             return ("Last run needs attention", "\(latest.displayName) · \(latest.status.rawValue)", DS.Status.err)
         case .skippedBudget:
             return ("Last run skipped", "Budget limit reached", DS.Status.warn)
-        default:
+        case .skippedConcurrency:
+            return ("Last run skipped", "Another session was running", DS.Status.warn)
+        case .scheduled, .success:
             return ("Ready", "Last: \(latest.displayName) · \(latest.status.rawValue)", DS.Status.ok)
         }
     }
 
     private func openMainWindow() {
+        dismiss()
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first(where: { $0.title == "Scout" })?.makeKeyAndOrderFront(nil)
+        // Reopens the "main" Window scene — fronts the existing window or
+        // recreates a closed one. Never look the window up by its title:
+        // RunDetailView's .navigationTitle retitles it.
+        openWindow(id: "main")
     }
 
     private func installWakeSchedule() {
