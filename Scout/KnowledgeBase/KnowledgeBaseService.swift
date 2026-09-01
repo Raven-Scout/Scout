@@ -345,6 +345,13 @@ final class KnowledgeBaseService: ObservableObject {
         return KBGraph(nodes: nodes, edges: Array(edgeSet))
     }
 
+    /// The overview's default seed: the most-connected notes across the whole
+    /// KB, bounded so the map opens readable rather than as a full-vault
+    /// hairball. Degree/grouping come from `fullGraph()`.
+    func hubGraph(maxNodes: Int = 40) -> KBGraph {
+        fullGraph().topHubs(maxNodes: maxNodes)
+    }
+
     /// Full-text search across note names and contents (from the index's cached
     /// text — no disk reads), returning a snippet for the first matching line.
     /// Capped at 30 hits.
