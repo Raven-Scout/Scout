@@ -83,4 +83,48 @@ struct TaskChipTests {
         let chips = TaskChip.chips(for: task(links: []), carriedLabel: "Jun 2")
         #expect(chips.first?.links.isEmpty == true)
     }
+
+    // MARK: - Refs-block chips (entity / cross-ref / plain)
+
+    @Test func entityChipUsesLastPathSegmentAndOpens() {
+        let chips = TaskChip.chips(for: task(links: [.entity(path: "people/alex", label: nil)]))
+        let chip = chips.first { $0.glyph == .entity }
+        #expect(chip?.label == "alex")                     // last path segment
+        #expect(chip?.links.count == 1)                    // opens the note
+    }
+
+    @Test func entityChipPrefersWikilinkAlias() {
+        let chips = TaskChip.chips(for: task(links: [.entity(path: "people/priya", label: "Priya")]))
+        #expect(chips.first { $0.glyph == .entity }?.label == "Priya")
+    }
+
+    @Test func crossRefChipIsInert() {
+        let chips = TaskChip.chips(for: task(links: [.crossRef(tag: "XREF")]))
+        let chip = chips.first { $0.glyph == .crossRef }
+        #expect(chip?.label == "#XREF")
+        #expect(chip?.links.isEmpty == true)               // resolves in-app, no URL
+    }
+
+    @Test func plainRefChipIsInert() {
+        let chips = TaskChip.chips(for: task(links: [.plainRef(text: "??garbage")]))
+        let chip = chips.first { $0.glyph == .plain }
+        #expect(chip?.label == "??garbage")
+        #expect(chip?.links.isEmpty == true)
+    }
+
+    /// Coverage rule: every Refs token yields at least one chip — none vanish.
+    @Test func everyRefsTokenYieldsAChip() {
+        let chips = TaskChip.chips(for: task(links: [
+            .entity(path: "people/alex", label: nil),
+            .linear(id: "PROJ-3026"),
+            pr("example-org/repo", 7056),
+            .crossRef(tag: "XREF"),
+            .plainRef(text: "??garbage"),
+        ]))
+        #expect(chips.contains { $0.glyph == .entity })
+        #expect(chips.contains { $0.glyph == .linear })
+        #expect(chips.contains { $0.glyph == .github })
+        #expect(chips.contains { $0.glyph == .crossRef })
+        #expect(chips.contains { $0.glyph == .plain })
+    }
 }

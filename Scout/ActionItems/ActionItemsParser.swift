@@ -126,6 +126,61 @@ extension ActionItemsParser {
         }
         return result
     }
+
+    /// Parse the ` · `-separated token list from a task's `- Refs:` sub-bullet
+    /// into deep links. Each token runs through ``detectDeepLinks`` first
+    /// (Linear id / GitHub PR URL / Slack permalink — this also catches a
+    /// Linear id wrapped in a `[[PROJ-1234]]` wikilink), then the Refs-only
+    /// shapes: `owner/repo#N` GitHub shorthand, `[[entity]]` / `[[entity|Label]]`
+    /// wikilink refs, and `#XREF` cross-reference hashtags. Anything
+    /// unrecognized is preserved verbatim as a `.plainRef` so nothing is
+    /// dropped.
+    static func parseRefs(_ tokensString: String) -> [TaskDeepLink] {
+        let ghShorthand = try? NSRegularExpression(pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#)
+        let wikilink = try? NSRegularExpression(pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#)
+        let crossRef = try? NSRegularExpression(pattern: #"^#([A-Za-z][A-Za-z0-9_\-]*)$"#)
+
+        var result: [TaskDeepLink] = []
+        for rawToken in tokensString.components(separatedBy: "·") {
+            let token = rawToken.trimmingCharacters(in: .whitespaces)
+            if token.isEmpty { continue }
+
+            // 1. Linear id / GitHub PR URL / Slack permalink.
+            let detected = detectDeepLinks(in: token)
+            if !detected.isEmpty { result.append(contentsOf: detected); continue }
+
+            let ns = token as NSString
+            let full = NSRange(location: 0, length: ns.length)
+
+            // 2. GitHub shorthand `owner/repo#N` (no URL form). The canonical
+            //    `/issues/N` path redirects to `/pull/N`, matching
+            //    GitHubRefLinkifier.
+            if let m = ghShorthand?.firstMatch(in: token, range: full),
+               let n = Int(ns.substring(with: m.range(at: 2))),
+               let url = URL(string: "https://github.com/\(ns.substring(with: m.range(at: 1)))/issues/\(n)") {
+                result.append(.githubPR(repo: ns.substring(with: m.range(at: 1)), number: n, rawURL: url))
+                continue
+            }
+
+            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`.
+            if let m = wikilink?.firstMatch(in: token, range: full) {
+                let path = ns.substring(with: m.range(at: 1))
+                let label = m.range(at: 2).location == NSNotFound ? nil : ns.substring(with: m.range(at: 2))
+                result.append(.entity(path: path, label: label))
+                continue
+            }
+
+            // 4. Cross-reference hashtag `#XREF`.
+            if let m = crossRef?.firstMatch(in: token, range: full) {
+                result.append(.crossRef(tag: ns.substring(with: m.range(at: 1))))
+                continue
+            }
+
+            // 5. Unrecognized — preserve verbatim.
+            result.append(.plainRef(text: token))
+        }
+        return result
+    }
 }
 
 extension ActionItemsParser {
@@ -225,6 +280,14 @@ extension ActionItemsParser {
         /// task body, not a comment. v0.5.2 added this so comments written
         /// through scoutctl actually round-trip into the app's reparse.
         let subBulletCommentRe = try NSRegularExpression(pattern: #"^(\s+)-\s+([A-Za-z][A-Za-z0-9._-]*)\s*:\s*(.+?)\s*$"#)
+        /// The `- Refs:` sub-bullet (Action Items redesign): an indented
+        /// ` · `-separated list of machine refs under a task line. Recognized
+        /// like the comment sub-lines and attached to the preceding task as
+        /// deep links, never rendered as body prose or a comment. Anchored on
+        /// the literal `Refs:` so ordinary `- Source:` / `- Context:` bullets
+        /// are untouched. MUST be checked before `subBulletCommentRe`, which
+        /// would otherwise expose it as a comment from author "Refs".
+        let refsSubBulletRe = try NSRegularExpression(pattern: #"^\s+-\s+Refs:\s*(.+?)\s*$"#)
         /// scoutctl's snooze marker: `  - snoozed-until: YYYY-MM-DD`,
         /// optionally followed by `(from-kind: <kind>)`. Captured as task
         /// metadata (`task.snoozedUntil`, `task.snoozedFromKind`) rather than
@@ -431,6 +494,40 @@ extension ActionItemsParser {
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
                     snoozedFromKind: parsedKind ?? last.snoozedFromKind
+                )
+                currentTasks[currentTasks.count - 1] = updated
+                i += 1; continue
+            }
+
+            // Refs sub-bullet: `  - Refs: [[people/alex]] · PROJ-1 · … · #XREF`.
+            // Parse the ` · `-separated tokens into deep links and merge them
+            // onto the preceding task, then consume the line so it never
+            // renders as body prose or a comment. Must precede
+            // subBulletCommentRe, which would otherwise read it as a comment
+            // from author "Refs".
+            if inSection,
+               let last = currentTasks.last,
+               let rm = refsSubBulletRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let tokensString = (line as NSString).substring(with: rm.range(at: 1))
+                var merged = last.deepLinks
+                var seen = Set(merged.map(\.id))
+                for link in parseRefs(tokensString) where seen.insert(link.id).inserted {
+                    merged.append(link)
+                }
+                let updated = ActionTask(
+                    id: last.id,
+                    lineNumber: last.lineNumber,
+                    done: last.done,
+                    subject: last.subject,
+                    plainSubject: last.plainSubject,
+                    body: last.body,
+                    comments: last.comments,
+                    deepLinks: merged,
+                    snoozedUntil: last.snoozedUntil,
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: last.snoozedFromKind
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue

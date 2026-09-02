@@ -167,7 +167,7 @@ enum ClaudeLauncher {
         }
         if !task.deepLinks.isEmpty {
             let block = task.deepLinks
-                .map { "- \($0.displayLabel): \($0.openURL.absoluteString)" }
+                .compactMap { link in link.openURL.map { "- \(link.displayLabel): \($0.absoluteString)" } }
                 .joined(separator: "\n")
             out += "\n\nLinks:\n\(block)"
         }

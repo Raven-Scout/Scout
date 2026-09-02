@@ -91,7 +91,14 @@ struct InlineMarkdownText: View {
         // like a link label to the later passes. Wikilinks last: it only ever
         // touches `[[…]]`, which neither of the others emits.
         let rewritten = rewriteWikilinks(GitHubRefLinkifier.linkify(KBTag.linkify(raw)))
-        var computed = (try? AttributedString(markdown: rewritten)) ?? AttributedString(rewritten)
+        // Inline-only + preserve whitespace: matches SummaryTab's call site,
+        // avoids block-level parsing (fewer throws) and the whitespace collapse
+        // that broke `_italic_` under the default `.full` syntax.
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        var computed = (try? AttributedString(markdown: rewritten, options: options))
+            ?? AttributedString(rewritten)
         styleTagChips(&computed)
         if cache.count >= cacheCap {
             // Evict an arbitrary half rather than flushing everything: a full
