@@ -99,6 +99,41 @@ nonisolated struct KBGraph: Equatable {
     static let empty = KBGraph(nodes: [], edges: [])
 }
 
+extension KBGraph {
+    /// The top `maxNodes` nodes by degree (ties broken by id ascending for a
+    /// stable layout), plus only the edges whose endpoints are both kept.
+    /// Returns `self` unchanged when already within the cap. Seeds the overview
+    /// with the vault's most-connected "spine" instead of all N notes.
+    func topHubs(maxNodes: Int) -> KBGraph {
+        guard nodes.count > maxNodes else { return self }
+        let kept = nodes
+            .sorted { a, b in a.degree != b.degree ? a.degree > b.degree : a.id < b.id }
+            .prefix(maxNodes)
+        let keptIds = Set(kept.map(\.id))
+        return KBGraph(nodes: Array(kept),
+                       edges: edges.filter { keptIds.contains($0.from) && keptIds.contains($0.to) })
+    }
+
+    /// Keep nodes in `types`, with `degree >= minDegree`, and (when
+    /// `hideOrphans`) `degree > 0`. A center node is ALWAYS kept so a re-rooted
+    /// view is never emptied by a filter. Edges with a removed endpoint drop.
+    /// Degree here is the node's degree over the whole KB, not within the
+    /// currently rendered subgraph — so "hide orphans" only drops notes with no
+    /// links anywhere, not hub-view nodes whose neighbours happen to be capped out.
+    func filtered(types: Set<KBEntityGroup>, hideOrphans: Bool, minDegree: Int) -> KBGraph {
+        let keptNodes = nodes.filter { n in
+            if n.isCenter { return true }
+            guard types.contains(n.group) else { return false }
+            if n.degree < minDegree { return false }
+            if hideOrphans && n.degree == 0 { return false }
+            return true
+        }
+        let keptIds = Set(keptNodes.map(\.id))
+        return KBGraph(nodes: keptNodes,
+                       edges: edges.filter { keptIds.contains($0.from) && keptIds.contains($0.to) })
+    }
+}
+
 /// Precomputed wikilink index: each note's display stem → its path, each note's
 /// outgoing link targets (original case), the note text itself (read once per
 /// reparse; serves backlink excerpts and full-text search without disk I/O),

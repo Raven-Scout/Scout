@@ -38,7 +38,7 @@ The global KB map currently renders `fullGraph()` — **every one of the ~272 va
 
 1. **`hubGraph(maxNodes: Int = 40) -> KBGraph`** — the default seed. Rank all notes by degree over `undirectedEdges()`, take the top `maxNodes`, and keep only edges whose *both* endpoints are in that set. Nodes tagged with group + degree as in `fullGraph()`. No `isCenter`.
 2. **Re-root reuses `localGraph(around:depth:maxNodes:)`** — the overview calls it with `maxNodes: 40` (vs the right panel's 26) when `focusPath != nil`. No new traversal.
-3. **`filter(_ graph: KBGraph, types: Set<KBEntityGroup>, hideOrphans: Bool, minDegree: Int) -> KBGraph`** — a pure post-filter applied to whichever graph is showing: keep nodes whose group ∈ `types`, whose degree ≥ `minDegree`, and (if `hideOrphans`) degree > 0; then drop edges with a dropped endpoint. The center node (if any) is always kept so re-root never yields an empty focus.
+3. **`filter(_ graph: KBGraph, types: Set<KBEntityGroup>, hideOrphans: Bool, minDegree: Int) -> KBGraph`** — a pure post-filter applied to whichever graph is showing: keep nodes whose group ∈ `types`, whose degree ≥ `minDegree`, and (if `hideOrphans`) degree > 0; then drop edges with a dropped endpoint. The center node (if any) is always kept so re-root never yields an empty focus. Degree here is the node's **global** degree over `undirectedEdges()`, not its degree within the rendered subgraph — so "Hide orphans" can keep a hub-view node that renders edge-less (its neighbours were capped out) as long as it has links somewhere in the vault.
 
 ### UI — upgrade the map region of `KBOverviewView`
 
@@ -64,7 +64,7 @@ shown = filter(base, types: activeTypes, hideOrphans: hideOrphans, minDegree: mi
 ```
 
 Gestures (in `KBGraphCanvas`):
-- **Single tap a node → re-root** (`focusPath = id; history.append(previous)`).
+- **Single tap a node → re-root** (`focusPath = id; history.append(previous)`). This intentionally diverges from the right-panel local graph, where a tap still opens the note — the overview is for navigating the map, the panel for jumping to a note.
 - **Double-click a node → open** the note in the editor (the current `onNavigate`, moved from single-tap to double-click).
 - Drag/pan/pinch unchanged. `.id` the canvas on `(focusPath, filters)` so Grape re-lays-out on focus/filter change.
 
@@ -74,7 +74,7 @@ Gestures (in `KBGraphCanvas`):
 launch/overview → focusPath=nil → hubGraph(40) → filter → canvas (top hubs)
 tap node X → focusPath=X, history+=[prev] → localGraph(X,2,40) → filter → canvas
 double-click X → onNavigate(X) → editor opens the note
-search "bigquery" → pick → focusPath=match → …
+search "atlas" → pick → focusPath=match → …
 toggle filter / min-degree → re-filter current base → canvas
 ‹ back → focusPath = history.pop() ;  ⌂ hubs → focusPath=nil, history=[]
 ```
