@@ -79,6 +79,9 @@ struct BoardCardView: View {
         case .linear:      return "circle.grid.2x2"
         case .githubPR:    return "arrow.triangle.pull"
         case .slackThread: return "bubble.left.and.bubble.right"
+        case .entity:      return "doc.text"
+        case .crossRef:    return "number.square"
+        case .plainRef:    return "tag"
         }
     }
 }
