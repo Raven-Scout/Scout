@@ -1,7 +1,7 @@
 # In-app updates — app binary (Sparkle) + plugin (detect & hand off)
 
-**Date:** 2026-07-07
-**Status:** design approved; ready for implementation plan.
+**Date:** 2026-07-07 (amended 2026-09-02 — see [Amendments](#amendments-2026-09-02) at the end)
+**Status:** design approved; implementation plan: `docs/superpowers/plans/2026-09-02-in-app-updates.md`.
 
 ## Summary
 
@@ -232,3 +232,97 @@ file groups — no `.pbxproj` edits); the SPM Sparkle dependency **does** requir
   `plugin update` path.
 - **Rollback / channel selection (beta vs stable)** — single stable channel for
   v1.
+
+## Amendments (2026-09-02)
+
+Added while writing the implementation plan, two months after approval. None
+of the brainstorm decisions above change; these are hardening details and
+facts re-checked against the current repo, plugin and Sparkle release. Each is
+small enough to reject individually in review.
+
+### Facts re-checked
+
+- **Open item "canonical public plugin org" is resolved.** scout-plugin commit
+  `e0f86f5` pointed `plugin.json` `homepage`/`repository` at
+  `https://github.com/Raven-Scout/scout-plugin`; the raw-URL fallback default
+  is `Raven-Scout/scout-plugin`.
+- **Open item "`sparkle:version` = commit count" is confirmed** — it is what
+  `release.sh` already stamps and it is strictly monotonic as long as each
+  release is cut from a commit ahead of the previous tag (now enforced, below).
+- Versions today: installed plugin `0.8.0` == repo `0.8.0` (dev machine,
+  `directory` source). `installed_plugins.json` is schema `version: 2`; the
+  three marketplace source shapes observed are `{source:"github", repo}`,
+  `{source:"git", url}` and `{source:"directory", path}`.
+- Sparkle current release is **2.9.6** (2026-08-17). `main` has no branch
+  protection, so `release.sh` can push `appcast.xml` there as designed.
+
+### Hardening adopted
+
+1. **Exact Sparkle pin (`2.9.6`)** instead of `upToNextMajor`. `release.sh`
+   signs Sparkle's nested executables by path, so a Sparkle upgrade must be a
+   deliberate, visible change.
+2. **Sparkle keys live in a typed `Scout/Info.plist`** (`INFOPLIST_FILE`
+   merged with the generated plist). Booleans and the interval stay typed; a
+   contract test pins `SUFeedURL`, a 32-byte `SUPublicEDKey`,
+   `SUEnableAutomaticChecks = true`, `SUScheduledCheckInterval = 86400`, and
+   the absence of `SUAutomaticallyUpdate`.
+3. **Debug builds never start the updater.** A dev build lives in DerivedData
+   under `com.scout.Scout.dev`; letting it replace itself with the release
+   bundle would be confusing at best. The Sparkle controller is still
+   constructed (so all Sparkle code compiles in Debug and CI catches
+   breakage); it is never started. Settings ▸ Updates says so; the menu-bar
+   item is hidden; the app-menu item is disabled. The plugin track works in
+   Debug too.
+4. **`release.sh` guards:** the public key in the built Info.plist must equal
+   the keychain's (`generate_keys -p`) or the release aborts before
+   notarization; the build number must be strictly greater than the latest
+   plain tag's `git rev-list --count`; every expected Sparkle component must
+   exist before signing; `sign_update` runs on the **stapled** DMG (stapling
+   changes the bytes); the appcast is `xmllint`-validated; only plain
+   `vX.Y.Z` tags feed the version rule and changelog range; a real release
+   must be cut from a clean `main` checkout.
+5. **Pre-release rehearsal path.** `PRERELEASE=1 scripts/release.sh
+   0.12.0-rc.N` publishes a GitHub pre-release with the appcast attached **as
+   an asset only** (main's feed untouched). A `SCOUT_APPCAST_URL` environment
+   variable — honored only for well-formed `https` URLs, via Sparkle's
+   sanctioned `feedURLString(for:)` delegate hook — points an installed rc at
+   that asset. This cannot weaken security: a hostile feed still cannot
+   produce a valid EdDSA signature or a Developer-ID-matching bundle.
+   **Rollout:** rc.1 → rc.2 must update end-to-end before 0.12.0 ships,
+   because 0.12.0 is the one release where a broken updater cannot be fixed
+   *through* the updater. Copies older than 0.12.0 have no updater and are
+   told to download once more.
+6. **One-item feed, regenerated per release.** Sparkle only needs the newest
+   item (it compares `sparkle:version` with the running app), older DMGs stay
+   on GitHub Releases, and it avoids merging XML in bash. An **empty but valid
+   `appcast.xml`** is committed with the code so the feed URL never 404s
+   before the first Sparkle-enabled release. Trade-off: if a future release
+   raises `minimumSystemVersion`, users on older macOS see "no update" rather
+   than the last compatible version.
+7. **Appcast release notes are rendered as HTML directly** from the same
+   feat/fix/other grouping that produces the Markdown release notes (no
+   Markdown converter). The version rule, both renderers, the appcast renderer
+   and `sign_update` output parsing move into `scripts/release-lib.sh`, a
+   sourced library covered by `scripts/tests/release-lib.test.sh` and run in
+   CI. `sparkle:minimumSystemVersion` is read from the built app's
+   `LSMinimumSystemVersion`.
+8. **Plugin "latest" reads the raw manifest at the `HEAD` ref**
+   (`raw.githubusercontent.com/<org>/<repo>/HEAD/.claude-plugin/plugin.json`)
+   — raw GitHub resolves `HEAD` to the default branch, so no API call is
+   needed to discover it. `git`-source URLs on github.com are mapped to the
+   same URL; non-GitHub git sources are unsupported (row shows "Couldn't
+   check").
+9. **Feed push skips CI.** The `chore(release): appcast for vX.Y.Z [skip ci]`
+   commit keeps a docs-only change from burning a 30-minute test run.
+
+### Considered and not adopted (say so in review if you want any of them)
+
+- A **6-hour** check interval instead of daily.
+- **`SUAutomaticallyUpdate = YES`** (silent background download, then a
+  "ready to install" prompt) instead of Sparkle's dialog-first flow.
+- **Settings toggles** for automatic checks / automatic downloads.
+- **Appcast as a GitHub Release asset** behind the stable
+  `releases/latest/download/appcast.xml` redirect (no commit to `main` per
+  release; self-healing if a release is deleted) instead of the checked-in
+  feed. The checked-in feed was the brainstorm decision and works — `main` is
+  unprotected — so it stands.
