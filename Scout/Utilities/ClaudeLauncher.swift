@@ -184,11 +184,12 @@ enum ClaudeLauncher {
         if !task.body.isEmpty {
             lines.append(contentsOf: task.body.split(separator: "\n").map { "  \($0)" })
         }
-        if !task.deepLinks.isEmpty {
-            lines.append(contentsOf: task.deepLinks.map {
-                "  - [\($0.displayLabel)](\($0.openURL.absoluteString))"
-            })
-        }
+        // Non-URL refs (crossRef/plainRef) are omitted, matching the expanded
+        // Links list and fullContext: a checklist link without a target would
+        // render as a broken `[label]()`.
+        lines.append(contentsOf: task.deepLinks.compactMap { link in
+            link.openURL.map { "  - [\(link.displayLabel)](\($0.absoluteString))" }
+        })
         return lines.joined(separator: "\n")
     }
 
