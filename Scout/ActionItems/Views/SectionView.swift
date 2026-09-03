@@ -4,6 +4,7 @@ struct SectionView: View {
     let section: ActionSection
     let displayedDate: Date
     let scoutDirectory: URL
+    let selection: Binding<Set<UUID>>?
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
 
     var body: some View {
@@ -37,6 +38,7 @@ struct SectionView: View {
                             kind: section.kind,
                             displayedDate: displayedDate,
                             scoutDirectory: scoutDirectory,
+                            selection: selection,
                             onOp: onOp
                         )
                     }
@@ -151,6 +153,9 @@ struct SectionView: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(section.tasks) { t in
                     HStack(alignment: .top, spacing: 8) {
+                        if selection != nil {
+                            completedSelectionButton(t)
+                        }
                         Image(systemName: "checkmark")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(DS.Priority.done)
@@ -177,6 +182,27 @@ struct SectionView: View {
                 Spacer()
             }
         }
+    }
+
+    private func completedSelectionButton(_ task: ActionTask) -> some View {
+        let selected = selection?.wrappedValue.contains(task.id) == true
+        return Button {
+            guard let selection else { return }
+            if selected {
+                selection.wrappedValue.remove(task.id)
+            } else {
+                selection.wrappedValue.insert(task.id)
+            }
+        } label: {
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(selected ? DS.Accent.ink : DS.Ink.p4)
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(selected ? "Remove from copy selection" : "Add to copy selection")
+        .accessibilityLabel(selected ? "Selected for copying" : "Select for copying")
     }
 }
 

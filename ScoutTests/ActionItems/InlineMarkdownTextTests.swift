@@ -2,6 +2,14 @@ import Testing
 import Foundation
 @testable import Scout
 
+// @MainActor is load-bearing, exactly as on KBTagTests' "Tag search" suite:
+// `InlineMarkdownText.attributedString` and its static cache are MainActor-
+// isolated in the app module (SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor), but
+// the test target compiles nonisolated-by-default in Swift 5 mode, so an
+// unannotated suite runs on a background thread and races the test host's
+// main-thread renders of the same cache — a ~50%-flaky
+// `-[NSIndexPath count]` heap-corruption crash under `xcodebuild test`.
+@MainActor
 @Suite("Inline markdown rendering")
 struct InlineMarkdownTextTests {
     /// `_word_` must render as an italic (emphasized) run, not literal underscores.

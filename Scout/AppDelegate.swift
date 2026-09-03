@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound, .badge]
         ) { _, _ in }
+        // "Start in menu bar" is handled by the main Window scene's
+        // .defaultLaunchBehavior(.suppressed) in ScoutApp — no window is
+        // created, so there is nothing to hide here.
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
