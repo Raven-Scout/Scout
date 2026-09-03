@@ -93,4 +93,41 @@ struct RefsBlockTests {
         ])
         #expect(task.deepLinks.isEmpty)   // Source: is not a Refs line
     }
+
+    // MARK: - Cross-ref grammar (#96)
+
+    /// The vault's mnemonics are 2–8 `[A-Z0-9]` with at least one letter, so a
+    /// digit-leading tag is a cross-ref like any other. The old letter-first
+    /// pattern degraded these to `.plainRef`.
+    @Test func digitLeadingTagIsACrossRef() throws {
+        let task = try parseTask([
+            "- [ ] [#DIG] **Digit-leading tag** — a body.",
+            "  - Refs: #5864M",
+        ])
+        #expect(task.deepLinks == [.crossRef(tag: "5864M")])
+    }
+
+    /// A purely numeric `#123` has no letter, so it is a GitHub ref rather than
+    /// a tag — the property that keeps `KBTag` and `GitHubRefLinkifier`
+    /// disjoint. It must not be claimed as a cross-ref.
+    @Test func numericHashIsNotACrossRef() throws {
+        let task = try parseTask([
+            "- [ ] [#NUM] **Numeric hash** — a body.",
+            "  - Refs: #123",
+        ])
+        #expect(!task.deepLinks.contains { if case .crossRef = $0 { return true } else { return false } })
+    }
+
+    /// Tokens outside the grammar are still preserved verbatim, not dropped.
+    @Test func outOfGrammarHashTokensPreservedAsPlainRefs() throws {
+        let task = try parseTask([
+            "- [ ] [#OOG] **Out of grammar** — a body.",
+            "  - Refs: #lowercase · #WAYTOOLONGTAG · #A",
+        ])
+        #expect(task.deepLinks == [
+            .plainRef(text: "#lowercase"),      // lowercase isn't the tag alphabet
+            .plainRef(text: "#WAYTOOLONGTAG"),  // 13 chars, over the 8 cap
+            .plainRef(text: "#A"),              // 1 char, under the 2 floor
+        ])
+    }
 }

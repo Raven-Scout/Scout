@@ -151,6 +151,18 @@ extension ActionItemsParser {
         return result
     }
 
+    /// `owner/repo#N` GitHub shorthand. Compiled once — `parseRefs` runs per
+    /// task, and `NSRegularExpression` compilation dominates the cost
+    /// (cf. `InlineMarkdownText.wikilinkRe`).
+    private static let ghShorthandRe = try! NSRegularExpression(
+        pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#
+    )
+
+    /// `[[entity]]` / `[[entity|Label]]` wikilink ref.
+    private static let wikilinkRe = try! NSRegularExpression(
+        pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#
+    )
+
     /// Parse the ` · `-separated token list from a task's `- Refs:` sub-bullet
     /// into deep links. Each token runs through ``detectDeepLinks`` first
     /// (Linear id / GitHub PR URL / Slack permalink — this also catches a
@@ -160,10 +172,6 @@ extension ActionItemsParser {
     /// unrecognized is preserved verbatim as a `.plainRef` so nothing is
     /// dropped.
     static func parseRefs(_ tokensString: String) -> [TaskDeepLink] {
-        let ghShorthand = try? NSRegularExpression(pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#)
-        let wikilink = try? NSRegularExpression(pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#)
-        let crossRef = try? NSRegularExpression(pattern: #"^#([A-Za-z][A-Za-z0-9_\-]*)$"#)
-
         var result: [TaskDeepLink] = []
         for rawToken in tokensString.components(separatedBy: "·") {
             let token = rawToken.trimmingCharacters(in: .whitespaces)
@@ -179,7 +187,7 @@ extension ActionItemsParser {
             // 2. GitHub shorthand `owner/repo#N` (no URL form). The canonical
             //    `/issues/N` path redirects to `/pull/N`, matching
             //    GitHubRefLinkifier.
-            if let m = ghShorthand?.firstMatch(in: token, range: full),
+            if let m = ghShorthandRe.firstMatch(in: token, range: full),
                let n = Int(ns.substring(with: m.range(at: 2))),
                let url = URL(string: "https://github.com/\(ns.substring(with: m.range(at: 1)))/issues/\(n)") {
                 result.append(.githubPR(repo: ns.substring(with: m.range(at: 1)), number: n, rawURL: url))
@@ -187,16 +195,20 @@ extension ActionItemsParser {
             }
 
             // 3. Entity wikilink `[[path]]` / `[[path|Label]]`.
-            if let m = wikilink?.firstMatch(in: token, range: full) {
+            if let m = wikilinkRe.firstMatch(in: token, range: full) {
                 let path = ns.substring(with: m.range(at: 1))
                 let label = m.range(at: 2).location == NSNotFound ? nil : ns.substring(with: m.range(at: 2))
                 result.append(.entity(path: path, label: label))
                 continue
             }
 
-            // 4. Cross-reference hashtag `#XREF`.
-            if let m = crossRef?.firstMatch(in: token, range: full) {
-                result.append(.crossRef(tag: ns.substring(with: m.range(at: 1))))
+            // 4. Cross-reference hashtag `#XREF`. Deferred to `KBTag` so the
+            //    Refs block honors the one tag grammar the rest of the app
+            //    uses (2–8 `[A-Z0-9]`, at least one letter): digit-leading
+            //    mnemonics like `#5864M` are tags, while a purely numeric
+            //    `#123` has no letter and stays a GitHub ref.
+            if token.hasPrefix("#"), let tag = KBTag.normalized(token) {
+                result.append(.crossRef(tag: tag))
                 continue
             }
 
