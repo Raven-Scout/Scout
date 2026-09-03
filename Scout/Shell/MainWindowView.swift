@@ -68,7 +68,7 @@ struct MainWindowView: View {
     }
 }
 
-enum SidebarItem: Hashable {
+enum SidebarItem: Hashable, CaseIterable {
     case controlCenter, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.

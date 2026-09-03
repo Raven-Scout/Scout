@@ -27,3 +27,26 @@ struct ScoutTests {
 }
 
 final class FixtureAnchor {}
+
+/// Poll `condition` on the main actor until it holds, or fail after `timeout`.
+///
+/// Used by the FSEvents watch tests. Those assert *liveness* — that a file
+/// event eventually reaches the service's debounced reparse — not latency, so
+/// the budget is deliberately generous: CI runs the whole suite in parallel on
+/// a few cores, and a 3 s budget flaked there while passing locally in ~300 ms.
+/// A genuinely broken watch still fails, just after a longer wait.
+@MainActor
+func waitUntil(
+    timeout: TimeInterval = 30,
+    pollInterval: Duration = .milliseconds(50),
+    _ description: @autoclosure () -> String = "condition never became true",
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: @MainActor () -> Bool
+) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return }
+        try? await Task.sleep(for: pollInterval)
+    }
+    #expect(condition(), "\(description()) within \(timeout)s", sourceLocation: sourceLocation)
+}

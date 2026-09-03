@@ -48,11 +48,19 @@ jobs:
             -scheme Scout \
             -destination 'platform=macOS' \
             -only-testing:ScoutTests \
+            -enableCodeCoverage YES \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             | tee xcodebuild.log
+
+      # Fails the job if Scout.app line coverage drops below the floor in
+      # scripts/coverage-floor.txt. Runs even when tests failed, so a PR that
+      # breaks a test still gets its coverage reported in the job summary.
+      - name: Check coverage floor
+        if: always()
+        run: ./scripts/check-coverage.sh TestResults.xcresult
 
       - name: Upload test results
         if: always()
