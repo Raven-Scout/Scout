@@ -131,9 +131,8 @@ struct PerFileDocumentServiceWatchTests {
         events.emit(FileSystemEvent(
             url: dir.appendingPathComponent("2026-06-15-a.md"), kind: .created))
 
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline, svc.items.isEmpty {
-            try await Task.sleep(nanoseconds: 25_000_000)
+        await waitUntil("the .md event should have triggered a reparse") {
+            !svc.items.isEmpty
         }
         #expect(svc.items.count == 1)
         #expect(svc.activeCount == 1)

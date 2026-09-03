@@ -191,7 +191,9 @@ struct ProposalsDocumentServiceTests {
         events.emit(FileSystemEvent(
             url: dir.appendingPathComponent("2026-06-01-a.md"), kind: .created))
 
-        try await waitUntil { svc.proposals.count == 1 }
+        await waitUntil("the .md event should have triggered a reparse") {
+            svc.proposals.count == 1
+        }
         #expect(svc.proposals.first?.title == "A")
     }
 
@@ -210,16 +212,4 @@ struct ProposalsDocumentServiceTests {
         #expect(svc.proposals.isEmpty)
     }
 
-    /// Poll `condition` on the main actor until it holds or the budget runs out.
-    private func waitUntil(
-        timeout: TimeInterval = 3.0,
-        _ condition: @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return }
-            try await Task.sleep(nanoseconds: 25_000_000)
-        }
-        #expect(condition(), "condition never became true within \(timeout)s")
-    }
 }

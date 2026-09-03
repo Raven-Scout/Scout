@@ -268,9 +268,8 @@ struct KnowledgeBaseServiceLifecycleTests {
         events.emit(FileSystemEvent(
             url: root.appendingPathComponent("knowledge-base/b.md"), kind: .created))
 
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline, svc.tree.flatMap(\.allFiles).count < 2 {
-            try await Task.sleep(nanoseconds: 25_000_000)
+        await waitUntil("the file event should have triggered a reparse") {
+            svc.tree.flatMap(\.allFiles).count >= 2
         }
         #expect(svc.tree.flatMap(\.allFiles).count == 2)
     }
