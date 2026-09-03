@@ -593,7 +593,8 @@ struct ActionItemsView: View {
                     tasks: openTasks,
                     bullets: section.bullets,
                     tables: section.tables,
-                    subheads: section.subheads
+                    subheads: section.subheads,
+                    collapsed: section.collapsed
                 ))
             }
         }
@@ -610,7 +611,8 @@ struct ActionItemsView: View {
                 tasks: original.tasks + collectedDone,
                 bullets: original.bullets,
                 tables: original.tables,
-                subheads: original.subheads
+                subheads: original.subheads,
+                collapsed: original.collapsed
             )
         } else {
             // No Done section in the source — synthesize one so the
@@ -625,7 +627,8 @@ struct ActionItemsView: View {
                 tasks: collectedDone,
                 bullets: [],
                 tables: [],
-                subheads: []
+                subheads: [],
+                collapsed: []
             ))
         }
         return out
@@ -633,7 +636,7 @@ struct ActionItemsView: View {
 
     private func filtered(_ section: ActionSection) -> ActionSection {
         let needle = filter.searchText.lowercased()
-        let tasks = section.tasks.filter { t in
+        func matches(_ t: ActionTask) -> Bool {
             let statusOK: Bool = {
                 switch filter.status {
                 case .all:     return true
@@ -648,6 +651,24 @@ struct ActionItemsView: View {
                 || t.body.lowercased().contains(needle)
                 || t.comments.contains(where: { $0.text.lowercased().contains(needle) })
         }
+        let tasks = section.tasks.filter(matches)
+        // Archived rows are searchable too — a parked block can hold more rows
+        // than the live list, and a search that silently skipped it would look
+        // like the item was gone. When a search is running, a group with no
+        // surviving rows drops out rather than sitting there empty.
+        let collapsedGroups: [ActionSection.CollapsedGroup] = section.collapsed.compactMap { group in
+            let kept = group.tasks.filter(matches)
+            // A search that matched nothing in an archive drops it entirely
+            // rather than leaving a block that holds only its prose.
+            if !needle.isEmpty && kept.isEmpty { return nil }
+            return ActionSection.CollapsedGroup(
+                id: group.id,
+                summary: group.summary,
+                tasks: kept,
+                bullets: needle.isEmpty ? group.bullets : [],
+                tables: group.tables
+            )
+        }
         return ActionSection(
             id: section.id,
             emoji: section.emoji,
@@ -656,7 +677,8 @@ struct ActionItemsView: View {
             tasks: tasks,
             bullets: section.bullets,
             tables: section.tables,
-            subheads: section.subheads
+            subheads: section.subheads,
+            collapsed: collapsedGroups
         )
     }
 

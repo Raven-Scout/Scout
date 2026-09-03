@@ -14,7 +14,7 @@ struct ActionBoardColumnTests {
 
     private func section(_ kind: ActionSection.Kind, _ tasks: [ActionTask]) -> ActionSection {
         ActionSection(id: UUID(), emoji: "", title: kind.rawValue, kind: kind,
-                      tasks: tasks, bullets: [], tables: [], subheads: [])
+                      tasks: tasks, bullets: [], tables: [], subheads: [], collapsed: [])
     }
 
     @Test func alwaysShowsCorePillarsInOrder() {

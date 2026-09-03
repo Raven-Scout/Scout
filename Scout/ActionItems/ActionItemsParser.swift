@@ -42,6 +42,30 @@ extension ActionItemsParser {
         return s
     }
 
+    /// Split a leading ordered-list marker (`1. `, `12) `) off a 💡 Focus line.
+    ///
+    /// The focus section is authored as a numbered markdown list wrapped in
+    /// narrative prose — a lede paragraph above it and a `⏸️ Verified
+    /// negatives` paragraph below. The parser keeps all of it as bullets, so
+    /// the renderer needs to tell the two apart: a line with an ordinal is a
+    /// ranked focus item and keeps *its own* number, and everything else is
+    /// prose that shouldn't be numbered at all. Without this the view counted
+    /// rows itself and drew "1  1. …" over lines that already had a number.
+    static func focusOrdinal(_ raw: String) -> (number: Int?, text: String) {
+        let range = NSRange(raw.startIndex..., in: raw)
+        guard let m = focusOrdinalRe.firstMatch(in: raw, range: range),
+              let digits = Range(m.range(at: 1), in: raw),
+              let full = Range(m.range, in: raw),
+              let n = Int(raw[digits]) else {
+            return (nil, raw)
+        }
+        return (n, String(raw[full.upperBound...]))
+    }
+
+    /// `1. ` / `12) ` at the start of a line. The trailing space is required so
+    /// `1.5x the cost` stays prose.
+    private static let focusOrdinalRe = try! NSRegularExpression(pattern: #"^(\d{1,3})[.)]\s+"#)
+
     private static func replaceRegex(in s: String, pattern: String, template: String) -> String {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
         let range = NSRange(s.startIndex..., in: s)
@@ -237,6 +261,23 @@ extension ActionItemsParser {
         var pendingTableHeaders: [String]? = nil
         var pendingTableRows: [[String]] = []
 
+        // --- `<details>` archive regions ---
+        // While a region is open the task/bullet accumulators are redirected
+        // into it, so the whole existing parse path keeps working unchanged and
+        // archived content simply lands somewhere else. See
+        // `ActionSection.CollapsedGroup` for why it's kept rather than dropped.
+        var currentCollapsed: [ActionSection.CollapsedGroup] = []
+        var inCollapsed = false
+        var detailsDepth = 0
+        var collapsedSummary = ""
+        var parkedTasks: [ActionTask] = []
+        var parkedBullets: [String] = []
+        var parkedTables: [ActionSection.Table] = []
+        /// Namespace for task ``stableID`` keys. Without it a parked row and a
+        /// live row with the same subject at the same index hash to the same
+        /// UUID, and SwiftUI sees two rows claiming one identity.
+        var idScope = "0"
+
         func flushTable() {
             if let headers = pendingTableHeaders {
                 currentTables.append(.init(headers: headers, rows: pendingTableRows))
@@ -245,7 +286,35 @@ extension ActionItemsParser {
             pendingTableRows = []
         }
 
+        /// Seal the open `<details>` region and restore the live accumulators.
+        /// A no-op outside a region, so it's safe to call defensively wherever
+        /// a region must not outlive its context — notably at a `## ` heading,
+        /// which is how the file's unbalanced tags are kept from swallowing
+        /// everything after the orphan.
+        func closeCollapsedGroup() {
+            detailsDepth = 0
+            guard inCollapsed else { return }
+            inCollapsed = false
+            flushTable()
+            currentCollapsed.append(ActionSection.CollapsedGroup(
+                id: stableID("collapsed|\(sections.count)|\(currentCollapsed.count)|\(collapsedSummary)"),
+                summary: collapsedSummary,
+                tasks: currentTasks,
+                bullets: currentBullets,
+                tables: currentTables
+            ))
+            currentTasks = parkedTasks
+            currentBullets = parkedBullets
+            currentTables = parkedTables
+            parkedTasks = []
+            parkedBullets = []
+            parkedTables = []
+            collapsedSummary = ""
+            idScope = "\(sections.count)"
+        }
+
         func flushSection() {
+            closeCollapsedGroup()
             flushTable()
             if inSection {
                 // Stable identity: section index + kind + title. Survives a
@@ -259,16 +328,19 @@ extension ActionItemsParser {
                     tasks: currentTasks,
                     bullets: currentBullets,
                     tables: currentTables,
-                    subheads: currentSubheads
+                    subheads: currentSubheads,
+                    collapsed: currentCollapsed
                 ))
             }
             currentTasks = []
             currentBullets = []
             currentTables = []
             currentSubheads = []
+            currentCollapsed = []
             currentEmoji = ""
             currentTitle = ""
             currentKind = .neutral
+            idScope = "\(sections.count)"
         }
 
         let taskRe = try NSRegularExpression(pattern: #"^(\s*)- \[([ xX])\] (.+?)\s*$"#)
@@ -350,10 +422,50 @@ extension ActionItemsParser {
                 i += 1; continue
             }
 
+            // `<details>` region boundary. Tag lines are markup, never content
+            // — emitting them is what put rows reading `</details>` in Today's
+            // Focus. Content *between* the tags falls through to the ordinary
+            // branches below and lands in the redirected accumulators, so
+            // archived tasks stay real `ActionTask`s inside their group.
+            if inSection {
+                let scan = HTMLDetailsScanner.scan(line)
+                if scan.isTagLine {
+                    if detailsDepth == 0 && scan.opens > 0 {
+                        // Outermost open: park the live lists and start a group.
+                        flushTable()
+                        inCollapsed = true
+                        collapsedSummary = scan.summary ?? ""
+                        parkedTasks = currentTasks
+                        parkedBullets = currentBullets
+                        parkedTables = currentTables
+                        currentTasks = []
+                        currentBullets = []
+                        currentTables = []
+                        idScope = "\(sections.count)|collapsed\(currentCollapsed.count)"
+                    } else if let inner = scan.summary, !inner.isEmpty {
+                        // Nested open: flattened into the outermost group, but
+                        // its summary survives as prose so the archive still
+                        // reads in order.
+                        currentBullets.append(inner)
+                    }
+                    detailsDepth += scan.opens
+                    detailsDepth -= scan.closes
+                    if detailsDepth <= 0 { closeCollapsedGroup() }
+                    i += 1; continue
+                }
+            }
+
             // Subhead
             if line.hasPrefix("### ") && inSection {
                 flushTable()
-                currentSubheads.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                // Inside a region this is archived structure, not a live
+                // subhead — keep the text with the group rather than promoting
+                // it to the section.
+                if detailsDepth > 0 {
+                    currentBullets.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                } else {
+                    currentSubheads.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                }
                 i += 1; continue
             }
 
@@ -412,13 +524,13 @@ extension ActionItemsParser {
                    let r = Range(cm.range(at: 1), in: body) {
                     carryInKind = ActionSection.Kind(rawValue: String(body[r]).lowercased())
                 }
-                // Stable identity: owning-section index + task index within
-                // that section + subject. Adding a comment to a task doesn't
-                // change any of these, so the row keeps its identity across
-                // the reparse the write triggers and the scroll holds. See
-                // `stableID`.
+                // Stable identity: owning scope (the section index, or the
+                // collapsed group within it) + task index within that scope +
+                // subject. Adding a comment to a task doesn't change any of
+                // these, so the row keeps its identity across the reparse the
+                // write triggers and the scroll holds. See `stableID`.
                 currentTasks.append(ActionTask(
-                    id: stableID("task|\(sections.count)|\(currentTasks.count)|\(subject)"),
+                    id: stableID("task|\(idScope)|\(currentTasks.count)|\(subject)"),
                     lineNumber: i + 1,
                     done: done,
                     subject: subject,
