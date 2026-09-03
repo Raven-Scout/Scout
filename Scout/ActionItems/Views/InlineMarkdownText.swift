@@ -76,14 +76,32 @@ struct InlineMarkdownText: View {
     /// that rebuilding it per body evaluation visibly stalls scrolling through
     /// a full day of cards. Keys are the raw subject/body strings, which are
     /// stable across parses for the same task text.
-    private static var cache: [String: AttributedString] = [:]
-    private static let cacheCap = 2000
+    private struct CacheEntry {
+        let value: AttributedString
+        /// Logical clock tick of the last read or write — the LRU ordering.
+        var lastUsed: UInt64
+    }
+
+    private static var cache: [String: CacheEntry] = [:]
+    private static var clock: UInt64 = 0
+
+    /// Upper bound on cached renderings.
+    ///
+    /// A real day's first paint touches ~935 unique strings (~443 KB of source
+    /// text), and expanding cards, searching, or switching days pushes the
+    /// working set several thousand higher. `var` only so tests can shrink it;
+    /// nothing in the app mutates it. MainActor-isolated like the cache itself.
+    static var cacheCap = 6000
 
     /// Internal rather than private so tests can assert on the rendered runs —
     /// that a tag survives the markdown parse as a `scout-tag://` link and
     /// carries the chip attributes. Pure function; no other caller.
     static func attributedString(for raw: String) -> AttributedString {
-        if let hit = cache[raw] { return hit }
+        clock &+= 1
+        if let hit = cache[raw] {
+            cache[raw]?.lastUsed = clock
+            return hit.value
+        }
         // Tags first: once a tag is a `[label](scout-tag://…)` link, the GitHub
         // linkifier's protected ranges cover it. The two can't collide on the
         // same token anyway — a tag needs a letter, a GitHub ref is all digits
@@ -100,16 +118,41 @@ struct InlineMarkdownText: View {
         var computed = (try? AttributedString(markdown: rewritten, options: options))
             ?? AttributedString(rewritten)
         styleTagChips(&computed)
-        if cache.count >= cacheCap {
-            // Evict an arbitrary half rather than flushing everything: a full
-            // clear at the cap means the very next render pass re-parses every
-            // visible string — the stall this cache exists to prevent.
-            for key in Array(cache.keys.prefix(cacheCap / 2)) {
-                cache.removeValue(forKey: key)
-            }
-        }
-        cache[raw] = computed
+        if cache.count >= cacheCap { evictColdest() }
+        cache[raw] = CacheEntry(value: computed, lastUsed: clock)
         return computed
+    }
+
+    /// Drop the coldest quarter, oldest first.
+    ///
+    /// The previous policy evicted `cache.keys.prefix(cap/2)` — *arbitrary*
+    /// dictionary order — so the strings currently on screen were as likely to
+    /// be thrown out as anything else. Past the cap that turned into a re-parse
+    /// treadmill: a warm pass over a 2,398-string working set measured ~320 ms
+    /// against 12 ms uncapped, a 27× cliff hit by expanding cards, searching,
+    /// and switching days. Evicting by last use keeps the visible set resident,
+    /// so crossing the cap degrades gradually instead of falling off an edge.
+    ///
+    /// A quarter at a time so the sort amortizes across many inserts rather
+    /// than running on every one past the cap.
+    private static func evictColdest() {
+        let excess = cache.count - (cacheCap * 3 / 4)
+        guard excess > 0 else { return }
+        let coldest = cache
+            .sorted { $0.value.lastUsed < $1.value.lastUsed }
+            .prefix(excess)
+        for (key, _) in coldest {
+            cache.removeValue(forKey: key)
+        }
+    }
+
+    // MARK: - Test seams
+
+    static var cacheCountForTesting: Int { cache.count }
+    static func cacheContainsForTesting(_ raw: String) -> Bool { cache[raw] != nil }
+    static func resetCacheForTesting() {
+        cache.removeAll()
+        clock = 0
     }
 
     /// Give every `scout-tag://` run the chip treatment: accent ink on an

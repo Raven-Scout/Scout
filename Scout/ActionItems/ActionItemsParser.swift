@@ -778,65 +778,90 @@ extension ActionItemsParser {
     /// and ``[label](url)`` tokens. Falls back to ``": "`` separator. Mirrors
     /// ``action-items/render.py`` ``_split_subject``.
     static func splitSubjectBody(_ rest: String) -> (String, String) {
-        let separators = [" — ", " – ", " - "]
-        if let idx = firstSeparatorOutsideTokens(in: rest, separators: separators) {
-            for sep in separators {
-                let sepLen = sep.count
-                if rest.distance(from: idx, to: rest.endIndex) >= sepLen,
-                   rest[idx ..< rest.index(idx, offsetBy: sepLen)] == sep {
-                    return (
-                        String(rest[..<idx]).trimmingCharacters(in: .whitespaces),
-                        String(rest[rest.index(idx, offsetBy: sepLen)...]).trimmingCharacters(in: .whitespaces)
-                    )
-                }
-            }
+        // Materialize the grapheme clusters once. Every index below is then an
+        // `Int` into this array, which is what keeps the scan O(n): the previous
+        // version walked `String.Index` and asked `text.distance(from:to:)` —
+        // itself O(n) — three times per character, making the whole function
+        // quadratic in line length. Task lines run to ~9,700 characters, so that
+        // cost 465 ms at `-O` across one day's file, 68% of the entire parse.
+        let chars = Array(rest)
+
+        if let hit = firstSeparatorOutsideTokens(in: chars, separators: dashSeparators) {
+            return split(chars, at: hit)
         }
-        if let idx = firstSeparatorOutsideTokens(in: rest, separators: [": "]) {
-            let sepLen = 2
-            return (
-                String(rest[..<idx]).trimmingCharacters(in: .whitespaces),
-                String(rest[rest.index(idx, offsetBy: sepLen)...]).trimmingCharacters(in: .whitespaces)
-            )
+        if let hit = firstSeparatorOutsideTokens(in: chars, separators: colonSeparator) {
+            return split(chars, at: hit)
         }
         return (rest, "")
     }
 
-    private static func firstSeparatorOutsideTokens(in text: String, separators: [String]) -> String.Index? {
+    /// ` — ` / ` – ` / ` - `, in the order the scanner tries them at each
+    /// position. Hoisted so the arrays aren't rebuilt per task line.
+    private static let dashSeparators: [[Character]] = [
+        Array(" — "), Array(" – "), Array(" - "),
+    ]
+    private static let colonSeparator: [[Character]] = [Array(": ")]
+
+    private static func split(
+        _ chars: [Character],
+        at hit: (index: Int, length: Int)
+    ) -> (String, String) {
+        (
+            String(chars[..<hit.index]).trimmingCharacters(in: .whitespaces),
+            String(chars[(hit.index + hit.length)...]).trimmingCharacters(in: .whitespaces)
+        )
+    }
+
+    /// First separator lying outside `**bold**`, `~~strike~~`, `` `code` ``,
+    /// `[[wikilink]]` and `[label](url)` tokens, as a `(offset, length)` pair.
+    ///
+    /// Returning the matched length as well as the offset lets the caller slice
+    /// directly. The original re-tested each separator at the returned index to
+    /// recover its length; because the scan already tries them in order at every
+    /// position, the first one that matched there is the same one, so this is
+    /// equivalent — and the `SplitSubjectBodyTests` differential pins it.
+    private static func firstSeparatorOutsideTokens(
+        in chars: [Character],
+        separators: [[Character]]
+    ) -> (index: Int, length: Int)? {
         var inBold = false, inStrike = false, inCode = false
         var bracketDepth = 0, parenDepth = 0
-        var i = text.startIndex
-        while i < text.endIndex {
-            let rem = text[i...]
-            let two = rem.prefix(2)
-            let ch = text[i]
-            if ch == "`" && !inBold && !inStrike { inCode.toggle(); i = text.index(after: i); continue }
-            if inCode { i = text.index(after: i); continue }
-            if two == "**" { inBold.toggle(); i = text.index(i, offsetBy: 2); continue }
-            if two == "~~" { inStrike.toggle(); i = text.index(i, offsetBy: 2); continue }
-            if two == "[[" { bracketDepth += 1; i = text.index(i, offsetBy: 2); continue }
-            if two == "]]" && bracketDepth > 0 { bracketDepth -= 1; i = text.index(i, offsetBy: 2); continue }
-            if ch == "[" && bracketDepth == 0 { bracketDepth = 1; i = text.index(after: i); continue }
-            if ch == "]" && bracketDepth > 0 && two != "]]" {
+        var i = 0
+        let n = chars.count
+        while i < n {
+            let ch = chars[i]
+            let next: Character? = i + 1 < n ? chars[i + 1] : nil
+            if ch == "`" && !inBold && !inStrike { inCode.toggle(); i += 1; continue }
+            if inCode { i += 1; continue }
+            if ch == "*" && next == "*" { inBold.toggle(); i += 2; continue }
+            if ch == "~" && next == "~" { inStrike.toggle(); i += 2; continue }
+            if ch == "[" && next == "[" { bracketDepth += 1; i += 2; continue }
+            if ch == "]" && next == "]" && bracketDepth > 0 { bracketDepth -= 1; i += 2; continue }
+            if ch == "[" && bracketDepth == 0 { bracketDepth = 1; i += 1; continue }
+            if ch == "]" && bracketDepth > 0 && next != "]" {
                 bracketDepth = 0
-                let next = text.index(after: i)
-                if next < text.endIndex && text[next] == "(" {
+                if next == "(" {
                     parenDepth = 1
-                    i = text.index(i, offsetBy: 2); continue
+                    i += 2; continue
                 }
-                i = text.index(after: i); continue
+                i += 1; continue
             }
-            if ch == ")" && parenDepth > 0 { parenDepth -= 1; i = text.index(after: i); continue }
+            if ch == ")" && parenDepth > 0 { parenDepth -= 1; i += 1; continue }
             if !inBold && !inStrike && bracketDepth == 0 && parenDepth == 0 {
-                for sep in separators {
-                    let sepLen = sep.count
-                    if text.distance(from: i, to: text.endIndex) >= sepLen,
-                       text[i ..< text.index(i, offsetBy: sepLen)] == sep {
-                        return i
-                    }
+                for sep in separators where matches(chars, at: i, sep) {
+                    return (i, sep.count)
                 }
             }
-            i = text.index(after: i)
+            i += 1
         }
         return nil
+    }
+
+    private static func matches(_ chars: [Character], at i: Int, _ sep: [Character]) -> Bool {
+        guard i + sep.count <= chars.count else { return false }
+        for k in 0 ..< sep.count where chars[i + k] != sep[k] {
+            return false
+        }
+        return true
     }
 }
