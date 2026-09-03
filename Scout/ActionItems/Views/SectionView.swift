@@ -14,7 +14,7 @@ struct SectionView: View {
             case .focus:
                 focus
             case .meetings:
-                MeetingsTableView(section: section)
+                MeetingsTableView(tables: section.tables)
                     .padding(.top, 4)
             case .done:
                 completedList
@@ -46,8 +46,77 @@ struct SectionView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(.top, 12)
             }
+            archive
         }
         .padding(.bottom, 12)
+    }
+
+    // MARK: - Archive (`<details>` regions)
+
+    /// Collapsed `<details>` regions, rendered the way the markdown means them:
+    /// shut by default, one disclosure per region, below the live list. Their
+    /// rows are real tasks, so a parked item can still be worked without
+    /// leaving the app — it just doesn't compete with today's work for
+    /// attention, and it stays out of the section count.
+    @ViewBuilder
+    private var archive: some View {
+        if !section.collapsed.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(section.collapsed) { group in
+                    archiveGroup(group)
+                }
+            }
+            .padding(.top, 14)
+        }
+    }
+
+    private func archiveGroup(_ group: ActionSection.CollapsedGroup) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(group.tasks) { task in
+                    TaskCardView(
+                        task: task,
+                        kind: section.kind,
+                        displayedDate: displayedDate,
+                        scoutDirectory: scoutDirectory,
+                        // Deliberately not selectable. `ActionItemsView`
+                        // derives the selectable set from `section.tasks`, so a
+                        // checked archive row would be reconciled away on the
+                        // next reparse and silently skipped by Copy — and
+                        // "Select all" sweeping a 124-row parked block into a
+                        // copy isn't what the button means. Every other action
+                        // on the card still works.
+                        selection: nil,
+                        onOp: onOp
+                    )
+                }
+                ForEach(Array(group.bullets.enumerated()), id: \.offset) { _, bullet in
+                    InlineMarkdownText(bullet)
+                        .font(DS.serif(13))
+                        .foregroundStyle(DS.Ink.p3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                MeetingsTableView(tables: group.tables)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.top, 6)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                InlineMarkdownText(group.summary.isEmpty ? "Archived" : group.summary)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Ink.p4)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !group.tasks.isEmpty {
+                    Text("\(group.tasks.count)")
+                        .font(DS.mono(11, weight: .medium))
+                        .foregroundStyle(DS.Ink.p4)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Header
@@ -103,32 +172,41 @@ struct SectionView: View {
 
     private var focus: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(section.bullets.enumerated()), id: \.offset) { index, bullet in
-                focusItem(n: index + 1, bullet: bullet, index: index)
+            ForEach(Array(section.bullets.enumerated()), id: \.offset) { _, bullet in
+                let split = ActionItemsParser.focusOrdinal(bullet)
+                if let n = split.number {
+                    focusItem(n: n, text: split.text)
+                } else {
+                    focusProse(split.text)
+                }
             }
         }
         .padding(.top, 12)
     }
 
-    /// First three focus items get the priority-hue left border — mirrors the
-    /// f1/f2/f3 levels in the handoff bundle.
-    @ViewBuilder
-    private func focusItem(n: Int, bullet: String, index: Int) -> some View {
+    /// A ranked line from the section's numbered list. The number is the
+    /// source's own — the section is authored as a markdown ordered list, so
+    /// counting rows here instead would both renumber it and print the ordinal
+    /// twice.
+    ///
+    /// The top three get the priority-hue left border, mirroring the f1/f2/f3
+    /// levels in the handoff bundle.
+    private func focusItem(n: Int, text: String) -> some View {
         let accent: Color = {
-            switch index {
-            case 0:  return DS.Priority.urgent
-            case 1:  return DS.Priority.todo
-            case 2:  return DS.Priority.watch
+            switch n {
+            case 1:  return DS.Priority.urgent
+            case 2:  return DS.Priority.todo
+            case 3:  return DS.Priority.watch
             default: return DS.Rule.hard
             }
         }()
-        HStack(alignment: .top, spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
             Text("\(n)")
                 .font(DS.mono(11, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, alignment: .trailing)
                 .padding(.top, 3)
-            InlineMarkdownText(bullet)
+            InlineMarkdownText(text)
                 .font(DS.serif(14))
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
@@ -144,6 +222,18 @@ struct SectionView: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(accent).frame(width: 2)
         }
+    }
+
+    /// The narrative around the list — the run's lede above it, the
+    /// `⏸️ Verified negatives` note below. Prose, not a ranked item, so it gets
+    /// no number and no card.
+    private func focusProse(_ text: String) -> some View {
+        InlineMarkdownText(text)
+            .font(DS.serif(13))
+            .foregroundStyle(DS.Ink.p2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
     }
 
     // MARK: - Recently completed
