@@ -16,7 +16,9 @@ final class AppState: ObservableObject {
     @Published private(set) var urgentActionCount: Int = 0
 
     // Existing Control Center services
-    let fileWatcher: FileWatcher
+    /// The FSEvents source every document service watches through. Production
+    /// wires a real `FileWatcher`; tests inject a fake so no vault is touched.
+    let fileEvents: any FileSystemEventSource
     let trackerService: UsageTrackerService
     let sessionTokensService: SessionTokensService
     let connectorHealthService: ConnectorHealthService
@@ -61,12 +63,21 @@ final class AppState: ObservableObject {
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
-    init() {
-        let scoutDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Scout")
+    /// Production entry point — everything points at `~/Scout` and all the
+    /// background work (timers, file watches, launch-time loads) starts.
+    convenience init() {
+        self.init(configuration: .production())
+    }
+
+    /// Designated initializer. Every external dependency arrives through
+    /// `configuration`, so tests can point the whole object graph at a temp
+    /// directory and keep the background work switched off.
+    init(configuration: Configuration) {
+        let scoutDir = configuration.scoutDirectory
         let actionItemsDir = scoutDir.appendingPathComponent("action-items")
-        let watcher = FileWatcher()
-        let runner = SystemProcessRunner()
+        let events = configuration.fileEvents
+        let runner = configuration.runner
+        let defaults = configuration.defaults
 
         // Resolve scoutctl explicitly. When Scout.app launches from Finder
         // (or via `open`), its PATH is the LaunchServices default
@@ -79,28 +90,29 @@ final class AppState: ObservableObject {
         // GUI app PATH inheritance at all. Falls back to `/usr/bin/env`
         // only if no known path exists (then ScheduleService surfaces the
         // exec error via its `lastError` publisher so the UI can show
-        // "scoutctl not found").
-        let scoutctlResolved = AppState.resolveScoutctlPath()
+        // "scoutctl not found"). `Configuration.production()` does the
+        // resolving; tests pass a fixed invocation instead.
+        let scoutctlResolved = configuration.scoutctl
 
         let git = GitService(repoURL: scoutDir, runner: runner)
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
-            fileEvents: watcher
+            fileEvents: events
         )
         let tokens = SessionTokensService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/session-tokens.jsonl"),
-            fileEvents: watcher
+            fileEvents: events
         )
         let connectorHealth = ConnectorHealthService(
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
             ackStoreURL: scoutDir.appendingPathComponent(".scout-cache/connector-alerts-acked.json"),
-            fileEvents: watcher
+            fileEvents: events
         )
         let logs = SessionLogService(
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
             trackerService: tracker,
             gitService: git,
-            fileEvents: watcher
+            fileEvents: events
         )
         // Plan 5: scout-app no longer dispatches launchd plists. ScheduleService
         // polls `scoutctl schedule list-upcoming --json` every 60 s and renders
@@ -129,7 +141,7 @@ final class AppState: ObservableObject {
                 .defaultScoutSessionsDirectory(scoutDirectory: scoutDir)
         )
 
-        let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: watcher)
+        let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: events)
         let writerActor = ActionItemsWriter(
             scoutctl: scoutctlExe,
             argumentsPrefix: scoutctlArgsPrefix,
@@ -145,7 +157,7 @@ final class AppState: ObservableObject {
         // `dreaming-proposals.md` is just an index). The folder is overridable
         // via the `dreamingProposalsPath` setting; takes effect on next launch.
         let proposalsDirURL: URL = {
-            let override = UserDefaults.standard
+            let override = defaults
                 .string(forKey: "dreamingProposalsPath")?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let override, !override.isEmpty {
@@ -153,7 +165,7 @@ final class AppState: ObservableObject {
             }
             return scoutDir.appendingPathComponent("dreaming-proposals")
         }()
-        let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: watcher)
+        let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: events)
         let proposalsWriter = ProposalsWriter(
             scoutDirectory: scoutDir,
             gitService: git
@@ -163,7 +175,7 @@ final class AppState: ObservableObject {
         // Per-file Wishlist + Research: resolve directory (override key or default
         // relative path under scoutDir), matching the dreamingProposalsPath pattern.
         func perFileDir(_ config: PerFileTabConfig) -> URL {
-            let override = UserDefaults.standard
+            let override = defaults
                 .string(forKey: config.pathOverrideKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let override, !override.isEmpty {
@@ -171,17 +183,17 @@ final class AppState: ObservableObject {
             }
             return scoutDir.appendingPathComponent(config.directoryDefaultRelative)
         }
-        let wishlistDoc = PerFileDocumentService(directoryURL: perFileDir(.wishlist), fileEvents: watcher)
-        let researchDoc = PerFileDocumentService(directoryURL: perFileDir(.research), fileEvents: watcher)
+        let wishlistDoc = PerFileDocumentService(directoryURL: perFileDir(.wishlist), fileEvents: events)
+        let researchDoc = PerFileDocumentService(directoryURL: perFileDir(.research), fileEvents: events)
         let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: git)
         let perFileWriterBox = PerFileItemWriterBox(writer: perFileWriter)
 
         // Knowledge Base: tree service over `knowledge-base/` + whole-file writer.
-        let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: watcher)
+        let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: events)
         let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
         let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
 
-        self.fileWatcher = watcher
+        self.fileEvents = events
         self.gitService = git
         self.trackerService = tracker
         self.sessionTokensService = tokens
@@ -234,6 +246,12 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Everything below spawns work that outlives the initializer — polling
+        // timers, FSEvents subscriptions, launch-time loads and a `scoutctl`
+        // shell-out. Tests build the same object graph with this switched off
+        // so a rendered view can't reach the filesystem or the network.
+        guard configuration.startsBackgroundWork else { return }
+
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
             _ = try? await tokens.loadInitial()
@@ -264,6 +282,39 @@ final class AppState: ObservableObject {
         }
 
         startNotificationWatch()
+    }
+
+    // MARK: - Configuration
+
+    /// Everything `AppState` reaches outside its own process. `production()`
+    /// is what the app ships with; tests substitute a temp directory, a
+    /// scripted process runner, and an inert event source.
+    struct Configuration {
+        /// Vault root. Every service path is derived from this.
+        var scoutDirectory: URL
+        /// How `scoutctl` and `git` shell-outs are executed.
+        var runner: any ProcessRunner
+        /// FSEvents source the document services subscribe to.
+        var fileEvents: any FileSystemEventSource
+        /// Where `scoutctl` lives and how to invoke it.
+        var scoutctl: ScoutctlInvocation
+        /// Backing store for the user's path-override settings.
+        var defaults: UserDefaults
+        /// When false the initializer wires the object graph but starts no
+        /// timers, watches, loads, or subprocesses.
+        var startsBackgroundWork: Bool
+
+        static func production() -> Configuration {
+            Configuration(
+                scoutDirectory: FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Scout"),
+                runner: SystemProcessRunner(),
+                fileEvents: FileWatcher(),
+                scoutctl: AppState.resolveScoutctlPath(),
+                defaults: .standard,
+                startsBackgroundWork: true
+            )
+        }
     }
 
     /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
@@ -427,3 +478,49 @@ final class AppState: ObservableObject {
         }.store(in: &cancellables)
     }
 }
+
+#if DEBUG
+extension AppState.Configuration {
+    /// An inert configuration for tests and SwiftUI previews: a caller-supplied
+    /// vault directory, a process runner that never spawns anything, an event
+    /// source that never fires, and no background work. Nothing here touches
+    /// `~/Scout` or `UserDefaults.standard`.
+    static func testing(
+        scoutDirectory: URL,
+        runner: any ProcessRunner = InertProcessRunner(),
+        defaults: UserDefaults = UserDefaults(suiteName: "scout.tests")!
+    ) -> AppState.Configuration {
+        // Clear any path overrides a previous run left behind, so the vault
+        // directory passed in is authoritative.
+        defaults.removePersistentDomain(forName: "scout.tests")
+        return AppState.Configuration(
+            scoutDirectory: scoutDirectory,
+            runner: runner,
+            fileEvents: InertFileEvents(),
+            scoutctl: AppState.ScoutctlInvocation(
+                executable: URL(fileURLWithPath: "/usr/bin/false"),
+                argsPrefix: []
+            ),
+            defaults: defaults,
+            startsBackgroundWork: false
+        )
+    }
+}
+
+/// Succeeds instantly with empty output — stands in for `scoutctl` and `git`.
+struct InertProcessRunner: ProcessRunner {
+    func run(
+        executable: URL, arguments: [String],
+        environment: [String: String], workingDirectory: URL?
+    ) async throws -> ProcessResult {
+        ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+    }
+}
+
+/// A file-event source that finishes immediately, so nothing ever re-parses.
+struct InertFileEvents: FileSystemEventSource {
+    func events(for url: URL) -> AsyncStream<FileSystemEvent> {
+        AsyncStream { $0.finish() }
+    }
+}
+#endif
