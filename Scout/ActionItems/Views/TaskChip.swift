@@ -4,7 +4,8 @@ import Foundation
 /// scannable "who/where" line inspired by the triage artifact's chips. Derived
 /// purely from a task's deep links and carry marker; no new data.
 struct TaskChip: Identifiable, Equatable {
-    enum Glyph: Equatable {
+    /// `String`-backed so `id` can key off the glyph without reflection.
+    enum Glyph: String, Equatable {
         case github, linear, slack, carry
         /// Sourced from a task's `- Refs:` sub-bullet.
         case entity, crossRef, plain
@@ -24,16 +25,26 @@ struct TaskChip: Identifiable, Equatable {
     let label: String
     /// Click targets: 0 = static (no action), 1 = open directly, >1 = dropdown.
     let links: [Link]
+    /// Identity of the single Refs token this chip stands for, when it stands
+    /// for one — `TaskDeepLink.id`, i.e. kind + raw value. The grouped chips
+    /// (PRs, Linear, Slack) and the carry chip summarise zero or many tokens
+    /// and leave it nil, falling back to glyph + label.
+    let tokenID: String?
 
-    /// `links` is defaulted so call sites and tests that construct a chip by
-    /// glyph+label keep compiling and comparing equal.
-    init(glyph: Glyph, label: String, links: [Link] = []) {
+    /// `links` and `tokenID` are defaulted so call sites and tests that
+    /// construct a chip by glyph+label keep compiling and comparing equal.
+    init(glyph: Glyph, label: String, links: [Link] = [], tokenID: String? = nil) {
         self.glyph = glyph
         self.label = label
         self.links = links
+        self.tokenID = tokenID
     }
 
-    var id: String { "\(label)" }
+    /// Stable `ForEach` identity. The label alone collides whenever two
+    /// distinct tokens render the same text — `[[people/alex]]` and
+    /// `[[team/alex]]` both display "alex" — which leaves SwiftUI free to
+    /// render either row, so per-token chips identify by their token instead.
+    var id: String { tokenID ?? "\(glyph.rawValue):\(label)" }
 
     /// Derive the chip row for a task: a count/label per deep-link kind (PRs,
     /// Linear, Slack), the repo slug when a single GitHub repo is referenced,
@@ -96,11 +107,11 @@ struct TaskChip: Identifiable, Equatable {
             switch link {
             case .entity:
                 let links = link.openURL.map { [Link(label: link.displayLabel, url: $0)] } ?? []
-                chips.append(TaskChip(glyph: .entity, label: link.displayLabel, links: links))
+                chips.append(TaskChip(glyph: .entity, label: link.displayLabel, links: links, tokenID: link.id))
             case .crossRef:
-                chips.append(TaskChip(glyph: .crossRef, label: link.displayLabel))
+                chips.append(TaskChip(glyph: .crossRef, label: link.displayLabel, tokenID: link.id))
             case .plainRef:
-                chips.append(TaskChip(glyph: .plain, label: link.displayLabel))
+                chips.append(TaskChip(glyph: .plain, label: link.displayLabel, tokenID: link.id))
             case .linear, .githubPR, .slackThread:
                 break   // handled by the grouped kinds above
             }
