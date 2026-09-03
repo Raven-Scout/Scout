@@ -20,6 +20,7 @@ repos, and nothing in CI can see across a repo edge.
 |---|---|---|---|---|
 | `parser-corpus.json` | `scout-plugin/engine/tests/fixtures/contract/` | macOS `ScoutTests/Fixtures/`, iOS `ScoutMobileTests/Fixtures/` | SHA-256 asserted on **both** sides (`canonicalSHA256`, `EXPECTED_SHA256`) | ✅ in sync — `745dc8f8…` in all three |
 | `connectors.snapshot.json` | `scout-plugin/engine/scout/` | macOS `ScoutTests/Fixtures/` | best-effort dual-write, **no cross-repo check** | ❌ drifted ~4 months |
+| `connectors.snapshot.json` | *(same)* | macOS **`Scout/Resources/`** — shipped in the app bundle | **none whatsoever** | ❌ drifted ~4 months, **user-facing** |
 | `schedule.snapshot.json` | `scout-plugin/engine/scout/` | macOS `ScoutTests/Fixtures/` | best-effort dual-write, **no cross-repo check** | ❌ drifted |
 | `scoutctl` invocation contract | `engine/scout/cli.py` | macOS `ActionItemsWriter`, `ScheduleService`, … | runtime `--help` probe | ⚠️ probe-only, no version floor |
 | `manifest.json` capability contract | `engine/scout/manifest.py` | *(intended: `CapabilityChecker.swift`)* | — | ❌ never built app-side |
@@ -39,11 +40,30 @@ convenience does not.
    since 2026-05-07. A snapshot test asserting "the exact roster the app must
    reflect" has been asserting a roster the engine abandoned.
 
-2. **`schedule.snapshot.json` has drifted semantically.** Four slots read
-   `on_miss: "collapse"` canonically and `on_miss: "skip"` in the app's fixture.
-   The app's tests pin behavior the engine no longer implements.
+2. **The stale connector roster ships to users, and a test certifies it.**
+   `ConnectorHealthService.defaultSnapshotURL` loads
+   `Scout/Resources/connectors.snapshot.json` from `Bundle.main` at runtime —
+   this is the roster the rail card renders, not a test artifact. That file and
+   `ScoutTests/Fixtures/connectors.snapshot.json` are the *same stale bytes*
+   (`7a57c9cc…`), so `ConnectorHealthServiceTests` asserts the shipped roster is
+   correct while both are four months behind and missing `mcp:fathom`. The test
+   does not catch the bug; it ratifies it.
 
-3. **The sync mechanism cannot run where it matters.**
+   Worse, the resolver's own comment claims the engine writer *"keeps targeting
+   all three sinks."* It does not.
+   [`connectors_snapshot.py:94-101`](https://github.com/Raven-Scout/scout-plugin/blob/main/engine/scout/scripts/connectors_snapshot.py#L94-L101)
+   defines exactly two — the canonical file and `~/scout-app/ScoutTests/Fixtures/`
+   — and has no reference to `Resources/` anywhere. The third sink was documented
+   but never implemented, so the shipped copy has had **no sync mechanism at all**
+   since it was added on 2026-05-19.
+
+3. **`schedule.snapshot.json` has drifted semantically.** Four slots read
+   `on_miss: "collapse"` canonically and `on_miss: "skip"` in the app's fixture.
+   The app's tests pin behavior the engine no longer implements. (Schedule has no
+   bundled runtime resource — `ScheduleService` calls `scoutctl schedule list
+   --json` live — so this one is test-only.)
+
+4. **The sync mechanism cannot run where it matters.**
    [`cli.py:363`](https://github.com/Raven-Scout/scout-plugin/blob/main/engine/scout/cli.py#L363)
    dual-writes into a hardcoded `~/scout-app/ScoutTests/Fixtures/` and
    *"best-effort … skipped scout-app fixture write"* when that sibling checkout
@@ -52,13 +72,13 @@ convenience does not.
    the YAML" and its own comment says *"scout-app's bundled fixture is a synced
    copy"* — with no step that verifies the copy.
 
-4. **Keeping the guarded file correct costs a 4-step, 3-repo ritual.** The macOS
+5. **Keeping the guarded file correct costs a 4-step, 3-repo ritual.** The macOS
    `CLAUDE.md` documents it: edit the corpus, copy it byte-for-byte into two
    sibling checkouts, update two checksum constants, then run three test suites
    on two platforms. It works because it is expensive enough to be conspicuous.
    That is not a property to preserve.
 
-5. **Path drift is silent and already present.** The app's *first-priority*
+6. **Path drift is silent and already present.** The app's *first-priority*
    `scoutctl` candidate is `~/scout-plugin/bin/scoutctl`
    ([`AppState.swift:383`](https://github.com/Raven-Scout/Scout/blob/main/Scout/Shell/AppState.swift#L383)).
    That path does not exist — the executable is at `engine/bin/scoutctl`. The app
@@ -66,7 +86,7 @@ convenience does not.
    test in either repo could have caught this, because neither repo can see the
    other's tree.
 
-6. **Version skew is unpoliced.** The v0.4 spec §8 specified an app-side
+7. **Version skew is unpoliced.** The v0.4 spec §8 specified an app-side
    `CapabilityChecker.swift` floor against `engine/manifest.json`. The engine
    ships `manifest.py`; the app contains **zero** references to a manifest. Skew
    is instead detected by shelling out `scoutctl action-items --help` and grepping
@@ -329,9 +349,14 @@ The actual payoff, and the reason to do this at all.
 ### Stage 1 — make drift detectable (migration scope)
 
 One CI job, `contract.yml`, regenerates the snapshots from their YAML sources and
-`diff`s them against every client's committed fixture. Both §1 drifts become
-red builds on the commit that introduces them. This alone converts three silent
-failure modes into loud ones.
+`diff`s them against every committed copy — **test fixtures and shipped bundle
+resources alike**. All three §1 drifts become red builds on the commit that
+introduces them.
+
+The bundle resource (`apps/macos/Scout/Resources/connectors.snapshot.json`) is
+the copy that matters most and the only one with no mechanism today, so it is
+explicitly in the diff set, not just the fixtures. A check that covered only
+test fixtures would have left the user-facing drift live.
 
 ### Stage 2 — make drift unrepresentable (immediately after)
 
@@ -340,8 +365,16 @@ Better than detecting a copy is not having one. Two moves:
 1. **Delete the macOS app's snapshot fixtures.** Point the Xcode test target at
    `plugin/engine/scout/connectors.snapshot.json` and
    `plugin/engine/scout/schedule.snapshot.json` via a relative path in the same
-   tree. Then retire the `--write-app-fixture` dual-write in `cli.py` and its
-   hardcoded `~/scout-app` path. There is no copy left to drift.
+   tree. Then retire the `--also-write-app-fixture` dual-write in `cli.py` and its
+   hardcoded `~/scout-app` path.
+
+   The **bundle resource cannot simply be deleted** — the shipping app must carry
+   a roster with no dev checkout present, which is the whole reason
+   `defaultSnapshotURL` prefers `Bundle.main`. Instead make it a *build product*:
+   an Xcode pre-build script copies `plugin/engine/scout/connectors.snapshot.json`
+   into the bundle, and the file leaves version control. A generated artifact
+   cannot drift from its source. Until that lands, `contract.yml` (Stage 1) is
+   what keeps it honest.
 
 2. **Delete the parser-corpus checksum guards.** With the corpus and both
    consumers in one tree, `canonicalSHA256` and `EXPECTED_SHA256` are ceremony
@@ -380,7 +413,7 @@ Xcode build, and an app-only Swift change runs the Python matrix.
 | `app-ci.yml` | `apps/macos/**`, `.github/workflows/app-ci.yml` | `macos-15` |
 | `plugin-test.yml` | `plugin/**`, `.github/workflows/plugin-test.yml` | ubuntu + macos × py3.11/3.12 |
 | `plugin-lint.yml` | `plugin/**` | ubuntu |
-| `contract.yml` | `plugin/engine/scout/*.yaml`, `plugin/engine/scout/*.snapshot.json`, `plugin/engine/tests/fixtures/contract/**`, `apps/**/Fixtures/**` | ubuntu |
+| `contract.yml` | `plugin/engine/scout/*.yaml`, `plugin/engine/scout/*.snapshot.json`, `plugin/engine/tests/fixtures/contract/**`, `apps/**/Fixtures/**`, `apps/**/Resources/**` | ubuntu |
 | `release-plugin.yml` | tag `plugin/v*` | ubuntu |
 
 App releases stay a local script (§6) — notarization needs a Developer ID
