@@ -10,15 +10,15 @@ import Foundation
 /// tag: NAHSEND
 /// channel: email
 /// loop_type: direct-debt
-/// to: "Jan Novák <jan@firma.cz>"
+/// to: "Priya <priya@example.com>"
 /// thread_ref: "https://mail.google.com/…"
-/// subject: "Re: Rozpočet Q3"
+/// subject: "Re: Q3 budget"
 /// status: draft
 /// created: 2026-06-29
 /// context_answer_ref: ""
 /// ---
 ///
-/// Ahoj Jane, …
+/// Hi Priya, …
 /// ```
 ///
 /// Pure functions — no I/O — so they are trivially unit-testable. `nonisolated`
@@ -86,10 +86,19 @@ nonisolated enum ReplyDraftsParser {
         sectionBody(context, heading: "## Summary")
     }
 
+    /// Matches `- [YYYY-MM-DD] Sender: text`. The sender group is lazy and the
+    /// separator requires a following space, so the split lands on the LAST
+    /// `": "` that starts the text rather than the first bare colon — otherwise
+    /// a sender carrying a time ("Alex 10:30") is truncated to "Alex 10".
+    /// Compiled once; `parseMessages` runs for every draft parse.
+    private static let messageLine = try? NSRegularExpression(
+        pattern: #"^\s*-\s*\[([^\]]*)\]\s*(.+?):\s(.*)$"#
+    )
+
     /// Parse `- [YYYY-MM-DD] Sender: text` lines under a `## Thread` heading.
     static func parseMessages(_ context: String) -> [DraftMessage] {
         guard let section = sectionBody(context, heading: "## Thread") else { return [] }
-        guard let re = try? NSRegularExpression(pattern: #"^\s*-\s*\[([^\]]*)\]\s*([^:]+):\s*(.*)$"#) else { return [] }
+        guard let re = messageLine else { return [] }
         var out: [DraftMessage] = []
         for (i, line) in section.components(separatedBy: "\n").enumerated() {
             let ns = line as NSString
@@ -158,10 +167,13 @@ nonisolated enum ReplyDraftsParser {
         return out
     }
 
+    /// Compiled once — see ``messageLine``.
+    private static let stemDatePrefix = try? NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}"#)
+
     /// First `yyyy-MM-dd` at the start of a filename stem, used when frontmatter
     /// omits `created`.
     static func datePrefix(of stem: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}"#) else { return nil }
+        guard let re = stemDatePrefix else { return nil }
         let ns = stem as NSString
         guard let m = re.firstMatch(in: stem, range: NSRange(location: 0, length: ns.length)) else { return nil }
         return ns.substring(with: m.range)

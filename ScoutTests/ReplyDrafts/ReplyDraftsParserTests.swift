@@ -7,20 +7,20 @@ private let fullFixture = """
 tag: NAHSEND
 channel: email
 loop_type: direct-debt
-to: "Jan Novák <jan@firma.cz>"
-cc: "Petra Malá <petra@firma.cz>"
+to: "Priya <priya@example.com>"
+cc: "Sam <sam@example.com>"
 thread_ref: "https://mail.google.com/mail/u/0/#inbox/abc123"
-subject: "Re: Rozpočet Q3"
+subject: "Re: Q3 budget"
 status: draft
 created: 2026-06-29
 context_answer_ref: ""
 ---
 
-Ahoj Jane,
+Hi Priya,
 
-posílám čísla k Q3 rozpočtu. [TBD: doplnit finální částku]
+sending over the Q3 budget numbers. [TBD: fill in the final amount]
 
-Měj se,
+Best,
 Alex
 """
 
@@ -33,16 +33,16 @@ struct ReplyDraftsParserTests {
         #expect(d.tag == "NAHSEND")
         #expect(d.channel == .email)
         #expect(d.loopType == "direct-debt")
-        #expect(d.to == "Jan Novák <jan@firma.cz>")
-        #expect(d.cc == "Petra Malá <petra@firma.cz>")
+        #expect(d.to == "Priya <priya@example.com>")
+        #expect(d.cc == "Sam <sam@example.com>")
         #expect(d.threadRef == "https://mail.google.com/mail/u/0/#inbox/abc123")
-        #expect(d.subject == "Re: Rozpočet Q3")
+        #expect(d.subject == "Re: Q3 budget")
         #expect(d.status == .draft)
         #expect(d.created == "2026-06-29")
         // Empty quoted value → nil.
         #expect(d.contextAnswerRef == nil)
-        #expect(d.bodyMarkdown.hasPrefix("Ahoj Jane,"))
-        #expect(d.bodyMarkdown.contains("[TBD: doplnit finální částku]"))
+        #expect(d.bodyMarkdown.hasPrefix("Hi Priya,"))
+        #expect(d.bodyMarkdown.contains("[TBD: fill in the final amount]"))
         #expect(d.showsSubject)
     }
 
@@ -51,38 +51,56 @@ struct ReplyDraftsParserTests {
         ---
         tag: CTX1
         channel: email
-        to: "a@b.cz"
+        to: "priya@example.com"
         thread_ref: "u"
         status: draft
         created: 2026-06-30
         ---
 
-        Ahoj, posílám odpověď.
+        Hi — sending my answer.
 
         <!-- scout:context -->
         ## Summary
 
-        Priya se ptá na možnosti granulárních rolí; míč je na tobě.
+        Priya asked about granular role options; the ball is with you.
 
         ## Thread
 
-        - [2026-05-26] Priya Rivera: shrnula tři varianty řešení
-        - [2026-05-22] Alex (you): feature není na roadmapě
+        - [2026-05-26] Priya Rivera: summarized three options
+        - [2026-05-22] Alex (you): the feature is not on the roadmap
         """
         let d = try #require(ReplyDraftsParser.parseFile(
             contents: text, fileURL: URL(fileURLWithPath: "/x/CTX1.md")))
         // Sendable body excludes the context block (Copy stays clean).
-        #expect(d.bodyMarkdown == "Ahoj, posílám odpověď.")
+        #expect(d.bodyMarkdown == "Hi — sending my answer.")
         #expect(!d.bodyMarkdown.contains("scout:context"))
         #expect(!d.bodyMarkdown.contains("Summary"))
         // Summary parsed.
-        #expect(d.summary == "Priya se ptá na možnosti granulárních rolí; míč je na tobě.")
+        #expect(d.summary == "Priya asked about granular role options; the ball is with you.")
         // Messages parsed.
         #expect(d.relatedMessages.count == 2)
         #expect(d.relatedMessages[0].date == "2026-05-26")
         #expect(d.relatedMessages[0].sender == "Priya Rivera")
-        #expect(d.relatedMessages[0].text == "shrnula tři varianty řešení")
+        #expect(d.relatedMessages[0].text == "summarized three options")
         #expect(d.relatedMessages[1].sender == "Alex (you)")
+    }
+
+    /// The sender/text split must land on the `": "` that starts the text, not
+    /// the first bare colon — a sender carrying a time was truncated ("Alex 10"
+    /// with text "30: said hi"), and the mangled name flows into the chat prompt.
+    @Test func senderWithAColonIsNotTruncated() {
+        let context = """
+        ## Thread
+
+        - [2026-05-26] Alex 10:30: said hi
+        - [2026-05-26] Priya: re: the budget thread
+        """
+        let messages = ReplyDraftsParser.parseMessages(context)
+        #expect(messages.count == 2)
+        #expect(messages[0].sender == "Alex 10:30")
+        #expect(messages[0].text == "said hi")
+        #expect(messages[1].sender == "Priya")
+        #expect(messages[1].text == "re: the budget thread")
     }
 
     @Test func draftWithoutContextHasNoSummaryOrMessages() throws {
@@ -106,7 +124,7 @@ struct ReplyDraftsParserTests {
         channel: slack
         loop_type: direct-debt
         to: "@alex"
-        thread_ref: "https://slack.com/archives/C1/p123"
+        thread_ref: "https://acme-co.slack.com/archives/C0123456789/p1700000000000000"
         status: draft
         created: 2026-06-29
         ---
@@ -128,20 +146,20 @@ struct ReplyDraftsParserTests {
         tag: QBACK
         channel: email
         loop_type: promise-answered
-        to: "Petra <petra@x.cz>"
+        to: "Sam <sam@example.com>"
         thread_ref: "https://mail/thread/1"
-        subject: "Re: termín"
+        subject: "Re: timing"
         status: draft
         created: 2026-06-29
-        context_answer_ref: "https://slack.com/archives/C2/p999"
+        context_answer_ref: "https://acme-co.slack.com/archives/C0123456789/p1700000000000001"
         ---
 
-        Ahoj Petro, ptal jsem se a termín je 15. července.
+        Hi Sam — I checked, and the date is 15 July.
         """
         let url = URL(fileURLWithPath: "/x/drafts/QBACK.md")
         let d = try #require(ReplyDraftsParser.parseFile(contents: text, fileURL: url))
         #expect(d.loopType == "promise-answered")
-        #expect(d.contextAnswerRef == "https://slack.com/archives/C2/p999")
+        #expect(d.contextAnswerRef == "https://acme-co.slack.com/archives/C0123456789/p1700000000000001")
     }
 
     @Test func missingStatusDefaultsToDraft() throws {

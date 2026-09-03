@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
     @AppStorage("dreamingProposalsPath") private var dreamingProposalsPath: String = ""
+    @AppStorage("replyDraftsPath")       private var replyDraftsPath: String = ""
     @AppStorage("wishlistPath")          private var wishlistPath: String = ""
     @AppStorage("researchQueuePath")     private var researchQueuePath: String = ""
     @State private var detectedClaudePath: String?
@@ -111,6 +112,19 @@ struct SettingsView: View {
                             SettingsInput(
                                 text: $dreamingProposalsPath,
                                 placeholder: "~/Scout/dreaming-proposals")
+                        }
+                    }
+                }
+
+                section(label: "Reply Drafts") {
+                    SettingsCard {
+                        SettingsField(
+                            label: "Reply drafts folder",
+                            help: "Folder of prepared replies the Reply Drafts tab reads. Leave blank to use `~/Scout/drafts`. Takes effect after restarting Scout."
+                        ) {
+                            SettingsInput(
+                                text: $replyDraftsPath,
+                                placeholder: "~/Scout/drafts")
                         }
                     }
                 }

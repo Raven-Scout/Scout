@@ -36,6 +36,10 @@ enum ReplyDraftsWriterError: Error, Equatable {
     case frontmatterNotFound(file: String)
     /// Frontmatter was present but had no `status:` line to replace.
     case statusFieldNotFound(file: String)
+    /// The `[TBD: …]` marker being filled was no longer in the file — the draft
+    /// changed under us. Surfaced rather than reported as a successful fill,
+    /// which would silently discard what the user typed.
+    case placeholderNotFound(file: String)
     case readFailed(String)
     case writeFailed(String)
 }
@@ -83,16 +87,24 @@ actor ReplyDraftsWriter {
     }
 
     /// Fill one `[TBD: …]` placeholder in the draft body with the user's value,
-    /// writing it into the file so the reply reads cleanly. Status is untouched
-    /// (the draft stays a draft). `label` is used for the git commit message.
-    func fill(placeholder: String, value: String, fileURL: URL, label: String) async throws {
+    /// writing it into the file so the reply reads cleanly. `occurrence` picks
+    /// which instance of an identical marker to replace (see
+    /// ``DraftInput/occurrence``). Status is untouched (the draft stays a
+    /// draft). `label` is used for the git commit message.
+    ///
+    /// Throws ``ReplyDraftsWriterError/placeholderNotFound(file:)`` when the
+    /// marker is gone: a no-op here means the draft changed under us, and
+    /// reporting it as success would make the caller discard the typed value.
+    func fill(placeholder: String, occurrence: Int, value: String, fileURL: URL, label: String) async throws {
         let previous = tail
         let task = Task { [scoutDirectory, gitService] in
             _ = await previous?.value
             let didWrite: Bool
             do {
                 didWrite = try GuardedFileWrite.apply(to: fileURL) { text in
-                    Self.fillPlaceholder(text: text, placeholder: placeholder, value: value)
+                    Self.fillPlaceholder(
+                        text: text, placeholder: placeholder, occurrence: occurrence, value: value
+                    )
                 }
             } catch let e as GuardedFileWrite.Failure {
                 switch e {
@@ -102,7 +114,9 @@ actor ReplyDraftsWriter {
                     throw ReplyDraftsWriterError.writeFailed("\(fileURL.lastPathComponent) changed repeatedly under concurrent writes")
                 }
             }
-            guard didWrite else { return }
+            guard didWrite else {
+                throw ReplyDraftsWriterError.placeholderNotFound(file: fileURL.lastPathComponent)
+            }
             let rel = Self.relativePathInRepo(fileURL: fileURL, repo: scoutDirectory)
             try? await gitService?.commitPaths([rel], message: "app: fill input in reply draft \(label)")
         }
@@ -110,12 +124,26 @@ actor ReplyDraftsWriter {
         return try await task.value
     }
 
-    /// Replace the FIRST occurrence of `placeholder` with `value`. Returns the
-    /// text unchanged when the placeholder isn't present (idempotent no-op —
-    /// e.g. a concurrent fill already resolved it).
-    static func fillPlaceholder(text: String, placeholder: String, value: String) -> String {
-        guard let range = text.range(of: placeholder) else { return text }
-        return text.replacingCharacters(in: range, with: value)
+    /// Replace the `occurrence`-th (zero-based) instance of `placeholder` with
+    /// `value`. Matching by position rather than "the first one" is what lets
+    /// two identical `[TBD: …]` markers be filled independently — replacing the
+    /// first every time made the second unfillable. Returns the text unchanged
+    /// when that instance isn't present (the caller turns that into
+    /// ``ReplyDraftsWriterError/placeholderNotFound(file:)``).
+    static func fillPlaceholder(
+        text: String, placeholder: String, occurrence: Int, value: String
+    ) -> String {
+        guard !placeholder.isEmpty, occurrence >= 0 else { return text }
+        var searchStart = text.startIndex
+        var remaining = occurrence
+        while let range = text.range(of: placeholder, range: searchStart..<text.endIndex) {
+            if remaining == 0 {
+                return text.replacingCharacters(in: range, with: value)
+            }
+            remaining -= 1
+            searchStart = range.upperBound
+        }
+        return text
     }
 
     private static func perform(
@@ -174,19 +202,25 @@ actor ReplyDraftsWriter {
             throw ReplyDraftsWriterError.frontmatterNotFound(file: file)
         }
 
-        var i = 1
-        while i < lines.count {
-            // Closing fence ends the frontmatter without finding `status:`.
-            if lines[i].trimmingCharacters(in: .whitespaces) == "---" { break }
-            if let colon = lines[i].firstIndex(of: ":") {
-                let key = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                if key == "status" {
-                    let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
-                    lines[i] = "\(leading)status: \(newStatusValue)"
-                    return lines.joined(separator: "\n")
-                }
+        // Locate the closing fence FIRST. Scanning for `status:` without one
+        // would run past the end of the frontmatter and rewrite a `status:`
+        // line in the reply body — the file only looks like it has frontmatter.
+        // The writer re-reads the file at write time, so it can see a truncated
+        // version the parser never accepted.
+        guard let fence = lines.dropFirst().firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == "---"
+        }) else {
+            throw ReplyDraftsWriterError.frontmatterNotFound(file: file)
+        }
+
+        for i in 1..<fence {
+            guard let colon = lines[i].firstIndex(of: ":") else { continue }
+            let key = lines[i][..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "status" {
+                let leading = String(lines[i].prefix(while: { $0 == " " || $0 == "\t" }))
+                lines[i] = "\(leading)status: \(newStatusValue)"
+                return lines.joined(separator: "\n")
             }
-            i += 1
         }
         throw ReplyDraftsWriterError.statusFieldNotFound(file: file)
     }

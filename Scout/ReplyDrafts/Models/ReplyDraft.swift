@@ -47,12 +47,49 @@ nonisolated struct ReplyDraft: Identifiable, Equatable, Sendable {
     /// collapsible "Thread" section. Empty when none.
     let relatedMessages: [DraftMessage]
 
+    /// Fill-in slots (`[TBD: …]` markers) the user still needs to resolve.
+    ///
+    /// Stored, not computed: the card reads this three times per body
+    /// evaluation, and as a computed property each read re-scanned the whole
+    /// body. Derived once in the initializer from `bodyMarkdown`.
+    let inputs: [DraftInput]
+
+    init(
+        fileURL: URL,
+        tag: String,
+        channel: DraftChannel,
+        loopType: String,
+        to: String,
+        cc: String?,
+        threadRef: String,
+        subject: String?,
+        status: DraftStatus,
+        created: String,
+        contextAnswerRef: String?,
+        bodyMarkdown: String,
+        summary: String?,
+        relatedMessages: [DraftMessage]
+    ) {
+        self.fileURL = fileURL
+        self.tag = tag
+        self.channel = channel
+        self.loopType = loopType
+        self.to = to
+        self.cc = cc
+        self.threadRef = threadRef
+        self.subject = subject
+        self.status = status
+        self.created = created
+        self.contextAnswerRef = contextAnswerRef
+        self.bodyMarkdown = bodyMarkdown
+        self.summary = summary
+        self.relatedMessages = relatedMessages
+        self.inputs = DraftInput.extract(from: bodyMarkdown)
+    }
+
     var id: String { fileURL.path }
 
     var isAwaitingAction: Bool { status.isAwaitingAction }
-
-    /// Fill-in slots (`[TBD: …]` markers) the user still needs to resolve.
-    var inputs: [DraftInput] { DraftInput.extract(from: bodyMarkdown) }
 
     /// Header chip — the tag reads like a code label.
     var code: String { tag }

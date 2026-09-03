@@ -7,17 +7,17 @@ private let writerFixture = """
 tag: NAHSEND
 channel: email
 loop_type: direct-debt
-to: "Jan Novák <jan@firma.cz>"
+to: "Priya <priya@example.com>"
 thread_ref: "https://mail.google.com/mail/u/0/#inbox/abc123"
-subject: "Re: Rozpočet Q3"
+subject: "Re: Q3 budget"
 status: draft
 created: 2026-06-29
 context_answer_ref: ""
 ---
 
-Ahoj Jane,
+Hi Priya,
 
-posílám čísla. [TBD: částka]
+sending over the numbers. [TBD: amount]
 """
 
 @Suite("ReplyDraftsWriter.rewriteFrontmatterStatus (pure)")
@@ -30,14 +30,14 @@ struct ReplyDraftsWriterRewriteTests {
         #expect(!out.contains("status: draft"))
         // Other frontmatter fields untouched.
         #expect(out.contains("tag: NAHSEND"))
-        #expect(out.contains("subject: \"Re: Rozpočet Q3\""))
+        #expect(out.contains("subject: \"Re: Q3 budget\""))
     }
 
     @Test func leavesBodyByteIdentical() throws {
         let out = try ReplyDraftsWriter.rewriteFrontmatterStatus(
             text: writerFixture, newStatusValue: "dismissed", file: "NAHSEND.md")
-        #expect(out.contains("Ahoj Jane,"))
-        #expect(out.contains("posílám čísla. [TBD: částka]"))
+        #expect(out.contains("Hi Priya,"))
+        #expect(out.contains("sending over the numbers. [TBD: amount]"))
     }
 
     @Test func reparsingTheRewriteReflectsTheNewStatus() throws {
@@ -69,31 +69,52 @@ struct ReplyDraftsWriterRewriteTests {
             text: text, newStatusValue: "sent", file: "p.md")
         #expect(out.contains("  status: sent"))
     }
+
+    /// An opening `---` with no closing fence is not frontmatter. Without the
+    /// fence check the scan runs into the body and rewrites the first line that
+    /// happens to look like `status:` — the writer re-reads the file at write
+    /// time, so it can see a truncated version the parser never accepted.
+    @Test func unterminatedFrontmatterThrowsRatherThanEditingTheBody() {
+        let text = "---\ntag: T\n\nHi — here is the status: draft we discussed.\n"
+        #expect(throws: ReplyDraftsWriterError.frontmatterNotFound(file: "p.md")) {
+            try ReplyDraftsWriter.rewriteFrontmatterStatus(
+                text: text, newStatusValue: "sent", file: "p.md")
+        }
+    }
 }
 
 @Suite("ReplyDraftsWriter.fillPlaceholder (pure)")
 struct ReplyDraftsFillTests {
 
-    @Test func replacesFirstOccurrenceWithValue() {
-        let text = "Potvrdím termín [TBD: ověřit čas] a ozvu se."
+    @Test func replacesTheOnlyOccurrenceWithValue() {
+        let text = "I'll confirm the time [TBD: check the calendar] and get back to you."
         let out = ReplyDraftsWriter.fillPlaceholder(
-            text: text, placeholder: "[TBD: ověřit čas]", value: "ve čtvrtek 14:00")
-        #expect(out == "Potvrdím termín ve čtvrtek 14:00 a ozvu se.")
+            text: text, placeholder: "[TBD: check the calendar]", occurrence: 0, value: "Thursday 14:00")
+        #expect(out == "I'll confirm the time Thursday 14:00 and get back to you.")
         #expect(!out.contains("[TBD"))
     }
 
     @Test func missingPlaceholderReturnsUnchanged() {
         let text = "Nothing to fill here."
         let out = ReplyDraftsWriter.fillPlaceholder(
-            text: text, placeholder: "[TBD: x]", value: "y")
+            text: text, placeholder: "[TBD: x]", occurrence: 0, value: "y")
         #expect(out == text)
     }
 
-    @Test func onlyFirstOccurrenceReplaced() {
+    /// Identical markers must be fillable independently — replacing "the first
+    /// one" every time made the second marker permanently unfillable.
+    @Test func replacesTheRequestedOccurrenceNotTheFirst() {
         let text = "[TBD: a] then [TBD: a]"
-        let out = ReplyDraftsWriter.fillPlaceholder(
-            text: text, placeholder: "[TBD: a]", value: "X")
-        #expect(out == "X then [TBD: a]")
+        #expect(ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: a]", occurrence: 0, value: "X") == "X then [TBD: a]")
+        #expect(ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: a]", occurrence: 1, value: "Y") == "[TBD: a] then Y")
+    }
+
+    @Test func occurrencePastTheEndReturnsUnchanged() {
+        let text = "[TBD: a] then [TBD: a]"
+        #expect(ReplyDraftsWriter.fillPlaceholder(
+            text: text, placeholder: "[TBD: a]", occurrence: 2, value: "Z") == text)
     }
 }
 

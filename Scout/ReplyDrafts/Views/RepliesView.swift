@@ -4,8 +4,12 @@ import SwiftUI
 /// directory), with Copy / Open thread / Mark sent / Dismiss on the ones still
 /// awaiting action and a read-only archive of resolved ones.
 ///
-/// The app never sends — it presents the drafted text for the user to send
-/// himself and only flips the draft's `status:` field.
+/// Scout never sends **on its own**: nothing here is dispatched by a background
+/// run, and the default path is to copy the text and send it yourself, after
+/// which Mark sent / Dismiss / Reopen only flip the file's `status:` field.
+/// Two explicitly-invoked, individually-confirmed actions do reach outward —
+/// "Send via Slack" posts the message and "Create Gmail draft" creates a native
+/// Gmail draft (see ``ReplyDraftCardView``).
 struct RepliesView: View {
     @EnvironmentObject var docService: ReplyDraftsDocumentService
     @EnvironmentObject var writerBox: ReplyDraftsWriterBox
@@ -14,7 +18,17 @@ struct RepliesView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            // Deliberately VStack, not LazyVStack (#83, fifth occurrence).
+            // Same reasoning as ActionItemsView (#84), SectionView (#86),
+            // ProposalsView and PerFileListView: a lazy stack under heavy card
+            // content re-enters a non-convergent height-estimation loop and
+            // wedges scrolling at 100% CPU. ReplyDraftCardView is the heaviest
+            // card in the app (three DisclosureGroups, vertical-axis TextFields,
+            // chat bubbles), and the drafts list is bounded and fully
+            // materialized by the parser, so laziness buys nothing. The
+            // maxWidth-920 frame below is load-bearing: a plain VStack hugs its
+            // widest child, where the width-greedy LazyVStack made it moot.
+            VStack(alignment: .leading, spacing: 16) {
                 header
                 content
             }
@@ -65,8 +79,8 @@ struct RepliesView: View {
         let pending = docService.pendingCount
         switch pending {
         case 0:  return "Replies Scout prepared for conversations you owe an answer. Nothing waiting — you're caught up."
-        case 1:  return "1 reply prepared. Read it, copy or open the thread, send it yourself, then mark it sent. Scout never sends."
-        default: return "\(pending) replies prepared. Read each, send it yourself, then mark it sent. Scout never sends."
+        case 1:  return "1 reply prepared. Read it, copy or open the thread, send it yourself, then mark it sent. Scout never sends on its own."
+        default: return "\(pending) replies prepared. Read each, send it yourself, then mark it sent. Scout never sends on its own."
         }
     }
 
@@ -115,7 +129,7 @@ struct RepliesView: View {
                 ReplyDraftCardView(
                     draft: draft,
                     onAction: { action in try await apply(draft, action) },
-                    onFill: { placeholder, value in try await fill(draft, placeholder, value) }
+                    onFill: { input, value in try await fill(draft, input, value) }
                 )
             }
             if !resolved.isEmpty {
@@ -149,7 +163,7 @@ struct RepliesView: View {
                     ReplyDraftCardView(
                         draft: draft,
                         onAction: { action in try await apply(draft, action) },
-                        onFill: { placeholder, value in try await fill(draft, placeholder, value) }
+                        onFill: { input, value in try await fill(draft, input, value) }
                     )
                 }
             }
@@ -183,9 +197,10 @@ struct RepliesView: View {
         docService.reload()
     }
 
-    private func fill(_ draft: ReplyDraft, _ placeholder: String, _ value: String) async throws {
+    private func fill(_ draft: ReplyDraft, _ input: DraftInput, _ value: String) async throws {
         try await writerBox.writer.fill(
-            placeholder: placeholder,
+            placeholder: input.placeholder,
+            occurrence: input.occurrence,
             value: value,
             fileURL: draft.fileURL,
             label: draft.tag

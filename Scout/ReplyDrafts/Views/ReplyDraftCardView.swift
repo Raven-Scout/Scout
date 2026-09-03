@@ -3,16 +3,24 @@ import AppKit
 
 /// One reply draft rendered as an editorial card: heading (tag + recipient +
 /// subject + channel/status chips), the prepared reply body (selectable, ready
-/// to copy), and actions. The app **never sends** — Copy puts the text on the
-/// pasteboard, Open thread opens the original conversation, and Mark sent /
-/// Dismiss only flip the file's `status:`.
+/// to copy), and actions.
+///
+/// Most actions stay local: Copy puts the text on the pasteboard, Open thread
+/// opens the original conversation, and Mark sent / Dismiss / Reopen only flip
+/// the file's `status:`. Two actions do reach outward, and both are explicit,
+/// per-card, and confirmed before anything happens — **"Send via Slack" posts
+/// the message** (it cannot be unsent) and **"Create Gmail draft" creates a
+/// native Gmail draft**. Nothing is ever dispatched by a background run.
 struct ReplyDraftCardView: View {
     @EnvironmentObject var chat: ReplyChatService
     let draft: ReplyDraft
     /// Performs a status write. Throws so the card can show an inline error.
     let onAction: @MainActor (DraftAction) async throws -> Void
     /// Fills a `[TBD: …]` placeholder with a value, writing it into the body.
-    let onFill: @MainActor (_ placeholder: String, _ value: String) async throws -> Void
+    /// Takes the whole ``DraftInput`` so the writer can target the right
+    /// occurrence of an identical marker. Throws when the marker is gone, so
+    /// the card keeps what the user typed instead of silently dropping it.
+    let onFill: @MainActor (_ input: DraftInput, _ value: String) async throws -> Void
 
     @State private var inFlight: DraftAction?
     @State private var errorText: String?
@@ -24,6 +32,7 @@ struct ReplyDraftCardView: View {
     @State private var chatExpanded = false
     @State private var chatInput = ""
     @State private var confirmingSlack = false
+    @State private var confirmingGmail = false
     @State private var deliveryNote: String?
 
     var body: some View {
@@ -254,8 +263,13 @@ struct ReplyDraftCardView: View {
         errorText = nil
         Task {
             do {
-                try await onFill(input.placeholder, value)
+                try await onFill(input, value)
                 inputValues[input.id] = nil
+            } catch ReplyDraftsWriterError.placeholderNotFound {
+                // Keep the typed value — the draft changed under us, and
+                // clearing the field here would discard the user's input with
+                // nothing written to the file.
+                errorText = "That fill-in slot is no longer in the draft — it may have changed on disk. Your text is still here; reload and try again."
             } catch {
                 errorText = "Couldn't fill in — \(error.localizedDescription)"
             }
@@ -370,6 +384,16 @@ struct ReplyDraftCardView: View {
         } message: {
             Text("This sends the message now — it can't be unsent.")
         }
+        .confirmationDialog(
+            "Create a Gmail draft addressed to \(draft.to)?",
+            isPresented: $confirmingGmail,
+            titleVisibility: .visible
+        ) {
+            Button("Create draft") { deliver(.gmailDraft) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This creates a real draft in your Gmail account. It is not sent — review and send it from Gmail.")
+        }
     }
 
     /// Channel-conditional delivery button: Slack actually sends (after a
@@ -385,7 +409,7 @@ struct ReplyDraftCardView: View {
             .buttonStyle(.plainHit)
             .disabled(busy)
         case .email:
-            Button { deliver(.gmailDraft) } label: {
+            Button { confirmingGmail = true } label: {
                 chrome(label: "Create Gmail draft", systemImage: "envelope", tint: DS.Accent.ink, busy: busy)
             }
             .buttonStyle(.plainHit)
@@ -397,12 +421,20 @@ struct ReplyDraftCardView: View {
 
     private func deliver(_ kind: ReplyChatService.DeliveryKind) {
         deliveryNote = nil
+        errorText = nil
         Task {
             let result = await chat.deliver(kind, draft: draft)
             deliveryNote = result.message
             // A successful Slack send closes the loop; mark the draft sent.
+            // The message is already out, so a failure here must be surfaced —
+            // swallowing it leaves the file saying `draft` with a green "Sent"
+            // note above it, which invites sending the same reply twice.
             if result.ok && kind == .slackSend {
-                try? await onAction(.markSent)
+                do {
+                    try await onAction(.markSent)
+                } catch {
+                    errorText = "Sent via Slack, but couldn't mark the draft sent — \(error.localizedDescription). The file still says `draft`; don't re-send."
+                }
             }
         }
     }

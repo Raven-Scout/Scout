@@ -20,11 +20,19 @@ struct DraftStatusTests {
         #expect(DraftStatus.parse("queued") == .unknown("queued"))
     }
 
-    @Test func onlyDraftIsAwaitingAction() {
+    @Test func onlySentAndDismissedAreResolved() {
         #expect(DraftStatus.draft.isAwaitingAction)
         #expect(!DraftStatus.sent.isAwaitingAction)
         #expect(!DraftStatus.dismissed.isAwaitingAction)
-        #expect(!DraftStatus.unknown("x").isAwaitingAction)
+    }
+
+    /// An unrecognized status (e.g. a newer engine writing `status: queued`) is
+    /// far more likely an unsent reply than a resolved one. Treating it as
+    /// resolved hides it from the badge and buries it in the collapsed Resolved
+    /// section — the damaging default (#85). Matches `ItemStatus.isActive`.
+    @Test func unknownStatusCountsAsAwaitingAction() {
+        #expect(DraftStatus.unknown("queued").isAwaitingAction)
+        #expect(!DraftStatus.unknown("queued").isResolved)
     }
 
     @Test func fileValueIsCanonicalLowercaseContract() {

@@ -377,20 +377,21 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// Locate the `claude` CLI the same way we locate scoutctl — the per-draft
-    /// chat shells out to it so it runs on the user's own Claude license. Tries
-    /// known install paths; falls back to `/usr/bin/env claude` if none exist.
+    /// Locate the `claude` CLI for the per-draft chat, which shells out to it so
+    /// it runs on the user's own Claude license.
+    ///
+    /// Delegates to ``ClaudeLauncher/resolveClaudePath(override:)`` rather than
+    /// probing a private list of paths: that one also honours the
+    /// `claudeCLIPath` setting and, crucially, falls back to asking the user's
+    /// login shell (`$SHELL -lc 'command -v claude'`). A Finder-launched
+    /// Scout.app inherits a stripped PATH with no sourced profile, so a
+    /// mise/asdf/nvm-managed `claude` is invisible to both a fixed-path probe
+    /// and `/usr/bin/env claude` — the chat would silently never work for users
+    /// whose `claude` runs fine in a terminal.
     static func resolveClaudePath() -> ScoutctlInvocation {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates: [URL] = [
-            home.appendingPathComponent(".local/bin/claude"),
-            home.appendingPathComponent(".claude/local/claude"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
-            URL(fileURLWithPath: "/usr/local/bin/claude"),
-        ]
-        let fm = FileManager.default
-        for url in candidates where fm.isExecutableFile(atPath: url.path) {
-            return ScoutctlInvocation(executable: url, argsPrefix: [])
+        let override = UserDefaults.standard.string(forKey: "claudeCLIPath") ?? ""
+        if let resolved = ClaudeLauncher.resolveClaudePath(override: override) {
+            return ScoutctlInvocation(executable: URL(fileURLWithPath: resolved), argsPrefix: [])
         }
         return ScoutctlInvocation(
             executable: URL(fileURLWithPath: "/usr/bin/env"),

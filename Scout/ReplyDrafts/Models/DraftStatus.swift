@@ -41,9 +41,17 @@ nonisolated enum DraftStatus: Equatable, Sendable {
 
     /// True while the draft still needs the user's action — drives the sidebar
     /// badge and the send/dismiss buttons.
+    ///
+    /// Unknown statuses count as awaiting action: an unrecognized value (e.g. an
+    /// ad-hoc `status: queued` from a newer engine) is far more likely an
+    /// unsent reply than a resolved one, so hiding it under Resolved — where it
+    /// gets no badge and sits behind a collapsed disclosure — is the damaging
+    /// default (#85). Matches `ItemStatus.isActive`.
     var isAwaitingAction: Bool {
-        if case .draft = self { return true }
-        return false
+        switch self {
+        case .draft, .unknown: return true
+        case .sent, .dismissed: return false
+        }
     }
 
     var isResolved: Bool { !isAwaitingAction }
