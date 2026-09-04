@@ -1,7 +1,14 @@
 import CryptoKit
 import Foundation
 
-enum ActionItemsParser {
+/// `nonisolated` so the whole parser can run off the main actor. The module
+/// compiles with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, which would
+/// otherwise pin every one of these statics to the main thread — and parsing a
+/// real 1.8 MB day costs hundreds of milliseconds, blocking the UI on every
+/// load and every write. Nothing here touches shared mutable state: the regexes
+/// are immutable `static let`s, and the one `UserDefaults` read this used to do
+/// per inline comment is now passed in by the caller.
+nonisolated enum ActionItemsParser {
     // Parser entry point + helpers land over the next tasks.
 
     /// Deterministic ``UUID`` derived from a stable content key.
@@ -22,7 +29,7 @@ enum ActionItemsParser {
     }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     /// Strip markdown tokens from a subject so it matches the Python CLIs'
     /// ``_strip_markdown_tokens`` output byte-for-byte.
     ///
@@ -96,7 +103,7 @@ extension ActionItemsParser {
     }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     /// Scan ``text`` for Linear IDs, GitHub PR URLs, and Slack thread URLs.
     /// Emits them in first-match order with duplicates removed.
     ///
@@ -207,13 +214,24 @@ extension ActionItemsParser {
     }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     enum ParseError: Error {
         case noTitle
         case invalidDateInFilename
     }
 
-    static func parse(text: String, sourceURL: URL, sourceBytes: Int) throws -> ActionItemsDocument {
+    /// - Parameter inlineCommentAuthor: byline for Obsidian `//==<< … >>==//`
+    ///   inline comments. Passed in rather than read from `UserDefaults` here:
+    ///   this type is `nonisolated` so it can parse off the main actor, and a
+    ///   Cocoa-backed default read from a background thread is exactly the
+    ///   shape that used to fault. It was also being re-read once per inline
+    ///   comment rather than once per parse.
+    static func parse(
+        text: String,
+        sourceURL: URL,
+        sourceBytes: Int,
+        inlineCommentAuthor: String = "user"
+    ) throws -> ActionItemsDocument {
         let lines = text.components(separatedBy: "\n")
 
         // --- title + preamble ---
@@ -682,8 +700,7 @@ extension ActionItemsParser {
                let im = inlineCommentRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
                 let nsLine = line as NSString
                 let body = nsLine.substring(with: im.range(at: 2))
-                let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                let newComment = TaskComment(author: author, timestamp: "", text: body)
+                let newComment = TaskComment(author: inlineCommentAuthor, timestamp: "", text: body)
                 let updated = ActionTask(
                     id: last.id,
                     lineNumber: last.lineNumber,

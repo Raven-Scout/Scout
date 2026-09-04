@@ -11,7 +11,7 @@ import Foundation
 ///
 /// `timeZone` defaults to `.current` (the engine's behavior); it's injectable
 /// so the conversion can be tested deterministically against a fixed zone.
-enum ActionItemsDay {
+nonisolated enum ActionItemsDay {
     /// `YYYY-MM-DD` stem naming the daily file for `date`'s calendar day.
     static func stem(for date: Date, timeZone: TimeZone = .current) -> String {
         formatter(timeZone).string(from: date)
