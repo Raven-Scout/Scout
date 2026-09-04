@@ -12,7 +12,7 @@ import Foundation
 /// 2. **`<details>` also appears as prose.** Run notes discuss the markup
 ///    itself (``…so the `<details>` block isn't orphaned``), so a bare
 ///    substring search over-counts. ``scan(_:)`` masks inline-code spans first.
-enum HTMLDetailsScanner {
+nonisolated enum HTMLDetailsScanner {
     struct Scan: Equatable {
         /// `<details>` opening tags on this line.
         let opens: Int

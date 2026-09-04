@@ -83,7 +83,7 @@ struct ActionItemsDocumentServiceTests {
         try FileManager.default.removeItem(at: url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 
-        service.reparseCurrent()
+        await service.reparseCurrent()
         guard case .failed = service.state else {
             Issue.record("expected .failed after reparse error, got \(service.state)"); return
         }

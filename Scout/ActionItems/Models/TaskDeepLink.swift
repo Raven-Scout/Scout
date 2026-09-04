@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskDeepLink: Equatable, Hashable, Sendable, Identifiable {
+nonisolated enum TaskDeepLink: Equatable, Hashable, Sendable, Identifiable {
     case linear(id: String)
     case githubPR(repo: String, number: Int, rawURL: URL)
     case slackThread(URL)
