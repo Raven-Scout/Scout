@@ -638,11 +638,10 @@ def _register_schedule() -> None:
     ) -> None:
         """Install or remove com.scout.schedule-tick.plist in ~/Library/LaunchAgents/.
 
-        The scoutctl path written into the plist is always
-        ``<plugin_root>/.venv/bin/scoutctl`` for the plugin checkout that
-        is running this command (see ``resolve_scoutctl_bin``). No override
-        knob is exposed by design — the scheduler should always point at
-        the venv that matches the currently-loaded engine.
+        The scoutctl path written into the plist is the console script beside
+        the interpreter running this command (see ``resolve_scoutctl_bin``).
+        No override knob is exposed by design — the scheduler should always
+        point at the venv that matches the currently-loaded engine.
         """
         from pathlib import Path as _Path
 
