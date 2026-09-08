@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from scout.sessions.desktop import (
@@ -122,3 +123,55 @@ def test_load_worktree_leases_keyed_by_leasing_session() -> None:
     assert set(leases) == {"local_bbb"}
     assert leases["local_bbb"].path.endswith("/w9") and leases["local_bbb"].branch == "claude/w9"
     assert leases["local_bbb"].base_repo == "/Users/alex/code/other"
+
+
+def test_structurally_malformed_record_is_reported_not_fatal() -> None:
+    s = support_dir()
+    write_desktop_record(s, "local_ok")
+    write_desktop_record(s, "local_bad2", prs=5)  # valid JSON, wrong shape
+    records, errors = load_desktop_records(s)
+    assert [r.session_id for r in records] == ["local_ok"]
+    assert len(errors) == 1 and errors[0].source == "desktop" and "local_bad2.json" in errors[0].message
+
+
+def test_load_groups_reports_wrong_inner_shapes() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "preferences": {
+            "epitaxyPrefs": {
+                "dframe-group-scopes": {
+                    "org-0000/user-0000": {
+                        "groups": "nope",
+                        "assignments": ["a", "b"],
+                    }
+                }
+            }
+        }
+    }
+    (s / "claude_desktop_config.json").write_text(json.dumps(payload), encoding="utf-8")
+    groups, errors = load_groups(s)
+    assert groups.names == {} and groups.assignments == {}
+    assert sorted(e.message for e in errors) == [
+        "org-0000/user-0000: assignments is not an object",
+        "org-0000/user-0000: groups is not a list",
+    ]
+    assert all(e.source == "desktop-config" for e in errors)
+
+
+def test_load_worktree_leases_reports_wrong_shape() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "git-worktrees.json").write_text(json.dumps({"worktrees": ["not", "a", "dict"]}), encoding="utf-8")
+    leases, errors = load_worktree_leases(s)
+    assert leases == {}
+    assert [e.source for e in errors] == ["desktop-worktrees"] and "not an object" in errors[0].message
+
+
+def test_non_object_top_level_json_is_reported() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "claude_desktop_config.json").write_text("[]", encoding="utf-8")
+    groups, errors = load_groups(s)
+    assert groups.names == {} and groups.assignments == {}
+    assert len(errors) == 1 and errors[0].source == "desktop-config" and "not a JSON object" in errors[0].message

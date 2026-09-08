@@ -85,14 +85,18 @@ def _int(v: Any) -> int | None:
 def _prs(raw: dict[str, Any]) -> list[PRRef]:
     out: list[PRRef] = []
     seen: set[str] = set()
-    for item in raw.get("prs") or []:
-        if not isinstance(item, dict):
-            continue
-        number, repo = _int(item.get("prNumber")), _str(item.get("repo"))
-        if number is None or repo is None or f"{repo}#{number}" in seen:
-            continue
-        seen.add(f"{repo}#{number}")
-        out.append(PRRef(number=number, repo=repo, url=_str(item.get("url")), legacy_state=None))
+    items = raw.get("prs")
+    if "prs" in raw and items is not None and not isinstance(items, list):
+        raise ValueError("prs must be a list")
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            number, repo = _int(item.get("prNumber")), _str(item.get("repo"))
+            if number is None or repo is None or f"{repo}#{number}" in seen:
+                continue
+            seen.add(f"{repo}#{number}")
+            out.append(PRRef(number=number, repo=repo, url=_str(item.get("url")), legacy_state=None))
     number, repo = _int(raw.get("prNumber")), _str(raw.get("prRepository"))
     if number is not None and repo is not None and f"{repo}#{number}" not in seen:
         out.append(PRRef(number=number, repo=repo, url=_str(raw.get("prUrl")), legacy_state=_str(raw.get("prState"))))
@@ -137,13 +141,21 @@ def load_desktop_records(support_dir: Path) -> tuple[list[DesktopRecord], list[S
     for path in sorted(root.glob("*/*/local_*.json")):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            if not isinstance(raw, dict):
+                errors.append(SourceError(source="desktop", message=f"{path.name}: not a JSON object"))
+                continue
+            records.append(_record(raw, fallback_id=path.stem))
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            AttributeError,
+            ValueError,
+            KeyError,
+        ) as e:
             errors.append(SourceError(source="desktop", message=f"{path.name}: {e}"))
             continue
-        if not isinstance(raw, dict):
-            errors.append(SourceError(source="desktop", message=f"{path.name}: not a JSON object"))
-            continue
-        records.append(_record(raw, fallback_id=path.stem))
     return records, errors
 
 
@@ -155,7 +167,10 @@ def _read_json(path: Path, source: str, errors: list[SourceError]) -> dict[str, 
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         errors.append(SourceError(source=source, message=f"{path.name}: {e}"))
         return None
-    return raw if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        errors.append(SourceError(source=source, message=f"{path.name}: not a JSON object"))
+        return None
+    return raw
 
 
 def load_groups(support_dir: Path) -> tuple[Groups, list[SourceError]]:
@@ -167,15 +182,28 @@ def load_groups(support_dir: Path) -> tuple[Groups, list[SourceError]]:
     epitaxy = prefs.get("epitaxyPrefs") if isinstance(prefs, dict) else None
     scopes = epitaxy.get("dframe-group-scopes") if isinstance(epitaxy, dict) else None
     if isinstance(scopes, dict):
-        for scope in scopes.values():
+        for scope_key, scope in scopes.items():
             if not isinstance(scope, dict):
                 continue
-            for g in scope.get("groups") or []:
-                if isinstance(g, dict) and _str(g.get("id")) and _str(g.get("name")):
-                    names[g["id"]] = g["name"]
-            for key, gid in (scope.get("assignments") or {}).items():
-                if isinstance(key, str) and isinstance(gid, str):
-                    assignments[key.removeprefix("code:")] = gid
+            groups = scope.get("groups")
+            if "groups" in scope and not isinstance(groups, list):
+                errors.append(SourceError(source="desktop-config", message=f"{scope_key}: groups is not a list"))
+            elif isinstance(groups, list):
+                for g in groups:
+                    if isinstance(g, dict) and _str(g.get("id")) and _str(g.get("name")):
+                        names[g["id"]] = g["name"]
+            assignments_val = scope.get("assignments")
+            if "assignments" in scope and not isinstance(assignments_val, dict):
+                errors.append(
+                    SourceError(
+                        source="desktop-config",
+                        message=f"{scope_key}: assignments is not an object",
+                    )
+                )
+            elif isinstance(assignments_val, dict):
+                for key, gid in assignments_val.items():
+                    if isinstance(key, str) and isinstance(gid, str):
+                        assignments[key.removeprefix("code:")] = gid
     return Groups(names=names, assignments=assignments), errors
 
 
@@ -183,18 +211,22 @@ def load_worktree_leases(support_dir: Path) -> tuple[dict[str, WorktreeLease], l
     errors: list[SourceError] = []
     raw = _read_json(support_dir / "git-worktrees.json", "desktop-worktrees", errors)
     leases: dict[str, WorktreeLease] = {}
-    for entry in ((raw or {}).get("worktrees") or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        holder, path = _str(entry.get("leasedBy")), _str(entry.get("path"))
-        if holder is None or path is None:
-            continue
-        leases[holder] = WorktreeLease(
-            path=path,
-            branch=_str(entry.get("branch")),
-            source_branch=_str(entry.get("sourceBranch")),
-            base_repo=_str(entry.get("baseRepo")),
-        )
+    worktrees = (raw or {}).get("worktrees")
+    if raw is not None and "worktrees" in raw and not isinstance(worktrees, dict):
+        errors.append(SourceError(source="desktop-worktrees", message="worktrees is not an object"))
+    elif isinstance(worktrees, dict):
+        for entry in worktrees.values():
+            if not isinstance(entry, dict):
+                continue
+            holder, path = _str(entry.get("leasedBy")), _str(entry.get("path"))
+            if holder is None or path is None:
+                continue
+            leases[holder] = WorktreeLease(
+                path=path,
+                branch=_str(entry.get("branch")),
+                source_branch=_str(entry.get("sourceBranch")),
+                base_repo=_str(entry.get("baseRepo")),
+            )
     return leases, errors
 
 
