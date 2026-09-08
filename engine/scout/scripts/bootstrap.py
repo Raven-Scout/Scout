@@ -30,6 +30,7 @@ from scout.scripts.bootstrap_lock import (
     release_lock,
 )
 from scout.scripts.connector_probes import normalize_connector_keys
+from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
     parse_phase_file,
@@ -163,7 +164,7 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         "GITHUB_USERNAME": cfg.connector_inputs.get("github_username", ""),
         "GITHUB_REPOS": cfg.connector_inputs.get("github_repos", ""),
         "SCOUT_DIR": str(cfg.vault),
-        "SCOUTCTL_BIN": str(cfg.plugin_root / ".venv" / "bin" / "scoutctl"),
+        "SCOUTCTL_BIN": str(resolve_scoutctl_bin()),
         "TIMEZONE": cfg.timezone,
         "PLATFORM": cfg.platform,
         "MAX_BUDGET": cfg.connector_inputs.get("max_budget", "5.00"),

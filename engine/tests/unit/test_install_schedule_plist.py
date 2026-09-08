@@ -35,14 +35,29 @@ def test_install_plist_substitutes_resolver_output(tmp_path):
     assert f"<string>{resolve_scoutctl_bin()}</string>" in content
 
 
-def test_resolve_scoutctl_bin_points_at_running_engine_venv():
-    """Resolver always derives plugin_root from the running engine's package
-    location and appends `.venv/bin/scoutctl` — single source of truth for
-    'the scoutctl that matches the currently-loaded engine'."""
-    import scout
+def test_resolve_scoutctl_bin_is_the_running_interpreters_sibling():
+    """The scoutctl that matches the running engine is the console script
+    beside the interpreter executing this test — whatever venv that is, and
+    wherever it lives relative to the plugin tree (spec E1)."""
+    import sys
 
-    expected_plugin_root = Path(scout.__file__).parent.parent.parent
-    assert resolve_scoutctl_bin() == expected_plugin_root / ".venv" / "bin" / "scoutctl"
+    assert resolve_scoutctl_bin() == Path(sys.executable).absolute().parent / "scoutctl"
+
+
+def test_resolve_scoutctl_bin_does_not_follow_symlinks(monkeypatch, tmp_path):
+    """A venv's bin/python is a symlink to the base interpreter; resolving it
+    would name a scoutctl that does not exist."""
+    import sys
+
+    real = tmp_path / "base" / "bin" / "python3"
+    real.parent.mkdir(parents=True)
+    real.write_text("")
+    venv_py = tmp_path / "venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.symlink_to(real)
+    monkeypatch.setattr(sys, "executable", str(venv_py))
+
+    assert resolve_scoutctl_bin() == venv_py.parent / "scoutctl"
 
 
 def test_install_plist_refuses_to_overwrite_without_force(tmp_path):
