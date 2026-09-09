@@ -21,16 +21,15 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from scout import config as scout_config
 from scout import paths
+from scout.sessions.transcript import extract_files_touched, extract_first_message  # moved (Agent Sessions plan 1)
 
 DEFAULT_HOURS_LOOKBACK = 24
 # Kept as a named export for back-compat; the runtime default is the
@@ -38,27 +37,6 @@ DEFAULT_HOURS_LOOKBACK = 24
 DEFAULT_TZ = scout_config.DEFAULT_TIMEZONE
 CACHE_FILENAME = "cc-sessions.cache.json"
 OUTPUT_FILENAME = "cc-sessions.md"
-
-# Per-file caps replicated from the bash original (head -50, head -10).
-_HEAD_LINES_FOR_FIRST_MSG = 50
-_MAX_FILES_TOUCHED = 10
-_FIRST_MSG_MAX_CHARS = 500
-
-# Filter for "files touched" — drop agent-internal noise so the LLM only sees
-# user-meaningful files. Mirrors the grep -Ev in the bash:
-#   /.claude/projects/.*/tool-results/  /.claude/projects/.*/tasks/
-#   /.claude/plugins/cache/             /node_modules/
-#   ^/private/tmp/claude-               /.claude/projects/.*/memory/
-_FILES_NOISE_RE = re.compile(
-    r"(/\.claude/projects/.*/tool-results/"
-    r"|/\.claude/projects/.*/tasks/"
-    r"|/\.claude/plugins/cache/"
-    r"|/node_modules/"
-    r"|^/private/tmp/claude-"
-    r"|/\.claude/projects/.*/memory/)"
-)
-
-_FILE_PATH_LINE_RE = re.compile(r'"file_path"\s*:\s*"([^"]+)"')
 
 # Default instance suffixes that mean "Scout's own sessions" — matches the
 # bash case glob ``*-Scout|*-scout|*-{INSTANCE_NAME}``. The CLI lets the
@@ -133,73 +111,6 @@ def iter_session_jsonls(
 
 
 # ----- per-file extraction (slow path) -------------------------------------
-
-
-def extract_first_message(jsonl_path: Path) -> str:
-    """Return the first user-typed prompt from a CC JSONL.
-
-    Bash equivalent: ``head -50 | python3 -c '...'``. Robust to malformed
-    rows and the various shapes Claude Code has used for user messages
-    (top-level ``role`` / ``type`` and nested ``message.content`` lists).
-    Returns a sentinel string on no-match so the markdown render always
-    has something to show.
-    """
-    try:
-        with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-            for i, raw in enumerate(f):
-                if i >= _HEAD_LINES_FOR_FIRST_MSG:
-                    break
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                kind = obj.get("type") or obj.get("role")
-                if kind not in ("user", "human"):
-                    continue
-                msg = obj.get("message")
-                content: Any
-                content = msg.get("content") if isinstance(msg, dict) else obj.get("content")
-                if isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            text = (part.get("text") or "")[:_FIRST_MSG_MAX_CHARS]
-                            if text:
-                                return text
-                elif isinstance(content, str) and content.strip():
-                    return content[:_FIRST_MSG_MAX_CHARS]
-    except OSError:
-        return "(parse error)"
-    return "(could not extract first message)"
-
-
-def extract_files_touched(jsonl_path: Path, home: Path | None = None) -> list[str]:
-    """Return up to 10 unique user-meaningful files referenced in the JSONL.
-
-    Bash equivalent: ``grep -o '"file_path":"..."' | sed ... | grep -Ev <noise>
-    | sort -u | head -10 | sed "s|^$HOME/|~/|"``. Filters the same noise
-    classes (tool-results, tasks, plugin cache, node_modules, /private/tmp,
-    memory dirs) and collapses ``$HOME`` to ``~``.
-    """
-    home_str = str(home or Path.home())
-    seen: set[str] = set()
-    try:
-        with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                for m in _FILE_PATH_LINE_RE.finditer(line):
-                    path = m.group(1)
-                    if _FILES_NOISE_RE.search(path):
-                        continue
-                    if path.startswith(home_str + "/"):
-                        path = "~/" + path[len(home_str) + 1 :]
-                    seen.add(path)
-    except OSError:
-        return []
-    return sorted(seen)[:_MAX_FILES_TOUCHED]
 
 
 def build_session_entry(jsonl_path: Path, st: os.stat_result) -> SessionEntry:
