@@ -10,6 +10,7 @@ import ServiceManagement
 /// round-trip without migration. Notification toggles are new and persist
 /// alongside.
 struct SettingsView: View {
+    @EnvironmentObject var appState: AppState
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("launchMinimized") private var launchMinimized: Bool = false
     @AppStorage("linearWorkspace") private var linearWorkspace: String = ""
@@ -107,6 +108,11 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+
+                section(label: "Budget") {
+                    BudgetSettingsSection()
+                        .environmentObject(appState.budgetSettingsService)
                 }
 
                 section(label: "Proposals") {

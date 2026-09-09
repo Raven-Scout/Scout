@@ -24,6 +24,7 @@ final class AppState: ObservableObject {
     let scheduleService: ScheduleService
     let powerStateService: PowerStateService
     let scheduleEditService: ScheduleEditService
+    let budgetSettingsService: BudgetSettingsService
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
@@ -123,6 +124,14 @@ final class AppState: ObservableObject {
             canonicalSchedulePath: canonical,
             argumentsPrefix: scoutctlArgsPrefix
         )
+        // Budget config is read and written through `scoutctl budget show/set`,
+        // never by parsing scout-config.yaml here — that file doubles as
+        // bootstrap state with several producers.
+        let budgetSettings = BudgetSettingsService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: ClaudeSessionService
@@ -190,6 +199,7 @@ final class AppState: ObservableObject {
         self.scheduleService = sched
         self.powerStateService = power
         self.scheduleEditService = scheduleEditService
+        self.budgetSettingsService = budgetSettings
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.actionItemsDocumentService = docService
