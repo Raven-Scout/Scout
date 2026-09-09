@@ -56,14 +56,20 @@ def load_live_processes(
             errors.append(SourceError(source="claude-home", message=f"{path.name}: {e}"))
             continue
         if not isinstance(raw, dict):
+            errors.append(SourceError(source="claude-home", message=f"{path.name}: not a JSON object"))
             continue
         pid, sid = raw.get("pid"), raw.get("sessionId")
-        if not isinstance(pid, int) or not isinstance(sid, str) or not sid:
+        # Validate pid as int but not bool, and sessionId as non-empty str
+        if not (isinstance(pid, int) and not isinstance(pid, bool)) or not (isinstance(sid, str) and sid):
+            msg = f"{path.name}: pid or sessionId missing or malformed"
+            errors.append(SourceError(source="claude-home", message=msg))
             continue
         if not is_alive(pid):
             continue
         cwd = raw.get("cwd") if isinstance(raw.get("cwd"), str) else None
-        started = raw.get("startedAt") if isinstance(raw.get("startedAt"), int) else None
+        # Accept startedAt only as int that is not a bool
+        started_at = raw.get("startedAt")
+        started = started_at if (isinstance(started_at, int) and not isinstance(started_at, bool)) else None
         live[sid] = LiveProcess(pid=pid, cli_session_id=sid, cwd=cwd, started_at_ms=started)
     return live, errors
 

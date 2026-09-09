@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -56,3 +57,21 @@ def test_transcript_paths_maps_uuid_to_newest_file() -> None:
 def test_project_path_from_dirname() -> None:
     assert project_path_from_dirname("-Users-alex-code-repo") == "/Users/alex/code/repo"
     assert project_path_from_dirname("opaque") == "opaque"
+
+
+def test_load_live_processes_reports_wrong_shapes() -> None:
+    h = claude_home()
+    (h / "sessions").mkdir(parents=True, exist_ok=True)
+    (h / "sessions" / "1.json").write_text("[]", encoding="utf-8")  # not an object
+    (h / "sessions" / "2.json").write_text(json.dumps({"pid": "x", "sessionId": U1}), encoding="utf-8")  # pid is str
+    (h / "sessions" / "3.json").write_text(json.dumps({"pid": 3, "cwd": "/x"}), encoding="utf-8")  # missing sessionId
+    (h / "sessions" / "4.json").write_text(json.dumps({"pid": True, "sessionId": U2}), encoding="utf-8")  # pid is bool
+    live, errors = load_live_processes(h, is_alive=lambda pid: True)
+    assert live == {}
+    assert sorted(e.message for e in errors) == [
+        "1.json: not a JSON object",
+        "2.json: pid or sessionId missing or malformed",
+        "3.json: pid or sessionId missing or malformed",
+        "4.json: pid or sessionId missing or malformed",
+    ]
+    assert all(e.source == "claude-home" for e in errors)
