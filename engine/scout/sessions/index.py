@@ -377,8 +377,12 @@ def run(
     use_gh: bool = True,
     now: datetime | None = None,
     opts: BuildOptions | None = None,
+    render: bool = False,
+    hours: int = 24,
+    instance_name: str = "Scout",
+    tz_name: str | None = None,
 ) -> tuple[Index, Path]:
-    """Build the index and write it (plus both caches). Returns ``(index, path)``."""
+    """Build the index and write it (plus both caches); optionally render the digest."""
     o = opts or default_options(data_dir, now=now, use_gh=use_gh)
     index = build_index(o)
     legacy = paths.cache_dir(o.data_dir) / LEGACY_CACHE_FILENAME
@@ -389,6 +393,20 @@ def run(
             pass
     path = index_path(o.data_dir)
     write_index(index, path)
+    if render:
+        from scout import config as scout_config
+        from scout.sessions.render import DIGEST_FILENAME, render_digest
+
+        tz = scout_config.timezone_or_default(tz_name) if tz_name else scout_config.resolve_timezone(o.data_dir)
+        digest = render_digest(
+            index,
+            now=o.now,
+            tz=tz,
+            hours=hours,
+            instance_name=instance_name,
+            max_per_bucket=o.settings.render_max_per_bucket,
+        )
+        (paths.cache_dir(o.data_dir) / DIGEST_FILENAME).write_text(digest, encoding="utf-8")
     return index, path
 
 

@@ -260,3 +260,16 @@ def test_write_index_raises_when_directory_is_a_file(tmp_path: Path) -> None:
     idx = Index(generated_at="x", source_counts={}, source_errors=[], display={}, projects=[], sessions=[])
     with pytest.raises(OSError):
         write_index(idx, blocker / INDEX_FILENAME)
+
+
+def test_run_with_render_writes_digest(fake_data_dir: Path) -> None:
+    run(opts=_world(fake_data_dir), render=True, tz_name="UTC")
+    digest = (fake_data_dir / ".scout-cache" / "cc-sessions.md").read_text(encoding="utf-8")
+    assert digest.startswith("# Claude Code Sessions — state digest")
+    assert "## Needs you (1)" in digest
+    # Session A: record title "Fix the parser", group "Example Repo", both matched signals, PR url, 1h idle.
+    assert (
+        "- **Fix the parser** — Example Repo — changes requested on PR #98; ended on a question"
+        " — https://github.com/example-org/example-repo/pull/98 — last active 1h ago"
+    ) in digest
+    assert "scout-morning-briefing" not in digest  # Scout's own run excluded from the digest
