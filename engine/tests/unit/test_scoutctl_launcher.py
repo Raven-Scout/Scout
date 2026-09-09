@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
 LAUNCHER = Path(__file__).parent.parent.parent / "bin" / "scoutctl"
 
 
@@ -162,3 +164,97 @@ def test_falls_back_to_system_python3_when_no_venv(tmp_path):
     # succeeded (developer has scout globally). Both are acceptable — we
     # just want to be sure we didn't exit before reaching the fallback.
     assert result.returncode != 127, "launcher itself crashed: " + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Engine pointer candidate (A3 / E2b): ~/.local/state/scout/engine.json
+#
+# These run the launcher with a fully hermetic env (bare PATH, isolated HOME)
+# rather than the ambient-PATH `_run` above, so "no venv, no pointer" reliably
+# falls through to a controllable fake `python3` instead of whatever the host
+# happens to have on PATH.
+# ---------------------------------------------------------------------------
+
+
+def _fake_python(venv: Path, tag: str) -> Path:
+    py = venv / "bin" / "python"
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(f'#!/bin/sh\necho "{tag} $*"\n', encoding="utf-8")
+    py.chmod(0o755)
+    return py
+
+
+def _plugin_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "plugin"
+    (root / "engine" / "bin").mkdir(parents=True)
+    dst = root / "engine" / "bin" / "scoutctl"
+    shutil.copy(LAUNCHER, dst)
+    dst.chmod(0o755)
+    return root
+
+
+def _write_pointer(home: Path, python: Path) -> None:
+    write_pointer(
+        EnginePointer(
+            version="0.0.0",
+            engine_root="/nonexistent",
+            python=str(python),
+            scoutctl=str(python.parent / "scoutctl"),
+            vault=str(home / "Scout"),
+            managed_by="scout-app",
+            written_at="2026-01-01T00:00:00Z",
+        ),
+        home=home,
+    )
+
+
+def _run_isolated(root: Path, home: Path, extra_path: str = "") -> str:
+    env = {"HOME": str(home), "PATH": f"{extra_path}:/usr/bin:/bin".lstrip(":")}
+    out = subprocess.run(
+        [str(root / "engine" / "bin" / "scoutctl"), "version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    return out.stdout.strip()
+
+
+def test_uses_pointer_python_when_tree_has_no_venv(tmp_path):
+    home = tmp_path / "home"
+    py = _fake_python(tmp_path / "outside-venv", "POINTER_PY")
+    _write_pointer(home, py)
+    assert _run_isolated(_plugin_tree(tmp_path), home) == "POINTER_PY -m scout.cli version"
+
+
+def test_prefers_in_tree_venv_over_pointer(tmp_path):
+    """Edit-and-go: a dev checkout with its own venv keeps using it."""
+    home = tmp_path / "home"
+    _write_pointer(home, _fake_python(tmp_path / "outside-venv", "POINTER_PY"))
+    root = _plugin_tree(tmp_path)
+    _fake_python(root / ".venv", "TREE_PY")
+    assert _run_isolated(root, home) == "TREE_PY -m scout.cli version"
+
+
+def test_malformed_pointer_falls_through_to_system_python3(tmp_path):
+    home = tmp_path / "home"
+    (home / ".local" / "state" / "scout").mkdir(parents=True)
+    (home / ".local" / "state" / "scout" / "engine.json").write_text("{not json", encoding="utf-8")
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+
+
+def test_pointer_python_that_no_longer_exists_is_skipped(tmp_path):
+    home = tmp_path / "home"
+    _write_pointer(home, tmp_path / "gone" / "bin" / "python")
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"

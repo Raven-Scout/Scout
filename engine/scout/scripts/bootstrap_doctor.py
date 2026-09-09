@@ -256,6 +256,39 @@ def _check_scoutctl_shim(*, home: Path) -> tuple[list[str], list[str]]:
     return [], warnings
 
 
+def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
+    """Warn (never error) when the engine pointer disagrees with reality.
+
+    Both the pointer and the schedule-tick plist are rewritten by every
+    bootstrap run, so disagreement means they were produced by different
+    engines — exactly the drift the pointer exists to make visible. A missing
+    pointer is not flagged (pre-pointer engines; the next bootstrap writes it).
+    """
+    from scout.scripts.engine_pointer import read_pointer
+
+    pointer = read_pointer(home=home)
+    if pointer is None:
+        return [], []
+    warnings: list[str] = []
+    if not Path(pointer.scoutctl).exists():
+        warnings.append(
+            f"engine pointer names a missing scoutctl ({pointer.scoutctl}) — re-run `scoutctl bootstrap upgrade`."
+        )
+    plist_path = home / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist"
+    if plist_path.exists():
+        try:
+            with plist_path.open("rb") as f:
+                args = plistlib.load(f).get("ProgramArguments") or []
+        except (plistlib.InvalidFileException, OSError):
+            args = []
+        if args and args[0] != pointer.scoutctl:
+            warnings.append(
+                f"engine pointer ({pointer.scoutctl}) and {plist_path.name} ({args[0]}) name different "
+                f"scoutctl binaries — re-run `scoutctl bootstrap upgrade` so both track one engine."
+            )
+    return [], warnings
+
+
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
     """Run all doctor checks against ``vault``. Pure read."""
     errors: list[str] = []
@@ -356,6 +389,9 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         # Interactive/session scoutctl reachability (separate from the plist).
         _, shim_warnings = _check_scoutctl_shim(home=home)
         warnings.extend(shim_warnings)
+        # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
+        _, pointer_warnings = _check_engine_pointer(home=home)
+        warnings.extend(pointer_warnings)
 
     if errors:
         return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings)
