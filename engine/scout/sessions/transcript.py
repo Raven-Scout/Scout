@@ -115,7 +115,11 @@ def _last_turn_kind(last_assistant: dict[str, Any] | None, answered: set[str]) -
 
 
 def parse_transcript(path: Path, *, st: os.stat_result | None = None, home: Path | None = None) -> TranscriptInfo:
-    """Walk the JSONL once: first prompt, files touched, tool-call count, last-turn shape."""
+    """Walk the JSONL once: first prompt, files touched, tool-call count, last-turn shape.
+
+    Raises OSError if the transcript cannot be stat'ed (e.g. it vanished mid-scan); callers
+    record a SourceError per file and continue.
+    """
     stat = st or path.stat()
     home_str = str(home or Path.home())
     files: set[str] = set()
@@ -201,9 +205,9 @@ def load_transcript_cache(cache_path: Path) -> dict[str, TranscriptInfo]:
 
 def write_transcript_cache(cache_path: Path, entries: dict[str, TranscriptInfo]) -> None:
     """Atomically replace the cache file. Best-effort — never raises."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache_path.with_suffix(".json.tmp")
     try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps({k: asdict(v) for k, v in entries.items()}), encoding="utf-8")
         os.replace(tmp, cache_path)
     except OSError:
@@ -214,7 +218,11 @@ def write_transcript_cache(cache_path: Path, entries: dict[str, TranscriptInfo])
 
 
 def transcript_info(path: Path, *, cache: dict[str, TranscriptInfo], home: Path | None = None) -> TranscriptInfo:
-    """Cached lookup keyed by path; re-parses only when ``mtime_ns`` changed."""
+    """Cached lookup keyed by path; re-parses only when ``mtime_ns`` changed.
+
+    Raises OSError if the transcript cannot be stat'ed (e.g. it vanished mid-scan); callers
+    record a SourceError per file and continue.
+    """
     st = path.stat()
     prior = cache.get(str(path))
     if prior is not None and prior.mtime_ns == st.st_mtime_ns:

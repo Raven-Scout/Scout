@@ -176,3 +176,11 @@ def test_load_transcript_cache_missing_or_corrupt_is_empty(tmp_path: Path) -> No
     bad = tmp_path / "bad.json"
     bad.write_text("[1,2", encoding="utf-8")
     assert load_transcript_cache(bad) == {}
+
+
+def test_write_transcript_cache_never_raises_when_parent_is_a_file(tmp_path: Path) -> None:
+    blocker = tmp_path / "cache"
+    blocker.write_text("not a dir", encoding="utf-8")
+    write_transcript_cache(blocker / TRANSCRIPT_CACHE_FILENAME, {})  # must not raise
+    assert blocker.read_text(encoding="utf-8") == "not a dir"
+    assert not list(tmp_path.glob("*.tmp"))
