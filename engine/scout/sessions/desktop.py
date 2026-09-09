@@ -33,6 +33,10 @@ class PRRef:
     url: str | None
     legacy_state: str | None  # only the pre-`prs[]` schema carried `prState`
 
+    @property
+    def key(self) -> str:
+        return f"{self.repo}#{self.number}"
+
 
 @dataclass(frozen=True)
 class DesktopRecord:
