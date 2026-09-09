@@ -22,6 +22,7 @@ import pytest
 
 from scout.scripts import cc_session_cache as ccc
 from scout.scripts.cc_session_cache import SessionEntry
+from scout.sessions import transcript as tr
 
 
 @pytest.fixture
@@ -165,7 +166,7 @@ def test_first_message_only_scans_the_head_of_the_file(tmp_path: Path) -> None:
 def test_first_message_is_truncated(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
     p.write_text(json.dumps({"type": "user", "content": "x" * 900}) + "\n", encoding="utf-8")
-    assert len(ccc.extract_first_message(p)) == ccc._FIRST_MSG_MAX_CHARS
+    assert len(ccc.extract_first_message(p)) == tr._FIRST_MSG_MAX_CHARS
 
 
 def test_first_message_reports_a_parse_error_for_an_unreadable_file(
@@ -233,7 +234,7 @@ def test_files_touched_is_capped(tmp_path: Path) -> None:
         "\n".join(json.dumps({"tool_input": {"file_path": f"/w/f{n:03d}.py"}}) for n in range(25)) + "\n",
         encoding="utf-8",
     )
-    assert len(ccc.extract_files_touched(p, home=Path("/Users/alex"))) == ccc._MAX_FILES_TOUCHED
+    assert len(ccc.extract_files_touched(p, home=Path("/Users/alex"))) == tr._MAX_FILES_TOUCHED
 
 
 def test_files_touched_is_empty_for_an_unreadable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
