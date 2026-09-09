@@ -1279,6 +1279,14 @@ def _register_bootstrap() -> None:
         github_repos: str = typer.Option("", "--github-repos"),
         claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
         max_budget: str = typer.Option("5.00", "--max-budget"),
+        managed_by: str = typer.Option(
+            "unknown",
+            "--managed-by",
+            help=(
+                "Who owns this engine install: scout-app | install.sh | claude-code | "
+                "dev | unknown (recorded in the engine pointer)."
+            ),
+        ),
     ) -> None:
         """Install Scout into the user's vault directory."""
         from scout import __version__
@@ -1306,6 +1314,7 @@ def _register_bootstrap() -> None:
             },
             skip_jobs=skip_jobs,
             skip_claude=skip_claude,
+            managed_by=managed_by,
         )
         result = install(cfg)
         typer.echo(f"installed: {result.vault}")
@@ -1320,6 +1329,14 @@ def _register_bootstrap() -> None:
     def cli_bootstrap_upgrade(
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
+        managed_by: str = typer.Option(
+            "unknown",
+            "--managed-by",
+            help=(
+                "Who owns this engine install: scout-app | install.sh | claude-code | "
+                "dev | unknown (recorded in the engine pointer)."
+            ),
+        ),
     ) -> None:
         """Upgrade an existing vault against the current plugin templates."""
         from scout import __version__
@@ -1355,6 +1372,7 @@ def _register_bootstrap() -> None:
             connector_inputs=existing.get("connectors", {}).get("inputs", {}),
             skip_jobs=skip_jobs,
             skip_claude=skip_claude,
+            managed_by=managed_by,
         )
         result = upgrade(cfg)
         typer.echo(f"upgraded: {result.vault}")
@@ -1399,6 +1417,14 @@ def _register_bootstrap() -> None:
             "--no-jobs/--rebootstrap-jobs",
             help="Default --no-jobs: leave launchd/cron untouched; use --rebootstrap-jobs to reinstall them.",
         ),
+        managed_by: str = typer.Option(
+            "unknown",
+            "--managed-by",
+            help=(
+                "Who owns this engine install: scout-app | install.sh | claude-code | "
+                "dev | unknown (recorded in the engine pointer)."
+            ),
+        ),
     ) -> None:
         """One-time migration of a Plan-5-era vault to Plan 8 format.
 
@@ -1433,6 +1459,7 @@ def _register_bootstrap() -> None:
             },
             skip_jobs=skip_jobs,
             skip_claude=True,
+            managed_by=managed_by,
         )
         result = migrate_legacy(cfg)
         typer.echo(f"migrated: {result.vault}")

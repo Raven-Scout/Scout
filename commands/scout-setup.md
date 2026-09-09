@@ -126,6 +126,7 @@ Build the comma-separated connector list (only enabled), then run (use the `$SCO
 
 ```bash
 "$SCOUTCTL" bootstrap install \
+    --managed-by claude-code \
     --instance-name "<INSTANCE_NAME>" \
     --user-name "<USER_NAME>" \
     --user-email "<USER_EMAIL>" \

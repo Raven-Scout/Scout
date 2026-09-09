@@ -127,3 +127,28 @@ def test_install_persists_connector_inputs(tmp_path):
     # the template defaults — this is the failure mode the friend's vault hit.
     runner_text = (vault / "run-scout.sh").read_text()
     assert "/opt/homebrew/bin/claude" in runner_text
+
+
+def test_install_writes_engine_pointer_for_this_vault(tmp_path):
+    """Every bootstrap records where the engine lives (spec §4.2). HOME is the
+    hermetic per-test home from conftest, so Path.home() is safe to read."""
+    from scout.scripts.engine_pointer import read_pointer
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.managed_by = "scout-app"
+    result = install(cfg)
+    pointer = read_pointer(home=Path.home())
+    assert pointer is not None
+    assert pointer.vault == str(vault)
+    assert pointer.managed_by == "scout-app"
+    assert result.pointer == Path.home() / ".local" / "state" / "scout" / "engine.json"
+
+
+def test_install_pointer_defaults_to_unknown_manager(tmp_path):
+    from scout.scripts.engine_pointer import read_pointer
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    install(_config(tmp_path / "Scout", plugin_root=plugin))
+    assert read_pointer(home=Path.home()).managed_by == "unknown"

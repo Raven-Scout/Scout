@@ -55,6 +55,7 @@ class BootstrapConfig:
     connector_inputs: dict[str, str]
     skip_jobs: bool = False
     skip_claude: bool = False
+    managed_by: str = "unknown"
 
     def __post_init__(self) -> None:
         # Vaults configured before a probe-key rename (gmail → email) carry the
@@ -68,6 +69,7 @@ class BootstrapConfig:
 class InstallResult:
     vault: Path
     doctor: DoctorReport
+    pointer: Path | None = None
 
 
 @dataclass
@@ -76,6 +78,7 @@ class UpgradeResult:
     doctor: DoctorReport
     conflicts: list[str] = field(default_factory=list)
     backups: list[str] = field(default_factory=list)
+    pointer: Path | None = None
 
 
 @dataclass
@@ -84,6 +87,7 @@ class MigrateLegacyResult:
     doctor: DoctorReport
     backups: list[str] = field(default_factory=list)
     snapshots_recorded: list[str] = field(default_factory=list)
+    pointer: Path | None = None
 
 
 # ---------- shared helpers ----------
@@ -537,6 +541,17 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     _atomic_write(config_path, yaml.safe_dump(existing, sort_keys=False))
 
 
+def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path:
+    """Record where THIS engine lives (~/.local/state/scout/engine.json, §4.2).
+
+    Not gated by skip_jobs: the pointer is state about the engine that just
+    ran, true in every mode, and tests run under a hermetic HOME.
+    """
+    from scout.scripts.engine_pointer import current_pointer, write_pointer
+
+    return write_pointer(current_pointer(vault=cfg.vault, managed_by=cfg.managed_by), home=Path.home())
+
+
 # ---------- entry points ----------
 
 _VAULT_MARKERS = ("scout-config.yaml", ".scout-state")
@@ -589,10 +604,11 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
-    return InstallResult(vault=cfg.vault, doctor=report)
+    return InstallResult(vault=cfg.vault, doctor=report, pointer=pointer)
 
 
 def _is_legacy_vault(vault: Path) -> bool:
@@ -646,6 +662,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
@@ -654,6 +671,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         doctor=report,
         conflicts=conflicts,
         backups=backups,
+        pointer=pointer,
     )
 
 
@@ -719,6 +737,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         #    version_at_last_update are written; setup marks "migrated at this
         #    plugin version", matching how a freshly-installed vault records it).
         _stage_version_stamp(cfg, is_upgrade=False)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
@@ -727,4 +746,5 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         doctor=report,
         backups=backups,
         snapshots_recorded=snapshots_recorded,
+        pointer=pointer,
     )

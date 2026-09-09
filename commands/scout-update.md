@@ -130,7 +130,7 @@ If user declines, stop.
 ## Step 2: Run `scoutctl bootstrap upgrade`
 
 ```bash
-"$SCOUTCTL" bootstrap upgrade
+"$SCOUTCTL" bootstrap upgrade --managed-by claude-code
 ```
 
 Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
