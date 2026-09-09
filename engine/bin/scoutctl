@@ -8,6 +8,7 @@
 #                                     scripts/install-venv.sh
 #   2. ${PLUGIN_ROOT}/engine/.venv  — legacy / hand-built layout
 #   2b. engine pointer              — ~/.local/state/scout/engine.json "python"
+#                                     (matches engine_pointer.state_dir)
 #   3. Sibling marketplaces/ tree   — recover when we're loaded from
 #                                     Claude Code's cache/ copy but the
 #                                     venv lives in marketplaces/
@@ -48,7 +49,7 @@ candidates=(
 # app-managed engine (whose venv lives outside the tree) resolves without
 # guessing. Parsed with sed on purpose: this launcher has to work with only
 # /bin/sh tools — finding Python is the whole point.
-POINTER="${XDG_STATE_HOME:-$HOME/.local/state}/scout/engine.json"
+POINTER="$HOME/.local/state/scout/engine.json"
 if [ -r "$POINTER" ]; then
     POINTER_PY="$(sed -n 's/^[[:space:]]*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$POINTER" | head -n 1)"
     if [ -n "$POINTER_PY" ]; then

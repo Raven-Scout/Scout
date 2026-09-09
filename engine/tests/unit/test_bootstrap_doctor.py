@@ -437,6 +437,29 @@ def test_plist_corrupt_xml_yields_warning(tmp_path, monkeypatch):
     assert any("could not parse" in w and "com.scout.schedule-tick.plist" in w for w in report.warnings)
 
 
+def test_plist_truncated_xml_yields_warning(tmp_path, monkeypatch):
+    """Truncated XML plist (ExpatError) also yields a warning, not a crash."""
+    _populate_minimal_vault(tmp_path)
+    _stub_jobs_present(monkeypatch)
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
+    plist_dir = tmp_path / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    # Truncated XML plist — valid header but no closing tags, triggers ExpatError.
+    truncated = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "<key>Label</key>\n"
+        "<string>com.scout.schedule-tick"
+    )
+    (plist_dir / "com.scout.schedule-tick.plist").write_text(truncated)
+
+    report = run_doctor(vault=tmp_path, check_jobs=True, home=tmp_path)
+    assert any("could not parse" in w and "com.scout.schedule-tick.plist" in w for w in report.warnings)
+
+
 def test_plist_empty_program_arguments_yields_warning(tmp_path, monkeypatch):
     """ProgramArguments=[] in the plist is structurally valid but unusable → warning."""
     import plistlib
@@ -585,9 +608,34 @@ def test_doctor_silent_without_pointer(tmp_path):
     assert _check_engine_pointer(home=tmp_path / "home") == ([], [])
 
 
-def test_doctor_pointer_check_ignores_corrupt_plist(tmp_path):
-    """A malformed plist must not crash the pointer check (mirrors the
-    scheduler-bin-path check's own corrupt-plist handling)."""
+def test_doctor_pointer_check_ignores_truncated_xml_plist(tmp_path):
+    """A truncated XML plist (malformed mid-document) must not crash the pointer
+    check — xml.parsers.expat.ExpatError is now caught alongside InvalidFileException."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = home / "venv" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    _write_pointer(home, scoutctl)
+    plist_dir = home / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    # Truncated XML plist — valid header but no closing tags, triggers ExpatError.
+    truncated = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "<key>Label</key>\n"
+        "<string>com.scout.schedule-tick"
+    )
+    (plist_dir / "com.scout.schedule-tick.plist").write_text(truncated)
+    assert _check_engine_pointer(home=home) == ([], [])
+
+
+def test_doctor_pointer_check_ignores_invalid_format_plist(tmp_path):
+    """A plist that isn't valid XML at all (InvalidFileException) is also silently ignored."""
     from scout.scripts.bootstrap_doctor import _check_engine_pointer
 
     home = tmp_path / "home"

@@ -11,6 +11,7 @@ import platform
 import plistlib
 import re
 import subprocess
+import xml.parsers.expat
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -132,7 +133,7 @@ def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]
     try:
         with plist_path.open("rb") as f:
             data = plistlib.load(f)
-    except (plistlib.InvalidFileException, OSError) as e:
+    except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError) as e:
         warnings.append(f"could not parse {plist_path.name}: {e}")
         return errors, warnings
     args = data.get("ProgramArguments") or []
@@ -279,7 +280,7 @@ def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
         try:
             with plist_path.open("rb") as f:
                 args = plistlib.load(f).get("ProgramArguments") or []
-        except (plistlib.InvalidFileException, OSError):
+        except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError):
             args = []
         if args and args[0] != pointer.scoutctl:
             warnings.append(
