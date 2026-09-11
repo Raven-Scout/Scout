@@ -87,3 +87,87 @@ struct GitHubRefLinkifierTests {
         #expect(GitHubRefLinkifier.linkify(input) == input)
     }
 }
+
+/// The fast-path guard added for the render hot path. Both branches of `refRe`
+/// need a `#` immediately followed by a digit, so anything else must come back
+/// byte-identical — if that ever stops holding, the guard would silently drop
+/// rewrites rather than fail loudly, so pin the invariant it rests on.
+@Suite("GitHubRefLinkifier — hash-digit fast path")
+struct GitHubRefLinkifierFastPathTests {
+    @Test("Strings with no #digit are returned unchanged")
+    func noHashDigitRoundTrips() {
+        for s in [
+            "",
+            "Plain prose with no refs at all",
+            "example-org/scout is the repo",
+            "github.com/example-org/scout without a ref",
+            "[[people/alex]] and `code` and [label](https://example.com/a)",
+            "PROJ-1234 — Priya merged it",
+            "Numbers 1234 and 5678 but no hash",
+            "🚧 emoji and — an em dash",
+            // The case that makes the digit requirement worth having: Scout
+            // vaults are full of these, and none is a GitHub ref.
+            "[#DEMOTAG] the demo launch is still open",
+            "Discussed in #tmp-demo-sync with [[people/priya]]",
+            "[#AI3026] and [#RSM] in one line",
+            "A trailing hash # and a lone #",
+            // Digit-leading tags DO clear the guard — `#5` is a hash followed
+            // by a digit — so they still pay for the regex scan. They must
+            // nonetheless come back untouched: `[#5864M]` is not `#5864` (the
+            // trailing `M` defeats refRe's `\b`).
+            "[#5864M] the demo coupon",
+        ] {
+            #expect(GitHubRefLinkifier.linkify(s) == s, "should be untouched: \(s)")
+        }
+    }
+
+    @Test("Alpha-leading tags and channel names skip the regex scan entirely")
+    func guardSkipsTagsAndChannels() {
+        for s in [
+            "[#DEMOTAG] the demo launch is still open",
+            "Discussed in #tmp-demo-sync with [[people/priya]]",
+            "[#AI3026] and [#RSM] in one line",
+            "A trailing hash # and a lone #",
+            "no hash at all",
+        ] {
+            #expect(!GitHubRefLinkifier.containsHashDigit(s), "guard should skip: \(s)")
+        }
+    }
+
+    @Test("The guard admits every shape refRe can match")
+    func guardAdmitsRealRefs() {
+        for s in [
+            "#42",
+            "see #42 in example-org/scout",
+            "example-org/scout#42",
+            "trailing ref example-org/scout#7",
+            "[#TAG] alongside a real #99 ref",
+        ] {
+            #expect(GitHubRefLinkifier.containsHashDigit(s), "guard must not skip: \(s)")
+        }
+    }
+
+    @Test("Strings with a # still linkify")
+    func hashStillLinkifies() {
+        // Qualified ref — carries its own repo.
+        #expect(GitHubRefLinkifier.linkify("example-org/scout#42")
+            .contains("https://github.com/example-org/scout/issues/42"))
+        // Bare ref — only linkifies once a single repo can be inferred from the
+        // same string, so give it one. (Without a repo it stays plain; that's
+        // the existing `leavesBareRefsPlainWhenNoRepo` case, not a fast-path
+        // regression.)
+        #expect(GitHubRefLinkifier.linkify("see #42 in example-org/scout")
+            .contains("https://github.com/example-org/scout/issues/42"))
+    }
+
+    @Test("Non-ASCII digits are not issue numbers, guard or no guard")
+    func nonASCIIDigitsAreNotRefs() {
+        // `refRe` spells its digits as `[0-9]` so it agrees with
+        // `containsHashDigit` by construction. Pair the fullwidth ref with an
+        // ASCII one so the guard admits the string and the regex really runs.
+        let out = GitHubRefLinkifier.linkify("example-org/scout#４２ and #1")
+        #expect(!out.contains("issues/４２"), "fullwidth digits linkified: \(out)")
+        #expect(out.contains("https://github.com/example-org/scout/issues/1"))
+        #expect(!GitHubRefLinkifier.containsHashDigit("example-org/scout#４２"))
+    }
+}
