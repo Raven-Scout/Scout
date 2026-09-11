@@ -95,7 +95,9 @@ struct InlineMarkdownText: View {
 
     /// Internal rather than private so tests can assert on the rendered runs —
     /// that a tag survives the markdown parse as a `scout-tag://` link and
-    /// carries the chip attributes. Pure function; no other caller.
+    /// carries the chip attributes. Not pure: every call ticks the LRU clock
+    /// and may insert or evict, so it stays main-actor-bound. `init` is the
+    /// only production caller.
     static func attributedString(for raw: String) -> AttributedString {
         clock &+= 1
         if let hit = cache[raw] {

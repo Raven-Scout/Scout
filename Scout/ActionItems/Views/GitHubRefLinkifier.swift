@@ -31,7 +31,7 @@ enum GitHubRefLinkifier {
     /// the same `#N`. Group 1/2 = qualified owner/repo + number; group 3 =
     /// bare number.
     private static let refRe = try! NSRegularExpression(
-        pattern: #"(?<![\w/])([A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*)#(\d{1,7})\b|(?<![\w/#])#(\d{1,7})\b"#
+        pattern: #"(?<![\w/])([A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*)#([0-9]{1,7})\b|(?<![\w/#])#([0-9]{1,7})\b"#
     )
 
     /// owner/repo#N and bare owner/repo slugs, excluding file-path-looking
@@ -49,8 +49,9 @@ enum GitHubRefLinkifier {
     )
 
     /// Whether `s` holds a `#` immediately followed by an ASCII digit — the
-    /// necessary condition for `refRe` to match anything. One byte pass, no
-    /// allocation, no grapheme breaking.
+    /// necessary condition for `refRe` to match anything (`refRe` spells its
+    /// digits as `[0-9]`, not `\d`, so the two agree by construction). One
+    /// byte pass, no allocation, no grapheme breaking.
     static func containsHashDigit(_ s: String) -> Bool {
         var previousWasHash = false
         for byte in s.utf8 {

@@ -107,15 +107,15 @@ struct GitHubRefLinkifierFastPathTests {
             "🚧 emoji and — an em dash",
             // The case that makes the digit requirement worth having: Scout
             // vaults are full of these, and none is a GitHub ref.
-            "[#PRGREISS] Prague reissue is still open",
-            "Discussed in #tmp-cuesta-star with [[people/priya]]",
+            "[#DEMOTAG] the demo launch is still open",
+            "Discussed in #tmp-demo-sync with [[people/priya]]",
             "[#AI3026] and [#RSM] in one line",
             "A trailing hash # and a lone #",
             // Digit-leading tags DO clear the guard — `#5` is a hash followed
             // by a digit — so they still pay for the regex scan. They must
             // nonetheless come back untouched: `[#5864M]` is not `#5864` (the
-            // trailing `M` defeats refRe's `\b`), and it is bracket-protected.
-            "[#5864M] the reissue coupon",
+            // trailing `M` defeats refRe's `\b`).
+            "[#5864M] the demo coupon",
         ] {
             #expect(GitHubRefLinkifier.linkify(s) == s, "should be untouched: \(s)")
         }
@@ -124,8 +124,8 @@ struct GitHubRefLinkifierFastPathTests {
     @Test("Alpha-leading tags and channel names skip the regex scan entirely")
     func guardSkipsTagsAndChannels() {
         for s in [
-            "[#PRGREISS] Prague reissue is still open",
-            "Discussed in #tmp-cuesta-star with [[people/priya]]",
+            "[#DEMOTAG] the demo launch is still open",
+            "Discussed in #tmp-demo-sync with [[people/priya]]",
             "[#AI3026] and [#RSM] in one line",
             "A trailing hash # and a lone #",
             "no hash at all",
@@ -154,9 +154,20 @@ struct GitHubRefLinkifierFastPathTests {
             .contains("https://github.com/example-org/scout/issues/42"))
         // Bare ref — only linkifies once a single repo can be inferred from the
         // same string, so give it one. (Without a repo it stays plain; that's
-        // the existing `leavesBareRefsAloneWithoutARepo` case, not a fast-path
+        // the existing `leavesBareRefsPlainWhenNoRepo` case, not a fast-path
         // regression.)
         #expect(GitHubRefLinkifier.linkify("see #42 in example-org/scout")
             .contains("https://github.com/example-org/scout/issues/42"))
+    }
+
+    @Test("Non-ASCII digits are not issue numbers, guard or no guard")
+    func nonASCIIDigitsAreNotRefs() {
+        // `refRe` spells its digits as `[0-9]` so it agrees with
+        // `containsHashDigit` by construction. Pair the fullwidth ref with an
+        // ASCII one so the guard admits the string and the regex really runs.
+        let out = GitHubRefLinkifier.linkify("example-org/scout#４２ and #1")
+        #expect(!out.contains("issues/４２"), "fullwidth digits linkified: \(out)")
+        #expect(out.contains("https://github.com/example-org/scout/issues/1"))
+        #expect(!GitHubRefLinkifier.containsHashDigit("example-org/scout#４２"))
     }
 }
