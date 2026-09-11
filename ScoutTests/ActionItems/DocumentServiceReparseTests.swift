@@ -107,10 +107,9 @@ struct DocumentServiceReparseTests {
         // Let the slow parse get in flight, then supersede it.
         try await Task.sleep(nanoseconds: 20_000_000)
         try await service.load(date: fastDate)
+        // `load` returns only after its own parse has passed the generation
+        // guard, so once both loads have returned nothing is left in flight.
         _ = try? await slow
-
-        // Give any stale in-flight parse every chance to land late.
-        try await Task.sleep(nanoseconds: 1_500_000_000)
 
         guard case .loaded(let doc) = service.state else {
             Issue.record("expected .loaded, got \(service.state)"); return
@@ -143,5 +142,92 @@ struct DocumentServiceReparseTests {
 
         #expect(order.first == "other",
                 "main actor was blocked through the parse (order: \(order))")
+    }
+
+    // MARK: - Review fixes
+
+    @Test("A slow earlier load never overwrites a newer missing-day state")
+    func slowLoadDoesNotClobberMissingDay() async throws {
+        // Same race as `slowLoadDoesNotClobberNewer`, but the superseding day
+        // has no file yet (today before the briefing, or tomorrow). `.missing`
+        // must supersede the in-flight parse too, or the previous day's tasks
+        // land under the new dateline with the missing-file affordance gone.
+        let dir = try Self.tmpDir()
+        let slowDate = Self.day(2026, 4, 20)
+        let missingDate = Self.day(2026, 4, 21)
+        try Self.markdown(taskCount: 4000, marker: "SLOW")
+            .write(to: dir.appendingPathComponent("action-items-2026-04-20.md"),
+                   atomically: true, encoding: .utf8)
+
+        let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
+
+        async let slow: Void = service.load(date: slowDate)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try await service.load(date: missingDate)
+        _ = try? await slow
+
+        guard case .missing(let date, _) = service.state else {
+            Issue.record("expected .missing, got \(service.state)"); return
+        }
+        #expect(date == missingDate, "stale slow parse clobbered the missing-day state")
+    }
+
+    @Test("A failed reparse always republishes, even after a prior failure")
+    func failuresAlwaysRepublish() async throws {
+        // `State ==` treats any two failures as equal, so without a bypass in
+        // `publish` a second error would be swallowed and the first error's
+        // text would stay on screen.
+        let dir = try Self.tmpDir()
+        let date = Self.day(2026, 4, 20)
+        // A directory where the file should be: the read fails.
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("action-items-2026-04-20.md"),
+            withIntermediateDirectories: true
+        )
+
+        let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
+        try await service.load(date: date)
+        guard case .failed = service.state else {
+            Issue.record("expected .failed, got \(service.state)"); return
+        }
+
+        var publishes = 0
+        let token = service.objectWillChange.sink { _ in publishes += 1 }
+        defer { token.cancel() }
+
+        await service.reparseCurrent()
+        #expect(publishes == 1, "a repeated failure was swallowed by the equality gate")
+    }
+
+    @Test("Reloading the day already on screen does not flash `.loading`")
+    func reloadOfSameDayKeepsDocumentOnScreen() async throws {
+        // Returning to the tab recreates the view and calls `load` for the day
+        // the service already holds. Publishing `.loading` there would tear
+        // the card tree down to a spinner and rebuild it for an identical
+        // document.
+        let dir = try Self.tmpDir()
+        let date = Self.day(2026, 4, 20)
+        try Self.markdown(taskCount: 5)
+            .write(to: dir.appendingPathComponent("action-items-2026-04-20.md"),
+                   atomically: true, encoding: .utf8)
+
+        let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
+        try await service.load(date: date)
+
+        var publishes = 0
+        var sawLoading = false
+        let willChange = service.objectWillChange.sink { _ in publishes += 1 }
+        let values = service.$state.dropFirst().sink { next in
+            if case .loading = next { sawLoading = true }
+        }
+        defer { willChange.cancel(); values.cancel() }
+
+        try await service.load(date: date)
+
+        #expect(!sawLoading, "same-day reload published .loading")
+        #expect(publishes == 0, "same-day reload republished an identical document")
+        guard case .loaded = service.state else {
+            Issue.record("expected .loaded, got \(service.state)"); return
+        }
     }
 }

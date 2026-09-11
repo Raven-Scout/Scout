@@ -45,8 +45,15 @@ final class ActionItemsDocumentService: ObservableObject {
     /// the FSEvents subscription filtered to that date's filename.
     func load(date: Date) async throws {
         currentDate = date
-        publish(.loading(date))
-        await reparse(url: url(for: date))
+        // Keep an already-loaded copy of this same day on screen while the
+        // reparse runs. Publishing `.loading` here would tear the card tree
+        // down to a spinner and rebuild it on every return to the tab, even
+        // though the result is byte-identical and the equality gate in
+        // ``publish(_:)`` would otherwise absorb it.
+        if !isShowingDocument(for: date) {
+            publish(.loading(date))
+        }
+        await reparse()
         startWatching()
     }
 
@@ -59,19 +66,32 @@ final class ActionItemsDocumentService: ObservableObject {
     /// outcome — including the `#47` guarantee that a failed reparse surfaces
     /// as `.failed` rather than leaving stale `.loaded` state — must await it.
     func reparseCurrent() async {
-        guard let d = currentDate else { return }
-        await reparse(url: url(for: d))
+        await reparse()
     }
 
-    private func reparse(url: URL) async {
+    private func isShowingDocument(for date: Date) -> Bool {
+        if case .loaded(let doc) = state { return doc.sourceURL == url(for: date) }
+        return false
+    }
+
+    /// Reparse the file for `currentDate`. The URL is derived here rather than
+    /// passed in, so a reparse queued before a day switch (the watcher's
+    /// debounce) cannot land the previous day's document under the new date.
+    private func reparse() async {
         guard let date = currentDate else { return }
+        let url = url(for: date)
+
+        // Every request supersedes the ones in flight — including one that
+        // ends in `.missing`, otherwise a slow parse of the previous day
+        // finishes last and overwrites it.
+        generation &+= 1
+        let mine = generation
+
         guard FileManager.default.fileExists(atPath: url.path) else {
             publish(.missing(date: date, expectedURL: url))
             return
         }
 
-        generation &+= 1
-        let mine = generation
         // Read the byline here, on the main actor, rather than inside the
         // parser: the parse runs off-actor and `UserDefaults` hands back
         // Cocoa-backed strings.
@@ -114,6 +134,14 @@ final class ActionItemsDocumentService: ObservableObject {
     /// byte-identical document, and republishing it rebuilt the entire view
     /// tree (~475 cards, ~1.8 s) for no change at all.
     private func publish(_ next: State) {
+        // `State ==` treats any two failures as equal (it exists for
+        // `.onChange` coalescing), so a second, different error would be
+        // swallowed here and the first error's text would stay on screen.
+        // Failures are cheap to republish; always let them through.
+        if case .failed = next {
+            state = next
+            return
+        }
         guard state != next else { return }
         state = next
     }
@@ -132,7 +160,7 @@ final class ActionItemsDocumentService: ObservableObject {
                 debounce = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     guard let self, !Task.isCancelled else { return }
-                    await self.reparse(url: expected)
+                    await self.reparse()
                 }
             }
         }
