@@ -11,6 +11,21 @@
 # coverage drops *below* the floor, so normal noise (a few lines either way)
 # never blocks a merge.
 #
+# CALIBRATE THE FLOOR FROM A CI RUN, NOT A LOCAL ONE.
+#
+# A developer machine reports ~0.5–1 point HIGHER than the runner, because
+# several probes find things locally that don't exist in CI and so take a
+# different branch: AppState.resolveScoutctlPath (scoutctl on disk),
+# ClaudeLauncher.resolveClaudePath (the claude CLI),
+# ConnectorHealthService.loadRoster (~/scout-plugin's connectors.snapshot.json),
+# and DS.serif/DS.mono (Newsreader / JetBrains Mono installed). Same code, same
+# denominator — different lines executed. A floor set from a local number will
+# fail on the runner the moment it merges.
+#
+# The floor therefore also carries headroom for incoming features: a merge that
+# adds production code without proportional tests dilutes the percentage, and
+# that shouldn't fail an unrelated PR.
+#
 # Env:
 #   COVERAGE_TARGET  target to measure (default: Scout.app)
 #   FLOOR_FILE       path to the floor file
@@ -96,9 +111,19 @@ if pct < floor:
     )
 
 headroom = pct - floor
-if headroom >= 2.0:
+in_ci = bool(os.environ.get("GITHUB_ACTIONS"))
+if not in_ci:
+    print(
+        "note: this is a local run — it reads higher than CI (host-dependent "
+        "probes find scoutctl / claude / the connectors snapshot here and not "
+        "on the runner). Do not set the floor from this number; use the value "
+        "the CI job prints."
+    )
+elif headroom >= 2.0:
+    # Only suggest a bump from a CI number, and leave a full point of slack so
+    # the next feature merge doesn't immediately trip the raised floor.
     print(
         f"note: coverage is {headroom:.2f} points above the floor — "
-        f"consider bumping the floor to {pct - 0.5:.1f} in this PR."
+        f"consider bumping the floor to {pct - 1.0:.1f} in this PR."
     )
 PY
