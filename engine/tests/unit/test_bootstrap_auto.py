@@ -156,3 +156,57 @@ def test_run_dispatch_exception_becomes_refused(tmp_path, monkeypatch):
     vault = tmp_path / "Scout"
     d, code = run(_cfg(vault))
     assert code == 2 and d["action"] == "refused" and "raced" in d["error"]
+
+
+# --- Fix round 1 (reviewer findings 1 & 2) -----------------------------------
+
+
+def test_detect_ds_store_only_dir_is_install(tmp_path):
+    """Finder leaves .DS_Store behind just from opening/viewing ~/Scout —
+    that alone must not count as vault content (finding 1)."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / ".DS_Store").write_bytes(b"\x00\x00")
+    assert detect(vault).action is AutoAction.INSTALL
+
+
+def test_detect_ds_store_plus_content_is_refused(tmp_path):
+    """.DS_Store alongside real content is still a non-empty, non-vault
+    directory — the Finder-metadata carve-out must not swallow real files."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / ".DS_Store").write_bytes(b"\x00\x00")
+    (vault / "notes.txt").write_text("hi")
+    plan = detect(vault)
+    assert plan.action is AutoAction.REFUSED and "not a Scout vault" in plan.reason
+
+
+def test_detect_dotgit_only_dir_is_refused(tmp_path):
+    """A dotfile that isn't Finder metadata (e.g. .git/) still counts as
+    content — only the exact names .DS_Store/.localized are ignored."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / ".git").mkdir()
+    plan = detect(vault)
+    assert plan.action is AutoAction.REFUSED and "not a Scout vault" in plan.reason
+
+
+def test_run_lock_busy_becomes_refused(tmp_path, monkeypatch):
+    """LockBusyError (lock contention on .scout-logs/.scout-session.lock,
+    raised by acquire_lock_with_wait after its poll timeout) must produce a
+    refused/exit-2 payload like the other caught exceptions, not an uncaught
+    traceback (finding 2)."""
+    import scout.scripts.bootstrap_auto as bootstrap_auto
+    from scout.scripts.bootstrap_lock import LockBusyError
+
+    lock_path = tmp_path / "Scout" / ".scout-logs" / ".scout-session.lock"
+
+    def _raise(cfg: BootstrapConfig) -> None:
+        raise LockBusyError(lock_path, 4242)
+
+    monkeypatch.setattr(bootstrap_auto, "install", _raise)
+    vault = tmp_path / "Scout"
+    d, code = run(_cfg(vault))
+    assert code == 2
+    assert d["action"] == "refused"
+    assert "4242" in d["error"]

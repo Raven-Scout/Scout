@@ -1611,9 +1611,23 @@ def _register_bootstrap() -> None:
         if plan.action is AutoAction.UPGRADE and (vault / "scout-config.yaml").exists():
             if user_name or user_email:
                 typer.echo("note: identity flags are ignored on upgrade (read from scout-config.yaml)", err=True)
-            cfg = _config_from_existing_vault(
-                vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
-            )
+            try:
+                cfg = _config_from_existing_vault(
+                    vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
+                )
+            except ConfigError as e:
+                _emit(
+                    result_dict(
+                        action=AutoAction.REFUSED,
+                        vault=vault,
+                        plugin_version=__version__,
+                        result=None,
+                        error=str(e),
+                        reason=plan.reason,
+                    ),
+                    json_out=json_out,
+                )
+                raise typer.Exit(code=2) from e
         else:
             cfg = BootstrapConfig(
                 vault=vault,

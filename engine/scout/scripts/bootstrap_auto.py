@@ -25,8 +25,13 @@ from scout.scripts.bootstrap import (
     upgrade,
 )
 from scout.scripts.bootstrap_doctor import DoctorReport
+from scout.scripts.bootstrap_lock import LockBusyError
 
 RESULT_SCHEMA_VERSION = 1
+
+# Finder leaves these behind just from opening/viewing a folder — they don't
+# count as user content when deciding whether a vault directory is "empty".
+_FINDER_METADATA = frozenset({".DS_Store", ".localized"})
 
 
 class AutoAction(Enum):
@@ -48,8 +53,19 @@ def pending_sidecars(vault: Path) -> list[str]:
     return [n for n in names if (vault / n).exists()]
 
 
+def _is_effectively_empty(vault: Path) -> bool:
+    """True iff every entry in `vault` is Finder-authored metadata.
+
+    A `~/Scout` folder that Finder has merely opened (never anything a user
+    put there) leaves a `.DS_Store` behind; that alone shouldn't make
+    `detect()` treat the directory as occupied and refuse to install. Any
+    other entry — dotfiles included, e.g. `.git` — is real content.
+    """
+    return all(p.name in _FINDER_METADATA for p in vault.iterdir())
+
+
 def detect(vault: Path) -> Plan:
-    if not vault.exists() or (vault.is_dir() and not any(vault.iterdir())):
+    if not vault.exists() or (vault.is_dir() and _is_effectively_empty(vault)):
         return Plan(AutoAction.INSTALL, "no vault: directory missing or empty")
     if not vault.is_dir():
         return Plan(AutoAction.REFUSED, f"{vault} exists and is not a directory")
@@ -128,6 +144,6 @@ def run(cfg: BootstrapConfig, *, dry_run: bool = False) -> tuple[dict[str, Any],
             res = migrate_legacy(cfg)
         else:
             res = upgrade(cfg)
-    except (FileExistsError, FileNotFoundError, RuntimeError) as e:
+    except (FileExistsError, FileNotFoundError, RuntimeError, LockBusyError) as e:
         return result_dict(action=AutoAction.REFUSED, result=None, error=str(e), **common), 2
     return result_dict(action=plan.action, result=res, **common), res.doctor.exit_code

@@ -270,3 +270,33 @@ def test_upgrade_json_refuses_without_vault(tmp_path, monkeypatch):
     payload = json.loads(result.stdout)
     assert payload["action"] == "refused"
     assert "run /scout-setup" in payload["error"]
+
+
+# --- Fix round 1 (reviewer findings 1 & 3) -----------------------------------
+
+
+def test_auto_installs_when_vault_has_only_ds_store(tmp_path, monkeypatch):
+    """A vault directory containing only Finder's .DS_Store must still be
+    treated as empty and install cleanly (reviewer finding 1)."""
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / ".DS_Store").write_bytes(b"\x00\x00")
+    result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
+    assert result.exit_code in (0, 1), result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "install"
+    assert (vault / "scout-config.yaml").exists()
+
+
+def test_auto_upgrade_malformed_config_refuses_with_exit_2(tmp_path, monkeypatch):
+    """A malformed scout-config.yaml hit on a repeat `auto` run (the UPGRADE
+    branch, which calls _config_from_existing_vault directly) must refuse
+    cleanly with exit 2 and a JSON payload — not crash (reviewer finding 3)."""
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text("instance: [unclosed\n")
+    result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS])
+    assert result.exit_code == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "refused"
+    assert "malformed" in payload["error"]
