@@ -43,10 +43,13 @@ func waitUntil(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @MainActor () -> Bool
 ) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(timeout))
+    while clock.now < deadline {
         if condition() { return }
-        try? await Task.sleep(for: pollInterval)
+        // A cancelled task must stop polling rather than spin on the main
+        // actor until the deadline: `Task.sleep` throws at once when cancelled.
+        do { try await Task.sleep(for: pollInterval, clock: clock) } catch { break }
     }
     #expect(condition(), "\(description()) within \(timeout)s", sourceLocation: sourceLocation)
 }

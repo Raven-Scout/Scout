@@ -40,7 +40,11 @@ jobs:
           echo "--- macOS SDKs ---"
           xcodebuild -showsdks | grep -i macos || true
 
+      # Coverage comes from the shared scheme's Test action, which gathers it
+      # for Scout.app only — `-enableCodeCoverage YES` here would also
+      # instrument ScoutTests.xctest, whose numbers the floor check discards.
       - name: Run ScoutTests
+        id: tests
         run: |
           set -o pipefail
           xcodebuild test \
@@ -48,7 +52,6 @@ jobs:
             -scheme Scout \
             -destination 'platform=macOS' \
             -only-testing:ScoutTests \
-            -enableCodeCoverage YES \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -56,10 +59,15 @@ jobs:
             | tee xcodebuild.log
 
       # Fails the job if Scout.app line coverage drops below the floor in
-      # scripts/coverage-floor.txt. Runs even when tests failed, so a PR that
-      # breaks a test still gets its coverage reported in the job summary.
+      # scripts/coverage-floor.txt. Runs when tests failed too, so a PR that
+      # breaks a test still gets its coverage reported in the job summary —
+      # but not on a cancelled run, and when there is no coverage data because
+      # the tests never ran (compile error, host crash) the script warns and
+      # skips the floor instead of adding a second red step.
       - name: Check coverage floor
-        if: always()
+        if: ${{ !cancelled() }}
+        env:
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
         run: ./scripts/check-coverage.sh TestResults.xcresult
 
       - name: Upload test results
