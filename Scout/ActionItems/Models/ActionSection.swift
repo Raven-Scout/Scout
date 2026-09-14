@@ -1,6 +1,6 @@
 import Foundation
 
-struct ActionSection: Identifiable, Equatable, Hashable, Sendable {
+nonisolated struct ActionSection: Identifiable, Equatable, Hashable, Sendable {
     enum Kind: String, Equatable, Hashable, Sendable {
         case urgent, todo, watching, personal
         case focus, meetings, done, digest

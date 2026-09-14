@@ -30,6 +30,12 @@ final class ActionItemsDocumentService: ObservableObject {
     private var currentDate: Date?
     private var watchTask: Task<Void, Never>?
 
+    /// Bumped on every reparse request. A parse now runs off the main actor, so
+    /// two can overlap — a slow day switching to a fast one, or a write landing
+    /// mid-load. The result of a parse whose generation is no longer current is
+    /// discarded, otherwise the stale one finishes last and wins.
+    private var generation: UInt64 = 0
+
     init(directory: URL, fileEvents: any FileSystemEventSource) {
         self.directory = directory
         self.fileEvents = fileEvents
@@ -39,39 +45,105 @@ final class ActionItemsDocumentService: ObservableObject {
     /// the FSEvents subscription filtered to that date's filename.
     func load(date: Date) async throws {
         currentDate = date
-        state = .loading(date)
-        let fileURL = url(for: date)
-        do {
-            try reparse(url: fileURL)
-        } catch {
-            state = .failed(error)
+        // Keep an already-loaded copy of this same day on screen while the
+        // reparse runs. Publishing `.loading` here would tear the card tree
+        // down to a spinner and rebuild it on every return to the tab, even
+        // though the result is byte-identical and the equality gate in
+        // ``publish(_:)`` would otherwise absorb it.
+        if !isShowingDocument(for: date) {
+            publish(.loading(date))
         }
+        await reparse()
         startWatching()
     }
 
-    /// Recompute the displayed document's URL for the currently-loaded date.
-    /// Called by the writer after a successful CLI invocation so the user
-    /// sees the change ASAP even if FSEvents is briefly laggy.
-    func reparseCurrent() {
-        guard let d = currentDate else { return }
-        do {
-            try reparse(url: url(for: d))
-        } catch {
-            state = .failed(error)
+    /// Recompute the displayed document for the currently-loaded date. Called
+    /// by the view after a successful CLI invocation so the user sees the
+    /// change ASAP even if FSEvents is briefly laggy — the file watcher then
+    /// fires for the same write and reparses again, which the equality gate in
+    /// ``publish(_:)`` absorbs.
+    /// `async` because the parse it drives is: callers that need to observe the
+    /// outcome — including the `#47` guarantee that a failed reparse surfaces
+    /// as `.failed` rather than leaving stale `.loaded` state — must await it.
+    func reparseCurrent() async {
+        await reparse()
+    }
+
+    private func isShowingDocument(for date: Date) -> Bool {
+        if case .loaded(let doc) = state { return doc.sourceURL == url(for: date) }
+        return false
+    }
+
+    /// Reparse the file for `currentDate`. The URL is derived here rather than
+    /// passed in, so a reparse queued before a day switch (the watcher's
+    /// debounce) cannot land the previous day's document under the new date.
+    private func reparse() async {
+        guard let date = currentDate else { return }
+        let url = url(for: date)
+
+        // Every request supersedes the ones in flight — including one that
+        // ends in `.missing`, otherwise a slow parse of the previous day
+        // finishes last and overwrites it.
+        generation &+= 1
+        let mine = generation
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            publish(.missing(date: date, expectedURL: url))
+            return
+        }
+
+        // Read the byline here, on the main actor, rather than inside the
+        // parser: the parse runs off-actor and `UserDefaults` hands back
+        // Cocoa-backed strings.
+        let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+
+        // Off the main actor: parsing a real day costs hundreds of
+        // milliseconds, and doing it here froze the UI on every load and every
+        // checkbox click. `ActionItemsDocument` is `Sendable` and the parser is
+        // `nonisolated`, so only value types cross.
+        let result: Result<ActionItemsDocument, Error> = await Task.detached(priority: .userInitiated) {
+            do {
+                let data = try Data(contentsOf: url)
+                let text = String(data: data, encoding: .utf8) ?? ""
+                return .success(try ActionItemsParser.parse(
+                    text: text,
+                    sourceURL: url,
+                    sourceBytes: data.count,
+                    inlineCommentAuthor: author
+                ))
+            } catch {
+                return .failure(error)
+            }
+        }.value
+
+        // A newer request started while this one was parsing — drop it rather
+        // than overwrite fresher state with stale content.
+        guard mine == generation else { return }
+
+        switch result {
+        case .success(let doc): publish(.loaded(doc))
+        case .failure(let error): publish(.failed(error))
         }
     }
 
-    private func reparse(url: URL) throws {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let date = currentDate else {
-            if let d = currentDate { state = .missing(date: d, expectedURL: url) }
+    /// Assign `state` only when it actually changed.
+    ///
+    /// `@Published` fires `objectWillChange` on every assignment, equal or not,
+    /// and one write reparses twice — once explicitly for responsiveness, once
+    /// from the FSEvent the same write triggers. The second parse yields a
+    /// byte-identical document, and republishing it rebuilt the entire view
+    /// tree (~475 cards, ~1.8 s) for no change at all.
+    private func publish(_ next: State) {
+        // `State ==` treats any two failures as equal (it exists for
+        // `.onChange` coalescing), so a second, different error would be
+        // swallowed here and the first error's text would stay on screen.
+        // Failures are cheap to republish; always let them through.
+        if case .failed = next {
+            state = next
             return
         }
-        let data = try Data(contentsOf: url)
-        let text = String(data: data, encoding: .utf8) ?? ""
-        let doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: data.count)
-        _ = date
-        state = .loaded(doc)
+        guard state != next else { return }
+        state = next
     }
 
     private func startWatching() {
@@ -87,14 +159,8 @@ final class ActionItemsDocumentService: ObservableObject {
                 debounce?.cancel()
                 debounce = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 250_000_000)
-                    guard let self else { return }
-                    await MainActor.run {
-                        do {
-                            try self.reparse(url: expected)
-                        } catch {
-                            self.state = .failed(error)
-                        }
-                    }
+                    guard let self, !Task.isCancelled else { return }
+                    await self.reparse()
                 }
             }
         }
