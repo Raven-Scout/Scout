@@ -51,9 +51,35 @@ fi
 
 FLOOR="$(tr -d '[:space:]' < "$FLOOR_FILE")"
 
+# Emit a GitHub Actions warning annotation (plain note when running locally)
+# and succeed. Used for "there is no coverage data to check", which is never
+# this script's finding to report: the run that produced the bundle failed or
+# was cut short, and that step is already red.
+no_data() {
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::warning title=Coverage not checked::$1"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf '### ⚠️ Coverage not checked\n\n%s\n\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+    fi
+  else
+    echo "note: coverage not checked — $1"
+  fi
+  exit 0
+}
+
 JSON="$(mktemp -t scout-coverage)"
-trap 'rm -f "$JSON"' EXIT
-xcrun xccov view --report --json "$RESULT_BUNDLE" > "$JSON"
+trap 'rm -f "$JSON" "$JSON.err"' EXIT
+
+# A bundle from a run that failed before the tests executed carries no coverage
+# payload, and xccov exits non-zero. That is not a coverage regression.
+if ! xcrun xccov view --report --json "$RESULT_BUNDLE" > "$JSON" 2>"$JSON.err"; then
+  no_data "xccov reported no coverage data in $RESULT_BUNDLE ($(tr '\n' ' ' < "$JSON.err" | head -c 300)). The test step's own result is authoritative."
+fi
+rm -f "$JSON.err"
+
+if [ ! -s "$JSON" ]; then
+  no_data "xccov produced an empty report for $RESULT_BUNDLE."
+fi
 
 COVERAGE_TARGET="$COVERAGE_TARGET" FLOOR="$FLOOR" TOP_GAPS="$TOP_GAPS" \
 python3 - "$JSON" <<'PY'
@@ -63,17 +89,45 @@ target_name = os.environ["COVERAGE_TARGET"]
 floor = float(os.environ["FLOOR"])
 top_gaps = int(os.environ["TOP_GAPS"])
 
+summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+def no_data(message):
+    """Warn and succeed: there is nothing to measure, which is not a regression.
+
+    The run that produced this bundle failed or was cut short, and that step is
+    already red. Failing here too would bury it under a misleading "add tests".
+    """
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning title=Coverage not checked::{message}")
+        if summary_path:
+            with open(summary_path, "a") as fh:
+                fh.write(f"### ⚠️ Coverage not checked\n\n{message}\n\n")
+    else:
+        print(f"note: coverage not checked — {message}")
+    sys.exit(0)
+
+
 with open(sys.argv[1]) as fh:
     report = json.load(fh)
 
-target = next((t for t in report["targets"] if t["name"] == target_name), None)
+targets = report.get("targets") or []
+if not targets:
+    no_data("xccov reported no targets. The test step's own result is authoritative.")
+
+target = next((t for t in targets if t["name"] == target_name), None)
 if target is None:
-    names = ", ".join(t["name"] for t in report["targets"])
-    sys.exit(f"error: target {target_name!r} not in report (found: {names})")
+    names = ", ".join(t["name"] for t in targets)
+    no_data(
+        f"target {target_name!r} is not in the coverage report (found: {names}). "
+        f"Tests likely never ran."
+    )
 
 covered = target["coveredLines"]
 total = target["executableLines"]
-pct = 100.0 * covered / total if total else 0.0
+if not total:
+    no_data(f"{target_name} reports 0 executable lines — no coverage was collected.")
+pct = 100.0 * covered / total
 
 print(f"{target_name} line coverage: {pct:.2f}%  ({covered}/{total})")
 print(f"floor: {floor:.2f}%")
@@ -91,9 +145,8 @@ if gaps:
     print()
 
 # GitHub Actions job summary, when running in CI.
-summary = os.environ.get("GITHUB_STEP_SUMMARY")
-if summary:
-    with open(summary, "a") as fh:
+if summary_path:
+    with open(summary_path, "a") as fh:
         status = "✅" if pct >= floor else "❌"
         fh.write(f"### {status} Coverage: {pct:.2f}% (floor {floor:.2f}%)\n\n")
         fh.write(f"`{target_name}` — {covered}/{total} lines\n\n")

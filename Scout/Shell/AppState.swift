@@ -495,15 +495,19 @@ extension AppState.Configuration {
     /// vault directory, a process runner that never spawns anything, an event
     /// source that never fires, and no background work. Nothing here touches
     /// `~/Scout` or `UserDefaults.standard`.
+    ///
+    /// `defaults` defaults to a **fresh suite per call**, so the vault
+    /// directory passed in is authoritative without anything being erased.
+    /// The previous shape took one shared `"scout.tests"` suite and wiped it on
+    /// entry — which erased whatever suite a *caller-supplied* `defaults` was
+    /// meant to isolate, and let parallel tests wipe each other mid-run.
     static func testing(
         scoutDirectory: URL,
         runner: any ProcessRunner = InertProcessRunner(),
-        defaults: UserDefaults = UserDefaults(suiteName: "scout.tests")!
+        defaults: UserDefaults = UserDefaults(
+            suiteName: "scout.tests.\(UUID().uuidString)")!
     ) -> AppState.Configuration {
-        // Clear any path overrides a previous run left behind, so the vault
-        // directory passed in is authoritative.
-        defaults.removePersistentDomain(forName: "scout.tests")
-        return AppState.Configuration(
+        AppState.Configuration(
             scoutDirectory: scoutDirectory,
             runner: runner,
             fileEvents: InertFileEvents(),

@@ -23,7 +23,8 @@ struct FakeScoutRunIntegrationTests {
         let svc = await SessionLogService(
             logsDirectory: logsDir,
             trackerService: tracker,
-            fileEvents: watcher
+            fileEvents: watcher,
+            parseCacheURL: sandboxParseCacheURL(in: sandbox)
         )
         _ = try await svc.loadInitial()
 

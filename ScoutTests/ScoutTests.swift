@@ -28,6 +28,17 @@ struct ScoutTests {
 
 final class FixtureAnchor {}
 
+/// Parse-cache location inside a test's own sandbox directory.
+///
+/// `SessionLogService.parseCacheURL` defaults to the per-user caches directory,
+/// so a `loadInitial()` that leaves it `nil` writes
+/// `~/Library/Caches/Scout/session-parse-cache.json` — the *running app's*
+/// cache — and replaces the user's entries with fixture ones. Every test that
+/// builds a `SessionLogService` must inject this.
+nonisolated func sandboxParseCacheURL(in directory: URL) -> URL {
+    directory.appendingPathComponent("session-parse-cache.json")
+}
+
 /// Poll `condition` on the main actor until it holds, or fail after `timeout`.
 ///
 /// Used by the FSEvents watch tests. Those assert *liveness* — that a file
@@ -43,10 +54,16 @@ func waitUntil(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @MainActor () -> Bool
 ) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
+    // `ContinuousClock`, not `Date()`: the wall clock can step (NTP, a manual
+    // change, DST on a machine that keeps local time), which either cuts the
+    // budget short or stretches it.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+    while ContinuousClock.now < deadline {
         if condition() { return }
-        try? await Task.sleep(for: pollInterval)
+        // `try?` swallows the cancellation error, so a cancelled test would
+        // otherwise busy-spin the main actor until the full 30 s elapses.
+        do { try await Task.sleep(for: pollInterval) } catch { break }
+        if Task.isCancelled { break }
     }
     #expect(condition(), "\(description()) within \(timeout)s", sourceLocation: sourceLocation)
 }

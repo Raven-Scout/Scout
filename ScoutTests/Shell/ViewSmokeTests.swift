@@ -67,8 +67,12 @@ struct SmokeVault {
                                    withIntermediateDirectories: true)
         }
 
+        // `ActionItemsDocumentService.url(for:)` reads
+        // `action-items/action-items-<YYYY-MM-DD>.md`. The stem alone leaves
+        // the service in `.missing`, so the "populated day" smoke test silently
+        // rendered the empty state.
         try Self.write(Self.actionItems, to: root
-            .appendingPathComponent("action-items/2026-06-15.md"))
+            .appendingPathComponent("action-items/action-items-2026-06-15.md"))
         try Self.write(Self.proposal, to: root
             .appendingPathComponent("dreaming-proposals/2026-06-15-tighten-cadence.md"))
         try Self.write(Self.wishlistItem, to: root

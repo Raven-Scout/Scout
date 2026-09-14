@@ -18,6 +18,10 @@ struct SessionLogStaleSweepTests {
         return dir
     }
 
+    /// See ``sandboxParseCacheURL(in:)`` — without it these tests overwrite the
+    /// running app's parse cache in `~/Library/Caches/Scout`.
+    private func parseCache(in dir: URL) -> URL { sandboxParseCacheURL(in: dir) }
+
     private func makeTracker(in dir: URL) async throws -> UsageTrackerService {
         let trackerURL = dir.appendingPathComponent("usage-tracker.jsonl")
         try "".write(to: trackerURL, atomically: true, encoding: .utf8)
@@ -72,7 +76,8 @@ struct SessionLogStaleSweepTests {
         let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            gitService: nil, fileEvents: NoopFS(), timeZone: Self.ny)
+            gitService: nil, fileEvents: NoopFS(), timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
 
         #expect(await service.commits(for: Run.make()).isEmpty)
     }
@@ -89,7 +94,8 @@ struct SessionLogStaleSweepTests {
         let git = GitService(repoURL: dir, runner: runner)
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            gitService: git, fileEvents: NoopFS(), timeZone: Self.ny)
+            gitService: git, fileEvents: NoopFS(), timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
 
         let started = Date(timeIntervalSince1970: 1_781_600_000)
         let run = Run.make(type: .dreaming, startedAt: started,
@@ -114,7 +120,8 @@ struct SessionLogStaleSweepTests {
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
             gitService: GitService(repoURL: dir, runner: runner),
-            fileEvents: NoopFS(), clock: FixedClock(date: now), timeZone: Self.ny)
+            fileEvents: NoopFS(), clock: FixedClock(date: now), timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
 
         let run = Run.make(type: .research,
                            startedAt: Date(timeIntervalSince1970: 1_781_600_000),
@@ -135,7 +142,8 @@ struct SessionLogStaleSweepTests {
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
             gitService: GitService(repoURL: dir, runner: runner),
-            fileEvents: NoopFS(), timeZone: Self.ny)
+            fileEvents: NoopFS(), timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
 
         #expect(await service.commits(for: Run.make()).isEmpty)
     }
@@ -154,7 +162,8 @@ struct SessionLogStaleSweepTests {
         let fresh = FixedClock(date: Self.et(day: 20, hour: 22, minute: 10))
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), clock: fresh, timeZone: Self.ny)
+            fileEvents: NoopFS(), clock: fresh, timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
         let runs = try await service.loadInitial()
         #expect(runs.first?.status == .running)
 
@@ -174,7 +183,8 @@ struct SessionLogStaleSweepTests {
         let stale = FixedClock(date: Self.et(day: 20, hour: 23, minute: 35))
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), clock: stale, timeZone: Self.ny)
+            fileEvents: NoopFS(), clock: stale, timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
         let runs = try await service.loadInitial()
         #expect(runs.first?.status == .orphaned)
 
@@ -188,7 +198,8 @@ struct SessionLogStaleSweepTests {
         let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), timeZone: Self.ny)
+            fileEvents: NoopFS(), timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
         _ = try await service.loadInitial()
         #expect(service.runs.isEmpty)
         service.sweepStaleStatuses()
@@ -208,7 +219,8 @@ struct SessionLogStaleSweepTests {
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
             fileEvents: NoopFS(),
             clock: FixedClock(date: Self.et(day: 22, hour: 12, minute: 0)),   // 2 days later
-            timeZone: Self.ny)
+            timeZone: Self.ny,
+            parseCacheURL: parseCache(in: dir))
         let runs = try await service.loadInitial()
         let statusBefore = runs.first?.status
         #expect(statusBefore != .running)

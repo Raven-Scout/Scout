@@ -57,9 +57,12 @@ jobs:
 
       # Fails the job if Scout.app line coverage drops below the floor in
       # scripts/coverage-floor.txt. Runs even when tests failed, so a PR that
-      # breaks a test still gets its coverage reported in the job summary.
+      # breaks a test still gets its coverage reported in the job summary —
+      # but `!cancelled()` rather than `always()`, so cancelling the run (the
+      # concurrency group above cancels superseded runs) doesn't leave this
+      # step grinding on a half-written result bundle.
       - name: Check coverage floor
-        if: always()
+        if: ${{ !cancelled() }}
         run: ./scripts/check-coverage.sh TestResults.xcresult
 
       - name: Upload test results

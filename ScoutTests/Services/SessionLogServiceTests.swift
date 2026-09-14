@@ -284,7 +284,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: NoopFS(),
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let runs = try await service.loadInitial()
         #expect(!runs.isEmpty, "fixture logs should produce at least one Run")
@@ -324,7 +325,8 @@ struct SessionLogServiceTests {
             trackerService: tracker,
             fileEvents: NoopFS(),
             clock: clock,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -360,7 +362,8 @@ struct SessionLogServiceTests {
             trackerService: tracker,
             fileEvents: NoopFS(),
             clock: clock,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -400,7 +403,8 @@ struct SessionLogServiceTests {
             trackerService: tracker,
             fileEvents: NoopFS(),
             clock: clock,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -438,7 +442,8 @@ struct SessionLogServiceTests {
             trackerService: tracker,
             fileEvents: NoopFS(),
             clock: clock,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let runs = try await service.loadInitial()
         #expect(runs.count == 1)
@@ -532,7 +537,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: fakeFS,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         let initial = try await service.loadInitial()
         #expect(initial.isEmpty)
@@ -579,7 +585,8 @@ struct SessionLogServiceTests {
             logsDirectory: tempDir,
             trackerService: tracker,
             fileEvents: fakeFS,
-            timeZone: Self.ny
+            timeZone: Self.ny,
+            parseCacheURL: sandboxParseCacheURL(in: tempDir)
         )
         _ = try await service.loadInitial()
 

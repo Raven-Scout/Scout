@@ -17,6 +17,17 @@ struct TabViewSmokeTests {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         try await vault.state.actionItemsDocumentService.load(date: Self.fixtureDay)
 
+        // Without this the test passes on the *missing-day* chrome whenever the
+        // fixture filename drifts from `ActionItemsDocumentService.url(for:)`,
+        // which is exactly what it is meant to catch. `sections` must be
+        // non-empty too: a loaded-but-empty document renders the same chrome.
+        let state = vault.state.actionItemsDocumentService.state
+        guard case .loaded(let document) = state else {
+            Issue.record("expected .loaded after load(date:), got \(state)")
+            return
+        }
+        #expect(!document.sections.isEmpty)
+
         ViewHost.render(
             ActionItemsView(
                 scoutDirectory: vault.state.scoutDirectory,
