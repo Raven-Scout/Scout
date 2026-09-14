@@ -94,44 +94,50 @@ struct GitHubRefLinkifierTests {
 /// rewrites rather than fail loudly, so pin the invariant it rests on.
 @Suite("GitHubRefLinkifier — hash-digit fast path")
 struct GitHubRefLinkifierFastPathTests {
+    /// Strings with no `#` followed by a digit. One table serves both
+    /// assertions below: the guard must skip every entry, and `linkify` must
+    /// hand every entry back byte-identical.
+    private static let guardSkippedStrings: [String] = [
+        "",
+        "Plain prose with no refs at all",
+        "example-org/scout is the repo",
+        "github.com/example-org/scout without a ref",
+        "[[people/alex]] and `code` and [label](https://example.com/a)",
+        "PROJ-1234 — Priya merged it",
+        "Numbers 1234 and 5678 but no hash",
+        "🚧 emoji and — an em dash",
+        // The case that makes the digit requirement worth having: Scout
+        // vaults are full of these, and none is a GitHub ref.
+        "[#DEMOTAG] the demo launch is still open",
+        "Discussed in #tmp-demo-sync with [[people/priya]]",
+        "[#AI3026] and [#RSM] in one line",
+        "A trailing hash # and a lone #",
+        "no hash at all",
+    ]
+
     @Test("Strings with no #digit are returned unchanged")
     func noHashDigitRoundTrips() {
-        for s in [
-            "",
-            "Plain prose with no refs at all",
-            "example-org/scout is the repo",
-            "github.com/example-org/scout without a ref",
-            "[[people/alex]] and `code` and [label](https://example.com/a)",
-            "PROJ-1234 — Priya merged it",
-            "Numbers 1234 and 5678 but no hash",
-            "🚧 emoji and — an em dash",
-            // The case that makes the digit requirement worth having: Scout
-            // vaults are full of these, and none is a GitHub ref.
-            "[#DEMOTAG] the demo launch is still open",
-            "Discussed in #tmp-demo-sync with [[people/priya]]",
-            "[#AI3026] and [#RSM] in one line",
-            "A trailing hash # and a lone #",
-            // Digit-leading tags DO clear the guard — `#5` is a hash followed
-            // by a digit — so they still pay for the regex scan. They must
-            // nonetheless come back untouched: `[#5864M]` is not `#5864` (the
-            // trailing `M` defeats refRe's `\b`).
-            "[#5864M] the demo coupon",
-        ] {
+        for s in Self.guardSkippedStrings {
             #expect(GitHubRefLinkifier.linkify(s) == s, "should be untouched: \(s)")
         }
     }
 
     @Test("Alpha-leading tags and channel names skip the regex scan entirely")
     func guardSkipsTagsAndChannels() {
-        for s in [
-            "[#DEMOTAG] the demo launch is still open",
-            "Discussed in #tmp-demo-sync with [[people/priya]]",
-            "[#AI3026] and [#RSM] in one line",
-            "A trailing hash # and a lone #",
-            "no hash at all",
-        ] {
+        for s in Self.guardSkippedStrings {
             #expect(!GitHubRefLinkifier.containsHashDigit(s), "guard should skip: \(s)")
         }
+    }
+
+    @Test("A digit-leading tag clears the guard but is still not a ref")
+    func digitLeadingTagIsNotARef() {
+        // `#5` is a hash followed by a digit, so `[#5864M]` pays for the regex
+        // scan. It comes back untouched only because the trailing `M` defeats
+        // refRe's `\b` — not because of any bracket protection (the protected
+        // ranges cover `[[…]]`, `[…](…)` and code spans, not a bare `[…]`).
+        let s = "[#5864M] the demo coupon"
+        #expect(GitHubRefLinkifier.containsHashDigit(s))
+        #expect(GitHubRefLinkifier.linkify(s) == s)
     }
 
     @Test("The guard admits every shape refRe can match")
@@ -169,5 +175,33 @@ struct GitHubRefLinkifierFastPathTests {
         #expect(!out.contains("issues/４２"), "fullwidth digits linkified: \(out)")
         #expect(out.contains("https://github.com/example-org/scout/issues/1"))
         #expect(!GitHubRefLinkifier.containsHashDigit("example-org/scout#４２"))
+    }
+
+    @Test("Every string refRe matches also clears the guard")
+    func guardIsNecessaryForRefRe() {
+        // The guard and the regex are two encodings of one rule, so pin
+        // guard ⊆ regex directly against `refRe` rather than through `linkify`
+        // (which returns early on a guard miss and would make the check
+        // tautological). Every string up to length 5 over an alphabet that
+        // reaches both regex branches, the boundary characters, and non-ASCII
+        // digits — a future regex relaxation the guard does not admit fails
+        // here instead of silently going dark.
+        let alphabet: [Character] = ["#", "1", "a", "/", " ", "４", "٤"]
+        var frontier = [""]
+        var strings: [String] = []
+        for _ in 1...5 {
+            frontier = frontier.flatMap { s in alphabet.map { s + String($0) } }
+            strings += frontier
+        }
+
+        var matched = 0
+        for s in strings {
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            guard GitHubRefLinkifier.refRe.firstMatch(in: s, range: range) != nil else { continue }
+            matched += 1
+            #expect(GitHubRefLinkifier.containsHashDigit(s), "refRe matches but the guard skips: \(s)")
+        }
+        // Guard against the alphabet silently failing to reach the regex.
+        #expect(matched > 0)
     }
 }

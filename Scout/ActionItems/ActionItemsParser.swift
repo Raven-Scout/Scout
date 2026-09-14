@@ -799,10 +799,10 @@ extension ActionItemsParser {
         let chars = Array(rest)
 
         if let hit = firstSeparatorOutsideTokens(in: chars, separators: dashSeparators) {
-            return split(chars, at: hit)
+            return split(rest, at: hit)
         }
         if let hit = firstSeparatorOutsideTokens(in: chars, separators: colonSeparator) {
-            return split(chars, at: hit)
+            return split(rest, at: hit)
         }
         return (rest, "")
     }
@@ -814,13 +814,19 @@ extension ActionItemsParser {
     ]
     private static let colonSeparator: [[Character]] = [Array(": ")]
 
+    /// Slice `rest` around the separator at Character offset `hit.index`. The
+    /// offset is mapped back to a `String.Index` once — O(subject length) — so
+    /// both halves are plain substring copies rather than a Character-by-
+    /// Character rebuild of the whole line.
     private static func split(
-        _ chars: [Character],
+        _ rest: String,
         at hit: (index: Int, length: Int)
     ) -> (String, String) {
-        (
-            String(chars[..<hit.index]).trimmingCharacters(in: .whitespaces),
-            String(chars[(hit.index + hit.length)...]).trimmingCharacters(in: .whitespaces)
+        let sepStart = rest.index(rest.startIndex, offsetBy: hit.index)
+        let bodyStart = rest.index(sepStart, offsetBy: hit.length)
+        return (
+            String(rest[..<sepStart]).trimmingCharacters(in: .whitespaces),
+            String(rest[bodyStart...]).trimmingCharacters(in: .whitespaces)
         )
     }
 
@@ -860,20 +866,12 @@ extension ActionItemsParser {
             }
             if ch == ")" && parenDepth > 0 { parenDepth -= 1; i += 1; continue }
             if !inBold && !inStrike && bracketDepth == 0 && parenDepth == 0 {
-                for sep in separators where matches(chars, at: i, sep) {
+                for sep in separators where chars[i...].starts(with: sep) {
                     return (i, sep.count)
                 }
             }
             i += 1
         }
         return nil
-    }
-
-    private static func matches(_ chars: [Character], at i: Int, _ sep: [Character]) -> Bool {
-        guard i + sep.count <= chars.count else { return false }
-        for k in 0 ..< sep.count where chars[i + k] != sep[k] {
-            return false
-        }
-        return true
     }
 }
