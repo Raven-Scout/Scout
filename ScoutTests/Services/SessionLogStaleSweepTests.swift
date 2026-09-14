@@ -152,9 +152,12 @@ struct SessionLogStaleSweepTests {
 
         // Load with a clock 5 minutes in — still legitimately running.
         let fresh = FixedClock(date: Self.et(day: 20, hour: 22, minute: 10))
+        // `loadInitial` rewrites the parse cache from this directory's
+        // fixtures, so it must never resolve to the real per-user cache.
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), clock: fresh, timeZone: Self.ny)
+            fileEvents: NoopFS(), clock: fresh, timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
         let runs = try await service.loadInitial()
         #expect(runs.first?.status == .running)
 
@@ -174,7 +177,8 @@ struct SessionLogStaleSweepTests {
         let stale = FixedClock(date: Self.et(day: 20, hour: 23, minute: 35))
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), clock: stale, timeZone: Self.ny)
+            fileEvents: NoopFS(), clock: stale, timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
         let runs = try await service.loadInitial()
         #expect(runs.first?.status == .orphaned)
 
@@ -188,7 +192,8 @@ struct SessionLogStaleSweepTests {
         let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let service = SessionLogService(
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
-            fileEvents: NoopFS(), timeZone: Self.ny)
+            fileEvents: NoopFS(), timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
         _ = try await service.loadInitial()
         #expect(service.runs.isEmpty)
         service.sweepStaleStatuses()
@@ -208,7 +213,8 @@ struct SessionLogStaleSweepTests {
             logsDirectory: dir, trackerService: try await makeTracker(in: dir),
             fileEvents: NoopFS(),
             clock: FixedClock(date: Self.et(day: 22, hour: 12, minute: 0)),   // 2 days later
-            timeZone: Self.ny)
+            timeZone: Self.ny,
+            parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
         let runs = try await service.loadInitial()
         let statusBefore = runs.first?.status
         #expect(statusBefore != .running)

@@ -29,8 +29,9 @@ struct DetailSmokeTests {
     @Test("the run detail pane renders for every run status")
     func runDetailRendersEveryStatus() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
-        for status in [RunStatus.success, .failure, .running, .timeout,
-                       .orphaned, .skippedBudget, .skippedConcurrency, .rateLimited] {
+        // `allCases`, not a hand-written list: the list this replaced had
+        // already drifted (it lacked `.scheduled`).
+        for status in RunStatus.allCases {
             ViewHost.render(
                 RunDetailView(run: run(in: vault, status: status))
                     .environmentObject(vault.state),

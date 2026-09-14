@@ -146,8 +146,7 @@ final class AppState: ObservableObject {
         )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
-            projectsDirectory: ClaudeSessionService
-                .defaultScoutSessionsDirectory(scoutDirectory: scoutDir)
+            projectsDirectory: configuration.claudeSessionsDirectory
         )
 
         let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: events)
@@ -310,19 +309,63 @@ final class AppState: ObservableObject {
         var scoutctl: ScoutctlInvocation
         /// Backing store for the user's path-override settings.
         var defaults: UserDefaults
+        /// Where Claude Code keeps this vault's session transcripts
+        /// (`~/.claude/projects/<encoded vault path>` in production). Part of
+        /// the configuration so a test graph never reads the real home.
+        var claudeSessionsDirectory: URL
         /// When false the initializer wires the object graph but starts no
         /// timers, watches, loads, or subprocesses.
         var startsBackgroundWork: Bool
 
         static func production() -> Configuration {
-            Configuration(
-                scoutDirectory: FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Scout"),
+            let scoutDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Scout")
+            return Configuration(
+                scoutDirectory: scoutDirectory,
                 runner: SystemProcessRunner(),
                 fileEvents: FileWatcher(),
                 scoutctl: AppState.resolveScoutctlPath(),
                 defaults: .standard,
+                claudeSessionsDirectory: ClaudeSessionService
+                    .defaultScoutSessionsDirectory(scoutDirectory: scoutDirectory),
                 startsBackgroundWork: true
+            )
+        }
+
+        /// What `ScoutApp` boots with. Under `xcodebuild test` this process is
+        /// the ScoutTests host, so the graph is wired against a scratch
+        /// directory with background work off — otherwise every test run
+        /// watched `~/Scout` and polled `scoutctl` from the host, and the
+        /// coverage gate measured that live graph.
+        static func forCurrentProcess() -> Configuration {
+            isTestHost ? testHost() : production()
+        }
+
+        static var isTestHost: Bool {
+            let env = ProcessInfo.processInfo.environment
+            return env["XCTestConfigurationFilePath"] != nil
+                || env["XCTestBundlePath"] != nil
+                || NSClassFromString("XCTestCase") != nil
+        }
+
+        /// Inert wiring for the test host, built from the real runner and
+        /// watcher types so nothing test-only ships in the app. Nothing
+        /// subscribes to the watcher because background work is off.
+        static func testHost() -> Configuration {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("scout-test-host", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return Configuration(
+                scoutDirectory: dir,
+                runner: SystemProcessRunner(),
+                fileEvents: FileWatcher(),
+                scoutctl: AppState.ScoutctlInvocation(
+                    executable: URL(fileURLWithPath: "/usr/bin/false"),
+                    argsPrefix: []
+                ),
+                defaults: UserDefaults(suiteName: "scout.test-host") ?? .standard,
+                claudeSessionsDirectory: dir.appendingPathComponent(".claude-projects"),
+                startsBackgroundWork: false
             )
         }
     }
@@ -488,49 +531,3 @@ final class AppState: ObservableObject {
         }.store(in: &cancellables)
     }
 }
-
-#if DEBUG
-extension AppState.Configuration {
-    /// An inert configuration for tests and SwiftUI previews: a caller-supplied
-    /// vault directory, a process runner that never spawns anything, an event
-    /// source that never fires, and no background work. Nothing here touches
-    /// `~/Scout` or `UserDefaults.standard`.
-    static func testing(
-        scoutDirectory: URL,
-        runner: any ProcessRunner = InertProcessRunner(),
-        defaults: UserDefaults = UserDefaults(suiteName: "scout.tests")!
-    ) -> AppState.Configuration {
-        // Clear any path overrides a previous run left behind, so the vault
-        // directory passed in is authoritative.
-        defaults.removePersistentDomain(forName: "scout.tests")
-        return AppState.Configuration(
-            scoutDirectory: scoutDirectory,
-            runner: runner,
-            fileEvents: InertFileEvents(),
-            scoutctl: AppState.ScoutctlInvocation(
-                executable: URL(fileURLWithPath: "/usr/bin/false"),
-                argsPrefix: []
-            ),
-            defaults: defaults,
-            startsBackgroundWork: false
-        )
-    }
-}
-
-/// Succeeds instantly with empty output — stands in for `scoutctl` and `git`.
-struct InertProcessRunner: ProcessRunner {
-    func run(
-        executable: URL, arguments: [String],
-        environment: [String: String], workingDirectory: URL?
-    ) async throws -> ProcessResult {
-        ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
-    }
-}
-
-/// A file-event source that finishes immediately, so nothing ever re-parses.
-struct InertFileEvents: FileSystemEventSource {
-    func events(for url: URL) -> AsyncStream<FileSystemEvent> {
-        AsyncStream { $0.finish() }
-    }
-}
-#endif

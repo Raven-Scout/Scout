@@ -2,23 +2,6 @@ import Foundation
 import Testing
 @testable import Scout
 
-/// A per-file event source the test drives by hand.
-private final class ManualPerFileEvents: FileSystemEventSource, @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: AsyncStream<FileSystemEvent>.Continuation?
-
-    nonisolated func events(for url: URL) -> AsyncStream<FileSystemEvent> {
-        AsyncStream { cont in
-            lock.lock(); continuation = cont; lock.unlock()
-        }
-    }
-
-    func emit(_ event: FileSystemEvent) {
-        lock.lock(); let c = continuation; lock.unlock()
-        c?.yield(event)
-    }
-}
-
 /// `State` drives the Action Items view's placeholder/error chrome, and it
 /// hand-rolls `==` because `.failed` wraps a non-Equatable `Error`. These pin
 /// that comparison down.
@@ -122,7 +105,7 @@ struct PerFileDocumentServiceWatchTests {
     @Test("a markdown event triggers a debounced reparse")
     func watching_markdownEventReparses() async throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let events = ManualPerFileEvents()
+        let events = InjectableFS()
         let svc = PerFileDocumentService(directoryURL: dir, fileEvents: events)
         svc.load()
         #expect(svc.items.isEmpty)
@@ -141,7 +124,7 @@ struct PerFileDocumentServiceWatchTests {
     @Test("a non-markdown event is ignored")
     func watching_ignoresNonMarkdownEvents() async throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let events = ManualPerFileEvents()
+        let events = InjectableFS()
         let svc = PerFileDocumentService(directoryURL: dir, fileEvents: events)
         svc.load()
 
@@ -158,7 +141,7 @@ struct PerFileDocumentServiceWatchTests {
         try writeItem(in: dir, file: "2026-06-10-old.md", title: "Old", status: "open")
         try writeItem(in: dir, file: "2026-06-15-new.md", title: "New", status: "done")
 
-        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: ManualPerFileEvents())
+        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: InjectableFS())
         svc.load()
         #expect(svc.items.map(\.title) == ["New", "Old"])
         #expect(svc.activeCount == 1)
@@ -167,7 +150,7 @@ struct PerFileDocumentServiceWatchTests {
     @Test("state starts idle and reaches loaded")
     func state_transitions() throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: ManualPerFileEvents())
+        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: InjectableFS())
         #expect(svc.state == .idle)
         svc.load()
         #expect(svc.state == .loaded)
@@ -177,7 +160,7 @@ struct PerFileDocumentServiceWatchTests {
     func reload_seesStatusChange() throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeItem(in: dir, file: "2026-06-15-a.md", title: "A", status: "open")
-        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: ManualPerFileEvents())
+        let svc = PerFileDocumentService(directoryURL: dir, fileEvents: InjectableFS())
         svc.load()
         #expect(svc.activeCount == 1)
 
