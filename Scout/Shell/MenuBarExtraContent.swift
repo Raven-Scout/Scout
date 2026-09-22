@@ -36,7 +36,7 @@ struct MenuBarExtraContent: View {
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : -5)
         .onAppear {
-            state.refreshUrgentActionCount()
+            Task { await state.refreshUrgentActionCount() }
             if reduceMotion {
                 appeared = true
             } else {

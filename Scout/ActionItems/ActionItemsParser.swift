@@ -232,6 +232,12 @@ nonisolated extension ActionItemsParser {
         case invalidDateInFilename
     }
 
+    /// How many lines of the main loop run between `Task.isCancelled` checks.
+    /// A superseded parse should stop promptly, but the check is an atomic
+    /// load in a loop that runs tens of thousands of times on a real day, so
+    /// it is amortized rather than paid per line.
+    static var cancellationCheckInterval: Int { 256 }
+
     /// - Parameter inlineCommentAuthor: byline for Obsidian `//==<< … >>==//`
     ///   inline comments. Passed in rather than read from `UserDefaults` here:
     ///   this type is `nonisolated` so it can parse off the main actor, and a
@@ -418,7 +424,21 @@ nonisolated extension ActionItemsParser {
         let carryInRe = try NSRegularExpression(pattern: #"_\(carried in from (\d{4}-\d{2}-\d{2})\)_"#)
         let snoozeDateFmt = DateFormatter(); snoozeDateFmt.dateFormat = "yyyy-MM-dd"; snoozeDateFmt.timeZone = .current
 
+        // A parse runs detached, and two can overlap — a slow day switching to
+        // a fast one, or the FSEvent reparse landing on top of the explicit
+        // one. The service cancels the superseded task; cancellation is
+        // cooperative, so the walk has to look. Counting down rather than
+        // testing `i % n` because several branches below advance `i` by more
+        // than one and would step over the multiple.
+        var linesUntilCancellationCheck = cancellationCheckInterval
+
         while i < lines.count {
+            linesUntilCancellationCheck -= 1
+            if linesUntilCancellationCheck <= 0 {
+                try Task.checkCancellation()
+                linesUntilCancellationCheck = cancellationCheckInterval
+            }
+
             let line = lines[i]
             let stripped = line.trimmingCharacters(in: .whitespaces)
 

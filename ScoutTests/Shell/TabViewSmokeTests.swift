@@ -15,7 +15,7 @@ struct TabViewSmokeTests {
     @Test("the action items tab renders a populated day")
     func actionItemsRenders() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
-        try await vault.state.actionItemsDocumentService.load(date: Self.fixtureDay)
+        await vault.state.actionItemsDocumentService.load(date: Self.fixtureDay)
         // Without this the test silently renders the missing-day chrome —
         // the same render as `actionItemsRendersMissingDay` — and the
         // populated card pipeline is never evaluated.
