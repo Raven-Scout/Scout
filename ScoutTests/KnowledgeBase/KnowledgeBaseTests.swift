@@ -373,10 +373,10 @@ struct KBDocSegmentTests {
     /// on its own first line, leaving the segment range `i...(i-1)` — an empty
     /// ClosedRange, which traps: "Range requires lowerBound <= upperBound".
     /// That crashed the whole app from `KBEditableView.body` (EXC_BREAKPOINT),
-    /// and Scout's own notes routinely open a paragraph with `#647` or `#SLBETA`.
+    /// and Scout's own notes routinely open a paragraph with `#647` or `#PROJB1`.
     @Test(arguments: [
         "#projects/scout",      // Obsidian-style nested tag
-        "#SLBETA",              // bare [#TAG] mnemonic
+        "#PROJB1",              // bare [#TAG] mnemonic
         "#647 is the ref",      // paragraph opening with a GitHub ref
         "#nospace",
         "#",                    // bare hash
@@ -417,8 +417,8 @@ struct KBDocSegmentTests {
     /// lazy continuation of that new paragraph, which is what CommonMark does
     /// with a `#` that isn't a valid ATX heading.
     @Test func hashLineEndsThePrecedingParagraphAndOpensANewOne() {
-        let segs = KBDocSegment.segments(from: "prose line\n#SLBETA\nmore prose")
-        #expect(segs.map(\.raw) == ["prose line", "#SLBETA\nmore prose"])
+        let segs = KBDocSegment.segments(from: "prose line\n#PROJB1\nmore prose")
+        #expect(segs.map(\.raw) == ["prose line", "#PROJB1\nmore prose"])
         #expect(segs.map(\.lineStart) == [0, 1])
         #expect(segs.map(\.lineEnd) == [0, 2])
     }

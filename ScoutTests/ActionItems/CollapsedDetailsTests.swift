@@ -168,7 +168,7 @@ struct CollapsedDetailsTests {
 
         | Time | Meeting |
         |---|---|
-        | 9:00 AM | Cuesta sync |
+        | 9:00 AM | Platform sync |
 
         <details><summary>Yesterday — the as-run table</summary>
 
@@ -181,7 +181,7 @@ struct CollapsedDetailsTests {
         """, kind: .meetings)
 
         #expect(meetings.tables.count == 1)
-        #expect(meetings.tables.first?.rows == [["9:00 AM", "Cuesta sync"]])
+        #expect(meetings.tables.first?.rows == [["9:00 AM", "Platform sync"]])
         #expect(meetings.collapsed.first?.tables.count == 1)
         #expect(meetings.collapsed.first?.tables.first?.rows.count == 2)
     }

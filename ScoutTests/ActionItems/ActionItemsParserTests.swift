@@ -93,7 +93,7 @@ struct ActionItemsParserTests {
     }
 
     @Test func nestedTasksParsedWithIndentLevel() throws {
-        // Synthetic doc that mirrors the Prague-trip nesting pattern in the
+        // Synthetic doc that mirrors the offsite-trip nesting pattern in the
         // real action-items files (1 tab for child, 2 tabs for grand-child).
         let synthetic = """
         # Action Items — Synthetic

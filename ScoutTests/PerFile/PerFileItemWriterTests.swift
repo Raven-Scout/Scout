@@ -7,7 +7,7 @@ import Testing
 struct PerFileItemWriterPureTests {
     @Test func slugifyBasic() {
         #expect(PerFileItemWriter.slugify("Upgrade the Graph System!") == "upgrade-the-graph-system")
-        #expect(PerFileItemWriter.slugify("G6 · CEE conference entities") == "g6-cee-conference-entities")
+        #expect(PerFileItemWriter.slugify("X9 · DEMO conference entities") == "x9-demo-conference-entities")
     }
     @Test func slugifyTruncatesToEightWords() {
         #expect(PerFileItemWriter.slugify("one two three four five six seven eight nine ten") == "one-two-three-four-five-six-seven-eight")

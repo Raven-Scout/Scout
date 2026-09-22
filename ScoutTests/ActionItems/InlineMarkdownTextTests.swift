@@ -23,7 +23,7 @@ struct InlineMarkdownTextTests {
         #expect(emphasized)
     }
 
-    /// A parenthetical italic (the shape Adam saw unrendered) also emphasizes.
+    /// A parenthetical italic (the shape Sam saw unrendered) also emphasizes.
     @Test func parentheticalItalicRenders() {
         let attr = InlineMarkdownText.attributedString(for: "note _(net-new from the review)_ tail")
         #expect(!String(attr.characters).contains("_"))
