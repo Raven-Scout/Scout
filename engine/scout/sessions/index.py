@@ -410,12 +410,106 @@ def run(
     return index, path
 
 
+# ----- CLI entry points ----------------------------------------------------------------
+
+
+def main(
+    *,
+    json_out: bool = False,
+    render: bool = False,
+    use_gh: bool = True,
+    hours: int = 24,
+    instance_name: str = "Scout",
+    tz_name: str | None = None,
+    strict: bool = False,
+) -> int:
+    """`scoutctl session index`. Exit 0 on success (even partial), 1 when the index
+    cannot be written or `--strict` sees a source error."""
+    import sys
+
+    try:
+        index, path = run(use_gh=use_gh, render=render, hours=hours, instance_name=instance_name, tz_name=tz_name)
+    except OSError as exc:
+        print(f"session index: could not write the index: {exc}", file=sys.stderr)
+        return 1
+    if json_out:
+        print(json.dumps(index.to_dict(), indent=1))
+    else:
+        counts = index.source_counts
+        print(
+            f"session index: {path} — {len(index.sessions)} sessions"
+            f" ({counts.get('running', 0)} running, {counts.get('open', 0)} open,"
+            f" {counts.get('prs_refreshed', 0)} PRs refreshed, {len(index.source_errors)} source errors)"
+        )
+    if strict and index.source_errors:
+        for err in index.source_errors:
+            print(f"session index: [{err.source}] {err.message}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _load_index_dict(data_dir: Path | None = None) -> dict:
+    path = index_path(data_dir)
+    if not path.exists():
+        run(use_gh=False)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def list_main(
+    *,
+    states: list[str],
+    project: str | None,
+    include_archived: bool,
+    include_scout_runs: bool,
+    json_out: bool,
+) -> int:
+    """`scoutctl session list` — a human table (or JSON rows) from the written index."""
+    import sys
+
+    try:
+        payload = _load_index_dict()
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"session list: could not read the index: {exc}", file=sys.stderr)
+        return 1
+    names = {p["key"]: p["name"] for p in payload.get("projects", [])}
+    rows = []
+    for s in payload.get("sessions", []):
+        if s["is_archived"] and not include_archived:
+            continue
+        if s["is_scout_run"] and not include_scout_runs:
+            continue
+        if states and s["state"] not in states:
+            continue
+        pname = names.get(s["project_key"], s["project_key"])
+        if project and project.lower() not in (
+            pname.lower(),
+            s["project_key"].lower(),
+            Path(s["project_key"]).name.lower(),
+        ):
+            continue
+        rows.append({**s, "project_name": pname})
+    if json_out:
+        print(json.dumps(rows, indent=1))
+        return 0
+    if not rows:
+        print("no sessions match")
+        return 0
+    print("STATE      PROJECT               TITLE                                     PR      LAST ACTIVE")
+    for s in rows:
+        pr = f"#{s['pr']['number']}" if s.get("pr") else ""
+        title = (s.get("title") or (s.get("transcript") or {}).get("first_prompt") or "(untitled)")[:41]
+        print(f"{s['state']:<10} {s['project_name'][:21]:<21} {title:<41} {pr:<7} {s.get('last_activity_at') or ''}")
+    return 0
+
+
 __all__ = [
     "INDEX_FILENAME",
     "BuildOptions",
     "build_index",
     "default_options",
     "index_path",
+    "list_main",
+    "main",
     "run",
     "write_index",
 ]
