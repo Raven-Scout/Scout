@@ -113,7 +113,8 @@ final class AppState: ObservableObject {
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
             trackerService: tracker,
             gitService: git,
-            fileEvents: events
+            fileEvents: events,
+            parseCacheURL: configuration.parseCacheURL
         )
         // Plan 5: scout-app no longer dispatches launchd plists. ScheduleService
         // polls `scoutctl schedule list-upcoming --json` every 60 s and renders
@@ -313,6 +314,13 @@ final class AppState: ObservableObject {
         /// (`~/.claude/projects/<encoded vault path>` in production). Part of
         /// the configuration so a test graph never reads the real home.
         var claudeSessionsDirectory: URL
+        /// Where `SessionLogService` memoises parsed log bodies
+        /// (`~/Library/Caches/Scout/session-parse-cache.json` in production).
+        /// Configured for the same reason as `claudeSessionsDirectory`: the
+        /// service's own default is the per-user path, so a test graph that
+        /// left this to the default rewrote the *running app's* cache with
+        /// whatever its fixture vault contained.
+        var parseCacheURL: URL?
         /// When false the initializer wires the object graph but starts no
         /// timers, watches, loads, or subprocesses.
         var startsBackgroundWork: Bool
@@ -328,6 +336,7 @@ final class AppState: ObservableObject {
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: scoutDirectory),
+                parseCacheURL: SessionLogService.defaultParseCacheURL(),
                 startsBackgroundWork: true
             )
         }
@@ -365,6 +374,7 @@ final class AppState: ObservableObject {
                 ),
                 defaults: UserDefaults(suiteName: "scout.test-host") ?? .standard,
                 claudeSessionsDirectory: dir.appendingPathComponent(".claude-projects"),
+                parseCacheURL: dir.appendingPathComponent("session-parse-cache.json"),
                 startsBackgroundWork: false
             )
         }

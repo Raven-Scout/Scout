@@ -29,6 +29,7 @@ extension AppState.Configuration {
             ),
             defaults: defaults,
             claudeSessionsDirectory: scoutDirectory.appendingPathComponent(".claude-projects"),
+            parseCacheURL: sandboxParseCacheURL(in: scoutDirectory),
             startsBackgroundWork: false
         )
     }
