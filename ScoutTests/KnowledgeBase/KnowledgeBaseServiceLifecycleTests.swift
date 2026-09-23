@@ -2,23 +2,6 @@ import Foundation
 import Testing
 @testable import Scout
 
-/// A KB event source the test drives by hand.
-private final class ManualKBEvents: FileSystemEventSource, @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: AsyncStream<FileSystemEvent>.Continuation?
-
-    nonisolated func events(for url: URL) -> AsyncStream<FileSystemEvent> {
-        AsyncStream { cont in
-            lock.lock(); continuation = cont; lock.unlock()
-        }
-    }
-
-    func emit(_ event: FileSystemEvent) {
-        lock.lock(); let c = continuation; lock.unlock()
-        c?.yield(event)
-    }
-}
-
 /// Covers the KB service's lifecycle — load / reload / readFile / watching —
 /// and the search-content edge cases the graph tests don't reach.
 @MainActor
@@ -256,7 +239,7 @@ struct KnowledgeBaseServiceLifecycleTests {
     func watching_fileEventReparses() async throws {
         let root = try makeKB(["a.md": "# A\n"])
         defer { try? FileManager.default.removeItem(at: root) }
-        let events = ManualKBEvents()
+        let events = InjectableFS()
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: events)
         svc.load()
         await svc.reparseAndWait()

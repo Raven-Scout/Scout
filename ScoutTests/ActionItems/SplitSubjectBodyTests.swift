@@ -225,9 +225,8 @@ struct SplitSubjectBodyScalingTests {
     /// character, and peppered with tokens so no branch short-circuits.
     static func line(chars: Int) -> String {
         let unit = "some **bold** and `code` and [[a-wiki-link]] plus prose "
-        var s = ""
-        while s.count < chars { s += unit }
-        return String(s.prefix(chars))
+        let repeats = (chars + unit.count - 1) / unit.count
+        return String(String(repeating: unit, count: repeats).prefix(chars))
     }
 
     static func medianMS(of block: () -> Void, runs: Int = 5) -> Double {
@@ -243,8 +242,11 @@ struct SplitSubjectBodyScalingTests {
 
     @Test("Doubling the line length does not quadruple the time")
     func scalesLinearly() {
-        let short = Self.line(chars: 4_000)
-        let long = Self.line(chars: 8_000)
+        // Large enough that each sample is milliseconds even at `-O`, so
+        // scheduler jitter from suites running concurrently is noise on the
+        // measurement rather than the measurement itself.
+        let short = Self.line(chars: 16_000)
+        let long = Self.line(chars: 32_000)
 
         // Warm up, so first-call overhead doesn't land in either sample.
         _ = ActionItemsParser.splitSubjectBody(short)
@@ -254,19 +256,8 @@ struct SplitSubjectBodyScalingTests {
 
         // Linear ⇒ ratio ≈ 2. Quadratic ⇒ ratio ≈ 4. Allow generous slack for a
         // noisy machine while still failing the quadratic implementation, which
-        // measured 26.7 ms → 99.8 ms (3.7×) at these very sizes.
+        // measured 3.7× on a 4k → 8k doubling and only widens with length.
         let ratio = tLong / max(tShort, 0.0001)
-        #expect(ratio < 3.0, "cost ratio 8k/4k was \(ratio) (short \(tShort) ms, long \(tLong) ms)")
-    }
-
-    @Test("A pathological line stays far below the quadratic cost")
-    func longLineIsFast() {
-        // 16k chars measured 410 ms with the quadratic scan. Linear is ~1 ms;
-        // 60 ms leaves a wide margin for Debug and CI noise while still being
-        // unreachable for the old implementation.
-        let huge = Self.line(chars: 16_000)
-        _ = ActionItemsParser.splitSubjectBody(huge)
-        let t = Self.medianMS(of: { _ = ActionItemsParser.splitSubjectBody(huge) }, runs: 3)
-        #expect(t < 60, "16k-char line took \(t) ms")
+        #expect(ratio < 3.0, "cost ratio 32k/16k was \(ratio) (short \(tShort) ms, long \(tLong) ms)")
     }
 }

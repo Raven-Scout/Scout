@@ -57,13 +57,13 @@ func waitUntil(
     // `ContinuousClock`, not `Date()`: the wall clock can step (NTP, a manual
     // change, DST on a machine that keeps local time), which either cuts the
     // budget short or stretches it.
-    let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
-    while ContinuousClock.now < deadline {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(timeout))
+    while clock.now < deadline {
         if condition() { return }
-        // `try?` swallows the cancellation error, so a cancelled test would
-        // otherwise busy-spin the main actor until the full 30 s elapses.
-        do { try await Task.sleep(for: pollInterval) } catch { break }
-        if Task.isCancelled { break }
+        // A cancelled task must stop polling rather than spin on the main
+        // actor until the deadline: `Task.sleep` throws at once when cancelled.
+        do { try await Task.sleep(for: pollInterval, clock: clock) } catch { break }
     }
     #expect(condition(), "\(description()) within \(timeout)s", sourceLocation: sourceLocation)
 }

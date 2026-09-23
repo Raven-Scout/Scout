@@ -29,7 +29,7 @@ enum RunSource: String, Codable, Sendable {
 /// de-emphasize in the UI (`.orphaned`, `.skippedBudget`,
 /// `.skippedConcurrency`). When adding a new case, audit those consumers
 /// to decide whether `default` is still correct.
-enum RunStatus: String, Codable, Sendable {
+enum RunStatus: String, Codable, Sendable, CaseIterable {
     case scheduled
     case running
     case success

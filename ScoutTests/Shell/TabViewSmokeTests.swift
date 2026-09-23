@@ -16,6 +16,13 @@ struct TabViewSmokeTests {
     func actionItemsRenders() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         try await vault.state.actionItemsDocumentService.load(date: Self.fixtureDay)
+        // Without this the test silently renders the missing-day chrome —
+        // the same render as `actionItemsRendersMissingDay` — and the
+        // populated card pipeline is never evaluated.
+        guard case .loaded = vault.state.actionItemsDocumentService.state else {
+            Issue.record("fixture day did not load: \(vault.state.actionItemsDocumentService.state)")
+            return
+        }
 
         // Without this the test passes on the *missing-day* chrome whenever the
         // fixture filename drifts from `ActionItemsDocumentService.url(for:)`,
