@@ -77,25 +77,68 @@ if ! xcrun xccov view --report --json "$RESULT_BUNDLE" > "$JSON" 2> "$XCCOV_ERR"
   exit 2
 fi
 
+# xccov can also exit 0 having written nothing; python would then die on a JSON
+# decode error that says nothing about the real cause.
+if [ ! -s "$JSON" ]; then
+  skip_when_tests_failed "xccov produced an empty report for $RESULT_BUNDLE"
+  echo "error: xccov produced an empty report for $RESULT_BUNDLE" >&2
+  exit 2
+fi
+
 COVERAGE_TARGET="$COVERAGE_TARGET" FLOOR="$FLOOR" TOP_GAPS="$TOP_GAPS" \
+TESTS_OUTCOME="$TESTS_OUTCOME" \
 python3 - "$JSON" <<'PY'
 import json, os, sys
 
 target_name = os.environ["COVERAGE_TARGET"]
 floor = float(os.environ["FLOOR"])
 top_gaps = int(os.environ["TOP_GAPS"])
+tests_outcome = os.environ.get("TESTS_OUTCOME", "success")
+
+summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+def no_data(message):
+    """Report absent coverage as absent data, never as a coverage regression.
+
+    The floor's failure message tells the reader to add tests. When the report
+    carries no numbers for this target there is no coverage to add, so that
+    advice points at the wrong remedy. Mirrors the shell's
+    `skip_when_tests_failed`: a red test step already explains the absence, so
+    warn and succeed; if the tests passed, the missing data is itself the fault
+    and is reported as such.
+    """
+    if tests_outcome != "success":
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning title=Coverage not checked::{message}")
+            if summary_path:
+                with open(summary_path, "a") as fh:
+                    fh.write(f"### ⚠️ Coverage not checked\n\n{message}\n\n")
+        else:
+            print(f"note: coverage not checked — {message}")
+        sys.exit(0)
+    sys.exit(f"error: {message}")
+
 
 with open(sys.argv[1]) as fh:
     report = json.load(fh)
 
-target = next((t for t in report["targets"] if t["name"] == target_name), None)
+targets = report.get("targets") or []
+if not targets:
+    no_data("the coverage report lists no targets")
+
+target = next((t for t in targets if t["name"] == target_name), None)
 if target is None:
-    names = ", ".join(t["name"] for t in report["targets"])
-    sys.exit(f"error: target {target_name!r} not in report (found: {names})")
+    names = ", ".join(t["name"] for t in targets)
+    no_data(f"target {target_name!r} is not in the coverage report (found: {names})")
 
 covered = target["coveredLines"]
 total = target["executableLines"]
-pct = 100.0 * covered / total if total else 0.0
+if not total:
+    # 0/0 would score 0.00% and trip the floor with "add tests for the changed
+    # code" — but nothing was instrumented, so there is no coverage to add.
+    no_data(f"target {target_name!r} reports no executable lines")
+pct = 100.0 * covered / total
 
 print(f"{target_name} line coverage: {pct:.2f}%  ({covered}/{total})")
 print(f"floor: {floor:.2f}%")
@@ -113,9 +156,8 @@ if gaps:
     print()
 
 # GitHub Actions job summary, when running in CI.
-summary = os.environ.get("GITHUB_STEP_SUMMARY")
-if summary:
-    with open(summary, "a") as fh:
+if summary_path:
+    with open(summary_path, "a") as fh:
         status = "✅" if pct >= floor else "❌"
         fh.write(f"### {status} Coverage: {pct:.2f}% (floor {floor:.2f}%)\n\n")
         fh.write(f"`{target_name}` — {covered}/{total} lines\n\n")
