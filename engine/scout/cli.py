@@ -370,6 +370,28 @@ def _register_connectors() -> None:
                 primary = p.bash_command if p.kind is ProbeKind.BASH else (p.tool_chain[0] if p.tool_chain else "")
                 typer.echo(f"{name}\t{p.kind.value}\t{primary}")
 
+    @connectors_app.command("detect")
+    def cli_connectors_detect(
+        json_out: bool = typer.Option(
+            False, "--json", help="Emit detections as JSON (consumed by Scout.app onboarding)."
+        ),
+        claude_bin: str = typer.Option("claude", "--claude-bin", help="Claude Code binary used for `claude mcp list`."),
+        timeout: float = typer.Option(60.0, "--timeout", help="Seconds to wait for `claude mcp list`."),
+    ) -> None:
+        """Detect which connectors are reachable right now, without an LLM (spec E4)."""
+        import json as _json
+
+        from scout.scripts.connector_detect import detect, run_bash_probe, run_claude_mcp_list, to_json_dict
+        from scout.scripts.connector_probes import resolve_registry
+
+        reg = resolve_registry()
+        dets = detect(reg, mcp_list_output=run_claude_mcp_list(claude_bin, timeout=timeout), run_bash=run_bash_probe)
+        if json_out:
+            typer.echo(_json.dumps(to_json_dict(dets), indent=2, sort_keys=True))
+        else:
+            for name, d in dets.items():
+                typer.echo(f"{name}\t{d.status.value}\t{d.evidence}")
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(

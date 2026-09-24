@@ -1,0 +1,8 @@
+Checking MCP server health…
+
+[mcp-sdk] SEP-2352: stored OAuth credential has no 'issuer' stamp (pre-upgrade storage). SEP-2352 isolation is inactive for this read.
+claude.ai Gmail: https://mcp.example.invalid/gmail - ✔ Connected
+claude.ai Google Calendar: https://mcp.example.invalid/calendar - ✔ Connected
+claude.ai Slack: https://mcp.example.invalid/slack - ! Needs authentication
+claude.ai Granola: https://mcp.example.invalid/granola - ✔ Connected
+Some Internal Tool: https://mcp.example.invalid/tool - ✘ Failed to connect — HTTP 503: Error POSTing to endpoint
