@@ -6,6 +6,8 @@ from pathlib import Path
 
 from scout.scripts.connector_detect import (
     DetectStatus,
+    _match_server,
+    _normalize,
     detect,
     parse_mcp_list,
     run_bash_probe,
@@ -24,8 +26,12 @@ def test_parse_mcp_list_reads_one_status_per_server():
     assert servers["claude.ai Gmail"][0] is DetectStatus.CONNECTED
     assert servers["claude.ai Slack"][0] is DetectStatus.NEEDS_AUTH
     assert servers["Some Internal Tool"][0] is DetectStatus.UNAVAILABLE
+    assert servers["plugin:linear:linear"][0] is DetectStatus.NEEDS_AUTH
+    assert servers["plugin:slack:slack"][0] is DetectStatus.CONNECTED
+    assert servers["plugin:example-kit:search-tool"][0] is DetectStatus.CONNECTED
+    assert servers["project-tool"][0] is DetectStatus.NEEDS_AUTH  # ⏸ Pending approval
     assert "Checking MCP server health…" not in servers
-    assert len(servers) == 5
+    assert len(servers) == 9
 
 
 def test_server_slug_matches_claude_codes_tool_namespace():
@@ -56,9 +62,45 @@ def test_detect_maps_mcp_probes_to_server_status():
     }
     dets = detect(reg, mcp_list_output=FIXTURE, run_bash=lambda cmd: 1)
     assert dets["email"].status is DetectStatus.CONNECTED
-    assert dets["slack"].status is DetectStatus.NEEDS_AUTH  # fallback tool matched the claude.ai server
+    assert dets["email"].connector == "email"
+    assert dets["slack"].status is DetectStatus.CONNECTED  # primary `plugin:slack:slack` is connected in the fixture
     assert dets["slack"].needs_user_input == ["user_slack_id"]
     assert dets["fathom"].status is DetectStatus.UNKNOWN  # no such server listed
+
+
+def test_detect_maps_plugin_scoped_probe_to_needs_auth():
+    """`plugin:<plugin>:<server>` lines parse and match like any other server."""
+    reg = {"linear": _mcp("linear", ["mcp__plugin_linear_linear__list_teams"])}
+    dets = detect(reg, mcp_list_output=FIXTURE, run_bash=lambda cmd: 1)
+    assert dets["linear"].status is DetectStatus.NEEDS_AUTH
+
+
+def test_detect_matches_a_hyphenated_plugin_server():
+    """The tool-name segment keeps hyphens (`plugin_example-kit_search-tool`);
+    the display name uses colons (`plugin:example-kit:search-tool`).
+    `_normalize` must equate the two despite neither side being an exact or
+    merely-case-different match of the other."""
+    reg = {"search": _mcp("search", ["mcp__plugin_example-kit_search-tool__find"])}
+    dets = detect(reg, mcp_list_output=FIXTURE, run_bash=lambda cmd: 1)
+    assert dets["search"].status is DetectStatus.CONNECTED
+
+
+def test_normalize_equates_colon_and_hyphen_separator_forms():
+    assert _normalize("plugin:kbl-ui-platform:validate-ui") == _normalize("plugin_kbl-ui-platform_validate-ui")
+
+
+def test_match_server_keeps_first_seen_on_a_normalization_collision():
+    """Two listed servers that normalize to the same key (a pathological but
+    possible collision — one display name uses ':' throughout, another '-')
+    resolve to whichever was seen first in `claude mcp list`'s output."""
+    text = (
+        "plugin:foo:bar: https://mcp.example.invalid/a - ✔ Connected\n"
+        "plugin-foo-bar: https://mcp.example.invalid/b - ! Needs authentication\n"
+    )
+    servers = parse_mcp_list(text)
+    hit = _match_server("mcp__plugin_foo_bar__thing", servers)
+    assert hit is not None
+    assert hit[0] is DetectStatus.CONNECTED
 
 
 def test_detect_runs_bash_probes_directly():
@@ -161,7 +203,10 @@ def test_run_claude_mcp_list_returns_none_on_nonzero_exit(tmp_path: Path):
 
 def test_run_claude_mcp_list_returns_none_on_timeout(tmp_path: Path):
     fake = tmp_path / "claude"
-    fake.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    # `exec` replaces the `sh` process with `sleep` so the timeout kill (which
+    # only signals the direct child) actually stops the sleeping process,
+    # instead of orphaning it when `sh` would otherwise fork it.
+    fake.write_text("#!/bin/sh\nexec sleep 5\n", encoding="utf-8")
     fake.chmod(0o755)
     assert run_claude_mcp_list(str(fake), timeout=0.2) is None
 
@@ -179,4 +224,6 @@ def test_run_bash_probe_returns_exit_code_for_false():
 
 
 def test_run_bash_probe_returns_one_on_timeout():
-    assert run_bash_probe("sleep 5", timeout=0.2) == 1
+    # `exec` so the `sh -c` shell execs into `sleep` rather than forking it —
+    # the timeout kill then actually stops the sleeping process.
+    assert run_bash_probe("exec sleep 5", timeout=0.2) == 1

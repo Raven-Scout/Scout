@@ -33,15 +33,22 @@ class Detection:
     evidence: str
 
 
-# One `claude mcp list` server line: "<name>: <url or command> - <glyph> <text>".
-# Banner lines and "[mcp-sdk] …" warnings do not match and are ignored.
-_LINE = re.compile(r"^(?P<name>[^:]+?):\s.*?\s-\s(?P<glyph>[✔✓!✘✗])\s*(?P<text>.*)$")
+# One `claude mcp list` server line: "<name>: <target> - <glyph> <text>".
+# <name> runs to the first ": " (colon-space) so plugin-scoped names like
+# "plugin:linear:linear" (whose own colons have no trailing space) survive;
+# <glyph>'s status is the *last* " - <glyph>" so a "text" tail containing
+# " - " or embedded colons (e.g. "CONNECTION_CLOSED: Connection closed")
+# does not get mistaken for the name/target split.
+# Banner lines and "[mcp-sdk] …" warnings have no " - <glyph>" and so do not
+# match and are ignored.
+_LINE = re.compile(r"^(?P<name>.+?): (?P<target>.*) - (?P<glyph>[✔✓!✘✗⏸])\s*(?P<text>.*)$")
 _GLYPH = {
     "✔": DetectStatus.CONNECTED,
     "✓": DetectStatus.CONNECTED,
     "!": DetectStatus.NEEDS_AUTH,
     "✘": DetectStatus.UNAVAILABLE,
     "✗": DetectStatus.UNAVAILABLE,
+    "⏸": DetectStatus.NEEDS_AUTH,  # "Pending approval" needs a user action, like auth.
 }
 
 
@@ -73,15 +80,37 @@ def tool_server_slug(tool: str) -> str | None:
     return slug if sep else None
 
 
+def _normalize(s: str) -> str:
+    """Lowercase; collapse runs of non-alphanumerics to '_'; strip leading/trailing '_'.
+
+    Lets a tool-chain segment and a `claude mcp list` display name compare
+    equal regardless of which separator (':', '-', '.', '_') either side
+    uses — e.g. ``plugin:kbl-ui-platform:validate-ui`` (display name) and
+    ``plugin_kbl-ui-platform_validate-ui`` (tool-name segment, hyphens kept)
+    both normalize to ``plugin_kbl_ui_platform_validate_ui``.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
 def _match_server(tool: str, servers: dict[str, tuple[DetectStatus, str]]) -> tuple[DetectStatus, str] | None:
+    """Match a probe's tool-chain entry to a `claude mcp list` server line.
+
+    Compares a normalized form of both sides (see `_normalize`) instead of
+    `server_slug`'s exact/case-insensitive lookup, so a hyphenated plugin
+    server (whose tool-name segment keeps the hyphen, e.g.
+    ``plugin_example-kit_search-tool``) matches its display name
+    (``plugin:example-kit:search-tool``).
+    """
     want = tool_server_slug(tool)
     if not want:
         return None
-    by_slug = {server_slug(name): status for name, status in servers.items()}
-    if want in by_slug:
-        return by_slug[want]
-    lowered = {k.lower(): v for k, v in by_slug.items()}
-    return lowered.get(want.lower())
+    key = _normalize(want)
+    by_key: dict[str, tuple[DetectStatus, str]] = {}
+    for name, status in servers.items():
+        norm = _normalize(name)
+        if norm not in by_key:  # first listed server wins on a normalization collision
+            by_key[norm] = status
+    return by_key.get(key)
 
 
 def detect(
