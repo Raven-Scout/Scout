@@ -3,8 +3,8 @@
 <!--
   com.scout.schedule-tick.plist — runs `scoutctl schedule tick` every 5 min.
 
-  Installed by `scoutctl schedule install-plist`, which fills __USER_HOME__
-  and __SCOUTCTL_BIN__ at install time. __SCOUTCTL_BIN__ is the scoutctl
+  Installed by `scoutctl schedule install-plist`, which fills `__USER_HOME__`
+  and `__SCOUT_DIR__` at install time. `__SCOUTCTL_BIN__` is the scoutctl
   beside the interpreter that ran the install (see resolve_scoutctl_bin).
   Replaces the 7 per-slot legacy plists deleted in Task 11.
 -->
@@ -28,10 +28,12 @@
         <string>__USER_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>__USER_HOME__</string>
+        <key>SCOUT_DATA_DIR</key>
+        <string>__SCOUT_DIR__</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>__USER_HOME__/Scout/.scout-logs/launchd-schedule-tick-stdout.log</string>
+    <string>__SCOUT_DIR__/.scout-logs/launchd-schedule-tick-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>__USER_HOME__/Scout/.scout-logs/launchd-schedule-tick-stderr.log</string>
+    <string>__SCOUT_DIR__/.scout-logs/launchd-schedule-tick-stderr.log</string>
 </dict>
 </plist>

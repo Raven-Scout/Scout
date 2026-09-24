@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from scout.scripts.install_schedule_plist import (
+    PLIST_NAME,
     install_plist,
     resolve_scoutctl_bin,
     uninstall_plist,
@@ -138,3 +139,34 @@ def test_install_plist_bootstrap_boots_out_first(tmp_path, monkeypatch):
     assert calls[0][:2] == ["launchctl", "bootout"]
     assert calls[0][2].endswith("/com.scout.schedule-tick")
     assert calls[1][:2] == ["launchctl", "bootstrap"]
+
+
+def test_install_plist_renders_vault_into_env_and_paths(tmp_path):
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    vault = tmp_path / "Vaults" / "Work"
+    install_plist(home=tmp_path, agents_dir=target_dir, vault=vault)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert "__SCOUT_DIR__" not in content
+    assert f"<key>SCOUT_DATA_DIR</key>\n        <string>{vault}</string>" in content
+    assert f"{vault}/.scout-logs/" in content
+    assert f"{tmp_path}/Scout" not in content
+
+
+def test_install_plist_vault_defaults_to_home_scout(tmp_path):
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    install_plist(home=tmp_path, agents_dir=target_dir)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert f"<string>{tmp_path}/Scout</string>" in content
+
+
+def test_install_plist_escapes_ampersand_in_vault(tmp_path):
+    """A vault path with `&` (legal on macOS, e.g. ~/R&D Vault) must be
+    XML-escaped like every other substituted value (#49)."""
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    vault = tmp_path / "R&D Vault"
+    install_plist(home=tmp_path, agents_dir=target_dir, vault=vault)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert "R&amp;D Vault" in content

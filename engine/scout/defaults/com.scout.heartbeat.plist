@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.scout.heartbeat.plist — runs ~/Scout/scripts/heartbeat.sh every 30 min.
+  com.scout.heartbeat.plist — runs __SCOUT_DIR__/scripts/heartbeat.sh every 30 min.
 
   Installed by `scoutctl schedule install-heartbeat-plist`, which fills
-  __USER_HOME__ at install time. Mirrors the schedule-tick plist pattern.
+  `__USER_HOME__` and `__SCOUT_DIR__` at install time. Mirrors the
+  schedule-tick plist pattern.
 -->
 <plist version="1.0">
 <dict>
@@ -14,11 +15,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>__USER_HOME__/Scout/scripts/heartbeat.sh</string>
+        <string>__SCOUT_DIR__/scripts/heartbeat.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>__USER_HOME__/Scout</string>
+    <string>__SCOUT_DIR__</string>
 
     <key>StartInterval</key>
     <integer>1800</integer>
@@ -29,11 +30,13 @@
         <string>__USER_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>__USER_HOME__</string>
+        <key>SCOUT_DATA_DIR</key>
+        <string>__SCOUT_DIR__</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>__USER_HOME__/Scout/.scout-logs/launchd-heartbeat.log</string>
+    <string>__SCOUT_DIR__/.scout-logs/launchd-heartbeat.log</string>
     <key>StandardErrorPath</key>
-    <string>__USER_HOME__/Scout/.scout-logs/launchd-heartbeat.log</string>
+    <string>__SCOUT_DIR__/.scout-logs/launchd-heartbeat.log</string>
 </dict>
 </plist>

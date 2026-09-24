@@ -667,6 +667,7 @@ def _register_schedule() -> None:
         """
         from pathlib import Path as _Path
 
+        from scout import paths as _paths
         from scout.scripts.install_schedule_plist import install_plist as _i
         from scout.scripts.install_schedule_plist import uninstall_plist as _u
 
@@ -675,7 +676,7 @@ def _register_schedule() -> None:
             typer.echo("uninstalled com.scout.schedule-tick.plist")
             return
         try:
-            target = _i(home=_Path.home(), force=force, bootstrap=bootstrap)
+            target = _i(home=_Path.home(), force=force, bootstrap=bootstrap, vault=_paths.data_dir())
             typer.echo(f"installed: {target}")
         except FileExistsError as e:
             typer.echo(f"plist already exists at {e}; use --force to overwrite", err=True)
@@ -853,6 +854,7 @@ def _register_schedule() -> None:
         uninstall: bool = typer.Option(False, "--uninstall"),
     ) -> None:
         """Install or remove com.scout.heartbeat.plist."""
+        from scout import paths as _paths
         from scout.scripts.install_heartbeat_plist import (
             install_plist as _i,
         )
@@ -865,7 +867,7 @@ def _register_schedule() -> None:
             typer.echo("uninstalled com.scout.heartbeat.plist")
             return
         try:
-            target = _i(home=Path.home(), force=force, bootstrap=bootstrap)
+            target = _i(home=Path.home(), force=force, bootstrap=bootstrap, vault=_paths.data_dir())
             typer.echo(f"installed: {target}")
         except FileExistsError as e:
             typer.echo(f"plist exists at {e}; use --force to overwrite", err=True)
@@ -911,6 +913,7 @@ def _register_schedule() -> None:
 
         system = _platform.system()
         if system == "Darwin":
+            from scout import paths as _paths
             from scout.scripts.install_heartbeat_plist import (
                 install_plist as install_hb,
             )
@@ -929,8 +932,8 @@ def _register_schedule() -> None:
                 uninstall_hb(bootout=True)
                 typer.echo("uninstalled launchd plists")
                 return
-            install_st(home=Path.home(), force=force, bootstrap=True)
-            install_hb(home=Path.home(), force=force, bootstrap=True)
+            install_st(home=Path.home(), force=force, bootstrap=True, vault=_paths.data_dir())
+            install_hb(home=Path.home(), force=force, bootstrap=True, vault=_paths.data_dir())
             typer.echo("installed launchd plists")
         elif system == "Linux":
             from scout.scripts.install_cron import install_cron, uninstall_cron

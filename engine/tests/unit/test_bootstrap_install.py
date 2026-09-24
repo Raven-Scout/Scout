@@ -152,3 +152,34 @@ def test_install_pointer_defaults_to_unknown_manager(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     install(_config(tmp_path / "Scout", plugin_root=plugin))
     assert read_pointer(home=Path.home()).managed_by == "unknown"
+
+
+def test_stage_jobs_install_passes_vault_through(tmp_path, monkeypatch):
+    """A vault anywhere other than ~/Scout must still get scheduled runs
+    pointed at it — _stage_jobs_install forwards cfg.vault to both plist
+    installers (E6)."""
+    from scout.scripts.bootstrap import _stage_jobs_install
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Vaults" / "Work"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.platform = "macos"
+    cfg.skip_jobs = False
+
+    calls: dict[str, dict] = {}
+
+    def fake_install_st(**kwargs):
+        calls["st"] = kwargs
+        return tmp_path / "com.scout.schedule-tick.plist"
+
+    def fake_install_hb(**kwargs):
+        calls["hb"] = kwargs
+        return tmp_path / "com.scout.heartbeat.plist"
+
+    monkeypatch.setattr("scout.scripts.install_schedule_plist.install_plist", fake_install_st)
+    monkeypatch.setattr("scout.scripts.install_heartbeat_plist.install_plist", fake_install_hb)
+
+    _stage_jobs_install(cfg)
+
+    assert calls["st"]["vault"] == cfg.vault
+    assert calls["hb"]["vault"] == cfg.vault

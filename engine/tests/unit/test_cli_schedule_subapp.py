@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from scout.cli import app
@@ -267,3 +268,71 @@ def test_schedule_validate_no_flag_keeps_default_behavior(tmp_path, monkeypatch)
     result = runner.invoke(app, ["schedule", "validate"])
     assert result.exit_code == 0
     assert "schedule OK" in result.output
+
+
+def test_schedule_install_plist_passes_scout_data_dir_as_vault(tmp_path, monkeypatch):
+    """`schedule install-plist` must point the plist at SCOUT_DATA_DIR, not the
+    hardcoded ~/Scout, so a vault installed elsewhere still gets scheduled
+    runs pointed at the right place (E6)."""
+    from scout import paths as _paths
+
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    calls: dict = {}
+
+    def fake_install_plist(**kwargs):
+        calls.update(kwargs)
+        return tmp_path / "com.scout.schedule-tick.plist"
+
+    monkeypatch.setattr("scout.scripts.install_schedule_plist.install_plist", fake_install_plist)
+
+    result = runner.invoke(app, ["schedule", "install-plist", "--no-bootstrap"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert calls["vault"] == _paths.data_dir()
+
+
+def test_schedule_install_heartbeat_plist_passes_scout_data_dir_as_vault(tmp_path, monkeypatch):
+    """`schedule install-heartbeat-plist` must point the plist at SCOUT_DATA_DIR (E6)."""
+    from scout import paths as _paths
+
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    calls: dict = {}
+
+    def fake_install_plist(**kwargs):
+        calls.update(kwargs)
+        return tmp_path / "com.scout.heartbeat.plist"
+
+    monkeypatch.setattr("scout.scripts.install_heartbeat_plist.install_plist", fake_install_plist)
+
+    result = runner.invoke(app, ["schedule", "install-heartbeat-plist", "--no-bootstrap"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert calls["vault"] == _paths.data_dir()
+
+
+def test_schedule_install_all_passes_scout_data_dir_as_vault(tmp_path, monkeypatch):
+    """`schedule install-all` (macOS branch) must forward SCOUT_DATA_DIR as
+    vault to both the schedule-tick and heartbeat installers (E6)."""
+    import platform as _platform
+
+    from scout import paths as _paths
+
+    if _platform.system() != "Darwin":
+        pytest.skip("install-all's launchd branch only runs on macOS")
+
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    calls: dict[str, dict] = {}
+
+    def fake_install_st(**kwargs):
+        calls["st"] = kwargs
+        return tmp_path / "com.scout.schedule-tick.plist"
+
+    def fake_install_hb(**kwargs):
+        calls["hb"] = kwargs
+        return tmp_path / "com.scout.heartbeat.plist"
+
+    monkeypatch.setattr("scout.scripts.install_schedule_plist.install_plist", fake_install_st)
+    monkeypatch.setattr("scout.scripts.install_heartbeat_plist.install_plist", fake_install_hb)
+
+    result = runner.invoke(app, ["schedule", "install-all"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert calls["st"]["vault"] == _paths.data_dir()
+    assert calls["hb"]["vault"] == _paths.data_dir()

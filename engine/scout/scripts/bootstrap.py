@@ -462,8 +462,8 @@ def _stage_jobs_install(cfg: BootstrapConfig) -> None:
         from scout.scripts.install_heartbeat_plist import install_plist as install_hb
         from scout.scripts.install_schedule_plist import install_plist as install_st
 
-        install_st(home=Path.home(), force=True, bootstrap=True)
-        install_hb(home=Path.home(), force=True, bootstrap=True)
+        install_st(home=Path.home(), force=True, bootstrap=True, vault=cfg.vault)
+        install_hb(home=Path.home(), force=True, bootstrap=True, vault=cfg.vault)
     elif cfg.platform == "linux":
         from scout.scripts.install_cron import install_cron
 

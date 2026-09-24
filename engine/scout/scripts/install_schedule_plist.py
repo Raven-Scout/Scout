@@ -39,8 +39,10 @@ def install_plist(
     agents_dir: Path | None = None,
     force: bool = False,
     bootstrap: bool = False,
+    vault: Path | None = None,
 ) -> Path:
     """Render the template into ~/Library/LaunchAgents/."""
+    vault = vault or (home / "Scout")
     agents_dir = agents_dir or (home / "Library" / "LaunchAgents")
     agents_dir.mkdir(parents=True, exist_ok=True)
     target = agents_dir / PLIST_NAME
@@ -54,6 +56,7 @@ def install_plist(
         TEMPLATE.read_text(encoding="utf-8")
         .replace("__USER_HOME__", escape(str(home), quote=True))
         .replace("__SCOUTCTL_BIN__", escape(str(resolve_scoutctl_bin()), quote=True))
+        .replace("__SCOUT_DIR__", escape(str(vault), quote=True))
     )
     target.write_text(rendered, encoding="utf-8")
     if bootstrap:
