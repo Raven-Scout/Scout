@@ -6,6 +6,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`scoutctl bootstrap auto`** (`engine/scout/cli.py`) — detects vault state and dispatches to `install`, `upgrade`, or `migrate-legacy`; `--json`, `--dry-run`, `--no-interactive`, `--yes` flags for automation and headless flows (closes #26). The same JSON output is also available on `install`, `upgrade`, `migrate-legacy`, and `doctor`.
+- **Engine pointer `~/.local/state/scout/engine.json`** (`engine/scout/scripts/bootstrap.py`, `engine/scout/cli.py`, `launcher.py`, `doctor`) — written by every bootstrap operation; holds vault root and optional `--managed-by` agent. The `scoutctl` launcher and doctor read it to discover the vault instead of hardcoding `~/Scout`.
+- **`scoutctl connectors detect --json`** (`engine/scout/cli.py`, `engine/scout/scripts/connectors_detect.py`) — headless connector detection via `claude mcp list`, returns JSON suitable for onboarding flows. Parses `plugin:<plugin>:<server>` lines from `claude mcp list` and matches against hyphenated plugin names.
+- **`scripts/install-venv.sh` with `uv` support** (`scripts/install-venv.sh`) — detects `uv` on the PATH and uses it in preference to plain `pip`, respecting `SCOUT_VENV_DIR`, `SCOUT_VENV_EXTRAS`, `SCOUT_PYTHON_VERSION`, and `SCOUT_UV` environment variables.
+
+### Changed
+- **`resolve_scoutctl_bin()`** (`launcher.py`, `doctor`) — now resolves scoutctl beside the running Python interpreter instead of `<plugin-root>/.venv/bin/scoutctl`, enabling engine delegation and multiple installations.
+- **launchd plists** (`templates/plists/`) — now render `SCOUT_DATA_DIR` into the environment and every configured vault path from the bootstrap, instead of hardcoding to `~/Scout`.
+
+### Fixed
+- **Doctor survives truncated plists** (`doctor`) — previously crashed on malformed XML; now degrades gracefully with a one-line warning.
+- **Bootstrap auto treats Finder metadata folders as empty** (`engine/scout/scripts/bootstrap.py`) — a directory holding only `.DS_Store` is now considered empty for upgrade detection.
+
 ## [0.10.0] - 2026-09-09
 
 

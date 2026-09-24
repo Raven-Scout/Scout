@@ -60,6 +60,14 @@ fi
 
 If `VENV_MISMATCH:<installed>|<expected>` is emitted, tell the user: "The venv at `$PLUGIN_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Re-installing now to pin it to this checkout..." then run `bash "$PLUGIN_ROOT/scripts/install-venv.sh"` and re-verify.
 
+Check whether this engine is managed by Scout.app:
+
+```bash
+grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/dev/null && echo "APP_MANAGED"
+```
+
+- If output is `APP_MANAGED`: tell the user "This Scout engine is managed by Scout.app. Please run setup from the Scout.app Settings pane instead." Stop here.
+
 ---
 
 ## Step 1: Collect user details (one question at a time)
