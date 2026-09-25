@@ -1611,7 +1611,22 @@ def _register_bootstrap() -> None:
         if claude_bin == "auto":
             claude_bin = shutil.which("claude") or "/usr/local/bin/claude"
 
-        plan = detect(vault)
+        try:
+            plan = detect(vault)
+        except OSError as e:
+            # An unreadable vault (e.g. TCC-denied ~/Documents/Scout) still
+            # answers with the refused payload, never a bare exit 70.
+            _emit(
+                result_dict(
+                    action=AutoAction.REFUSED,
+                    vault=vault,
+                    plugin_version=__version__,
+                    result=None,
+                    error=f"cannot inspect {vault}: {e}",
+                ),
+                json_out=json_out,
+            )
+            raise typer.Exit(code=2) from e
         needs_identity = plan.action in (AutoAction.INSTALL, AutoAction.MIGRATE_LEGACY)
         if needs_identity and not dry_run:
             if interactive:
@@ -1639,7 +1654,7 @@ def _register_bootstrap() -> None:
                 cfg = _config_from_existing_vault(
                     vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
                 )
-            except ConfigError as e:
+            except (ConfigError, OSError) as e:
                 _emit(
                     result_dict(
                         action=AutoAction.REFUSED,
@@ -1680,7 +1695,7 @@ def _register_bootstrap() -> None:
             if not typer.confirm(f"About to run bootstrap {plan.action.value} on {vault} ({plan.reason}). Proceed?"):
                 raise typer.Exit(code=1)
 
-        payload, code = run(cfg, dry_run=dry_run)
+        payload, code = run(cfg, plan=plan, dry_run=dry_run)
         _emit(payload, json_out=json_out)
         raise typer.Exit(code=code)
 

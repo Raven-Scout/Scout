@@ -308,6 +308,48 @@ def test_auto_upgrade_malformed_config_refuses_with_exit_2(tmp_path, monkeypatch
     assert "malformed" in payload["error"]
 
 
+# --- Final review: OS errors keep the --json / exit-code contract (Ruling 17)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_auto_unreadable_vault_is_refused_json_exit_2(tmp_path, monkeypatch):
+    """detect() lists the vault; an unreadable one (e.g. TCC-denied
+    ~/Documents/Scout) must still yield the refused payload, not exit 70
+    with empty stdout."""
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / "notes.txt").write_text("hi")
+    vault.chmod(0)
+    try:
+        result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
+    finally:
+        vault.chmod(0o755)
+    assert result.exit_code == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "refused"
+    assert payload["mutated"] is False
+    assert "Permission denied" in payload["error"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_auto_unreadable_config_is_refused_json_exit_2(tmp_path, monkeypatch):
+    """Same contract on the UPGRADE path, where scout-config.yaml is read
+    back before dispatch."""
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    config = vault / "scout-config.yaml"
+    config.write_text("instance: {name: Scout}\n")
+    config.chmod(0)
+    try:
+        result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS])
+    finally:
+        config.chmod(0o644)
+    assert result.exit_code == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "refused" and payload["mutated"] is False
+    assert "Permission denied" in payload["error"]
+
+
 # --- Final review: jobs-enabled runs (fake launchctl) -----------------------
 
 

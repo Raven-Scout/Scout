@@ -111,7 +111,11 @@ def result_dict(
     error: str | None = None,
     dry_run: bool = False,
     reason: str = "",
+    mutated: bool = False,
 ) -> dict[str, Any]:
+    """The BootstrapResult JSON. ``mutated`` is only meaningful on a refusal:
+    True when the run failed partway through dispatch, so the vault may have
+    been modified; False when it was refused before any stage ran."""
     pointer = getattr(result, "pointer", None)
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -126,15 +130,22 @@ def result_dict(
         "backups": list(getattr(result, "backups", None) or []),
         "snapshots_recorded": list(getattr(result, "snapshots_recorded", None) or []),
         "pointer": str(pointer) if pointer else None,
+        "mutated": mutated,
     }
 
 
-def run(cfg: BootstrapConfig, *, dry_run: bool = False) -> tuple[dict[str, Any], int]:
-    """Detect, dispatch, and return ``(result_dict, exit_code)``.
+def run(cfg: BootstrapConfig, *, plan: Plan | None = None, dry_run: bool = False) -> tuple[dict[str, Any], int]:
+    """Dispatch ``plan`` (detected here when None) and return ``(result_dict, exit_code)``.
 
     Exit codes: the doctor's 0/1/2 after a run; 2 when refused; 0 for dry-run.
+    FileExistsError / FileNotFoundError / LockBusyError are the entrypoints'
+    pre-flight refusals (vault state, lock contention), raised before any
+    stage runs, so they report ``mutated: false``; a RuntimeError or any other
+    OSError is treated as a stage failing partway, so ``mutated: true``. Any
+    other exception type propagates (exit 70).
     """
-    plan = detect(cfg.vault)
+    if plan is None:
+        plan = detect(cfg.vault)
     common: dict[str, Any] = {"vault": cfg.vault, "plugin_version": cfg.plugin_version, "reason": plan.reason}
     if dry_run:
         return result_dict(action=plan.action, result=None, dry_run=True, **common), 0
@@ -147,6 +158,10 @@ def run(cfg: BootstrapConfig, *, dry_run: bool = False) -> tuple[dict[str, Any],
             res = migrate_legacy(cfg)
         else:
             res = upgrade(cfg)
-    except (FileExistsError, FileNotFoundError, RuntimeError, LockBusyError) as e:
+    except (FileExistsError, FileNotFoundError, LockBusyError) as e:
+        # Before RuntimeError/OSError: FileExistsError and FileNotFoundError
+        # are OSError subclasses.
         return result_dict(action=AutoAction.REFUSED, result=None, error=str(e), **common), 2
+    except (RuntimeError, OSError) as e:
+        return result_dict(action=AutoAction.REFUSED, result=None, error=str(e), mutated=True, **common), 2
     return result_dict(action=plan.action, result=res, **common), res.doctor.exit_code

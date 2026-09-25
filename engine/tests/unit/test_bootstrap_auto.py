@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,7 @@ def test_run_refused_returns_exit_2(tmp_path):
     (vault / "notes.txt").write_text("hi")
     d, code = run(_cfg(vault))
     assert code == 2 and d["action"] == "refused" and d["error"]
+    assert d["mutated"] is False  # decided before dispatch
 
 
 def test_result_dict_has_the_contract_keys(tmp_path):
@@ -108,7 +110,9 @@ def test_result_dict_has_the_contract_keys(tmp_path):
         "backups",
         "snapshots_recorded",
         "pointer",
+        "mutated",
     }
+    assert d["mutated"] is False
 
 
 # --- Additional branch coverage (not in the brief; closes gaps the coverage
@@ -158,6 +162,7 @@ def test_run_dispatch_exception_becomes_refused(tmp_path, monkeypatch):
     vault = tmp_path / "Scout"
     d, code = run(_cfg(vault))
     assert code == 2 and d["action"] == "refused" and "raced" in d["error"]
+    assert d["mutated"] is False  # the entrypoints raise these before any stage runs
 
 
 # --- Fix round 1 (reviewer findings 1 & 2) -----------------------------------
@@ -212,6 +217,7 @@ def test_run_lock_busy_becomes_refused(tmp_path, monkeypatch):
     assert code == 2
     assert d["action"] == "refused"
     assert "4242" in d["error"]
+    assert d["mutated"] is False
 
 
 # --- Final review: interrupted installs resume (Ruling 16) ------------------
@@ -265,3 +271,58 @@ def test_upgrade_and_migrate_legacy_refuse_an_interrupted_install(tmp_path):
     assert detect(vault).action is AutoAction.INSTALL
     with pytest.raises(FileNotFoundError, match="interrupted install"):
         upgrade(_cfg(vault))
+
+
+# --- Final review: OS errors keep the JSON contract (Ruling 17) -------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [OSError(28, "No space left on device"), RuntimeError("template render failed")],
+    ids=["OSError", "RuntimeError"],
+)
+def test_stage_failure_is_refused_and_flagged_mutated(tmp_path, monkeypatch, exc):
+    """A stage failing mid-dispatch has already written to the vault, so the
+    refusal says so (`mutated: true`) instead of propagating (exit 70, empty
+    stdout) or claiming nothing happened."""
+    import scout.scripts.bootstrap as bootstrap
+
+    def boom(cfg: BootstrapConfig) -> None:
+        raise exc
+
+    monkeypatch.setattr(bootstrap, "_stage_cat1_writes", boom)
+    vault = tmp_path / "Scout"
+    d, code = run(_cfg(vault))
+    assert code == 2
+    assert d["action"] == "refused"
+    assert d["mutated"] is True
+    assert str(exc) in d["error"]
+    assert d["reason"] == "no vault: directory missing or empty"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_vault_parent_is_refused_not_raised(tmp_path):
+    """The reviewer's repro: the vault's parent cannot be written (read-only
+    volume, TCC-denied folder) — install()'s mkdir raises PermissionError."""
+    parent = tmp_path / "ro"
+    parent.mkdir()
+    parent.chmod(0o555)
+    try:
+        d, code = run(_cfg(parent / "Scout"))
+    finally:
+        parent.chmod(0o755)
+    assert code == 2 and d["action"] == "refused" and "Permission denied" in d["error"]
+
+
+def test_run_uses_the_callers_plan_instead_of_redetecting(tmp_path, monkeypatch):
+    """The CLI already detected (and guarded that call); run() must not
+    detect a second time when handed the Plan."""
+    import scout.scripts.bootstrap_auto as bootstrap_auto
+    from scout.scripts.bootstrap_auto import Plan
+
+    def no_detect(vault: Path) -> Plan:
+        raise AssertionError("run() re-detected despite being handed a plan")
+
+    monkeypatch.setattr(bootstrap_auto, "detect", no_detect)
+    d, code = run(_cfg(tmp_path / "Scout"), plan=Plan(AutoAction.REFUSED, "decided by the caller"))
+    assert code == 2 and d["error"] == "decided by the caller" and d["mutated"] is False
