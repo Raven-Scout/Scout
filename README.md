@@ -53,8 +53,6 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
-**macOS:** install [Scout.app](https://github.com/Raven-Scout/Scout/releases) — it installs this plugin, its engine and your vault for you. The one-liner below is the terminal and Linux path.
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
 ```
