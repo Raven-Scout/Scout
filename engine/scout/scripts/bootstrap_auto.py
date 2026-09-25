@@ -21,6 +21,7 @@ from scout.scripts.bootstrap import (
     _is_legacy_vault,
     _vault_exists,
     install,
+    install_incomplete,
     migrate_legacy,
     upgrade,
 )
@@ -75,6 +76,8 @@ def detect(vault: Path) -> Plan:
             AutoAction.REFUSED,
             f"unresolved proposed-merge sidecar(s): {sidecars} — edit each, `mv X.proposed-merge X`, then re-run",
         )
+    if install_incomplete(vault):
+        return Plan(AutoAction.INSTALL, "resuming an interrupted install")
     if _is_legacy_vault(vault):
         return Plan(AutoAction.MIGRATE_LEGACY, ".scout-state/ present without scout-config.yaml (pre-Plan-8 vault)")
     if _vault_exists(vault):

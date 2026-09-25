@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scout.scripts.bootstrap import BootstrapConfig
 from scout.scripts.bootstrap_auto import AutoAction, detect, result_dict, run
 
@@ -210,3 +212,56 @@ def test_run_lock_busy_becomes_refused(tmp_path, monkeypatch):
     assert code == 2
     assert d["action"] == "refused"
     assert "4242" in d["error"]
+
+
+# --- Final review: interrupted installs resume (Ruling 16) ------------------
+
+
+def test_interrupted_install_resumes_as_install(tmp_path, monkeypatch):
+    """install() creates .scout-state/ in its first stage but writes
+    scout-config.yaml at the end. A failure in between used to make the
+    retry look like a legacy vault → migrate-legacy, which never writes
+    SKILL/DREAMING/RESEARCH or parser.py → doctor red forever."""
+    import scout.scripts.bootstrap as bootstrap
+
+    vault = tmp_path / "Scout"
+    marker = vault / ".scout-state" / "install-incomplete"
+
+    def disk_full(cfg: BootstrapConfig) -> None:
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as m:
+        m.setattr(bootstrap, "_stage_cat4_install", disk_full)
+        with pytest.raises(OSError, match="No space"):
+            bootstrap.install(_cfg(vault))
+    assert marker.exists()
+    assert (vault / ".scout-state").is_dir() and not (vault / "scout-config.yaml").exists()
+    plan = detect(vault)
+    assert plan.action is AutoAction.INSTALL
+    assert plan.reason == "resuming an interrupted install"
+
+    d, code = run(_cfg(vault))
+    assert d["action"] == "install", d
+    assert d["doctor"]["severity"] != "red", d["doctor"]
+    assert code in (0, 1)
+    assert not marker.exists()
+    assert (vault / "SKILL.md").exists()
+    assert (vault / "knowledge-base" / "ontology" / "parser.py").exists()
+
+
+def test_upgrade_and_migrate_legacy_refuse_an_interrupted_install(tmp_path):
+    """A marker-bearing vault is not a vault: only install may touch it."""
+    from scout.scripts.bootstrap import migrate_legacy, upgrade
+
+    vault = tmp_path / "Scout"
+    (vault / ".scout-state").mkdir(parents=True)
+    (vault / ".scout-state" / "install-incomplete").touch()
+    with pytest.raises(FileNotFoundError, match="interrupted install"):
+        upgrade(_cfg(vault))
+    with pytest.raises(FileNotFoundError, match="interrupted install"):
+        migrate_legacy(_cfg(vault))
+    # Even if the crash landed after the version stamp, the marker still wins.
+    (vault / "scout-config.yaml").write_text("instance: {name: Scout}\n")
+    assert detect(vault).action is AutoAction.INSTALL
+    with pytest.raises(FileNotFoundError, match="interrupted install"):
+        upgrade(_cfg(vault))

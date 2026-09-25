@@ -561,11 +561,31 @@ def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path | None:
 
 _VAULT_MARKERS = ("scout-config.yaml", ".scout-state")
 
+# Written by install() right after it creates the vault directory and removed
+# right after the version stamp (which writes scout-config.yaml). While it
+# exists the directory is an unfinished install, not a vault: detection sends
+# it back to install (which resumes it) and upgrade/migrate-legacy refuse it.
+# Without it, a failure between the first stage (.scout-state/) and the last
+# (scout-config.yaml) looked like a legacy vault to the retry.
+INSTALL_INCOMPLETE_MARKER = ".scout-state/install-incomplete"
+
+
+def install_incomplete(vault: Path) -> bool:
+    return (vault / INSTALL_INCOMPLETE_MARKER).exists()
+
 
 def _vault_exists(vault: Path) -> bool:
-    if not vault.exists():
+    if not vault.exists() or install_incomplete(vault):
         return False
     return any((vault / m).exists() for m in _VAULT_MARKERS)
+
+
+def _refuse_interrupted_install(vault: Path) -> None:
+    if install_incomplete(vault):
+        raise FileNotFoundError(
+            f"{vault} holds an interrupted install ({INSTALL_INCOMPLETE_MARKER} present) — "
+            f"re-run `scoutctl bootstrap install` (or `scoutctl bootstrap auto`) to finish it."
+        )
 
 
 def _refuse_pending_sidecars(vault: Path) -> None:
@@ -588,13 +608,20 @@ def _refuse_pending_sidecars(vault: Path) -> None:
 
 
 def install(cfg: BootstrapConfig) -> InstallResult:
-    """Run the install pipeline. Stage 1 refuses if vault already exists."""
+    """Run the install pipeline. Stage 1 refuses if vault already exists.
+
+    An interrupted install (INSTALL_INCOMPLETE_MARKER present) is not a vault,
+    so re-running install() resumes it: every stage is safe to repeat.
+    """
     if _vault_exists(cfg.vault):
         raise FileExistsError(
             f"vault detected at {cfg.vault} — run /scout-update instead, "
             f"or manually remove the vault first (see Plan 8 §4.6 reset snippet)."
         )
     cfg.vault.mkdir(parents=True, exist_ok=True)
+    marker = cfg.vault / INSTALL_INCOMPLETE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     lock = cfg.vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
@@ -609,6 +636,7 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
+        marker.unlink(missing_ok=True)
         pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
@@ -621,7 +649,11 @@ def _is_legacy_vault(vault: Path) -> bool:
 
     Indicates a Plan-5-era vault that pre-dates the Plan 8 config conventions.
     Such vaults need `scoutctl bootstrap migrate-legacy` before `upgrade` works.
+    An interrupted install has the same shape but is not legacy (see
+    INSTALL_INCOMPLETE_MARKER).
     """
+    if install_incomplete(vault):
+        return False
     return (vault / ".scout-state").exists() and not (vault / "scout-config.yaml").exists()
 
 
@@ -636,7 +668,8 @@ def _stage_migrations(cfg: BootstrapConfig) -> None:
 
 
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
-    """Run the upgrade pipeline. Refuses if no vault or if vault is legacy (pre-Plan-8)."""
+    """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
+    _refuse_interrupted_install(cfg.vault)
     if not _vault_exists(cfg.vault):
         raise FileNotFoundError(f"no vault at {cfg.vault} — run /scout-setup instead.")
     if _is_legacy_vault(cfg.vault):
@@ -701,7 +734,9 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       8. Doctor.
 
     After this, the vault is Plan 8-compatible and `upgrade()` works normally.
+    Refuses an interrupted install, which has a legacy vault's shape.
     """
+    _refuse_interrupted_install(cfg.vault)
     if not (cfg.vault / ".scout-state").exists():
         raise FileNotFoundError(
             f"no vault at {cfg.vault} (no .scout-state/ directory) — run /scout-setup for a fresh install."
