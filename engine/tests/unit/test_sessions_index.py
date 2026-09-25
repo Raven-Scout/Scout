@@ -286,3 +286,11 @@ def test_build_options_defaults_honour_monkeypatched_gh(fake_data_dir: Path, mon
     assert opts.gh_available() is False
     opts.gh_runner(["pr", "view", "1"])
     assert calls == [["pr", "view", "1"]]
+
+
+def test_build_options_toplevel_honors_monkeypatch(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.sessions.derive as derive_mod
+    from scout.sessions.index import default_options
+
+    monkeypatch.setattr(derive_mod, "git_toplevel", lambda p: "/patched")
+    assert default_options(fake_data_dir).toplevel("/anything") == "/patched"

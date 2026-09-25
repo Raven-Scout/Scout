@@ -29,10 +29,10 @@ from scout.sessions import transcript as tr
 def test_first_message_reads_a_nested_text_block(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
     p.write_text(
-        json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "review OPS-1234"}]}}) + "\n",
+        json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "review PROJ-1234"}]}}) + "\n",
         encoding="utf-8",
     )
-    assert tr.extract_first_message(p) == "review OPS-1234"
+    assert tr.extract_first_message(p) == "review PROJ-1234"
 
 
 def test_first_message_reads_a_top_level_string_content(tmp_path: Path) -> None:

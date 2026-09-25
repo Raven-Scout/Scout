@@ -18,8 +18,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scout import paths
-from scout.sessions import cli_home, desktop, github
-from scout.sessions.derive import choose_pr, derive_state, git_toplevel, is_scout_run, resolve_project_key
+from scout.sessions import cli_home, derive, desktop, github
+from scout.sessions.derive import choose_pr, derive_state, is_scout_run, resolve_project_key
 from scout.sessions.model import (
     STATES,
     AgentSession,
@@ -57,7 +57,7 @@ class BuildOptions:
     use_gh: bool = True
     gh_runner: github.Runner = field(default_factory=lambda: github.default_runner)
     gh_available: Callable[[], bool] = field(default_factory=lambda: github.gh_available)
-    toplevel: Callable[[str], str | None] = field(default_factory=lambda: git_toplevel)
+    toplevel: Callable[[str], str | None] = field(default_factory=lambda: derive.git_toplevel)
     pid_alive: Callable[[int], bool] = field(default_factory=lambda: cli_home.pid_alive)
 
 
