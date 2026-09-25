@@ -79,7 +79,11 @@ def render_digest(
     by_project: dict[str, list[AgentSession]] = {}
     for s in active:
         by_project.setdefault(s.project_key, []).append(s)
-    for key in sorted(by_project, key=lambda k: names.get(k, k).lower()):
+
+    def _project_name(k: str) -> str:
+        return names.get(k, k)
+
+    for key in sorted(by_project, key=lambda k: _project_name(k).lower()):
         out.append(f"### {names.get(key, key)}")
         out.append("")
         for s in sorted(by_project[key], key=_recency, reverse=True):

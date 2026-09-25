@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scout import config as scout_config
 
@@ -53,13 +53,13 @@ class AgentSessionsSettings:
             if value < 0:
                 _warn(f"agent_sessions.{name}: must be >= 0, got {value} — using default")
                 continue
-            out = replace(out, **{name: value})
+            out = replace(out, **cast(dict[str, Any], {name: value}))
         if "use_gh" in block:
             out = replace(out, use_gh=bool(block["use_gh"]))
         for name in _STR_FIELDS:
             raw = block.get(name)
             if isinstance(raw, str) and raw.strip():
-                out = replace(out, **{name: raw.strip()})
+                out = replace(out, **cast(dict[str, Any], {name: raw.strip()}))
         return out
 
 

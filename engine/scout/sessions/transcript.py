@@ -108,7 +108,7 @@ def _last_turn_kind(last_assistant: dict[str, Any] | None, answered: set[str]) -
             return "question"
     if tool_uses:
         return "tool_use"
-    texts = [b.get("text") for b in blocks if b.get("type") == "text" and isinstance(b.get("text"), str)]
+    texts = [t for b in blocks if b.get("type") == "text" and isinstance(t := b.get("text"), str)]
     if texts and texts[-1].rstrip().endswith("?"):
         return "question"
     return "end_turn"

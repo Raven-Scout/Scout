@@ -108,7 +108,8 @@ def _prs(raw: dict[str, Any]) -> list[PRRef]:
 
 
 def _record(raw: dict[str, Any], fallback_id: str) -> DesktopRecord:
-    spawned = raw.get("spawnedFrom") if isinstance(raw.get("spawnedFrom"), dict) else {}
+    raw_spawned = raw.get("spawnedFrom")
+    spawned = raw_spawned if isinstance(raw_spawned, dict) else {}
     cwd = _str(raw.get("cwd")) or ""
     return DesktopRecord(
         session_id=_str(raw.get("sessionId")) or fallback_id,

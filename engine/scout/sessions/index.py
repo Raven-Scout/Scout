@@ -267,24 +267,24 @@ def build_index(opts: BuildOptions) -> Index:
 
     # 3. Transcript facts, liveness, last activity.
     for sess in sessions:
-        uuid = sess.cli_session_id
-        path = tpaths.get(uuid) if uuid else None
-        if path is not None:
+        cli_uuid = sess.cli_session_id
+        tpath = tpaths.get(cli_uuid) if cli_uuid else None
+        if tpath is not None:
             try:
-                st = path.stat()
+                tstat = tpath.stat()
             except OSError:
-                st = None
-            if st is not None:
-                mtime_iso = ns_to_iso(st.st_mtime_ns)
+                tstat = None
+            if tstat is not None:
+                mtime_iso = ns_to_iso(tstat.st_mtime_ns)
                 if sess.last_activity_at is None or mtime_iso > sess.last_activity_at:
                     sess.last_activity_at = mtime_iso
                 last = parse_iso(sess.last_activity_at)
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
                     try:
-                        sess.transcript = transcript_info(path, cache=tcache)
+                        sess.transcript = transcript_info(tpath, cache=tcache)
                     except OSError as exc:
-                        errors.append(SourceError(source="transcript", message=f"{path.name}: {exc}"))
-        if uuid is not None and uuid in live:
+                        errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
+        if cli_uuid is not None and cli_uuid in live:
             sess.is_open = True
 
     # 4. PR state.

@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Agent-session index — `scoutctl session index` / `session list`** (`engine/scout/sessions/`) — one machine-readable picture of every local Claude Code session, desktop or CLI, at `.scout-cache/sessions-index.json`. Merges the desktop app's per-session records (title, worktree, branch, linked PRs, parent session, archive flag), sidebar group assignments, `~/.claude` live-process files, transcript facts (first prompt, files touched, tool calls, whether the last turn ended on a question) and `gh` PR review/CI state (10-minute TTL cache, 25-fetch cap, three-strikes short-circuit when gh is down) into a derived **state** per session — `running`, `needs_you`, `waiting`, `parked`, `stale`, `done` — with the matched reasons spelled out. `cc-sessions.md` keeps its filename but becomes a state-first digest (Needs you · Running now · Waiting on others · Stale, then the per-project 24 h activity list), so consolidation can surface "changes requested on your agent's PR" with evidence. `scoutctl session cc-cache` is now an alias for `session index --render`; configuration lives under a new `agent_sessions:` block. Read-only over every source — Scout never writes to the desktop app's store. Spec: scout-app `docs/superpowers/specs/2026-09-08-agent-sessions-design.md`.
+
 ## [0.10.0] - 2026-09-09
 
 
