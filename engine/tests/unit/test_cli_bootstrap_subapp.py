@@ -363,3 +363,62 @@ def test_auto_with_jobs_writes_one_consistent_engine_pointer(tmp_path, monkeypat
     assert pointer["scoutctl"] == plist["ProgramArguments"][0] == shim_target.group(1)
     assert pointer["vault"] == plist["EnvironmentVariables"]["SCOUT_DATA_DIR"] == str(vault)
     assert pointer["managed_by"] == "scout-app"
+
+
+# --- Final review: --managed-by defaults to `preserve` (Ruling 15) ----------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["bootstrap", "install", "--no-jobs", "--skip-claude", *IDENTITY],
+        ["bootstrap", "upgrade", "--no-jobs"],
+        ["bootstrap", "migrate-legacy", *IDENTITY],
+        ["bootstrap", "auto", *HEADLESS, *IDENTITY],
+    ],
+    ids=["install", "upgrade", "migrate-legacy", "auto"],
+)
+def test_invalid_managed_by_is_a_usage_error(tmp_path, monkeypatch, argv):
+    """An explicit --managed-by outside MANAGED_BY_VALUES exits 2 before
+    anything is written (the last --managed-by on the command line wins)."""
+    vault = _vault(tmp_path, monkeypatch)
+    result = runner.invoke(app, [*argv, "--managed-by", "bogus"])
+    assert result.exit_code == 2, result.stdout + result.stderr
+    assert "bogus" in result.output
+    assert not vault.exists()
+
+
+@pytest.mark.parametrize(
+    ("argv", "target"),
+    [
+        (["bootstrap", "upgrade", "--no-jobs", "--json"], "scout.scripts.bootstrap.upgrade"),
+        (
+            ["bootstrap", "auto", "--no-jobs", "--no-interactive", "--yes", "--json", "--platform", "macos"],
+            "scout.scripts.bootstrap_auto.upgrade",
+        ),
+    ],
+    ids=["upgrade", "auto"],
+)
+def test_plain_upgrade_keeps_an_app_managed_engine_app_managed(tmp_path, monkeypatch, argv, target):
+    """No --managed-by (the doctor's own fix hint is a plain `scoutctl
+    bootstrap upgrade`): the pointer's `scout-app` survives when the pointer
+    describes the interpreter doing the upgrade."""
+    from scout.scripts.bootstrap import UpgradeResult
+    from scout.scripts.bootstrap_doctor import DoctorReport, Severity
+    from scout.scripts.engine_pointer import current_pointer, write_pointer
+
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text("instance:\n  name: Scout\n", encoding="utf-8")
+    write_pointer(current_pointer(vault=vault, managed_by="scout-app"), home=Path.home())
+    seen: dict[str, str] = {}
+
+    def fake_upgrade(cfg):
+        seen["managed_by"] = cfg.managed_by
+        return UpgradeResult(vault=cfg.vault, doctor=DoctorReport(severity=Severity.GREEN))
+
+    monkeypatch.setattr(target, fake_upgrade)
+    result = runner.invoke(app, argv)
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["action"] == "upgrade"
+    assert seen["managed_by"] == "scout-app"

@@ -11,13 +11,14 @@ This command is for **fresh installs only**. If a vault already exists, refuse a
 
 ---
 
-## Step 0: Pre-flight (refuse if vault detected; install venv if missing)
+## Step 0: Pre-flight (refuse if Scout.app manages the engine or a vault is detected; install venv if missing)
 
-Run this single bash command:
+Run this single bash command. Its first check asks whether this engine is managed by Scout.app — before anything else, so an app-managed install is never touched (no venv is built in Claude Code's plugin cache):
 
 ```bash
 bash <<'EOF'
 set -e
+grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/dev/null && echo "APP_MANAGED" && exit 0
 test -f "$HOME/Scout/scout-config.yaml" && echo "VAULT_EXISTS" && exit 0
 test -d "$HOME/Scout/.scout-state" && echo "VAULT_EXISTS" && exit 0
 ls "$HOME/Library/LaunchAgents/com.scout."*.plist 2>/dev/null && echo "ORPHAN_JOBS" && exit 0
@@ -25,6 +26,7 @@ echo "FRESH"
 EOF
 ```
 
+- If output is `APP_MANAGED`: tell the user "This Scout engine is managed by Scout.app. Please run setup from the Scout.app Settings pane instead." Stop here.
 - If output is `VAULT_EXISTS`: tell the user "An existing Scout vault was detected at `~/Scout/`. To upgrade, run `/scout-update`. To start over, see the manual reset snippet in the README." Stop here.
 - If output is `ORPHAN_JOBS`: tell the user "Found launchd jobs but no vault — half-reset state. Run this to clean up:" then show the [Manual Reset](#manual-reset) snippet. Stop here.
 - If output is `FRESH`: continue.
@@ -59,14 +61,6 @@ fi
 ```
 
 If `VENV_MISMATCH:<installed>|<expected>` is emitted, tell the user: "The venv at `$PLUGIN_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Re-installing now to pin it to this checkout..." then run `bash "$PLUGIN_ROOT/scripts/install-venv.sh"` and re-verify.
-
-Check whether this engine is managed by Scout.app:
-
-```bash
-grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/dev/null && echo "APP_MANAGED"
-```
-
-- If output is `APP_MANAGED`: tell the user "This Scout engine is managed by Scout.app. Please run setup from the Scout.app Settings pane instead." Stop here.
 
 ---
 

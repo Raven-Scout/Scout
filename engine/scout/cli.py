@@ -1285,6 +1285,22 @@ def _register_bootstrap() -> None:
 
     _TEXT_VERB = {"install": "installed", "upgrade": "upgraded", "migrate-legacy": "migrated"}
 
+    _MANAGED_BY_HELP = (
+        "Who owns this engine install: scout-app | install.sh | claude-code | dev | unknown "
+        "(recorded in the engine pointer). Default `preserve`: keep the existing pointer's value "
+        "when it describes this engine's interpreter, else unknown."
+    )
+
+    def _resolve_managed_by(value: str) -> str:
+        """`preserve` → the concrete manager (engine_pointer.resolve_managed_by);
+        an explicit value outside MANAGED_BY_VALUES is a usage error (exit 2)."""
+        from scout.scripts.engine_pointer import resolve_managed_by
+
+        try:
+            return resolve_managed_by(value, home=Path.home())
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="'--managed-by'") from e
+
     def _emit(payload: dict, *, json_out: bool) -> None:
         """One printer for every bootstrap subcommand: JSON on stdout, or the
         human lines. Warnings/errors go to stderr in text mode so a caller that
@@ -1373,14 +1389,7 @@ def _register_bootstrap() -> None:
         github_repos: str = typer.Option("", "--github-repos"),
         claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
         max_budget: str = typer.Option("5.00", "--max-budget"),
-        managed_by: str = typer.Option(
-            "unknown",
-            "--managed-by",
-            help=(
-                "Who owns this engine install: scout-app | install.sh | claude-code | "
-                "dev | unknown (recorded in the engine pointer)."
-            ),
-        ),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Install Scout into the user's vault directory."""
@@ -1389,6 +1398,7 @@ def _register_bootstrap() -> None:
         from scout.scripts.bootstrap import BootstrapConfig, install
         from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         cfg = BootstrapConfig(
             vault=vault,
@@ -1423,14 +1433,7 @@ def _register_bootstrap() -> None:
     def cli_bootstrap_upgrade(
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
-        managed_by: str = typer.Option(
-            "unknown",
-            "--managed-by",
-            help=(
-                "Who owns this engine install: scout-app | install.sh | claude-code | "
-                "dev | unknown (recorded in the engine pointer)."
-            ),
-        ),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Upgrade an existing vault against the current plugin templates."""
@@ -1439,6 +1442,7 @@ def _register_bootstrap() -> None:
         from scout.scripts.bootstrap import upgrade
         from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         cfg_path = vault / "scout-config.yaml"
         if not cfg_path.exists():
@@ -1505,14 +1509,7 @@ def _register_bootstrap() -> None:
             "--no-jobs/--rebootstrap-jobs",
             help="Default --no-jobs: leave launchd/cron untouched; use --rebootstrap-jobs to reinstall them.",
         ),
-        managed_by: str = typer.Option(
-            "unknown",
-            "--managed-by",
-            help=(
-                "Who owns this engine install: scout-app | install.sh | claude-code | "
-                "dev | unknown (recorded in the engine pointer)."
-            ),
-        ),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """One-time migration of a Plan-5-era vault to Plan 8 format.
@@ -1528,6 +1525,7 @@ def _register_bootstrap() -> None:
         from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy
         from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         cfg = BootstrapConfig(
             vault=vault,
@@ -1573,7 +1571,7 @@ def _register_bootstrap() -> None:
         max_budget: str = typer.Option("5.00", "--max-budget"),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
-        managed_by: str = typer.Option("unknown", "--managed-by"),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         interactive: bool | None = typer.Option(
             None,
             "--interactive/--no-interactive",
@@ -1592,6 +1590,7 @@ def _register_bootstrap() -> None:
         from scout.scripts.bootstrap import BootstrapConfig
         from scout.scripts.bootstrap_auto import AutoAction, detect, result_dict, run
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         if interactive is None:
             interactive = sys.stdin.isatty()

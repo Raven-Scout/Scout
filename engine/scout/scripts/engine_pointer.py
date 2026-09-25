@@ -18,6 +18,9 @@ from pathlib import Path
 
 POINTER_SCHEMA_VERSION = 1
 MANAGED_BY_VALUES = ("scout-app", "install.sh", "claude-code", "dev", "unknown")
+# The CLI default for --managed-by: keep whatever manager already owns THIS
+# engine (see resolve_managed_by). Never written to the pointer itself.
+MANAGED_BY_PRESERVE = "preserve"
 
 
 def state_dir(home: Path) -> Path:
@@ -97,3 +100,25 @@ def read_pointer(*, home: Path) -> EnginePointer | None:
         )
     except (KeyError, TypeError):
         return None
+
+
+def resolve_managed_by(requested: str, *, home: Path) -> str:
+    """The concrete ``managed_by`` a bootstrap run records.
+
+    ``preserve`` keeps the existing pointer's ``managed_by`` when that pointer
+    describes the interpreter running now, so a plain ``scoutctl bootstrap
+    upgrade`` — the doctor's own fix hint — never demotes an app-managed engine
+    to ``unknown`` (after which Scout.app would treat it as external and stop
+    repairing it). A pointer naming another interpreter belongs to another
+    engine, so ``preserve`` then means ``unknown``. Any other value must be in
+    ``MANAGED_BY_VALUES``; raises ``ValueError`` otherwise.
+    """
+    if requested == MANAGED_BY_PRESERVE:
+        existing = read_pointer(home=home)
+        if existing is not None and existing.python == str(Path(sys.executable).absolute()):
+            return existing.managed_by
+        return "unknown"
+    if requested not in MANAGED_BY_VALUES:
+        allowed = " | ".join((MANAGED_BY_PRESERVE, *MANAGED_BY_VALUES))
+        raise ValueError(f"{requested!r} is not one of {allowed}")
+    return requested

@@ -6,13 +6,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 import scout
 from scout import __version__
 from scout.scripts.engine_pointer import (
+    MANAGED_BY_VALUES,
     POINTER_SCHEMA_VERSION,
+    EnginePointer,
     current_pointer,
     pointer_path,
     read_pointer,
+    resolve_managed_by,
     write_pointer,
 )
 
@@ -65,3 +70,45 @@ def test_read_pointer_returns_none_when_a_required_field_is_missing(tmp_path):
     incomplete = {"schema_version": 1, "version": "0.4.0"}  # missing every other field
     pointer_path(tmp_path).write_text(json.dumps(incomplete))
     assert read_pointer(home=tmp_path) is None
+
+
+# --- resolve_managed_by: the `preserve` default (final review, Ruling 15) ----
+
+
+def _pointer_for(python: str, managed_by: str, home: Path) -> None:
+    write_pointer(
+        EnginePointer(
+            version="0.10.0",
+            engine_root="/nonexistent",
+            python=python,
+            scoutctl=str(Path(python).parent / "scoutctl"),
+            vault=str(home / "Scout"),
+            managed_by=managed_by,
+            written_at="2026-01-01T00:00:00Z",
+        ),
+        home=home,
+    )
+
+
+def test_preserve_keeps_the_managers_value_when_the_pointer_is_this_engine(tmp_path):
+    """A plain `scoutctl bootstrap upgrade` (the doctor's own fix hint) run by
+    the app's venv must not demote the engine to `unknown`."""
+    _pointer_for(str(Path(sys.executable).absolute()), "scout-app", tmp_path)
+    assert resolve_managed_by("preserve", home=tmp_path) == "scout-app"
+
+
+def test_preserve_is_unknown_when_the_pointer_names_another_interpreter(tmp_path):
+    _pointer_for("/somewhere/else/bin/python", "scout-app", tmp_path)
+    assert resolve_managed_by("preserve", home=tmp_path) == "unknown"
+
+
+def test_preserve_is_unknown_without_a_pointer(tmp_path):
+    assert resolve_managed_by("preserve", home=tmp_path) == "unknown"
+
+
+def test_explicit_managed_by_passes_through_and_invalid_raises(tmp_path):
+    _pointer_for(str(Path(sys.executable).absolute()), "scout-app", tmp_path)
+    for value in MANAGED_BY_VALUES:
+        assert resolve_managed_by(value, home=tmp_path) == value
+    with pytest.raises(ValueError, match="bogus"):
+        resolve_managed_by("bogus", home=tmp_path)
