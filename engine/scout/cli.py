@@ -1311,16 +1311,25 @@ def _register_bootstrap() -> None:
         tests/unit/test_cli_surface.py keep parsing/asserting the same lines.
         migrate-legacy also keeps its pre-E3 quirks — a "snapshots recorded"
         line, and backups on stdout rather than stderr — for the same reason.
+        A dry run says what it *would* do and why; a refusal names the vault,
+        the error and (when it adds something) the detected reason.
         """
         import json as _json
 
         if json_out:
             typer.echo(_json.dumps(payload, indent=2, sort_keys=True))
             return
+        reason = payload.get("reason") or ""
         if payload.get("error"):
-            typer.echo(f"{payload['action']}: {payload['error']}", err=True)
+            typer.echo(f"{payload['action']}: {payload['vault']} — {payload['error']}", err=True)
+            if reason and reason != payload["error"]:
+                typer.echo(f"  reason: {reason}", err=True)
             return
         action = payload["action"]
+        if payload.get("dry_run"):
+            verb = "refuse" if action == "refused" else action
+            typer.echo(f"would {verb}: {payload['vault']} ({reason})")
+            return
         typer.echo(f"{_TEXT_VERB.get(action, action)}: {payload['vault']}")
         if action == "migrate-legacy":
             typer.echo(f"snapshots recorded: {', '.join(payload.get('snapshots_recorded') or []) or 'none'}")

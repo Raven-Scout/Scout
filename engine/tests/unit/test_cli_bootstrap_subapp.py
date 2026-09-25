@@ -187,9 +187,45 @@ def test_auto_dry_run_text_mode_has_no_doctor_line(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert f"installed: {vault}" in result.stdout
+    assert result.stdout.splitlines() == [f"would install: {vault} (no vault: directory missing or empty)"]
+    assert "installed:" not in result.stdout
     assert "doctor:" not in result.stdout
     assert not vault.exists()
+
+
+TEXT_HEADLESS = [a for a in HEADLESS if a != "--json"]
+
+
+def test_auto_dry_run_text_mode_names_a_refusal_it_would_make(tmp_path, monkeypatch):
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / "notes.txt").write_text("hi")
+    result = runner.invoke(app, ["bootstrap", "auto", *TEXT_HEADLESS, "--dry-run"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert result.stdout.startswith(f"would refuse: {vault} ({vault} is non-empty but is not a Scout vault")
+
+
+def test_auto_refusal_text_mode_names_vault_error_and_reason(tmp_path, monkeypatch):
+    """A refusal prints `refused: <vault> — <error>` and, when it adds
+    something, the detected reason on the next line (both on stderr)."""
+    vault = _vault(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["bootstrap", "auto", *TEXT_HEADLESS])
+    assert result.exit_code == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        f"refused: {vault} — install needs --user-name and --user-email (or run interactively)",
+        "  reason: no vault: directory missing or empty",
+    ]
+
+
+def test_refusal_text_mode_omits_a_reason_that_repeats_the_error(tmp_path, monkeypatch):
+    vault = _vault(tmp_path, monkeypatch)
+    vault.mkdir()
+    (vault / "notes.txt").write_text("hi")
+    result = runner.invoke(app, ["bootstrap", "auto", *TEXT_HEADLESS, *IDENTITY])
+    assert result.exit_code == 2, result.stdout + result.stderr
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1 and lines[0].startswith(f"refused: {vault} — {vault} is non-empty but is not a Scout vault")
 
 
 def test_auto_claude_bin_auto_resolves_via_which(tmp_path, monkeypatch):
