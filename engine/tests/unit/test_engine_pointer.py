@@ -48,6 +48,26 @@ def test_write_then_read_round_trips(tmp_path):
     assert read_pointer(home=tmp_path) == p
 
 
+def test_non_ascii_paths_are_written_as_utf8_and_round_trip(tmp_path):
+    """The launcher reads `python` back with sed, which cannot decode JSON
+    \\uXXXX escapes — so a vault or home like ~/Résumé must be literal UTF-8."""
+    python = "/Users/alex/Résumé/venv/bin/python"
+    p = EnginePointer(
+        version="0.10.0",
+        engine_root="/Users/alex/Résumé/engine",
+        python=python,
+        scoutctl="/Users/alex/Résumé/venv/bin/scoutctl",
+        vault="/Users/alex/Scout é",
+        managed_by="scout-app",
+        written_at="2026-01-01T00:00:00Z",
+    )
+    written = write_pointer(p, home=tmp_path)
+    raw = written.read_bytes()
+    assert f'"python": "{python}"'.encode() in raw
+    assert b"\\u00e9" not in raw
+    assert read_pointer(home=tmp_path) == p
+
+
 def test_read_pointer_returns_none_when_missing_or_malformed(tmp_path):
     assert read_pointer(home=tmp_path) is None
     pointer_path(tmp_path).parent.mkdir(parents=True)

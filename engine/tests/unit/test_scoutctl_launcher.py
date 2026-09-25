@@ -228,6 +228,21 @@ def test_uses_pointer_python_when_tree_has_no_venv(tmp_path):
     assert _run_isolated(_plugin_tree(tmp_path), home) == "POINTER_PY -m scout.cli version"
 
 
+def test_uses_pointer_python_under_a_non_ascii_path(tmp_path):
+    """The pointer is UTF-8, not \\uXXXX escapes, so the launcher's sed reads
+    back a real path (final review, Ruling 20). A fake system python3 makes a
+    miss show up as SYSTEM_PY instead of a real interpreter's error."""
+    home = tmp_path / "home"
+    py = _fake_python(tmp_path / "Résumé" / "venv", "POINTER_PY")
+    _write_pointer(home, py)
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "POINTER_PY -m scout.cli version"
+
+
 def test_prefers_in_tree_venv_over_pointer(tmp_path):
     """Edit-and-go: a dev checkout with its own venv keeps using it."""
     home = tmp_path / "home"

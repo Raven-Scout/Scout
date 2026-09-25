@@ -43,7 +43,10 @@ class EnginePointer:
     schema_version: int = POINTER_SCHEMA_VERSION
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
+        # ensure_ascii=False: the launcher reads "python" back with sed, which
+        # cannot decode \uXXXX escapes, so non-ASCII paths must stay literal
+        # (write_pointer writes the file as UTF-8).
+        return json.dumps(asdict(self), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def current_pointer(*, vault: Path, managed_by: str) -> EnginePointer:
