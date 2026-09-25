@@ -1556,8 +1556,27 @@ def _register_bootstrap() -> None:
         )
         raise typer.Exit(code=result.doctor.exit_code)
 
+    # `auto` flags that an UPGRADE reads from scout-config.yaml instead (named
+    # in a stderr note when passed). --claude-bin is not here: an explicit
+    # path is applied on upgrade, since Scout.app passes a fresh one each time.
+    _AUTO_UPGRADE_IGNORED = frozenset(
+        {
+            "user_name",
+            "user_email",
+            "instance_name",
+            "timezone",
+            "platform_",
+            "connectors",
+            "user_slack_id",
+            "github_username",
+            "github_repos",
+            "max_budget",
+        }
+    )
+
     @bootstrap_app.command("auto")
     def cli_bootstrap_auto(
+        ctx: typer.Context,
         user_name: str = typer.Option("", "--user-name", help="Required for install / migrate-legacy."),
         user_email: str = typer.Option("", "--user-email", help="Required for install / migrate-legacy."),
         instance_name: str = typer.Option("Scout", "--instance-name"),
@@ -1608,7 +1627,8 @@ def _register_bootstrap() -> None:
                     json_out=json_out,
                 )
                 raise typer.Exit(code=2)
-        if claude_bin == "auto":
+        explicit_claude_bin = claude_bin != "auto"
+        if not explicit_claude_bin:
             claude_bin = shutil.which("claude") or "/usr/local/bin/claude"
 
         try:
@@ -1648,8 +1668,16 @@ def _register_bootstrap() -> None:
                 raise typer.Exit(code=2)
 
         if plan.action is AutoAction.UPGRADE and (vault / "scout-config.yaml").exists():
-            if user_name or user_email:
-                typer.echo("note: identity flags are ignored on upgrade (read from scout-config.yaml)", err=True)
+            # By the enum member's name: Typer vendors its own Click, so
+            # ParameterSource is not importable from a public module.
+            ignored = [
+                p.opts[0]
+                for p in ctx.command.params
+                if p.name in _AUTO_UPGRADE_IGNORED
+                and getattr(ctx.get_parameter_source(p.name), "name", None) == "COMMANDLINE"
+            ]
+            if ignored:
+                typer.echo(f"note: ignored on upgrade (read from scout-config.yaml): {', '.join(ignored)}", err=True)
             try:
                 cfg = _config_from_existing_vault(
                     vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
@@ -1667,6 +1695,10 @@ def _register_bootstrap() -> None:
                     json_out=json_out,
                 )
                 raise typer.Exit(code=2) from e
+            if explicit_claude_bin:
+                # A moved `claude` must reach the runners (and be persisted by
+                # the version stamp); `auto` keeps the vault's recorded path.
+                cfg.connector_inputs = {**cfg.connector_inputs, "claude_bin": claude_bin}
         else:
             cfg = BootstrapConfig(
                 vault=vault,

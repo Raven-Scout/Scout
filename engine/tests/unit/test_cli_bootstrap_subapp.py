@@ -215,7 +215,9 @@ def test_auto_claude_bin_auto_resolves_via_which(tmp_path, monkeypatch):
 
 
 def test_auto_upgrade_ignores_identity_flags_note_on_stderr(tmp_path, monkeypatch):
-    _vault(tmp_path, monkeypatch)
+    """The note names every flag that was passed but is read from
+    scout-config.yaml on upgrade — and none that was honored."""
+    vault = _vault(tmp_path, monkeypatch)
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     result = runner.invoke(
         app,
@@ -226,15 +228,48 @@ def test_auto_upgrade_ignores_identity_flags_note_on_stderr(tmp_path, monkeypatc
             "--skip-claude",
             "--no-interactive",
             "--yes",
-            "--platform",
-            "macos",
             "--claude-bin",
             "/usr/local/bin/claude",
+            "--connectors",
+            "github",
+            "--max-budget",
+            "9.00",
             *IDENTITY,
         ],
     )
     assert result.exit_code in (0, 1), result.stdout + result.stderr
-    assert "note: identity flags are ignored on upgrade" in result.stderr
+    note = next(line for line in result.stderr.splitlines() if line.startswith("note:"))
+    assert note == (
+        "note: ignored on upgrade (read from scout-config.yaml): --user-name, --user-email, --connectors, --max-budget"
+    )
+    inputs = yaml.safe_load((vault / "scout-config.yaml").read_text())["connectors"]
+    assert inputs["enabled"] == [] and inputs["inputs"]["max_budget"] == "5.00"
+
+
+def test_auto_upgrade_applies_an_explicit_claude_bin(tmp_path, monkeypatch):
+    """Scout.app passes a fresh --claude-bin on every upgrade; a moved
+    `claude` must reach the runners and scout-config.yaml."""
+    vault = _vault(tmp_path, monkeypatch)
+    runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
+    result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS, "--claude-bin", "/tmp/x/claude"])
+    assert result.exit_code in (0, 1), result.stdout + result.stderr
+    assert json.loads(result.stdout)["action"] == "upgrade"
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text())
+    assert config["connectors"]["inputs"]["claude_bin"] == "/tmp/x/claude"
+    assert "/tmp/x/claude" in (vault / "run-scout.sh").read_text()
+    assert "--claude-bin" not in result.stderr
+
+
+def test_auto_upgrade_keeps_the_vaults_claude_bin_by_default(tmp_path, monkeypatch):
+    """`--claude-bin auto` (the default) on upgrade keeps the recorded path."""
+    vault = _vault(tmp_path, monkeypatch)
+    runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
+    monkeypatch.setattr("shutil.which", lambda name: "/elsewhere/claude")
+    result = runner.invoke(app, ["bootstrap", "auto", "--no-jobs", "--no-interactive", "--yes", "--json"])
+    assert result.exit_code in (0, 1), result.stdout + result.stderr
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text())
+    assert config["connectors"]["inputs"]["claude_bin"] == "/usr/local/bin/claude"
+    assert "note:" not in result.stderr
 
 
 def _populate_legacy_vault(vault: Path) -> None:
