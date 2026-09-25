@@ -89,3 +89,36 @@ def test_defaults_to_plugin_root_venv_and_dev_extras(tmp_path, monkeypatch):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert f"uv venv --python 3.12 {root}/.venv" in log.read_text()
     assert f"-e {root}/engine[dev]" in log.read_text()
+
+
+def test_no_builder_leaves_an_existing_venv_untouched(tmp_path):
+    """Neither uv nor a Python >= 3.11: fail with the uv hint BEFORE removing
+    the old venv (final review, deferred A6 minor). PATH is a dir holding only
+    the tools the script needs up to that point — plus rm/mkdir so a
+    regression really deletes — and a python3 that fails the >= 3.11 check,
+    standing in for Apple's 3.9."""
+    import shutil
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("dirname", "cat", "rm", "mkdir"):
+        found = shutil.which(name)
+        assert found, name
+        (tools / name).symlink_to(found)
+    python3 = tools / "python3"
+    python3.write_text("#!/bin/sh\n# reports 3.9: fails the >= 3.11 probe\nexit 1\n", encoding="utf-8")
+    python3.chmod(0o755)
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "marker").write_text("working venv\n", encoding="utf-8")
+    proc = subprocess.run(
+        ["/bin/bash", str(SCRIPT)],
+        env={"HOME": str(tmp_path / "home"), "PATH": str(tools), "SCOUT_VENV_DIR": str(venv)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "uv" in proc.stderr
+    assert (venv / "bin" / "marker").read_text(encoding="utf-8") == "working venv\n"

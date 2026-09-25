@@ -31,21 +31,12 @@ UV="${SCOUT_UV:-}"
 if [ -z "$UV" ] && command -v uv >/dev/null 2>&1; then UV="$(command -v uv)"; fi
 if [ -z "$UV" ] && [ -x "${HOME:-/nonexistent}/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; fi
 
-if [ -d "$VENV" ]; then
-    echo "venv already exists at $VENV — recreating..."
-    rm -rf "$VENV"
-fi
-mkdir -p "$(dirname "$VENV")"
-
-if [ -n "$UV" ]; then
-    echo "using uv ($UV), python $PY_VERSION"
-    "$UV" venv --python "$PY_VERSION" "$VENV"
-    echo "installing scout-engine[$EXTRAS] in editable mode..."
-    "$UV" pip install --python "$VENV/bin/python" --quiet -e "$PLUGIN_ROOT/engine[$EXTRAS]"
-else
+# Choose the builder BEFORE touching an existing venv: a machine with neither
+# uv nor a Python >= 3.11 must keep the venv it has, not lose it to the error.
+PYTHON=""
+if [ -z "$UV" ]; then
     # No uv: pick a Python >= 3.11 (engine[requires-python]). Apple's bundled
     # /usr/bin/python3 is 3.9 on every macOS we support, so try explicit minors.
-    PYTHON=""
     for candidate in python3.13 python3.12 python3.11; do
         if command -v "$candidate" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
     done
@@ -64,6 +55,20 @@ then re-run: bash $PLUGIN_ROOT/scripts/install-venv.sh
 EOF
         exit 1
     fi
+fi
+
+if [ -d "$VENV" ]; then
+    echo "venv already exists at $VENV — recreating..."
+    rm -rf "$VENV"
+fi
+mkdir -p "$(dirname "$VENV")"
+
+if [ -n "$UV" ]; then
+    echo "using uv ($UV), python $PY_VERSION"
+    "$UV" venv --python "$PY_VERSION" "$VENV"
+    echo "installing scout-engine[$EXTRAS] in editable mode..."
+    "$UV" pip install --python "$VENV/bin/python" --quiet -e "$PLUGIN_ROOT/engine[$EXTRAS]"
+else
     echo "using $PYTHON ($("$PYTHON" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'))"
     "$PYTHON" -m venv "$VENV"
     echo "installing scout-engine[$EXTRAS] in editable mode (this may take 30-60s)..."
