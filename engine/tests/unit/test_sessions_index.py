@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import scout.sessions.github as gh
 from scout.sessions.index import INDEX_FILENAME, BuildOptions, build_index, index_path, run, write_index
 from scout.sessions.model import Index, dt_to_iso
 from scout.sessions.settings import AgentSessionsSettings
@@ -273,3 +274,15 @@ def test_run_with_render_writes_digest(fake_data_dir: Path) -> None:
         " — https://github.com/example-org/example-repo/pull/98 — last active 1h ago"
     ) in digest
     assert "scout-morning-briefing" not in digest  # Scout's own run excluded from the digest
+
+
+def test_build_options_defaults_honour_monkeypatched_gh(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(gh, "gh_available", lambda: False)
+    monkeypatch.setattr(gh, "default_runner", lambda argv: calls.append(argv))
+    from scout.sessions.index import default_options
+
+    opts = default_options(fake_data_dir)
+    assert opts.gh_available() is False
+    opts.gh_runner(["pr", "view", "1"])
+    assert calls == [["pr", "view", "1"]]

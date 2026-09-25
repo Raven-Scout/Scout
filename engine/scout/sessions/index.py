@@ -13,7 +13,7 @@ import re
 import tempfile
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -55,10 +55,10 @@ class BuildOptions:
     support_dir: Path
     now: datetime
     use_gh: bool = True
-    gh_runner: github.Runner = github.default_runner
-    gh_available: Callable[[], bool] = github.gh_available
-    toplevel: Callable[[str], str | None] = git_toplevel
-    pid_alive: Callable[[int], bool] = cli_home.pid_alive
+    gh_runner: github.Runner = field(default_factory=lambda: github.default_runner)
+    gh_available: Callable[[], bool] = field(default_factory=lambda: github.gh_available)
+    toplevel: Callable[[str], str | None] = field(default_factory=lambda: git_toplevel)
+    pid_alive: Callable[[int], bool] = field(default_factory=lambda: cli_home.pid_alive)
 
 
 def default_options(
