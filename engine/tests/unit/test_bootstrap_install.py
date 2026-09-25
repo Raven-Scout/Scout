@@ -129,29 +129,37 @@ def test_install_persists_connector_inputs(tmp_path):
     assert "/opt/homebrew/bin/claude" in runner_text
 
 
-def test_install_writes_engine_pointer_for_this_vault(tmp_path):
-    """Every bootstrap records where the engine lives (spec §4.2). HOME is the
-    hermetic per-test home from conftest, so Path.home() is safe to read."""
+def test_install_without_jobs_writes_no_engine_pointer(tmp_path):
+    """The pointer is written in the same stage as the shim, and that stage is
+    gated by skip_jobs (spec §4.2): a --no-jobs install leaves plists, shim
+    AND pointer alone, so a scratch run can never repoint Scout.app. HOME is
+    the hermetic per-test home from conftest, so Path.home() is safe to read."""
+    from scout.scripts.engine_pointer import read_pointer
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    cfg = _config(tmp_path / "Scout", plugin_root=plugin)
+    cfg.managed_by = "scout-app"
+    result = install(cfg)
+    assert result.pointer is None
+    assert read_pointer(home=Path.home()) is None
+
+
+def test_pointer_stage_writes_this_vault_and_defaults_to_unknown_manager(tmp_path):
+    """With jobs enabled the stage records this vault; BootstrapConfig's own
+    managed_by default is the concrete "unknown"."""
+    from scout.scripts.bootstrap import _stage_write_engine_pointer
     from scout.scripts.engine_pointer import read_pointer
 
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     cfg = _config(vault, plugin_root=plugin)
-    cfg.managed_by = "scout-app"
-    result = install(cfg)
+    cfg.skip_jobs = False
+    written = _stage_write_engine_pointer(cfg)
+    assert written == Path.home() / ".local" / "state" / "scout" / "engine.json"
     pointer = read_pointer(home=Path.home())
     assert pointer is not None
     assert pointer.vault == str(vault)
-    assert pointer.managed_by == "scout-app"
-    assert result.pointer == Path.home() / ".local" / "state" / "scout" / "engine.json"
-
-
-def test_install_pointer_defaults_to_unknown_manager(tmp_path):
-    from scout.scripts.engine_pointer import read_pointer
-
-    plugin = Path(__file__).parent.parent.parent.parent
-    install(_config(tmp_path / "Scout", plugin_root=plugin))
-    assert read_pointer(home=Path.home()).managed_by == "unknown"
+    assert pointer.managed_by == "unknown"
 
 
 def test_stage_jobs_install_passes_vault_through(tmp_path, monkeypatch):

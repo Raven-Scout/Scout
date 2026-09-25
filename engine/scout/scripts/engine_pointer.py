@@ -3,7 +3,8 @@
 One file that answers "where is the engine?" for every consumer: Scout.app
 (``EngineLocator``), the ``engine/bin/scoutctl`` launcher (venv candidate),
 the doctor (consistency check) and ``install.sh``. Written by every bootstrap
-entrypoint in the same stage as the ``~/.local/bin/scoutctl`` shim. Readers
+entrypoint in the same stage as the ``~/.local/bin/scoutctl`` shim — so only
+by runs that install jobs (a ``--no-jobs`` run writes neither). Readers
 treat a missing or malformed file as "no pointer" and fall back to discovery.
 """
 

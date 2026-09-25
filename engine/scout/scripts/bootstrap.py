@@ -541,12 +541,17 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     _atomic_write(config_path, yaml.safe_dump(existing, sort_keys=False))
 
 
-def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path:
+def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path | None:
     """Record where THIS engine lives (~/.local/state/scout/engine.json, §4.2).
 
-    Not gated by skip_jobs: the pointer is state about the engine that just
-    ran, true in every mode, and tests run under a hermetic HOME.
+    Gated by `skip_jobs` exactly like `_stage_install_scoutctl_shim`: the
+    pointer belongs to the same stage as the shim (spec §4.2) and must track
+    the plists the doctor compares it with. A `--no-jobs` run leaves plists,
+    shim and pointer alone, so a scratch install can never repoint Scout.app.
+    Returns the pointer path, or None when skipped.
     """
+    if cfg.skip_jobs:
+        return None
     from scout.scripts.engine_pointer import current_pointer, write_pointer
 
     return write_pointer(current_pointer(vault=cfg.vault, managed_by=cfg.managed_by), home=Path.home())

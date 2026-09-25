@@ -43,7 +43,8 @@ candidates=(
 )
 
 # The engine pointer (~/.local/state/scout/engine.json, written by every
-# `scoutctl bootstrap …`) names the venv that matches the installed engine.
+# `scoutctl bootstrap …` that installs jobs) names the venv that matches the
+# installed engine.
 # Consulted AFTER the in-tree venv so a dev checkout keeps edit-and-go, and
 # BEFORE the marketplaces/ cross-jump so Claude Code's cache copy of an
 # app-managed engine (whose venv lives outside the tree) resolves without

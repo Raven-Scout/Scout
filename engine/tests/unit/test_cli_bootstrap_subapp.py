@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import plistlib
+import re
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -89,7 +93,8 @@ def test_install_json_matches_auto_contract(tmp_path, monkeypatch):
     _vault(tmp_path, monkeypatch)
     result = runner.invoke(app, ["bootstrap", "install", "--no-jobs", "--skip-claude", "--json", *IDENTITY])
     payload = json.loads(result.stdout)
-    assert payload["action"] == "install" and "doctor" in payload and "pointer" in payload
+    assert payload["action"] == "install" and "doctor" in payload
+    assert payload["pointer"] is None  # --no-jobs
 
 
 # --- Additional branch coverage (controller decisions) ----------------------
@@ -260,7 +265,8 @@ def test_migrate_legacy_json_on_legacy_vault(tmp_path, monkeypatch):
     payload = json.loads(result.stdout)
     assert payload["action"] == "migrate-legacy"
     assert "SKILL.md" in payload["snapshots_recorded"]
-    assert payload["pointer"] is not None
+    # migrate-legacy defaults to --no-jobs, which leaves plists, shim and pointer alone.
+    assert payload["pointer"] is None
 
 
 def test_upgrade_json_refuses_without_vault(tmp_path, monkeypatch):
@@ -300,3 +306,60 @@ def test_auto_upgrade_malformed_config_refuses_with_exit_2(tmp_path, monkeypatch
     payload = json.loads(result.stdout)
     assert payload["action"] == "refused"
     assert "malformed" in payload["error"]
+
+
+# --- Final review: jobs-enabled runs (fake launchctl) -----------------------
+
+
+@pytest.fixture
+def fake_launchctl(tmp_path, monkeypatch) -> Path:
+    """Put a fake `launchctl` first on PATH so a jobs-enabled bootstrap never
+    touches the real launchd. install_plist(bootstrap=True) and the doctor
+    both call `launchctl` by name. `list` reports both Scout jobs so the
+    doctor is green; every call is logged; everything exits 0. Returns the log."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    log = tmp_path / "launchctl.log"
+    fake = fakebin / "launchctl"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{log}"\n'
+        'if [ "$1" = "list" ]; then\n'
+        "  printf -- '-\\t0\\tcom.scout.schedule-tick\\n-\\t0\\tcom.scout.heartbeat\\n'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}:{os.environ['PATH']}")
+    return log
+
+
+JOBS_ENABLED = [a for a in HEADLESS if a != "--no-jobs"]
+
+
+def test_auto_with_jobs_writes_one_consistent_engine_pointer(tmp_path, monkeypatch, fake_launchctl):
+    """With jobs installed, the pointer, the schedule-tick plist and the
+    ~/.local/bin/scoutctl shim all name the same scoutctl, and the pointer's
+    vault is the plist's SCOUT_DATA_DIR — the consistency the doctor checks."""
+    vault = _vault(tmp_path, monkeypatch)
+    home = Path.home()  # the hermetic per-test HOME from conftest
+    result = runner.invoke(app, ["bootstrap", "auto", *JOBS_ENABLED, *IDENTITY])
+    assert result.exit_code in (0, 1), result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "install"
+    assert payload["doctor"]["severity"] in ("green", "yellow"), payload["doctor"]
+    assert "bootstrap gui/" in fake_launchctl.read_text()  # the fake, not launchd, was driven
+
+    pointer_path = home / ".local" / "state" / "scout" / "engine.json"
+    assert payload["pointer"] == str(pointer_path)
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    with (home / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist").open("rb") as f:
+        plist = plistlib.load(f)
+    shim = (home / ".local" / "bin" / "scoutctl").read_text(encoding="utf-8")
+    shim_target = re.search(r'exec "([^"]+)"', shim)
+    assert shim_target is not None, shim
+
+    assert pointer["scoutctl"] == plist["ProgramArguments"][0] == shim_target.group(1)
+    assert pointer["vault"] == plist["EnvironmentVariables"]["SCOUT_DATA_DIR"] == str(vault)
+    assert pointer["managed_by"] == "scout-app"

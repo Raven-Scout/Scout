@@ -69,7 +69,7 @@ def test_run_installs_then_upgrades(tmp_path):
     first, code = run(_cfg(vault))
     assert first["action"] == "install" and code in (0, 1)
     assert first["doctor"]["severity"] in ("green", "yellow")
-    assert first["pointer"] is not None
+    assert first["pointer"] is None  # skip_jobs: no plists/shim, so no pointer either
     assert (vault / "scout-config.yaml").exists()
     second, _ = run(_cfg(vault))
     assert second["action"] == "upgrade"

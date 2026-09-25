@@ -261,7 +261,8 @@ def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
     """Warn (never error) when the engine pointer disagrees with reality.
 
     Both the pointer and the schedule-tick plist are rewritten by every
-    bootstrap run, so disagreement means they were produced by different
+    bootstrap run that installs jobs (a ``--no-jobs`` run writes neither),
+    so disagreement means they were produced by different
     engines — exactly the drift the pointer exists to make visible. A missing
     pointer is not flagged (pre-pointer engines; the next bootstrap writes it).
     """
