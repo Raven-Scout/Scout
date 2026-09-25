@@ -8,11 +8,13 @@ in the UI — anything we cannot map is ``unknown``, never ``unavailable``.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from scout.scripts.connector_probes import Probe, ProbeKind
@@ -50,6 +52,9 @@ _GLYPH = {
     "✗": DetectStatus.UNAVAILABLE,
     "⏸": DetectStatus.NEEDS_AUTH,  # "Pending approval" needs a user action, like auth.
 }
+
+# Shell exit codes for "command not executable" (126) and "command not found" (127).
+_NOT_RUNNABLE = frozenset({126, 127})
 
 
 def parse_mcp_list(text: str) -> dict[str, tuple[DetectStatus, str]]:
@@ -126,6 +131,13 @@ def detect(
         needs = list(probe.needs_user_input)
         if probe.kind is ProbeKind.BASH:
             rc = run_bash(probe.bash_command)
+            if rc in _NOT_RUNNABLE:
+                # The shell could not run the command at all — that says
+                # nothing about the connector itself.
+                out[name] = Detection(
+                    name, DetectStatus.UNKNOWN, needs, f"`{probe.bash_command}` not runnable (exit {rc})"
+                )
+                continue
             status = DetectStatus.CONNECTED if rc == 0 else DetectStatus.UNAVAILABLE
             out[name] = Detection(name, status, needs, f"`{probe.bash_command}` exit {rc}")
             continue
@@ -148,10 +160,28 @@ def detect(
     return out
 
 
+def probe_env() -> dict[str, str]:
+    """The inherited environment with the launchd plists' PATH dirs in front.
+
+    Scout.app spawns ``connectors detect`` with the GUI PATH (``/usr/bin:/bin:
+    /usr/sbin:/sbin``), where Homebrew's ``gh`` and the stdio MCP servers that
+    ``claude mcp list`` health-checks are not found. Prepend the same dirs the
+    plists put first (``engine/scout/defaults/*.plist``) so detection sees what
+    a scheduled run will see.
+    """
+    env = dict(os.environ)
+    prefix = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+    inherited = env.get("PATH", "")
+    env["PATH"] = f"{prefix}:{inherited}" if inherited else prefix
+    return env
+
+
 def run_claude_mcp_list(claude_bin: str, *, timeout: float = 60.0) -> str | None:
     """stdout of `claude mcp list`, or None when the CLI is missing, fails, or hangs."""
     try:
-        proc = subprocess.run([claude_bin, "mcp", "list"], capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(
+            [claude_bin, "mcp", "list"], capture_output=True, text=True, timeout=timeout, check=False, env=probe_env()
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -159,7 +189,9 @@ def run_claude_mcp_list(claude_bin: str, *, timeout: float = 60.0) -> str | None
 
 def run_bash_probe(command: str, *, timeout: float = 15.0) -> int:
     try:
-        return subprocess.run(command, shell=True, capture_output=True, timeout=timeout, check=False).returncode
+        return subprocess.run(
+            command, shell=True, capture_output=True, timeout=timeout, check=False, env=probe_env()
+        ).returncode
     except (OSError, subprocess.SubprocessError):
         return 1
 

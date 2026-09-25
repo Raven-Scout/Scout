@@ -87,8 +87,14 @@ def test_detect_json_is_unknown_for_mcp_probes_when_claude_is_missing(monkeypatc
     assert set(data["github"]) == {"status", "needs_user_input", "evidence"}
 
 
-def test_detect_text_mode_prints_tab_separated_lines():
-    """No --json: one tab-separated `name\\tstatus\\tevidence` line per connector."""
+def test_detect_text_mode_prints_tab_separated_lines(monkeypatch):
+    """No --json: one tab-separated `name\\tstatus\\tevidence` line per connector.
+
+    Like the JSON test above, the bash probes are faked so this never runs the
+    real `gh` (machine-dependent auth state, and a network call)."""
+    import scout.scripts.connector_detect as connector_detect
+
+    monkeypatch.setattr(connector_detect, "run_bash_probe", lambda command: 1)
     result = runner.invoke(app, ["connectors", "detect", "--claude-bin", "/nonexistent/claude"])
     assert result.exit_code == 0, result.stdout + result.stderr
     lines = [line for line in result.stdout.splitlines() if line.strip()]

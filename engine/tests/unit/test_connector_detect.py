@@ -10,6 +10,7 @@ from scout.scripts.connector_detect import (
     _normalize,
     detect,
     parse_mcp_list,
+    probe_env,
     run_bash_probe,
     run_claude_mcp_list,
     server_slug,
@@ -227,3 +228,49 @@ def test_run_bash_probe_returns_one_on_timeout():
     # `exec` so the `sh -c` shell execs into `sleep` rather than forking it —
     # the timeout kill then actually stops the sleeping process.
     assert run_bash_probe("exec sleep 5", timeout=0.2) == 1
+
+
+# --- Final review: probes run with the launchd PATH (Ruling 18) -------------
+#
+# Scout.app spawns `connectors detect` with the GUI PATH (/usr/bin:/bin:…);
+# Homebrew's `gh` and the stdio MCP servers `claude mcp list` health-checks
+# live in /opt/homebrew/bin, /usr/local/bin or ~/.local/bin.
+
+
+def _launchd_prefix() -> str:
+    return f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+
+
+def test_probe_env_prepends_the_launchd_path_dirs(monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = probe_env()
+    assert env["PATH"] == f"{_launchd_prefix()}:/usr/bin:/bin"
+    assert env["HOME"] == str(Path.home())  # the rest of the environment is inherited
+
+
+def test_probe_env_without_an_inherited_path_adds_no_empty_entry(monkeypatch):
+    monkeypatch.delenv("PATH", raising=False)
+    assert probe_env()["PATH"] == _launchd_prefix()
+
+
+def test_run_bash_probe_sees_the_launchd_path(monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert run_bash_probe(f'case "$PATH" in "{_launchd_prefix()}:"*) exit 0 ;; esac; exit 1') == 0
+
+
+def test_run_claude_mcp_list_sees_the_launchd_path(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    fake = tmp_path / "claude"
+    fake.write_text('#!/bin/sh\necho "$PATH"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    assert run_claude_mcp_list(str(fake)) == f"{_launchd_prefix()}:/usr/bin:/bin\n"
+
+
+def test_detect_maps_command_not_found_to_unknown():
+    """Exit 127 (not found) / 126 (not executable) says nothing about the
+    connector — detection is a hint, so it is `unknown`, not `unavailable`."""
+    reg = {"github": Probe(name="github", kind=ProbeKind.BASH, bash_command="gh auth status", needs_user_input=[])}
+    for rc in (126, 127):
+        dets = detect(reg, mcp_list_output=None, run_bash=lambda cmd, rc=rc: rc)
+        assert dets["github"].status is DetectStatus.UNKNOWN
+        assert dets["github"].evidence == f"`gh auth status` not runnable (exit {rc})"
