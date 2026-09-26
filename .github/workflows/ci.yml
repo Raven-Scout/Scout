@@ -67,6 +67,7 @@ jobs:
       # skips the floor instead of adding a second red step.
       - name: Check coverage floor
         if: ${{ !cancelled() }}
+        working-directory: apps/macos
         env:
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
         run: ./scripts/check-coverage.sh TestResults.xcresult
