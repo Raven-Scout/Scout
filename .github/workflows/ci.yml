@@ -45,6 +45,7 @@ jobs:
       # instrument ScoutTests.xctest, whose numbers the floor check discards.
       - name: Run ScoutTests
         id: tests
+        working-directory: apps/macos
         run: |
           set -o pipefail
           xcodebuild test \
@@ -76,6 +77,6 @@ jobs:
         with:
           name: TestResults
           path: |
-            TestResults.xcresult
-            xcodebuild.log
+            apps/macos/TestResults.xcresult
+            apps/macos/xcodebuild.log
           if-no-files-found: ignore
