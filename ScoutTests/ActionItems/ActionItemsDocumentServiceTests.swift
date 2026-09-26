@@ -21,7 +21,7 @@ struct ActionItemsDocumentServiceTests {
             timeZone: TimeZone.current,
             year: 2026, month: 4, day: 20
         ))!
-        try await service.load(date: y)
+        await service.load(date: y)
 
         switch service.state {
         case .loaded(let doc):
@@ -56,7 +56,7 @@ struct ActionItemsDocumentServiceTests {
             timeZone: TimeZone.current,
             year: 2099, month: 1, day: 1
         ))!
-        try await service.load(date: y)
+        await service.load(date: y)
         switch service.state {
         case .missing: break
         default: Issue.record("expected .missing, got \(service.state)")
@@ -73,7 +73,7 @@ struct ActionItemsDocumentServiceTests {
         var comps = DateComponents()
         comps.timeZone = .current; comps.year = 2026; comps.month = 4; comps.day = 20
         let date = Calendar(identifier: .iso8601).date(from: comps)!
-        try await service.load(date: date)
+        await service.load(date: date)
         guard case .loaded = service.state else {
             Issue.record("precondition: expected .loaded, got \(service.state)"); return
         }
@@ -100,7 +100,7 @@ struct ActionItemsDocumentServiceTests {
             timeZone: TimeZone.current,
             year: 2026, month: 4, day: 20
         ))!
-        try await service.load(date: y)
+        await service.load(date: y)
 
         // Mutate the file, then push an FSEvent.
         try "# T\n\n## 🔴 Urgent\n\n- [ ] **A** — body\n- [ ] **B** — body\n".write(to: url, atomically: true, encoding: .utf8)

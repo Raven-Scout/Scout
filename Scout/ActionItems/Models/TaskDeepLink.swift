@@ -42,10 +42,16 @@ nonisolated enum TaskDeepLink: Equatable, Hashable, Sendable, Identifiable {
     /// External URL to open, when one exists. `nil` for refs that resolve
     /// in-app (`crossRef`) or have no target (`plainRef`); such refs render as
     /// inert chips and are omitted from the expanded Links list.
-    var openURL: URL? {
+    ///
+    /// - Parameter linearWorkspace: the `linearWorkspace` setting. Passed in
+    ///   rather than read here for the same reason the parser's byline is
+    ///   (#103): this type is `nonisolated` so a parse can build one off the
+    ///   main actor, and `UserDefaults` hands back Cocoa-backed strings that
+    ///   have faulted when read off-thread. ``openURL`` reads it on the main
+    ///   actor for the view call sites.
+    func openURL(linearWorkspace workspace: String) -> URL? {
         switch self {
         case .linear(let id):
-            let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
             if workspace.isEmpty {
                 return URL(string: "https://linear.app/")
             }
@@ -62,5 +68,12 @@ nonisolated enum TaskDeepLink: Equatable, Hashable, Sendable, Identifiable {
         case .crossRef, .plainRef:
             return nil
         }
+    }
+
+    /// ``openURL(linearWorkspace:)`` with the workspace read from the user's
+    /// settings. `@MainActor` so that `UserDefaults` read stays on the main
+    /// actor — every call site is a view or a menu builder that already is.
+    @MainActor var openURL: URL? {
+        openURL(linearWorkspace: UserDefaults.standard.string(forKey: "linearWorkspace") ?? "")
     }
 }

@@ -530,7 +530,7 @@ struct ActionItemsView: View {
     }
 
     private func load() {
-        Task { try? await docService.load(date: displayedDate) }
+        Task { await docService.load(date: displayedDate) }
     }
 
     private func docServiceExpectedURL() -> URL {
