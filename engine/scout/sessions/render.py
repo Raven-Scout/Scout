@@ -13,6 +13,7 @@ from scout.sessions.derive import fmt_ago
 from scout.sessions.model import AgentSession, Index, parse_iso
 
 DIGEST_FILENAME = "cc-sessions.md"
+_TITLE_MAX_CHARS = 80  # an untitled session's first-prompt line is cut to this
 
 _BUCKETS: tuple[tuple[str, str], ...] = (
     ("needs_you", "Needs you"),
@@ -32,8 +33,23 @@ def _ago(s: AgentSession, now: datetime) -> str:
     return fmt_ago(now - dt) if dt else "unknown"
 
 
+def _display_title(s: AgentSession) -> str:
+    """The title; an untitled session shows its first prompt's first line (spec §4.1),
+    trimmed and cut to 80 characters plus ``…``. ``(untitled)`` only without a transcript."""
+    if s.title:
+        return s.title
+    if s.transcript is not None:
+        lines = s.transcript.first_prompt.strip().splitlines()
+        first = lines[0].strip() if lines else ""
+        if len(first) > _TITLE_MAX_CHARS:
+            return first[:_TITLE_MAX_CHARS].rstrip() + "…"
+        if first:
+            return first
+    return "(untitled)"
+
+
 def _bucket_line(s: AgentSession, project_name: str, now: datetime) -> str:
-    parts = [f"**{s.title or '(untitled)'}**", project_name, "; ".join(s.state_reasons) or s.state]
+    parts = [f"**{_display_title(s)}**", project_name, "; ".join(s.state_reasons) or s.state]
     if s.pr is not None and s.pr.url:
         parts.append(s.pr.url)
     parts.append(f"last active {_ago(s, now)}")
@@ -91,7 +107,7 @@ def render_digest(
             files = "\n".join(f"- {p}" for p in s.transcript.files_touched) or "- (none detected)"
             out.extend(
                 [
-                    f"#### {s.title or '(untitled)'}",
+                    f"#### {_display_title(s)}",
                     f"**Last active:** {_local(s, tz)} | **State:** {s.state} | **ID:** `{s.id}`",
                     "",
                     "**First message/context:**",

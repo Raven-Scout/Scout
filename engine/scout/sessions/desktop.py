@@ -190,15 +190,16 @@ def load_groups(support_dir: Path) -> tuple[Groups, list[SourceError]]:
         for scope_key, scope in scopes.items():
             if not isinstance(scope, dict):
                 continue
+            # An explicit JSON null is the same as the key being absent; only a wrong non-null shape reports.
             groups = scope.get("groups")
-            if "groups" in scope and not isinstance(groups, list):
+            if groups is not None and not isinstance(groups, list):
                 errors.append(SourceError(source="desktop-config", message=f"{scope_key}: groups is not a list"))
             elif isinstance(groups, list):
                 for g in groups:
                     if isinstance(g, dict) and _str(g.get("id")) and _str(g.get("name")):
                         names[g["id"]] = g["name"]
             assignments_val = scope.get("assignments")
-            if "assignments" in scope and not isinstance(assignments_val, dict):
+            if assignments_val is not None and not isinstance(assignments_val, dict):
                 errors.append(
                     SourceError(
                         source="desktop-config",
@@ -217,7 +218,7 @@ def load_worktree_leases(support_dir: Path) -> tuple[dict[str, WorktreeLease], l
     raw = _read_json(support_dir / "git-worktrees.json", "desktop-worktrees", errors)
     leases: dict[str, WorktreeLease] = {}
     worktrees = (raw or {}).get("worktrees")
-    if raw is not None and "worktrees" in raw and not isinstance(worktrees, dict):
+    if worktrees is not None and not isinstance(worktrees, dict):  # null ≡ absent
         errors.append(SourceError(source="desktop-worktrees", message="worktrees is not an object"))
     elif isinstance(worktrees, dict):
         for entry in worktrees.values():

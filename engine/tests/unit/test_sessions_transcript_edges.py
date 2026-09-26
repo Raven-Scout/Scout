@@ -63,6 +63,29 @@ def test_first_message_skips_blank_malformed_and_non_user_rows(tmp_path: Path) -
     assert tr.extract_first_message(p) == "the real first message"
 
 
+def test_first_message_skips_a_text_part_that_is_not_a_string(tmp_path: Path) -> None:
+    """A text part whose ``text`` is a dict used to hit the slice and raise ``KeyError: slice``."""
+    p = tmp_path / "s.jsonl"
+    p.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": {"nested": "x"}}]}}),
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [{"type": "text", "text": ["x"]}, {"type": "text", "text": "the prompt"}]
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert tr.extract_first_message(p) == "the prompt"
+
+
 def test_first_message_only_scans_the_head_of_the_file(tmp_path: Path) -> None:
     """Scanning a 100 MB transcript per file would blow the preamble budget;
     a session's first prompt is always near the top."""

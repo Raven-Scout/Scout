@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from scout.sessions._atomic import atomic_write_text
 from scout.sessions.model import LastTurn, TranscriptInfo, dt_to_iso, parse_iso
 
 TRANSCRIPT_CACHE_FILENAME = "sessions-transcripts.cache.json"
@@ -60,7 +61,10 @@ def extract_first_message(jsonl_path: Path) -> str:
                 if isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
-                            text = (part.get("text") or "")[:_FIRST_MSG_MAX_CHARS]
+                            raw_text = part.get("text")
+                            if not isinstance(raw_text, str):
+                                continue  # malformed part (e.g. a dict) — skip it, keep looking
+                            text = raw_text[:_FIRST_MSG_MAX_CHARS]
                             if text:
                                 return text
                 elif isinstance(content, str) and content.strip():
@@ -175,7 +179,38 @@ def parse_transcript(path: Path, *, st: os.stat_result | None = None, home: Path
 # ----- cache -------------------------------------------------------------------
 
 
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _cached_entry(payload: dict[str, Any]) -> TranscriptInfo | None:
+    """Rebuild one cache entry, or None when any field is missing or has the wrong type."""
+    lt = payload.get("last_turn")
+    files = payload.get("files_touched")
+    if not (
+        isinstance(payload.get("path"), str)
+        and isinstance(payload.get("first_prompt"), str)
+        and isinstance(files, list)
+        and all(isinstance(x, str) for x in files)
+        and _is_int(payload.get("tool_calls"))
+        and isinstance(lt, dict)
+        and isinstance(lt.get("kind"), str)
+        and (lt.get("at") is None or isinstance(lt.get("at"), str))
+        and _is_int(payload.get("mtime_ns"))
+    ):
+        return None
+    return TranscriptInfo(
+        path=payload["path"],
+        first_prompt=payload["first_prompt"],
+        files_touched=list(files),
+        tool_calls=payload["tool_calls"],
+        last_turn=LastTurn(at=lt.get("at"), kind=lt["kind"]),
+        mtime_ns=payload["mtime_ns"],
+    )
+
+
 def load_transcript_cache(cache_path: Path) -> dict[str, TranscriptInfo]:
+    """Load the cache; entries with a missing or wrongly-typed field are skipped (re-parsed later)."""
     if not cache_path.exists():
         return {}
     try:
@@ -188,33 +223,18 @@ def load_transcript_cache(cache_path: Path) -> dict[str, TranscriptInfo]:
     for key, payload in raw.items():
         if not isinstance(payload, dict):
             continue
-        try:
-            lt = payload.get("last_turn") or {}
-            out[key] = TranscriptInfo(
-                path=str(payload["path"]),
-                first_prompt=str(payload["first_prompt"]),
-                files_touched=[str(x) for x in payload.get("files_touched") or []],
-                tool_calls=int(payload.get("tool_calls", 0)),
-                last_turn=LastTurn(at=lt.get("at"), kind=str(lt.get("kind", "unknown"))),
-                mtime_ns=int(payload["mtime_ns"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
+        entry = _cached_entry(payload)
+        if entry is not None:
+            out[key] = entry
     return out
 
 
 def write_transcript_cache(cache_path: Path, entries: dict[str, TranscriptInfo]) -> None:
-    """Atomically replace the cache file. Best-effort — never raises."""
-    tmp = cache_path.with_suffix(".json.tmp")
+    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort — never raises."""
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({k: asdict(v) for k, v in entries.items()}), encoding="utf-8")
-        os.replace(tmp, cache_path)
+        atomic_write_text(cache_path, json.dumps({k: asdict(v) for k, v in entries.items()}))
     except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        pass
 
 
 def transcript_info(path: Path, *, cache: dict[str, TranscriptInfo], home: Path | None = None) -> TranscriptInfo:

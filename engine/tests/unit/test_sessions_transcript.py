@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
-from scout.sessions.model import TranscriptInfo
+import pytest
+
+from scout.sessions.model import LastTurn, TranscriptInfo
 from scout.sessions.transcript import (
     TRANSCRIPT_CACHE_FILENAME,
     extract_files_touched,
@@ -176,6 +179,68 @@ def test_load_transcript_cache_missing_or_corrupt_is_empty(tmp_path: Path) -> No
     bad = tmp_path / "bad.json"
     bad.write_text("[1,2", encoding="utf-8")
     assert load_transcript_cache(bad) == {}
+
+
+def test_load_transcript_cache_skips_wrongly_typed_entries(tmp_path: Path) -> None:
+    good = {
+        "path": "/Users/alex/.claude/projects/-Users-alex-code-example-repo/good.jsonl",
+        "first_prompt": "hi",
+        "files_touched": ["~/code/example-repo/a.py"],
+        "tool_calls": 2,
+        "last_turn": {"at": "2026-09-08T10:00:00Z", "kind": "end_turn"},
+        "mtime_ns": 5,
+    }
+    bad = {
+        "last_turn_str": {**good, "last_turn": "x"},
+        "last_turn_kind_int": {**good, "last_turn": {"at": None, "kind": 3}},
+        "last_turn_at_int": {**good, "last_turn": {"at": 5, "kind": "end_turn"}},
+        "path_int": {**good, "path": 5},
+        "first_prompt_none": {**good, "first_prompt": None},
+        "files_not_a_list": {**good, "files_touched": "~/a.py"},
+        "files_not_str": {**good, "files_touched": [1]},
+        "tool_calls_bool": {**good, "tool_calls": True},
+        "tool_calls_str": {**good, "tool_calls": "2"},
+        "mtime_bool": {**good, "mtime_ns": True},
+        "mtime_float": {**good, "mtime_ns": 5.0},
+        "missing_last_turn": {k: v for k, v in good.items() if k != "last_turn"},
+    }
+    path = tmp_path / TRANSCRIPT_CACHE_FILENAME
+    path.write_text(json.dumps({"good": good, **bad}), encoding="utf-8")
+    loaded = load_transcript_cache(path)
+    assert set(loaded) == {"good"}
+    assert loaded["good"].last_turn.kind == "end_turn" and loaded["good"].tool_calls == 2
+
+
+def _entry(prompt: str) -> TranscriptInfo:
+    return TranscriptInfo(
+        path=f"/Users/alex/.claude/projects/-x/{prompt}.jsonl",
+        first_prompt=prompt,
+        files_touched=[],
+        tool_calls=0,
+        last_turn=LastTurn(at=None, kind="end_turn"),
+        mtime_ns=1,
+    )
+
+
+def test_interleaved_transcript_cache_writes_never_share_a_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / TRANSCRIPT_CACHE_FILENAME
+    sources: list[str] = []
+    real_replace = os.replace
+
+    def replace_after_a_concurrent_writer(src: str, dst: str) -> None:
+        sources.append(os.fspath(src))
+        if len(sources) == 1:  # a second build writes the same cache while the first is mid-write
+            write_transcript_cache(path, {"b": _entry("b")})
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace_after_a_concurrent_writer)
+    write_transcript_cache(path, {"a": _entry("a")})
+    assert len(sources) == 2 and sources[0] != sources[1]
+    assert set(load_transcript_cache(path)) == {"a"}  # the outer write landed whole, last
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_write_transcript_cache_never_raises_when_parent_is_a_file(tmp_path: Path) -> None:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from pathlib import Path
 
 from scout import paths
 from scout.sessions import cli_home, derive, desktop, github
+from scout.sessions._atomic import atomic_write_text
 from scout.sessions.derive import choose_pr, derive_state, is_scout_run, resolve_project_key
 from scout.sessions.model import (
     STATES,
@@ -152,8 +152,9 @@ def _custom_title(path: Path) -> str | None:
 
 
 def _encode_dirname(path: str) -> str:
-    """Claude Code's project-dir encoding: every ``/`` and ``.`` becomes ``-``."""
-    return re.sub(r"[/.]", "-", path)
+    """Claude Code's project-dir encoding: every non-alphanumeric character (``/``, ``.``,
+    ``_``, space, …) becomes ``-``. Lossy, so it is only ever compared, never decoded."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 def _cli_only_session(uuid: str, path: Path, st: os.stat_result, known_dirs: dict[str, str]) -> AgentSession:
@@ -258,37 +259,38 @@ def build_index(opts: BuildOptions) -> Index:
             continue
         try:
             st = path.stat()
-        except OSError:
+            if opts.now - datetime.fromtimestamp(st.st_mtime_ns / 1e9, tz=UTC) > window:
+                continue
+            sessions.append(_cli_only_session(uuid, path, st, known_dirs))
+        except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
+            errors.append(SourceError(source="transcript", message=f"{path.name}: {exc}"))
             continue
-        if opts.now - datetime.fromtimestamp(st.st_mtime_ns / 1e9, tz=UTC) > window:
-            continue
-        sessions.append(_cli_only_session(uuid, path, st, known_dirs))
         cli_only += 1
 
     # 3. Transcript facts, liveness, last activity.
+    looked_up: set[str] = set()  # transcript-cache keys used this run; only these are written back
     for sess in sessions:
         cli_uuid = sess.cli_session_id
         tpath = tpaths.get(cli_uuid) if cli_uuid else None
         if tpath is not None:
             try:
-                tstat = tpath.stat()
-            except OSError:
-                tstat = None
-            if tstat is not None:
-                mtime_iso = ns_to_iso(tstat.st_mtime_ns)
+                mtime_iso = ns_to_iso(tpath.stat().st_mtime_ns)
                 if sess.last_activity_at is None or mtime_iso > sess.last_activity_at:
                     sess.last_activity_at = mtime_iso
                 last = parse_iso(sess.last_activity_at)
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
-                    try:
-                        sess.transcript = transcript_info(tpath, cache=tcache)
-                    except OSError as exc:
-                        errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
+                    looked_up.add(str(tpath))
+                    sess.transcript = transcript_info(tpath, cache=tcache)
+            except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
+                errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
         if cli_uuid is not None and cli_uuid in live:
             sess.is_open = True
 
-    # 4. PR state.
-    all_refs = [ref for refs in refs_by_session.values() for ref in refs]
+    # 4. PR state. refresh_pr_states fetches oldest-`fetched_at` first and never-fetched refs
+    # tie (stable sort), so on a cold cache this order decides who gets the capped fetches:
+    # live sessions before archived ones, most recently active first.
+    by_priority = sorted(sessions, key=lambda x: (x.is_archived, -_recency(x)))
+    all_refs = [ref for sess in by_priority for ref in refs_by_session.get(sess.id, [])]
     pr_cache = github.load_pr_cache(cache_dir / github.PR_CACHE_FILENAME)
     fetched = 0
     resolved: dict[str, PRInfo] = {}
@@ -331,8 +333,10 @@ def build_index(opts: BuildOptions) -> Index:
         )
 
     sessions.sort(key=lambda x: (STATES.index(x.state), -_recency(x)))
-    write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, tcache)
-    github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, pr_cache)
+    # Write back only what this run used, so deleted transcripts and unlinked PRs drop out.
+    write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, {k: v for k, v in tcache.items() if k in looked_up})
+    referenced = {ref.key for ref in all_refs}
+    github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, {k: v for k, v in pr_cache.items() if k in referenced})
 
     return Index(
         generated_at=dt_to_iso(opts.now),
@@ -354,21 +358,8 @@ def build_index(opts: BuildOptions) -> Index:
 
 
 def write_index(index: Index, path: Path) -> None:
-    """Atomic replace. Raises OSError when the target cannot be written."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".sessions-index.", suffix=".json.tmp", dir=str(path.parent))
-    tmp_path = Path(tmp)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(index.to_dict(), f, indent=1)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
+    """Atomic replace (fsync'd). Raises OSError when the target cannot be written."""
+    atomic_write_text(path, json.dumps(index.to_dict(), indent=1) + "\n", fsync=True)
 
 
 def run(
@@ -406,7 +397,7 @@ def run(
             instance_name=instance_name,
             max_per_bucket=o.settings.render_max_per_bucket,
         )
-        (paths.cache_dir(o.data_dir) / DIGEST_FILENAME).write_text(digest, encoding="utf-8")
+        atomic_write_text(paths.cache_dir(o.data_dir) / DIGEST_FILENAME, digest)  # raises OSError → main() exits 1
     return index, path
 
 

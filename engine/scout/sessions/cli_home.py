@@ -22,13 +22,16 @@ def default_claude_home() -> Path:
 
 
 def pid_alive(pid: int) -> bool:
+    # 0 and -1 address a process group / every process — never "this session is alive".
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except OSError:
+    except (OSError, OverflowError, ValueError):  # OverflowError: pid beyond the C pid_t range
         return False
     return True
 
@@ -59,8 +62,8 @@ def load_live_processes(
             errors.append(SourceError(source="claude-home", message=f"{path.name}: not a JSON object"))
             continue
         pid, sid = raw.get("pid"), raw.get("sessionId")
-        # Validate pid as int but not bool, and sessionId as non-empty str
-        if not (isinstance(pid, int) and not isinstance(pid, bool)) or not (isinstance(sid, str) and sid):
+        # Validate pid as a positive int (not bool), and sessionId as non-empty str
+        if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0) or not (isinstance(sid, str) and sid):
             msg = f"{path.name}: pid or sessionId missing or malformed"
             errors.append(SourceError(source="claude-home", message=msg))
             continue

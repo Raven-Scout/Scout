@@ -8,15 +8,15 @@ never refetched; a failure keeps the cached value flagged ``stale``.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout.sessions._atomic import atomic_write_text
 from scout.sessions.desktop import PRRef
 from scout.sessions.model import TERMINAL_PR_STATES, PRInfo, SourceError, dt_to_iso, parse_iso
 
@@ -63,18 +63,25 @@ def summarize_checks(rollup: list[dict[str, Any]] | None) -> str:
     return "pending" if saw_pending else "passing"
 
 
+def _upper_or_unknown(value: Any) -> str:
+    """gh enums upper-cased; missing, empty or GitHub's not-yet-computed ``UNKNOWN`` → ``"unknown"``,
+    the one spelling ``unknown_pr_info`` also writes."""
+    s = str(value or "").upper()
+    return "unknown" if s in ("", "UNKNOWN") else s
+
+
 def pr_info_from_payload(ref: PRRef, payload: dict[str, Any], fetched_at: str) -> PRInfo:
     decision = payload.get("reviewDecision")
     return PRInfo(
         number=ref.number,
         repo=ref.repo,
         url=payload.get("url") or ref.url,
-        state=str(payload.get("state") or "unknown").upper(),
+        state=_upper_or_unknown(payload.get("state")),
         is_draft=bool(payload.get("isDraft", False)),
         review_decision=str(decision) if isinstance(decision, str) else "",
         review_requested=bool(payload.get("reviewRequests")) or decision == "REVIEW_REQUIRED",
         checks=summarize_checks(payload.get("statusCheckRollup")),
-        merge_state=str(payload.get("mergeStateStatus") or "unknown").upper(),
+        merge_state=_upper_or_unknown(payload.get("mergeStateStatus")),
         fetched_at=fetched_at,
         stale=False,
         updated_at=payload.get("updatedAt") if isinstance(payload.get("updatedAt"), str) else None,
@@ -115,7 +122,25 @@ def terminal_pr_info(ref: PRRef, state: str) -> PRInfo:
     )
 
 
+# PRInfo's field annotations (strings under PEP 563) → the JSON value check for that field.
+_ANNOTATION_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "int": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "str": lambda v: isinstance(v, str),
+    "bool": lambda v: isinstance(v, bool),
+    "str | None": lambda v: v is None or isinstance(v, str),
+}
+
+
+def _valid_pr_payload(payload: dict[str, Any]) -> bool:
+    for f in fields(PRInfo):
+        check = _ANNOTATION_CHECKS.get(str(f.type))
+        if check is None or f.name not in payload or not check(payload[f.name]):
+            return False
+    return True
+
+
 def load_pr_cache(cache_path: Path) -> dict[str, PRInfo]:
+    """Load the cache; entries with a missing or wrongly-typed field are skipped (refetched later)."""
     if not cache_path.exists():
         return {}
     try:
@@ -126,26 +151,18 @@ def load_pr_cache(cache_path: Path) -> dict[str, PRInfo]:
         return {}
     out: dict[str, PRInfo] = {}
     for key, payload in raw.items():
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or not _valid_pr_payload(payload):
             continue
-        try:
-            out[key] = PRInfo(**{k: payload[k] for k in PRInfo.__dataclass_fields__})
-        except (KeyError, TypeError):
-            continue
+        out[key] = PRInfo(**{f.name: payload[f.name] for f in fields(PRInfo)})
     return out
 
 
 def write_pr_cache(cache_path: Path, cache: dict[str, PRInfo]) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cache_path.with_suffix(".json.tmp")
+    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort — never raises."""
     try:
-        tmp.write_text(json.dumps({k: asdict(v) for k, v in cache.items()}), encoding="utf-8")
-        os.replace(tmp, cache_path)
+        atomic_write_text(cache_path, json.dumps({k: asdict(v) for k, v in cache.items()}))
     except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        pass
 
 
 def _fetched_sort_key(info: PRInfo | None) -> float:

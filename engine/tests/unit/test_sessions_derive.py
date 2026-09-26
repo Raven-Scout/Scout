@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +14,7 @@ from scout.sessions.derive import (
     choose_pr,
     derive_state,
     fmt_ago,
+    git_toplevel,
     is_scout_run,
     resolve_project_key,
     strip_worktree,
@@ -99,6 +103,58 @@ def test_resolve_project_key_prefers_git_toplevel_then_stripping() -> None:
     assert resolve_project_key("/a/b/.claude/worktrees/w", toplevel=lambda p: "/a/b") == "/a/b"
     assert resolve_project_key("/a/b/.claude/worktrees/w", toplevel=lambda p: None) == "/a/b"
     assert resolve_project_key("/plain", toplevel=lambda p: None) == "/plain"
+
+
+def test_resolve_project_key_of_an_empty_cwd_never_asks_git() -> None:
+    def boom(path: str) -> str | None:
+        raise AssertionError(f"toplevel called for {path!r}")
+
+    assert resolve_project_key("", toplevel=boom) == ""
+
+
+def test_git_toplevel_of_an_empty_path_is_none() -> None:
+    # Path("") is ".", which used to resolve the caller's own repo.
+    assert git_toplevel("") is None
+
+
+def _git(*args: str, cwd: Path) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Alex",
+            "-c",
+            "user.email=alex@example.com",
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs a git binary")
+def test_git_toplevel_resolves_a_linked_worktree_to_its_main_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+    repo = tmp_path / "example-repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    worktree = repo / ".claude" / "worktrees" / "w1"
+    _git("worktree", "add", "-q", "-b", "claude/w1", str(worktree), cwd=repo)
+    (repo / "sub").mkdir()
+    assert git_toplevel(str(worktree)) == str(repo.resolve())  # not the worktree root
+    assert git_toplevel(str(repo)) == str(repo.resolve())
+    assert git_toplevel(str(repo / "sub")) == str(repo.resolve())
 
 
 def test_is_scout_run_needs_vault_cwd_and_a_run_signature(tmp_path: Path) -> None:
@@ -218,6 +274,52 @@ def test_needs_you_lists_every_matched_signal() -> None:
 def test_waiting_beats_stale_for_an_old_pr() -> None:
     s = _session(pr=_pr(review_requested=True), last_active=NOW - timedelta(days=10))
     assert derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)[0] == "waiting"
+
+
+# §4.7: state_reasons lists every matched signal, not only the deciding rule's.
+
+
+def test_running_also_lists_needs_you_signals() -> None:
+    s = _session(is_open=True, last_active=NOW - timedelta(seconds=40), pr=_pr(review_decision="CHANGES_REQUESTED"))
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "running"
+    assert reasons == ["active 40s ago", "changes requested on PR #98"]
+
+
+def test_needs_you_also_lists_awaiting_review() -> None:
+    s = _session(pr=_pr(checks="failing", review_requested=True))
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["CI failing", "PR #98 awaiting review 5d"]
+
+
+def test_waiting_also_lists_idle_past_the_stale_threshold() -> None:
+    s = _session(pr=_pr(review_requested=True), last_active=NOW - timedelta(days=10))
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "waiting"
+    assert reasons == ["PR #98 awaiting review 5d", "idle 10d"]
+
+
+def test_needs_you_lists_waiting_and_stale_signals_too() -> None:
+    s = _session(
+        pr=_pr(merge_state="DIRTY", checks="pending", review_requested=True),
+        last_active=NOW - timedelta(days=6),
+        worktree=WorktreeInfo(path="/w", name="w", branch="b", source_branch="main", dirty=True),
+    )
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["merge conflict", "PR #98 awaiting review 5d", "checks pending", "dirty worktree, idle 6d"]
+
+
+def test_a_draft_pr_adds_no_pr_signals_but_a_question_still_counts() -> None:
+    s = _session(
+        pr=_pr(is_draft=True, checks="failing", review_requested=True),
+        transcript=_question_transcript(),
+        last_active=NOW - timedelta(days=5),
+    )
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["ended on a question", "idle 5d"]
 
 
 def test_fmt_ago() -> None:

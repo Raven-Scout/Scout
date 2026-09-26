@@ -175,3 +175,32 @@ def test_non_object_top_level_json_is_reported() -> None:
     groups, errors = load_groups(s)
     assert groups.names == {} and groups.assignments == {}
     assert len(errors) == 1 and errors[0].source == "desktop-config" and "not a JSON object" in errors[0].message
+
+
+def test_explicit_null_containers_are_absent_but_wrong_shapes_still_report() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "preferences": {
+            "epitaxyPrefs": {
+                "dframe-group-scopes": {
+                    "org-0000/user-0000": {"groups": None, "assignments": {"code:local_aaa": "cg-1"}},
+                    "org-0000/user-0001": {"groups": [{"id": "cg-1", "name": "Example Repo"}], "assignments": None},
+                    "org-0000/user-0002": {"groups": 5, "assignments": "x"},
+                }
+            }
+        }
+    }
+    (s / "claude_desktop_config.json").write_text(json.dumps(payload), encoding="utf-8")
+    groups, errors = load_groups(s)
+    assert groups.names == {"cg-1": "Example Repo"} and groups.assignments == {"local_aaa": "cg-1"}
+    assert sorted(e.message for e in errors) == [
+        "org-0000/user-0002: assignments is not an object",
+        "org-0000/user-0002: groups is not a list",
+    ]
+
+    (s / "git-worktrees.json").write_text(json.dumps({"worktrees": None}), encoding="utf-8")
+    assert load_worktree_leases(s) == ({}, [])
+    (s / "git-worktrees.json").write_text(json.dumps({"worktrees": 7}), encoding="utf-8")
+    leases, errors = load_worktree_leases(s)
+    assert leases == {} and [e.message for e in errors] == ["worktrees is not an object"]

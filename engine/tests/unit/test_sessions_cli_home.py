@@ -28,6 +28,25 @@ def test_pid_alive_for_self_and_dead_pid() -> None:
     assert pid_alive(2**22 - 1) is False  # far above pid_max on macOS/Linux
 
 
+def test_pid_alive_rejects_non_positive_and_out_of_range_pids() -> None:
+    # 0 and -1 address a process group / every process, so os.kill(pid, 0) "succeeds" on them.
+    assert pid_alive(0) is False
+    assert pid_alive(-1) is False
+    assert pid_alive(2**40) is False  # os.kill raises OverflowError on an out-of-range pid
+
+
+def test_load_live_processes_reports_non_positive_pids() -> None:
+    h = claude_home()
+    write_pid_file(h, 0, U1, "/Users/alex/code/example-repo")
+    write_pid_file(h, -1, U2, "/Users/alex/code/other")
+    live, errors = load_live_processes(h, is_alive=lambda pid: True)
+    assert live == {}
+    assert sorted(e.message for e in errors) == [
+        "-1.json: pid or sessionId missing or malformed",
+        "0.json: pid or sessionId missing or malformed",
+    ]
+
+
 def test_load_live_processes_drops_dead_pids_and_bad_files() -> None:
     h = claude_home()
     write_pid_file(h, 111, U1, "/Users/alex/code/example-repo")

@@ -107,3 +107,19 @@ def test_main_delegates_to_the_index_and_never_raises(fake_data_dir: Path, monke
     monkeypatch.setattr(gh, "gh_available", lambda: False)
     assert main(hours=6, tz_name="UTC") == 0
     assert (fake_data_dir / ".scout-cache" / "cc-sessions.md").exists()
+
+
+def test_main_swallows_any_index_failure(
+    fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pre-session phase must never break on the digest: any exception → exit 0 plus one stderr line."""
+    import scout.sessions.index as index_mod
+    from scout.scripts.cc_session_cache import main
+
+    def boom(**_kw: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(index_mod, "run", boom)
+    assert main(hours=1, tz_name="UTC") == 0
+    assert "cc-session-cache: boom" in capsys.readouterr().err
+    assert not (fake_data_dir / ".scout-cache" / "cc-sessions.md").exists()

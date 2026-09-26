@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from scout.sessions.desktop import PRRef
 from scout.sessions.github import (
@@ -70,6 +75,20 @@ def test_pr_info_from_payload_maps_fields() -> None:
     assert (info.state, info.is_draft, info.review_decision) == ("OPEN", False, "CHANGES_REQUESTED")
     assert info.review_requested is True and info.checks == "passing" and info.merge_state == "CLEAN"
     assert info.updated_at == "2026-09-08T11:00:00Z" and info.stale is False
+
+
+def test_missing_or_uncomputed_state_is_one_lowercase_unknown() -> None:
+    at = "2026-09-08T12:00:00Z"
+    bare = pr_info_from_payload(REF, {}, fetched_at=at)
+    assert (bare.state, bare.merge_state) == ("unknown", "unknown")
+    empty = pr_info_from_payload(REF, {"state": "", "mergeStateStatus": ""}, fetched_at=at)
+    assert (empty.state, empty.merge_state) == ("unknown", "unknown")
+    # GitHub reports mergeStateStatus "UNKNOWN" while it has not computed mergeability yet.
+    uncomputed = pr_info_from_payload(REF, json.loads(_payload(state="UNKNOWN", mergeStateStatus="UNKNOWN")), at)
+    assert (uncomputed.state, uncomputed.merge_state) == ("unknown", "unknown")
+    lower = pr_info_from_payload(REF, json.loads(_payload(state="open", mergeStateStatus="dirty")), fetched_at=at)
+    assert (lower.state, lower.merge_state) == ("OPEN", "DIRTY")
+    assert (unknown_pr_info(REF).state, unknown_pr_info(REF).merge_state) == ("unknown", "unknown")
 
 
 def test_refresh_fetches_uncached_and_caches_result() -> None:
@@ -158,6 +177,56 @@ def test_unknown_and_cache_round_trip(tmp_path: Path) -> None:
     write_pr_cache(path, {info.key: info})
     assert load_pr_cache(path)[info.key] == info
     assert load_pr_cache(tmp_path / "missing.json") == {}
+
+
+def test_load_pr_cache_skips_entries_whose_fields_have_the_wrong_type(tmp_path: Path) -> None:
+    good = asdict(pr_info_from_payload(REF, json.loads(_payload()), fetched_at="2026-09-08T11:00:00Z"))
+    bad = {
+        "state_list": {**good, "state": []},  # unhashable: used to raise TypeError in refresh_pr_states
+        "number_bool": {**good, "number": True},
+        "number_str": {**good, "number": "98"},
+        "repo_none": {**good, "repo": None},
+        "url_int": {**good, "url": 5},
+        "is_draft_str": {**good, "is_draft": "no"},
+        "review_requested_int": {**good, "review_requested": 1},
+        "checks_none": {**good, "checks": None},
+        "fetched_at_int": {**good, "fetched_at": 5},
+        "stale_none": {**good, "stale": None},
+        "updated_at_list": {**good, "updated_at": []},
+        "missing_state": {k: v for k, v in good.items() if k != "state"},
+    }
+    path = tmp_path / PR_CACHE_FILENAME
+    path.write_text(json.dumps({"good": good, **bad}), encoding="utf-8")
+    loaded = load_pr_cache(path)
+    assert set(loaded) == {"good"}
+    assert asdict(loaded["good"]) == good
+
+
+def test_interleaved_pr_cache_writes_never_share_a_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / PR_CACHE_FILENAME
+    first, second = unknown_pr_info(REF), terminal_pr_info(REF, "MERGED")
+    sources: list[str] = []
+    real_replace = os.replace
+
+    def replace_after_a_concurrent_writer(src: str, dst: str) -> None:
+        sources.append(os.fspath(src))
+        if len(sources) == 1:  # a second build writes the same cache while the first is mid-write
+            write_pr_cache(path, {"b": second})
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace_after_a_concurrent_writer)
+    write_pr_cache(path, {"a": first})
+    assert len(sources) == 2 and sources[0] != sources[1]
+    assert load_pr_cache(path) == {"a": first}  # the outer write landed whole, last
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_write_pr_cache_never_raises_when_parent_is_a_file(tmp_path: Path) -> None:
+    blocker = tmp_path / "cache"
+    blocker.write_text("not a dir", encoding="utf-8")
+    write_pr_cache(blocker / PR_CACHE_FILENAME, {})  # must not raise
+    assert blocker.read_text(encoding="utf-8") == "not a dir"
 
 
 def test_three_consecutive_failures_stop_calling_gh() -> None:

@@ -23,14 +23,11 @@ def strip_worktree(path: str) -> str:
     return m.group(1) if m else path
 
 
-@functools.lru_cache(maxsize=256)
-def git_toplevel(path: str) -> str | None:
-    """`git rev-parse --show-toplevel` for *path*, memoised per path; None when not a repo."""
-    if not Path(path).is_dir():
-        return None
+def _git_rev_parse(path: str, *args: str) -> str | None:
+    """``git -C <path> rev-parse <args>`` stdout (2 s timeout); None on any failure."""
     try:
         proc = subprocess.run(
-            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            ["git", "-C", path, "rev-parse", *args],
             capture_output=True,
             text=True,
             check=False,
@@ -40,11 +37,29 @@ def git_toplevel(path: str) -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    top = proc.stdout.strip()
-    return top or None
+    return proc.stdout.strip() or None
+
+
+@functools.lru_cache(maxsize=256)
+def git_toplevel(path: str) -> str | None:
+    """The main repo root for *path*, memoised per path; None for an empty or non-directory
+    path, or one outside any repo.
+
+    Inside a linked worktree ``--show-toplevel`` names the worktree, so ask for the common
+    git dir first: ``<repo>/.git`` ⇒ ``<repo>``. Anything else (e.g. a submodule's
+    ``.git/modules/…``) falls back to ``--show-toplevel``.
+    """
+    if not path or not Path(path).is_dir():  # Path("") is ".", the caller's own cwd
+        return None
+    common = _git_rev_parse(path, "--path-format=absolute", "--git-common-dir")
+    if common is not None and common.endswith("/.git"):
+        return str(Path(common).parent)
+    return _git_rev_parse(path, "--show-toplevel")
 
 
 def resolve_project_key(origin_cwd: str, *, toplevel: Callable[[str], str | None]) -> str:
+    if not origin_cwd:
+        return ""
     top = toplevel(origin_cwd)
     if top:
         return top
@@ -106,7 +121,12 @@ def fmt_days(td: timedelta) -> str:
 def derive_state(
     session: AgentSession, *, now: datetime, stale_after: timedelta, running_window: timedelta
 ) -> tuple[str, list[str]]:
-    """Spec §4.7, first match wins. ``reasons`` lists every matched signal of the winning rule."""
+    """Spec §4.7: the state is the first matching rule; ``reasons`` lists every matched signal.
+
+    Rule-4 (needs you), rule-5 (waiting) and rule-6 (stale) signals are computed
+    independently, so e.g. a running session with changes requested says both, and a
+    waiting PR that has also gone idle past ``stale_after`` says ``idle Nd`` too.
+    """
     last = parse_iso(session.last_activity_at)
     idle = (now - last) if last else None
     pr = session.pr
@@ -114,14 +134,14 @@ def derive_state(
     if session.is_archived:  # 1
         return "done", ["archived"]
 
-    if session.is_open and idle is not None and idle <= running_window:  # 2
-        return "running", [f"active {fmt_ago(idle)}"]
-
-    if pr is not None and pr.state in TERMINAL_PR_STATES:  # 3
+    running = session.is_open and idle is not None and idle <= running_window  # 2
+    if not running and pr is not None and pr.state in TERMINAL_PR_STATES:  # 3
         return "done", [f"PR #{pr.number} {pr.state.lower()}"]
 
-    needs: list[str] = []  # 4
+    # Drafts contribute no PR-based rule-4/5 signals; the question signal still applies.
     live_pr = pr is not None and pr.state == "OPEN" and not pr.is_draft
+    needs: list[str] = []  # rule-4 signals
+    waiting: list[str] = []  # rule-5 signals
     if live_pr:
         assert pr is not None
         if pr.review_decision == "CHANGES_REQUESTED":
@@ -133,22 +153,25 @@ def derive_state(
         ready_review = pr.review_decision == "APPROVED" or (pr.review_decision == "" and not pr.review_requested)
         if pr.checks in ("passing", "none") and pr.merge_state == "CLEAN" and ready_review:
             needs.append(f"PR #{pr.number} ready to merge")
-    if session.transcript is not None and session.transcript.last_turn.kind == "question":
-        needs.append("ended on a question")
-    if needs:
-        return "needs_you", needs
-
-    if live_pr:  # 5
-        assert pr is not None
-        waiting: list[str] = []
         if pr.review_requested or pr.review_decision == "REVIEW_REQUIRED":
             age = parse_iso(pr.updated_at)
             suffix = f" {fmt_days(now - age)}" if age else ""
             waiting.append(f"PR #{pr.number} awaiting review{suffix}")
         if pr.checks == "pending":
             waiting.append("checks pending")
-        if waiting:
-            return "waiting", waiting
+    if session.transcript is not None and session.transcript.last_turn.kind == "question":
+        needs.append("ended on a question")
+    stale: list[str] = []  # rule-6 signal (at most one)
+    if idle is not None and idle > stale_after:
+        dirty = session.worktree is not None and session.worktree.dirty
+        stale.append(f"dirty worktree, idle {fmt_days(idle)}" if dirty else f"idle {fmt_days(idle)}")
+
+    if running:
+        return "running", [f"active {fmt_ago(idle)}", *needs, *waiting]
+    if needs:  # 4
+        return "needs_you", [*needs, *waiting, *stale]
+    if waiting:  # 5
+        return "waiting", [*waiting, *stale]
 
     extra: list[str] = []
     if pr is not None and pr.is_draft:
@@ -159,10 +182,8 @@ def derive_state(
         assert pr is not None
         extra.append(f"PR #{pr.number} open")
 
-    if idle is not None and idle > stale_after:  # 6
-        if session.worktree is not None and session.worktree.dirty:
-            return "stale", [f"dirty worktree, idle {fmt_days(idle)}", *extra]
-        return "stale", [f"idle {fmt_days(idle)}", *extra]
+    if stale:  # 6
+        return "stale", [*stale, *extra]
 
     if session.is_open:  # 7
         return "parked", [f"open, idle {fmt_ago(idle)}", *extra]

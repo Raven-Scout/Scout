@@ -19,7 +19,7 @@ def _iso(dt: datetime) -> str:
 
 def _s(
     id_: str,
-    title: str,
+    title: str | None,
     state: str,
     reasons: list[str],
     *,
@@ -152,3 +152,31 @@ def test_digest_caps_buckets_and_reports_overflow() -> None:
     out = render_digest(idx, now=NOW, tz=ZoneInfo("UTC"), hours=24, instance_name="Scout", max_per_bucket=2)
     assert "## Needs you (4)" in out and "Needs 0" in out and "Needs 1" in out and "Needs 2" not in out
     assert "_…and 2 more_" in out
+
+
+def test_untitled_session_renders_its_first_prompt() -> None:
+    """Spec §4.1: no title → the first prompt's first line (trimmed, max 80 chars + …); (untitled) only
+    when there is no transcript either. Same text in the bucket line and the activity heading."""
+    idx = _index()
+    idx.sessions = [
+        _s(
+            "u1",
+            None,
+            "needs_you",
+            ["ended on a question"],
+            hours_ago=1,
+            prompt=(
+                "  Why does the parser drop blank rows when the file ends without a newline at the very end  "
+                "\nsecond line of the prompt"
+            ),
+        ),
+        _s("u2", None, "waiting", ["checks pending"], hours_ago=2, prompt="ship it"),
+        _s("u3", None, "stale", ["idle 5d"], hours_ago=5 * 24),
+    ]
+    out = render_digest(idx, now=NOW, tz=ZoneInfo("UTC"), hours=24, instance_name="Scout", max_per_bucket=15)
+    long_title = "Why does the parser drop blank rows when the file ends without a newline at the…"  # 80 + …
+    assert f"- **{long_title}** — Example Repo — ended on a question — last active 1h ago" in out
+    assert f"#### {long_title}\n" in out
+    assert "- **ship it** — Example Repo — checks pending — last active 2h ago" in out and "#### ship it\n" in out
+    assert "- **(untitled)** — Example Repo — idle 5d — last active 5d ago" in out
+    assert "second line of the prompt" not in out.split("**First message/context:**")[0]
