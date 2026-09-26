@@ -163,9 +163,7 @@ def test_is_scout_run_needs_vault_cwd_and_a_run_signature(tmp_path: Path) -> Non
         origin_cwd=str(vault), title="scout-morning-briefing-20260908-1150", scheduled_task_id=None, vault=vault
     )
     assert is_scout_run(origin_cwd=str(vault), title="Scout research", scheduled_task_id="scout-research", vault=vault)
-    assert not is_scout_run(
-        origin_cwd=str(vault), title="Lightning detection in videos", scheduled_task_id=None, vault=vault
-    )
+    assert not is_scout_run(origin_cwd=str(vault), title="Tidy the release notes", scheduled_task_id=None, vault=vault)
     assert not is_scout_run(
         origin_cwd="/elsewhere", title="scout-dreaming-20260908-1830", scheduled_task_id=None, vault=vault
     )
