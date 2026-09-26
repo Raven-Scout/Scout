@@ -168,7 +168,7 @@ def derive_state(
             needs.append("ended on a question")
         else:
             question_is_fresh = False
-    stale: list[str] = []  # rule-6 signal (at most one)
+    stale: list[str] = []  # rule-6 signals: idle/dirty, then a question too old to count as needs_you
     if idle is not None and idle > stale_after:
         dirty = session.worktree is not None and session.worktree.dirty
         stale.append(f"dirty worktree, idle {fmt_days(idle)}" if dirty else f"idle {fmt_days(idle)}")
