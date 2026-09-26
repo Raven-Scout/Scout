@@ -1,0 +1,6 @@
+{
+  "scout-plugin": { "source": { "source": "github", "repo": "example-org/scout-plugin" },
+                    "installLocation": "/Users/alex/.claude/plugins/marketplaces/scout-plugin", "lastUpdated": "2026-07-13T19:43:40.507Z" },
+  "example-marketplace": { "source": { "source": "directory", "path": "/Users/alex/example-marketplace" },
+                           "installLocation": "/Users/alex/example-marketplace", "lastUpdated": "2026-07-13T19:43:40.507Z" }
+}
