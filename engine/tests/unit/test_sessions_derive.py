@@ -313,11 +313,43 @@ def test_a_draft_pr_adds_no_pr_signals_but_a_question_still_counts() -> None:
     s = _session(
         pr=_pr(is_draft=True, checks="failing", review_requested=True),
         transcript=_question_transcript(),
-        last_active=NOW - timedelta(days=5),
+        last_active=NOW - timedelta(days=1),
     )
     state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
     assert state == "needs_you"
-    assert reasons == ["ended on a question", "idle 5d"]
+    assert reasons == ["ended on a question"]
+
+
+def test_question_fresh_needs_you() -> None:
+    s = _session(last_active=NOW - timedelta(days=1), transcript=_question_transcript())
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["ended on a question"]
+
+
+def test_question_stale_becomes_stale_signal() -> None:
+    s = _session(last_active=NOW - timedelta(days=7), transcript=_question_transcript())
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "stale"
+    assert reasons == ["idle 7d", "ended on a question"]
+
+
+def test_question_stale_with_changes_requested_still_needs_you() -> None:
+    s = _session(
+        last_active=NOW - timedelta(days=7),
+        pr=_pr(review_decision="CHANGES_REQUESTED"),
+        transcript=_question_transcript(),
+    )
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["changes requested on PR #98", "idle 7d", "ended on a question"]
+
+
+def test_question_at_stale_threshold_still_needs_you() -> None:
+    s = _session(last_active=NOW - STALE, transcript=_question_transcript())
+    state, reasons = derive_state(s, now=NOW, stale_after=STALE, running_window=RUNNING)
+    assert state == "needs_you"
+    assert reasons == ["ended on a question"]
 
 
 def test_fmt_ago() -> None:

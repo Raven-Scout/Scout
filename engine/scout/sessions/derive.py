@@ -126,6 +126,9 @@ def derive_state(
     Rule-4 (needs you), rule-5 (waiting) and rule-6 (stale) signals are computed
     independently, so e.g. a running session with changes requested says both, and a
     waiting PR that has also gone idle past ``stale_after`` says ``idle Nd`` too.
+
+    A session that ended on a question counts as needs_you only while fresh (idle <= stale_after);
+    when idle > stale_after, the question signal moves to stale reasons instead.
     """
     last = parse_iso(session.last_activity_at)
     idle = (now - last) if last else None
@@ -159,12 +162,18 @@ def derive_state(
             waiting.append(f"PR #{pr.number} awaiting review{suffix}")
         if pr.checks == "pending":
             waiting.append("checks pending")
+    question_is_fresh = True  # whether the question signal goes to needs (vs stale)
     if session.transcript is not None and session.transcript.last_turn.kind == "question":
-        needs.append("ended on a question")
+        if idle is None or idle <= stale_after:
+            needs.append("ended on a question")
+        else:
+            question_is_fresh = False
     stale: list[str] = []  # rule-6 signal (at most one)
     if idle is not None and idle > stale_after:
         dirty = session.worktree is not None and session.worktree.dirty
         stale.append(f"dirty worktree, idle {fmt_days(idle)}" if dirty else f"idle {fmt_days(idle)}")
+        if not question_is_fresh:
+            stale.append("ended on a question")
 
     if running:
         return "running", [f"active {fmt_ago(idle)}", *needs, *waiting]
