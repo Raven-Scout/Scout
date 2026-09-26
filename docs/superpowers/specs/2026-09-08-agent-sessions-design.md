@@ -229,7 +229,7 @@ session with several PRs uses the most recently updated *open* one for state.
 | 1 | `is_archived` (desktop flag or Archived group) | `done` | `archived` |
 | 2 | running (§4.4) | `running` | `live pid 36808`, `active 40s ago` |
 | 3 | PR `MERGED` or `CLOSED` | `done` | `PR #98 merged`, `PR #47 closed` |
-| 4 | PR `reviewDecision == CHANGES_REQUESTED`, or `checks == failing`, or `merge_state` conflict, or `last_turn.kind == question`; **or** PR open, not draft, `checks ∈ {passing, none}`, `merge_state == CLEAN` and (`reviewDecision == APPROVED` or no review requested) — *ready to merge* | `needs_you` | `changes requested on PR #98`, `CI failing`, `merge conflict`, `ended on a question`, `PR #102 ready to merge` |
+| 4 | PR `reviewDecision == CHANGES_REQUESTED`, or `checks == failing`, or `merge_state` conflict, or `last_turn.kind == question` **while fresh** (idle ≤ `stale_after_days`; an older question becomes a rule-6 signal instead); **or** PR open, not draft, `checks ∈ {passing, none}`, `merge_state == CLEAN` and (`reviewDecision == APPROVED` or no review requested) — *ready to merge* | `needs_you` | `changes requested on PR #98`, `CI failing`, `merge conflict`, `ended on a question`, `PR #102 ready to merge` |
 | 5 | PR open, not draft, and (review requested / required and not approved, or `checks == pending`) | `waiting` | `PR #98 awaiting review 5d`, `checks pending` |
 | — | Draft PRs match neither 4 nor 5 and fall through to 6/7 with reason `draft PR #n` | | |
 | 6 | `now − last_activity_at > stale_after_days` (3), or `keptDirtyWorktree` and idle > `stale_after_days` | `stale` | `idle 4d`, `dirty worktree, idle 6d` |
@@ -581,3 +581,7 @@ Plans live at `docs/superpowers/plans/2026-09-08-agent-sessions-plan-<n>-….md`
 - No live `git status` sweep across worktrees; `keptDirtyWorktree` is the dirty signal.
 - An open, mergeable PR with no pending review is *needs you* (ready to merge), not
   *waiting*; draft PRs are parked/stale, never waiting.
+- A session that ended on a question is *needs you* only while fresh (idle ≤
+  `stale_after_days`); after that the question is listed as a stale signal
+  (decided after plan 1's real-machine run, where 13 of 16 question-driven
+  needs-you sessions were a week old).
