@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`recurring-task-status.py`: back-ported two vault fixes the engine copy never had, one of which it had already silently reverted once** (`templates/scripts/recurring-task-status.py`) — this file is an **exact twin** (no `.tmpl`), so `/scout-update` copies it into a vault verbatim, and the engine copy was missing both of the vault's fixes. **(1) `count_missed_windows()` / the `windows_missed` column** shipped into a vault on 2026-08-12 after a C-level asked for a semantic-layer update while the tracker reported *"nothing owed"*; the 2026-09-03 v0.9.0 upgrade overwrote the script with this engine copy and deleted all 47 lines, and the KB went on rendering the dead column for **24 days** before anything noticed. **(2) `yearly:<MM-DD>`** — the cadence DSL had five terms, all work-interval shaped (`daily`, `weekly:`, `monthly:`, `monthly:nth:`, `quarterly:`), because every recurring-task entity to date was a Linear project update. An annual cadence was therefore unrepresentable, and the failure is the silent kind: `next_due_date()` returns `None` → `compute_status()` yields `status: "unknown"` → nothing downstream mints a reminder, so the entity parses, validates, renders in the index and **fires exactly zero times**. `yearly:02-29` clamps to Feb 28 in non-leap years rather than vanishing. Verified by execution across the 2027 boundary (`surfacing` Sep 24–25, `due` Sep 26, rolls to 2028). Until this merges, every `/scout-update` re-deletes both fixes.
+
 ## [0.10.0] - 2026-09-09
 
 

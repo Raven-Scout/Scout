@@ -31,6 +31,7 @@ Cadence DSL (subset implemented in v1):
     monthly:<day>             e.g. monthly:1
     monthly:nth:<n>:<weekday> e.g. monthly:nth:2:tuesday
     quarterly:cycle-start
+    yearly:<MM-DD>            e.g. yearly:09-26  (name days, birthdays, renewals)
 
 Surface-window DSL (subset):
     T-0 morning  -> show on the due day itself
@@ -41,6 +42,7 @@ Surface-window DSL (subset):
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import re
 import sys
@@ -70,6 +72,13 @@ class TaskStatus:
     status: str
     next_due: Optional[str]
     last_completed: Optional[str]
+    # Count of cadence due-dates that fell strictly between last_completed and today.
+    # Derived, not a status: it makes an elapsed lapse visible WITHOUT reclassifying
+    # anything as `overdue` (see Pattern #123 / entity (Q4) — `overdue` is unreachable
+    # for weekly:* cadences and cannot be fixed until the cadence question (Q1b) is
+    # settled). Added 2026-08-12 after Eder's 4:35 AM DM asked for a semantic-layer
+    # update the tracker was reporting as `upcoming` with two windows already missed.
+    windows_missed: int = 0
     domain: str = ""
     priority: str = ""
     reason: str = ""
@@ -127,11 +136,56 @@ def next_due_date(cadence: str, today: date) -> Optional[date]:
             candidate = date(year, month, min(day, 28))
         return candidate
 
+    if cadence.startswith("yearly:"):
+        # yearly:<MM-DD> — annual anniversaries that recur on a fixed calendar date
+        # (name days, birthdays, renewals). Added 2026-09-27: Jordan confirmed
+        # "September 26th every year is Andrea's name day", and the v1 DSL had no
+        # way to say that, so the entity would have parsed as status `unknown` and
+        # never surfaced. See scout-mistake-audit Pattern #227.
+        month_day = _parse_month_day(cadence.split(":", 1)[1])
+        if month_day is None:
+            return None
+        month, day = month_day
+        candidate = _clamped_date(today.year, month, day)
+        if candidate is not None and candidate < today:
+            candidate = _clamped_date(today.year + 1, month, day)
+        return candidate
+
     if cadence == "quarterly:cycle-start":
         # No project-cycle data here; signal "unknown".
         return None
 
     return None
+
+
+def _parse_month_day(spec: str) -> Optional[tuple[int, int]]:
+    """Parse an 'MM-DD' cadence suffix into (month, day); None if malformed."""
+    parts = spec.strip().split("-")
+    if len(parts) != 2:
+        return None
+    try:
+        month, day = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return (month, day)
+
+
+def _clamped_date(year: int, month: int, day: int) -> Optional[date]:
+    """date(year, month, day) with the day clamped to that month's last valid day.
+
+    Keeps `yearly:02-29` meaningful in non-leap years (it lands on Feb 28) rather
+    than raising and silently degrading the entity to `unknown`.
+    """
+    try:
+        return date(year, month, day)
+    except ValueError:
+        pass
+    try:
+        return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+    except ValueError:
+        return None
 
 
 def _nth_weekday_on_or_after(today: date, n: int, weekday: int) -> Optional[date]:
@@ -179,7 +233,49 @@ def cadence_window_for_today(cadence: str, today: date) -> tuple[Optional[date],
         return (window_start, window_end)
     if cadence == "daily":
         return (today, today)
+    if cadence.startswith("yearly:"):
+        # Mirrors the weekly shape one order of magnitude up: the window is the
+        # year ending on the next occurrence, so `today == cad_end` is the due day
+        # and a completion recorded any time in the prior year reads as `done`.
+        window_end = next_due_date(cadence, today)
+        if window_end is None:
+            return (None, None)
+        prior = _clamped_date(window_end.year - 1, window_end.month, window_end.day)
+        if prior is None:
+            return (None, None)
+        return (prior + timedelta(days=1), window_end)
     return (None, None)
+
+
+def count_missed_windows(cadence: str, last_completed: Optional[date], today: date) -> int:
+    """How many cadence due-dates fell after `last_completed` and before today's window end?
+
+    Purely derived from the two dates — it does not consult or change `status`. A
+    non-zero value means the commitment lapsed that many times, which for
+    `weekly:*` cadences is otherwise invisible: `cadence_window_for_today()`
+    always returns a window whose end is >= today, so the `overdue` branch in
+    `compute_status()` is dead code (Pattern #123). Reporting the count restores
+    visibility without inventing statuses or pre-judging the cadence question.
+
+    Returns 0 when there is no completion on record (nothing to measure a lapse
+    against) or when the cadence DSL has no computable due-date.
+    """
+    if last_completed is None:
+        return 0
+    _, cad_end = cadence_window_for_today(cadence, today)
+    if cad_end is None:
+        return 0
+    missed = 0
+    cursor = next_due_date(cadence, last_completed + timedelta(days=1))
+    # Count due-dates strictly after last_completed, up to but excluding the
+    # current window's end (today's window is still live, not yet missed).
+    while cursor is not None and cursor < cad_end:
+        missed += 1
+        nxt = next_due_date(cadence, cursor + timedelta(days=1))
+        if nxt is None or nxt <= cursor:
+            break
+        cursor = nxt
+    return missed
 
 
 def compute_status(
@@ -251,6 +347,10 @@ def compute_status(
         if isinstance(rel, dict) and rel.get("type") == "feeds":
             feeds.append(rel.get("target", ""))
 
+    missed = count_missed_windows(cadence, last_completed, today)
+    if missed:
+        reason = (reason + " " if reason else "") + f"[{missed} cadence window(s) missed since {last_completed}]"
+
     return TaskStatus(
         name=name,
         cadence=cadence,
@@ -258,6 +358,7 @@ def compute_status(
         status=status,
         next_due=nd.isoformat() if nd else None,
         last_completed=last_completed.isoformat() if last_completed else None,
+        windows_missed=missed,
         domain=entity.get("domain", ""),
         priority=entity.get("priority", ""),
         reason=reason,
@@ -344,11 +445,12 @@ def main() -> int:
         return 0
 
     print(f"# recurring-task-status — {today.isoformat()}\n")
-    print("| Name | Status | Cadence | Next due | Surface window | Last completed | Reason |")
-    print("|------|--------|---------|----------|----------------|----------------|--------|")
+    print("| Name | Status | Missed | Cadence | Next due | Surface window | Last completed | Reason |")
+    print("|------|--------|--------|---------|----------|----------------|----------------|--------|")
     for r in rows:
+        missed = f"**{r.windows_missed}**" if r.windows_missed else "0"
         print(
-            f"| {r.name} | **{r.status}** | {r.cadence} | {r.next_due or '—'} | "
+            f"| {r.name} | **{r.status}** | {missed} | {r.cadence} | {r.next_due or '—'} | "
             f"{r.surface_window} | {r.last_completed or '—'} | {r.reason} |"
         )
     return 0
