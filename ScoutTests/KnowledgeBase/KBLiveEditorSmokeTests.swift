@@ -24,7 +24,7 @@ struct KBLiveEditorSmokeTests {
     ## Context
 
     A paragraph with **bold**, _italic_, `inline code`, a [[wikilink]], a
-    [labelled link](https://github.com/example-org/app/pull/42), and a [#MIRO] tag.
+    [labelled link](https://github.com/example-org/app/pull/42), and a [#IOTA] tag.
 
     ### Work
 

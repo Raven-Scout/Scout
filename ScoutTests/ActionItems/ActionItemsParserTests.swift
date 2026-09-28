@@ -118,10 +118,10 @@ struct ActionItemsParserTests {
 
     @Test func extractsVariableLengthSemanticTag() throws {
         let url = URL(fileURLWithPath: "/tmp/action-items-2026-06-06.md")
-        let text = "# T\n\n## 🔴 Urgent\n\n- [ ] [#AI3026] **Validate tracing** — overnight\n"
+        let text = "# T\n\n## 🔴 Urgent\n\n- [ ] [#XI7391] **Validate tracing** — overnight\n"
         let doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
         let t = try #require(doc.sections.flatMap { $0.tasks }.first)
-        #expect(t.shortPrefix == "AI3026")
+        #expect(t.shortPrefix == "XI7391")
         #expect(t.subject == "**Validate tracing**")
     }
 

@@ -82,8 +82,8 @@ nonisolated extension ActionItemsParser {
     /// Extract a leading `[#TAG] ` short-prefix marker from a task body and
     /// return both the bare prefix and the body with the marker removed.
     /// Mirrors scout-plugin's widened `scout.ids.short_prefix_pattern`:
-    /// 2–8 chars of `[A-Z0-9]` with at least one letter (so `[#MIRO]`,
-    /// `[#AI3026]`, `[#RSM]`, `[#5864M]` are recognized). Pure-numeric refs
+    /// 2–8 chars of `[A-Z0-9]` with at least one letter (so `[#IOTA]`,
+    /// `[#XI7391]`, `[#NTX]`, `[#7391K]` are recognized). Pure-numeric refs
     /// like `[#555]` are rejected — those are GitHub issue refs rendered by
     /// the GitHubRefLinkifier. Returns `(nil, raw)` on absence.
     static func extractShortPrefix(_ raw: String) -> (prefix: String?, rest: String) {
@@ -212,7 +212,7 @@ nonisolated extension ActionItemsParser {
             // 4. Cross-reference hashtag `#XREF`. Deferred to `KBTag` so the
             //    Refs block honors the one tag grammar the rest of the app
             //    uses (2–8 `[A-Z0-9]`, at least one letter): digit-leading
-            //    mnemonics like `#5864M` are tags, while a purely numeric
+            //    mnemonics like `#7391K` are tags, while a purely numeric
             //    `#123` has no letter and stays a GitHub ref.
             if token.hasPrefix("#"), let tag = KBTag.normalized(token) {
                 result.append(.crossRef(tag: tag))

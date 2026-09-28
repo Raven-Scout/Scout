@@ -109,13 +109,13 @@ struct GitHubRefLinkifierFastPathTests {
             // vaults are full of these, and none is a GitHub ref.
             "[#DEMOTAG] the demo launch is still open",
             "Discussed in #tmp-demo-sync with [[people/priya]]",
-            "[#AI3026] and [#RSM] in one line",
+            "[#XI7391] and [#NTX] in one line",
             "A trailing hash # and a lone #",
             // Digit-leading tags DO clear the guard — `#5` is a hash followed
             // by a digit — so they still pay for the regex scan. They must
-            // nonetheless come back untouched: `[#5864M]` is not `#5864` (the
+            // nonetheless come back untouched: `[#7391K]` is not `#7391` (the
             // trailing `M` defeats refRe's `\b`).
-            "[#5864M] the demo coupon",
+            "[#7391K] the demo coupon",
         ] {
             #expect(GitHubRefLinkifier.linkify(s) == s, "should be untouched: \(s)")
         }
@@ -126,7 +126,7 @@ struct GitHubRefLinkifierFastPathTests {
         for s in [
             "[#DEMOTAG] the demo launch is still open",
             "Discussed in #tmp-demo-sync with [[people/priya]]",
-            "[#AI3026] and [#RSM] in one line",
+            "[#XI7391] and [#NTX] in one line",
             "A trailing hash # and a lone #",
             "no hash at all",
         ] {

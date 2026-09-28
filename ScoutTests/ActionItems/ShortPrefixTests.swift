@@ -37,8 +37,8 @@ struct ExtractShortPrefixTests {
         for (input, expected) in [
             ("[#ILOU] subj", "ILOU"),   // non-Crockford letters
             ("[#A3F] subj", "A3F"),     // 3 chars
-            ("[#AI3026] subj", "AI3026"), // 6 chars, contains I
-            ("[#5864M] subj", "5864M"), // digit-led, has a letter
+            ("[#XI7391] subj", "XI7391"), // 6 chars, contains I
+            ("[#7391K] subj", "7391K"), // digit-led, has a letter
         ] {
             let (prefix, _) = ActionItemsParser.extractShortPrefix(input)
             #expect(prefix == expected, "expected \(expected) for \(input); got \(prefix ?? "nil")")

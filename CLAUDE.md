@@ -17,10 +17,39 @@ Scout repos — this one, `scout-iOS-app`, and `scout-plugin` — are public.
   - GitHub: `example-org/<repo>`.
   - Slack: `acme-co.slack.com/archives/C0123456789/p1700000000000000`.
   - Vendors/products: a generic noun ("the demo", "the tracing job"), not the brand.
-- **Anonymize content, not structure.** Keep the load-bearing tokens the parser is
-  tested on — the synthetic `[#TAG]` short-prefixes (`MIRO`, `AI3026`, `RSM`,
-  `5864M`…), `**bold**`, `_(italic)_`, `[[wikilinks]]`, ` — ` separators,
-  `` `code` ``. Only swap the words around them.
+- **Anonymize content, not structure.** Keep the load-bearing *shapes* the parser
+  is tested on — `[#TAG]` short-prefixes, `**bold**`, `_(italic)_`,
+  `[[wikilinks]]`, ` — ` separators, `` `code` ``. Only swap the words around them.
+  A `[#TAG]`'s **shape** is load-bearing; its **letters are not**. Each corpus tag
+  is chosen to exercise one grammar property, so a replacement must preserve that
+  property — the `_note` on each case says which:
+  - `IOTA` — 4 chars, contains I and O, i.e. *not* Crockford base32 (which omits
+    I/L/O/U). A replacement must also contain one of those letters.
+  - `XI7391` — 6 chars, contains I; longer than the old 4-char limit.
+  - `NTX` — 3 chars, no bold, no separator.
+  - `7391K` — digit-led with a trailing letter, so it is not a bare GitHub ref.
+
+  The tags themselves are invented and must stay that way. **Verify a new tag
+  against the vault before using it** (see below) — the previous set (`MIRO`,
+  `AI3026`, `RSM`, `5864M`) was documented here as synthetic but was not: each
+  appeared in dozens to hundreds of real vault files, and `AI3026` was a real
+  Linear id under the real `AI-` prefix. Replaced in #112.
+- **Check a literal against the vault before trusting it.** Count *files*, and
+  exclude `~/Scout/.claude/` — those are session transcripts holding copies of
+  this repo's own test source, so they inflate every literal, invented ones
+  included. Real identifiers land in the tens-to-hundreds once excluded;
+  invented ones land at zero.
+
+  ```bash
+  grep -rIow -F -f candidates.txt ~/Scout | sort -u \
+    | grep -v '/Scout/\.claude/' | awk -F: '{print $NF}' | sort | uniq -c | sort -rn
+  ```
+
+  Two traps: compare priority-shaped tokens against their siblings (`P3` scored
+  224 files where `P1`/`P2` scored ~50, so it was a codename, not a priority);
+  and a prefix collision is not a leak (`CC-N` here is this repo's own Control
+  Center bug numbering from `docs/control-center-bugs.md`, even though `CC-` is
+  also a real Linear team prefix).
 - **Preserve legitimate attribution** — these are NOT leaks, leave them: the
   `pyproject`/`marketplace.json` owner, `LICENSE`, and the project's own
   `github.com/<org>/…` URLs.
