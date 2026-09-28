@@ -33,7 +33,7 @@ Scout repos — this one, `scout-iOS-app`, and `scout-plugin` — are public.
   against the vault before using it** (see below) — the previous set (`MIRO`,
   `AI3026`, `RSM`, `5864M`) was documented here as synthetic but was not: each
   appeared in dozens to hundreds of real vault files, and `AI3026` was a real
-  Linear id under the real `AI-` prefix. Replaced in #112.
+  Linear id under the real `AI-` prefix. Replaced in #111.
 - **Check a literal against the vault before trusting it.** Count *files*, and
   exclude `~/Scout/.claude/` — those are session transcripts holding copies of
   this repo's own test source, so they inflate every literal, invented ones
