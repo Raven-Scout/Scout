@@ -1,4 +1,5 @@
-"""Transcript facts (spec §4.5): one forward pass over the bytes, plus the mtime-keyed cache.
+"""Transcript facts (spec §4.5): one forward pass, checkpointed so a growing transcript is
+parsed only from where the last build stopped (1b spec §3.3–§3.4), plus the cache.
 
 ``extract_first_message`` / ``extract_files_touched`` moved here verbatim from
 ``scout.scripts.cc_session_cache`` (that module re-exports them).
@@ -6,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -17,12 +19,17 @@ from typing import Any
 
 from scout.sessions._atomic import atomic_write_text
 from scout.sessions.model import LastTurn, TranscriptInfo, dt_to_iso, parse_iso
+from scout.sessions.stats import BuildStats
 
 TRANSCRIPT_CACHE_FILENAME = "sessions-transcripts.cache.json"
 
+_CACHE_VERSION = 2
 _HEAD_LINES_FOR_FIRST_MSG = 50
 _MAX_FILES_TOUCHED = 10
 _FIRST_MSG_MAX_CHARS = 500
+_HEAD_CHECK_BYTES = 4096
+_NO_FIRST_MESSAGE = ("(could not extract first message)", "(parse error)")
+_ASSISTANT_KINDS = ("tool_use", "question", "end_turn")
 _FILES_NOISE_RE = re.compile(
     r"(/\.claude/projects/.*/tool-results/"
     r"|/\.claude/projects/.*/tasks/"
@@ -268,33 +275,190 @@ def _unreadable(path: Path, st: os.stat_result) -> TranscriptInfo:
     )
 
 
+# ----- checkpoints (1b spec §3.3) ------------------------------------------------------
+
+
+@dataclass
+class Checkpoint:
+    """Where a forward pass stopped in a file, and what it knew there."""
+
+    dev: int
+    ino: int
+    size: int  # the file's size and mtime when the checkpoint was taken
+    mtime_ns: int
+    offset: int  # end of the last complete line; <= size (they differ after a half-written line)
+    head_sha1: str  # SHA-1 of the first min(4096, offset) bytes: the grown-same-file check
+    lines: int  # newlines before offset
+    first_prompt_final: bool
+    files_smallest: list[str]  # the 10 alphabetically smallest paths: all a merge needs
+    tool_calls: int
+    last_assistant: str | None
+    pending_questions: list[str]
+    last_ts: str | None
+
+
+@dataclass
+class CachedTranscript:
+    info: TranscriptInfo
+    checkpoint: Checkpoint | None  # None when the file could not be read: always parsed again
+
+
+def _first_prompt_final(first: str, lines: int, partial: bytes) -> bool:
+    """The first prompt can no longer change: 50 complete lines exist, or a prompt was found
+    with no half-written line after it (the head of an append-only file is fixed)."""
+    return lines >= _HEAD_LINES_FOR_FIRST_MSG or (not partial and first not in _NO_FIRST_MESSAGE)
+
+
+def _checkpoint(
+    state: _State, st: os.stat_result, *, offset: int, head: bytes, lines: int, first_final: bool
+) -> Checkpoint:
+    return Checkpoint(
+        dev=st.st_dev,
+        ino=st.st_ino,
+        size=st.st_size,
+        mtime_ns=st.st_mtime_ns,
+        offset=offset,
+        head_sha1=hashlib.sha1(head).hexdigest(),
+        lines=lines,
+        first_prompt_final=first_final,
+        files_smallest=sorted(state.files)[:_MAX_FILES_TOUCHED],
+        tool_calls=state.tool_calls,
+        last_assistant=state.last_assistant,
+        pending_questions=sorted(state.pending),
+        last_ts=state.last_ts,
+    )
+
+
+def _resume(cp: Checkpoint) -> _State:
+    return _State(
+        files=set(cp.files_smallest),
+        tool_calls=cp.tool_calls,
+        last_assistant=cp.last_assistant,
+        pending=set(cp.pending_questions),
+        last_ts=cp.last_ts,
+    )
+
+
+def _full(path: Path, st: os.stat_result, home_prefix: str, stats: BuildStats) -> CachedTranscript:
+    """Parse from byte 0 and take a fresh checkpoint."""
+    try:
+        with path.open("rb") as f:
+            data = f.read(st.st_size)
+    except OSError:
+        return CachedTranscript(info=_unreadable(path, st), checkpoint=None)
+    stats.transcript_bytes_read += len(data)
+    state = _State()
+    end, partial = _consume(state, data, home_prefix)
+    first = _first_message_of(data)
+    lines = data.count(b"\n", 0, end)
+    cp = _checkpoint(
+        state,
+        st,
+        offset=end,
+        head=data[: min(_HEAD_CHECK_BYTES, end)],
+        lines=lines,
+        first_final=_first_prompt_final(first, lines, partial),
+    )
+    return CachedTranscript(info=_info(path, st, state, partial, first, home_prefix), checkpoint=cp)
+
+
+def _tail(
+    path: Path, st: os.stat_result, cp: Checkpoint, first_prompt: str, home_prefix: str, stats: BuildStats
+) -> CachedTranscript | None:
+    """Parse only what was appended after *cp*; None when the file's head no longer matches."""
+    with path.open("rb") as f:
+        head = f.read(min(_HEAD_CHECK_BYTES, cp.offset))
+        if hashlib.sha1(head).hexdigest() != cp.head_sha1:
+            return None
+        f.seek(cp.offset)
+        data = f.read(st.st_size - cp.offset)
+    stats.transcript_bytes_read += len(data)
+    state = _resume(cp)
+    end, partial = _consume(state, data, home_prefix)
+    offset = cp.offset + end
+    lines = cp.lines + data.count(b"\n", 0, end)
+    if cp.first_prompt_final:
+        first, final = first_prompt, True
+    else:
+        first = extract_first_message(path)
+        final = _first_prompt_final(first, lines, partial)
+    if len(head) < _HEAD_CHECK_BYTES:  # the identity check grows with the file, up to 4 KB
+        head = (head + data)[: min(_HEAD_CHECK_BYTES, offset)]
+    return CachedTranscript(
+        info=_info(path, st, state, partial, first, home_prefix),
+        checkpoint=_checkpoint(state, st, offset=offset, head=head, lines=lines, first_final=final),
+    )
+
+
+def _route(prior: CachedTranscript | None, st: os.stat_result) -> str:
+    """unchanged | tail | full, from the file's identity against its checkpoint."""
+    cp = prior.checkpoint if prior is not None else None
+    if cp is None:
+        return "full"
+    if (cp.dev, cp.ino, cp.size, cp.mtime_ns) == (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns):
+        return "unchanged"
+    if (cp.dev, cp.ino) == (st.st_dev, st.st_ino) and st.st_size > cp.size:
+        return "tail"
+    return "full"
+
+
 def parse_transcript(path: Path, *, st: os.stat_result | None = None, home: Path | None = None) -> TranscriptInfo:
     """The full parse: first prompt, files touched, tool-call count, last-turn shape.
 
     Raises OSError if the transcript cannot be stat'ed (e.g. it vanished mid-scan); callers
     record a SourceError per file and continue.
     """
-    stat = st or path.stat()
-    prefix = _home_prefix(home)
-    try:
-        with path.open("rb") as f:
-            data = f.read(stat.st_size)
-    except OSError:
-        return _unreadable(path, stat)
-    state = _State()
-    _, partial = _consume(state, data, prefix)
-    return _info(path, stat, state, partial, _first_message_of(data), prefix)
+    return _full(path, st or path.stat(), _home_prefix(home), BuildStats()).info
 
 
-# ----- cache -------------------------------------------------------------------
+def transcript_info(
+    path: Path,
+    *,
+    cache: dict[str, CachedTranscript],
+    home: Path | None = None,
+    stats: BuildStats | None = None,
+) -> TranscriptInfo:
+    """Reuse an unchanged transcript, parse only the appended tail of a grown one, and fully
+    parse anything else (1b spec §3.3). Updates *cache* in place.
+
+    Raises OSError if the transcript cannot be stat'ed (e.g. it vanished mid-scan); callers
+    record a SourceError per file and continue.
+    """
+    if stats is None:
+        stats = BuildStats()
+    st = path.stat()
+    key = str(path)
+    prior = cache.get(key)
+    route = _route(prior, st)
+    if route == "unchanged" and prior is not None:
+        return prior.info
+    home_prefix = _home_prefix(home)
+    entry: CachedTranscript | None = None
+    if route == "tail" and prior is not None and prior.checkpoint is not None:
+        try:
+            entry = _tail(path, st, prior.checkpoint, prior.info.first_prompt, home_prefix, stats)
+        except Exception:  # 1b spec §4: any failure in a tail parse falls back to a full parse
+            entry = None
+        if entry is not None:
+            stats.transcripts_tail_parsed += 1
+    if entry is None:
+        entry = _full(path, st, home_prefix, stats)
+        stats.transcripts_full_parsed += 1
+    cache[key] = entry
+    return entry.info
+
+
+# ----- cache file (version 2) ----------------------------------------------------------
 
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _cached_entry(payload: dict[str, Any]) -> TranscriptInfo | None:
-    """Rebuild one cache entry, or None when any field is missing or has the wrong type."""
+def _cached_info(payload: Any) -> TranscriptInfo | None:
+    """Rebuild a cached TranscriptInfo, or None when any field is missing or has the wrong type."""
+    if not isinstance(payload, dict):
+        return None
     lt = payload.get("last_turn")
     files = payload.get("files_touched")
     if not (
@@ -319,51 +483,88 @@ def _cached_entry(payload: dict[str, Any]) -> TranscriptInfo | None:
     )
 
 
-def load_transcript_cache(cache_path: Path) -> dict[str, TranscriptInfo]:
-    """Load the cache; entries with a missing or wrongly-typed field are skipped (re-parsed later)."""
-    if not cache_path.exists():
-        return {}
+def _cached_checkpoint(v: Any) -> Checkpoint | None:
+    """Rebuild a cached Checkpoint, or None when any field is missing, mistyped or inconsistent."""
+    if not isinstance(v, dict) or "last_assistant" not in v or "last_ts" not in v:
+        return None
+    ints = ("dev", "ino", "size", "mtime_ns", "offset", "lines", "tool_calls")
+    if not all(_is_int(v.get(k)) for k in ints) or not 0 <= v["offset"] <= v["size"]:
+        return None
+    files, pending, last_ts = v.get("files_smallest"), v.get("pending_questions"), v["last_ts"]
+    if not (
+        isinstance(v.get("head_sha1"), str)
+        and isinstance(v.get("first_prompt_final"), bool)
+        and isinstance(files, list)
+        and len(files) <= _MAX_FILES_TOUCHED
+        and all(isinstance(x, str) for x in files)
+        and isinstance(pending, list)
+        and all(isinstance(x, str) for x in pending)
+        and (v["last_assistant"] is None or v["last_assistant"] in _ASSISTANT_KINDS)
+        and (last_ts is None or isinstance(last_ts, str))
+    ):
+        return None
+    return Checkpoint(
+        dev=v["dev"],
+        ino=v["ino"],
+        size=v["size"],
+        mtime_ns=v["mtime_ns"],
+        offset=v["offset"],
+        head_sha1=v["head_sha1"],
+        lines=v["lines"],
+        first_prompt_final=v["first_prompt_final"],
+        files_smallest=list(files),
+        tool_calls=v["tool_calls"],
+        last_assistant=v["last_assistant"],
+        pending_questions=list(pending),
+        last_ts=last_ts,
+    )
+
+
+def _cached_transcript(v: Any) -> CachedTranscript | None:
+    if not isinstance(v, dict) or "checkpoint" not in v:
+        return None
+    info = _cached_info(v.get("info"))
+    if info is None:
+        return None
+    if v["checkpoint"] is None:
+        return CachedTranscript(info=info, checkpoint=None)
+    cp = _cached_checkpoint(v["checkpoint"])
+    return None if cp is None else CachedTranscript(info=info, checkpoint=cp)
+
+
+def load_transcript_cache(cache_path: Path) -> dict[str, CachedTranscript]:
+    """Load the cache. A missing, corrupt or pre-1b (plan 1) file is empty; a bad entry is skipped."""
     try:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or not _is_int(raw.get("version")) or raw["version"] != _CACHE_VERSION:
         return {}
-    out: dict[str, TranscriptInfo] = {}
-    for key, payload in raw.items():
-        if not isinstance(payload, dict):
-            continue
-        entry = _cached_entry(payload)
+    entries = raw.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    out: dict[str, CachedTranscript] = {}
+    for key, value in entries.items():
+        entry = _cached_transcript(value)
         if entry is not None:
             out[key] = entry
     return out
 
 
-def write_transcript_cache(cache_path: Path, entries: dict[str, TranscriptInfo]) -> None:
-    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort — never raises."""
+def write_transcript_cache(cache_path: Path, entries: dict[str, CachedTranscript]) -> bool:
+    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort: False instead of raising."""
+    payload = {"version": _CACHE_VERSION, "entries": {k: asdict(v) for k, v in entries.items()}}
     try:
-        atomic_write_text(cache_path, json.dumps({k: asdict(v) for k, v in entries.items()}))
+        atomic_write_text(cache_path, json.dumps(payload))
     except OSError:
-        pass
-
-
-def transcript_info(path: Path, *, cache: dict[str, TranscriptInfo], home: Path | None = None) -> TranscriptInfo:
-    """Cached lookup keyed by path; re-parses only when ``mtime_ns`` changed.
-
-    Raises OSError if the transcript cannot be stat'ed (e.g. it vanished mid-scan); callers
-    record a SourceError per file and continue.
-    """
-    st = path.stat()
-    prior = cache.get(str(path))
-    if prior is not None and prior.mtime_ns == st.st_mtime_ns:
-        return prior
-    info = parse_transcript(path, st=st, home=home)
-    cache[str(path)] = info
-    return info
+        return False
+    return True
 
 
 __all__ = [
     "TRANSCRIPT_CACHE_FILENAME",
+    "CachedTranscript",
+    "Checkpoint",
     "extract_files_touched",
     "extract_first_message",
     "load_transcript_cache",

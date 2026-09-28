@@ -12,6 +12,7 @@ import pytest
 from scout.sessions.model import LastTurn, TranscriptInfo
 from scout.sessions.transcript import (
     TRANSCRIPT_CACHE_FILENAME,
+    CachedTranscript,
     extract_files_touched,
     extract_first_message,
     load_transcript_cache,
@@ -150,47 +151,89 @@ def test_moved_extractors_keep_their_contract(tmp_path: Path) -> None:
     assert extract_files_touched(jsonl) == ["/Users/me/repo/src/main.py"]
 
 
-def test_transcript_cache_round_trip_and_mtime_reuse(tmp_path: Path) -> None:
+def test_transcript_cache_round_trip_and_unchanged_reuse(tmp_path: Path) -> None:
     p = write_transcript(
         claude_home(), "-Users-alex-code-example-repo", U1, [_user("warm one", "2026-09-08T10:00:00.000Z")]
     )
-    cache: dict[str, TranscriptInfo] = {}
+    cache: dict[str, CachedTranscript] = {}
     first = transcript_info(p, cache=cache)
-    assert first.first_prompt == "warm one" and str(p) in cache
+    assert first.first_prompt == "warm one" and cache[str(p)].checkpoint is not None
 
     cache_path = tmp_path / TRANSCRIPT_CACHE_FILENAME
-    write_transcript_cache(cache_path, cache)
+    assert write_transcript_cache(cache_path, cache) is True
     reloaded = load_transcript_cache(cache_path)
-    assert reloaded[str(p)] == first
+    assert reloaded == cache
 
-    # Corrupt the file but keep mtime: the cached entry must be served.
-    mtime = p.stat().st_mtime_ns
-    p.write_bytes(b"garbage\n")
-    os.utime(p, ns=(mtime, mtime))
+    # Same file, size and mtime but different bytes: served from the cache without reading.
+    st = p.stat()
+    p.write_bytes(b"x" * (st.st_size - 1) + b"\n")
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert transcript_info(p, cache=reloaded).first_prompt == "warm one"
 
-    # Bump mtime: re-parse.
-    os.utime(p, ns=(mtime + 1_000_000_000, mtime + 1_000_000_000))
+    # A new mtime at the same size is not an append: full re-parse.
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     assert "could not extract" in transcript_info(p, cache=reloaded).first_prompt
 
 
-def test_load_transcript_cache_missing_or_corrupt_is_empty(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[1,2",
+        "[]",
+        '{"version": 1, "entries": {}}',
+        '{"version": true, "entries": {}}',
+        '{"version": 2, "entries": []}',
+    ],
+)
+def test_a_transcript_cache_of_another_version_or_shape_is_empty(tmp_path: Path, text: str) -> None:
+    path = tmp_path / TRANSCRIPT_CACHE_FILENAME
+    path.write_text(text, encoding="utf-8")
+    assert load_transcript_cache(path) == {}
+
+
+def test_a_missing_transcript_cache_is_empty(tmp_path: Path) -> None:
     assert load_transcript_cache(tmp_path / "nope.json") == {}
-    bad = tmp_path / "bad.json"
-    bad.write_text("[1,2", encoding="utf-8")
-    assert load_transcript_cache(bad) == {}
+
+
+_GOOD_INFO = {
+    "path": "/Users/alex/.claude/projects/-Users-alex-code-example-repo/good.jsonl",
+    "first_prompt": "hi",
+    "files_touched": ["~/code/example-repo/a.py"],
+    "tool_calls": 2,
+    "last_turn": {"at": "2026-09-08T10:00:00Z", "kind": "end_turn"},
+    "mtime_ns": 5,
+}
+
+
+def test_a_plan_1_transcript_cache_is_empty(tmp_path: Path) -> None:
+    path = tmp_path / TRANSCRIPT_CACHE_FILENAME
+    path.write_text(json.dumps({_GOOD_INFO["path"]: _GOOD_INFO}), encoding="utf-8")  # plan 1's flat layout
+    assert load_transcript_cache(path) == {}
+
+
+def _checkpoint(**overrides: object) -> dict:
+    base: dict = {
+        "dev": 1,
+        "ino": 2,
+        "size": 10,
+        "mtime_ns": 5,
+        "offset": 10,
+        "head_sha1": "0" * 40,
+        "lines": 1,
+        "first_prompt_final": True,
+        "files_smallest": [],
+        "tool_calls": 0,
+        "last_assistant": None,
+        "pending_questions": [],
+        "last_ts": None,
+    }
+    base.update(overrides)
+    return base
 
 
 def test_load_transcript_cache_skips_wrongly_typed_entries(tmp_path: Path) -> None:
-    good = {
-        "path": "/Users/alex/.claude/projects/-Users-alex-code-example-repo/good.jsonl",
-        "first_prompt": "hi",
-        "files_touched": ["~/code/example-repo/a.py"],
-        "tool_calls": 2,
-        "last_turn": {"at": "2026-09-08T10:00:00Z", "kind": "end_turn"},
-        "mtime_ns": 5,
-    }
-    bad = {
+    good = _GOOD_INFO
+    bad_info = {
         "last_turn_str": {**good, "last_turn": "x"},
         "last_turn_kind_int": {**good, "last_turn": {"at": None, "kind": 3}},
         "last_turn_at_int": {**good, "last_turn": {"at": 5, "kind": "end_turn"}},
@@ -203,16 +246,37 @@ def test_load_transcript_cache_skips_wrongly_typed_entries(tmp_path: Path) -> No
         "mtime_bool": {**good, "mtime_ns": True},
         "mtime_float": {**good, "mtime_ns": 5.0},
         "missing_last_turn": {k: v for k, v in good.items() if k != "last_turn"},
+        "info_not_a_dict": "x",
     }
+    bad_checkpoints = {
+        "cp_not_a_dict": "x",
+        "cp_offset_past_size": _checkpoint(offset=11),
+        "cp_negative_offset": _checkpoint(offset=-1),
+        "cp_dev_bool": _checkpoint(dev=True),
+        "cp_sha_int": _checkpoint(head_sha1=5),
+        "cp_final_int": _checkpoint(first_prompt_final=1),
+        "cp_too_many_files": _checkpoint(files_smallest=[f"f{n}" for n in range(11)]),
+        "cp_pending_not_str": _checkpoint(pending_questions=[1]),
+        "cp_unknown_kind": _checkpoint(last_assistant="thinking"),
+        "cp_ts_int": _checkpoint(last_ts=5),
+        "cp_missing_last_ts": {k: v for k, v in _checkpoint().items() if k != "last_ts"},
+    }
+    entries: dict = {
+        "good": {"info": good, "checkpoint": _checkpoint()},
+        "good_unread": {"info": good, "checkpoint": None},
+        "no_checkpoint_key": {"info": good},
+    }
+    entries.update({k: {"info": v, "checkpoint": _checkpoint()} for k, v in bad_info.items()})
+    entries.update({k: {"info": good, "checkpoint": v} for k, v in bad_checkpoints.items()})
     path = tmp_path / TRANSCRIPT_CACHE_FILENAME
-    path.write_text(json.dumps({"good": good, **bad}), encoding="utf-8")
+    path.write_text(json.dumps({"version": 2, "entries": entries}), encoding="utf-8")
     loaded = load_transcript_cache(path)
-    assert set(loaded) == {"good"}
-    assert loaded["good"].last_turn.kind == "end_turn" and loaded["good"].tool_calls == 2
+    assert set(loaded) == {"good", "good_unread"}
+    assert loaded["good"].info.tool_calls == 2 and loaded["good_unread"].checkpoint is None
 
 
-def _entry(prompt: str) -> TranscriptInfo:
-    return TranscriptInfo(
+def _entry(prompt: str) -> CachedTranscript:
+    info = TranscriptInfo(
         path=f"/Users/alex/.claude/projects/-x/{prompt}.jsonl",
         first_prompt=prompt,
         files_touched=[],
@@ -220,6 +284,7 @@ def _entry(prompt: str) -> TranscriptInfo:
         last_turn=LastTurn(at=None, kind="end_turn"),
         mtime_ns=1,
     )
+    return CachedTranscript(info=info, checkpoint=None)
 
 
 def test_interleaved_transcript_cache_writes_never_share_a_temp_file(
@@ -246,6 +311,6 @@ def test_interleaved_transcript_cache_writes_never_share_a_temp_file(
 def test_write_transcript_cache_never_raises_when_parent_is_a_file(tmp_path: Path) -> None:
     blocker = tmp_path / "cache"
     blocker.write_text("not a dir", encoding="utf-8")
-    write_transcript_cache(blocker / TRANSCRIPT_CACHE_FILENAME, {})  # must not raise
+    assert write_transcript_cache(blocker / TRANSCRIPT_CACHE_FILENAME, {}) is False  # must not raise
     assert blocker.read_text(encoding="utf-8") == "not a dir"
     assert not list(tmp_path.glob("*.tmp"))

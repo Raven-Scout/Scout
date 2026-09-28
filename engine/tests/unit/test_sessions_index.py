@@ -365,21 +365,61 @@ def test_non_string_text_part_in_a_transcript_never_aborts_the_build(fake_data_d
 def test_wrongly_typed_transcript_cache_entry_is_ignored(fake_data_dir: Path) -> None:
     opts = _world(fake_data_dir)
     a_path = claude_home() / "projects" / (REPO_DIR + "--claude-worktrees-w1") / f"{UA}.jsonl"
-    entry = {
+    st = a_path.stat()
+    info = {
         "path": str(a_path),
         "first_prompt": "stale",
         "files_touched": [],
         "tool_calls": 0,
         "last_turn": "x",  # used to raise AttributeError out of load_transcript_cache
-        "mtime_ns": a_path.stat().st_mtime_ns,
+        "mtime_ns": st.st_mtime_ns,
+    }
+    checkpoint = {  # matches the file exactly: only the bad info keeps the entry from being served
+        "dev": st.st_dev,
+        "ino": st.st_ino,
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "offset": st.st_size,
+        "head_sha1": "0" * 40,
+        "lines": 2,
+        "first_prompt_final": True,
+        "files_smallest": [],
+        "tool_calls": 0,
+        "last_assistant": "end_turn",
+        "pending_questions": [],
+        "last_ts": None,
     }
     (fake_data_dir / ".scout-cache" / "sessions-transcripts.cache.json").write_text(
-        json.dumps({str(a_path): entry}), encoding="utf-8"
+        json.dumps({"version": 2, "entries": {str(a_path): {"info": info, "checkpoint": checkpoint}}}),
+        encoding="utf-8",
     )
     idx = build_index(opts)
     assert _ids(idx) == ALL_IDS and idx.source_errors == []
     a = next(s for s in idx.sessions if s.id == "local_A")
     assert a.transcript is not None and a.transcript.first_prompt == "fix it"  # re-parsed, not the bad entry
+
+
+def test_a_plan_1_transcript_cache_is_rebuilt_as_version_2(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    a_path = claude_home() / "projects" / (REPO_DIR + "--claude-worktrees-w1") / f"{UA}.jsonl"
+    plan_1 = {
+        str(a_path): {
+            "path": str(a_path),
+            "first_prompt": "stale",
+            "files_touched": [],
+            "tool_calls": 0,
+            "last_turn": {"at": None, "kind": "end_turn"},
+            "mtime_ns": a_path.stat().st_mtime_ns,  # an mtime match was all plan 1 needed to serve it
+        }
+    }
+    cache_file = fake_data_dir / ".scout-cache" / "sessions-transcripts.cache.json"
+    cache_file.write_text(json.dumps(plan_1), encoding="utf-8")
+    stats = BuildStats()
+    idx = build_index(opts, stats=stats)
+    a = next(s for s in idx.sessions if s.id == "local_A")
+    assert a.transcript is not None and a.transcript.first_prompt == "fix it"
+    assert stats.transcripts_full_parsed == 3  # A, E and F: the upgrade build is a cold one
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["version"] == 2
 
 
 def test_wrongly_typed_pr_cache_entry_is_ignored(fake_data_dir: Path) -> None:
@@ -575,10 +615,10 @@ def test_a_deleted_transcript_drops_out_of_the_transcript_cache(fake_data_dir: P
     cache_file = fake_data_dir / ".scout-cache" / "sessions-transcripts.cache.json"
     e_path = claude_home() / "projects" / "-Users-alex-code-other" / f"{UE}.jsonl"
     a_path = claude_home() / "projects" / (REPO_DIR + "--claude-worktrees-w1") / f"{UA}.jsonl"
-    assert {str(e_path), str(a_path)} <= set(json.loads(cache_file.read_text(encoding="utf-8")))
+    assert {str(e_path), str(a_path)} <= set(json.loads(cache_file.read_text(encoding="utf-8"))["entries"])
     e_path.unlink()
     run(opts=opts)
-    cached = set(json.loads(cache_file.read_text(encoding="utf-8")))
+    cached = set(json.loads(cache_file.read_text(encoding="utf-8"))["entries"])
     assert str(e_path) not in cached and str(a_path) in cached
 
 

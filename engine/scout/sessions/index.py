@@ -287,7 +287,7 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
                 last = parse_iso(sess.last_activity_at)
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
                     looked_up.add(str(tpath))
-                    sess.transcript = transcript_info(tpath, cache=tcache)
+                    sess.transcript = transcript_info(tpath, cache=tcache, stats=stats)
             except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
                 errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
         if cli_uuid is not None and cli_uuid in live:
