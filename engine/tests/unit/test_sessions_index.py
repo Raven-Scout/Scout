@@ -611,5 +611,18 @@ def test_build_options_toplevel_honors_monkeypatch(fake_data_dir: Path, monkeypa
     import scout.sessions.derive as derive_mod
     from scout.sessions.index import default_options
 
-    monkeypatch.setattr(derive_mod, "git_toplevel", lambda p: "/patched")
+    monkeypatch.setattr(derive_mod, "repo_root", lambda p: "/patched")
     assert default_options(fake_data_dir).toplevel("/anything") == "/patched"
+
+
+def test_project_roots_are_resolved_once_per_distinct_path(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    asked: list[str] = []
+
+    def counting(path: str) -> str | None:
+        asked.append(path)
+        return None
+
+    opts.toplevel = counting
+    idx = build_index(opts)
+    assert sorted(asked) == sorted({s.origin_cwd for s in idx.sessions if s.origin_cwd})

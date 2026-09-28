@@ -58,7 +58,7 @@ class BuildOptions:
     use_gh: bool = True
     gh_runner: github.Runner = field(default_factory=lambda: github.default_runner)
     gh_available: Callable[[], bool] = field(default_factory=lambda: github.gh_available)
-    toplevel: Callable[[str], str | None] = field(default_factory=lambda: derive.git_toplevel)
+    toplevel: Callable[[str], str | None] = field(default_factory=lambda: derive.repo_root)
     pid_alive: Callable[[int], bool] = field(default_factory=lambda: cli_home.pid_alive)
 
 
@@ -328,10 +328,17 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
         sess.pr = choose_pr(sess.prs)
 
     # 5. Project key, Scout-run flag, state.
+    roots: dict[str, str | None] = {}
+
+    def toplevel(path: str) -> str | None:
+        if path not in roots:
+            roots[path] = opts.toplevel(path)
+        return roots[path]
+
     stale_after = timedelta(days=s.stale_after_days)
     running_window = timedelta(seconds=s.running_window_seconds)
     for sess in sessions:
-        sess.project_key = resolve_project_key(sess.origin_cwd, toplevel=opts.toplevel)
+        sess.project_key = resolve_project_key(sess.origin_cwd, toplevel=toplevel)
         sess.is_scout_run = is_scout_run(
             origin_cwd=sess.origin_cwd, title=sess.title, scheduled_task_id=sess.scheduled_task_id, vault=opts.data_dir
         )
