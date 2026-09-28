@@ -71,7 +71,7 @@ Entries for records that no longer exist are dropped. A cached `record` whose fi
 
 `derive.git_toplevel` is replaced by a pure-Python `repo_root(path)` with the same contract (main repository root, or None):
 
-1. If `path` is empty, return None. Otherwise start at the nearest ancestor of `path` that exists.
+1. If `path` is empty or relative, return None. Otherwise start at the nearest ancestor of `path` that exists.
 2. Walk up toward `/` looking for an entry named `.git`.
 3. `.git` is a directory: the folder containing it is the root.
 4. `.git` is a file: read its `gitdir:` line (relative to the file's folder when not absolute). If that git dir contains a `commondir` file, resolve it relative to the git dir; when the result is named `.git`, its parent is the root (a linked worktree resolves to its main repository). In every other case — no `commondir` (a submodule), or a common dir not named `.git` — the folder containing the `.git` file is the root, which matches what `git rev-parse --show-toplevel` reports today.
@@ -94,8 +94,9 @@ The transcript cache moves to format version 2. Each entry keeps plan 1's publis
          "offset": 1048576, "head_sha1": "…",
          "files_smallest": ["~/a.py", "…at most 10…"],
          "tool_calls": 212,
+         "lines": 412,
          "first_prompt_final": true,
-         "last_assistant": {"tool_uses": [["toolu_…", "Read"]], "ends_with_question": false},
+         "last_assistant": "tool_use",
          "pending_questions": [],
          "last_ts": "…Z or null"}}}}
 ```
@@ -104,7 +105,7 @@ The transcript cache moves to format version 2. Each entry keeps plan 1's publis
 
 On each build, per transcript inside the window:
 
-1. **Unchanged** (current size and `mtime_ns` equal the checkpoint's): reuse `info`.
+1. **Unchanged** (same device, inode, size and `mtime_ns` as the checkpoint): reuse `info`.
 2. **Grown, same file** (same `dev` and `ino`, current size > the checkpoint's `size`, and the SHA-1 of the first `min(4096, offset)` bytes matches `head_sha1`): read only the bytes from `offset` to the end, process complete lines, advance `offset` past the last newline, and recompute `info` from the updated state.
 3. **Anything else** (shrunk, replaced, rewritten, or no checkpoint): full parse, which produces a fresh checkpoint.
 
@@ -112,8 +113,8 @@ The state reproduces a full parse exactly:
 
 - **Files touched.** The published value is the 10 alphabetically smallest distinct paths (plan 1's cap), so the checkpoint keeps only those 10 and merges new paths in. The file-path scan still runs on every line.
 - **Tool calls** are additive.
-- **First prompt.** It comes from the first 50 lines, which never change in an append-only file. It is fixed once the file has 50 lines or a prompt was found; until then it is re-read from the head (≤ 50 lines) after each tail parse.
-- **Last turn.** Only the final assistant message matters. The checkpoint keeps its tool calls (id and name), whether its last text ends with `?`, and the ids of its `AskUserQuestion` calls not yet answered. A new assistant row replaces the summary; a new user row's tool results remove answered ids. A tool result always follows its tool call, so tracking answers only after the final assistant message is exact.
+- **First prompt.** It comes from the first 50 lines, which never change in an append-only file. It is fixed once 50 complete lines exist (`lines` counts the newlines consumed) or a prompt was found with no half-written line after it; until then it is re-read from the head (≤ 50 lines) after each tail parse.
+- **Last turn.** Only the final assistant message matters. The checkpoint keeps that row's own kind (`tool_use` if it called a tool, else `question` or `end_turn` by whether its last text ends with `?`) and the ids of its `AskUserQuestion` calls not yet answered; the published kind is `question` while any remain. A new assistant row replaces the summary; a new user row's tool results remove answered ids. A tool result always follows its tool call, so tracking answers only after the final assistant message is exact.
 - **Last-turn timestamp.** Plan 1's rule is the timestamp of the last user or assistant row, in file order, whose timestamp parses. `last_ts` in the checkpoint is exactly that value for the bytes consumed so far; how the forward pass computes it without decoding every user row is in §3.4.
 - **A half-written last line** is not consumed: `offset` stops at the last newline, so the line is picked up whole on the next build instead of being skipped for good.
 
@@ -148,17 +149,16 @@ The desktop, transcript and PR caches each track whether an entry was added, cha
 | `desktop_served_last_good` | decode failures served from the cache |
 | `transcripts_full_parsed` | transcripts parsed from the start |
 | `transcripts_tail_parsed` | transcripts parsed from a checkpoint |
-| `transcript_bytes_read` | bytes read by transcript parses (excluding the ≤ 4 KB identity check) |
-| `git_subprocesses` | always 0 after §3.2; asserted by tests |
+| `transcript_bytes_read` | bytes read by transcript parses (excluding the ≤ 4 KB identity check and the ≤ 50-line first-prompt head) |
 | `caches_written` | names of cache files rewritten |
 
-The collector is not part of the index, so schema v1 and its contract test are unchanged.
+The collector is not part of the index, so schema v1 and its contract test are unchanged. Zero `git` subprocesses (§3.2) is not a counter: the budget tests fail if a build starts any subprocess at all.
 
 ## 4. Error handling
 
 - A corrupt or wrong-typed cache file or entry is ignored; that source falls back to the cold path. This extends plan 1's behaviour to the new desktop cache.
 - A failure anywhere in a tail parse falls back to a full parse of that transcript. If the full parse fails, the transcript gets a per-file `SourceError`, as today.
-- `repo_root` never raises: unreadable `.git` files, broken `gitdir:` lines, and permission errors resolve as "no root found here" and the walk continues upward.
+- `repo_root` never raises: unreadable `.git` files, broken `gitdir:` lines, a `gitdir:` that points at a git dir that no longer exists, and permission errors resolve as "no root found here" and the walk continues upward.
 - Mid-write desktop reads are handled by §3.1's last-good rule.
 
 ## 5. Testing
