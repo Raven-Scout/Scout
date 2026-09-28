@@ -101,7 +101,7 @@ def test_index_build_stays_within_budget(fake_data_dir: Path) -> None:
 
     assert (fake_data_dir / ".scout-cache" / TRANSCRIPT_CACHE_FILENAME).exists()
     assert len(load_transcript_cache(fake_data_dir / ".scout-cache" / TRANSCRIPT_CACHE_FILENAME)) == TRANSCRIPTS
-    assert (fake_data_dir / ".scout-cache" / github.PR_CACHE_FILENAME).exists()
+    assert not (fake_data_dir / ".scout-cache" / github.PR_CACHE_FILENAME).exists()  # no PR links: nothing to write
 
     t1 = time.perf_counter()
     warm = build_index(opts)
