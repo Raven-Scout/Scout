@@ -1,0 +1,30 @@
+#!/bin/bash
+# kb-pre-filter.sh — Pre-filter KB files by staleness before a {{INSTANCE_NAME}} session.
+# Writes .scout-cache/kb-filter.md — a compact markdown list of which files are
+# stale vs. fresh — so the session reads the cache instead of re-scanning every
+# KB file from inside Claude.
+#
+# Usage: ./hooks/kb-pre-filter.sh [session-type]
+#   session-type: briefing | consolidation | dreaming
+#
+# This is a thin wrapper around `scoutctl hook kb-pre-filter` — the logic lives
+# in scout.hooks.kb_pre_filter so the runner pays one Python cold start instead
+# of the per-KB-file `python3 -c '...'` the previous bash version spawned via its
+# BSD-`date` parse fallback (one interpreter per file on Linux). See issue #74.
+
+set -euo pipefail
+
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
+if [[ ! -x "$SCOUTCTL_BIN" ]]; then
+    if command -v scoutctl >/dev/null 2>&1; then
+        SCOUTCTL_BIN="$(command -v scoutctl)"
+    else
+        echo "kb-pre-filter.sh: scoutctl not found (looked at ${SCOUTCTL_BIN})" >&2
+        exit 1
+    fi
+fi
+
+SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+export SCOUT_DATA_DIR
+
+exec "$SCOUTCTL_BIN" hook kb-pre-filter --session-type "${1:-dreaming}"

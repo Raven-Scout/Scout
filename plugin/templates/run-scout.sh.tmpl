@@ -1,0 +1,166 @@
+#!/bin/bash
+# {{INSTANCE_NAME}} runner — invoked by scheduler at configured times
+# Each invocation starts a fresh Claude Code session with full local access
+
+set -euo pipefail
+
+SCOUT_DIR="{{SCOUT_DIR}}"
+# Exported so any consumer of scout-plugin's engine package (scout.kb, etc.)
+# resolves the user's vault. Required by Plan 5+.
+export SCOUT_DATA_DIR="$SCOUT_DIR"
+LOG_DIR="$SCOUT_DIR/.scout-logs"
+CLAUDE_BIN="{{CLAUDE_BIN}}"
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
+LOG_FILE="$LOG_DIR/scout-$TIMESTAMP.log"
+LOCK_FILE="$LOG_DIR/.scout-session.lock"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+# Ensure .scout-logs is gitignored
+if ! grep -q '.scout-logs' "$SCOUT_DIR/.gitignore" 2>/dev/null; then
+    echo '.scout-logs/' >> "$SCOUT_DIR/.gitignore"
+fi
+
+# Concurrency guard — only one {{INSTANCE_NAME}} session at a time.
+# Liveness alone is not enough: a holder that is alive but not progressing
+# (host slept mid-run, wedged network call) passes `kill -0` forever and
+# would silently block every subsequent slot. Real sessions finish in
+# minutes, so a holder past LOCK_MAX_AGE_SECS is wedged by definition —
+# reap it and take over, and record the reap in failures.log so the
+# takeover is visible to audit surfaces (not just this run's log).
+LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h ceiling, env-overridable
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    if kill -0 "$LOCK_PID" 2>/dev/null; then
+        # Lock age = seconds since the holder wrote the lock at session start.
+        # Sourced from the lock file's mtime: macOS ps has no `etimes` keyword,
+        # so elapsed-seconds-of-PID is not portable. GNU stat first (errors on
+        # BSD), BSD stat second; unknown age → treat the holder as fresh.
+        LOCK_MTIME=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || stat -f %m "$LOCK_FILE" 2>/dev/null || echo "")
+        LOCK_AGE=""
+        case "$LOCK_MTIME" in
+            ''|*[!0-9]*) ;;
+            *) LOCK_AGE=$(( $(date +%s) - LOCK_MTIME )) ;;
+        esac
+        if [ -n "$LOCK_AGE" ] && [ "$LOCK_AGE" -gt "$LOCK_MAX_AGE_SECS" ]; then
+            echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${LOCK_AGE}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
+            echo "Reaped wedged session PID $LOCK_PID after ${LOCK_AGE}s at $(date)" >> "$LOG_DIR/failures.log"
+            kill -TERM "$LOCK_PID" 2>/dev/null || true
+            sleep 5
+            # KILL before removing the lock: a KILLed holder cannot run its
+            # EXIT trap, so it cannot delete the lock this run is about to own.
+            kill -KILL "$LOCK_PID" 2>/dev/null || true
+            rm -f "$LOCK_FILE"
+        else
+            echo "=== Another {{INSTANCE_NAME}} session running (PID $LOCK_PID) — skipping ===" >> "$LOG_FILE"
+            exit 0
+        fi
+    else
+        # Stale lock file — previous session crashed
+        rm -f "$LOCK_FILE"
+    fi
+fi
+echo $$ > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT
+
+# Mode is set by the dispatcher (SCOUT_FORCE_MODE). For manual invocations
+# without SCOUT_FORCE_MODE set, default to "manual" — operators can still
+# fire the runner directly for debugging, and the Run Modes table tells the
+# model to fall back to a day-of-week + hour derivation in that case.
+MODE="${SCOUT_FORCE_MODE:-manual}"
+
+# The prompt instructs Claude to read SKILL.md and execute it
+PROMPT="You are {{INSTANCE_NAME}}, an autonomous knowledge management system. Your working directory is {{SCOUT_DIR}}.
+
+Step 1: Read {{SCOUT_DIR}}/SKILL.md in full.
+Step 2: Your run mode is \`$MODE\` (the dispatcher's slot key). Find the matching row of the Run Modes table near the top of SKILL.md and follow it. If the mode is \`manual\`, derive the closest mode from the current day and hour, then follow that row.
+Step 3: Execute the SKILL.md instructions completely — all steps/phases in order.
+Step 4: Commit results to git.
+Step 5: If anything material changed, send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing what was found and changed.
+
+Important:
+- Use 'gh' CLI for all GitHub operations (not GitHub MCP).
+- The knowledge base and action items are in {{SCOUT_DIR}}/knowledge-base/ and {{SCOUT_DIR}}/action-items/.
+- Always use [[wikilinks]] when referencing KB files.
+- Commit frequently — every meaningful change gets its own commit.
+- Your output should focus on what you found and changed, not infrastructure steps."
+
+echo "=== {{INSTANCE_NAME}} run starting at $(date) ===" >> "$LOG_FILE"
+
+# Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
+# These write to .scout-cache/ for the skill files to consume.
+PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"
+if [ -x "$PRE_FILTER" ]; then
+    "$PRE_FILTER" "$MODE" >> "$LOG_FILE" 2>&1 || true
+fi
+PRE_SESSION="$SCOUT_DIR/scripts/pre-session-data.sh"
+if [ -x "$PRE_SESSION" ]; then
+    "$PRE_SESSION" "$MODE" >> "$LOG_FILE" 2>&1 || true
+fi
+CC_CACHE="$SCOUT_DIR/scripts/cc-session-cache.sh"
+if [ -x "$CC_CACHE" ]; then
+    "$CC_CACHE" 24 >> "$LOG_FILE" 2>&1 || true
+fi
+# Daily-file completeness invariant — if today's action-items file doesn't
+# exist yet, materialize it verbatim from the most recent daily file so no
+# session (or app surface) ever sees a missing/stub list. No-op when present.
+MATERIALIZE="$SCOUT_DIR/scripts/materialize-daily-file.sh"
+if [ -x "$MATERIALIZE" ]; then
+    "$MATERIALIZE" >> "$LOG_FILE" 2>&1 || true
+fi
+
+# Budget check — skip if we're over the spending threshold
+BUDGET_CHECK="$SCOUT_DIR/scripts/budget-check.sh"
+if [ -x "$BUDGET_CHECK" ]; then
+    if ! "$BUDGET_CHECK" --verbose >> "$LOG_FILE" 2>&1; then
+        echo "=== Budget check: skipping this run ===" >> "$LOG_FILE"
+        exit 0
+    fi
+fi
+
+START_TIME=$(date +%s)
+
+# Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
+# Wrapper handles log redirection and retries on transient API errors (socket close,
+# ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+EXIT_CODE=0
+cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+    "$LOG_FILE" \
+    "$CLAUDE_BIN" \
+    --permission-mode auto \
+    --model opus \
+    --max-budget-usd {{MAX_BUDGET}} \
+    --name "{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)" \
+    -p "$PROMPT" \
+    || EXIT_CODE=$?
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+echo "=== {{INSTANCE_NAME}} run finished at $(date) (exit code: $EXIT_CODE, duration: ${DURATION}s) ===" >> "$LOG_FILE"
+
+# If the run failed, log it and check for rate limiting
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "{{INSTANCE_NAME}} run FAILED with exit code $EXIT_CODE at $(date)" >> "$LOG_DIR/failures.log"
+    RATE_DETECT="$SCOUT_DIR/scripts/rate-limit-detect.sh"
+    if [ -x "$RATE_DETECT" ]; then
+        if "$RATE_DETECT" "$LOG_FILE" --write-tracker 2>/dev/null; then
+            echo "Rate limit detected — logged to usage tracker" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# Post-session: guarantee stable [#XXXX] prefixes on today's action items so
+# scout-app's --by-id write path always has a key (issue #10 / stable-id
+# contract). Deterministic — does not depend on the session prompt complying.
+POST_BACKFILL="$SCOUT_DIR/scripts/post-session-backfill.sh"
+if [ -x "$POST_BACKFILL" ]; then
+    "$POST_BACKFILL" >> "$LOG_FILE" 2>&1 || true
+fi
+
+# Track session cost (skill self-reports actual cost from inside the session via the
+# same script; this runner call is a fallback so failed/crashed runs still leave a row).
+COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
+if [ -x "$COST_TRACKER" ]; then
+    "$COST_TRACKER" "$MODE" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
+fi

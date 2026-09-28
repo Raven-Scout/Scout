@@ -1,0 +1,75 @@
+#!/bin/bash
+# Rate limit detection — scans a session log for rate limit signals
+#
+# Exit codes:
+#   0 = rate limit detected
+#   1 = no rate limit detected
+#   2 = no log file provided or file doesn't exist
+#
+# Usage: rate-limit-detect.sh <log_file> [--write-tracker]
+#   --write-tracker: append a rate_limit event to usage-tracker.jsonl
+
+set -euo pipefail
+
+LOG_FILE="${1:-}"
+WRITE_TRACKER="${2:-}"
+TRACKER_FILE="{{SCOUT_DIR}}/.scout-logs/usage-tracker.jsonl"
+
+if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
+    exit 2
+fi
+
+# Patterns that indicate rate limiting or capacity issues
+PATTERNS=(
+    'rate.?limit'
+    'rate_limit'
+    '429'
+    'too many requests'
+    'overloaded'
+    'throttl'
+    'capacity'
+    'ERR_OVERLOADED'
+    'Request too large'
+    'credit balance'
+    'usage limit'
+    'token limit exceeded'
+)
+
+# Build a combined grep pattern
+COMBINED=""
+for p in "${PATTERNS[@]}"; do
+    if [ -z "$COMBINED" ]; then
+        COMBINED="$p"
+    else
+        COMBINED="$COMBINED|$p"
+    fi
+done
+
+# Search the log (last 100 lines — rate limits appear near session end)
+MATCHES=$(tail -100 "$LOG_FILE" | grep -iE "$COMBINED" 2>/dev/null || true)
+
+if [ -z "$MATCHES" ]; then
+    exit 1
+fi
+
+# Rate limit detected — extract the first matching line for context.
+# No pipe into `head`: it exits after one line and SIGPIPEs the writer (141), which
+# `pipefail` would promote to the assignment's status and `set -e` would turn into a
+# 141 exit — read by the caller as "no rate limit". $MATCHES is unbounded (every
+# matching line in a 100-line tail), so it can outgrow the pipe buffer.
+FIRST_MATCH=$(head -1 <<<"$MATCHES" | cut -c1-200)
+
+if [ "$WRITE_TRACKER" = "--write-tracker" ]; then
+    TIMESTAMP=$(TZ=UTC date '+%Y-%m-%dT%H:%M:%SZ')
+    # Localized timezone via scout-tz.sh (timezone-localization, call-site migration);
+    # double fallback to the default so a missing/bad config never goes timezone-blind
+    # (Pattern #29).
+    _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SCOUT_TZ="$("$_SCRIPT_DIR/scout-tz.sh" 2>/dev/null || echo America/New_York)"
+    TIMESTAMP_ET=$(TZ="$SCOUT_TZ" date '+%Y-%m-%d %H:%M %Z')
+    mkdir -p "$(dirname "$TRACKER_FILE")"
+    ESCAPED_MATCH=$(echo "$FIRST_MATCH" | sed 's/"/\\"/g' | tr -d '\n')
+    echo "{\"ts\":\"$TIMESTAMP\",\"ts_et\":\"$TIMESTAMP_ET\",\"type\":\"rate_limit\",\"signal\":\"$ESCAPED_MATCH\",\"log_file\":\"$(basename "$LOG_FILE")\"}" >> "$TRACKER_FILE"
+fi
+
+exit 0

@@ -1,0 +1,120 @@
+[project]
+name = "scout-engine"
+version = "0.10.0"
+description = "Scout engine: CLI, hooks, runners, and Python library for the Scout productivity system."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Jordan Burger"}]
+license = {text = "MIT"}
+
+dependencies = [
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "python-ulid>=2.2",
+    "rich>=13.7",
+    "watchdog>=4.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+full = [
+    "textual>=0.63",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "types-PyYAML",
+]
+
+[project.scripts]
+scoutctl = "scout.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scout"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# render.py contains embedded CSS/HTML template strings with unavoidable long lines
+"scout/action_items/render.py" = ["E501"]
+# CLI files use typer.Argument/typer.Option in function defaults — standard Typer idiom, B008 is a false positive here
+"scout/action_items/cli.py" = ["B008"]
+"scout/cli.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+
+# Textual is in the [full] extras, not [dev]. CI lint runs in a [dev]-only
+# environment to keep that job lean, so its mypy invocation cannot resolve
+# textual.* — silence those imports rather than installing the heavier
+# extra just for type-checking.
+[[tool.mypy.overrides]]
+module = ["textual", "textual.*"]
+ignore_missing_imports = true
+
+# watchdog ships no PEP 561 type stubs (no `types-watchdog` exists on PyPI as
+# of 2026-04). Treat as untyped — same pattern as textual.
+[[tool.mypy.overrides]]
+module = ["watchdog", "watchdog.*"]
+ignore_missing_imports = true
+
+# requests has `types-requests` available, but pinning it to the dev extras
+# adds another wheel to every CI run for one outbound module. The Telegram
+# port (Plan 4 Task 6) is the only requests caller in the engine; treat
+# requests as untyped — same pattern as textual / watchdog.
+[[tool.mypy.overrides]]
+module = ["requests", "requests.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+markers = [
+    "perf: performance tests (may be skipped in fast CI runs)",
+    "concurrency: tests involving multiple processes/threads",
+    "slow: tests taking > 1 second",
+]
+
+# Coverage is opt-in per-invocation (`pytest --cov=scout`), not wired into
+# addopts — the perf tests measure cold-start latency and coverage's tracer
+# skews those numbers. CI runs a dedicated coverage job; see
+# .github/workflows/test.yml.
+[tool.coverage.run]
+source = ["scout"]
+branch = true
+omit = [
+    # Trivial `python -m scout` shim; its one branch is the __main__ guard.
+    "scout/__main__.py",
+]
+
+[tool.coverage.report]
+# The engine ships as a scheduled, unattended runner: an uncovered failure
+# path is one that first executes at 03:00 with no one watching. The suite
+# currently sits at ~99% statement+branch; the floor is set just under that so
+# a genuinely-untestable line doesn't fail a build, while a new module landing
+# without tests does. Raise it as gaps close — never lower it to make a build
+# pass.
+fail_under = 98
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(typing\\.)?overload",
+]

@@ -1,0 +1,108 @@
+#!/bin/bash
+# claude-with-retry.sh — invoke `claude -p` with bounded retry for transient API errors.
+#
+# Retries on the network/API failure class that's killing long {{INSTANCE_NAME}} sessions:
+#   - "socket connection was closed unexpectedly"  (undici UND_ERR_SOCKET)
+#   - "Unable to connect to API (ECONNRESET)"
+#   - "Unable to connect to API (ConnectionRefused)"
+#   - "Stream idle timeout - partial response received"
+#   - "Connection closed mid-response"             (socket torn down mid-stream,
+#                                                    e.g. machine slept overnight)
+#   - "went to sleep mid-response"                  (lid-close/clamshell sleep;
+#                                                    idle sleep surfaces as the
+#                                                    line above instead)
+#   - "529 Overloaded"                              (Anthropic upstream temp)
+#
+# Does NOT retry on:
+#   - 401 / 403 auth failures   (need user intervention)
+#   - "Exceeded USD budget"     (intentional budget gate)
+#   - Any non-zero exit whose log tail doesn't match the transient list
+#
+# IMPORTANT: each retry re-runs `claude -p` from scratch with the full prompt.
+# That is safe only if the SKILL.md flow is idempotent — i.e. mid-run commits
+# leave a recoverable state and a fresh invocation will not double-commit.
+# The {{INSTANCE_NAME}} dreaming/consolidation/research modes are *documented*
+# as restartable, but verify in a dry run before relying on this in production.
+#
+# Usage:
+#   claude-with-retry.sh <log-file> <claude-bin> <claude-args...>
+#
+# Env knobs:
+#   SCOUT_RETRY_MAX=2          total attempts (default: 2 → 1 retry)
+#   SCOUT_RETRY_BACKOFF_S=60   base backoff seconds (default 60; scales linearly: 60s, 120s, ...)
+#   SCOUT_RETRY_DISABLE=1      single-attempt mode (legacy behavior)
+#
+# Exit code: the exit code of the final attempt.
+
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+    echo "usage: $0 <log-file> <claude-bin> <claude-args...>" >&2
+    exit 2
+fi
+
+LOG_FILE="$1"; shift
+CLAUDE_BIN="$1"; shift
+
+MAX_ATTEMPTS="${SCOUT_RETRY_MAX:-2}"
+BACKOFF_S="${SCOUT_RETRY_BACKOFF_S:-60}"
+if [ "${SCOUT_RETRY_DISABLE:-0}" = "1" ]; then
+    MAX_ATTEMPTS=1
+fi
+
+# Pipe-separated grep -E regex. Keep narrow — anything matched here triggers a retry.
+TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded'
+
+# Auth-failure class (HTTP 401/403). NOT retried — re-authentication needs a human —
+# but surfaced with a concrete remediation instead of the opaque "not classified"
+# line, since a rejected credential blocks EVERY scheduled run until fixed.
+AUTH_PATTERNS='Failed to authenticate|Invalid authentication credentials|API Error: 40[13]|40[13] Unauthorized|40[13] Forbidden|OAuth token (has )?expired'
+
+attempt=1
+exit_code=0
+while :; do
+    if [ "$attempt" -gt 1 ]; then
+        echo "=== Claude retry attempt $attempt/$MAX_ATTEMPTS at $(date) ===" >> "$LOG_FILE"
+    fi
+
+    exit_code=0
+    "$CLAUDE_BIN" "$@" >> "$LOG_FILE" 2>&1 || exit_code=$?
+
+    if [ "$exit_code" -eq 0 ]; then
+        exit 0
+    fi
+
+    if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+        echo "=== Retry exhausted: $MAX_ATTEMPTS attempts, last exit $exit_code ===" >> "$LOG_FILE"
+        exit "$exit_code"
+    fi
+
+    # Snapshot the tail once, then match against the variable. `tail … | grep -q`
+    # SIGPIPEs the writer (141) as soon as grep matches, and `pipefail` makes 141 the
+    # pipeline's status — which would silently reclassify a transient failure as
+    # "not transient" and skip the retry this wrapper exists for. A 50-line tail is
+    # bounded in lines, not bytes, so it can outgrow the pipe buffer on a chatty run.
+    # `|| true` keeps an unreadable log from aborting the wrapper under `set -e`,
+    # so the real claude exit code still reaches the caller (prior behavior).
+    LOG_TAIL="$(tail -50 "$LOG_FILE" 2>/dev/null || true)"
+    if ! grep -qE "$TRANSIENT_PATTERNS" <<<"$LOG_TAIL"; then
+        if grep -qE "$AUTH_PATTERNS" <<<"$LOG_TAIL"; then
+            {
+                echo "=== Authentication failure (HTTP 401/403) — no retry (exit $exit_code) ==="
+                echo "    Claude Code's API credentials were rejected. This blocks every scheduled {{INSTANCE_NAME}} run until re-authenticated."
+                echo "    Re-authenticate the claude binary this runner uses ($CLAUDE_BIN):"
+                echo "      - interactive: run 'claude' once and complete login, or"
+                echo "      - headless:    run 'claude setup-token' and expose CLAUDE_CODE_OAUTH_TOKEN to this runner's environment."
+                echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model opus"
+            } >> "$LOG_FILE"
+            exit "$exit_code"
+        fi
+        echo "=== Failure not classified as transient — no retry (exit $exit_code) ===" >> "$LOG_FILE"
+        exit "$exit_code"
+    fi
+
+    sleep_s=$(( BACKOFF_S * attempt ))
+    echo "=== Transient API error detected — sleeping ${sleep_s}s before retry ===" >> "$LOG_FILE"
+    sleep "$sleep_s"
+    attempt=$(( attempt + 1 ))
+done

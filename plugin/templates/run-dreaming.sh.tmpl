@@ -1,0 +1,151 @@
+#!/bin/bash
+# {{INSTANCE_NAME}} Dreaming runner — invoked by scheduler for evening + weekend sessions
+# Processes feedback and does KB-only deep improvement work
+
+set -euo pipefail
+
+SCOUT_DIR="{{SCOUT_DIR}}"
+# Exported so any consumer of scout-plugin's engine package resolves the vault.
+export SCOUT_DATA_DIR="$SCOUT_DIR"
+LOG_DIR="$SCOUT_DIR/.scout-logs"
+CLAUDE_BIN="{{CLAUDE_BIN}}"
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
+LOG_FILE="$LOG_DIR/dreaming-$TIMESTAMP.log"
+LOCK_FILE="$LOG_DIR/.scout-session.lock"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+# Concurrency guard — only one {{INSTANCE_NAME}} session at a time.
+# Liveness alone is not enough: a holder that is alive but not progressing
+# (host slept mid-run, wedged network call) passes `kill -0` forever and
+# would silently block every subsequent slot. Real sessions finish in
+# minutes, so a holder past LOCK_MAX_AGE_SECS is wedged by definition —
+# reap it and take over, and record the reap in failures.log so the
+# takeover is visible to audit surfaces (not just this run's log).
+LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h ceiling, env-overridable
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    if kill -0 "$LOCK_PID" 2>/dev/null; then
+        # Lock age = seconds since the holder wrote the lock at session start.
+        # Sourced from the lock file's mtime: macOS ps has no `etimes` keyword,
+        # so elapsed-seconds-of-PID is not portable. GNU stat first (errors on
+        # BSD), BSD stat second; unknown age → treat the holder as fresh.
+        LOCK_MTIME=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || stat -f %m "$LOCK_FILE" 2>/dev/null || echo "")
+        LOCK_AGE=""
+        case "$LOCK_MTIME" in
+            ''|*[!0-9]*) ;;
+            *) LOCK_AGE=$(( $(date +%s) - LOCK_MTIME )) ;;
+        esac
+        if [ -n "$LOCK_AGE" ] && [ "$LOCK_AGE" -gt "$LOCK_MAX_AGE_SECS" ]; then
+            echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${LOCK_AGE}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
+            echo "Reaped wedged session PID $LOCK_PID after ${LOCK_AGE}s at $(date)" >> "$LOG_DIR/failures.log"
+            kill -TERM "$LOCK_PID" 2>/dev/null || true
+            sleep 5
+            # KILL before removing the lock: a KILLed holder cannot run its
+            # EXIT trap, so it cannot delete the lock this run is about to own.
+            kill -KILL "$LOCK_PID" 2>/dev/null || true
+            rm -f "$LOCK_FILE"
+        else
+            echo "=== Another {{INSTANCE_NAME}} session running (PID $LOCK_PID) — skipping ===" >> "$LOG_FILE"
+            exit 0
+        fi
+    else
+        # Stale lock file — previous session crashed
+        rm -f "$LOCK_FILE"
+    fi
+fi
+echo $$ > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT
+
+# The prompt instructs Claude to read DREAMING.md and execute it
+PROMPT="You are {{INSTANCE_NAME}} running in DREAMING mode — the evening self-improvement and KB deep work session. Your working directory is {{SCOUT_DIR}}.
+
+Step 1: Read {{SCOUT_DIR}}/DREAMING.md in full.
+Step 2: Execute Phase 1 (Feedback Processing) completely.
+Step 3: Execute Phase 2 (KB Deep Work) completely.
+Step 4: Execute Phase 3 (Wishlist) completely.
+Step 5: Commit results to git.
+Step 6: Send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing feedback processed and KB work done.
+
+Important:
+- Use 'gh' CLI for all GitHub operations (not GitHub MCP).
+- The knowledge base is in {{SCOUT_DIR}}/knowledge-base/.
+- Always use [[wikilinks]] when referencing KB files.
+- Commit with message format: dreaming [HH:MM]: <summary>
+- Your output should focus on what you found and changed, not infrastructure steps."
+
+echo "=== {{INSTANCE_NAME}} Dreaming run starting at $(date) ===" >> "$LOG_FILE"
+
+# Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
+# These write to .scout-cache/ for DREAMING.md to consume.
+PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"
+if [ -x "$PRE_FILTER" ]; then
+    "$PRE_FILTER" dreaming >> "$LOG_FILE" 2>&1 || true
+fi
+PRE_SESSION="$SCOUT_DIR/scripts/pre-session-data.sh"
+if [ -x "$PRE_SESSION" ]; then
+    "$PRE_SESSION" dreaming >> "$LOG_FILE" 2>&1 || true
+fi
+CC_CACHE="$SCOUT_DIR/scripts/cc-session-cache.sh"
+if [ -x "$CC_CACHE" ]; then
+    "$CC_CACHE" 24 >> "$LOG_FILE" 2>&1 || true
+fi
+# Daily-file completeness invariant — if today's action-items file doesn't
+# exist yet, materialize it verbatim from the most recent daily file so no
+# session (or app surface) ever sees a missing/stub list. No-op when present.
+MATERIALIZE="$SCOUT_DIR/scripts/materialize-daily-file.sh"
+if [ -x "$MATERIALIZE" ]; then
+    "$MATERIALIZE" >> "$LOG_FILE" 2>&1 || true
+fi
+
+# Budget check — skip if we're over the spending threshold
+BUDGET_CHECK="$SCOUT_DIR/scripts/budget-check.sh"
+if [ -x "$BUDGET_CHECK" ]; then
+    if ! "$BUDGET_CHECK" --verbose >> "$LOG_FILE" 2>&1; then
+        echo "=== Budget check: skipping this run ===" >> "$LOG_FILE"
+        exit 0
+    fi
+fi
+
+# Mode is set by the dispatcher (SCOUT_FORCE_MODE). For manual invocations
+# without SCOUT_FORCE_MODE set, default to "dreaming-manual".
+MODE="${SCOUT_FORCE_MODE:-dreaming-manual}"
+
+START_TIME=$(date +%s)
+
+# Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
+# Wrapper handles log redirection and retries on transient API errors (socket close,
+# ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+EXIT_CODE=0
+cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+    "$LOG_FILE" \
+    "$CLAUDE_BIN" \
+    --permission-mode auto \
+    --model opus \
+    --max-budget-usd {{MAX_BUDGET}} \
+    --name "{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)" \
+    -p "$PROMPT" \
+    || EXIT_CODE=$?
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+echo "=== {{INSTANCE_NAME}} Dreaming run finished at $(date) (exit code: $EXIT_CODE, duration: ${DURATION}s) ===" >> "$LOG_FILE"
+
+# If the run failed, log it and check for rate limiting
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "{{INSTANCE_NAME}} Dreaming run FAILED with exit code $EXIT_CODE at $(date)" >> "$LOG_DIR/failures.log"
+    RATE_DETECT="$SCOUT_DIR/scripts/rate-limit-detect.sh"
+    if [ -x "$RATE_DETECT" ]; then
+        if "$RATE_DETECT" "$LOG_FILE" --write-tracker 2>/dev/null; then
+            echo "Rate limit detected — logged to usage tracker" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# Track session cost (skill self-reports actual cost from inside the session via the
+# same script; this runner call is a fallback so failed/crashed runs still leave a row).
+COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
+if [ -x "$COST_TRACKER" ]; then
+    "$COST_TRACKER" "dreaming" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
+fi

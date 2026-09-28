@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# cc-session-cache.sh — Pre-fetch Claude Code session summaries for {{INSTANCE_NAME}}.
+#
+# Scans {{USER_NAME}}'s CC session files, extracts recent session metadata,
+# and writes a summary to .scout-cache/cc-sessions.md so the SCOUT skill can
+# read it instead of re-discovering and parsing JSONL files from inside the
+# session.
+#
+# Usage: ./scripts/cc-session-cache.sh [hours-lookback]
+#   hours-lookback: How many hours back to scan (default: 24)
+#
+# This is a thin wrapper around `scoutctl session cc-cache`. The bash version
+# spawned a fresh python3 cold start per JSONL plus a 5-stage subprocess
+# pipeline for files_touched extraction — order of dozens of Python starts
+# per session-start. The Python module does it all in one process and adds
+# a mtime-keyed cache so unchanged files from the previous run skip parsing
+# entirely (see issues #74 + #75).
+
+set -eu
+
+HOURS="${1:-24}"
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
+if [[ ! -x "$SCOUTCTL_BIN" ]]; then
+    if command -v scoutctl >/dev/null 2>&1; then
+        SCOUTCTL_BIN="$(command -v scoutctl)"
+    else
+        echo "cc-session-cache.sh: scoutctl not found (looked at ${SCOUTCTL_BIN})" >&2
+        exit 1
+    fi
+fi
+
+SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+export SCOUT_DATA_DIR
+
+exec "$SCOUTCTL_BIN" session cc-cache \
+    --hours "$HOURS" \
+    --instance-name "{{INSTANCE_NAME}}" \
+    --timezone "{{TIMEZONE}}"

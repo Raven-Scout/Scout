@@ -1,0 +1,26 @@
+.DS_Store
+*.log
+
+# Python bytecode and tool caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+
+# scoutctl manifest build output (per-machine artifact)
+engine/manifest.json
+
+# Local per-checkout artifacts (not part of the plugin)
+.claude/
+.scoutctl-py-cache
+docs/plans/archive/PLAN-8-RESUME.md

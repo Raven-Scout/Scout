@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scout — an autonomous agent that runs and improves itself</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="An autonomous agent that keeps up for you, checks its own work, improves its own instructions, drives its own roadmap, and keeps a memory you can read — explained visually." />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Scout — an autonomous agent that runs and improves itself" />
+<meta property="og:description" content="It reads everything you connect, cross-checks every claim, drives its own roadmap, and improves its own instructions — a memory you can read, on your machine." />
+<meta property="og:url" content="https://raven-scout.github.io/scout-plugin/" />
+<meta property="og:image" content="https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/docs/assets/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="stylesheet" href="fonts.css" />
+<link rel="stylesheet" href="hybrid.css" />
+<link rel="icon" type="image/svg+xml" href="assets/scout-icon.svg" />
+<style>
+  /* ---- width / responsiveness: use the screen on laptops, scale visuals up ---- */
+  .wrap{max-width:1200px;}
+  .proof > .col{max-width:1140px;padding-left:24px;padding-right:24px;}
+  .hero .win{max-width:960px;}
+  @media (max-width:640px){ .proof > .col{padding-left:20px;padding-right:20px;} .partlabel{padding-top:54px;} }
+  @media (min-width:1080px){
+    .vrow{grid-template-columns:0.88fr 1.12fr;gap:68px;padding:56px 0;}
+    .vvis{padding:32px;}
+    .vtext h3{font-size:27px;}
+    .vtext p{font-size:16.5px;max-width:40ch;}
+    .partlabel h2{font-size:clamp(34px,3.2vw,46px);}
+    .pcard .ln, .legend .r, .chk .it, .q .row, .bi h4{font-size:15px;}
+    .win .body{padding:22px 28px 24px;}
+    .kg svg{max-width:480px;margin:0 auto;}
+  }
+  @media (min-width:1440px){
+    .wrap{max-width:1320px;}
+    .proof > .col{max-width:1240px;}
+    .vrow{gap:84px;}
+  }
+
+  /* lighter, visual layout */
+  .hero .lede2{margin:22px 0 0;font-family:var(--serif);font-size:20px;line-height:1.6;color:var(--ink-2);max-width:50ch;}
+  .partlabel{text-align:center;padding:70px 0 0;}
+  .partlabel .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--acc);}
+  .partlabel h2{font-family:var(--serif);font-weight:500;font-size:clamp(26px,3.4vw,38px);letter-spacing:-.015em;margin:12px auto 0;max-width:24ch;line-height:1.18;}
+
+  .vrow{display:grid;grid-template-columns:0.92fr 1.08fr;gap:46px;align-items:center;padding:44px 0;border-top:1px solid var(--line);}
+  .vrow.flip .vtext{order:2;}
+  .vtext .sysnum{font-family:var(--mono);font-size:11px;color:var(--acc);letter-spacing:.05em;text-transform:uppercase;}
+  .vtext h3{font-family:var(--sans);font-size:23px;font-weight:800;letter-spacing:-.02em;margin:9px 0 11px;line-height:1.2;}
+  .vtext p{font-family:var(--sans);font-size:15.5px;line-height:1.62;color:var(--ink-2);margin:0;max-width:44ch;}
+  .vtext p b{color:var(--ink);font-weight:600;} .vtext p em{font-style:italic;}
+  .vvis{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 22px 46px -30px rgba(60,40,15,.24);}
+  @media(max-width:860px){.vrow{grid-template-columns:1fr;gap:22px;}.vrow.flip .vtext{order:0;}}
+
+  /* briefing mock (hero) */
+  .win{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 28px 60px -32px rgba(60,40,15,.34);max-width:760px;margin:46px auto 0;text-align:left;}
+  .win .bar{display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--sunk);}
+  .win .bar .d{width:10px;height:10px;border-radius:50%;background:#e1dccd;}
+  .win .bar .t{font-size:12.5px;color:var(--ink-3);margin-left:6px;}
+  .win .bar .r{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);}
+  .win .body{padding:18px 22px 20px;}
+  .bi{display:grid;grid-template-columns:12px 1fr;gap:12px;padding:13px 0;border-top:1px solid var(--line);}
+  .bi:first-child{border-top:none;} .bi .p{width:9px;height:9px;border-radius:50%;margin-top:5px;}
+  .bi h4{margin:0 0 3px;font-size:14.5px;font-weight:600;color:var(--ink);} .bi p{margin:0;font-size:12.5px;color:var(--ink-2);}
+  .bi .r{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+  .src{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);padding:3px 8px;border-radius:5px;background:var(--sunk);}
+  .conflict{margin-top:9px;display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .sd{border:1px solid var(--line-2);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--ink-2);}
+  .sd .l{display:block;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px;} .sd b{color:var(--ink);}
+
+  /* cross-check flow */
+  .xc{display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .xc .srcs{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;}
+  .xc .arr{color:var(--ink-4);font-size:20px;line-height:1;}
+  .xc .out{display:flex;align-items:center;gap:8px;border:1px solid var(--ok);background:#eef5ef;border-radius:9px;padding:9px 13px;font-size:13.5px;font-weight:600;color:var(--ink);}
+
+  /* tag legend */
+  .legend{display:flex;flex-direction:column;gap:10px;}
+  .legend .r{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--ink-2);}
+  .legend .tag{min-width:104px;justify-content:center;}
+
+  /* pattern card */
+  .pcard .head{display:flex;align-items:center;gap:9px;margin-bottom:11px;}
+  .pcard .id{font-family:var(--mono);font-size:13px;font-weight:600;}
+  .pill{font-family:var(--mono);font-size:10px;padding:3px 9px;border-radius:999px;font-weight:500;}
+  .pill.regress{background:#f7e3df;color:var(--red);} .pill.fixed{background:#e3efe7;color:var(--ok);}
+  .pcard .ln{display:flex;gap:9px;font-size:13px;color:var(--ink-2);padding:7px 0;border-top:1px solid var(--line);}
+  .pcard .ln .k{font-family:var(--mono);font-size:10px;color:var(--ink-3);width:74px;flex:none;text-transform:uppercase;padding-top:1px;}
+  .occ{display:flex;gap:5px;align-items:center;margin-top:11px;}
+  .occ .d{width:8px;height:8px;border-radius:50%;background:var(--red);opacity:.85;}
+  .occ .lbl{font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:5px;}
+
+  /* proposal flow */
+  .flow{display:flex;align-items:stretch;gap:9px;}
+  .fstep{flex:1;border:1px solid var(--line-2);border-radius:10px;padding:11px 9px;text-align:center;background:var(--bg);}
+  .fstep .t{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;}
+  .fstep .b{font-size:12.5px;font-weight:600;color:var(--ink);margin-top:5px;line-height:1.25;}
+  .fstep.acc{border-color:var(--acc);} .fstep.acc .b{color:var(--acc-2);}
+  .farr{align-self:center;color:var(--ink-4);font-size:16px;}
+  .commit{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-top:12px;}
+  .commit .h{color:var(--acc);} .commit .rv{color:var(--ink-3);}
+
+  /* checklist */
+  .chk .it{display:flex;align-items:center;gap:11px;padding:9px 0;border-top:1px solid var(--line);font-size:14px;color:var(--ink);}
+  .chk .it:first-child{border-top:none;}
+  .chk .box{width:18px;height:18px;border-radius:5px;border:1.5px solid var(--line-2);flex:none;}
+  .chk .it.done .box{background:var(--ok);border-color:var(--ok);background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><path d='M3 8.5l3 3 7-7'/></svg>");background-size:12px;background-repeat:no-repeat;background-position:center;}
+  .chk .it.done span{color:var(--ink-3);}
+  .chk .it .tg{margin-left:auto;font-family:var(--mono);font-size:9.5px;}
+  .chk .it.done .tg{color:var(--ok);} .chk .it .tg.wip{color:var(--amb);}
+
+  /* research queue */
+  .q .pin{display:flex;gap:9px;align-items:flex-start;background:var(--acc-wash);border:1px dashed var(--acc);border-radius:9px;padding:10px 12px;}
+  .q .pin .mono{font-family:var(--mono);font-size:11px;color:var(--acc-2);}
+  .q .pin .x{font-size:13px;color:var(--ink);} .q .pin .x b{color:var(--acc-2);}
+  .q .row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:13px;color:var(--ink-2);}
+  .q .row .age{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink-3);}
+  .q .rot{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-top:11px;}
+
+  /* enrichment */
+  .bubble{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:13px 15px;}
+  .bubble .q{font-size:14px;font-weight:600;color:var(--ink);} .bubble .g{font-size:12px;color:var(--ink-3);margin-top:5px;}
+  .route{display:flex;align-items:center;gap:9px;margin-top:12px;font-family:var(--mono);font-size:11px;color:var(--acc);}
+  .route .e{background:var(--surface);border:1px solid var(--line-2);border-radius:7px;padding:5px 10px;color:var(--ink-2);}
+
+  /* review held */
+  .held .lbl{font-family:var(--mono);font-size:10px;color:var(--amb);text-transform:uppercase;letter-spacing:.04em;}
+  .held .claim{font-size:13.5px;color:var(--ink-2);margin:9px 0 13px;line-height:1.5;} .held .claim b{color:var(--ink);}
+  .held .acts{display:flex;gap:8px;}
+  .held .a{font-family:var(--mono);font-size:11px;padding:6px 12px;border-radius:7px;border:1px solid var(--line-2);background:var(--bg);}
+  .held .a.y{color:var(--ok);border-color:#bfe0cb;} .held .a.n{color:var(--red);border-color:#eccbc4;}
+
+  /* connectors */
+  .conn{display:flex;flex-wrap:wrap;gap:8px;}
+  .conn .c{font-family:var(--sans);font-size:13px;font-weight:500;color:var(--ink-2);background:var(--bg);border:1px solid var(--line-2);border-radius:8px;padding:7px 12px;}
+  .conn .c.more{color:var(--acc);background:var(--acc-wash);border-color:transparent;}
+
+  .kg svg{width:100%;height:auto;display:block;}
+  .kgstat{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);text-align:center;margin-top:6px;}
+  .vcap{font-family:var(--mono);font-size:10px;color:var(--ink-4);text-align:center;margin-top:12px;text-transform:uppercase;letter-spacing:.05em;}
+
+  /* ===== animation layer (scroll-sequenced) ===== */
+  html.js .seq{opacity:0;transform:translateY(10px);}
+  html.js .vvis.in .seq, html.js .win.in .seq{opacity:1;transform:none;transition:opacity .5s cubic-bezier(.2,.7,.2,1),transform .5s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0s);}
+  html.js .occ .d{transform:scale(0);} html.js .vvis.in .occ .d{animation:popdot .3s cubic-bezier(.3,1.4,.5,1) forwards;animation-delay:var(--d,0s);}
+  @keyframes popdot{to{transform:scale(1);}}
+  @media (prefers-reduced-motion: reduce){ html.js .seq, html.js .vvis.in .seq, html.js .win.in .seq, html.js .occ .d{opacity:1!important;transform:none!important;animation:none!important;} }
+
+  /* ===== interactive knowledge graph ===== */
+  .kg2 svg{width:100%;height:auto;display:block;max-width:520px;margin:0 auto;}
+  .kg2 .edge{stroke:#dcd5c5;stroke-width:1.4;transition:stroke .15s,opacity .15s,stroke-width .15s;}
+  .kg2 .node{cursor:pointer;outline:none;}
+  .kg2 .node circle{transition:transform .16s ease,opacity .15s;transform-box:fill-box;transform-origin:center;}
+  .kg2 .node text{transition:opacity .15s;}
+  .kg2.dim .edge{opacity:.14;} .kg2.dim .node{opacity:.3;}
+  .kg2 .node.hot{opacity:1;} .kg2 .node.hot circle{transform:scale(1.4);}
+  .kg2 .node.hot text{font-weight:700;}
+  .kg2 .edge.hot{stroke:var(--acc);opacity:1;stroke-width:2.4;}
+  .kgcap{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:center;margin-top:14px;min-height:32px;line-height:1.5;}
+  .kgcap b{color:var(--acc-2);} .kgcap .nn{color:var(--ink);font-weight:600;}
+
+  /* ===== playable briefing ===== */
+  .playtoggle{display:inline-flex;gap:5px;background:var(--sunk);border:1px solid var(--line);border-radius:11px;padding:4px;margin:26px auto 0;}
+  .pt{font-family:var(--mono);font-size:12.5px;border:none;background:none;color:var(--ink-3);padding:9px 18px;border-radius:8px;cursor:pointer;transition:.15s;}
+  .pt.active{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(40,30,15,.08);}
+  .playwrap{max-width:760px;margin:18px auto 0;}
+  .playwrap .bi{cursor:pointer;transition:background .15s;border-radius:8px;}
+  .playwrap .bi:hover{background:var(--bg);}
+  .bi h4 .more{font-family:var(--mono);font-size:10px;color:var(--acc);font-weight:500;margin-left:6px;}
+  .bi.open h4 .more{color:var(--ink-3);}
+  .bi .why{display:none;margin-top:9px;border-top:1px dashed var(--line-2);padding-top:9px;font-family:var(--sans);font-size:12.5px;line-height:1.55;color:var(--ink-2);}
+  .bi .why b{color:var(--ink);}
+  .bi.open .why{display:block;}
+  .win .tag[data-tip]{position:relative;cursor:help;}
+  .win .tag[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);white-space:nowrap;background:var(--ink);color:var(--bg);font-family:var(--sans);font-size:11px;font-weight:400;padding:6px 10px;border-radius:7px;z-index:6;box-shadow:0 8px 20px -6px rgba(0,0,0,.4);}
+  .win .tag[data-tip]:hover::before{content:'';position:absolute;bottom:calc(100% + 3px);left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--ink);z-index:6;}
+  .chaos{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 28px 60px -32px rgba(60,40,15,.34);}
+  .chaos .capx{font-family:var(--sans);font-size:14px;color:var(--ink-2);text-align:center;margin-bottom:18px;}
+  .chaos .apps{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+  .chaos .app{position:relative;background:var(--bg);border:1px solid var(--line-2);border-radius:11px;padding:17px 10px;text-align:center;}
+  .chaos .app .nm{font-size:13px;color:var(--ink-2);font-weight:500;}
+  .chaos .app .b{position:absolute;top:-8px;right:-8px;min-width:22px;height:22px;border-radius:11px;background:var(--red);color:#fff;font-family:var(--mono);font-size:11px;display:grid;place-items:center;padding:0 5px;}
+  .chaos .capx2{font-family:var(--serif);font-style:italic;font-size:15px;color:var(--ink-3);text-align:center;margin-top:20px;}
+  @media(max-width:560px){.chaos .apps{grid-template-columns:repeat(2,1fr);}}
+
+  /* ===== nav icon buttons + theme transition ===== */
+  body{transition:background .35s ease,color .35s ease;}
+  .iconbtn{background:var(--surface);border:1px solid var(--line-2);color:var(--ink-2);border-radius:8px;height:30px;padding:0 10px;cursor:pointer;font-family:var(--mono);font-size:13px;display:inline-flex;align-items:center;gap:6px;transition:.15s;}
+  .iconbtn:hover{border-color:var(--ink-3);color:var(--ink);}
+  .iconbtn .kbd{font-size:11px;}
+  @media(max-width:760px){ #cmdk-btn{display:none;} }
+
+  /* ===== watch scout work ===== */
+  .win .bar .replay{margin-left:10px;background:none;border:1px solid var(--line-2);color:var(--ink-3);border-radius:6px;font-family:var(--mono);font-size:10.5px;padding:3px 8px;cursor:pointer;transition:.15s;}
+  .win .bar .replay:hover{color:var(--acc);border-color:var(--acc);}
+  .scan{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding:12px 22px;border-bottom:1px solid var(--line);overflow:hidden;transition:max-height .4s ease,opacity .3s ease,padding .35s ease,border-color .3s ease;max-height:80px;}
+  .scan.gone{max-height:0;opacity:0;padding-top:0;padding-bottom:0;border-bottom-color:transparent;}
+  .scan .sc{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding:4px 9px;border-radius:6px;border:1px solid var(--line-2);background:var(--bg);transition:.2s;}
+  .scan .sc.done{color:var(--ok);border-color:#bfe0cb;background:#eef5ef;}
+  .scan .sc.done::before{content:'✓ ';}
+  .scan .scctr{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3);} .scan .scctr b{color:var(--ink-2);}
+  html.js .win.play .bi{opacity:0;transform:translateY(8px);}
+  html.js .win.play .bi.shown{opacity:1;transform:none;transition:opacity .45s ease,transform .45s cubic-bezier(.2,.7,.2,1);}
+  @media(prefers-reduced-motion:reduce){ html.js .win.play .bi{opacity:1;transform:none;} .scan{display:none;} }
+
+  /* ===== a day with scout (scrolly) ===== */
+  .day{position:relative;padding:48px 0 28px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--sunk);}
+  .day-inner{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start;}
+  .day-sticky{position:sticky;top:90px;height:min(68vh,500px);display:flex;gap:22px;align-items:stretch;}
+  .clock{position:relative;display:flex;flex-direction:column;justify-content:space-around;padding:18px 0;}
+  .clock .rail{position:absolute;left:33px;top:26px;bottom:26px;width:2px;background:var(--rule, var(--line-2));}
+  .clock .phase{display:flex;align-items:center;gap:12px;position:relative;z-index:1;opacity:.45;transition:opacity .3s;}
+  .clock .phase .t{font-family:var(--mono);font-size:12px;color:var(--ink-3);width:42px;}
+  .clock .phase .dot{width:14px;height:14px;border-radius:50%;background:var(--surface);border:2px solid var(--line-2);transition:.3s;}
+  .clock .phase.on{opacity:1;} .clock .phase.on .dot{background:var(--acc);border-color:var(--acc);transform:scale(1.35);} .clock .phase.on .t{color:var(--ink);}
+  .scene{flex:1;position:relative;min-height:240px;}
+  .scene .card{position:absolute;inset:0;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:30px;box-shadow:0 16px 40px -26px rgba(60,40,15,.34);opacity:0;transform:translateY(12px);transition:opacity .4s ease,transform .4s ease;display:flex;flex-direction:column;justify-content:center;}
+  .scene .card.on{opacity:1;transform:none;}
+  .scene .card .ic{font-size:32px;}
+  .scene .card h3{font-family:var(--serif);font-size:26px;font-weight:500;margin:14px 0 8px;color:var(--ink);}
+  .scene .card p{font-family:var(--serif);font-size:16px;line-height:1.62;color:var(--ink-2);margin:0;}
+  .day-steps{display:flex;flex-direction:column;}
+  .dstep{min-height:62vh;display:flex;flex-direction:column;justify-content:center;}
+  .dstep .k{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--acc);}
+  .dstep h4{font-family:var(--sans);font-size:clamp(22px,2.6vw,30px);font-weight:800;letter-spacing:-.02em;margin:10px 0 8px;color:var(--ink);}
+  .dstep p{font-family:var(--sans);font-size:16px;line-height:1.6;color:var(--ink-2);max-width:40ch;margin:0;}
+  .day-foot{font-family:var(--serif);font-style:italic;font-size:16px;color:var(--ink-3);text-align:center;margin:8px auto 0;max-width:60ch;}
+  @media(max-width:860px){ .day-inner{grid-template-columns:1fr;gap:8px;} .day-sticky{position:sticky;top:62px;height:auto;flex-direction:row;margin-bottom:14px;background:var(--sunk);padding:8px 0;z-index:5;} .scene{min-height:180px;} .dstep{min-height:auto;padding:34px 0;} }
+
+  /* ===== pointer tilt ===== */
+  @media(hover:hover){ .playwrap{perspective:1200px;} html.js .playwrap .win[data-view="with"]{transition:transform .12s ease;} }
+
+  /* ===== ⌘K palette ===== */
+  .cmdk{position:fixed;inset:0;z-index:80;background:rgba(20,15,8,.34);backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;}
+  .cmdk[hidden]{display:none;}
+  .cmdk-box{width:min(460px,92vw);background:var(--surface);border:1px solid var(--line-2);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px -20px rgba(0,0,0,.5);}
+  .cmdk-box input{width:100%;border:none;border-bottom:1px solid var(--line);background:none;padding:16px 18px;font-family:var(--sans);font-size:15px;color:var(--ink);outline:none;}
+  .cmdk-box ul{list-style:none;margin:0;padding:6px;max-height:300px;overflow:auto;}
+  .cmdk-box li{padding:11px 13px;border-radius:8px;font-family:var(--sans);font-size:14px;color:var(--ink-2);cursor:pointer;}
+  .cmdk-box li.sel,.cmdk-box li:hover{background:var(--sunk);color:var(--ink);}
+  .cmdk-box li[hidden]{display:none;}
+
+  /* ===== interactive: cross-check sandbox ===== */
+  .xc .srct{font-family:var(--mono);font-size:11px;padding:5px 10px;border-radius:6px;border:1px solid var(--line-2);background:var(--bg);color:var(--ink-3);cursor:pointer;transition:.15s;}
+  .xc .srct.on{color:var(--ok);border-color:#bfe0cb;background:#eef5ef;} .xc .srct.on::before{content:'✓ ';}
+  .xc .srct.conflict.on{color:var(--red);border-color:#eccbc4;background:#fbeeeb;} .xc .srct.conflict.on::before{content:'⚠ ';}
+  .xchint{font-family:var(--mono);font-size:10px;color:var(--ink-4);text-align:center;margin-top:10px;}
+
+  /* ===== interactive: pattern card ===== */
+  .pcard{cursor:pointer;transition:transform .15s ease;outline:none;border-radius:8px;} .pcard:hover{transform:translateY(-2px);}
+  .phint{font-family:var(--mono);font-size:10px;color:var(--acc);margin-top:11px;}
+  .pcard[data-fixed] .occ .d{background:var(--ok);} .pill.fixed{background:#e3efe7;color:var(--ok);}
+
+  /* ===== interactive: proposal ===== */
+  .prop .phead{display:flex;align-items:center;gap:9px;margin-bottom:10px;}
+  .prop .pid{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink);}
+  .ptimer{font-family:var(--mono);font-size:10px;padding:3px 9px;border-radius:999px;background:var(--acc-wash);color:var(--acc-2);margin-left:auto;transition:.2s;}
+  .prop .ptext{font-size:13.5px;color:var(--ink-2);line-height:1.5;} .prop .ptgt{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+  .pacts{display:flex;gap:8px;margin-top:14px;}
+  .pbtn{font-family:var(--mono);font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid var(--line-2);background:var(--bg);cursor:pointer;transition:.15s;}
+  .pbtn.y{color:var(--ok);border-color:#bfe0cb;} .pbtn.y:hover{background:#eef5ef;}
+  .pbtn.n{color:var(--red);border-color:#eccbc4;} .pbtn.n:hover{background:#fbeeeb;}
+  .pbtn.reset{color:var(--ink-3);}
+  .pcommit{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);background:var(--bg);border:1px solid transparent;border-radius:8px;margin-top:14px;overflow:hidden;max-height:0;opacity:0;padding:0 11px;transition:.35s;}
+  .pcommit .h{color:var(--acc);} .pcommit .rv{color:var(--ink-3);}
+  .prop[data-state="applied"] .pcommit{max-height:60px;opacity:1;padding:9px 11px;border-color:var(--line);}
+  .prop[data-state="applied"] .ptimer{background:#e3efe7;color:var(--ok);}
+  .prop[data-state="rejected"] .ptimer{background:#f1ece3;color:var(--ink-3);}
+
+  /* ===== interactive: wishlist ===== */
+  .chk .it{cursor:pointer;border-radius:6px;} .chk .it:hover{background:var(--bg);}
+  .chkhint{font-family:var(--mono);font-size:10px;color:var(--acc);margin-top:12px;}
+
+  /* ===== interactive: research queue ===== */
+  .rq .rqlist{max-height:150px;overflow-y:auto;margin-top:6px;}
+  .rq .rrow{display:flex;align-items:center;gap:10px;padding:9px 2px;border-top:1px solid var(--line);font-size:13.5px;color:var(--ink-2);}
+  .rq .rrow:first-child{border-top:none;} .rq .rrow .nm{flex:1;} .rq .rrow .age{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);}
+  .rq .rrow.done .nm{color:var(--ink-3);} .rq .rrow.done .age{color:var(--ok);} .rq .rrow.running .age{color:var(--acc);}
+  .rq .rqfoot{display:flex;align-items:center;gap:12px;margin-top:12px;}
+  .rq .rot{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:1;}
+  .rqrun{font-family:var(--mono);font-size:11.5px;padding:7px 13px;border-radius:8px;border:1px solid var(--acc);color:var(--acc-2);background:var(--acc-wash);cursor:pointer;transition:.15s;}
+  .rqrun:hover{background:var(--acc);color:#fff;} .rqrun[disabled]{opacity:.5;cursor:default;}
+  .rq .rqlist::-webkit-scrollbar{width:8px;} .rq .rqlist::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:4px;}
+
+  /* ===== interactive: telegram chat ===== */
+  .tg{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 22px 46px -30px rgba(60,40,15,.26);max-width:440px;}
+  .tghead{display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--slate);color:#fff;}
+  .tghead .tav{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.18);display:grid;place-items:center;}
+  .tghead .tgnm{font-family:var(--sans);font-weight:700;font-size:14px;} .tghead .tgst{font-family:var(--sans);font-size:11px;opacity:.7;}
+  .tghead .tgreplay{margin-left:auto;cursor:pointer;font-size:15px;opacity:.8;} .tghead .tgreplay:hover{opacity:1;}
+  .tgbody{padding:16px;display:flex;flex-direction:column;gap:9px;min-height:236px;background:var(--bg);}
+  .msg{max-width:84%;padding:9px 12px;border-radius:13px;font-family:var(--sans);font-size:13px;line-height:1.45;opacity:0;transform:translateY(8px);animation:msgin .3s ease forwards;}
+  .msg.scout{align-self:flex-start;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-bottom-left-radius:4px;}
+  .msg.me{align-self:flex-end;background:var(--slate);color:#fff;border-bottom-right-radius:4px;}
+  .msg .react{margin-top:7px;display:flex;gap:6px;} .msg .react button{font-size:12px;background:var(--bg);border:1px solid var(--line-2);border-radius:999px;padding:2px 8px;cursor:pointer;}
+  .msg .react button.picked{background:var(--acc-wash);border-color:var(--acc);}
+  @keyframes msgin{to{opacity:1;transform:none;}}
+  .typing{align-self:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:13px;border-bottom-left-radius:4px;padding:11px 14px;display:inline-flex;gap:4px;}
+  .typing span{width:6px;height:6px;border-radius:50%;background:var(--ink-4);animation:tdot 1s infinite;} .typing span:nth-child(2){animation-delay:.15s;} .typing span:nth-child(3){animation-delay:.3s;}
+  @keyframes tdot{0%,60%,100%{opacity:.3;transform:translateY(0);}30%{opacity:1;transform:translateY(-3px);}}
+  .tgchips{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 16px;background:var(--bg);} .tgchips:empty{display:none;}
+  .tgc{font-family:var(--sans);font-size:13px;padding:8px 14px;border-radius:999px;border:1px solid var(--acc);color:var(--acc-2);background:var(--acc-wash);cursor:pointer;} .tgc:hover{background:var(--acc);color:#fff;}
+  @media(prefers-reduced-motion:reduce){.msg{animation:none;opacity:1;transform:none;}}
+
+  /* ===== interactive: review queue ===== */
+  .held .a{cursor:pointer;}
+  .held[data-state="confirmed"]{border-color:#bfe0cb;} .held[data-state="rejected"]{border-color:#eccbc4;}
+
+  /* ===== detail pass: prominent system names + richer day cards ===== */
+  .vtext .sysnum{font-size:12px;letter-spacing:.04em;font-weight:500;}
+  .vtext .sysname{font-family:var(--sans);font-size:27px;font-weight:800;letter-spacing:-.02em;line-height:1.12;color:var(--ink);margin:8px 0 9px;}
+  .vtext .syslede{font-family:var(--serif);font-style:italic;font-size:18px;line-height:1.35;color:var(--acc-2);margin:0 0 11px;}
+  .vtext .sysbody{font-family:var(--sans);font-size:15px;line-height:1.62;color:var(--ink-2);margin:0;max-width:46ch;}
+  .vtext .sysbody b{color:var(--ink);font-weight:600;} .vtext .sysbody code{font-family:var(--mono);font-size:12.5px;background:var(--sunk);padding:1px 5px;border-radius:5px;color:var(--ink-2);}
+  @media (min-width:1080px){ .vtext .sysname{font-size:31px;} .vtext .syslede{font-size:19px;} .vtext .sysbody{font-size:16px;} }
+
+  .scene .card{justify-content:flex-start;}
+  .scene .card .cic{width:42px;height:42px;border-radius:12px;background:var(--acc-wash);color:var(--acc-2);display:grid;place-items:center;} .scene .card .cic svg{width:22px;height:22px;}
+  .scene .card .cmeta{display:flex;align-items:baseline;gap:11px;margin:16px 0 9px;flex-wrap:wrap;}
+  .scene .card .cmeta h3{font-family:var(--serif);font-size:25px;font-weight:600;margin:0;color:var(--ink);}
+  .scene .card .cmeta .freq{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+  .scene .card p{font-family:var(--serif);font-size:15.5px;line-height:1.6;color:var(--ink-2);margin:0;}
+  .scene .card .io{margin-top:15px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10.5px;color:var(--ink-3);line-height:1.7;}
+  .scene .card .io span{color:var(--acc-2);font-weight:500;} .scene .card .io .ar{color:var(--ink-4);padding:0 4px;}
+  @media (min-width:900px){ .day-sticky{height:min(74vh,560px);} .scene .card p{font-size:16px;} }
+  @media (max-width:860px){ .day-sticky{flex-direction:column;height:auto;} .clock{flex-direction:row;justify-content:space-between;padding:0 0 12px;gap:6px;} .clock .rail{display:none;} .clock .phase{flex-direction:column;gap:6px;text-align:center;} .clock .phase .t{width:auto;} .scene{min-height:300px;} .scene .card{position:relative;} .scene .card:not(.on){display:none;} }
+</style>
+</head>
+<body>
+<header class="nav"><div class="wrap nav-in">
+  <a class="brand" href="#"><img src="assets/scout-icon.svg" alt=""/><b>Scout</b></a>
+  <span class="sp"></span>
+  <a class="lnk" href="#trust">Trust</a>
+  <a class="lnk" href="#self">Self-operating</a>
+  <a class="lnk" href="#day">A day</a>
+  <a class="lnk" href="#yours">Yours</a>
+  <button class="iconbtn" id="cmdk-btn" aria-label="Jump to a section" title="Jump to… (⌘K)"><span class="kbd">⌘K</span></button>
+  <button class="iconbtn" id="theme-btn" aria-label="Toggle light/dark theme" title="Toggle theme">◐</button>
+  <a class="btn btn-p sm cta" href="#install">Install</a>
+</div></header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero" style="text-align:center;"><div class="wrap">
+    <p class="eyebrow" style="display:inline-block;">An autonomous agent for Claude Code</p>
+    <h1 style="margin-left:auto;margin-right:auto;max-width:17ch;">There's always more happening than you can <em>keep up with</em>.</h1>
+    <p class="lede2" style="margin-left:auto;margin-right:auto;">So I built an agent that keeps up for me — reads everything, checks its own work, and reaches back only when it's worth it.</p>
+    <div class="ctas" style="justify-content:center;">
+      <a class="btn btn-p" href="#install">Install Scout</a>
+      <a class="btn btn-s" href="https://github.com/Raven-Scout/scout-plugin">View on GitHub</a>
+    </div>
+
+    <div class="playtoggle reveal" role="tablist">
+      <button class="pt active" data-view="with">With Scout</button>
+      <button class="pt" data-view="without">Without Scout</button>
+    </div>
+
+    <div class="playwrap reveal">
+      <div class="win" data-view="with">
+        <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="t">Scout — Today</span><span class="r" id="winstatus">tap an item to see how it knows</span><button class="replay" id="replay" hidden>↻ replay</button></div>
+        <div class="scan" id="scan" aria-hidden="true">
+          <span class="sc" data-s="Slack">Slack</span><span class="sc" data-s="Gmail">Gmail</span><span class="sc" data-s="Calendar">Calendar</span><span class="sc" data-s="Linear">Linear</span><span class="sc" data-s="GitHub">GitHub</span>
+          <span class="scctr"><b id="scnum">0</b>/5 cross-checked</span>
+        </div>
+        <div class="body">
+          <div class="bi"><span class="p" style="background:var(--red)"></span><div><h4>Reply to Priya — she's asked twice. <span class="more">why ›</span></h4><p>The migration doc she needs is already in your drafts.</p><div class="r"><span class="tag v" data-tip="Confirmed by 2+ independent sources">verified</span><span class="src">Slack</span><span class="src">Gmail</span></div><div class="why">Scout matched her Slack nudge in #platform to the Gmail thread, saw the second ask landed at 4:40pm, and found the migration doc already in your drafts. Two sources agree → <b>verified</b>.</div></div></div>
+          <div class="bi"><span class="p" style="background:var(--amb)"></span><div><h4>Renewal call may have moved to 3:00. <span class="more">why ›</span></h4><p>Only the calendar says so — treat as tentative.</p><div class="r"><span class="tag s" data-tip="Only one source says so — treat as tentative">single-source</span><span class="src">Calendar</span></div><div class="why">The calendar event shifted, but nothing in email or Slack confirms it. One source only → flagged <b>single-source</b>, not asserted as fact.</div></div></div>
+          <div class="bi"><span class="p" style="background:var(--ink-3)"></span><div><h4>Did PROJ-214 ship? Sources disagree. <span class="more">why ›</span></h4><div class="conflict"><div class="sd"><span class="l">Linear</span><b>Done</b></div><div class="sd"><span class="l">GitHub</span>PR <b>still open</b></div></div><div class="r"><span class="tag x" data-tip="Sources disagree — both sides shown, never guessed">contradicted</span></div><div class="why">Linear says done; the PR is still open with no approvals. Scout won't pick a winner — it surfaces both and holds it for you. This contradiction is usually the most important thing in the day.</div></div></div>
+        </div>
+      </div>
+
+      <div class="chaos" data-view="without" hidden>
+        <div class="capx">Without Scout, the same morning looks like this — somewhere in here is the thing that matters:</div>
+        <div class="apps">
+          <div class="app"><span class="nm">Slack</span><span class="b">47</span></div>
+          <div class="app"><span class="nm">Gmail</span><span class="b">23</span></div>
+          <div class="app"><span class="nm">Linear</span><span class="b">12</span></div>
+          <div class="app"><span class="nm">Calendar</span><span class="b">5</span></div>
+          <div class="app"><span class="nm">GitHub</span><span class="b">8</span></div>
+          <div class="app"><span class="nm">Granola</span><span class="b">3</span></div>
+          <div class="app"><span class="nm">Drive</span><span class="b">9</span></div>
+          <div class="app"><span class="nm">WhatsApp</span><span class="b">6</span></div>
+        </div>
+        <div class="capx2">…and you reconcile it all by hand, hoping you didn't miss anything.</div>
+      </div>
+    </div>
+  </div></section>
+
+  <!-- PART I — TRUST -->
+  <div class="proof"><div class="col">
+    <div class="partlabel"><p class="k reveal">Part I — Trust by construction</p><h2 class="reveal">No source gets taken at its word.</h2></div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">Cross-checked, not collected</p><h3>It reconciles your tools before it tells you anything.</h3><p>A calendar invite checked against the transcript; a ticket against its PR. And what you <b>actually did</b> beats what a note says you'll do.</p></div>
+      <div class="vvis reveal"><div class="xc" id="xc">
+        <div class="srcs">
+          <button class="srct on" data-k="a">Calendar</button>
+          <button class="srct on" data-k="b">Slack</button>
+          <button class="srct on" data-k="c">Gmail</button>
+          <button class="srct conflict" data-k="x">conflicting source</button>
+        </div>
+        <span class="arr">↓</span>
+        <div class="out" id="xcout"><span class="tag v">verified</span> <span class="xcmsg">confirmed by 3 sources</span></div>
+        <div class="xchint">toggle the sources — watch the confidence change</div>
+      </div></div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">Confidence on every line</p><h3>You always know how much to trust it.</h3><p>Every claim carries its evidence level. A one-source claim is <b>never</b> quietly promoted to fact.</p></div>
+      <div class="vvis reveal"><div class="legend">
+        <div class="r"><span class="tag v">verified</span> 2+ sources agree</div>
+        <div class="r"><span class="tag s">single-source</span> only one — tentative</div>
+        <div class="r"><span class="tag" style="color:var(--ink-3)">unverified</span> mentioned, not corroborated</div>
+        <div class="r"><span class="tag" style="color:var(--ink-4)">stale</span> true once, not reconfirmed</div>
+        <div class="r"><span class="tag x">contradicted</span> sources disagree</div>
+      </div></div>
+    </div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">Disagreement is the signal</p><h3>When tools conflict, it shows both sides.</h3><p>It won't pick a winner. That contradiction is usually the most important thing in your day — and what every other tool hides.</p></div>
+      <div class="vvis reveal"><div class="conflict" style="margin-top:0;"><div class="sd"><span class="l">Linear</span>moved to <b>Done</b> by Sam, 6:12pm</div><div class="sd"><span class="l">GitHub</span>PR <b>#482 still open</b>, 0 approvals</div></div><div style="margin-top:10px;"><span class="tag x">contradicted</span> <span class="src" style="background:none;color:var(--ink-3)">→ held for you, never guessed</span></div></div>
+    </div>
+  </div></div>
+
+  <!-- PART II — SELF-OPERATING -->
+  <div class="band"><div class="proof" style="padding-top:0;"><div class="col">
+    <div class="partlabel"><p class="k reveal">Part II — It runs &amp; improves itself</p><h2 class="reveal">The part nothing else does. Six loops it runs on its own.</h2></div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">System 01 · self-knowledge</p><h3 class="sysname">The mistake audit</h3><p class="syslede">It keeps a model of its own mistakes.</p><p class="sysbody">Every time it's wrong and you flag it, it logs a numbered pattern — the error, the root cause, the fix — and tracks whether that fix actually held. A "fixed" one that recurs flips to <b>regression</b>, so nothing rots quietly. Over a hundred patterns in, the same class of error keeps getting rarer.</p></div>
+      <div class="vvis reveal"><div class="pcard" id="pcard" tabindex="0" role="button" aria-label="Apply the fix">
+        <div class="head"><span class="id">Pattern #58</span><span class="pill regress" id="ppill">regression</span></div>
+        <div class="ln"><span class="k">error</span><span>relied on a transcript for a name</span></div>
+        <div class="ln"><span class="k">root cause</span><span>didn't check the knowledge graph first</span></div>
+        <div class="ln"><span class="k">fix</span><span>names resolve against the graph, never the transcript</span></div>
+        <div class="occ"><span class="d"></span><span class="d"></span><span class="d"></span><span class="lbl" id="pocc">seen 3× → fix written back into its own rules</span></div>
+        <div class="phint" id="phint">click to apply the fix ›</div>
+      </div></div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">System 02 · self-modification</p><h3 class="sysname">Dreaming proposals</h3><p class="syslede">It rewrites its own instructions — in the open.</p><p class="sysbody">Each night it decides what to change about itself. Small, additive fixes it just applies; anything bigger it proposes and <b>auto-applies in a few days unless you reject it</b>. Every change is a separate git commit you can read and <code>revert</code> — transparency instead of a gate on every step.</p></div>
+      <div class="vvis reveal"><div class="prop" id="prop" data-state="pending">
+        <div class="phead"><span class="pid">proposal · resolve-names-via-graph</span><span class="ptimer" id="ptimer">auto-applies in 3d</span></div>
+        <div class="ptext">Resolve people against the knowledge graph, never the transcript. <span class="ptgt">→ edits SKILL.md</span></div>
+        <div class="pacts" id="pacts"><button class="pbtn y" data-act="approve">✓ Approve now</button><button class="pbtn n" data-act="reject">✕ Reject</button></div>
+        <div class="pcommit" id="pcommit"><span class="h">dreaming [21:30]:</span> <span id="pcommit-msg">applied — names resolve via graph</span> <span class="rv">· git revert anytime</span></div>
+      </div></div>
+    </div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">System 03 · self-direction</p><h3 class="sysname">The wishlist</h3><p class="syslede">It drives its own roadmap.</p><p class="sysbody">It keeps a running wishlist of improvements and works it down on its own — picking an item, building it across however many nights it takes, and shipping it. The Mac app, the terminal UI, the research mode: <b>features it built for itself.</b> You're not the only one filing requests.</p></div>
+      <div class="vvis reveal"><div class="chk" id="chk">
+        <div class="it done"><span class="box"></span><span>macOS Control Center app</span><span class="tg">shipped</span></div>
+        <div class="it done"><span class="box"></span><span>Terminal action-items UI</span><span class="tg">shipped</span></div>
+        <div class="it done"><span class="box"></span><span>Research session type</span><span class="tg">shipped</span></div>
+        <div class="it"><span class="box"></span><span>Event-driven triggers</span><span class="tg wip">in progress</span></div>
+        <div class="chkhint">tick an item — Scout works its own list</div>
+      </div></div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">System 04 · self-expansion</p><h3 class="sysname">The research queue</h3><p class="syslede">It goes and finds what it's missing.</p><p class="sysbody">Between briefings it scores which parts of your knowledge base have gone stale or thin, <b>rotates across your projects</b> so nothing's forgotten, and digs — web, docs, your tools — to fill the gaps. Drop a note in the vault and it jumps to the top of the queue.</p></div>
+      <div class="vvis reveal"><div class="rq" id="rq">
+        <div class="pin"><span class="mono">//==&lt;&lt;</span><span class="x"><b>look into the competitor’s launch</b> — your note, jumped to the top</span></div>
+        <div class="rqlist" id="rqlist">
+          <div class="rrow"><span class="nm">billing-revamp</span><span class="age">12d stale</span></div>
+          <div class="rrow"><span class="nm">api-migration</span><span class="age">7d</span></div>
+          <div class="rrow"><span class="nm">data-pipeline</span><span class="age">9d</span></div>
+          <div class="rrow"><span class="nm">design-system</span><span class="age">4d</span></div>
+          <div class="rrow"><span class="nm">onboarding-flow</span><span class="age">6d</span></div>
+          <div class="rrow done"><span class="nm">mobile-app</span><span class="age">done ✓</span></div>
+          <div class="rrow done"><span class="nm">q3-launch</span><span class="age">done ✓</span></div>
+        </div>
+        <div class="rqfoot"><span class="rot">scroll the queue · rotates so nothing's forgotten</span><button class="rqrun" id="rqrun">▸ run next</button></div>
+      </div></div>
+    </div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">System 05 · asking for help</p><h3 class="sysname">Enrichment questions</h3><p class="syslede">It asks you only what it can't find.</p><p class="sysbody">Some facts no tool can see — who really owns a decision, why something stalled. So it occasionally surfaces one <b>targeted, low-stakes question</b>, always with a link and a one-line gist so you can answer in seconds. Your answer routes straight into the graph, and it never asks twice.</p></div>
+      <div class="vvis reveal" style="padding:0;background:none;border:none;box-shadow:none;">
+        <div class="tg" id="tg">
+          <div class="tghead"><span class="tav"><svg width="14" height="14" viewBox="0 0 40 40" fill="none"><path d="M12 26 L20 10 L28 26 M15 21 H25" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><div class="tgnm">Scout</div><div class="tgst">bot · online</div></div><span class="tgreplay" id="tgreplay" title="replay">↻</span></div>
+          <div class="tgbody" id="tgbody"></div>
+          <div class="tgchips" id="tgchips"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">System 06 · knowing its limits</p><h3 class="sysname">The review queue</h3><p class="syslede">It refuses to guess about people.</p><p class="sysbody">The most dangerous edit a knowledge system can make is mistaking one person for another. Anything it isn't sure of — <b>especially identities</b> — it holds for you to confirm or reject, instead of silently corrupting the graph.</p></div>
+      <div class="vvis reveal"><div class="held" id="held" data-state="open">
+        <span class="lbl" id="heldlbl">⏸ held for review</span>
+        <div class="claim" id="heldclaim">Is <b>"A. Rivera"</b> a new person, or the Alex already in your graph? One source, can't tell.</div>
+        <div class="acts" id="heldacts"><button class="a y" data-act="confirm">✓ confirm</button><button class="a n" data-act="reject">✕ reject</button></div>
+      </div></div>
+    </div>
+  </div></div></div>
+
+  <!-- A DAY WITH SCOUT (scrollytelling) -->
+  <section class="day" id="day">
+    <div class="day-inner wrap">
+      <div class="day-sticky">
+        <div class="clock" aria-hidden="true">
+          <div class="rail"></div>
+          <div class="phase" data-i="0"><span class="t">07:00</span><span class="dot"></span></div>
+          <div class="phase" data-i="1"><span class="t">12:30</span><span class="dot"></span></div>
+          <div class="phase" data-i="2"><span class="t">15:00</span><span class="dot"></span></div>
+          <div class="phase" data-i="3"><span class="t">21:30</span><span class="dot"></span></div>
+        </div>
+        <div class="scene">
+          <div class="card" data-i="0">
+            <span class="cic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l1.8 1.8M17.2 17.2L19 19M19 5l-1.8 1.8M6.8 17.2L5 19"/></svg></span>
+            <div class="cmeta"><h3>Morning Briefing</h3><span class="freq">07:00 · daily</span></div>
+            <p>A full cold start. It reads the entire knowledge base, queries every connected tool, and <b>cross-checks every finding against the others</b> before it writes a single thing — then hands you today's short, trustworthy list.</p>
+            <div class="io"><span>reads</span> every tool + the whole KB <span class="ar">→</span> <span>writes</span> today's action items</div>
+          </div>
+          <div class="card" data-i="1">
+            <span class="cic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg></span>
+            <div class="cmeta"><h3>Consolidation</h3><span class="freq">midday + afternoon · a few times</span></div>
+            <p>Light delta scans. It looks only at <b>what changed since the last run</b> — a new reply, a shipped ticket, a meeting that moved — and reconciles each open item against the fresh data, flagging anything that's gone stale or now contradicts.</p>
+            <div class="io"><span>reads</span> what's new since last run <span class="ar">→</span> <span>writes</span> updated, reconciled items</div>
+          </div>
+          <div class="card" data-i="2">
+            <span class="cic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span>
+            <div class="cmeta"><h3>Research</h3><span class="freq">afternoon · when there's budget</span></div>
+            <p>It goes outward. It scores which parts of the knowledge base have <b>gone stale or thin</b>, rotates across your projects so none gets ignored, and deep-dives with web search and docs to fill the gaps it found — folding what it learns back into the graph.</p>
+            <div class="io"><span>reads</span> the web + your tools <span class="ar">→</span> <span>writes</span> a deeper knowledge graph</div>
+          </div>
+          <div class="card" data-i="3">
+            <span class="cic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.3 6.3 0 0 0 10.5 10.5Z"/></svg></span>
+            <div class="cmeta"><h3>Dreaming</h3><span class="freq">21:30 · nightly</span></div>
+            <p>Self-improvement, while you're offline. It processes the day's feedback, <b>logs its own mistakes</b>, prunes what no longer matters, and rewrites its own instructions so tomorrow's runs are a little sharper than today's.</p>
+            <div class="io"><span>reads</span> your feedback + its mistakes <span class="ar">→</span> <span>writes</span> better instructions</div>
+          </div>
+        </div>
+      </div>
+      <div class="day-steps">
+        <div class="dstep" data-i="0"><span class="k">07:00 · morning</span><h4>You wake up already briefed.</h4><p>While you slept, Scout read everything and cross-checked it. The day starts with one short, trustworthy list — not a pile of unread tabs.</p></div>
+        <div class="dstep" data-i="1"><span class="k">12:30 · midday</span><h4>It keeps pace as the day moves.</h4><p>Light consolidation runs reconcile what changed since the morning — new replies, shipped tickets, a meeting that moved.</p></div>
+        <div class="dstep" data-i="2"><span class="k">15:00 · afternoon</span><h4>It goes looking, on its own.</h4><p>When there's budget and something's gone stale, it researches — rotating across your projects so nothing is quietly forgotten.</p></div>
+        <div class="dstep" data-i="3"><span class="k">21:30 · night</span><h4>It gets better while you're offline.</h4><p>Dreaming processes the day's feedback, prunes what no longer matters, and rewrites its own instructions for tomorrow.</p></div>
+      </div>
+    </div>
+    <p class="day-foot wrap">These four run by default — and you can retime them, add your own, or let Scout invent its own.</p>
+  </section>
+
+  <!-- PART III — MEMORY -->
+  <div class="proof"><div class="col">
+    <div class="partlabel"><p class="k reveal">Part III — A memory you can read</p><h2 class="reveal">A living, validated knowledge graph — not a notes pile.</h2></div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">The graph</p><h3>Typed people, projects, tasks — and the links between them.</h3><p>Densely interconnected on purpose: corroboration needs more than one edge to lean on. Validated against a formal ontology on every run.</p></div>
+      <div class="vvis reveal"><div class="kg2" id="kg2">
+        <svg viewBox="0 0 420 250" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace" font-size="9.5">
+          <g class="edges">
+            <line class="edge" data-a="you" data-b="proj" x1="95" y1="120" x2="205" y2="72"/>
+            <line class="edge" data-a="you" data-b="org" x1="95" y1="120" x2="345" y2="62"/>
+            <line class="edge" data-a="you" data-b="mate" x1="95" y1="120" x2="330" y2="150"/>
+            <line class="edge" data-a="you" data-b="task" x1="95" y1="120" x2="200" y2="185"/>
+            <line class="edge" data-a="proj" data-b="mate" x1="205" y1="72" x2="330" y2="150"/>
+            <line class="edge" data-a="proj" data-b="tool" x1="205" y1="72" x2="70" y2="46"/>
+            <line class="edge" data-a="proj" data-b="task" x1="205" y1="72" x2="200" y2="185"/>
+            <line class="edge" data-a="proj" data-b="meet" x1="205" y1="72" x2="320" y2="212"/>
+            <line class="edge" data-a="task" data-b="pr" x1="200" y1="185" x2="120" y2="205"/>
+          </g>
+          <g class="node" data-id="you" data-rels="works_on → Project · employed_by → Org · works_with → Teammate · assigned → Task"><circle cx="95" cy="120" r="9" fill="#2f7d52"/><text x="95" y="142" fill="#534c41" text-anchor="middle">You</text></g>
+          <g class="node" data-id="proj" data-rels="worked_on_by → You, Teammate · depends_on → Tool · about ← Task, Meeting"><circle cx="205" cy="72" r="9" fill="#b4541f"/><text x="205" y="58" fill="#534c41" text-anchor="middle">Project</text></g>
+          <g class="node" data-id="org" data-rels="employs → You"><circle cx="345" cy="62" r="9" fill="#2f4a55"/><text x="345" y="48" fill="#534c41" text-anchor="middle">Org</text></g>
+          <g class="node" data-id="mate" data-rels="works_on → Project · works_with → You"><circle cx="330" cy="150" r="9" fill="#2f7d52"/><text x="330" y="170" fill="#534c41" text-anchor="middle">Teammate</text></g>
+          <g class="node" data-id="task" data-rels="assigned_to → You · about → Project · blocked_by → PR"><circle cx="200" cy="185" r="9" fill="#b07d2c"/><text x="200" y="205" fill="#534c41" text-anchor="middle">Task</text></g>
+          <g class="node" data-id="tool" data-rels="used_by → Project"><circle cx="70" cy="46" r="9" fill="#2f4a55"/><text x="70" y="32" fill="#534c41" text-anchor="middle">Tool</text></g>
+          <g class="node" data-id="meet" data-rels="about → Project"><circle cx="320" cy="212" r="9" fill="#b07d2c"/><text x="320" y="232" fill="#534c41" text-anchor="middle">Meeting</text></g>
+          <g class="node" data-id="pr" data-rels="blocks → Task"><circle cx="120" cy="205" r="9" fill="#2f4a55"/><text x="120" y="225" fill="#534c41" text-anchor="middle">PR</text></g>
+        </svg>
+        <div class="kgcap" id="kgcap">≈140 entities · ≈950 relationships — <b>hover a node</b> to trace its links</div>
+      </div></div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">Git as memory</p><h3>Every run is a commit. The history is its memory.</h3><p>Trace exactly what it changed, when, and why — and undo any of it. 800+ committed sessions and counting.</p></div>
+      <div class="vvis reveal"><div class="commit" style="margin-top:0;line-height:1.95;">
+        <div><span class="h">briefing [06-15]:</span> 3 need you · 1 contradiction surfaced</div>
+        <div><span class="h">consolidation [12:30]:</span> reconciled 2 items · 1 done</div>
+        <div><span class="h">research [15:00]:</span> refreshed billing-revamp</div>
+        <div><span class="h">dreaming [21:30]:</span> logged pattern #58 · applied 1 fix</div>
+      </div></div>
+    </div>
+  </div></div>
+
+  <!-- PART IV — YOURS -->
+  <div class="band"><div class="proof" style="padding-top:0;"><div class="col">
+    <div class="partlabel"><p class="k reveal">Part IV — Built for anyone, owned by you</p><h2 class="reveal">It runs on your machine, your tools, your files.</h2></div>
+
+    <div class="vrow">
+      <div class="vtext reveal"><p class="sysnum">Endless connectors</p><h3>Connect anything. The list is never closed.</h3><p>It auto-discovers whatever you've wired into Claude — official, custom, or community. Adds no new cloud; there's no Scout server.</p></div>
+      <div class="vvis reveal"><div class="conn">
+        <span class="c">Slack</span><span class="c">Gmail</span><span class="c">Calendar</span><span class="c">Linear</span><span class="c">GitHub</span><span class="c">Granola</span><span class="c">Drive</span><span class="c">WhatsApp</span><span class="c more">+ any MCP you add</span>
+      </div></div>
+    </div>
+
+    <div class="vrow flip">
+      <div class="vtext reveal"><p class="sysnum">Yours to keep</p><h3>Plain markdown, in a folder you own.</h3><p>Human-readable files with <code style="font-family:var(--mono);font-size:13px;">[[wikilinks]]</code> — open it, grep it, walk away with it. Not locked to one model or harness.</p></div>
+      <div class="vvis reveal"><div class="commit" style="margin-top:0;line-height:1.9;">
+        <div>~/Scout/</div>
+        <div style="color:var(--ink-3)">&nbsp;&nbsp;people/ · projects/ · personal/</div>
+        <div style="color:var(--ink-3)">&nbsp;&nbsp;action-items/ · meetings/</div>
+        <div style="color:var(--ink-3)">&nbsp;&nbsp;.git/ &nbsp;<span style="color:var(--acc)">← every change, reversible</span></div>
+      </div></div>
+    </div>
+
+    <div class="block" id="install" style="padding-top:54px;border-top:1px solid var(--line);">
+      <p class="kick reveal">Install</p>
+      <h3 class="sec reveal" style="font-family:var(--sans);font-size:28px;font-weight:800;">Run it yourself in under five minutes.</h3>
+      <p class="lead reveal">Two commands in Claude Code, then <code>/scout-setup</code> detects what you've connected and scaffolds your vault.</p>
+      <div class="term reveal"><div class="h">claude</div><pre><code><span class="c"># in Claude Code:</span>
+<span class="g">/plugin</span> marketplace add Raven-Scout/scout-plugin
+<span class="g">/plugin</span> install scout@scout-plugin
+
+<span class="c"># then create your vault:</span>
+<span class="g">/scout-setup</span></code></pre></div>
+      <div class="ctas reveal" style="margin-top:24px;">
+        <a class="btn btn-p" href="https://github.com/Raven-Scout/scout-plugin">Get Scout on GitHub</a>
+        <a class="btn btn-s" href="https://github.com/jordanrburger/Scout/releases">Download the Mac app</a>
+      </div>
+    </div>
+  </div></div></div>
+</main>
+
+<div class="cmdk" id="cmdk" hidden>
+  <div class="cmdk-box">
+    <input id="cmdk-input" placeholder="Jump to a section…" autocomplete="off" spellcheck="false" />
+    <ul id="cmdk-list">
+      <li data-href="#top">Top</li>
+      <li data-href="#trust">Trust — verification</li>
+      <li data-href="#self">Self-operating loops</li>
+      <li data-href="#day">A day with Scout</li>
+      <li data-href="#yours">Your data</li>
+      <li data-href="#install">Install</li>
+    </ul>
+  </div>
+</div>
+
+<footer><div class="wrap foot">
+  <span class="b"><img src="assets/scout-icon.svg" alt=""/>Scout</span><span>· an autonomous agent that runs and improves itself</span><span class="sp"></span>
+  <a href="https://github.com/Raven-Scout/scout-plugin">Repository</a>
+  <a href="https://code.claude.com/docs/en/discover-plugins">Claude Code plugins</a>
+  <a href="privacy.html">Privacy</a>
+  <a href="terms.html">Terms</a>
+</div></footer>
+
+<script>(function(){
+  var root=document.documentElement; root.classList.add('js');
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* generic scroll reveal + stagger (hero .bi handled separately) */
+  var seqSel='.src,.legend .r,.pcard .ln,.chk .it,.q .row,.q .pin,.commit > div,.conn .c,.bubble,.route,.held .claim,.held .acts,.fstep,.out';
+  document.querySelectorAll('.vvis').forEach(function(v){
+    v.querySelectorAll(seqSel).forEach(function(k,i){ k.classList.add('seq'); k.style.setProperty('--d',(i*0.07).toFixed(2)+'s'); });
+    v.querySelectorAll('.occ .d').forEach(function(d,i){ d.style.setProperty('--d',(0.35+i*0.13).toFixed(2)+'s'); });
+  });
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -7% 0px'});
+  document.querySelectorAll('.reveal, .vvis').forEach(function(e){io.observe(e);});
+
+  /* interactive knowledge graph */
+  var kg=document.getElementById('kg2');
+  if(kg){
+    var cap=document.getElementById('kgcap'), def=cap.innerHTML;
+    var nodes=[].slice.call(kg.querySelectorAll('.node')), edges=[].slice.call(kg.querySelectorAll('.edge'));
+    var clr=function(){kg.classList.remove('dim');nodes.forEach(function(n){n.classList.remove('hot');});edges.forEach(function(e){e.classList.remove('hot');});cap.innerHTML=def;};
+    nodes.forEach(function(n){ n.setAttribute('tabindex','0');
+      var f=function(){ var id=n.getAttribute('data-id'); kg.classList.add('dim'); n.classList.add('hot');
+        edges.forEach(function(e){ var a=e.getAttribute('data-a'),b=e.getAttribute('data-b'); if(a===id||b===id){e.classList.add('hot'); var o=kg.querySelector('.node[data-id="'+(a===id?b:a)+'"]'); if(o)o.classList.add('hot');} });
+        cap.innerHTML='<span class="nn">'+n.querySelector('text').textContent+'</span> — '+n.getAttribute('data-rels'); };
+      n.addEventListener('mouseenter',f); n.addEventListener('focus',f); n.addEventListener('mouseleave',clr); n.addEventListener('blur',clr);
+    });
+    kg.addEventListener('mouseleave',clr);
+  }
+
+  /* playable briefing: toggle + tap-to-expand */
+  document.querySelectorAll('.playwrap .bi').forEach(function(bi){ bi.addEventListener('click',function(e){ if(e.target.closest('.tag'))return; bi.classList.toggle('open'); }); });
+  var btns=[].slice.call(document.querySelectorAll('.pt')), views=[].slice.call(document.querySelectorAll('.playwrap [data-view]'));
+  btns.forEach(function(b){ b.addEventListener('click',function(){ btns.forEach(function(x){x.classList.toggle('active',x===b);}); var v=b.getAttribute('data-view'); views.forEach(function(el){el.hidden=el.getAttribute('data-view')!==v;}); }); });
+
+  /* watch scout work: live build */
+  (function(){
+    var win=document.querySelector('.win[data-view="with"]'); if(!win) return;
+    var scan=win.querySelector('#scan'), status=win.querySelector('#winstatus'), replay=win.querySelector('#replay');
+    var chips=[].slice.call(win.querySelectorAll('.scan .sc')), num=win.querySelector('#scnum');
+    var items=[].slice.call(win.querySelectorAll('.bi')); var timers=[];
+    function done(){ win.classList.remove('play'); if(scan)scan.classList.add('gone'); items.forEach(function(i){i.classList.add('shown');}); if(status)status.textContent='5 sources cross-checked · 3 need you'; if(replay)replay.hidden=false; }
+    function play(){
+      if(reduce){ done(); return; }
+      timers.forEach(clearTimeout); timers=[];
+      win.classList.add('play'); if(replay)replay.hidden=true;
+      if(scan)scan.classList.remove('gone'); chips.forEach(function(c){c.classList.remove('done');}); if(num)num.textContent='0';
+      items.forEach(function(i){i.classList.remove('shown');}); if(status)status.textContent='reading your tools…';
+      var t=350;
+      chips.forEach(function(c,i){ timers.push(setTimeout(function(){ c.classList.add('done'); if(num)num.textContent=String(i+1); },t)); t+=250; });
+      timers.push(setTimeout(function(){ if(scan)scan.classList.add('gone'); if(status)status.textContent='cross-checking…'; },t+150)); t+=560;
+      items.forEach(function(it){ timers.push(setTimeout(function(){ it.classList.add('shown'); },t)); t+=400; });
+      timers.push(setTimeout(function(){ if(status)status.textContent='5 sources cross-checked · 3 need you'; if(replay)replay.hidden=false; },t+150));
+    }
+    if(replay)replay.addEventListener('click',play);
+    var started=false, hio=new IntersectionObserver(function(es){es.forEach(function(e){ if(e.isIntersecting&&!started){started=true;play();hio.disconnect();} });},{threshold:.4});
+    hio.observe(win);
+  })();
+
+  /* a day with scout: scrollytelling */
+  (function(){
+    var day=document.getElementById('day'); if(!day) return;
+    var phases=[].slice.call(day.querySelectorAll('.clock .phase')), cards=[].slice.call(day.querySelectorAll('.scene .card')), steps=[].slice.call(day.querySelectorAll('.dstep'));
+    function set(i){ phases.forEach(function(p,k){p.classList.toggle('on',k===i);}); cards.forEach(function(c,k){c.classList.toggle('on',k===i);}); }
+    set(0);
+    var sio=new IntersectionObserver(function(es){es.forEach(function(e){ if(e.isIntersecting){ set(parseInt(e.target.getAttribute('data-i'),10)||0); } });},{rootMargin:'-45% 0px -45% 0px',threshold:0});
+    steps.forEach(function(s){sio.observe(s);});
+  })();
+
+  /* theme toggle */
+  (function(){
+    var btn=document.getElementById('theme-btn'); if(!btn) return;
+    try{ var s=localStorage.getItem('scout-theme'); if(s==='dark')root.classList.add('theme-dark'); else if(s==='light')root.classList.remove('theme-dark'); }catch(e){}
+    btn.addEventListener('click',function(){ var d=root.classList.toggle('theme-dark'); try{localStorage.setItem('scout-theme',d?'dark':'light');}catch(e){} });
+  })();
+
+  /* pointer tilt + magnetic buttons (hover devices, motion ok) */
+  if(window.matchMedia && matchMedia('(hover:hover)').matches && !reduce){
+    var wrap=document.querySelector('.playwrap'), w=wrap&&wrap.querySelector('.win[data-view="with"]');
+    if(wrap&&w){ wrap.addEventListener('mousemove',function(e){ var r=wrap.getBoundingClientRect(); var x=(e.clientX-r.left)/r.width-.5,y=(e.clientY-r.top)/r.height-.5; w.style.transform='rotateX('+(-y*3).toFixed(2)+'deg) rotateY('+(x*4).toFixed(2)+'deg)'; }); wrap.addEventListener('mouseleave',function(){w.style.transform='';}); }
+    document.querySelectorAll('.btn-p').forEach(function(b){ b.addEventListener('mousemove',function(e){ var r=b.getBoundingClientRect(); b.style.transform='translate('+((e.clientX-r.left-r.width/2)*0.12).toFixed(1)+'px,'+((e.clientY-r.top-r.height/2)*0.18).toFixed(1)+'px)'; }); b.addEventListener('mouseleave',function(){b.style.transform='';}); });
+  }
+
+  /* ⌘K palette */
+  (function(){
+    var pal=document.getElementById('cmdk'), input=document.getElementById('cmdk-input'), list=document.getElementById('cmdk-list'), open=document.getElementById('cmdk-btn'); if(!pal) return;
+    var lis=[].slice.call(list.querySelectorAll('li')), sel=0;
+    function vis(){ return lis.filter(function(l){return !l.hidden;}); }
+    function mark(){ var v=vis(); v.forEach(function(l,i){l.classList.toggle('sel',i===sel);}); }
+    function filt(){ var q=input.value.toLowerCase(); lis.forEach(function(l){ l.hidden = q && l.textContent.toLowerCase().indexOf(q)<0; }); sel=0; mark(); }
+    function show(){ pal.hidden=false; input.value=''; filt(); input.focus(); }
+    function hide(){ pal.hidden=true; }
+    function go(l){ var h=l.getAttribute('data-href'); hide(); if(h==='#top'){window.scrollTo({top:0,behavior:'smooth'});} else { var t=document.querySelector(h); if(t)t.scrollIntoView({behavior:'smooth'}); } }
+    if(open)open.addEventListener('click',show);
+    document.addEventListener('keydown',function(e){
+      if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); pal.hidden?show():hide(); }
+      else if(!pal.hidden){ if(e.key==='Escape')hide(); else if(e.key==='ArrowDown'){e.preventDefault();sel=Math.min(sel+1,vis().length-1);mark();} else if(e.key==='ArrowUp'){e.preventDefault();sel=Math.max(sel-1,0);mark();} else if(e.key==='Enter'){var v=vis();if(v[sel])go(v[sel]);} }
+    });
+    input.addEventListener('input',filt);
+    lis.forEach(function(l){ l.addEventListener('click',function(){go(l);}); });
+    pal.addEventListener('click',function(e){ if(e.target===pal)hide(); });
+  })();
+
+  /* cross-check sandbox */
+  (function(){ var xc=document.getElementById('xc'); if(!xc) return; var out=document.getElementById('xcout');
+    function upd(){ var on=xc.querySelectorAll('.srct.on:not(.conflict)').length; var conf=xc.querySelector('.srct.conflict.on'); var cls,lbl,msg;
+      if(conf){cls='x';lbl='contradicted';msg='sources disagree — held for you, never guessed';}
+      else if(on>=2){cls='v';lbl='verified';msg='confirmed by '+on+' sources';}
+      else if(on===1){cls='s';lbl='single-source';msg='one source — flagged, not asserted';}
+      else {cls='';lbl='unverified';msg='no corroboration yet';}
+      out.innerHTML='<span class="tag '+cls+'">'+lbl+'</span> <span class="xcmsg">'+msg+'</span>'; }
+    xc.querySelectorAll('.srct').forEach(function(b){ b.addEventListener('click',function(){ b.classList.toggle('on'); upd(); }); });
+  })();
+
+  /* pattern card flip */
+  (function(){ var c=document.getElementById('pcard'); if(!c) return; var pill=document.getElementById('ppill'),occ=document.getElementById('pocc'),hint=document.getElementById('phint'),fx=false;
+    function flip(){ fx=!fx; if(fx){c.setAttribute('data-fixed','');pill.textContent='fixed';pill.className='pill fixed';occ.textContent='✓ no recurrence since the fix landed';hint.textContent='fixed — click to replay';}
+      else {c.removeAttribute('data-fixed');pill.textContent='regression';pill.className='pill regress';occ.textContent='seen 3× → fix written back into its own rules';hint.textContent='click to apply the fix ›';} }
+    c.addEventListener('click',flip); c.addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){e.preventDefault();flip();} });
+  })();
+
+  /* proposal approve/reject */
+  (function(){ var p=document.getElementById('prop'); if(!p) return; var acts=document.getElementById('pacts'),timer=document.getElementById('ptimer'),cmsg=document.getElementById('pcommit-msg');
+    var pend='<button class="pbtn y" data-act="approve">✓ Approve now</button><button class="pbtn n" data-act="reject">✕ Reject</button>';
+    acts.addEventListener('click',function(e){ var b=e.target.closest('.pbtn'); if(!b)return; var a=b.getAttribute('data-act');
+      if(a==='approve'){p.setAttribute('data-state','applied');timer.textContent='applied ✓';cmsg.textContent='applied — names resolve via graph';acts.innerHTML='<button class="pbtn reset" data-act="reset">↻ try again</button>';}
+      else if(a==='reject'){p.setAttribute('data-state','rejected');timer.textContent='rejected — not applied';acts.innerHTML='<button class="pbtn reset" data-act="reset">↻ try again</button>';}
+      else {p.setAttribute('data-state','pending');timer.textContent='auto-applies in 3d';acts.innerHTML=pend;} });
+  })();
+
+  /* wishlist toggle */
+  (function(){ var chk=document.getElementById('chk'); if(!chk) return; chk.querySelectorAll('.it').forEach(function(it){ it.addEventListener('click',function(){ var done=it.classList.toggle('done'); var tg=it.querySelector('.tg'); if(tg){ if(done){tg.classList.remove('wip');tg.textContent='shipped';} else {tg.textContent='in progress';tg.classList.add('wip');} } }); }); })();
+
+  /* research queue run-next */
+  (function(){ var run=document.getElementById('rqrun'),list=document.getElementById('rqlist'); if(!run||!list) return;
+    run.addEventListener('click',function(){ var row=list.querySelector('.rrow:not(.done):not(.running)'); if(!row)return; var age=row.querySelector('.age'); row.classList.add('running'); age.textContent='researching…'; run.disabled=true;
+      setTimeout(function(){ row.classList.remove('running'); row.classList.add('done'); age.textContent='done ✓'; list.appendChild(row); run.disabled=false; },1100); });
+  })();
+
+  /* telegram chat */
+  (function(){ var tg=document.getElementById('tg'); if(!tg) return; var body=document.getElementById('tgbody'),chips=document.getElementById('tgchips'),replay=document.getElementById('tgreplay'),timers=[];
+    function clr(){ timers.forEach(clearTimeout); timers=[]; body.innerHTML=''; chips.innerHTML=''; }
+    function add(cls,html){ var d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=html; body.appendChild(d); body.scrollTop=body.scrollHeight; return d; }
+    function typing(){ var d=document.createElement('div'); d.className='typing'; d.innerHTML='<span></span><span></span><span></span>'; body.appendChild(d); body.scrollTop=body.scrollHeight; return d; }
+    function chip(){ chips.innerHTML=''; [["It's Marco's call","Marco"],["That's me","you"]].forEach(function(pr){ var b=document.createElement('button'); b.className='tgc'; b.textContent=pr[0];
+      b.onclick=function(){ chips.innerHTML=''; add('me',pr[0]); var t=typing(); timers.push(setTimeout(function(){ t.remove(); add('scout','Got it — saved to the graph. I won’t ask again. ✓'); },800)); };
+      chips.appendChild(b); }); }
+    function play(){ clr();
+      if(reduce){ var m=add('scout','Morning briefing: <b>3 need you</b>, 1 contradiction surfaced.'); add('scout','One thing I can’t tell from your tools — who owns the migration decision, you or Marco?'); chip(); return; }
+      timers.push(setTimeout(function(){ var t=typing(); timers.push(setTimeout(function(){ t.remove(); var m=add('scout','Morning briefing: <b>3 need you</b>, 1 contradiction surfaced.');
+        m.innerHTML+='<div class="react"><button data-r="up">👍</button><button data-r="down">👎</button></div>';
+        m.querySelectorAll('.react button').forEach(function(b){ b.onclick=function(){ m.querySelectorAll('.react button').forEach(function(x){x.classList.remove('picked');}); b.classList.add('picked'); }; }); },900)); },400));
+      timers.push(setTimeout(function(){ var t=typing(); timers.push(setTimeout(function(){ t.remove(); add('scout','One thing I can’t tell from your tools — who owns the migration decision, you or Marco?'); chip(); },1000)); },2200));
+    }
+    if(replay)replay.addEventListener('click',play);
+    var started=false,tio=new IntersectionObserver(function(es){es.forEach(function(e){ if(e.isIntersecting&&!started){started=true;play();tio.disconnect();} });},{threshold:.4}); tio.observe(tg);
+  })();
+
+  /* review queue confirm/reject (delegated) */
+  (function(){ var h=document.getElementById('held'); if(!h) return; var lbl=document.getElementById('heldlbl'),claim=document.getElementById('heldclaim'),acts=document.getElementById('heldacts');
+    var openHTML='<button class="a y" data-act="confirm">✓ confirm</button><button class="a n" data-act="reject">✕ reject</button>';
+    acts.addEventListener('click',function(e){ var b=e.target.closest('button'); if(!b)return; var a=b.getAttribute('data-act');
+      if(a==='confirm'){h.setAttribute('data-state','confirmed');lbl.textContent='✓ added to the graph';lbl.style.color='var(--ok)';claim.innerHTML='Linked to the existing <b>Alex</b> — your call, not a guess.';acts.innerHTML='<button class="pbtn reset" data-act="reset">↻ reset</button>';}
+      else if(a==='reject'){h.setAttribute('data-state','rejected');lbl.textContent='✕ discarded';lbl.style.color='var(--red)';claim.innerHTML='Left out of the graph — nothing silently corrupted.';acts.innerHTML='<button class="pbtn reset" data-act="reset">↻ reset</button>';}
+      else {h.setAttribute('data-state','open');lbl.textContent='⏸ held for review';lbl.style.color='';claim.innerHTML='Is <b>"A. Rivera"</b> a new person, or the Alex already in your graph? One source, can’t tell.';acts.innerHTML=openHTML;} });
+  })();
+})();</script>
+</body>
+</html>

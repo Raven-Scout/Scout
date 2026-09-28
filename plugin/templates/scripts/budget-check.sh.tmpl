@@ -1,0 +1,32 @@
+#!/bin/bash
+# Pre-run budget check — decides whether a session should proceed.
+#
+# Exit codes:
+#   0 = proceed (budget available)
+#   1 = skip (budget exhausted or too close to limit)
+#   2 = backoff (recent failure, possible rate limit)
+#
+# Usage: budget-check.sh [--verbose]
+# Called by runner scripts before launching claude.
+#
+# This is a thin wrapper around `scoutctl budget check` — the logic lives in
+# scout.scripts.budget_check so the runner pays one Python cold start instead
+# of the 5+ that the previous bash version paid via `python3 -c '...'` calls
+# (see issue #74).
+
+set -euo pipefail
+
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
+if [[ ! -x "$SCOUTCTL_BIN" ]]; then
+    if command -v scoutctl >/dev/null 2>&1; then
+        SCOUTCTL_BIN="$(command -v scoutctl)"
+    else
+        echo "budget-check.sh: scoutctl not found (looked at ${SCOUTCTL_BIN})" >&2
+        exit 1
+    fi
+fi
+
+SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+export SCOUT_DATA_DIR
+
+exec "$SCOUTCTL_BIN" budget check ${1:+"$1"}

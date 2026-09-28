@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-session-data.sh — Gather routine data before a {{INSTANCE_NAME}} session starts.
+# Writes to .scout-cache/session-context.json for skills to read instead of
+# making live API calls for repetitive checks (git log, PR lists, KB dates, personal tasks).
+#
+# Usage: Called by {{INSTANCE_NAME}} runner scripts before invoking Claude.
+#   ./scripts/pre-session-data.sh [session-type]
+#   session-type: briefing | consolidation | dreaming | research
+#
+# This is a thin wrapper around `scoutctl pre-session data`. The bash version
+# ran a 4-subprocess pipeline (head | grep | head | sed | sed) per KB markdown
+# file plus two python3 -c calls just to JSON-encode stdin. Folded into one
+# Python process here with an mtime cache for the KB date extraction (#74 + #76).
+
+set -eu
+
+SESSION_TYPE="${1:-unknown}"
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
+if [[ ! -x "$SCOUTCTL_BIN" ]]; then
+    if command -v scoutctl >/dev/null 2>&1; then
+        SCOUTCTL_BIN="$(command -v scoutctl)"
+    else
+        echo "pre-session-data.sh: scoutctl not found (looked at ${SCOUTCTL_BIN})" >&2
+        exit 1
+    fi
+fi
+
+SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+export SCOUT_DATA_DIR
+
+exec "$SCOUTCTL_BIN" pre-session data "$SESSION_TYPE"
