@@ -17,6 +17,7 @@ from scout.sessions import cli_home
 from scout.sessions.index import INDEX_FILENAME, BuildOptions, build_index, index_path, run, write_index
 from scout.sessions.model import Index, dt_to_iso
 from scout.sessions.settings import AgentSessionsSettings
+from scout.sessions.stats import BuildStats
 from tests.unit.sessions_helpers import (
     claude_home,
     support_dir,
@@ -450,6 +451,20 @@ def test_run_writes_index_and_caches_atomically(fake_data_dir: Path) -> None:
     assert not list((fake_data_dir / ".scout-cache").glob("*.tmp"))
     assert (fake_data_dir / ".scout-cache" / "sessions-transcripts.cache.json").exists()
     assert (fake_data_dir / ".scout-cache" / "sessions-pr.cache.json").exists()
+
+
+def test_a_rebuild_decodes_no_unchanged_desktop_record(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    cold = BuildStats()
+    first = build_index(opts, stats=cold)
+    assert cold.desktop_decoded == 4 and "desktop" in cold.caches_written
+    assert (fake_data_dir / ".scout-cache" / "sessions-desktop.cache.json").exists()
+
+    warm = BuildStats()
+    second = build_index(opts, stats=warm)
+    assert warm.desktop_decoded == 0 and "desktop" not in warm.caches_written
+    assert second.to_dict()["sessions"] == first.to_dict()["sessions"]
+    assert second.to_dict()["projects"] == first.to_dict()["projects"]
 
 
 def test_run_removes_legacy_transcript_cache(fake_data_dir: Path) -> None:

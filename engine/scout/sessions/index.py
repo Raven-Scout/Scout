@@ -35,6 +35,7 @@ from scout.sessions.model import (
     parse_iso,
 )
 from scout.sessions.settings import AgentSessionsSettings, load_settings
+from scout.sessions.stats import BuildStats
 from scout.sessions.transcript import (
     TRANSCRIPT_CACHE_FILENAME,
     load_transcript_cache,
@@ -214,16 +215,22 @@ def _recency(s: AgentSession) -> float:
 # ----- build ---------------------------------------------------------------------------
 
 
-def build_index(opts: BuildOptions) -> Index:
+def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index:
+    """Build the index from every source. *stats*, when given, is filled with the work done (1b spec §3.7)."""
+    if stats is None:
+        stats = BuildStats()
     s = opts.settings
     errors: list[SourceError] = []
-    records, e1 = desktop.load_desktop_records(opts.support_dir)
+    cache_dir = paths.cache_dir(opts.data_dir)
+    dcache_path = cache_dir / desktop.DESKTOP_CACHE_FILENAME
+    dcache = desktop.load_desktop_cache(dcache_path)
+    dcache_loaded = dict(dcache)  # entries are replaced, never mutated, so a shallow copy is a snapshot
+    records, e1 = desktop.load_desktop_records(opts.support_dir, cache=dcache, stats=stats)
     groups, e2 = desktop.load_groups(opts.support_dir)
     leases, e3 = desktop.load_worktree_leases(opts.support_dir)
     live, e4 = cli_home.load_live_processes(opts.claude_home, is_alive=opts.pid_alive)
     errors.extend([*e1, *e2, *e3, *e4])
     tpaths = cli_home.transcript_paths(opts.claude_home)
-    cache_dir = paths.cache_dir(opts.data_dir)
     tcache = load_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME)
     window = timedelta(days=s.transcript_window_days)
 
@@ -333,6 +340,8 @@ def build_index(opts: BuildOptions) -> Index:
         )
 
     sessions.sort(key=lambda x: (STATES.index(x.state), -_recency(x)))
+    if dcache != dcache_loaded and desktop.write_desktop_cache(dcache_path, dcache):
+        stats.caches_written.append("desktop")
     # Write back only what this run used, so deleted transcripts and unlinked PRs drop out.
     write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, {k: v for k, v in tcache.items() if k in looked_up})
     referenced = {ref.key for ref in all_refs}
@@ -372,10 +381,11 @@ def run(
     hours: int = 24,
     instance_name: str = "Scout",
     tz_name: str | None = None,
+    stats: BuildStats | None = None,
 ) -> tuple[Index, Path]:
     """Build the index and write it (plus both caches); optionally render the digest."""
     o = opts or default_options(data_dir, now=now, use_gh=use_gh)
-    index = build_index(o)
+    index = build_index(o, stats=stats)
     legacy = paths.cache_dir(o.data_dir) / LEGACY_CACHE_FILENAME
     if legacy.exists():
         try:
