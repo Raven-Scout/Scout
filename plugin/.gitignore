@@ -23,4 +23,3 @@ engine/manifest.json
 # Local per-checkout artifacts (not part of the plugin)
 .claude/
 .scoutctl-py-cache
-docs/plans/archive/PLAN-8-RESUME.md
