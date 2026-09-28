@@ -18,8 +18,8 @@ def test_backfill_skips_lines_with_semantic_tag(fake_data_dir: Path, tmp_path: P
     f = tmp_path / "action-items-2026-06-06.md"
     f.write_text(
         "# T\n\n## 🔴 Urgent\n\n"
-        "- [ ] [#MIRO] **Miro 1:1** — sends\n"  # semantic tag: skip
-        "- [ ] [#AI3026] **Validate tracing**\n"  # 6-char tag: skip
+        "- [ ] [#IOTA] **Team 1:1** — sends\n"  # semantic tag: skip
+        "- [ ] [#XI7391] **Validate tracing**\n"  # 6-char tag: skip
         "- [ ] **Bare unprefixed task** — needs id\n",  # bare: gets a prefix
         encoding="utf-8",
     )
@@ -27,7 +27,7 @@ def test_backfill_skips_lines_with_semantic_tag(fake_data_dir: Path, tmp_path: P
     # lines it would prefix. dry_run avoids touching the file or id-map.
     added = backfill_prefixes(target=f, data_dir=fake_data_dir, dry_run=True)
     titles = {title for _, _, title in added}
-    assert all("Miro" not in t and "Validate tracing" not in t for t in titles)
+    assert all("Team 1:1" not in t and "Validate tracing" not in t for t in titles)
     assert len(added) == 1  # only the bare line
 
 
