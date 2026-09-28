@@ -1,7 +1,7 @@
 import Foundation
 
 /// A concrete engine on disk.
-struct EngineInstall: Equatable, Sendable {
+nonisolated struct EngineInstall: Equatable, Sendable {
     let root: URL
     let scoutctl: URL
     let python: URL?
@@ -10,12 +10,12 @@ struct EngineInstall: Equatable, Sendable {
 }
 
 /// Who owns an engine the app did not install (spec §4.4 / §10).
-enum ExternalSource: Equatable, Sendable {
+nonisolated enum ExternalSource: Equatable, Sendable {
     case devCheckout, installSh, claudeCode, marketplaceCache, shim
     case unknown(String)
 }
 
-enum EngineState: Equatable, Sendable {
+nonisolated enum EngineState: Equatable, Sendable {
     case notInstalled
     case managed(EngineInstall, vaultBootstrapped: Bool)
     case external(EngineInstall, ExternalSource)
@@ -41,9 +41,8 @@ enum EngineState: Equatable, Sendable {
 }
 
 /// Pure filesystem discovery, in the precedence order of spec §4.4's table.
-struct EngineLocator: Sendable {
+nonisolated struct EngineLocator: Sendable {
     let layout: EngineLayout
-    var fileManager: FileManager = .default
 
     static let shimMarker = "# scout-plugin scoutctl shim"
 
@@ -55,7 +54,7 @@ struct EngineLocator: Sendable {
             let install = EngineInstall(root: URL(fileURLWithPath: p.engineRoot), scoutctl: scoutctl,
                                         python: URL(fileURLWithPath: p.python), version: p.version,
                                         vault: URL(fileURLWithPath: p.vault))
-            guard fileManager.isExecutableFile(atPath: scoutctl.path) else {
+            guard FileManager.default.isExecutableFile(atPath: scoutctl.path) else {
                 return .broken(install, reason: "engine pointer names a missing scoutctl: \(p.scoutctl)")
             }
             return p.managedBy == "scout-app"
@@ -74,11 +73,11 @@ struct EngineLocator: Sendable {
     /// `engine/current` → versioned root; venv beside it. The installer stopped
     /// before `bootstrap` (which writes the pointer), or a user deleted state.
     private func conventionalLayout() -> EngineInstall? {
-        guard let dest = try? fileManager.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path) else { return nil }
+        guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path) else { return nil }
         let root = URL(fileURLWithPath: dest, relativeTo: layout.engineDir).standardizedFileURL
         let version = root.lastPathComponent
         let scoutctl = layout.scoutctl(version: version)
-        guard fileManager.isExecutableFile(atPath: scoutctl.path) else { return nil }
+        guard FileManager.default.isExecutableFile(atPath: scoutctl.path) else { return nil }
         return EngineInstall(root: root, scoutctl: scoutctl, python: layout.venv(version: version).appending(path: "bin/python"),
                              version: Self.version(atRoot: root) ?? version, vault: nil)
     }
@@ -86,7 +85,7 @@ struct EngineLocator: Sendable {
     private func shimTarget() -> EngineInstall? {
         guard let text = try? String(contentsOf: layout.shimURL, encoding: .utf8),
               let target = Self.parseShimTarget(text),
-              fileManager.isExecutableFile(atPath: target) else { return nil }
+              FileManager.default.isExecutableFile(atPath: target) else { return nil }
         let scoutctl = URL(fileURLWithPath: target)
         // <root>/.venv/bin/scoutctl → root is three levels up.
         let root = scoutctl.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -111,7 +110,7 @@ struct EngineLocator: Sendable {
     private func installIfVenv(at root: URL) -> EngineInstall? {
         for venv in [root.appending(path: ".venv"), root.appending(path: "engine/.venv")] {
             let scoutctl = venv.appending(path: "bin/scoutctl")
-            if fileManager.isExecutableFile(atPath: scoutctl.path) {
+            if FileManager.default.isExecutableFile(atPath: scoutctl.path) {
                 return EngineInstall(root: root, scoutctl: scoutctl, python: venv.appending(path: "bin/python"),
                                      version: Self.version(atRoot: root), vault: nil)
             }

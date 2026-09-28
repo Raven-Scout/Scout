@@ -118,6 +118,19 @@ struct EngineLocatorTests {
         #expect(EngineLocator(layout: layout).locate().externalSource == .devCheckout)
     }
 
+    /// `EngineLocator` must be safe to call off the main actor (Task B3 runs
+    /// `locate()` from `Task.detached`); this fails to compile if the type
+    /// silently regains `@MainActor` isolation under this project's
+    /// `-default-isolation=MainActor` build setting.
+    @Test func locatesFromADetachedTask() async throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pluginTree(layout.devCheckout, version: "0.9.0")
+        try executable(layout.devCheckout.appending(path: ".venv/bin/scoutctl"))
+        let state = await Task.detached { EngineLocator(layout: layout).locate() }.value
+        #expect(state.externalSource == .devCheckout)
+    }
+
     @Test func parseShimTargetRequiresTheMarker() {
         #expect(EngineLocator.parseShimTarget("#!/bin/sh\n# scout-plugin scoutctl shim\nexec \"/x/bin/scoutctl\" \"$@\"\n") == "/x/bin/scoutctl")
         #expect(EngineLocator.parseShimTarget("#!/bin/sh\nexec \"/x/bin/scoutctl\" \"$@\"\n") == nil)

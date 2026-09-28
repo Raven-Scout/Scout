@@ -2,7 +2,7 @@ import Foundation
 
 /// Mirror of `~/.local/state/scout/engine.json` (spec §4.2), written by every
 /// `scoutctl bootstrap …`. The app only reads it.
-struct EnginePointer: Codable, Equatable, Sendable {
+nonisolated struct EnginePointer: Codable, Equatable, Sendable {
     let schemaVersion: Int
     let version: String
     let engineRoot: String
@@ -19,7 +19,7 @@ struct EnginePointer: Codable, Equatable, Sendable {
         case managedBy = "managed_by", writtenAt = "written_at"
     }
 
-    struct UnsupportedSchema: Error, Equatable { let found: Int }
+    nonisolated struct UnsupportedSchema: Error, Equatable { let found: Int }
 
     static func decode(_ data: Data) throws -> EnginePointer {
         let p = try JSONDecoder().decode(EnginePointer.self, from: data)

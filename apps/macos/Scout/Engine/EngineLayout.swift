@@ -4,7 +4,7 @@ import Foundation
 /// `home` so tests point it at a temp directory. Mirrors scout-plugin's
 /// `engine_pointer.py` and the `~/.local/{share,state,bin}` conventions Claude
 /// Code itself uses (`~/.local/bin/claude`, `~/.local/share/claude/versions/`).
-struct EngineLayout: Equatable, Sendable {
+nonisolated struct EngineLayout: Equatable, Sendable {
     let home: URL
 
     var shareDir: URL { home.appending(path: ".local/share/scout") }

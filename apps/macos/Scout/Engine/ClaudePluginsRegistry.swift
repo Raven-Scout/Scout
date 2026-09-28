@@ -5,26 +5,26 @@ import Foundation
 /// schema version 2; `known_marketplaces.json` keyed by marketplace name).
 /// #74's `PluginManifests` parses the same files for update checks — whichever
 /// lands second should dedupe onto one type.
-struct InstalledPlugin: Equatable, Sendable {
+nonisolated struct InstalledPlugin: Equatable, Sendable {
     let id: String
     let version: String
     let installPath: String
 }
 
-enum MarketplaceSource: Equatable, Sendable {
+nonisolated enum MarketplaceSource: Equatable, Sendable {
     case directory(path: String)
     case github(repo: String)
     case git(url: String)
     case other(String)
 }
 
-struct KnownMarketplace: Equatable, Sendable {
+nonisolated struct KnownMarketplace: Equatable, Sendable {
     let name: String
     let source: MarketplaceSource
     let installLocation: String?
 }
 
-enum ClaudePluginsRegistry {
+nonisolated enum ClaudePluginsRegistry {
     static let scoutPluginID = "scout@scout-plugin"
     static let scoutMarketplaceName = "scout-plugin"
 
