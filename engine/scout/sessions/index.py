@@ -232,6 +232,7 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
     errors.extend([*e1, *e2, *e3, *e4])
     tpaths = cli_home.transcript_paths(opts.claude_home)
     tcache = load_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME)
+    tcache_loaded = dict(tcache)
     window = timedelta(days=s.transcript_window_days)
 
     # 1. Desktop records → sessions; forks sharing a cliSessionId dedupe to the most recent.
@@ -299,6 +300,7 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
     by_priority = sorted(sessions, key=lambda x: (x.is_archived, -_recency(x)))
     all_refs = [ref for sess in by_priority for ref in refs_by_session.get(sess.id, [])]
     pr_cache = github.load_pr_cache(cache_dir / github.PR_CACHE_FILENAME)
+    pr_loaded = dict(pr_cache)  # refresh_pr_states inserts new PRInfo objects, never mutates old ones
     fetched = 0
     resolved: dict[str, PRInfo] = {}
     if all_refs:
@@ -347,12 +349,17 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
         )
 
     sessions.sort(key=lambda x: (STATES.index(x.state), -_recency(x)))
+    # Write back only what this run used, so deleted transcripts and unlinked PRs drop out,
+    # and only when something changed (1b spec §3.6).
     if dcache != dcache_loaded and desktop.write_desktop_cache(dcache_path, dcache):
         stats.caches_written.append("desktop")
-    # Write back only what this run used, so deleted transcripts and unlinked PRs drop out.
-    write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, {k: v for k, v in tcache.items() if k in looked_up})
+    kept = {k: v for k, v in tcache.items() if k in looked_up}
+    if kept != tcache_loaded and write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, kept):
+        stats.caches_written.append("transcripts")
     referenced = {ref.key for ref in all_refs}
-    github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, {k: v for k, v in pr_cache.items() if k in referenced})
+    pr_kept = {k: v for k, v in pr_cache.items() if k in referenced}
+    if pr_kept != pr_loaded and github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, pr_kept):
+        stats.caches_written.append("prs")
 
     return Index(
         generated_at=dt_to_iso(opts.now),

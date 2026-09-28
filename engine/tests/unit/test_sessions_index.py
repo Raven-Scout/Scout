@@ -666,3 +666,35 @@ def test_project_roots_are_resolved_once_per_distinct_path(fake_data_dir: Path) 
     opts.toplevel = counting
     idx = build_index(opts)
     assert sorted(asked) == sorted({s.origin_cwd for s in idx.sessions if s.origin_cwd})
+
+
+def test_an_unchanged_rebuild_rewrites_no_cache(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    first = BuildStats()
+    run(opts=opts, stats=first)
+    assert sorted(first.caches_written) == ["desktop", "prs", "transcripts"]
+    cache_dir = fake_data_dir / ".scout-cache"
+    before = {p.name: p.stat().st_mtime_ns for p in cache_dir.glob("sessions-*.cache.json")}
+    assert len(before) == 3
+
+    again = BuildStats()
+    run(opts=opts, stats=again)
+    assert again.caches_written == []
+    assert {p.name: p.stat().st_mtime_ns for p in cache_dir.glob("sessions-*.cache.json")} == before
+
+
+def test_a_grown_transcript_rewrites_only_the_transcript_cache(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    run(opts=opts)
+    a_path = claude_home() / "projects" / (REPO_DIR + "--claude-worktrees-w1") / f"{UA}.jsonl"
+    row = _assistant_text("Found it: the parser skips blank lines.", "2026-09-08T10:00:09.000Z")
+    with a_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, separators=(",", ":")) + "\n")
+    st = a_path.stat()
+    os.utime(a_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    stats = BuildStats()
+    idx, _ = run(opts=opts, stats=stats)
+    assert stats.caches_written == ["transcripts"] and stats.transcripts_tail_parsed == 1
+    a = next(s for s in idx.sessions if s.id == "local_A")
+    assert a.transcript is not None and a.transcript.last_turn.kind == "end_turn"
