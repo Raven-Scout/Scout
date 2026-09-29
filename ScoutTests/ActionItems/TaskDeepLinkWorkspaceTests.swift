@@ -36,7 +36,7 @@ struct TaskDeepLinkWorkspaceTests {
     }
 
     @Test func inAppRefsHaveNoURL() {
-        #expect(TaskDeepLink.crossRef(tag: "MIRO").openURL(linearWorkspace: "acme-co") == nil)
+        #expect(TaskDeepLink.crossRef(tag: "IOTA").openURL(linearWorkspace: "acme-co") == nil)
         #expect(TaskDeepLink.plainRef(text: "see the runbook").openURL(linearWorkspace: "acme-co") == nil)
     }
 }

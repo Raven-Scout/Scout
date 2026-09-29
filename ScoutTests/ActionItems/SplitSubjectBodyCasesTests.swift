@@ -104,8 +104,8 @@ struct SplitSubjectBodyCasesTests {
 
     @Test("a short-prefix tag stays with the subject")
     func shortPrefixStaysInSubject() {
-        let r = split("[#AI3026] Land the tracing job — blocked on review")
-        #expect(r.subject == "[#AI3026] Land the tracing job")
+        let r = split("[#XI7391] Land the tracing job — blocked on review")
+        #expect(r.subject == "[#XI7391] Land the tracing job")
         #expect(r.body == "blocked on review")
     }
 
