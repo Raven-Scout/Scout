@@ -196,14 +196,15 @@ def merge_gitignore(vault_text: str, template_text: str) -> str:
     line the vault added (a secrets file, a local venv) survives any upgrade.
     Template patterns the vault is missing are appended after a blank line,
     together with the comment lines directly above them in the template.
-    Patterns compare with surrounding whitespace stripped. When the vault already
+    Patterns compare with trailing whitespace stripped, which git ignores; leading
+    whitespace is part of a git pattern, so it counts. When the vault already
     has every template pattern, its text comes back byte-identical.
     """
-    present = {s for line in vault_text.splitlines() if (s := line.strip()) and not s.startswith("#")}
+    present = {s for line in vault_text.splitlines() if (s := line.rstrip()) and not s.startswith("#")}
     additions: list[str] = []
     comments: list[str] = []
     for line in template_text.splitlines():
-        s = line.strip()
+        s = line.rstrip()
         if not s:
             comments = []
         elif s.startswith("#"):
@@ -240,12 +241,15 @@ def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
         _atomic_write(cfg.vault / vault_rel, src.read_text(encoding="utf-8"))
     for vault_rel, tmpl_rel in _CAT1_TEMPLATES:
         src = cfg.plugin_root / tmpl_rel
+        target = cfg.vault / vault_rel
+        merge = vault_rel in _CAT1_APPEND_ONLY and target.exists()
         if not src.exists():
-            _atomic_write(cfg.vault / vault_rel, f"# placeholder: {tmpl_rel}\n")
+            # A placeholder over an append-only file would drop every vault line.
+            if not merge:
+                _atomic_write(target, f"# placeholder: {tmpl_rel}\n")
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
-        target = cfg.vault / vault_rel
-        if vault_rel in _CAT1_APPEND_ONLY and target.exists():
+        if merge:
             rendered = merge_gitignore(target.read_text(encoding="utf-8"), rendered)
         _atomic_write(target, rendered)
         target.chmod(0o755)

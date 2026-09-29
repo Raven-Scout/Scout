@@ -9,6 +9,7 @@ added, nothing is removed.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,24 @@ def test_merge_gitignore_leaves_a_complete_vault_file_byte_identical() -> None:
 
 def test_merge_gitignore_ignores_whitespace_differences() -> None:
     assert bootstrap.merge_gitignore(".venv/   \n", ".venv/\n") == ".venv/   \n"
+
+
+def test_upgrade_with_the_template_missing_leaves_the_vault_gitignore_alone(vault: Path, tmp_path: Path) -> None:
+    """A partial checkout or failed plugin update can lack the template. The cat-1
+    fallback writes a placeholder, which for .gitignore would drop every line."""
+    gitignore = vault / ".gitignore"
+    before = gitignore.read_text(encoding="utf-8") + "secrets.env\n"
+    gitignore.write_text(before, encoding="utf-8")
+    pruned = tmp_path / "pruned-plugin"
+    shutil.copytree(PLUGIN_ROOT, pruned, ignore=shutil.ignore_patterns(".git", ".venv", "*.egg-info", "__pycache__"))
+    (pruned / "templates" / ".gitignore.tmpl").unlink()
+
+    upgrade(BootstrapConfig(**{**_config(vault, version="0.4.1").__dict__, "plugin_root": pruned}))
+
+    assert gitignore.read_text(encoding="utf-8") == before
+
+
+def test_merge_gitignore_treats_leading_whitespace_as_part_of_the_pattern() -> None:
+    """git reads " .mcp.json" as a different pattern that does not ignore .mcp.json."""
+    merged = bootstrap.merge_gitignore(" .mcp.json\n", ".mcp.json\n")
+    assert merged.splitlines() == [" .mcp.json", "", ".mcp.json"]
