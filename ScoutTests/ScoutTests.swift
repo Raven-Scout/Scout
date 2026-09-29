@@ -28,6 +28,17 @@ struct ScoutTests {
 
 final class FixtureAnchor {}
 
+/// Parse-cache location inside a test's own sandbox directory.
+///
+/// `SessionLogService.parseCacheURL` defaults to the per-user caches directory,
+/// so a `loadInitial()` that leaves it `nil` writes
+/// `~/Library/Caches/Scout/session-parse-cache.json` — the *running app's*
+/// cache — and replaces the user's entries with fixture ones. Every test that
+/// builds a `SessionLogService` must inject this.
+nonisolated func sandboxParseCacheURL(in directory: URL) -> URL {
+    directory.appendingPathComponent("session-parse-cache.json")
+}
+
 /// Poll `condition` on the main actor until it holds, or fail after `timeout`.
 ///
 /// Used by the FSEvents watch tests. Those assert *liveness* — that a file
@@ -43,6 +54,9 @@ func waitUntil(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @MainActor () -> Bool
 ) async {
+    // `ContinuousClock`, not `Date()`: the wall clock can step (NTP, a manual
+    // change, DST on a machine that keeps local time), which either cuts the
+    // budget short or stretches it.
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: .seconds(timeout))
     while clock.now < deadline {
