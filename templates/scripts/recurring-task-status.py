@@ -31,7 +31,7 @@ Cadence DSL (subset implemented in v1):
     monthly:<day>             e.g. monthly:1
     monthly:nth:<n>:<weekday> e.g. monthly:nth:2:tuesday
     quarterly:cycle-start
-    yearly:<MM-DD>            e.g. yearly:09-26  (name days, birthdays, renewals)
+    yearly:<MM-DD>            e.g. yearly:06-15  (name days, birthdays, renewals)
 
 Surface-window DSL (subset):
     T-0 morning  -> show on the due day itself
@@ -235,9 +235,13 @@ def cadence_window_for_today(cadence: str, today: date) -> tuple[Optional[date],
         # year ending on the next occurrence, so `today == cad_end` is the due day
         # and a completion recorded any time in the prior year reads as `done`.
         window_end = next_due_date(cadence, today)
-        if window_end is None:
+        month_day = _parse_month_day(cadence.split(":", 1)[1])
+        if window_end is None or month_day is None:
             return (None, None)
-        prior = _clamped_date(window_end.year - 1, window_end.month, window_end.day)
+        # The prior occurrence comes from the configured MM-DD, not from
+        # window_end: a clamped yearly:02-29 ends on Feb 28, and stepping back
+        # from that would count a leap-day completion as this year's.
+        prior = _clamped_date(window_end.year - 1, *month_day)
         if prior is None:
             return (None, None)
         return (prior + timedelta(days=1), window_end)
