@@ -84,6 +84,7 @@ For each candidate:
 2. **Raw estimate:** your honest guess of the pure working time, in grid steps, from what the task actually involves. Give a one-sentence reason ("a 2-page draft from notes that exist").
 3. **Factor:** the calibration `factor` for that kind when its `source` is `calibrated`; otherwise `buffer`. For a kind of work the user has not done before, use the larger of that and `new_work_buffer`.
 4. **Planned:** raw x factor, rounded **up** to the grid. Never below one grid step.
+   Small tasks that go into a shared batch block (Phase 5) are the exception: apply the factor **once** to the sum of their raw estimates and round the batch up, instead of rounding each task. Otherwise every 15-minute task would be booked as 30 minutes. Their `estimate` marker then records the raw estimate as planned.
 5. **Split:** planned time above 2h becomes parts of at most `deep_block_minutes`, planned as separate blocks.
 
 When calibration exists, say so once in the plan: "Deep work runs 1.4x your first guess (6 samples), I planned with that."
@@ -94,7 +95,7 @@ When calibration exists, say so once in the plan: "Deep work runs 1.4x your firs
 
 1. **Pack in rank order until capacity is used:**
    - `deep` tasks go into the **longest** free windows first, one task per block, each block at most `deep_block_minutes`;
-   - `shallow`, `comms` and `review` tasks of 30 minutes or less are grouped into shared batch blocks of up to `batch_block_minutes`;
+   - `shallow`, `comms` and `review` tasks with a raw estimate of 30 minutes or less are grouped into shared batch blocks of up to `batch_block_minutes`, sized as the rounded-up sum of their raw estimates x factor;
    - every block starts and ends on the grid, inside a free window.
 2. **Present** one table and three lines:
 
