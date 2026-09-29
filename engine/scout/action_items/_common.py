@@ -19,10 +19,11 @@ from scout.ids import new_ulid
 # Matches the comment shape that `add-comment` writes:
 #   `  - <author>: <text>`
 # Author allows letters/digits/`._-` to mirror the parser's tolerance.
-# The snooze marker `  - snoozed-until: YYYY-MM-DD` also fits this shape; we
-# strip those when listing comments since they are not user-authored notes.
+# The snooze marker `  - snoozed-until: YYYY-MM-DD` and the /scout-plan markers
+# (`estimate:`, `block:`, `actual:`) also fit this shape; we strip those when
+# listing comments since they are machine metadata, not user-authored notes.
 _COMMENT_SUB_BULLET_RE = re.compile(r"^(?P<indent>\s+)-\s+(?P<author>[A-Za-z][A-Za-z0-9._-]*)\s*:\s*(?P<text>.+?)\s*$")
-_SNOOZE_MARKER_AUTHORS = {"snoozed-until"}
+_SNOOZE_MARKER_AUTHORS = {"snoozed-until", "estimate", "block", "actual"}
 
 
 def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, str, str]]:

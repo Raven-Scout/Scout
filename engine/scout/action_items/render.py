@@ -116,7 +116,8 @@ COMMENT_DASH_RE = re.compile(
 # *metadata*, not conversation comments, and must not render as comments.
 # The closed vocabulary is defined by the briefing format in
 # phases/core/action-items.md (Source/Context/Evidence/Completed/…) plus the
-# machine `snoozed-until` marker. Matched case-insensitively.
+# machine `snoozed-until` marker and the /scout-plan markers (`estimate`,
+# `block`, `actual`). Matched case-insensitively.
 COMMENT_METADATA_KEYS = frozenset(
     {
         "source",
@@ -126,6 +127,9 @@ COMMENT_METADATA_KEYS = frozenset(
         "originally from",
         "current status",
         "snoozed-until",
+        "estimate",
+        "block",
+        "actual",
     }
 )
 
