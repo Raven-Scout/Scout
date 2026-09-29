@@ -1,0 +1,75 @@
+import Testing
+import Foundation
+@testable import Scout
+
+@Suite("EngineHealthService")
+@MainActor
+struct EngineHealthServiceTests {
+    func managedHome() throws -> EngineLayout {
+        let fm = FileManager.default
+        let layout = EngineLayout(home: fm.temporaryDirectory.appendingPathComponent("health-\(UUID().uuidString)"))
+        let scoutctl = layout.scoutctl(version: "0.10.0")
+        try fm.createDirectory(at: scoutctl.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(to: scoutctl, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scoutctl.path)
+        try fm.createDirectory(at: layout.stateDir, withIntermediateDirectories: true)
+        try """
+        {"schema_version": 1, "version": "0.10.0", "engine_root": "\(layout.engineRoot(version: "0.10.0").path)", "python": "x",
+         "scoutctl": "\(scoutctl.path)", "vault": "\(layout.home.path)/Scout", "managed_by": "scout-app", "written_at": "2026-09-08T00:00:00Z"}
+        """.write(to: layout.pointerURL, atomically: true, encoding: .utf8)
+        return layout
+    }
+
+    @Test func refreshLocatesAndRunsDoctorWithVaultEnv() async throws {
+        let layout = try managedHome()
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: #"{"severity": "green", "errors": [], "warnings": []}"#)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner, environment: ["SCOUT_DATA_DIR": "/v"])
+        await svc.refresh()
+        #expect(svc.state.isManaged)
+        #expect(svc.doctor?.severity == .green)
+        #expect(!svc.needsAttention)
+        #expect(runner.calls.first?.arguments == ["bootstrap", "doctor", "--json"])
+        #expect(runner.calls.first?.environment["SCOUT_DATA_DIR"] == "/v")
+    }
+
+    @Test func redDoctorNeedsAttention() async throws {
+        let layout = try managedHome()
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: "severity: red\nerror: vault directory missing: /x\n", exit: 2)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.doctor?.severity == .red)
+        #expect(svc.needsAttention)
+    }
+
+    @Test func notInstalledSkipsDoctorAndNeedsAttention() async throws {
+        let layout = EngineLayout(home: FileManager.default.temporaryDirectory.appendingPathComponent("empty-\(UUID().uuidString)"))
+        let runner = RuleBasedRunner()
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.state == .notInstalled)
+        #expect(runner.calls.isEmpty)
+        #expect(svc.needsAttention)
+    }
+
+    /// Older adopted engines (pre E3) don't understand `--json` and exit
+    /// non-zero with a Click-style usage error; `refresh()` retries once
+    /// without `--json` and falls back to legacy `severity: …` text parsing.
+    @Test func fallsBackToLegacyTextWhenJsonFlagIsRejected() async throws {
+        let layout = try managedHome()
+        let runner = RuleBasedRunner()
+        // Register the more specific (--json) rule before the plain-prefix rule,
+        // since `on(tool:prefix:)` matches by prefix and "bootstrap doctor" is a
+        // prefix of "bootstrap doctor --json".
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor", "--json"], stderr: "Error: No such option: --json", exit: 2)
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: "severity: yellow\nwarning: snapshot missing: x\n")
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.doctor?.severity == .yellow)
+        #expect(svc.lastError == nil)
+        #expect(runner.calls(to: "scoutctl").count == 2)
+        #expect(runner.calls(to: "scoutctl").first == ["bootstrap", "doctor", "--json"])
+        #expect(runner.calls(to: "scoutctl").last == ["bootstrap", "doctor"])
+    }
+}
