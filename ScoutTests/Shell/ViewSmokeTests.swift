@@ -17,10 +17,13 @@ enum ViewHost {
     /// Mount `view` in a hosting view and force a full layout + display pass,
     /// so lazy containers materialise their children.
     ///
-    /// Deliberately does *not* pump the run loop: these suites are
-    /// `.serialized`, and re-entering the main run loop from inside a test
-    /// crashes the host. Layout alone is enough to evaluate `body` and every
-    /// computed sub-view it reaches.
+    /// Deliberately does *not* pump the run loop: re-entering the main run
+    /// loop from inside a test crashes the host. It is the `@MainActor` on
+    /// this type and on the suites — not `.serialized`, which only orders
+    /// tests within one suite — that keeps two renders from overlapping.
+    /// Layout alone is enough to evaluate `body` and every computed sub-view
+    /// it reaches; `.task` and `.onAppear` work does not run here, so views
+    /// render their initial branch.
     static func render<V: View>(
         _ view: V,
         size: CGSize = CGSize(width: 1280, height: 860)
@@ -67,8 +70,10 @@ struct SmokeVault {
                                    withIntermediateDirectories: true)
         }
 
+        // Must match `ActionItemsDocumentService.url(for:)`, which reads
+        // `action-items/action-items-<YYYY-MM-DD>.md`.
         try Self.write(Self.actionItems, to: root
-            .appendingPathComponent("action-items/2026-06-15.md"))
+            .appendingPathComponent("action-items/action-items-2026-06-15.md"))
         try Self.write(Self.proposal, to: root
             .appendingPathComponent("dreaming-proposals/2026-06-15-tighten-cadence.md"))
         try Self.write(Self.wishlistItem, to: root

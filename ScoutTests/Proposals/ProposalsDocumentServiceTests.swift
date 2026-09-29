@@ -2,29 +2,6 @@ import Foundation
 import Testing
 @testable import Scout
 
-private struct EmptyFileEvents: FileSystemEventSource {
-    nonisolated func events(for url: URL) -> AsyncStream<FileSystemEvent> {
-        AsyncStream { $0.finish() }
-    }
-}
-
-/// A file-event source the test drives by hand.
-private final class ManualFileEvents: FileSystemEventSource, @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: AsyncStream<FileSystemEvent>.Continuation?
-
-    nonisolated func events(for url: URL) -> AsyncStream<FileSystemEvent> {
-        AsyncStream { cont in
-            lock.lock(); continuation = cont; lock.unlock()
-        }
-    }
-
-    func emit(_ event: FileSystemEvent) {
-        lock.lock(); let c = continuation; lock.unlock()
-        c?.yield(event)
-    }
-}
-
 @MainActor
 @Suite("ProposalsDocumentService")
 struct ProposalsDocumentServiceTests {
@@ -63,7 +40,7 @@ struct ProposalsDocumentServiceTests {
         try writeProposal(in: dir, file: "2026-06-10-older.md", title: "Older", status: "Proposed")
         try writeProposal(in: dir, file: "2026-06-15-newer.md", title: "Newer", status: "Approved")
 
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
 
         #expect(svc.state == .loaded)
@@ -81,7 +58,7 @@ struct ProposalsDocumentServiceTests {
         try writeProposal(in: dir, file: "2026-06-04-d.md", title: "D", status: "Rejected")
         try writeProposal(in: dir, file: "2026-06-05-e.md", title: "E", status: "Applied — 2026-06-06")
 
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
 
         #expect(svc.proposals.count == 5)
@@ -99,7 +76,7 @@ struct ProposalsDocumentServiceTests {
         try "not markdown"
             .write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
 
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
 
         #expect(svc.proposals.map(\.title) == ["Real"])
@@ -109,7 +86,7 @@ struct ProposalsDocumentServiceTests {
     func load_missingDirectory() {
         let absent = FileManager.default.temporaryDirectory
             .appendingPathComponent("absent-\(UUID().uuidString)")
-        let svc = ProposalsDocumentService(directoryURL: absent, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: absent, fileEvents: NoopFS())
         svc.load()
 
         #expect(svc.proposals.isEmpty)
@@ -123,7 +100,7 @@ struct ProposalsDocumentServiceTests {
         let file = dir.appendingPathComponent("a-file.md")
         try "x".write(to: file, atomically: true, encoding: .utf8)
 
-        let svc = ProposalsDocumentService(directoryURL: file, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: file, fileEvents: NoopFS())
         svc.load()
         #expect(svc.state == .missing(file))
     }
@@ -131,7 +108,7 @@ struct ProposalsDocumentServiceTests {
     @Test("an empty directory loads cleanly with no proposals")
     func load_emptyDirectory() throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
         #expect(svc.state == .loaded)
         #expect(svc.proposals.isEmpty)
@@ -140,7 +117,7 @@ struct ProposalsDocumentServiceTests {
     @Test("state starts idle before load")
     func state_startsIdle() throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         #expect(svc.state == .idle)
         #expect(svc.proposals.isEmpty)
     }
@@ -152,7 +129,7 @@ struct ProposalsDocumentServiceTests {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeProposal(in: dir, file: "2026-06-01-a.md", title: "A", status: "Proposed")
 
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
         #expect(svc.proposals.count == 1)
 
@@ -167,7 +144,7 @@ struct ProposalsDocumentServiceTests {
     func reload_seesStatusChange() throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeProposal(in: dir, file: "2026-06-01-a.md", title: "A", status: "Proposed")
-        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: EmptyFileEvents())
+        let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: NoopFS())
         svc.load()
         #expect(svc.pendingCount == 1)
 
@@ -182,7 +159,7 @@ struct ProposalsDocumentServiceTests {
     @Test("a markdown file event triggers a debounced reparse")
     func watching_markdownEventReparses() async throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let events = ManualFileEvents()
+        let events = InjectableFS()
         let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: events)
         svc.load()
         #expect(svc.proposals.isEmpty)
@@ -200,7 +177,7 @@ struct ProposalsDocumentServiceTests {
     @Test("a non-markdown file event is ignored")
     func watching_ignoresNonMarkdownEvents() async throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let events = ManualFileEvents()
+        let events = InjectableFS()
         let svc = ProposalsDocumentService(directoryURL: dir, fileEvents: events)
         svc.load()
 

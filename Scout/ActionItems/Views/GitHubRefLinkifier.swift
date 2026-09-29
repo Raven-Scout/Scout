@@ -29,8 +29,10 @@ enum GitHubRefLinkifier {
 
     /// Single alternation so qualified refs win over the bare-ref branch on
     /// the same `#N`. Group 1/2 = qualified owner/repo + number; group 3 =
-    /// bare number.
-    private static let refRe = try! NSRegularExpression(
+    /// bare number. Internal rather than private so the fast-path tests can
+    /// pin `containsHashDigit` as a necessary condition of this pattern over a
+    /// generated alphabet — the two are separate encodings of one rule.
+    static let refRe = try! NSRegularExpression(
         pattern: #"(?<![\w/])([A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*)#([0-9]{1,7})\b|(?<![\w/#])#([0-9]{1,7})\b"#
     )
 

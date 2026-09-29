@@ -232,6 +232,12 @@ nonisolated extension ActionItemsParser {
         case invalidDateInFilename
     }
 
+    /// How many lines of the main loop run between `Task.isCancelled` checks.
+    /// A superseded parse should stop promptly, but the check is an atomic
+    /// load in a loop that runs tens of thousands of times on a real day, so
+    /// it is amortized rather than paid per line.
+    static var cancellationCheckInterval: Int { 256 }
+
     /// - Parameter inlineCommentAuthor: byline for Obsidian `//==<< … >>==//`
     ///   inline comments. Passed in rather than read from `UserDefaults` here:
     ///   this type is `nonisolated` so it can parse off the main actor, and a
@@ -418,7 +424,21 @@ nonisolated extension ActionItemsParser {
         let carryInRe = try NSRegularExpression(pattern: #"_\(carried in from (\d{4}-\d{2}-\d{2})\)_"#)
         let snoozeDateFmt = DateFormatter(); snoozeDateFmt.dateFormat = "yyyy-MM-dd"; snoozeDateFmt.timeZone = .current
 
+        // A parse runs detached, and two can overlap — a slow day switching to
+        // a fast one, or the FSEvent reparse landing on top of the explicit
+        // one. The service cancels the superseded task; cancellation is
+        // cooperative, so the walk has to look. Counting down rather than
+        // testing `i % n` because several branches below advance `i` by more
+        // than one and would step over the multiple.
+        var linesUntilCancellationCheck = cancellationCheckInterval
+
         while i < lines.count {
+            linesUntilCancellationCheck -= 1
+            if linesUntilCancellationCheck <= 0 {
+                try Task.checkCancellation()
+                linesUntilCancellationCheck = cancellationCheckInterval
+            }
+
             let line = lines[i]
             let stripped = line.trimmingCharacters(in: .whitespaces)
 
@@ -816,10 +836,10 @@ nonisolated extension ActionItemsParser {
         let chars = Array(rest)
 
         if let hit = firstSeparatorOutsideTokens(in: chars, separators: dashSeparators) {
-            return split(chars, at: hit)
+            return split(rest, at: hit)
         }
         if let hit = firstSeparatorOutsideTokens(in: chars, separators: colonSeparator) {
-            return split(chars, at: hit)
+            return split(rest, at: hit)
         }
         return (rest, "")
     }
@@ -831,13 +851,19 @@ nonisolated extension ActionItemsParser {
     ]
     private static let colonSeparator: [[Character]] = [Array(": ")]
 
+    /// Slice `rest` around the separator at Character offset `hit.index`. The
+    /// offset is mapped back to a `String.Index` once — O(subject length) — so
+    /// both halves are plain substring copies rather than a Character-by-
+    /// Character rebuild of the whole line.
     private static func split(
-        _ chars: [Character],
+        _ rest: String,
         at hit: (index: Int, length: Int)
     ) -> (String, String) {
-        (
-            String(chars[..<hit.index]).trimmingCharacters(in: .whitespaces),
-            String(chars[(hit.index + hit.length)...]).trimmingCharacters(in: .whitespaces)
+        let sepStart = rest.index(rest.startIndex, offsetBy: hit.index)
+        let bodyStart = rest.index(sepStart, offsetBy: hit.length)
+        return (
+            String(rest[..<sepStart]).trimmingCharacters(in: .whitespaces),
+            String(rest[bodyStart...]).trimmingCharacters(in: .whitespaces)
         )
     }
 
@@ -877,20 +903,12 @@ nonisolated extension ActionItemsParser {
             }
             if ch == ")" && parenDepth > 0 { parenDepth -= 1; i += 1; continue }
             if !inBold && !inStrike && bracketDepth == 0 && parenDepth == 0 {
-                for sep in separators where matches(chars, at: i, sep) {
+                for sep in separators where chars[i...].starts(with: sep) {
                     return (i, sep.count)
                 }
             }
             i += 1
         }
         return nil
-    }
-
-    private static func matches(_ chars: [Character], at i: Int, _ sep: [Character]) -> Bool {
-        guard i + sep.count <= chars.count else { return false }
-        for k in 0 ..< sep.count where chars[i + k] != sep[k] {
-            return false
-        }
-        return true
     }
 }

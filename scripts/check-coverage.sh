@@ -30,6 +30,11 @@
 #   COVERAGE_TARGET  target to measure (default: Scout.app)
 #   FLOOR_FILE       path to the floor file
 #   TOP_GAPS         how many least-covered files to print (default: 15)
+#   TESTS_OUTCOME    CI only: the test step's outcome ("success"/"failure").
+#                    When it is not "success", a missing bundle or missing
+#                    coverage data is a warning and the floor is skipped — the
+#                    test step is already red, and a second red step here would
+#                    only point at the wrong remedy.
 
 set -euo pipefail
 
@@ -37,10 +42,20 @@ RESULT_BUNDLE="${1:-TestResults.xcresult}"
 COVERAGE_TARGET="${COVERAGE_TARGET:-Scout.app}"
 FLOOR_FILE="${FLOOR_FILE:-$(dirname "$0")/coverage-floor.txt}"
 TOP_GAPS="${TOP_GAPS:-15}"
+TESTS_OUTCOME="${TESTS_OUTCOME:-success}"
+
+skip_when_tests_failed() {
+  # $1: what is missing. Exits 0 with a warning if the tests did not succeed.
+  if [ "$TESTS_OUTCOME" != "success" ]; then
+    echo "::warning::$1 — the test step did not succeed (outcome: $TESTS_OUTCOME); skipping the coverage floor"
+    exit 0
+  fi
+}
 
 if [ ! -e "$RESULT_BUNDLE" ]; then
+  skip_when_tests_failed "no result bundle at $RESULT_BUNDLE"
   echo "error: result bundle not found at $RESULT_BUNDLE" >&2
-  echo "hint: run xcodebuild test with -enableCodeCoverage YES -resultBundlePath $RESULT_BUNDLE" >&2
+  echo "hint: run xcodebuild test with -resultBundlePath $RESULT_BUNDLE (the shared scheme enables coverage)" >&2
   exit 2
 fi
 
@@ -52,28 +67,78 @@ fi
 FLOOR="$(tr -d '[:space:]' < "$FLOOR_FILE")"
 
 JSON="$(mktemp -t scout-coverage)"
-trap 'rm -f "$JSON"' EXIT
-xcrun xccov view --report --json "$RESULT_BUNDLE" > "$JSON"
+XCCOV_ERR="$(mktemp -t scout-coverage-err)"
+trap 'rm -f "$JSON" "$XCCOV_ERR"' EXIT
+if ! xcrun xccov view --report --json "$RESULT_BUNDLE" > "$JSON" 2> "$XCCOV_ERR"; then
+  # "No coverage data in result bundle": the tests never ran.
+  skip_when_tests_failed "no coverage data in $RESULT_BUNDLE"
+  echo "error: xccov could not read coverage from $RESULT_BUNDLE:" >&2
+  sed 's/^/  /' "$XCCOV_ERR" >&2
+  exit 2
+fi
+
+# xccov can also exit 0 having written nothing; python would then die on a JSON
+# decode error that says nothing about the real cause.
+if [ ! -s "$JSON" ]; then
+  skip_when_tests_failed "xccov produced an empty report for $RESULT_BUNDLE"
+  echo "error: xccov produced an empty report for $RESULT_BUNDLE" >&2
+  exit 2
+fi
 
 COVERAGE_TARGET="$COVERAGE_TARGET" FLOOR="$FLOOR" TOP_GAPS="$TOP_GAPS" \
+TESTS_OUTCOME="$TESTS_OUTCOME" \
 python3 - "$JSON" <<'PY'
 import json, os, sys
 
 target_name = os.environ["COVERAGE_TARGET"]
 floor = float(os.environ["FLOOR"])
 top_gaps = int(os.environ["TOP_GAPS"])
+tests_outcome = os.environ.get("TESTS_OUTCOME", "success")
+
+summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+def no_data(message):
+    """Report absent coverage as absent data, never as a coverage regression.
+
+    The floor's failure message tells the reader to add tests. When the report
+    carries no numbers for this target there is no coverage to add, so that
+    advice points at the wrong remedy. Mirrors the shell's
+    `skip_when_tests_failed`: a red test step already explains the absence, so
+    warn and succeed; if the tests passed, the missing data is itself the fault
+    and is reported as such.
+    """
+    if tests_outcome != "success":
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning title=Coverage not checked::{message}")
+            if summary_path:
+                with open(summary_path, "a") as fh:
+                    fh.write(f"### ⚠️ Coverage not checked\n\n{message}\n\n")
+        else:
+            print(f"note: coverage not checked — {message}")
+        sys.exit(0)
+    sys.exit(f"error: {message}")
+
 
 with open(sys.argv[1]) as fh:
     report = json.load(fh)
 
-target = next((t for t in report["targets"] if t["name"] == target_name), None)
+targets = report.get("targets") or []
+if not targets:
+    no_data("the coverage report lists no targets")
+
+target = next((t for t in targets if t["name"] == target_name), None)
 if target is None:
-    names = ", ".join(t["name"] for t in report["targets"])
-    sys.exit(f"error: target {target_name!r} not in report (found: {names})")
+    names = ", ".join(t["name"] for t in targets)
+    no_data(f"target {target_name!r} is not in the coverage report (found: {names})")
 
 covered = target["coveredLines"]
 total = target["executableLines"]
-pct = 100.0 * covered / total if total else 0.0
+if not total:
+    # 0/0 would score 0.00% and trip the floor with "add tests for the changed
+    # code" — but nothing was instrumented, so there is no coverage to add.
+    no_data(f"target {target_name!r} reports no executable lines")
+pct = 100.0 * covered / total
 
 print(f"{target_name} line coverage: {pct:.2f}%  ({covered}/{total})")
 print(f"floor: {floor:.2f}%")
@@ -91,9 +156,8 @@ if gaps:
     print()
 
 # GitHub Actions job summary, when running in CI.
-summary = os.environ.get("GITHUB_STEP_SUMMARY")
-if summary:
-    with open(summary, "a") as fh:
+if summary_path:
+    with open(summary_path, "a") as fh:
         status = "✅" if pct >= floor else "❌"
         fh.write(f"### {status} Coverage: {pct:.2f}% (floor {floor:.2f}%)\n\n")
         fh.write(f"`{target_name}` — {covered}/{total} lines\n\n")

@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct ScoutApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var appState = AppState()
+    @StateObject private var appState = AppState(configuration: .forCurrentProcess())
     // Read once at launch: the scene graph is built before Settings can
     // change it, and the toggle documents itself as next-launch anyway.
     private let launchMinimized = UserDefaults.standard.bool(forKey: "launchMinimized")

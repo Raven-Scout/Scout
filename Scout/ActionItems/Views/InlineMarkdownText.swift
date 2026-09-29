@@ -100,9 +100,11 @@ struct InlineMarkdownText: View {
     /// only production caller.
     static func attributedString(for raw: String) -> AttributedString {
         clock &+= 1
-        if let hit = cache[raw] {
-            cache[raw]?.lastUsed = clock
-            return hit.value
+        // One hashed lookup on the hit path: refresh the LRU stamp in place
+        // through the index rather than re-hashing the (up to ~10 KB) key.
+        if let idx = cache.index(forKey: raw) {
+            cache.values[idx].lastUsed = clock
+            return cache.values[idx].value
         }
         // Tags first: once a tag is a `[label](scout-tag://…)` link, the GitHub
         // linkifier's protected ranges cover it. The two can't collide on the

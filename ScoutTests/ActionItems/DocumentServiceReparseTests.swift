@@ -46,7 +46,7 @@ struct DocumentServiceReparseTests {
         try Self.markdown(taskCount: 30).write(to: url, atomically: true, encoding: .utf8)
 
         let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
-        try await service.load(date: date)
+        await service.load(date: date)
 
         var publishes = 0
         let token = service.objectWillChange.sink { _ in publishes += 1 }
@@ -67,7 +67,7 @@ struct DocumentServiceReparseTests {
         try Self.markdown(taskCount: 30).write(to: url, atomically: true, encoding: .utf8)
 
         let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
-        try await service.load(date: date)
+        await service.load(date: date)
 
         var publishes = 0
         let token = service.objectWillChange.sink { _ in publishes += 1 }
@@ -106,7 +106,7 @@ struct DocumentServiceReparseTests {
         async let slow: Void = service.load(date: slowDate)
         // Let the slow parse get in flight, then supersede it.
         try await Task.sleep(nanoseconds: 20_000_000)
-        try await service.load(date: fastDate)
+        await service.load(date: fastDate)
         // `load` returns only after its own parse has passed the generation
         // guard, so once both loads have returned nothing is left in flight.
         _ = try? await slow
@@ -136,7 +136,7 @@ struct DocumentServiceReparseTests {
         var order: [String] = []
         let other = Task { @MainActor in order.append("other") }
 
-        try await service.load(date: date)
+        await service.load(date: date)
         order.append("load")
         await other.value
 
@@ -163,7 +163,7 @@ struct DocumentServiceReparseTests {
 
         async let slow: Void = service.load(date: slowDate)
         try await Task.sleep(nanoseconds: 20_000_000)
-        try await service.load(date: missingDate)
+        await service.load(date: missingDate)
         _ = try? await slow
 
         guard case .missing(let date, _) = service.state else {
@@ -186,7 +186,7 @@ struct DocumentServiceReparseTests {
         )
 
         let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
-        try await service.load(date: date)
+        await service.load(date: date)
         guard case .failed = service.state else {
             Issue.record("expected .failed, got \(service.state)"); return
         }
@@ -212,7 +212,7 @@ struct DocumentServiceReparseTests {
                    atomically: true, encoding: .utf8)
 
         let service = ActionItemsDocumentService(directory: dir, fileEvents: NoopFS())
-        try await service.load(date: date)
+        await service.load(date: date)
 
         var publishes = 0
         var sawLoading = false
@@ -222,7 +222,7 @@ struct DocumentServiceReparseTests {
         }
         defer { willChange.cancel(); values.cancel() }
 
-        try await service.load(date: date)
+        await service.load(date: date)
 
         #expect(!sawLoading, "same-day reload published .loading")
         #expect(publishes == 0, "same-day reload republished an identical document")

@@ -77,8 +77,14 @@ struct InlineMarkdownCacheTests {
             let s = "**Bold** with [[people/alex]] and example-org/scout#42"
             let cold = InlineMarkdownText.attributedString(for: s)
             let warm = InlineMarkdownText.attributedString(for: s)
-            #expect(String(cold.characters) == String(warm.characters))
-            #expect(cold == warm)
+            // Drop the entry so the third call is an independent parse rather
+            // than the stored value handed back a second time; comparing the
+            // hit against that is what makes this a hit-vs-fresh-parse check.
+            InlineMarkdownText.resetCacheForTesting()
+            let fresh = InlineMarkdownText.attributedString(for: s)
+            #expect(String(warm.characters) == String(fresh.characters))
+            #expect(warm == fresh)
+            #expect(cold == fresh)
         }
     }
 }
