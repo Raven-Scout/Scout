@@ -149,6 +149,26 @@ if [ $EXIT_CODE -ne 0 ]; then
     fi
 fi
 
+# Record how this run ended, out-of-band. This has to be a runner step, not a
+# session step: the failure being watched for is a run that never reaches its
+# phases (an expired login, a dead network), and nothing the session writes can
+# report that. scripts/run-outcome.sh is an optional vault helper; a vault
+# without it skips this step.
+OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"
+if [ -x "$OUTCOME" ]; then
+    "$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >/dev/null 2>&1 || true
+fi
+
+# Regenerate the connector-health surface from the runner, for the same reason:
+# a run that dies early has still logged its tool calls, but never refreshes
+# knowledge-base/connector-health.md, which then goes stale while still looking
+# current (showing alerts that later runs already resolved). Optional vault
+# helper, skipped when absent.
+HEALTH_ROLLUP="$SCOUT_DIR/scripts/connector-health-rollup.sh"
+if [ -x "$HEALTH_ROLLUP" ]; then
+    "$HEALTH_ROLLUP" >> "$LOG_FILE" 2>&1 || true
+fi
+
 # Track session cost (skill self-reports actual cost from inside the session via the
 # same script; this runner call is a fallback so failed/crashed runs still leave a row).
 COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
