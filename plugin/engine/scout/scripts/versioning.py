@@ -14,43 +14,63 @@ import re
 import sys
 from pathlib import Path
 
-# engine/scout/scripts/versioning.py -> parents[3] == plugin root
+# engine/scout/scripts/versioning.py -> parents[3] == the plugin subtree root
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 
-# (label, relative path, compiled regex capturing the version in group 'v')
+# Root kinds for _TARGETS. marketplace.json is the repo's marketplace entry
+# point and lives ABOVE the plugin subtree — `claude plugin marketplace add`
+# reads it from the repo root — so it cannot resolve against PLUGIN_ROOT.
+_PLUGIN = "plugin"
+_REPO = "repo"
+
+# (label, root kind, relative path, compiled regex capturing the version in group 'v')
 _TARGETS = [
-    ("plugin.json", ".claude-plugin/plugin.json", re.compile(r'("version":\s*")(?P<v>[^"]+)(")')),
+    (
+        "plugin.json",
+        _PLUGIN,
+        ".claude-plugin/plugin.json",
+        re.compile(r'("version":\s*")(?P<v>[^"]+)(")'),
+    ),
     (
         "marketplace.json",
+        _REPO,
         ".claude-plugin/marketplace.json",
         re.compile(r'("plugins"[\s\S]*?"version":\s*")(?P<v>[^"]+)(")'),
     ),
     (
         "pyproject.toml",
+        _PLUGIN,
         "engine/pyproject.toml",
         re.compile(r'(?m)^(version\s*=\s*")(?P<v>[^"]+)(")'),
     ),
     (
         "__init__.py",
+        _PLUGIN,
         "engine/scout/__init__.py",
         re.compile(r'(?m)^(__version__\s*=\s*")(?P<v>[^"]+)(")'),
     ),
 ]
 
 
-def read_versions(root: Path = PLUGIN_ROOT) -> dict[str, str]:
+def _target_path(kind: str, rel: str, plugin_root: Path, repo_root: Path) -> Path:
+    return (plugin_root if kind == _PLUGIN else repo_root) / rel
+
+
+def read_versions(root: Path = PLUGIN_ROOT, repo_root: Path | None = None) -> dict[str, str]:
+    repo = root.parent if repo_root is None else repo_root
     out: dict[str, str] = {}
-    for label, rel, rx in _TARGETS:
-        text = (root / rel).read_text(encoding="utf-8")
+    for label, kind, rel, rx in _TARGETS:
+        path = _target_path(kind, rel, root, repo)
+        text = path.read_text(encoding="utf-8")
         m = rx.search(text)
         if not m:
-            raise ValueError(f"no version field found in {rel}")
+            raise ValueError(f"no version field found in {path}")
         out[label] = m.group("v")
     return out
 
 
-def assert_in_sync(root: Path = PLUGIN_ROOT) -> str:
-    versions = read_versions(root)
+def assert_in_sync(root: Path = PLUGIN_ROOT, repo_root: Path | None = None) -> str:
+    versions = read_versions(root, repo_root)
     distinct = set(versions.values())
     if len(distinct) != 1:
         raise ValueError(f"version drift across manifests: {versions}")
@@ -73,15 +93,20 @@ def bump(current: str, level: str) -> str:
     raise ValueError(f"invalid bump level: {level!r} (use major|minor|patch|X.Y.Z)")
 
 
-def set_version(root: Path = PLUGIN_ROOT, version: str | None = None) -> None:
+def set_version(
+    root: Path = PLUGIN_ROOT,
+    version: str | None = None,
+    repo_root: Path | None = None,
+) -> None:
     if version is None:
         raise ValueError("set_version requires a version")
-    for _label, rel, rx in _TARGETS:
-        path = root / rel
+    repo = root.parent if repo_root is None else repo_root
+    for _label, kind, rel, rx in _TARGETS:
+        path = _target_path(kind, rel, root, repo)
         text = path.read_text(encoding="utf-8")
         new_text, n = rx.subn(lambda m: m.group(1) + version + m.group(3), text, count=1)
         if n != 1:
-            raise ValueError(f"failed to rewrite version in {rel}")
+            raise ValueError(f"failed to rewrite version in {path}")
         path.write_text(new_text, encoding="utf-8")
 
 

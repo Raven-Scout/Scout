@@ -122,7 +122,9 @@ def test_read_versions_rejects_a_file_with_no_version_field(tmp_path, monkeypatc
     (tmp_path / ".claude-plugin").mkdir()
     (tmp_path / ".claude-plugin" / "plugin.json").write_text('{"name": "scout"}\n', encoding="utf-8")
 
-    with pytest.raises(ValueError, match="no version field found in .claude-plugin/plugin.json"):
+    # The error now interpolates the resolved absolute path (not a bare `rel`)
+    # since read_versions can draw from two different roots — match the suffix.
+    with pytest.raises(ValueError, match=r"no version field found in .*\.claude-plugin/plugin\.json"):
         versioning.read_versions(tmp_path)
 
 
