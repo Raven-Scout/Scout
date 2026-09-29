@@ -14,8 +14,8 @@ from scout.sessions.derive import (
     choose_pr,
     derive_state,
     fmt_ago,
-    git_toplevel,
     is_scout_run,
+    repo_root,
     resolve_project_key,
     strip_worktree,
 )
@@ -99,7 +99,7 @@ def test_strip_worktree() -> None:
     assert strip_worktree("/Users/alex/code/repo") == "/Users/alex/code/repo"
 
 
-def test_resolve_project_key_prefers_git_toplevel_then_stripping() -> None:
+def test_resolve_project_key_prefers_the_repo_root_then_stripping() -> None:
     assert resolve_project_key("/a/b/.claude/worktrees/w", toplevel=lambda p: "/a/b") == "/a/b"
     assert resolve_project_key("/a/b/.claude/worktrees/w", toplevel=lambda p: None) == "/a/b"
     assert resolve_project_key("/plain", toplevel=lambda p: None) == "/plain"
@@ -110,11 +110,6 @@ def test_resolve_project_key_of_an_empty_cwd_never_asks_git() -> None:
         raise AssertionError(f"toplevel called for {path!r}")
 
     assert resolve_project_key("", toplevel=boom) == ""
-
-
-def test_git_toplevel_of_an_empty_path_is_none() -> None:
-    # Path("") is ".", which used to resolve the caller's own repo.
-    assert git_toplevel("") is None
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -138,10 +133,112 @@ def _git(*args: str, cwd: Path) -> None:
     )
 
 
+def test_repo_root_of_an_empty_or_relative_path_is_none() -> None:
+    # Path("") is ".", which used to resolve the caller's own repo; a relative path would too.
+    assert repo_root("") is None
+    assert repo_root("code/example-repo") is None
+
+
+def _repo(root: Path) -> Path:
+    (root / ".git").mkdir(parents=True)
+    return root.resolve()
+
+
+def _linked_worktree(repo: Path, name: str, *, relative: bool = False) -> Path:
+    """What `git worktree add` lays out: <wt>/.git names <repo>/.git/worktrees/<name>, whose commondir is ../.."""
+    gitdir = repo / ".git" / "worktrees" / name
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    wt = repo / ".claude" / "worktrees" / name
+    wt.mkdir(parents=True)
+    target = os.path.relpath(gitdir, wt) if relative else str(gitdir)
+    (wt / ".git").write_text(f"gitdir: {target}\n", encoding="utf-8")
+    return wt
+
+
+def test_repo_root_finds_the_folder_holding_dot_git(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    (repo / "src" / "deep").mkdir(parents=True)
+    assert repo_root(str(repo)) == str(repo)
+    assert repo_root(str(repo / "src" / "deep")) == str(repo)
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_repo_root_resolves_a_linked_worktree_to_its_main_repo(tmp_path: Path, relative: bool) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    wt = _linked_worktree(repo, "w1", relative=relative)
+    (wt / "sub").mkdir()
+    assert repo_root(str(wt)) == str(repo)
+    assert repo_root(str(wt / "sub")) == str(repo)
+
+
+def test_repo_root_of_a_submodule_is_the_submodule_folder(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    (repo / ".git" / "modules" / "vendored").mkdir(parents=True)  # a submodule's git dir has no commondir
+    sub = repo / "vendored"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/vendored\n", encoding="utf-8")
+    assert repo_root(str(sub)) == str(sub)
+
+
+def test_repo_root_of_a_worktree_of_a_submodule_is_that_worktree(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    gitdir = repo / ".git" / "modules" / "vendored" / "worktrees" / "w2"
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n", encoding="utf-8")  # → .git/modules/vendored, not named .git
+    wt = tmp_path / "vendored-w2"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    assert repo_root(str(wt)) == str(wt.resolve())
+
+
+def test_repo_root_of_a_deleted_folder_uses_its_nearest_existing_ancestor(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    assert repo_root(str(repo / ".claude" / "worktrees" / "gone")) == str(repo)
+
+
+def test_repo_root_outside_any_repo_is_none(tmp_path: Path) -> None:
+    (tmp_path / "plain").mkdir()
+    assert repo_root(str(tmp_path / "plain")) is None
+
+
+@pytest.mark.parametrize("dot_git", ["", "not a gitdir line\n", "gitdir:\n", "gitdir: /nowhere/at/all\n"])
+def test_repo_root_skips_a_broken_dot_git_file_and_keeps_walking(tmp_path: Path, dot_git: str) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    inner = repo / "inner"
+    inner.mkdir()
+    (inner / ".git").write_text(dot_git, encoding="utf-8")
+    assert repo_root(str(inner)) == str(repo)
+
+
+def test_repo_root_follows_a_symlinked_project_folder(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "real" / "example-repo")
+    link = tmp_path / "link-to-repo"
+    link.symlink_to(repo, target_is_directory=True)
+    assert repo_root(str(link)) == str(repo)  # the real path, as git reports it
+
+
+def test_repo_root_never_raises_on_a_nul_byte(tmp_path: Path) -> None:
+    assert repo_root(f"{tmp_path}/bad\x00name") is None
+
+
+def _git_answer(path: Path) -> str | None:
+    """What plan 1 asked git: the common dir's parent when it is <repo>/.git, else --show-toplevel."""
+
+    def rev_parse(*args: str) -> str | None:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", *args], capture_output=True, text=True, check=False, timeout=30
+        )
+        return (proc.stdout.strip() or None) if proc.returncode == 0 else None
+
+    common = rev_parse("--path-format=absolute", "--git-common-dir")
+    if common is not None and common.endswith("/.git"):
+        return str(Path(common).parent)
+    return rev_parse("--show-toplevel")
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs a git binary")
-def test_git_toplevel_resolves_a_linked_worktree_to_its_main_repo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_repo_root_agrees_with_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("GIT_"):
             monkeypatch.delenv(key)
@@ -149,12 +246,30 @@ def test_git_toplevel_resolves_a_linked_worktree_to_its_main_repo(
     repo.mkdir()
     _git("init", "-q", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    (repo / "sub").mkdir()
     worktree = repo / ".claude" / "worktrees" / "w1"
     _git("worktree", "add", "-q", "-b", "claude/w1", str(worktree), cwd=repo)
-    (repo / "sub").mkdir()
-    assert git_toplevel(str(worktree)) == str(repo.resolve())  # not the worktree root
-    assert git_toplevel(str(repo)) == str(repo.resolve())
-    assert git_toplevel(str(repo / "sub")) == str(repo.resolve())
+    relative = repo / ".claude" / "worktrees" / "w2"
+    _git("worktree", "add", "-q", "-b", "claude/w2", str(relative), cwd=repo)
+    gitfile = relative / ".git"
+    target = gitfile.read_text(encoding="utf-8").split(":", 1)[1].strip()
+    gitfile.write_text(f"gitdir: {os.path.relpath(target, relative)}\n", encoding="utf-8")  # as --relative-paths does
+    lib = tmp_path / "example-lib"
+    lib.mkdir()
+    _git("init", "-q", cwd=lib)
+    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=lib)
+    _git("-c", "protocol.file.allow=always", "submodule", "--quiet", "add", str(lib), "vendored", cwd=repo)
+
+    for p in (repo, repo / "sub", worktree, relative, repo / "vendored"):
+        assert repo_root(str(p)) == _git_answer(p), p
+    assert repo_root(str(worktree)) == str(repo.resolve())  # a worktree is its main repo, not itself
+
+
+def test_is_scout_run_tolerates_a_nul_byte_in_a_recorded_path(tmp_path: Path) -> None:
+    vault = tmp_path / "Scout"
+    assert not is_scout_run(
+        origin_cwd=f"{vault}\x00", title="scout-morning-briefing-20260908-1150", scheduled_task_id=None, vault=vault
+    )
 
 
 def test_is_scout_run_needs_vault_cwd_and_a_run_signature(tmp_path: Path) -> None:

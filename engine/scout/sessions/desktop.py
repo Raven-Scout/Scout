@@ -8,18 +8,26 @@ Layout (macOS)::
       claude_desktop_config.json                            sidebar groups + assignments
       git-worktrees.json                                    worktree leases
 
-Nothing here writes. Every loader returns ``(data, errors)``; a missing
+Nothing here writes to the desktop store. The one file written is Scout's own
+desktop cache (``.scout-cache/sessions-desktop.cache.json``), which holds only the
+``DesktopRecord`` fields. Every loader returns ``(data, errors)``; a missing
 directory or file is *not* an error, a malformed file is.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from scout.sessions._atomic import atomic_write_text
 from scout.sessions.model import SourceError
+from scout.sessions.stats import BuildStats
+
+DESKTOP_CACHE_FILENAME = "sessions-desktop.cache.json"
+_DESKTOP_CACHE_VERSION = 1
+_DECODE_ERRORS = (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, AttributeError, ValueError, KeyError)
 
 
 def default_support_dir() -> Path:
@@ -137,31 +145,191 @@ def _record(raw: dict[str, Any], fallback_id: str) -> DesktopRecord:
     )
 
 
-def load_desktop_records(support_dir: Path) -> tuple[list[DesktopRecord], list[SourceError]]:
+@dataclass(frozen=True)
+class CachedRecord:
+    """One desktop-cache entry (1b spec §3.1): the record as last decoded, keyed by file identity."""
+
+    size: int
+    mtime_ns: int
+    record: DesktopRecord
+    failed: tuple[int, int] | None = None  # (size, mtime_ns) of a version that would not decode
+
+
+def _decode_record(path: Path) -> DesktopRecord:
+    """Read and extract one record. Raises one of ``_DECODE_ERRORS`` when it cannot."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("not a JSON object")
+    return _record(raw, fallback_id=path.stem)
+
+
+def load_desktop_records(
+    support_dir: Path,
+    *,
+    cache: dict[str, CachedRecord] | None = None,
+    stats: BuildStats | None = None,
+) -> tuple[list[DesktopRecord], list[SourceError]]:
+    """Every ``local_*.json`` record, decoding only files whose (size, mtime_ns) changed (1b spec §3.1).
+
+    *cache* is updated in place: changed files are decoded again and files that are gone are
+    dropped. A file that fails to decode is served from its last good entry. That happens
+    silently the first time, because the desktop app rewrites records mid-turn. If the same
+    version is still unreadable on a later build, the build also reports a ``SourceError``.
+    """
+    if cache is None:
+        cache = {}
+    if stats is None:
+        stats = BuildStats()
     root = support_dir / "claude-code-sessions"
     records: list[DesktopRecord] = []
     errors: list[SourceError] = []
     if not root.is_dir():
+        cache.clear()
         return records, errors
+    seen: set[str] = set()
     for path in sorted(root.glob("*/*/local_*.json")):
+        key = str(path)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                errors.append(SourceError(source="desktop", message=f"{path.name}: not a JSON object"))
-                continue
-            records.append(_record(raw, fallback_id=path.stem))
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            TypeError,
-            AttributeError,
-            ValueError,
-            KeyError,
-        ) as e:
+            st = path.stat()
+        except OSError as e:  # gone between the glob and the stat
             errors.append(SourceError(source="desktop", message=f"{path.name}: {e}"))
             continue
+        ident = (st.st_size, st.st_mtime_ns)
+        prior = cache.get(key)
+        if prior is not None and (prior.size, prior.mtime_ns) == ident:
+            seen.add(key)
+            records.append(prior.record)
+            continue
+        try:
+            rec = _decode_record(path)
+        except _DECODE_ERRORS as e:
+            if prior is None:
+                errors.append(SourceError(source="desktop", message=f"{path.name}: {e}"))
+                continue
+            if prior.failed == ident:  # the same unreadable version as last build: say so
+                errors.append(SourceError(source="desktop", message=f"{path.name}: {e}"))
+            cache[key] = replace(prior, failed=ident)
+            seen.add(key)
+            records.append(prior.record)
+            stats.desktop_served_last_good += 1
+            continue
+        stats.desktop_decoded += 1
+        cache[key] = CachedRecord(size=st.st_size, mtime_ns=st.st_mtime_ns, record=rec)
+        seen.add(key)
+        records.append(rec)
+    for key in [k for k in cache if k not in seen]:
+        del cache[key]
     return records, errors
+
+
+# ----- desktop cache file ---------------------------------------------------------------
+
+_REQUIRED_STR = ("session_id", "cwd", "origin_cwd")
+_OPTIONAL_STR = (
+    "cli_session_id",
+    "title",
+    "title_source",
+    "worktree_path",
+    "worktree_name",
+    "branch",
+    "source_branch",
+    "model",
+    "effort",
+    "parent_session_id",
+    "spawned_task_id",
+    "scheduled_task_id",
+)
+_OPTIONAL_INT = ("created_at_ms", "last_activity_at_ms", "completed_turns")
+_BOOL = ("is_archived", "kept_dirty_worktree", "transcript_unavailable")
+_RECORD_FIELDS = (*_REQUIRED_STR, *_OPTIONAL_STR, *_OPTIONAL_INT, *_BOOL)  # every DesktopRecord field but prs
+
+
+def _cached_pr(v: Any) -> PRRef | None:
+    if not isinstance(v, dict) or not {"number", "repo", "url", "legacy_state"} <= v.keys():
+        return None
+    number, repo, url, legacy = v["number"], v["repo"], v["url"], v["legacy_state"]
+    if _int(number) is None or not isinstance(repo, str):
+        return None
+    if not (url is None or isinstance(url, str)) or not (legacy is None or isinstance(legacy, str)):
+        return None
+    return PRRef(number=number, repo=repo, url=url, legacy_state=legacy)
+
+
+def _cached_desktop_record(v: Any) -> DesktopRecord | None:
+    """Rebuild a cached record, or None when a field is missing or fails the checks fresh records pass."""
+    if not isinstance(v, dict) or not {*_RECORD_FIELDS, "prs"} <= v.keys():
+        return None
+    ok = (
+        all(isinstance(v[k], str) for k in _REQUIRED_STR)
+        and all(v[k] is None or isinstance(v[k], str) for k in _OPTIONAL_STR)
+        and all(v[k] is None or _int(v[k]) is not None for k in _OPTIONAL_INT)
+        and all(isinstance(v[k], bool) for k in _BOOL)
+        and isinstance(v["prs"], list)
+    )
+    if not ok:
+        return None
+    prs = [_cached_pr(p) for p in v["prs"]]
+    if any(p is None for p in prs):
+        return None
+    return DesktopRecord(**{k: v[k] for k in _RECORD_FIELDS}, prs=[p for p in prs if p is not None])
+
+
+def _cached_entry(v: Any) -> CachedRecord | None:
+    if not isinstance(v, dict) or _int(v.get("size")) is None or _int(v.get("mtime_ns")) is None:
+        return None
+    record = _cached_desktop_record(v.get("record"))
+    if record is None:
+        return None
+    failed = v.get("failed")
+    if failed is None:
+        return CachedRecord(size=v["size"], mtime_ns=v["mtime_ns"], record=record)
+    if isinstance(failed, list) and len(failed) == 2 and all(_int(x) is not None for x in failed):
+        return CachedRecord(size=v["size"], mtime_ns=v["mtime_ns"], record=record, failed=(failed[0], failed[1]))
+    return None
+
+
+def load_desktop_cache(cache_path: Path) -> dict[str, CachedRecord]:
+    """Load the desktop cache. A missing, corrupt or other-version file is empty; bad entries are skipped."""
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict) or _int(raw.get("version")) != _DESKTOP_CACHE_VERSION:
+        return {}
+    entries = raw.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    out: dict[str, CachedRecord] = {}
+    for key, value in entries.items():
+        entry = _cached_entry(value)
+        if entry is not None:
+            out[key] = entry
+    return out
+
+
+def write_desktop_cache(cache_path: Path, cache: dict[str, CachedRecord]) -> bool:
+    """Atomically replace the desktop cache. Best-effort: returns False instead of raising.
+
+    It stores only the ``DesktopRecord`` fields, never a raw record: a raw record's MCP
+    configuration can hold credentials.
+    """
+    payload = {
+        "version": _DESKTOP_CACHE_VERSION,
+        "entries": {
+            key: {
+                "size": e.size,
+                "mtime_ns": e.mtime_ns,
+                "record": asdict(e.record),
+                "failed": list(e.failed) if e.failed is not None else None,
+            }
+            for key, e in cache.items()
+        },
+    }
+    try:
+        atomic_write_text(cache_path, json.dumps(payload))
+    except OSError:
+        return False
+    return True
 
 
 def _read_json(path: Path, source: str, errors: list[SourceError]) -> dict[str, Any] | None:
@@ -237,12 +405,16 @@ def load_worktree_leases(support_dir: Path) -> tuple[dict[str, WorktreeLease], l
 
 
 __all__ = [
+    "DESKTOP_CACHE_FILENAME",
+    "CachedRecord",
     "DesktopRecord",
     "Groups",
     "PRRef",
     "WorktreeLease",
     "default_support_dir",
+    "load_desktop_cache",
     "load_desktop_records",
     "load_groups",
     "load_worktree_leases",
+    "write_desktop_cache",
 ]

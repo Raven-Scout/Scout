@@ -157,12 +157,13 @@ def load_pr_cache(cache_path: Path) -> dict[str, PRInfo]:
     return out
 
 
-def write_pr_cache(cache_path: Path, cache: dict[str, PRInfo]) -> None:
-    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort — never raises."""
+def write_pr_cache(cache_path: Path, cache: dict[str, PRInfo]) -> bool:
+    """Atomically replace the cache file (unique temp + ``os.replace``). Best-effort: False instead of raising."""
     try:
         atomic_write_text(cache_path, json.dumps({k: asdict(v) for k, v in cache.items()}))
     except OSError:
-        pass
+        return False
+    return True
 
 
 def _fetched_sort_key(info: PRInfo | None) -> float:

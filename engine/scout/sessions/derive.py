@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import functools
+import os
 import re
-import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,38 +22,57 @@ def strip_worktree(path: str) -> str:
     return m.group(1) if m else path
 
 
-def _git_rev_parse(path: str, *args: str) -> str | None:
-    """``git -C <path> rev-parse <args>`` stdout (2 s timeout); None on any failure."""
+def _root_at(folder: Path) -> str | None:
+    """The repository root that a ``.git`` directly inside *folder* names, or None if there is none
+    or it cannot be used (unreadable, no ``gitdir:`` line, pointing at a git dir that is gone)."""
+    dot = folder / ".git"
     try:
-        proc = subprocess.run(
-            ["git", "-C", path, "rev-parse", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        if dot.is_dir():
+            return str(folder)
+        if not dot.is_file():
+            return None
+        first = dot.read_text(encoding="utf-8", errors="replace").partition("\n")[0].strip()
+        if not first.startswith("gitdir:"):
+            return None
+        target = first.removeprefix("gitdir:").strip()
+        if not target:
+            return None
+        gitdir = Path(target) if os.path.isabs(target) else folder / target
+        if not gitdir.is_dir():
+            return None
+        commondir = gitdir / "commondir"
+        common = commondir.read_text(encoding="utf-8", errors="replace").strip() if commondir.is_file() else ""
+        if common:
+            main = (gitdir / common).resolve()  # an absolute commondir replaces gitdir in the join
+            if main.name == ".git":
+                return str(main.parent)  # a linked worktree: its main repository
+    except (OSError, RuntimeError):
         return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    return str(folder)  # a submodule, a worktree of one, or a separate git dir: --show-toplevel's answer
 
 
-@functools.lru_cache(maxsize=256)
-def git_toplevel(path: str) -> str | None:
-    """The main repo root for *path*, memoised per path; None for an empty or non-directory
-    path, or one outside any repo.
+def repo_root(path: str) -> str | None:
+    """The main repository root for *path*, or None. Pure Python, no ``git`` (1b spec §3.2).
 
-    Inside a linked worktree ``--show-toplevel`` names the worktree, so ask for the common
-    git dir first: ``<repo>/.git`` ⇒ ``<repo>``. Anything else (e.g. a submodule's
-    ``.git/modules/…``) falls back to ``--show-toplevel``.
+    The walk starts at the nearest existing ancestor, so a deleted worktree still names its
+    repository, and goes up to the first usable ``.git``. It never raises. A relative path
+    returns None, like the empty one (``Path("")`` is "."), rather than resolving against the
+    caller's own working directory. The result is the real path, as ``git rev-parse`` reports.
     """
-    if not path or not Path(path).is_dir():  # Path("") is ".", the caller's own cwd
+    if not path or not os.path.isabs(path):
         return None
-    common = _git_rev_parse(path, "--path-format=absolute", "--git-common-dir")
-    if common is not None and common.endswith("/.git"):
-        return str(Path(common).parent)
-    return _git_rev_parse(path, "--show-toplevel")
+    try:
+        start = Path(path)
+        while not start.exists():
+            start = start.parent
+        start = start.resolve()
+        for folder in (start, *start.parents):
+            root = _root_at(folder)
+            if root is not None:
+                return root
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
 
 
 def resolve_project_key(origin_cwd: str, *, toplevel: Callable[[str], str | None]) -> str:
@@ -69,7 +87,7 @@ def resolve_project_key(origin_cwd: str, *, toplevel: Callable[[str], str | None
 def is_scout_run(*, origin_cwd: str, title: str | None, scheduled_task_id: str | None, vault: Path) -> bool:
     try:
         in_vault = Path(origin_cwd).resolve() == vault.resolve()
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a NUL byte in a recorded path
         in_vault = origin_cwd.rstrip("/") == str(vault).rstrip("/")
     if not in_vault:
         return False
@@ -205,8 +223,8 @@ __all__ = [
     "derive_state",
     "fmt_ago",
     "fmt_days",
-    "git_toplevel",
     "is_scout_run",
+    "repo_root",
     "resolve_project_key",
     "strip_worktree",
 ]

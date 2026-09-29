@@ -35,6 +35,7 @@ from scout.sessions.model import (
     parse_iso,
 )
 from scout.sessions.settings import AgentSessionsSettings, load_settings
+from scout.sessions.stats import BuildStats
 from scout.sessions.transcript import (
     TRANSCRIPT_CACHE_FILENAME,
     load_transcript_cache,
@@ -57,7 +58,7 @@ class BuildOptions:
     use_gh: bool = True
     gh_runner: github.Runner = field(default_factory=lambda: github.default_runner)
     gh_available: Callable[[], bool] = field(default_factory=lambda: github.gh_available)
-    toplevel: Callable[[str], str | None] = field(default_factory=lambda: derive.git_toplevel)
+    toplevel: Callable[[str], str | None] = field(default_factory=lambda: derive.repo_root)
     pid_alive: Callable[[int], bool] = field(default_factory=lambda: cli_home.pid_alive)
 
 
@@ -214,17 +215,24 @@ def _recency(s: AgentSession) -> float:
 # ----- build ---------------------------------------------------------------------------
 
 
-def build_index(opts: BuildOptions) -> Index:
+def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index:
+    """Build the index from every source. *stats*, when given, is filled with the work done (1b spec §3.7)."""
+    if stats is None:
+        stats = BuildStats()
     s = opts.settings
     errors: list[SourceError] = []
-    records, e1 = desktop.load_desktop_records(opts.support_dir)
+    cache_dir = paths.cache_dir(opts.data_dir)
+    dcache_path = cache_dir / desktop.DESKTOP_CACHE_FILENAME
+    dcache = desktop.load_desktop_cache(dcache_path)
+    dcache_loaded = dict(dcache)  # entries are replaced, never mutated, so a shallow copy is a snapshot
+    records, e1 = desktop.load_desktop_records(opts.support_dir, cache=dcache, stats=stats)
     groups, e2 = desktop.load_groups(opts.support_dir)
     leases, e3 = desktop.load_worktree_leases(opts.support_dir)
     live, e4 = cli_home.load_live_processes(opts.claude_home, is_alive=opts.pid_alive)
     errors.extend([*e1, *e2, *e3, *e4])
     tpaths = cli_home.transcript_paths(opts.claude_home)
-    cache_dir = paths.cache_dir(opts.data_dir)
     tcache = load_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME)
+    tcache_loaded = dict(tcache)
     window = timedelta(days=s.transcript_window_days)
 
     # 1. Desktop records → sessions; forks sharing a cliSessionId dedupe to the most recent.
@@ -280,7 +288,7 @@ def build_index(opts: BuildOptions) -> Index:
                 last = parse_iso(sess.last_activity_at)
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
                     looked_up.add(str(tpath))
-                    sess.transcript = transcript_info(tpath, cache=tcache)
+                    sess.transcript = transcript_info(tpath, cache=tcache, stats=stats)
             except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
                 errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
         if cli_uuid is not None and cli_uuid in live:
@@ -292,6 +300,7 @@ def build_index(opts: BuildOptions) -> Index:
     by_priority = sorted(sessions, key=lambda x: (x.is_archived, -_recency(x)))
     all_refs = [ref for sess in by_priority for ref in refs_by_session.get(sess.id, [])]
     pr_cache = github.load_pr_cache(cache_dir / github.PR_CACHE_FILENAME)
+    pr_loaded = dict(pr_cache)  # refresh_pr_states inserts new PRInfo objects, never mutates old ones
     fetched = 0
     resolved: dict[str, PRInfo] = {}
     if all_refs:
@@ -321,10 +330,17 @@ def build_index(opts: BuildOptions) -> Index:
         sess.pr = choose_pr(sess.prs)
 
     # 5. Project key, Scout-run flag, state.
+    roots: dict[str, str | None] = {}
+
+    def toplevel(path: str) -> str | None:
+        if path not in roots:
+            roots[path] = opts.toplevel(path)
+        return roots[path]
+
     stale_after = timedelta(days=s.stale_after_days)
     running_window = timedelta(seconds=s.running_window_seconds)
     for sess in sessions:
-        sess.project_key = resolve_project_key(sess.origin_cwd, toplevel=opts.toplevel)
+        sess.project_key = resolve_project_key(sess.origin_cwd, toplevel=toplevel)
         sess.is_scout_run = is_scout_run(
             origin_cwd=sess.origin_cwd, title=sess.title, scheduled_task_id=sess.scheduled_task_id, vault=opts.data_dir
         )
@@ -333,10 +349,17 @@ def build_index(opts: BuildOptions) -> Index:
         )
 
     sessions.sort(key=lambda x: (STATES.index(x.state), -_recency(x)))
-    # Write back only what this run used, so deleted transcripts and unlinked PRs drop out.
-    write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, {k: v for k, v in tcache.items() if k in looked_up})
+    # Write back only what this run used, so deleted transcripts and unlinked PRs drop out,
+    # and only when something changed (1b spec §3.6).
+    if dcache != dcache_loaded and desktop.write_desktop_cache(dcache_path, dcache):
+        stats.caches_written.append("desktop")
+    kept = {k: v for k, v in tcache.items() if k in looked_up}
+    if kept != tcache_loaded and write_transcript_cache(cache_dir / TRANSCRIPT_CACHE_FILENAME, kept):
+        stats.caches_written.append("transcripts")
     referenced = {ref.key for ref in all_refs}
-    github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, {k: v for k, v in pr_cache.items() if k in referenced})
+    pr_kept = {k: v for k, v in pr_cache.items() if k in referenced}
+    if pr_kept != pr_loaded and github.write_pr_cache(cache_dir / github.PR_CACHE_FILENAME, pr_kept):
+        stats.caches_written.append("prs")
 
     return Index(
         generated_at=dt_to_iso(opts.now),
@@ -372,10 +395,11 @@ def run(
     hours: int = 24,
     instance_name: str = "Scout",
     tz_name: str | None = None,
+    stats: BuildStats | None = None,
 ) -> tuple[Index, Path]:
     """Build the index and write it (plus both caches); optionally render the digest."""
     o = opts or default_options(data_dir, now=now, use_gh=use_gh)
-    index = build_index(o)
+    index = build_index(o, stats=stats)
     legacy = paths.cache_dir(o.data_dir) / LEGACY_CACHE_FILENAME
     if legacy.exists():
         try:

@@ -82,9 +82,10 @@ def write_worktrees(support: Path, leases: dict[str, dict[str, Any]]) -> Path:
 def write_transcript(
     home: Path, encoded_dir: str, uuid: str, rows: list[dict[str, Any]], *, mtime_ago_hours: float = 1.0
 ) -> Path:
+    """Write rows the way Claude Code does: one compact JSON object per line."""
     p = home / "projects" / encoded_dir / f"{uuid}.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    p.write_text("\n".join(json.dumps(r, separators=(",", ":")) for r in rows) + "\n", encoding="utf-8")
     ts = (datetime.now(tz=UTC) - timedelta(hours=mtime_ago_hours)).timestamp()
     os.utime(p, (ts, ts))
     return p
