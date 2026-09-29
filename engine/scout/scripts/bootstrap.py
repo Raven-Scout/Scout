@@ -137,6 +137,12 @@ _CAT1_TEMPLATES = (
     (".gitignore", "templates/.gitignore.tmpl"),
 )
 
+# Cat-1 templates the vault also edits, so an upgrade merges them into the live
+# file instead of overwriting it (see merge_gitignore). A vault's .gitignore can
+# carry lines that keep secrets out of git; the sessions auto-commit the vault,
+# so dropping one of those lines on upgrade can commit a live credential.
+_CAT1_APPEND_ONLY = frozenset({".gitignore"})
+
 _INSTALL_ONLY_TEMPLATES = (
     # Vault-owned files seeded once on install (cat 2). Never overwritten on upgrade.
     ("dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
@@ -183,6 +189,38 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def merge_gitignore(vault_text: str, template_text: str) -> str:
+    """The vault's .gitignore plus any template pattern it lacks. Append-only.
+
+    Every vault line is kept in place and in order; nothing is ever removed, so a
+    line the vault added (a secrets file, a local venv) survives any upgrade.
+    Template patterns the vault is missing are appended after a blank line,
+    together with the comment lines directly above them in the template.
+    Patterns compare with surrounding whitespace stripped. When the vault already
+    has every template pattern, its text comes back byte-identical.
+    """
+    present = {s for line in vault_text.splitlines() if (s := line.strip()) and not s.startswith("#")}
+    additions: list[str] = []
+    comments: list[str] = []
+    for line in template_text.splitlines():
+        s = line.strip()
+        if not s:
+            comments = []
+        elif s.startswith("#"):
+            comments.append(line)
+        else:
+            if s not in present:
+                additions += comments + [line]
+                present.add(s)
+            comments = []
+    if not additions:
+        return vault_text
+    if not vault_text.strip():
+        return template_text
+    base = vault_text if vault_text.endswith("\n") else vault_text + "\n"
+    return base + "\n" + "\n".join(additions) + "\n"
+
+
 # ---------- stages ----------
 
 
@@ -192,7 +230,7 @@ def _stage_create_dirs(cfg: BootstrapConfig) -> None:
 
 
 def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
-    """Stage 3: cat 1 file overwrites (always)."""
+    """Stage 3: cat 1 file overwrites (always), except _CAT1_APPEND_ONLY files, which merge."""
     vars_ = _template_vars(cfg)
     for vault_rel, plugin_rel in _CAT1_FILES_FROM_PLUGIN.items():
         src = cfg.plugin_root / plugin_rel
@@ -206,8 +244,11 @@ def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
             _atomic_write(cfg.vault / vault_rel, f"# placeholder: {tmpl_rel}\n")
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
-        _atomic_write(cfg.vault / vault_rel, rendered)
-        (cfg.vault / vault_rel).chmod(0o755)
+        target = cfg.vault / vault_rel
+        if vault_rel in _CAT1_APPEND_ONLY and target.exists():
+            rendered = merge_gitignore(target.read_text(encoding="utf-8"), rendered)
+        _atomic_write(target, rendered)
+        target.chmod(0o755)
 
 
 def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
