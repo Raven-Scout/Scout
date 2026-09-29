@@ -27,4 +27,16 @@ fi
 SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
 export SCOUT_DATA_DIR
 
+# Git-truth staleness ranking, cached before the session starts. The filter
+# below ranks each KB file by the "Last verified" date the file *claims*, and a
+# file can carry a fresh claimed date for facts nobody re-checked. The optional
+# vault helper scripts/vault-freshness.py ranks by git committer date instead,
+# which cannot drift that way; running it here puts both views in .scout-cache/
+# before the model starts. Never fatal: a session must not die because a
+# staleness cache could not be written.
+if [[ -f "$SCOUT_DATA_DIR/scripts/vault-freshness.py" ]]; then
+    ( cd "$SCOUT_DATA_DIR" && python3 scripts/vault-freshness.py --limit 15 \
+        --out .scout-cache/vault-freshness.md >/dev/null 2>&1 ) || true
+fi
+
 exec "$SCOUTCTL_BIN" hook kb-pre-filter --session-type "${1:-dreaming}"
