@@ -31,3 +31,18 @@ features:
 auto_update:
   enabled: false
   channel: stable
+
+# Agent-session index (scoutctl session index). Spec: scout-app
+# docs/superpowers/specs/2026-09-08-agent-sessions-design.md §4.11.
+# NOTE: `sessions:` is the budget block in older vaults — this is a separate key.
+agent_sessions:
+  stale_after_days: 3
+  running_window_seconds: 120
+  pr_refresh_minutes: 10
+  pr_fetch_cap: 25
+  transcript_window_days: 14
+  done_visible_hours: 24
+  render_max_per_bucket: 15
+  use_gh: true
+  desktop_support_dir: null
+  claude_home: null

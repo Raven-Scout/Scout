@@ -24,3 +24,6 @@ engine/manifest.json
 .claude/
 .scoutctl-py-cache
 docs/plans/archive/PLAN-8-RESUME.md
+
+# superpowers plugin scratch (SDD ledgers, briefs, review packages)
+.superpowers/

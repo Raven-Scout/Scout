@@ -212,35 +212,72 @@ def budget_set_cmd(
     typer.echo(f"skip at: {payload['skip_at_pct']:.0f}% → ${payload['skip_threshold_usd']:.2f}")
 
 
-# `scoutctl session cc-cache` replaces ~/Scout/scripts/cc-session-cache.sh
-# (#74 + #75). The bash version spawned one python3 cold start per JSONL file
-# in ~/.claude/projects/* plus a 5-stage subprocess pipeline per file — often
-# dozens of starts per Scout session-start. This is one process and reuses
-# unchanged-mtime entries from a JSON cache.
+# `scoutctl session index` builds .scout-cache/sessions-index.json from
+# desktop records, transcripts, live PIDs and gh (Agent Sessions plan 1,
+# #74 + #75). `session list` reads that index back. `cc-cache` is the
+# back-compat alias for `index --render` that vault scripts/cc-session-cache.sh
+# still calls — it replaces the old ~/Scout/scripts/cc-session-cache.sh, whose
+# bash version spawned one python3 cold start per JSONL file in
+# ~/.claude/projects/* plus a 5-stage subprocess pipeline per file.
 session_app = typer.Typer(help="Pre-session data caches for scheduled Scout runs.")
 app.add_typer(session_app, name="session")
 
 
+@session_app.command("index")
+def session_index_cmd(
+    json_out: bool = typer.Option(False, "--json", help="Print the index JSON to stdout."),
+    render: bool = typer.Option(False, "--render", help="Also write the cc-sessions.md digest."),
+    no_gh: bool = typer.Option(False, "--no-gh", help="Skip gh; PR states come from cache or read 'unknown'."),
+    hours: int = typer.Option(24, "--hours", "-h", help="Activity window for the digest (default 24h)."),
+    instance_name: str = typer.Option("Scout", "--instance-name", help="Instance name used in the digest header."),
+    timezone: str = typer.Option(None, "--timezone", help="IANA zone for rendered timestamps (default: vault's)."),
+    strict: bool = typer.Option(False, "--strict", help="Exit 1 if any source reported an error."),
+) -> None:
+    """Build .scout-cache/sessions-index.json from desktop records, transcripts, PIDs and gh."""
+    from scout.sessions.index import main as index_main
+
+    raise typer.Exit(
+        index_main(
+            json_out=json_out,
+            render=render,
+            use_gh=not no_gh,
+            hours=hours,
+            instance_name=instance_name,
+            tz_name=timezone,
+            strict=strict,
+        )
+    )
+
+
+@session_app.command("list")
+def session_list_cmd(
+    state: list[str] = typer.Option([], "--state", help="Only these states (repeatable)."),
+    project: str = typer.Option(None, "--project", help="Project name, folder name or key."),
+    include_archived: bool = typer.Option(False, "--include-archived"),
+    include_scout_runs: bool = typer.Option(False, "--include-scout-runs"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List sessions from the written index (builds it first if missing)."""
+    from scout.sessions.index import list_main
+
+    raise typer.Exit(
+        list_main(
+            states=list(state),
+            project=project,
+            include_archived=include_archived,
+            include_scout_runs=include_scout_runs,
+            json_out=json_out,
+        )
+    )
+
+
 @session_app.command("cc-cache")
 def session_cc_cache_cmd(
-    hours: int = typer.Option(
-        24,
-        "--hours",
-        "-h",
-        help="Lookback window for CC session JSONLs (default 24h).",
-    ),
-    instance_name: str = typer.Option(
-        "Scout",
-        "--instance-name",
-        help="Instance name suffix to exclude (skip Scout's own sessions).",
-    ),
-    timezone: str = typer.Option(
-        None,
-        "--timezone",
-        help="IANA zone for the rendered timestamps (default: the vault's configured timezone).",
-    ),
+    hours: int = typer.Option(24, "--hours", "-h", help="Activity window for the digest (default 24h)."),
+    instance_name: str = typer.Option("Scout", "--instance-name", help="Instance name used in the digest header."),
+    timezone: str = typer.Option(None, "--timezone", help="IANA zone for rendered timestamps (default: vault's)."),
 ) -> None:
-    """Refresh .scout-cache/cc-sessions.md with metadata from recent CC sessions."""
+    """Back-compat alias for `session index --render` (vault scripts/cc-session-cache.sh calls this)."""
     from scout.scripts.cc_session_cache import main as cc_main
 
     raise typer.Exit(cc_main(hours=hours, instance_name=instance_name, tz_name=timezone))
