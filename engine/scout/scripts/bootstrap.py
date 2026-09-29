@@ -535,6 +535,94 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
 
 
+def _top_level_blocks(text: str) -> tuple[list[tuple[str, list[str], list[str]]], list[str]] | None:
+    """Split a block-style YAML mapping into ``(key, leading, block)`` segments.
+
+    ``leading`` is the run of comment and blank lines directly above the key;
+    ``block`` is the key line and everything under it. The second return value
+    holds the comment and blank lines after the last block. Returns None for
+    anything this line scanner cannot split with confidence — document markers,
+    flow collections spanning lines, duplicate keys — so the caller can fall
+    back to a plain dump.
+    """
+    lines = text.splitlines(keepends=True)
+    starts: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        if not line.strip() or line[0] in " \t#":
+            continue
+        if line.startswith(("---", "...")):
+            return None
+        if line.startswith("-"):
+            continue  # a sequence item under the previous key
+        try:
+            parsed = yaml.safe_load(line)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(parsed, dict) or len(parsed) != 1:
+            return None
+        starts.append((i, str(next(iter(parsed)))))
+    if len({key for _, key in starts}) != len(starts):
+        return None
+
+    def is_filler(line: str) -> bool:
+        return not line.strip() or line.lstrip().startswith("#")
+
+    segments: list[tuple[str, list[str], list[str]]] = []
+    lead_from = 0
+    for n, (start, key) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        # Comments and blank lines just above the next key belong to that key.
+        while end > start + 1 and is_filler(lines[end - 1]):
+            end -= 1
+        segments.append((key, lines[lead_from:start], lines[start:end]))
+        lead_from = end
+    return segments, lines[lead_from:]
+
+
+def _dump_keeping_comments(text: str, data: dict) -> str:
+    """``yaml.safe_dump(data)``, but written over ``text`` so its comments survive.
+
+    Each top-level block whose value is unchanged comes back byte-for-byte, with
+    every comment inside it. A changed block is re-dumped under its original
+    leading comments; comments inside a changed block are lost. New keys are
+    appended at the end. Falls back to a plain dump whenever the text cannot be
+    split safely, or the result would not load back as ``data``.
+    """
+    plain = yaml.safe_dump(data, sort_keys=False)
+    split = _top_level_blocks(text)
+    try:
+        original = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return plain
+    if split is None or not isinstance(original, dict):
+        return plain
+    segments, trailer = split
+
+    out: list[str] = []
+    for key, leading, block in segments:
+        out += leading
+        if key not in data:
+            continue
+        if key in original and original[key] == data[key]:
+            out += block
+        else:
+            out.append(yaml.safe_dump({key: data[key]}, sort_keys=False))
+    out += trailer
+    added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
+    if added:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.append(yaml.safe_dump(added, sort_keys=False))
+
+    result = "".join(out)
+    try:
+        if yaml.safe_load(result) != data:
+            return plain
+    except yaml.YAMLError:
+        return plain
+    return result
+
+
 def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     """Stage 7: write/update plugin.version_at_last_{setup,update} plus persist
     connector_inputs so subsequent upgrades render templates with the same values
@@ -543,10 +631,8 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     cat-1b hand-edit detection fire on every upgrade.
     """
     config_path = cfg.vault / "scout-config.yaml"
-    if config_path.exists():
-        existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    else:
-        existing = {}
+    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    existing = yaml.safe_load(text) or {}
     existing.setdefault("user", {})
     existing["user"]["name"] = cfg.user_name
     existing["user"]["email"] = cfg.user_email
@@ -574,7 +660,9 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
         plugin.setdefault("version_at_last_setup", cfg.plugin_version)
     plugin["version_at_last_update"] = cfg.plugin_version
     plugin.setdefault("applied_migrations", [])
-    _atomic_write(config_path, yaml.safe_dump(existing, sort_keys=False))
+    # Not a plain safe_dump: that round-trip deleted every comment in the file
+    # on every upgrade, including the one `scoutctl budget set` writes.
+    _atomic_write(config_path, _dump_keeping_comments(text, existing))
 
 
 # ---------- entry points ----------
