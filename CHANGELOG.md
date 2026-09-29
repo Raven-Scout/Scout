@@ -6,6 +6,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Upgrades no longer delete a vault's `.gitignore` lines** (`engine/scout/scripts/bootstrap.py`, `templates/.gitignore.tmpl`) — `bootstrap upgrade` re-rendered `.gitignore` from the template like any other cat-1 file, so every line a vault had added was dropped, including `.mcp.json`, which holds a live API key. Scout's sessions auto-commit the vault, so the next session after an upgrade could commit that key. `.gitignore` is now **append-only** on upgrade and migrate-legacy: vault lines stay where they are, template patterns the vault lacks are appended with the comment above them, and a vault that already has every pattern is left byte-identical. The template gains `.mcp.json` and `.venv/`.
+- **The version stamp keeps `scout-config.yaml`'s comments** (`engine/scout/scripts/bootstrap.py`) — the stamp rewrote the file through a pyyaml round-trip, deleting every comment on every upgrade, including the one `scoutctl budget set` writes above `budget:`. Top-level blocks whose value is unchanged now come back byte-for-byte; a changed block (`plugin:`) keeps the comments above it. Anything the scanner can't split safely (duplicate keys, document markers, multi-line flow collections) falls back to the old dump.
+- **Runners export `SCOUT_MODE`** (`templates/run-*.sh.tmpl`) — the telemetry hooks short-circuit when it is unset, so every scheduled run looked interactive and no connector telemetry was written. (#192, #121)
+- **Runners record the run outcome and roll up connector health** (`templates/run-*.sh.tmpl`) — after the session, from the wrapper, so both still happen when a run dies before its phases: `scripts/run-outcome.sh record <mode> <exit> <start> <log>` and `scripts/connector-health-rollup.sh`. Both are optional vault helpers; each step is skipped when its helper is absent and never fails the run.
+- **`kb-pre-filter.sh` caches the git-truth staleness ranking, and `heartbeat.sh` runs the session-lane liveness watchdog once a day** (`templates/hooks/kb-pre-filter.sh.tmpl`, `templates/scripts/heartbeat.sh.tmpl`) — calls into the optional vault helpers `scripts/vault-freshness.py` and `scripts/session-lane-liveness.py --quiet --notify`; both skipped when absent, never fatal.
+- **`recurring-task-status.py` gains the `yearly:<MM-DD>` cadence and the missed-window count** (`templates/scripts/recurring-task-status.py`) — the script ships verbatim, so each upgrade had reverted a vault's copy to this older one. Without `yearly:` an annual entity resolved to `unknown` and never fired; without `windows_missed` a weekly task that had missed two windows still read `upcoming`. `yearly:02-29` lands on Feb 28 in non-leap years.
+
+Every fix above had lived only in a vault and been restored by hand after each upgrade; `test_upgrade_keeps_vault_fixes.py` now upgrades a vault carrying each one and checks it survives. A vault whose runners carry these fixes by hand gets one last `run-*.sh.bak.<date>` on its first upgrade to this version (the template words the comments differently); after that the runners match the template and upgrades back up nothing.
+
 ## [0.11.0] - 2026-09-29
 
 
