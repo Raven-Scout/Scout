@@ -21,11 +21,14 @@ Arguments (`$ARGUMENTS`):
 1. **Vault and dates.** The vault is the directory holding `scout-config.yaml` (the current directory, else `~/Scout`). Read its `timezone` (default `America/New_York`) and compute today and the target day with `TZ=<timezone> date '+%Y-%m-%d'`. Tasks always live in **today's** file `<vault>/action-items/action-items-<today>.md`, even when planning tomorrow; the next briefing carries them, and their plan markers, forward.
 2. **Engine.** Resolve scoutctl and check that it knows planning:
    ```bash
-   SCOUTCTL="${CLAUDE_PLUGIN_ROOT:-}/.venv/bin/scoutctl"
+   SCOUTCTL="${SCOUT_SCOUTCTL:-}"
+   [ -x "$SCOUTCTL" ] || SCOUTCTL="${CLAUDE_PLUGIN_ROOT:-}/.venv/bin/scoutctl"
    [ -x "$SCOUTCTL" ] || SCOUTCTL="$(command -v scoutctl)"
+   echo "SCOUTCTL=$SCOUTCTL"
    "$SCOUTCTL" manifest show | grep -q '"planning_v1": true' && echo PLANNING_OK || echo PLANNING_UNAVAILABLE
    ```
-   On `PLANNING_UNAVAILABLE`, tell the user the installed engine predates `/scout-plan` and to run `/scout-update`, then stop.
+   Every shell block starts fresh, so from here on call scoutctl by the full path this block printed. `SCOUT_SCOUTCTL` is for testing a plugin checkout: a `claude --plugin-dir` session does not reach the checkout's engine through `PATH`.
+   On `PLANNING_UNAVAILABLE`, tell the user the engine at that path predates `/scout-plan`, then stop. A normal install needs `/scout-update`. A session testing a checkout needs Claude Code started with `SCOUT_SCOUTCTL=<checkout>/.venv/bin/scoutctl`.
 3. **Settings and calibration.**
    ```bash
    "$SCOUTCTL" planning show --json
@@ -75,6 +78,10 @@ From today's file take open (`- [ ]`) items in 🔴 Urgent, 🟡 To Do and 💡 
 
 Rank: overdue or due on the target day first, then 🔴, then 🟡 and 💡 by nearest deadline, then oldest. Work with the top 12 at most and say how many more exist.
 
+**Check that each candidate is still live** before you estimate it. A plan full of finished work is worse than no plan.
+- **Age.** Every briefing rewrites the item text, so "NEW", "this morning", "yesterday" or "since the last run" say nothing about when the item started. Take the age from the vault history instead: `git -C <vault> log --reverse --format=%ad --date=short -S "[#<TAG>]" -- action-items | head -1`. Use that date when ranking by age, and in the Why column when waiting time matters ("Alex has waited since Sep 15").
+- **Source.** When the item links a Linear issue or a GitHub issue or PR, check its current state with the connector or `gh` you have. If it is closed, merged or done, do not plan it. List it under "Looks done at the source" with the evidence, and on a yes check it off with `"$SCOUTCTL" action-items mark-done --by-id <TAG> <today's file>`. If you cannot reach the source, plan the item and say it is unverified.
+
 ---
 
 ## Phase 4: Estimate
@@ -103,9 +110,11 @@ When calibration exists, say so once in the plan: "Deep work runs 1.4x your firs
    |---|---|---|---|---|
    | 09:30-11:00 | Draft the rollout note `[#PROJ1]` | deep | 1h30m (raw 1h x 1.5) | 2-page draft, numbers still missing |
 
-   - Capacity: "4h15m planned of 6h30m free (65% cap)."
+   - Capacity: "4h15m planned of 6h30m free (65% cap), 2h15m left open." The time left open is free minus planned.
    - Does not fit: the tasks left over, each with "suggest tomorrow" or "suggest dropping".
    - Question: "Create these N blocks, or change something?"
+
+   Start a row with `Batch:` only when it holds two or more tasks. Unplanned time is just unplanned: do not call a gap lunch or a break unless a calendar event says so.
 3. **Iterate.** The user may change estimates, times, order, kinds, or which tasks are in. Re-pack and show the table again. Every change stays on the grid.
 4. Continue only on an explicit yes to the current table. "Looks good" about one row is not a yes for all of them.
 
@@ -116,7 +125,7 @@ When calibration exists, say so once in the plan: "Deep work runs 1.4x your firs
 Only after the yes:
 
 1. **One event per block** with `create_event`:
-   - `summary`: `<event_title_prefix> <plain task title>`; a batch block uses `<prefix> Batch: <short list>`;
+   - `summary`: `<event_title_prefix> <plain task title>`; a block with two or more tasks uses `<prefix> Batch: <short list>`;
    - `description`: one `[scout:<TAG>]` marker per task in the block, then one sentence from each task;
    - `startTime` and `endTime` as ISO 8601 with the user's `timeZone`;
    - `availability`: `AVAILABILITY_BUSY` or `AVAILABILITY_FREE` from `event_availability`; `visibility` from `event_visibility`; `notificationLevel`: `NONE`; no attendees, no Meet link.

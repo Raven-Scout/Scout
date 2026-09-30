@@ -19,7 +19,7 @@ In one conversation, the user gets a realistic plan for the day. Scout estimates
 
 1. **Feedback first.** Tasks with a past `block:` and no `actual:` are listed in one question. Finished ones get `set-actual`. Unfinished ones can be replanned or have their block cleared.
 2. **Read the day.** `list_events` over the work window. Busy time is every timed, non-declined event plus a gap around each one, with edges rounded inward to the grid. Earlier Scout blocks count as busy and their tasks as already planned.
-3. **Pick candidates** from 🔴, 🟡 and 💡. Skipped: Watching items, waiting or blocked items, snoozed items, personal items unless asked.
+3. **Pick candidates** from 🔴, 🟡 and 💡. Skipped: Watching items, waiting or blocked items, snoozed items, personal items unless asked. Each candidate is checked before it is estimated: its age comes from the vault history (`git log -S "[#TAG]"`), because every briefing rewrites the item text, and a linked Linear issue or GitHub issue or PR that is already closed or merged takes the task out of the plan and offers it for check-off.
 4. **Estimate.** A kind of work (`deep`, `shallow`, `comms`, `review`), a raw estimate with a one-sentence reason, then a factor: calibrated per kind, else the configured buffer. The result is rounded up to the grid, and anything over 2h is split.
 5. **Pack.** Deep work goes into the longest windows. Small tasks share batch blocks. Packing stops at `capacity_pct` of free time, and what does not fit is listed for another day.
 6. **Agree, then act.** The plan is shown as a table. After an explicit yes, `create_event` runs per block (busy, private, no notifications by default), then `set-estimate` and `set-block` per task, then a vault commit `plan [HH:MM]:`.
@@ -54,6 +54,7 @@ The command only ever edits or deletes events it created: the title prefix plus 
 | `planning show [--json]` | effective `planning:` block |
 | `planning calibration [--json]` | per-kind `samples`, `median_ratio`, `factor`, `source` |
 
+- The command finds the engine through `SCOUT_SCOUTCTL`, then `${CLAUDE_PLUGIN_ROOT}/.venv/bin/scoutctl`, then `scoutctl` on `PATH`. A `claude --plugin-dir` session gets neither of the last two pointing at the checkout, so testing a checkout means starting Claude Code with `SCOUT_SCOUTCTL=<checkout>/.venv/bin/scoutctl`.
 - All verbs take `--by-id` / `--subject` and the optional daily-file path, like `snooze`.
 - The comment lister (`_common.list_comment_lines`) and the HTML renderer (`render.COMMENT_METADATA_KEYS`) treat `estimate`, `block` and `actual` as metadata.
 - The manifest advertises `planning_v1`.
