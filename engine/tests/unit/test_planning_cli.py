@@ -88,6 +88,7 @@ def test_clear_block_via_cli(vault: Path) -> None:
         ("set-estimate", ["30m"]),
         ("set-block", ["--date", "2026-09-30", "--start", "10:00", "--end", "10:30"]),
         ("clear-block", []),
+        ("clear-plan", []),
         ("set-actual", ["30m"]),
     ],
 )
@@ -105,6 +106,7 @@ def test_selector_must_be_exactly_one(vault: Path, command: str, extra: list[str
         ("set-estimate", ["30m"]),
         ("set-block", ["--date", "2026-09-30", "--start", "10:00", "--end", "10:30"]),
         ("clear-block", []),
+        ("clear-plan", []),
         ("set-actual", ["30m"]),
     ],
 )
@@ -197,3 +199,11 @@ def test_materialize_carries_plan_marks_verbatim(vault: Path) -> None:
     carried = (vault / "action-items" / "action-items-2026-09-30.md").read_text(encoding="utf-8")
     assert "  - estimate: 45m (raw: 30m, kind: deep)" in carried
     assert "  - block: 2026-09-30 10:00-10:45 (event: abc)" in carried
+
+
+def test_clear_plan_via_cli(vault: Path) -> None:
+    target = _seed(vault)
+    runner.invoke(action_items_app, ["set-estimate", "30m", "--by-id", "OPS2", str(target)])
+    result = runner.invoke(action_items_app, ["clear-plan", "--by-id", "OPS2", str(target)])
+    assert result.exit_code == 0, result.output
+    assert "- estimate:" not in target.read_text(encoding="utf-8")

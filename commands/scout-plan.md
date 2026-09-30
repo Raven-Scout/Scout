@@ -139,6 +139,7 @@ Only after the yes:
 
 - **Moving a block:** a task that already has a block for the target day is shown, not replanned silently. To move it, with an explicit yes: `delete_event` the old event, create the new one, then `set-block` with the new id.
 - **Removing a block:** with an explicit yes, `delete_event` it and run `clear-block` for its tasks.
+- **Dropping a task from the plan:** with an explicit yes, delete its event and run `clear-plan`, which removes the estimate, the block and any actual from the task. Recorded actuals stay in the planning log.
 - **Only ever touch events Scout created:** the title starts with `event_title_prefix` **and** the description carries a `[scout:TAG]` marker. Never edit or delete anything else on the calendar.
 
 ## Important Notes

@@ -48,6 +48,7 @@ The command only ever edits or deletes events it created: the title prefix plus 
 | `action-items set-estimate <dur> [--raw <dur>] [--kind <k>]` | write or replace `estimate:` |
 | `action-items set-block --date --start --end [--event-id]` | write or replace `block:` (edges and length on the grid) |
 | `action-items clear-block` | remove `block:` (no-op when absent) |
+| `action-items clear-plan` | remove all three markers from a task (no-op when absent); the log keeps any recorded actual |
 | `action-items set-actual <dur> [--on <date>]` | write or replace `actual:` and append a row to `.scout-state/planning-log.jsonl` |
 | `action-items list --json --with-plan` | adds `plan` (estimate, raw, kind, block, actual) per item |
 | `planning show [--json]` | effective `planning:` block |

@@ -324,6 +324,20 @@ def cli_clear_block(
     clear_block(by_id=by_id, by_subject=subject, date=date, data_dir=data_dir)
 
 
+@app.command("clear-plan")
+def cli_clear_plan(
+    subject: str | None = typer.Option(None, "--subject", help=_SUBJECT_HELP),
+    by_id: str | None = typer.Option(None, "--by-id", help=_BY_ID_HELP),
+    path: Path | None = typer.Argument(None, help=_PATH_HELP),
+) -> None:
+    """Remove every plan marker (estimate, block, actual) from a task."""
+    from scout.action_items.plan_marks import clear_plan
+
+    _require_one_selector("clear-plan", subject, by_id)
+    data_dir, date = _daily_target(path)
+    clear_plan(by_id=by_id, by_subject=subject, date=date, data_dir=data_dir)
+
+
 @app.command("set-actual")
 def cli_set_actual(
     duration: str = typer.Argument(..., help="Time the task really took, on the grid, e.g. 1h."),

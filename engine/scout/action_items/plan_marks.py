@@ -280,6 +280,27 @@ def clear_block(
     return _event("action_item.block_cleared", "cli:clear-block", item_ulid, via, match, cleared=cleared)
 
 
+def clear_plan(
+    *,
+    by_id: str | None = None,
+    by_subject: str | None = None,
+    date: dt.date | None = None,
+    data_dir: Path | None = None,
+) -> Event:
+    """Remove every plan marker (estimate, block, actual) from a task.
+
+    For a task that drops out of the plan entirely. The planning log is left
+    alone: an actual that was recorded stays a calibration sample.
+    """
+    target_path, match, item_ulid, via = _resolve(by_id=by_id, by_subject=by_subject, date=date, data_dir=data_dir)
+    found = _mark_lines(target_path.read_text(encoding="utf-8").splitlines(), match.line_number)
+    cleared = [key for key in MARK_ORDER if key in found]
+    # Bottom-up, so earlier line numbers stay valid while deleting.
+    for key in sorted(cleared, key=lambda k: found[k][0], reverse=True):
+        delete_line(target_path, line_number=found[key][0])
+    return _event("action_item.plan_cleared", "cli:clear-plan", item_ulid, via, match, cleared=cleared)
+
+
 def set_actual(
     *,
     minutes: int,
@@ -335,6 +356,7 @@ __all__ = [
     "PlanBlock",
     "PlanMarks",
     "clear_block",
+    "clear_plan",
     "read_plan_marks",
     "set_actual",
     "set_block",

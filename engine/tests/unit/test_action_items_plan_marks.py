@@ -276,3 +276,27 @@ def test_today_comes_from_the_configured_day_boundary(fake_data_dir: Path) -> No
     from scout.action_items import plan_marks
 
     assert plan_marks._today(fake_data_dir) == config.today(fake_data_dir)
+
+
+def test_clear_plan_removes_every_marker_and_nothing_else(daily: Path, fake_data_dir: Path) -> None:
+    from scout.action_items.plan_marks import clear_plan
+
+    set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
+    set_block(day=_DAY, start="10:00", end="10:45", event_id="abc123", by_id="PROJ1", data_dir=fake_data_dir)
+    set_actual(minutes=60, by_id="PROJ1", data_dir=fake_data_dir)
+    event = clear_plan(by_id="PROJ1", data_dir=fake_data_dir)
+    text = daily.read_text(encoding="utf-8")
+    for key in ("- estimate:", "- block:", "- actual:"):
+        assert key not in text
+    assert "  - Source: slack\n  - alex: ping me when ready" in text
+    assert event.kind == "action_item.plan_cleared"
+    assert event.payload["cleared"] == ["estimate", "block", "actual"]
+
+
+def test_clear_plan_without_markers_is_a_no_op(daily: Path, fake_data_dir: Path) -> None:
+    from scout.action_items.plan_marks import clear_plan
+
+    before = daily.read_text(encoding="utf-8")
+    event = clear_plan(by_id="OPS2", data_dir=fake_data_dir)
+    assert event.payload["cleared"] == []
+    assert daily.read_text(encoding="utf-8") == before
