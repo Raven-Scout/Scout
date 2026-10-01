@@ -36,10 +36,15 @@ final class AppState: ObservableObject {
     // without each consumer constructing its own runner.
     let runner: any ProcessRunner
     let scoutctlExecutable: URL
-    /// Args inserted before scoutctl subcommands. Empty when `scoutctlExecutable`
-    /// is scoutctl itself; `["scoutctl"]` when we fell back to `/usr/bin/env`.
-    /// Every scoutctl shell-out must use this — see `fireNowArguments`.
+    /// Args inserted before scoutctl subcommands. Always empty now that
+    /// `scoutctlExecutable` is always a concrete resolved path (`EngineLocator`
+    /// or the shim), never `/usr/bin/env`. Every scoutctl shell-out must use
+    /// this — see `fireNowArguments`.
     let scoutctlArgumentsPrefix: [String]
+
+    // Engine discovery (spec §4.4)
+    let engineLayout: EngineLayout
+    let engineHealth: EngineHealthService
 
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
@@ -84,20 +89,22 @@ final class AppState: ObservableObject {
         let runner = configuration.runner
         let defaults = configuration.defaults
 
-        // Resolve scoutctl explicitly. When Scout.app launches from Finder
-        // (or via `open`), its PATH is the LaunchServices default
-        // (`/usr/bin:/bin:/usr/sbin:/sbin`) — homebrew, miniconda, pipx,
-        // and the scout-plugin bin dir are all absent. `/usr/bin/env
-        // scoutctl` then fails silently inside ScheduleService.refresh
-        // (caught by the do/catch), leaving the upcoming strip empty.
-        //
-        // Pick the first concrete scoutctl on disk so we don't depend on
-        // GUI app PATH inheritance at all. Falls back to `/usr/bin/env`
-        // only if no known path exists (then ScheduleService surfaces the
-        // exec error via its `lastError` publisher so the UI can show
-        // "scoutctl not found"). `Configuration.production()` does the
-        // resolving; tests pass a fixed invocation instead.
+        // The engine is found by `EngineLocator` (pointer → conventional
+        // layout → shim → marketplace cache → dev checkout) inside
+        // `Configuration.production()`, not here — the app no longer guesses
+        // a `scoutctl` path or falls back to `/usr/bin/env` + PATH luck. When
+        // nothing is found, `production()` hands us the shim path instead:
+        // ENOENT there is the honest failure, and `EngineHealthService`
+        // reports the same fact so the UI isn't silently broken.
+        // `Configuration.production()` does the resolving; tests pass a
+        // fixed invocation instead.
         let scoutctlResolved = configuration.scoutctl
+        let engineHealth = EngineHealthService(
+            locator: EngineLocator(layout: configuration.engineLayout),
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            initialState: configuration.initialEngineState
+        )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
         let tracker = UsageTrackerService(
@@ -236,6 +243,8 @@ final class AppState: ObservableObject {
         self.runner = runner
         self.scoutctlExecutable = scoutctlExe
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
+        self.engineLayout = configuration.engineLayout
+        self.engineHealth = engineHealth
 
         // Forward child-service changes so AppState.objectWillChange fires when
         // wishlist/research item counts update (drives sidebar badge reactivity).
@@ -287,6 +296,12 @@ final class AppState: ObservableObject {
             await self?.recomputeMenuStatus()
             await self?.refreshUrgentActionCount()
 
+            // Locate + doctor-check the engine, then keep rechecking every
+            // 10 minutes (spec §4.4) — drives the window gate, Settings ▸
+            // Engine, and the sidebar badge.
+            await engineHealth.refresh()
+            await MainActor.run { engineHealth.startPeriodicRefresh() }
+
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
                 scoutctl: scoutctlExe,
@@ -328,22 +343,47 @@ final class AppState: ObservableObject {
         /// left this to the default rewrote the *running app's* cache with
         /// whatever its fixture vault contained.
         var parseCacheURL: URL?
+        /// Where the app-managed engine lives on disk (spec §4.1). Real home
+        /// in production; a temp directory in every test configuration so a
+        /// test run can never locate (or doctor-check) the user's real engine.
+        var engineLayout: EngineLayout
+        /// The engine state `EngineLocator.locate()` found synchronously at
+        /// configuration time — lets `EngineHealthService` (and the window
+        /// gate it drives) be correct from the very first frame, before the
+        /// async `refresh()` has had a chance to run.
+        var initialEngineState: EngineState
         /// When false the initializer wires the object graph but starts no
         /// timers, watches, loads, or subprocesses.
         var startsBackgroundWork: Bool
 
         static func production() -> Configuration {
-            let scoutDirectory = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Scout")
+            let layout = EngineLayout.live
+            let locator = EngineLocator(layout: layout)
+            let state = locator.locate()
+            // Vault root precedence (spec §4.4): the `scoutDataDir` default
+            // (tilde expanded) → the engine pointer's `vault` → `~/Scout`.
+            let vault = AppState.resolveScoutDirectory(
+                defaults: .standard, pointer: locator.pointer(), home: layout.home
+            )
             return Configuration(
-                scoutDirectory: scoutDirectory,
-                runner: SystemProcessRunner(),
+                scoutDirectory: vault,
+                // Every scoutctl/git call must see the vault the app is
+                // looking at (the engine defaults to ~/Scout otherwise) —
+                // inject it once, here, so every call site gets it for free.
+                runner: EnvironmentInjectingRunner(base: SystemProcessRunner(), extra: ["SCOUT_DATA_DIR": vault.path]),
                 fileEvents: FileWatcher(),
-                scoutctl: AppState.resolveScoutctlPath(),
+                // The engine is found by EngineLocator (pointer → conventional
+                // layout → shim → marketplace cache → dev checkout). When
+                // nothing is found we fall back to the shim path: ENOENT
+                // there is the honest failure, and EngineHealthService gates
+                // the UI on the same fact. No more `/usr/bin/env scoutctl`.
+                scoutctl: AppState.ScoutctlInvocation(executable: state.scoutctl ?? layout.shimURL, argsPrefix: []),
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
-                    .defaultScoutSessionsDirectory(scoutDirectory: scoutDirectory),
+                    .defaultScoutSessionsDirectory(scoutDirectory: vault),
                 parseCacheURL: SessionLogService.defaultParseCacheURL(),
+                engineLayout: layout,
+                initialEngineState: state,
                 startsBackgroundWork: true
             )
         }
@@ -371,6 +411,11 @@ final class AppState: ObservableObject {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("scout-test-host", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let engineHome = dir.appendingPathComponent("engine-home", isDirectory: true)
+            let testInstall = EngineInstall(
+                root: dir, scoutctl: URL(fileURLWithPath: "/usr/bin/false"),
+                python: nil, version: nil, vault: dir
+            )
             return Configuration(
                 scoutDirectory: dir,
                 runner: SystemProcessRunner(),
@@ -382,6 +427,11 @@ final class AppState: ObservableObject {
                 defaults: UserDefaults(suiteName: "scout.test-host") ?? .standard,
                 claudeSessionsDirectory: dir.appendingPathComponent(".claude-projects"),
                 parseCacheURL: dir.appendingPathComponent("session-parse-cache.json"),
+                // Never the real home — this process is the ScoutTests host,
+                // and a test run must never locate (or doctor-check) the
+                // user's real engine.
+                engineLayout: EngineLayout(home: engineHome),
+                initialEngineState: .external(testInstall, .unknown("test-host")),
                 startsBackgroundWork: false
             )
         }
@@ -502,28 +552,32 @@ final class AppState: ObservableObject {
     /// Where scoutctl lives + how to invoke it. Used by the constructor to
     /// wire ScheduleService and ScheduleEditService at startup.
     struct ScoutctlInvocation {
-        /// Executable to launch. If we found scoutctl on disk this is its
-        /// absolute path; otherwise `/usr/bin/env` and we lean on $PATH.
+        /// The resolved `scoutctl` executable — found by `EngineLocator` in
+        /// `Configuration.production()`, or the shim path as an honest ENOENT
+        /// when no engine is found. Always an absolute path; there is no
+        /// `/usr/bin/env` + PATH fallback.
         let executable: URL
-        /// Args inserted before the user's args. Empty when `executable`
-        /// is scoutctl itself; `["scoutctl"]` when we fell back to
-        /// `/usr/bin/env`.
+        /// Args inserted before the user's args. Always empty now that
+        /// `executable` is always a concrete path, never `/usr/bin/env`.
         let argsPrefix: [String]
     }
 
-    /// Resolve scoutctl's location. See `ScoutctlLocator` for the priority
-    /// order and the tests that pin it.
-    static func resolveScoutctlPath() -> ScoutctlInvocation {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let manifest = try? String(
-            contentsOf: ScoutctlLocator.installedPluginsJSONURL(home: home),
-            encoding: .utf8
-        )
-        return ScoutctlLocator.resolve(
-            home: home,
-            installedPluginsJSON: manifest,
-            isExecutable: { FileManager.default.isExecutableFile(atPath: $0.path) }
-        )
+    /// Vault root precedence (spec §4.4): the `scoutDataDir` default (tilde
+    /// expanded) → the engine pointer's `vault` → `~/Scout`.
+    ///
+    /// Tilde expansion is done against the `home` parameter, not
+    /// `NSString.expandingTildeInPath` (which always expands against the
+    /// real process home) — `home` is itself the real home in production,
+    /// but a test that injects a fixture `home` needs `~` to expand against
+    /// *that*, not the host machine's actual home directory.
+    nonisolated static func resolveScoutDirectory(defaults: UserDefaults, pointer: EnginePointer?, home: URL) -> URL {
+        if let raw = defaults.string(forKey: "scoutDataDir")?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            if raw == "~" { return home }
+            if raw.hasPrefix("~/") { return home.appendingPathComponent(String(raw.dropFirst(2))) }
+            return URL(fileURLWithPath: raw)
+        }
+        if let pointer { return URL(fileURLWithPath: pointer.vault) }
+        return home.appendingPathComponent("Scout")
     }
 
     func recomputeMenuStatus() async {
