@@ -24,7 +24,7 @@ In one conversation, the user gets a realistic plan for the day. Scout estimates
 5. **Pack.** Deep work goes into the longest windows. Small tasks share batch blocks. Packing stops at `capacity_pct` of free time, and what does not fit is listed for another day.
 6. **Agree, then act.** The plan is shown as a table. After an explicit yes, `create_event` runs per block (busy, private, no notifications by default), then `set-estimate` and `set-block` per task, then a vault commit `plan [HH:MM]:`.
 
-The command only ever edits or deletes events it created: the title prefix plus a `[scout:TAG]` marker in the description.
+The command only ever edits or deletes events it created: an event whose id is recorded in a task's `block:` marker, or one with the title prefix plus a `[scout:TAG]` marker in the description. Step 1 covers every block that has already ended, today's included, so planning tomorrow in the evening still logs today.
 
 ### Markers (the grammar)
 

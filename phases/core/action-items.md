@@ -175,7 +175,7 @@ Good vs bad (anonymized):
       - block: 2026-09-30 10:00-10:45 (event: abc123)
       - actual: 1h (2026-09-30)
 
-- When you carry a task forward, or rewrite the file in full, copy these lines **verbatim**, directly under the task line, in the same order. Never re-author, merge, round, translate or drop them, and never fold them into the `- Refs:` sub-bullet. They are the one exception to the single-Refs-line rule because the apps and the planner parse them.
+- When you carry a task forward, move it to another section (including Recently Completed when it is done), or rewrite the file in full, copy these lines **verbatim**, directly under the task line, in the same order. Never re-author, merge, round, translate or drop them, and never fold them into the `- Refs:` sub-bullet. They are the one exception to the single-Refs-line rule because the apps and the planner parse them.
 - Never write, edit or remove them yourself. If one looks wrong, say so in the digest and leave it.
 - A past `block:` without an `actual:` is data the estimate feedback loop still needs. Keep it until the task is done and the user has logged the time with `/scout-plan review`.
 

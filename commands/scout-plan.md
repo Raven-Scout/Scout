@@ -44,7 +44,7 @@ Arguments (`$ARGUMENTS`):
 
 This is how Scout learns how long work really takes. Do it first, every time.
 
-1. From the `--with-plan` listing, collect open or done items whose `block.date` is **before today** and whose `actual_minutes` is null.
+1. From the `--with-plan` listing, collect open or done items whose block has **already ended** (`block.date` before today, or today with `block.end` at or before the current time) and whose `actual_minutes` is null. Planning tomorrow in the evening must still log today's blocks.
 2. If there are none, say so in one line and go on (or stop, for `review`).
 3. Ask about all of them in **one** message, as a numbered list: the task title, the block (`Tue 10:00-10:45`), the estimate, and the question "done? how long did it really take?". Answers are on the grid: 15m, 30m, 45m, 1h, 1h15m. Accept quick replies like "1: 30m, 2: not done, 3: 1h".
 4. For each task the user says is finished, record it against the block's day:
@@ -62,7 +62,7 @@ This is how Scout learns how long work really takes. Do it first, every time.
 
 1. `list_events` for the target day from `work_start` to `work_end` in the user's timezone.
 2. Busy time is every timed event the user has not declined, including their own focus-time and out-of-office events. All-day events do not block time unless they are out-of-office. If the whole day is out-of-office, say so and stop.
-3. Events whose title starts with `event_title_prefix` and whose description has a `[scout:TAG]` marker are **earlier Scout blocks**. Keep them as busy, and treat their tasks as already planned: list them, do not plan them twice.
+3. Events whose id appears in a task's `block:` marker, or whose title starts with `event_title_prefix` and whose description has a `[scout:TAG]` marker, are **earlier Scout blocks**. Keep them as busy, and treat their tasks as already planned: list them, do not plan them twice.
 4. **Free windows:** the work window minus busy time, minus `meeting_gap_minutes` before and after every busy event, with every edge rounded **inward** to the grid. Drop windows shorter than one grid step. On today, start no earlier than the next grid step after now.
 5. **Capacity:** `capacity_pct` percent of the total free minutes, rounded down to the grid. The rest stays unplanned on purpose, for messages, interruptions and things that come up.
 
@@ -149,7 +149,7 @@ Only after the yes:
 - **Moving a block:** a task that already has a block for the target day is shown, not replanned silently. To move it, with an explicit yes: `delete_event` the old event, create the new one, then `set-block` with the new id.
 - **Removing a block:** with an explicit yes, `delete_event` it and run `clear-block` for its tasks.
 - **Dropping a task from the plan:** with an explicit yes, delete its event and run `clear-plan`, which removes the estimate, the block and any actual from the task. Recorded actuals stay in the planning log.
-- **Only ever touch events Scout created:** the title starts with `event_title_prefix` **and** the description carries a `[scout:TAG]` marker. Never edit or delete anything else on the calendar.
+- **Only ever touch events Scout created:** the event id is recorded in a task's `block:` marker, or the title starts with `event_title_prefix` **and** the description carries a `[scout:TAG]` marker. A changed prefix (for example a test prefix) does not orphan earlier blocks, because the recorded id still matches. Never edit or delete anything else on the calendar.
 
 ## Important Notes
 
