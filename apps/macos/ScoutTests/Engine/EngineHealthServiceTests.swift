@@ -72,4 +72,35 @@ struct EngineHealthServiceTests {
         #expect(runner.calls(to: "scoutctl").first == ["bootstrap", "doctor", "--json"])
         #expect(runner.calls(to: "scoutctl").last == ["bootstrap", "doctor"])
     }
+
+    /// Re-entrant refresh: a slow first call must not clobber a fresher,
+    /// faster second call's result (finding #1 — generation guard).
+    @Test func latestStartedRefreshWins() async throws {
+        let layout = try managedHome()
+        let runner = RuleBasedRunner()
+        let callCount = Locked(0)
+        runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.starts(with: ["bootstrap", "doctor"]) }) { _, _, _ in
+            let n = callCount.increment()
+            if n == 1 {
+                Thread.sleep(forTimeInterval: 0.3)
+                return ProcessResult(exitCode: 2, stdout: Data(#"{"severity": "red", "errors": ["vault directory missing: /x"], "warnings": []}"#.utf8), stderr: Data())
+            }
+            return ProcessResult(exitCode: 0, stdout: Data(#"{"severity": "green", "errors": [], "warnings": []}"#.utf8), stderr: Data())
+        }
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        async let a: Void = svc.refresh()
+        try await Task.sleep(for: .milliseconds(50))
+        await svc.refresh()
+        await a
+        #expect(svc.doctor?.severity == .green)
+    }
+}
+
+/// Small thread-safe counter for the re-entrancy test's responder, which is
+/// invoked concurrently from overlapping `refresh()` calls.
+private final class Locked: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int
+    init(_ value: Int) { self.value = value }
+    func increment() -> Int { lock.withLock { value += 1; return value } }
 }

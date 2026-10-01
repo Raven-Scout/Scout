@@ -15,6 +15,12 @@ final class EngineHealthService: ObservableObject {
     private let environment: [String: String]
     private var timer: Timer?
 
+    /// Bumped at the entry of every `refresh()` call. A call only publishes
+    /// its results while it's still holding the latest value — an
+    /// overlapping call that was started earlier discards its (now stale)
+    /// results instead of overwriting a fresher one (spec §4.4 re-entrancy).
+    private var generation = 0
+
     /// `initialState` lets the caller pass the synchronously located state so
     /// the window gate is correct from the very first frame, before the async
     /// `refresh()` has had a chance to run.
@@ -28,7 +34,6 @@ final class EngineHealthService: ObservableObject {
 
     var needsAttention: Bool {
         if state.gatesTabs { return true }
-        if case .broken = state { return true }
         return doctor?.severity == .red
     }
 
@@ -38,9 +43,18 @@ final class EngineHealthService: ObservableObject {
     /// engines don't recognize `--json` and exit non-zero with a Click-style
     /// usage error. When the `--json` output doesn't parse, this retries once
     /// with the plain (legacy-text) form before giving up.
+    ///
+    /// Re-entrant: if a second `refresh()` starts before the first finishes,
+    /// each publish below only takes effect while its call is still the most
+    /// recently *started* one — whichever call is newest at the moment it
+    /// tries to publish wins, and an older, slower call's results are
+    /// discarded rather than overwriting the newer ones.
     func refresh() async {
+        generation += 1
+        let myGeneration = generation
         let locator = self.locator
         let located = await Task.detached { locator.locate() }.value
+        guard myGeneration == generation else { return }
         state = located
         lastChecked = Date()
         guard let scoutctl = located.scoutctl, !located.gatesTabs || located.isManaged else {
@@ -50,6 +64,7 @@ final class EngineHealthService: ObservableObject {
         do {
             let jsonResult = try await runner.run(executable: scoutctl, arguments: ["bootstrap", "doctor", "--json"],
                                                   environment: environment, workingDirectory: nil)
+            guard myGeneration == generation else { return }
             if let report = DoctorReport.parse(stdout: jsonResult.stdout) {
                 doctor = report
                 lastError = nil
@@ -57,6 +72,7 @@ final class EngineHealthService: ObservableObject {
             }
             let textResult = try await runner.run(executable: scoutctl, arguments: ["bootstrap", "doctor"],
                                                    environment: environment, workingDirectory: nil)
+            guard myGeneration == generation else { return }
             if let report = DoctorReport.parse(stdout: textResult.stdout) {
                 doctor = report
                 lastError = nil
@@ -66,6 +82,7 @@ final class EngineHealthService: ObservableObject {
                 lastError = "doctor output not understood: \(ScheduleService.previewBytes(source, max: 200))"
             }
         } catch {
+            guard myGeneration == generation else { return }
             doctor = nil
             lastError = "could not run scoutctl: \(String(describing: error).prefix(160))"
         }
@@ -77,5 +94,9 @@ final class EngineHealthService: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
+    }
+
+    isolated deinit {
+        timer?.invalidate()
     }
 }
