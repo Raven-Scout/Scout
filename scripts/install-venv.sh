@@ -20,9 +20,34 @@ if [ ! -d "$PLUGIN_ROOT/engine" ]; then
     exit 1
 fi
 
-# Pick a Python interpreter that satisfies engine[requires-python] = ">=3.11".
-# Apple's bundled /usr/bin/python3 is 3.9.x on every macOS we support, so
-# `python3` alone is unreliable — try the explicit minors first.
+# The uv and Claude Code installers put binaries here; a fresh shell may lack it.
+export PATH="$HOME/.local/bin:$PATH"
+
+# Preferred path: uv. It downloads a managed CPython when the machine has no
+# suitable one, so a stock Mac needs neither Homebrew nor a Python install.
+# (install.sh guarantees uv; SCOUT_INSTALL_NO_UV=1 forces the fallback below.)
+if [ -z "${SCOUT_INSTALL_NO_UV:-}" ] && command -v uv >/dev/null 2>&1; then
+    if [ -d "$VENV" ]; then
+        echo "venv already exists at $VENV — recreating..."
+        rm -rf "$VENV"
+    fi
+    echo "creating venv at $VENV with uv (downloads Python 3.12 if needed)..."
+    uv venv --quiet --python 3.12 "$VENV"
+    echo "installing scout-engine in editable mode..."
+    uv pip install --quiet --python "$VENV/bin/python" -e "$PLUGIN_ROOT/engine[dev]"
+    if [ ! -x "$VENV/bin/scoutctl" ]; then
+        echo "error: scoutctl not found at $VENV/bin/scoutctl after install" >&2
+        exit 1
+    fi
+    echo "ok: venv ready at $VENV ($("$VENV/bin/python" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'))"
+    echo "verify: $VENV/bin/scoutctl version"
+    exit 0
+fi
+
+# Fallback (no uv): pick a Python interpreter that satisfies
+# engine[requires-python] = ">=3.11". Apple's bundled /usr/bin/python3 is 3.9.x
+# on every macOS we support, so `python3` alone is unreliable — try the
+# explicit minors first.
 PYTHON=""
 for candidate in python3.13 python3.12 python3.11; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -38,7 +63,10 @@ fi
 if [ -z "$PYTHON" ]; then
     cat >&2 <<EOF
 error: no Python >= 3.11 found on PATH.
-scout-engine requires Python 3.11 or newer. Install one of:
+scout-engine requires Python 3.11 or newer. Easiest fix — install uv, which
+provides Python automatically, then re-run:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+Or install a Python yourself:
   macOS:   brew install python@3.13
   Debian:  sudo apt install python3.13 python3.13-venv
   pyenv:   pyenv install 3.13 && pyenv shell 3.13

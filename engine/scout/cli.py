@@ -9,6 +9,7 @@ the subcommand functions, not at module level.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -1292,6 +1293,22 @@ def _register_notify() -> None:
 _register_notify()
 
 
+def _resolve_claude_bin_or_warn(explicit: str, resolve: Callable[[str], str]) -> str:
+    """Resolve ``--claude-bin`` once so the value persisted in scout-config.yaml
+    is the concrete path the runners were rendered with; warn when it is not
+    executable (every scheduled run would fail to launch Claude)."""
+    import os as _os
+
+    resolved = resolve(explicit)
+    if not _os.access(resolved, _os.X_OK):
+        typer.echo(
+            f"  warning: claude CLI not executable at {resolved} — scheduled runs will fail until "
+            "Claude Code is installed there (or re-run with --claude-bin <path>).",
+            err=True,
+        )
+    return resolved
+
+
 def _register_bootstrap() -> None:
     bootstrap_app = typer.Typer(help="Bootstrap pipeline (install/upgrade/doctor).")
     app.add_typer(bootstrap_app, name="bootstrap")
@@ -1315,15 +1332,23 @@ def _register_bootstrap() -> None:
         user_slack_id: str = typer.Option("", "--user-slack-id"),
         github_username: str = typer.Option("", "--github-username"),
         github_repos: str = typer.Option("", "--github-repos"),
-        claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
+        claude_bin: str = typer.Option(
+            "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
+        ),
         max_budget: str = typer.Option("5.00", "--max-budget"),
+        auto_update: bool | None = typer.Option(
+            None,
+            "--auto-update/--no-auto-update",
+            help="Record the auto-update preference (auto_update.enabled) in scout-config.yaml.",
+        ),
     ) -> None:
         """Install Scout into the user's vault directory."""
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, install
+        from scout.scripts.bootstrap import BootstrapConfig, install, resolve_claude_bin
 
         vault = _paths.data_dir()
+        claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
             vault=vault,
             plugin_root=Path(__file__).parent.parent.parent,
@@ -1344,6 +1369,7 @@ def _register_bootstrap() -> None:
             },
             skip_jobs=skip_jobs,
             skip_claude=skip_claude,
+            auto_update=auto_update,
         )
         result = install(cfg)
         typer.echo(f"installed: {result.vault}")
@@ -1427,7 +1453,9 @@ def _register_bootstrap() -> None:
         user_slack_id: str = typer.Option("", "--user-slack-id"),
         github_username: str = typer.Option("", "--github-username"),
         github_repos: str = typer.Option("", "--github-repos"),
-        claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
+        claude_bin: str = typer.Option(
+            "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
+        ),
         timezone: str = typer.Option("America/New_York", "--timezone"),
         max_budget: str = typer.Option("5.00", "--max-budget"),
         platform: str = typer.Option("macos", "--platform"),
@@ -1448,9 +1476,10 @@ def _register_bootstrap() -> None:
         """
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy
+        from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy, resolve_claude_bin
 
         vault = _paths.data_dir()
+        claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
             vault=vault,
             plugin_root=Path(__file__).parent.parent.parent,
