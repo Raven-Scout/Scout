@@ -1,6 +1,8 @@
 # `/scout-plan` Implementation Plan
 
-**Goal:** Ship the day-planning command described in `docs/specs/scout-plan.md`: engine support for plan markers and estimate calibration, the interactive command, and the briefing rule that carries the markers forward.
+> **For agentic workers:** steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Ship the day-planning command described in `docs/superpowers/specs/2026-09-29-scout-plan-design.md`: engine support for plan markers and estimate calibration, the interactive command, and the briefing rule that carries the markers forward.
 
 **Architecture:**
 - **New package `engine/scout/planning/`:**

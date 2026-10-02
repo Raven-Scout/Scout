@@ -1,6 +1,7 @@
 # `/scout-plan`: day planning with calendar blocks and an estimate feedback loop
 
-**Status:** Proposed (for review)
+**Date:** 2026-09-29
+**Status:** Design, implemented on this branch, for review
 **Surface:** new interactive command `commands/scout-plan.md`; engine `scout/planning/`, `scout/action_items/plan_marks.py`; one rule and one Focus line in `phases/core/action-items.md`
 
 ## Context
