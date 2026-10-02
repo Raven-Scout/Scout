@@ -78,6 +78,30 @@ def test_read_versions_accepts_an_explicit_repo_root(tmp_path):
     assert versions["marketplace.json"] == "1.2.3"
 
 
+def test_set_version_accepts_an_explicit_repo_root(tmp_path):
+    """Mirrors test_read_versions_accepts_an_explicit_repo_root. set_version
+    has its own, independent `repo = root.parent if repo_root is None else
+    repo_root` ternary — a copy/paste slip there (e.g. `repo_root.parent`)
+    would still pass every other test, since they all pass repo_root=None.
+    Relocating marketplace.json outside root.parent means the write only
+    lands if repo_root is genuinely consulted."""
+    plugin_root = _fake_plugin(tmp_path, "1.2.3")
+    other_repo = tmp_path.parent / f"{tmp_path.name}-other-repo"
+    (other_repo / ".claude-plugin").mkdir(parents=True)
+    (tmp_path / ".claude-plugin" / "marketplace.json").rename(other_repo / ".claude-plugin" / "marketplace.json")
+
+    versioning.set_version(plugin_root, version="1.3.0", repo_root=other_repo)
+
+    marketplace = (other_repo / ".claude-plugin" / "marketplace.json").read_text()
+    assert '"version": "1.3.0"' in marketplace
+    assert versioning.read_versions(plugin_root, repo_root=other_repo) == {
+        "plugin.json": "1.3.0",
+        "marketplace.json": "1.3.0",
+        "pyproject.toml": "1.3.0",
+        "__init__.py": "1.3.0",
+    }
+
+
 def test_read_versions_returns_all_four(tmp_path):
     root = _fake_plugin(tmp_path, "1.2.3")
     versions = versioning.read_versions(root)
