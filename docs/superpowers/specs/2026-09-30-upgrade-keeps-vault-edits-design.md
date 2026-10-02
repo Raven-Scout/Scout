@@ -86,7 +86,8 @@ Terms: *new* is the render for this plugin version, *live* is the vault's file,
 | new == base, live differs | keep live | new | **kept** |
 | both differ, merge clean | write the merge | new | **merged** |
 | both differ, merge conflicts | keep live; park new as `.plugin` and the draft as `.merge` | unchanged (base) | **conflict** |
-| no base, live != new | write new; park live as `.vault` | new | **replaced** |
+| no base, live a known render | write new | new | — |
+| no base, live unknown | write new; park live as `.vault` (vault-developed file: keep live, park new as `.plugin`) | new (none) | **replaced** (**conflict**) |
 
 Two rules hold across the table:
 
@@ -123,20 +124,44 @@ template change between versions. Options considered:
   template variable changed since the last render, for example `SCOUTCTL_BIN`
   moving with the plugin root: the merge would then treat the old path as a
   vault edit and put it back. Rejected.
-- **Chosen: the plugin wins, and the vault's copy is parked and reported.**
-  - live == new: the baseline is recorded and nothing is reported.
-  - `parser.py`: the snapshot the old merge policy kept at
-    `.scout-state/last-assembled/<rel>` is exactly the base. It is carried over
-    (moved) and used.
-  - Anything else: new is installed and the old live file is parked at
-    `drift/<rel>.vault`. The upgrade reports this once as **replaced**, and
-    `doctor` keeps a note while the copy exists.
+- **Plugin wins, the vault's copy is parked and reported.** This is safe, but
+  between releases 0 to 8 managed templates change (v0.8→v0.9: 8,
+  v0.11→this branch: 6). So a vault that never edited anything would still get
+  up to 8 false "replaced" reports, which is the flood the brief rules out.
+- **Chosen: recognise a known render first; only an unknown file is parked.**
+  Rules in order:
+  1. live == new: record the baseline, report nothing.
+  2. `parser.py`: the snapshot the old merge policy kept at
+     `.scout-state/last-assembled/<rel>` is exactly the base. Move it to
+     `last-rendered/` and decide as usual.
+  3. **Known render:** live is an unedited render of the current template or of
+     any template a release before this one shipped. Update it silently, as if
+     live == base. The check uses a **signature** per template version: the
+     sha256 of the raw template text, its line count, and the raw text of the
+     lines holding a `{{VAR}}` token. To compare, each of those lines in live
+     must match its raw line with every token as a wildcard, and is then put
+     back to the raw text; the result must hash to the signature. That is
+     exact apart from template-variable values, so it isn't fooled when
+     `SCOUTCTL_BIN` moves with the plugin root. Verbatim (`.py`) files are
+     whole-file hashes. Signatures for v0.4.0–v0.11.0 ship in
+     `engine/scout/defaults/render-history.json` (≈20 KB, generated from the
+     release tags by `scripts/gen-render-history.py`). It is **frozen**:
+     releases from this one on record their own snapshots, so only vaults last
+     rendered by an older release ever read it.
+  4. Otherwise the file is truly unknown: a vault edit on top of some render,
+     or a render from an unreleased checkout.
+     - A plugin-owned file: install new, park live as `drift/<rel>.vault`,
+       report **replaced** once, and keep a doctor note while the copy exists.
+       The plugin's fixes land.
+     - A vault-developed file (`_CAT_MERGE_FILES`, i.e. `parser.py`, which
+       dreaming sessions extend in the vault): keep live, park new as
+       `.plugin`, report **conflict**. This is what the old sidecar did, minus
+       the blocking.
 
-  Plugin fixes land, and a vault that never edited anything loses nothing. A
-  vault that did edit keeps the edit in a parked copy and is told where it is.
-  From the next upgrade on, every file has a base and gets full protection.
-  `migrate-legacy` goes through the same path. The `run-*.sh.bak.<date>` backups
-  are retired: the `.vault` copies replace them, and the doctor still reports old
+  A vault that never edited anything upgrades silently. A vault that did edit is
+  told where its edit is and loses nothing. From the next upgrade on every file
+  has a base. `migrate-legacy` uses the same path. The `run-*.sh.bak.<date>`
+  backups are retired in favour of `.vault` copies; the doctor still reports old
   `.bak` files.
 
 ## Resolving
