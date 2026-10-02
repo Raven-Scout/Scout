@@ -3,8 +3,9 @@
 8 stages, behavior varies by command:
 1. Pre-flight       — vault state checks, lock acquisition
 2. Schema migrations — empty in 0.4.0
-3. Cat 1 file writes — plists, ontology, render.py, scripts, hooks
-4. Cat 1b runner writes — with hand-edit detection (upgrade only)
+3. Managed files    — plugin-owned scripts, hooks, runners, render.py, parser.py;
+                      a vault's edits are kept, merged or parked (vault_drift)
+4. .gitignore       — append-only merge
 5. Cat 4 assembled  — SKILL/DREAMING/RESEARCH (3-way merge on upgrade)
 6. Job lifecycle    — launchd / cron
 7. Version stamp    — scout-config.yaml plugin.version_*
@@ -25,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
+from scout.scripts import vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
     acquire_lock_with_wait,
@@ -38,6 +40,7 @@ from scout.scripts.phase_assembly import (
     select_sections,
 )
 from scout.scripts.three_way_merge import three_way_merge
+from scout.scripts.vault_drift import VaultEdit
 
 
 @dataclass
@@ -77,8 +80,12 @@ class InstallResult:
 class UpgradeResult:
     vault: Path
     doctor: DoctorReport
+    # Blocking <file>.proposed-merge sidecars (the assembled brain files).
     conflicts: list[str] = field(default_factory=list)
+    # Vault copies an upgrade replaced, parked under .scout-state/drift/.
     backups: list[str] = field(default_factory=list)
+    # Every vault edit to a managed file the upgrade kept, merged, or parked.
+    vault_edits: list[VaultEdit] = field(default_factory=list)
 
 
 @dataclass
@@ -87,6 +94,7 @@ class MigrateLegacyResult:
     doctor: DoctorReport
     backups: list[str] = field(default_factory=list)
     snapshots_recorded: list[str] = field(default_factory=list)
+    vault_edits: list[VaultEdit] = field(default_factory=list)
 
 
 # ---------- shared helpers ----------
@@ -114,12 +122,13 @@ _CAT1_FILES_FROM_PLUGIN = {
     "scripts/recurring-task-status.py": "templates/scripts/recurring-task-status.py",
 }
 
-# Cat-1 files that are BOTH engine-owned AND user-editable in the vault, so they
-# must be 3-way merged on upgrade instead of blindly overwritten. parser.py is
-# the canonical case (Pattern #68): the always-overwrite cat-1 path clobbered
-# vault-side edits to the ontology parser on every /scout-update. These files
-# go through the same snapshot + sidecar policy as the assembled SKILL/DREAMING/
-# RESEARCH brain files (see _stage_merge_files_upgrade).
+# Plugin-owned files the vault is known to extend, not just patch: parser.py is
+# grown by dreaming sessions in the vault (Pattern #68). They are managed files
+# like the rest, with one difference: when there is no recorded base to merge
+# against, the vault's version stays live and the plugin's is parked. Engines
+# before last-rendered/ merged these into a blocking `<file>.proposed-merge`
+# sidecar; one an older engine left behind still blocks the upgrade
+# (_refuse_pending_sidecars), so the name stays.
 _CAT_MERGE_FILES = {
     "knowledge-base/ontology/parser.py": "templates/knowledge-base/ontology/parser.py",
 }
@@ -182,6 +191,26 @@ def resolve_claude_bin(explicit: str = "", *, home: Path | None = None) -> str:
         if candidate and os.access(candidate, os.X_OK):
             return candidate
     return native
+
+
+@dataclass(frozen=True)
+class _ManagedFile:
+    """A plugin-owned file the upgrade rewrites, keeping any vault edit to it."""
+
+    vault_rel: str
+    plugin_rel: str
+    rendered: bool  # template variables substituted
+    executable: bool
+    placeholder_if_missing: bool  # else skipped when the plugin lacks the source
+    vault_developed: bool = False  # see _CAT_MERGE_FILES
+
+
+_MANAGED_FILES = (
+    *(_ManagedFile(v, p, False, False, True) for v, p in _CAT1_FILES_FROM_PLUGIN.items()),
+    *(_ManagedFile(v, p, False, False, False, vault_developed=True) for v, p in _CAT_MERGE_FILES.items()),
+    *(_ManagedFile(v, p, True, True, True) for v, p in _CAT1_TEMPLATES if v not in _CAT1_APPEND_ONLY),
+    *(_ManagedFile(v, p, True, True, False) for v, p in _CAT1B_RUNNERS),
+)
 
 
 def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
@@ -255,19 +284,71 @@ def _stage_create_dirs(cfg: BootstrapConfig) -> None:
         (cfg.vault / rel).mkdir(parents=True, exist_ok=True)
 
 
-def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
-    """Stage 3: cat 1 file overwrites (always), except _CAT1_APPEND_ONLY files, which merge."""
+@dataclass(frozen=True)
+class ManagedRender:
+    file: _ManagedFile
+    template: str  # the plugin's source (a placeholder when the source is missing)
+    text: str  # what this plugin version writes into the vault
+
+
+def managed_renders(cfg: BootstrapConfig) -> list[ManagedRender]:
+    """This plugin version's render of every managed file, in write order.
+
+    A file whose source is missing gets its placeholder, or is left out when
+    it has none (the runners, parser.py).
+    """
     vars_ = _template_vars(cfg)
-    for vault_rel, plugin_rel in _CAT1_FILES_FROM_PLUGIN.items():
-        src = cfg.plugin_root / plugin_rel
-        if not src.exists():
-            _atomic_write(cfg.vault / vault_rel, f"# placeholder: {plugin_rel}\n")
-            continue
-        _atomic_write(cfg.vault / vault_rel, src.read_text(encoding="utf-8"))
+    out: list[ManagedRender] = []
+    for m in _MANAGED_FILES:
+        src = cfg.plugin_root / m.plugin_rel
+        if src.exists():
+            raw = src.read_text(encoding="utf-8")
+            out.append(ManagedRender(m, raw, render_template(raw, vars_) if m.rendered else raw))
+        elif m.placeholder_if_missing:
+            placeholder = f"# placeholder: {m.plugin_rel}\n"
+            out.append(ManagedRender(m, placeholder, placeholder))
+    return out
+
+
+def _stage_managed_files(cfg: BootstrapConfig) -> list[VaultEdit]:
+    """Stage 3: write every managed file without losing a vault edit to it.
+
+    Each file goes through vault_drift.reconcile: an unedited file takes the
+    plugin's render, an edited one is kept, merged, or parked, and nothing it
+    parks can block the next upgrade. Returns the edits worth reporting.
+    """
+    history = vault_drift.load_render_history()
+    edits: list[VaultEdit] = []
+    for r in managed_renders(cfg):
+        m = r.file
+        # Older releases' templates, and the current one: a render of it with
+        # other variable values (the plugin root moved) is not a vault edit.
+        signatures = [*history.get(m.vault_rel, ()), vault_drift.signature(r.template, rendered=m.rendered)]
+        edit = vault_drift.reconcile(
+            cfg.vault, m.vault_rel, r.text, signatures=signatures, vault_developed=m.vault_developed
+        )
+        if m.executable:
+            (cfg.vault / m.vault_rel).chmod(0o755)
+        if edit is not None:
+            edits.append(edit)
+    vault_drift.prune_snapshots(cfg.vault, (m.vault_rel for m in _MANAGED_FILES))
+    return edits
+
+
+def _parked_copies(edits: list[VaultEdit]) -> list[str]:
+    """The vault copies an upgrade replaced and set aside — its backups."""
+    return [p for e in edits if e.outcome == "replaced" for p in e.parked]
+
+
+def _stage_gitignore(cfg: BootstrapConfig) -> None:
+    """Stage 4: the _CAT1_APPEND_ONLY files, merged into the vault's copy."""
+    vars_ = _template_vars(cfg)
     for vault_rel, tmpl_rel in _CAT1_TEMPLATES:
+        if vault_rel not in _CAT1_APPEND_ONLY:
+            continue
         src = cfg.plugin_root / tmpl_rel
         target = cfg.vault / vault_rel
-        merge = vault_rel in _CAT1_APPEND_ONLY and target.exists()
+        merge = target.exists()
         if not src.exists():
             # A placeholder over an append-only file would drop every vault line.
             if not merge:
@@ -299,49 +380,6 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
         _atomic_write(target, rendered)
-
-
-def _unique_backup_path(target: Path) -> Path:
-    """A backup path for `target` that never overwrites an existing backup.
-
-    Keeps the familiar ``<name>.bak.<YYYY-MM-DD>`` form for the first backup
-    of the day; on a second same-day run, appends ``-1``, ``-2``, ... so an
-    earlier run's backup of a different hand-edit is never clobbered (#62).
-    """
-    # Configured-zone date (ambient vault resolution) — cosmetic filename
-    # suffix, but it must not flip a day earlier/later than every other
-    # surface near midnight (#207).
-    today = scout_config.today().isoformat()
-    base = target.with_name(f"{target.name}.bak.{today}")
-    if not base.exists():
-        return base
-    n = 1
-    while True:
-        candidate = target.with_name(f"{target.name}.bak.{today}-{n}")
-        if not candidate.exists():
-            return candidate
-        n += 1
-
-
-def _stage_cat1b_runners(cfg: BootstrapConfig, *, is_upgrade: bool) -> list[str]:
-    """Stage 4: cat 1b runner writes."""
-    vars_ = _template_vars(cfg)
-    backups: list[str] = []
-    for vault_rel, tmpl_rel in _CAT1B_RUNNERS:
-        src = cfg.plugin_root / tmpl_rel
-        target = cfg.vault / vault_rel
-        if not src.exists():
-            continue
-        rendered = render_template(src.read_text(encoding="utf-8"), vars_)
-        if is_upgrade and target.exists():
-            current = target.read_text(encoding="utf-8")
-            if current != rendered:
-                bak = _unique_backup_path(target)
-                shutil.copy2(target, bak)
-                backups.append(bak.name)
-        _atomic_write(target, rendered)
-        target.chmod(0o755)
-    return backups
 
 
 def _assemble(cfg: BootstrapConfig, kind: str) -> str:
@@ -452,75 +490,6 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> list[str]:
             _atomic_write(live, result.content)
             _atomic_write(snap, ours)
         else:
-            _atomic_write(sidecar, result.content)
-            conflicts.append(sidecar.name)
-    return conflicts
-
-
-def _merge_snapshot_path(cfg: BootstrapConfig, vault_rel: str) -> Path:
-    """Snapshot location for a 3-way-merged cat-1 file (mirrors the assembled
-    brain-file snapshots under .scout-state/last-assembled/)."""
-    return cfg.vault / ".scout-state" / "last-assembled" / vault_rel
-
-
-def _stage_merge_files_install(cfg: BootstrapConfig) -> None:
-    """Install: write each _CAT_MERGE_FILES live from the plugin AND record a
-    snapshot so future upgrades have a merge base."""
-    for vault_rel, plugin_rel in _CAT_MERGE_FILES.items():
-        src = cfg.plugin_root / plugin_rel
-        if not src.exists():
-            continue
-        content = src.read_text(encoding="utf-8")
-        live = cfg.vault / vault_rel
-        live.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(live, content)
-        snap = _merge_snapshot_path(cfg, vault_rel)
-        snap.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(snap, content)
-
-
-def _stage_merge_files_upgrade(cfg: BootstrapConfig) -> list[str]:
-    """Upgrade: 3-way merge each _CAT_MERGE_FILES, identical sidecar policy to
-    _stage_cat4_upgrade — ``ours`` = plugin content, ``theirs`` = vault-live,
-    ``base`` = recorded snapshot. Clean merge → live + snapshot advance;
-    conflict (or no recorded base vs a diverged plugin) → ``<file>.proposed-merge``
-    sidecar with live + snapshot left untouched. Protects Pattern #68 vault edits
-    while still letting engine improvements flow in."""
-    conflicts: list[str] = []
-    for vault_rel, plugin_rel in _CAT_MERGE_FILES.items():
-        src = cfg.plugin_root / plugin_rel
-        if not src.exists():
-            continue
-        ours = src.read_text(encoding="utf-8")
-        live = cfg.vault / vault_rel
-        theirs = live.read_text(encoding="utf-8") if live.exists() else ours
-        snap = _merge_snapshot_path(cfg, vault_rel)
-        base = snap.read_text(encoding="utf-8") if snap.exists() else theirs
-        sidecar = cfg.vault / f"{vault_rel}.proposed-merge"
-
-        if ours == theirs:
-            snap.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(snap, ours)
-            continue
-
-        if base == theirs:
-            # No recorded vault edits vs base but plugin diverged (or first
-            # upgrade after this file became merge-managed, so no snapshot
-            # existed and base defaulted to theirs) — surface as a review
-            # prompt rather than overwriting a possibly hand-edited file.
-            sidecar.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(sidecar, ours)
-            conflicts.append(sidecar.name)
-            continue
-
-        result = three_way_merge(base=base, ours=ours, theirs=theirs)
-        if not result.conflicts:
-            live.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(live, result.content)
-            snap.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(snap, ours)
-        else:
-            sidecar.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write(sidecar, result.content)
             conflicts.append(sidecar.name)
     return conflicts
@@ -671,7 +640,7 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     connector_inputs so subsequent upgrades render templates with the same values
     that setup/migration used. Without this, upgrade defaults claude_bin /
     max_budget / user_slack_id back to their fallback values, which makes
-    cat-1b hand-edit detection fire on every upgrade.
+    every rendered file look changed by the plugin on every upgrade.
     """
     config_path = cfg.vault / "scout-config.yaml"
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -755,12 +724,11 @@ def install(cfg: BootstrapConfig) -> InstallResult:
     acquire_lock_with_wait(lock)
     try:
         _stage_create_dirs(cfg)
-        _stage_cat1_writes(cfg)
-        _stage_install_only_seeds(cfg)  # <-- NEW
+        _stage_managed_files(cfg)
+        _stage_gitignore(cfg)
+        _stage_install_only_seeds(cfg)
         _stage_seed_schedule(cfg)
-        _stage_cat1b_runners(cfg, is_upgrade=False)
         _stage_cat4_install(cfg)
-        _stage_merge_files_install(cfg)
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
@@ -808,16 +776,15 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         # DREAMING/RESEARCH) land on an already-migrated vault. Idempotent:
         # no-ops on vaults that are already per-file or never had legacy files.
         _stage_migrations(cfg)
-        _stage_cat1_writes(cfg)
+        vault_edits = _stage_managed_files(cfg)
+        _stage_gitignore(cfg)
         # _stage_seed_schedule is idempotent (returns early if the file
         # exists) so it's safe to call on upgrade. Without it, vaults set
         # up before .scout-state/schedule.yaml was a first-class file
         # never get one written, and the dispatcher silently falls back
         # to the packaged default.
         _stage_seed_schedule(cfg)
-        backups = _stage_cat1b_runners(cfg, is_upgrade=True)
         conflicts = _stage_cat4_upgrade(cfg)
-        conflicts += _stage_merge_files_upgrade(cfg)
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
@@ -828,7 +795,8 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         vault=cfg.vault,
         doctor=report,
         conflicts=conflicts,
-        backups=backups,
+        backups=_parked_copies(vault_edits),
+        vault_edits=vault_edits,
     )
 
 
@@ -842,10 +810,10 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       2. Snapshot current SKILL.md / DREAMING.md / RESEARCH.md to
          ``.scout-state/last-assembled/`` as the merge baseline. Live files
          never touched.
-      3. Run cat-1 writes — overwrites plugin-owned scripts/hooks/plists with
-         templates rendered against the user-provided cfg vars.
-      4. Run cat-1b runner regen with hand-edit detection. Legacy runners
-         (heavily customized) get backed up; fresh templates installed.
+      3. Write the managed files (scripts, hooks, runners, …) rendered against
+         the user-provided cfg vars. A file no release shipped (a customised
+         legacy runner) is parked under ``.scout-state/drift/`` first.
+      4. Merge ``.gitignore`` (append-only).
       5. Skip cat-4 merge entirely — snapshots just established, nothing to
          merge.
       6. Job lifecycle (subject to cfg.skip_jobs).
@@ -883,10 +851,11 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         #    explicit so the doctor reports green and future schedule edits
         #    have a stable home.
         _stage_seed_schedule(cfg)
-        # 3. cat-1 writes with the now-correct template vars.
-        _stage_cat1_writes(cfg)
-        # 4. cat-1b runner regen — backs up legacy runners.
-        backups = _stage_cat1b_runners(cfg, is_upgrade=True)
+        # 3. Managed files with the now-correct template vars. A legacy vault
+        #    has no record of its last render, so a file no release shipped
+        #    (a customised runner) is parked, not overwritten silently.
+        vault_edits = _stage_managed_files(cfg)
+        _stage_gitignore(cfg)
         # 5. SKIP cat-4 merge: snapshots just established equal current live.
         # 6. Jobs.
         _stage_jobs_install(cfg)
@@ -900,6 +869,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
     return MigrateLegacyResult(
         vault=cfg.vault,
         doctor=report,
-        backups=backups,
+        backups=_parked_copies(vault_edits),
         snapshots_recorded=snapshots_recorded,
+        vault_edits=vault_edits,
     )

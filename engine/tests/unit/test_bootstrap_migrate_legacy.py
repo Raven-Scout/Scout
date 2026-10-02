@@ -124,15 +124,19 @@ def test_migrate_legacy_records_snapshots(tmp_path):
     assert set(result.snapshots_recorded) == {"SKILL.md", "DREAMING.md", "RESEARCH.md"}
 
 
-def test_migrate_legacy_backs_up_runners(tmp_path):
-    """Heavily-customized legacy runners must be preserved as .bak files."""
+def test_migrate_legacy_parks_customized_runners(tmp_path):
+    """Heavily-customized legacy runners match no release, so each is parked
+    under .scout-state/drift/ before the template is installed."""
     _populate_legacy_vault(tmp_path)
     plugin = Path(__file__).parent.parent.parent.parent
+    originals = {n: (tmp_path / n).read_text() for n in ("run-scout.sh", "run-dreaming.sh", "run-research.sh")}
     result = migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    backups = list(tmp_path.glob("run-*.sh.bak.*"))
-    # All three runners diverge from the template — all three should be backed up.
-    assert len(backups) == 3
+    parked = sorted((tmp_path / ".scout-state" / "drift").glob("run-*.sh.vault"))
+    # All three runners diverge from the template — all three are parked.
+    assert [p.name for p in parked] == ["run-dreaming.sh.vault", "run-research.sh.vault", "run-scout.sh.vault"]
+    assert all(p.read_text() == originals[p.name.removesuffix(".vault")] for p in parked)
     assert len(result.backups) == 3
+    assert {e.outcome for e in result.vault_edits} == {"replaced"}
 
 
 def test_migrate_legacy_refuses_when_config_already_exists(tmp_path):

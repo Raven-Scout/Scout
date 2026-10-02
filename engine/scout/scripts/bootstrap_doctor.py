@@ -29,6 +29,8 @@ class DoctorReport:
     severity: Severity
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Worth knowing, not a health problem: never changes the severity.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
@@ -282,10 +284,50 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
+    """Vault edits to plugin-owned files, as (warnings, notes).
+
+    A conflict is a warning: the vault runs an older version of a plugin-owned
+    file until it is resolved. An edit upgrades keep, and a copy the first
+    baseline parked, are notes: deliberate state, so they must not hold the
+    doctor yellow forever.
+    """
+    from scout.scripts.vault_drift import scan
+
+    warnings: list[str] = []
+    notes: list[str] = []
+    edited: list[str] = []
+    for entry in scan(vault):
+        if entry.status == "conflict":
+            warnings.append(
+                f"vault edit to {entry.path} conflicts with a plugin update — your version is still "
+                f"running and the update is parked at {entry.parked[0]}. Merge by hand, then "
+                f"`scoutctl bootstrap drift --resolve {entry.path}` (or copy the parked file over yours "
+                f"to take the plugin's version)"
+            )
+        elif entry.status == "edited":
+            edited.append(entry.path)
+        elif entry.status == "replaced":
+            for copy in entry.parked:
+                notes.append(
+                    f"an upgrade installed the plugin's {entry.path} over a copy no release shipped; "
+                    f"yours is at {copy} — compare with `scoutctl bootstrap drift --diff`, dismiss with "
+                    f"`scoutctl bootstrap drift --resolve {entry.path}`"
+                )
+    if edited:
+        notes.insert(
+            0,
+            f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)} "
+            f"— `scoutctl bootstrap drift --patch` turns them into a plugin PR",
+        )
+    return warnings, notes
+
+
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
     """Run all doctor checks against ``vault``. Pure read."""
     errors: list[str] = []
     warnings: list[str] = []
+    notes: list[str] = []
     home = home or Path.home()
 
     if not vault.is_dir():
@@ -344,9 +386,15 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
                 f"`mv {sidecar.name} {name}.md` before re-running /scout-update"
             )
 
-    # Hand-edit backups (yellow but informational).
+    # Hand-edit backups (yellow but informational). Upgrades no longer write
+    # them — vault edits are kept or parked under .scout-state/drift/ — but a
+    # vault can still hold ones an older engine left.
     for bak in vault.glob("run-*.sh.bak.*"):
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
+
+    drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+    warnings.extend(drift_warnings)
+    notes.extend(drift_notes)
 
     # Recent Claude-CLI auth failure — scan the newest run log for a rejected
     # credential. Read-only and offline (no API call); self-clears on the next
@@ -389,7 +437,7 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         warnings.extend(claude_warnings)
 
     if errors:
-        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings)
+        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes)
     if warnings:
-        return DoctorReport(severity=Severity.YELLOW, warnings=warnings)
-    return DoctorReport(severity=Severity.GREEN)
+        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes)
+    return DoctorReport(severity=Severity.GREEN, notes=notes)
