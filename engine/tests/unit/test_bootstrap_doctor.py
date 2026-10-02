@@ -520,3 +520,37 @@ def test_shim_check_warns_when_shim_target_missing(tmp_path):
     _write_shim(tmp_path, tmp_path / "gone" / "scoutctl")
     _errors, warnings = _check_scoutctl_shim(home=tmp_path)
     assert any("missing target" in w for w in warnings)
+
+
+# ---------- #254: runner CLAUDE_BIN must be executable ----------
+
+
+def _write_runner(vault: Path, claude_bin: str) -> None:
+    vault.mkdir(parents=True, exist_ok=True)
+    (vault / "run-scout.sh").write_text(f'#!/bin/bash\nset -euo pipefail\nCLAUDE_BIN="{claude_bin}"\n')
+
+
+def test_runner_claude_bin_dead_path_is_red(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_runner_claude_bin
+
+    _write_runner(tmp_path, str(tmp_path / "nope" / "claude"))
+    errors, _ = _check_runner_claude_bin(vault=tmp_path)
+    assert len(errors) == 1
+    assert "CLAUDE_BIN=" in errors[0] and "command -v claude" in errors[0]
+
+
+def test_runner_claude_bin_executable_is_clean(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_runner_claude_bin
+
+    claude = tmp_path / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    _write_runner(tmp_path, str(claude))
+    assert _check_runner_claude_bin(vault=tmp_path) == ([], [])
+
+
+def test_runner_claude_bin_skipped_without_runner(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_runner_claude_bin
+
+    assert _check_runner_claude_bin(vault=tmp_path) == ([], [])

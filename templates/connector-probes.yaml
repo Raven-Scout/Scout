@@ -16,9 +16,12 @@ calendar:
 email:
   primary: mcp__claude_ai_Gmail__list_labels
   fallbacks: []
+# Like Slack: the local Claude Code plugin first, then the claude.ai connector —
+# the one scheduled runs use and connector health tracks (mcp:claude_ai_Linear).
 linear:
   primary: mcp__plugin_linear_linear__list_teams
-  fallbacks: []
+  fallbacks:
+    - mcp__claude_ai_Linear__list_teams
 github:
   primary: bash
   command: "gh auth status"
