@@ -18,41 +18,24 @@ struct CommentComposerView: View {
         if expanded {
             expandedEditor
         } else {
-            Button {
+            EditorialActionButton("Add comment", systemImage: "text.bubble") {
                 expanded = true
                 DispatchQueue.main.async { editorFocused = true }
-            } label: {
-                Label("Add comment", systemImage: "text.bubble")
-                    .font(.caption)
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
         }
     }
 
     private var expandedEditor: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextEditor(text: $draft)
-                .font(.system(size: 12))
-                .focused($editorFocused)
-                .scrollContentBackground(.hidden)
-                .padding(4)
-                .frame(minHeight: 32, maxHeight: 120)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color.secondary.opacity(0.3))
-                )
-            HStack {
-                Text("⌘+Return to send")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 6) {
+            CommentTextEditor(text: $draft, focus: $editorFocused, minHeight: 32)
+            HStack(spacing: 4) {
                 Spacer()
-                Button("Cancel") { cancel() }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                Button("Send") { submit() }
+                EditorialActionButton("Cancel") { cancel() }
+                EditorialActionButton(
+                    "Send", style: .primary, shortcut: "⌘↵",
+                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                ) { submit() }
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || submitting)
-                    .keyboardShortcut(.return, modifiers: .command)
             }
         }
     }
@@ -73,5 +56,25 @@ struct CommentComposerView: View {
             submitting = false
             expanded = false
         }
+    }
+}
+
+/// The comment text field: serif like the comment bodies, on the recessed input
+/// surface. Shared by the composer and the inline comment editor.
+struct CommentTextEditor: View {
+    @Binding var text: String
+    let focus: FocusState<Bool>.Binding
+    var minHeight: CGFloat = 32
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(DS.serif(13))
+            .foregroundStyle(DS.Ink.p1)
+            .focused(focus)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .frame(minHeight: minHeight, maxHeight: 120)
+            .neumorphicPressed(cornerRadius: 5)
     }
 }
