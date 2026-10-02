@@ -151,23 +151,15 @@ Ask the user:
 
 > "Should Scout keep itself up to date automatically? When on, scheduled runs apply sidecar-clean upgrades and ping you if a change needs manual review. (You can change this later via `/scout-update`.)"
 
-Wait for a yes/no answer. Then persist the preference by writing/merging the `auto_update` block directly into the freshly-created `~/Scout/scout-config.yaml`. (The vault template is not rendered at install time, so this is the only way to make the preference stick — do NOT rely on the template.)
+Wait for a yes/no answer. Then persist the preference into the freshly-created `~/Scout/scout-config.yaml` with `scoutctl config set-auto-update`. (The vault template is not rendered at install time, so this is the only way to make the preference stick — do NOT rely on the template.) The command rewrites only the `auto_update` block, adding it if absent, and keeps every other line and comment. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
 
 ```bash
-python3 - <<'EOF'
-import pathlib, yaml
-ENABLED = True   # set to False if the user declined
-p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
-cfg = yaml.safe_load(p.read_text()) or {}
-cfg.setdefault("auto_update", {})
-cfg["auto_update"]["enabled"] = ENABLED
-cfg["auto_update"].setdefault("channel", "stable")
-p.write_text(yaml.safe_dump(cfg, sort_keys=False))
-print(f"auto_update.enabled set to {ENABLED} (channel: stable).")
-EOF
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"
+"$SCOUTCTL" config set-auto-update --enabled   # --disabled if the user declined
 ```
 
-Set `ENABLED = True` if the user said yes, `False` if they said no.
+Pass `--enabled` if the user said yes, `--disabled` if they said no. If it exits 1, show the user its `error:` line and carry on with Step 4 — the preference can be set later via `/scout-update`.
 
 ---
 
