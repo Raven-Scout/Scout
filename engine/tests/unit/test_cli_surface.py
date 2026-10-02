@@ -860,6 +860,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
             vault = cfg.vault
             conflicts = ["SKILL.md"]
             backups = ["SKILL.md.bak.2026-04-15"]
+            vault_edits: list = []
 
             class doctor:
                 class severity:
@@ -902,6 +903,7 @@ def test_bootstrap_upgrade_empty_config_falls_back_to_defaults(vault: Path, monk
             vault = cfg.vault
             conflicts: list[str] = []
             backups: list[str] = []
+            vault_edits: list = []
 
             class doctor:
                 class severity:
@@ -928,6 +930,7 @@ def test_bootstrap_doctor_reports_severity_and_findings(vault: Path, monkeypatch
                 value = "warn"
 
             warnings = ["no recent session"]
+            notes: list[str] = []
             errors = ["missing knowledge-base/"]
             exit_code = 0
 
@@ -956,12 +959,14 @@ def test_bootstrap_migrate_legacy_reports_snapshots_and_backups(vault: Path, mon
             vault = cfg.vault
             snapshots_recorded = ["SKILL", "DREAMING"]
             backups = ["run-briefing.sh.bak.2026-04-15"]
+            vault_edits: list = []
 
             class doctor:
                 class severity:
                     value = "ok"
 
                 warnings = ["legacy runner backed up"]
+                notes: list[str] = []
                 errors: list[str] = []
                 exit_code = 0
 
@@ -995,6 +1000,7 @@ def test_bootstrap_migrate_legacy_rebootstrap_jobs_flips_skip_jobs(
             vault = cfg.vault
             snapshots_recorded: list[str] = []
             backups: list[str] = []
+            vault_edits: list = []
 
             class doctor:
                 class severity:
