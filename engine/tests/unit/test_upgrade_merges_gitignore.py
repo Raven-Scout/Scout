@@ -1,0 +1,139 @@
+"""An upgrade merges the vault's .gitignore instead of overwriting it.
+
+The vault's sessions auto-commit it, so a .gitignore line is sometimes all that
+keeps a secret out of git history (``.mcp.json`` holds live API keys). The
+upgrade used to replace the file with the template, dropping every line a vault
+had added. It is now append-only: vault lines stay, missing template lines are
+added, nothing is removed.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from scout.scripts import bootstrap
+from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _config(vault: Path, *, version: str = "0.4.0") -> BootstrapConfig:
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=PLUGIN_ROOT,
+        instance_name="TestScout",
+        instance_name_lower="testscout",
+        user_name="Alex",
+        user_email="alex@example.com",
+        timezone="America/New_York",
+        platform="macos",
+        plugin_version=version,
+        enabled_connectors=set(),
+        connector_inputs={},
+        skip_jobs=True,
+        skip_claude=True,
+    )
+
+
+@pytest.fixture
+def vault(tmp_path: Path) -> Path:
+    v = tmp_path / "Scout"
+    install(_config(v))
+    return v
+
+
+def _lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_upgrade_keeps_gitignore_lines_the_template_does_not_have(vault: Path) -> None:
+    gitignore = vault / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "\n# Local secrets\nsecrets.env\nprivate-notes/\n",
+        encoding="utf-8",
+    )
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    after = _lines(gitignore)
+    assert "secrets.env" in after
+    assert "private-notes/" in after
+    assert "# Local secrets" in after
+
+
+def test_upgrade_restores_template_lines_missing_from_the_vault_gitignore(vault: Path) -> None:
+    """New template lines reach old vaults; the vault's own lines stay put."""
+    gitignore = vault / ".gitignore"
+    gitignore.write_text("# my vault\n.obsidian/\nsecrets.env\n", encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    after = _lines(gitignore)
+    assert after[:3] == ["# my vault", ".obsidian/", "secrets.env"], "vault lines must keep their order"
+    for line in (".mcp.json", ".venv/", ".scout-logs/", "*.bak.*"):
+        assert line in after
+    assert after.count(".obsidian/") == 1, "a line both sides have is not duplicated"
+
+
+def test_gitignore_merge_is_idempotent(vault: Path) -> None:
+    gitignore = vault / ".gitignore"
+    gitignore.write_text("secrets.env\n", encoding="utf-8")
+    upgrade(_config(vault, version="0.4.1"))
+    once = gitignore.read_text(encoding="utf-8")
+    upgrade(_config(vault, version="0.4.2"))
+    assert gitignore.read_text(encoding="utf-8") == once
+
+
+def test_merge_gitignore_carries_a_missing_lines_comment_with_it() -> None:
+    template = "# Holds a live API key — never commit\n.mcp.json\n\n.venv/\n"
+    merged = bootstrap.merge_gitignore("secrets.env\n", template)
+    assert merged == "secrets.env\n\n# Holds a live API key — never commit\n.mcp.json\n.venv/\n"
+
+
+def test_merge_gitignore_leaves_a_complete_vault_file_byte_identical() -> None:
+    vault_text = "# mine\n.mcp.json\n.venv/\nextra/"  # no trailing newline, extra line
+    assert bootstrap.merge_gitignore(vault_text, ".venv/\n.mcp.json\n") == vault_text
+
+
+def test_merge_gitignore_ignores_whitespace_differences() -> None:
+    assert bootstrap.merge_gitignore(".venv/   \n", ".venv/\n") == ".venv/   \n"
+
+
+def test_upgrade_with_the_template_missing_leaves_the_vault_gitignore_alone(vault: Path, tmp_path: Path) -> None:
+    """A partial checkout or failed plugin update can lack the template. The cat-1
+    fallback writes a placeholder, which for .gitignore would drop every line."""
+    gitignore = vault / ".gitignore"
+    before = gitignore.read_text(encoding="utf-8") + "secrets.env\n"
+    gitignore.write_text(before, encoding="utf-8")
+    pruned = tmp_path / "pruned-plugin"
+    shutil.copytree(PLUGIN_ROOT, pruned, ignore=shutil.ignore_patterns(".git", ".venv", "*.egg-info", "__pycache__"))
+    (pruned / "templates" / ".gitignore.tmpl").unlink()
+
+    upgrade(BootstrapConfig(**{**_config(vault, version="0.4.1").__dict__, "plugin_root": pruned}))
+
+    assert gitignore.read_text(encoding="utf-8") == before
+
+
+def test_merge_gitignore_treats_leading_whitespace_as_part_of_the_pattern() -> None:
+    """git reads " .mcp.json" as a different pattern that does not ignore .mcp.json."""
+    merged = bootstrap.merge_gitignore(" .mcp.json\n", ".mcp.json\n")
+    assert merged.splitlines() == [" .mcp.json", "", ".mcp.json"]
+
+
+def test_upgrade_with_an_undecodable_gitignore_leaves_it_and_still_finishes(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """main overwrote such a file without reading it; the merge must not turn it
+    into an upgrade that aborts halfway (and then again on every auto-update)."""
+    gitignore = vault / ".gitignore"
+    raw = b"# caf\xe9 notes\nsecrets.env\n"
+    gitignore.write_bytes(raw)
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    assert gitignore.read_bytes() == raw
+    assert "0.4.1" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert ".gitignore" in capsys.readouterr().err
