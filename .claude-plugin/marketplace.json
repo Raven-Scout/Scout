@@ -7,14 +7,14 @@
   "plugins": [
     {
       "name": "scout",
-      "source": "./",
+      "source": "./plugin",
       "description": "Autonomous knowledge management and daily briefing system for Claude Code",
       "version": "0.10.0",
       "author": {
         "name": "Jordan Burger"
       },
-      "homepage": "https://github.com/Raven-Scout/scout-plugin",
-      "repository": "https://github.com/Raven-Scout/scout-plugin",
+      "homepage": "https://github.com/Raven-Scout/Scout",
+      "repository": "https://github.com/Raven-Scout/Scout",
       "keywords": [
         "knowledge-management",
         "briefing",
