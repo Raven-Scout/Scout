@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-02
+
+
 ### Fixed
 - **The one-line installer now actually builds the engine** (`install.sh`). `claude plugin list --json` emits a flat list, but the installer parsed it as `{"plugins": {...}}`; the `AttributeError` was swallowed, the venv step was skipped, and the script still printed ✅. It now accepts either shape (falling back to the marketplace cache), fails loudly with the exact retry command when the engine step fails, and checks `scoutctl` runs before reporting success. On a Mac without Apple's Command Line Tools it stops up front and opens their installer, instead of the system dialog interrupting mid-install. (#253)
 - **No Homebrew or Python needed** (`scripts/install-venv.sh`). When `uv` is available — `install.sh` guarantees it — the engine venv is built with `uv`, which downloads a managed Python 3.12 if the machine has none. The previous `python3.11+` probe stays as the fallback (`SCOUT_INSTALL_NO_UV=1` forces it). (#252)
