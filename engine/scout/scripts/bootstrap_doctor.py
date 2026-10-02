@@ -292,13 +292,13 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     baseline parked, are notes: deliberate state, so they must not hold the
     doctor yellow forever.
     """
-    from scout.scripts.vault_drift import scan
+    from scout.scripts import vault_drift
 
     warnings: list[str] = []
     notes: list[str] = []
     edited: list[str] = []
     parked: list[str] = []
-    for entry in scan(vault):
+    for entry in vault_drift.scan(vault):
         if entry.status == "conflict":
             warnings.append(
                 f"vault edit to {entry.path} conflicts with a plugin update — your version is still "
@@ -393,7 +393,10 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
     for bak in vault.glob("run-*.sh.bak.*"):
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
 
-    drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+    try:
+        drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+    except OSError as e:
+        drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
     warnings.extend(drift_warnings)
     notes.extend(drift_notes)
 

@@ -324,11 +324,16 @@ def _stage_managed_files(cfg: BootstrapConfig) -> list[VaultEdit]:
         # Older releases' templates, and the current one: a render of it with
         # other variable values (the plugin root moved) is not a vault edit.
         signatures = [*history.get(m.vault_rel, ()), vault_drift.signature(r.template, rendered=m.rendered)]
-        edit = vault_drift.reconcile(
-            cfg.vault, m.vault_rel, r.text, signatures=signatures, vault_developed=m.vault_developed
-        )
-        if m.executable:
-            (cfg.vault / m.vault_rel).chmod(0o755)
+        try:
+            edit = vault_drift.reconcile(
+                cfg.vault, m.vault_rel, r.text, signatures=signatures, vault_developed=m.vault_developed
+            )
+            if m.executable:
+                (cfg.vault / m.vault_rel).chmod(0o755)
+        except OSError as e:
+            # One unreadable or locked file must not stop the stage: the other
+            # files still upgrade and this one is reported, untouched.
+            edit = VaultEdit(m.vault_rel, "error", detail=f"{type(e).__name__}: {e}")
         if edit is not None:
             edits.append(edit)
     vault_drift.prune_snapshots(cfg.vault, (m.vault_rel for m in _MANAGED_FILES))

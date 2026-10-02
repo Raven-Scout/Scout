@@ -1602,7 +1602,7 @@ def _register_bootstrap() -> None:
                 for w in fp.warnings:
                     typer.echo(f"warning: {w}", err=True)
                 if fp.patch:
-                    typer.echo(fp.patch, nl=False)
+                    typer.echo(vault_drift.printable(fp.patch), nl=False)
                     produced += 1
             typer.echo(
                 f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "

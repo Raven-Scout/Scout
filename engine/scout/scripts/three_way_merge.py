@@ -39,9 +39,11 @@ def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str
         ours_path = tmp_path / "ours"
         base_path = tmp_path / "base"
         theirs_path = tmp_path / "theirs"
-        ours_path.write_text(ours, encoding="utf-8")
-        base_path.write_text(base, encoding="utf-8")
-        theirs_path.write_text(theirs, encoding="utf-8")
+        # surrogateescape: text read with it (vault files) keeps any byte that
+        # is not valid UTF-8 through the merge unchanged.
+        ours_path.write_text(ours, encoding="utf-8", errors="surrogateescape")
+        base_path.write_text(base, encoding="utf-8", errors="surrogateescape")
+        theirs_path.write_text(theirs, encoding="utf-8", errors="surrogateescape")
 
         label_args = [arg for label in labels for arg in ("-L", label)] if labels else []
         try:
@@ -59,6 +61,7 @@ def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="surrogateescape",
                 # A wedged git (e.g. waiting on a lock) must not hang
                 # bootstrap upgrade forever; merge-file on three small text
                 # files is sub-second, so 30s is generous (#47).

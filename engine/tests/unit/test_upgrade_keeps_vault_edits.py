@@ -17,7 +17,7 @@ import pytest
 
 from scout.scripts import vault_drift as vd
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
-from scout.scripts.bootstrap_doctor import Severity
+from scout.scripts.bootstrap_doctor import Severity, run_doctor
 
 REAL_PLUGIN = Path(__file__).resolve().parents[3]
 
@@ -334,3 +334,61 @@ def test_parked_copies_are_one_doctor_note_not_one_per_file(vault: Path, plugin:
     assert len(parked_notes) == 1
     assert f".scout-state/drift/{HEARTBEAT}.vault" in parked_notes[0]
     assert ".scout-state/drift/run-scout.sh.vault" in parked_notes[0]
+
+
+# ---------------------------------------------------------- robustness ----
+
+
+def test_a_managed_file_that_is_not_utf8_never_blocks_an_upgrade(vault: Path, plugin: Path) -> None:
+    """A byte pasted from a Latin-1 editor used to raise UnicodeDecodeError on
+    every upgrade, forever. The edit is kept byte-for-byte and the upgrade finishes."""
+    raw = (vault / HEARTBEAT).read_bytes() + b"# caf\xe9 (vault-local)\n"
+    (vault / HEARTBEAT).write_bytes(raw)
+
+    result = upgrade(_config(vault, plugin, version="0.12.0"))
+
+    assert (vault / HEARTBEAT).read_bytes() == raw
+    assert result.vault_edits == [vd.VaultEdit(HEARTBEAT, "kept")]
+    assert "0.12.0" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
+
+
+def test_a_file_the_upgrade_cannot_read_is_reported_and_the_rest_still_upgrades(
+    vault: Path, plugin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_reconcile = vd.reconcile
+
+    def flaky(vault_: Path, rel: str, new: str, **kw: object) -> vd.VaultEdit | None:
+        if rel == HEARTBEAT:
+            raise PermissionError(13, "Permission denied", str(vault_ / rel))
+        return real_reconcile(vault_, rel, new, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(vd, "reconcile", flaky)
+    _plugin_changes_heartbeat_top(plugin)
+    (plugin / "templates/run-scout.sh.tmpl").write_text(
+        (plugin / "templates/run-scout.sh.tmpl").read_text(encoding="utf-8") + "# plugin runner change\n",
+        encoding="utf-8",
+    )
+
+    result = upgrade(_config(vault, plugin, version="0.12.0"))
+
+    [edit] = result.vault_edits
+    assert (edit.path, edit.outcome) == (HEARTBEAT, "error")
+    assert "Permission denied" in edit.describe()
+    assert "# plugin runner change" in (vault / "run-scout.sh").read_text(encoding="utf-8")
+    assert "0.12.0" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
+
+
+def test_a_drift_check_that_fails_is_a_doctor_warning_not_a_crash(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The doctor runs after every upgrade stage; a crash there would turn a
+    finished upgrade into a failed one."""
+
+    def broken_scan(_vault: Path) -> list[vd.DriftEntry]:
+        raise PermissionError(13, "Permission denied", ".scout-state/drift")
+
+    monkeypatch.setattr(vd, "scan", broken_scan)
+
+    report = run_doctor(vault=vault, check_jobs=False)
+
+    assert any("could not check vault drift" in w for w in report.warnings)

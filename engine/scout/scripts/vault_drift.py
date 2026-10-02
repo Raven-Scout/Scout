@@ -148,7 +148,7 @@ class Signature:
 
 
 def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def signature(text: str, *, rendered: bool) -> Signature:
@@ -198,10 +198,13 @@ class VaultEdit:
     """A vault edit an upgrade found, and what it did with it."""
 
     path: str  # vault-relative
-    outcome: str  # one of REPORTED
+    outcome: str  # one of REPORTED, or "error" when the file could not be processed
     parked: tuple[str, ...] = ()  # vault-relative paths of what was set aside
+    detail: str = ""  # why, when the outcome needs one
 
     def describe(self) -> str:
+        if self.outcome == "error":
+            return f"left untouched, could not process it: {self.detail}"
         if self.outcome == "kept":
             return "kept as is (the plugin's version did not change)"
         if self.outcome == "merged":
@@ -231,15 +234,26 @@ def _rel(vault: Path, path: Path) -> str:
     return path.relative_to(vault).as_posix()
 
 
+# Vault files are read and written byte-transparently: a stray non-UTF-8 byte
+# in a hand-edited script round-trips unchanged instead of raising
+# UnicodeDecodeError, which would fail every upgrade until someone found it.
+_ERRORS = "surrogateescape"
+
+
 def _read(path: Path) -> str | None:
-    return path.read_text(encoding="utf-8") if path.is_file() else None
+    return path.read_text(encoding="utf-8", errors=_ERRORS) if path.is_file() else None
 
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
+    tmp.write_text(content, encoding="utf-8", errors=_ERRORS)
     tmp.replace(path)
+
+
+def printable(text: str) -> str:
+    """``text`` safe to print: undecodable bytes shown as U+FFFD."""
+    return text.encode("utf-8", _ERRORS).decode("utf-8", "replace")
 
 
 def _remove(vault: Path, path: Path) -> None:
@@ -509,7 +523,7 @@ def report(vault: Path, renders: dict[str, str]) -> list[DriftRow]:
                 added=sum(1 for ln in body if ln.startswith("+")),
                 removed=sum(1 for ln in body if ln.startswith("-")),
                 live=live,
-                diff="".join(ln if ln.endswith("\n") else ln + "\n" for ln in lines),
+                diff=printable("".join(ln if ln.endswith("\n") else ln + "\n" for ln in lines)),
             )
         )
     return rows
