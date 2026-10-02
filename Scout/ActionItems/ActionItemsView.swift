@@ -114,7 +114,7 @@ struct ActionItemsView: View {
         // Every other case (List mode, plus the loading/missing/failed states)
         // uses the editorial reading page below.
         if case .loaded(let doc) = docService.state, viewMode == .board {
-            BoardView(sections: boardSections(doc))
+            BoardView(sections: boardSections(doc), scoutDirectory: scoutDirectory)
         } else {
             listContent
         }
