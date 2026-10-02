@@ -8,18 +8,27 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 - **Action Items** — today's to-do list rendered from the daily markdown file, with inline comments and deep links to Linear / GitHub PRs / Slack threads.
 - **Agent handoff** — copy one or several action items as full context, concise text, or a Markdown checklist, or launch directly in Claude Code or Claude Desktop.
 - **Schedules** — full CRUD editor for `~/Scout/.scout-state/schedule.yaml`. Master/detail layout with Table + Cards view toggle, type-color palette (briefing/consolidation/dreaming/research/manual), filter chips, live header. Atomic saves via `scoutctl schedule validate --target` with mtime stale-check + header-comment preservation. Click a row to edit its time, weekdays, on-miss policy, cooldown, runner, etc.
+- **Proposals / Wishlist / Research** — review Scout's self-improvement proposals, its feature wishlist, and its research queue, one card per item.
+- **Knowledge Base** — browse the `~/Scout/knowledge-base` notes with backlinks and a graph view.
 - **Menu-bar control** — see current status and upcoming runs, fire a run, or open the full Control Center from a compact panel.
+- **Budget + notifications** — edit the daily budget and window from Settings, and get a macOS notification when a scheduled run fails or hits a rate limit.
 
-## Install (prebuilt DMG)
+## Install
 
-The fastest path if you just want to run the app:
+Scout.app sits on top of the Scout engine, so set up the engine first. (Making the app install the engine for you is on the roadmap: [#115](https://github.com/Raven-Scout/Scout/issues/115).)
 
-1. Go to the [Releases](https://github.com/Raven-Scout/Scout/releases) page and download the latest `Scout-*.dmg`.
-2. Open the DMG and drag **Scout.app** into the **Applications** folder.
-3. Launch it. Scout is signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
-4. Press ⌘, to open Settings and fill in your Linear workspace and author name.
+**You need:** a Mac on macOS 13+, a paid Claude plan (Max recommended), and [Claude Code](https://docs.claude.com/claude-code) installed and signed in (run `claude` once in Terminal). Turn on the tools you want Scout to read at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — Slack is strongly recommended, since Scout's daily summary arrives as a Slack DM. No Homebrew or Python needed.
 
-The app expects a Scout instance at `~/Scout/`. Install the [scout-plugin](https://github.com/Raven-Scout/scout-plugin) into Claude Code and run `/scout-setup` first if you don't have one yet.
+1. **Install the engine.** In Terminal:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
+   ```
+   It ends with `✅ Scout plugin + engine installed.` (On a brand-new Mac it first asks you to install Apple's Command Line Tools — accept, wait, re-run.)
+2. **Create your vault.** Open Claude Code and run `/scout-setup`. It asks a few questions, detects your connected tools, creates `~/Scout/`, and installs the schedule.
+3. **Install the app.** Download the latest `Scout-*.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and drag **Scout.app** into **Applications**. It's signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
+4. **Configure.** Press ⌘, for Settings — see [First-run configuration](#first-run-configuration). Turning on **Launch Scout at login** is recommended.
+
+The full install guide, troubleshooting and FAQ live in the [scout-plugin README](https://github.com/Raven-Scout/scout-plugin#install).
 
 ## Requirements (for building from source)
 
@@ -61,8 +70,11 @@ Cmd+, opens Settings. A few fields are worth filling in:
 - **Launch Scout at login** — start the app automatically so it's watching your Scout instance all day.
 - **Start in menu bar** — launch with the full window hidden and use Scout from its compact panel until you need the Control Center.
 - **Scout directory** — read-only display. The app assumes `~/Scout` (the scout-plugin default).
+- **Claude CLI path** — leave blank to auto-detect (`~/.local/bin`, Homebrew, then your login shell). Used by **Launch Claude**; **Open Claude Code in** picks the terminal.
+- **Budget** — the daily budget, rolling window, skip threshold and failure backoff the scheduled runs are gated by (written to `~/Scout/scout-config.yaml`, same as `scoutctl budget set`).
 - **Linear workspace** — your Linear workspace slug (e.g. `acme-co`). Used to build Linear URLs when you click a `[[PROJ-123]]` wikilink or deep link in an action item. Leave blank to open `linear.app` without a workspace.
 - **Your name** — shown next to comments you add to action items. Defaults to `user`.
+- **Notify on failed runs / rate-limit** — macOS notifications when a scheduled run fails, times out, or is rate-limited.
 
 ## Repo layout
 
@@ -70,12 +82,15 @@ Cmd+, opens Settings. A few fields are worth filling in:
 Scout/                 # main target source
   ActionItems/         # parser, writer, views for daily action-items markdown
   ControlCenter/       # sessions dashboard, upcoming-runs strip, on-battery banner
+  KnowledgeBase/       # KB browser: note view, backlinks, graph
   Models/              # shared types (Run, Slot, UpcomingRun, Schedule, …)
+  PerFileItems/        # Wishlist + Research tabs (one markdown file per item)
+  Proposals/           # dreaming-proposals tab
   Schedules/           # master/detail editor for ~/Scout/.scout-state/schedule.yaml
   Services/            # file watcher, git, launchctl, plist I/O, ScheduleEditService
-  Shell/               # AppState, sidebar, main window, settings
+  Shell/               # AppState, sidebar, main window, settings, menu bar
   Utilities/           # DesignSystem (DS namespace) + helpers
-ScoutTests/            # unit + integration tests (~220 @Test funcs / ~37 suites)
+ScoutTests/            # unit + integration tests (~900 @Test funcs / ~140 suites)
 docs/                  # design specs + implementation plans
 ```
 
