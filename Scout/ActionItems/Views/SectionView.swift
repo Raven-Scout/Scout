@@ -7,6 +7,15 @@ struct SectionView: View {
     let selection: Binding<Set<UUID>>?
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
 
+    /// Done rows opened into a full card, where comments can be read and added
+    /// (#52). Task ids survive the reparse after a write, so a card stays open
+    /// while its new comment saves.
+    @State private var openDoneIDs: Set<UUID> = []
+    /// Recently Completed open or shut. Held here, not by the DisclosureGroup,
+    /// so the whole header line toggles it: on macOS a DisclosureGroup label
+    /// does not react to clicks, only its small arrow does.
+    @State private var completedExpanded = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -239,37 +248,83 @@ struct SectionView: View {
     // MARK: - Recently completed
 
     private var completedList: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: $completedExpanded) {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(section.tasks) { t in
-                    HStack(alignment: .top, spacing: 8) {
-                        if selection != nil {
-                            completedSelectionButton(t)
+                    if openDoneIDs.contains(t.id) {
+                        TaskCardView(
+                            task: t,
+                            kind: section.kind,
+                            displayedDate: displayedDate,
+                            scoutDirectory: scoutDirectory,
+                            selection: selection,
+                            startsExpanded: true,
+                            onCollapse: { openDoneIDs.remove(t.id) },
+                            onOp: onOp
+                        )
+                    } else if selection != nil {
+                        completedRow(t)
+                            .padding(.vertical, 4)
+                    } else {
+                        // A Button, not a tap gesture, so the row also opens
+                        // from the keyboard and VoiceOver.
+                        Button {
+                            openDoneIDs.insert(t.id)
+                        } label: {
+                            completedRow(t)
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
                         }
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(DS.Priority.done)
-                        InlineMarkdownText(t.subject)
-                            .font(DS.serif(13))
-                            .strikethrough(color: DS.Ink.p4)
-                            .foregroundStyle(DS.Ink.p3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        .buttonStyle(.plainHit)
+                        .help("Open to read and add comments")
                     }
-                    .padding(.vertical, 4)
                 }
             }
             .padding(.top, 6)
         } label: {
-            HStack(spacing: 8) {
-                Text("RECENTLY COMPLETED")
-                    .font(DS.sans(12, weight: .medium))
-                    .tracking(0.05 * 12)
-                    .foregroundStyle(DS.Ink.p3)
-                Text("\(section.tasks.count)")
-                    .font(DS.mono(11, weight: .medium))
-                    .foregroundStyle(DS.Ink.p4)
-                Spacer()
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { completedExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("RECENTLY COMPLETED")
+                        .font(DS.sans(12, weight: .medium))
+                        .tracking(0.05 * 12)
+                        .foregroundStyle(DS.Ink.p3)
+                    Text("\(section.tasks.count)")
+                        .font(DS.mono(11, weight: .medium))
+                        .foregroundStyle(DS.Ink.p4)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plainHit)
+        }
+    }
+
+    private func completedRow(_ t: ActionTask) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            if selection != nil {
+                completedSelectionButton(t)
+            }
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(DS.Priority.done)
+            InlineMarkdownText(t.subject)
+                .font(DS.serif(13))
+                .strikethrough(color: DS.Ink.p4)
+                .foregroundStyle(DS.Ink.p3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !t.comments.isEmpty {
+                HStack(spacing: 3) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 9))
+                    Text("\(t.comments.count)")
+                        .font(DS.mono(10.5))
+                }
+                .foregroundStyle(DS.Ink.p4)
+                .padding(.top, 2)
+                .accessibilityLabel("\(t.comments.count) comments")
             }
         }
     }
