@@ -539,3 +539,49 @@ def test_resolve_rejects_a_path_outside_the_vault(tmp_path: Path, rel: str) -> N
     with pytest.raises(ValueError, match="vault-relative"):
         vd.resolve(vault, rel)
     assert not (tmp_path / "outside.sh").exists()
+
+
+def test_a_crash_after_parking_recovers_without_losing_or_duplicating_the_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = _vault(tmp_path)
+    (vault / "scripts").mkdir()
+    (vault / REL).write_text(EDITED)
+    real_write = vd._write
+
+    def crash_on_live(path: Path, content: str) -> None:
+        if path == vault / REL:
+            raise OSError("disk full")
+        real_write(path, content)
+
+    monkeypatch.setattr(vd, "_write", crash_on_live)
+    with pytest.raises(OSError):
+        vd.reconcile(vault, REL, NEW)
+    monkeypatch.setattr(vd, "_write", real_write)
+
+    edit = vd.reconcile(vault, REL, NEW)
+
+    assert edit is not None and edit.parked == (f".scout-state/drift/{REL}.vault",)
+    assert (vault / ".scout-state" / "drift" / f"{REL}.vault").read_text() == EDITED
+    assert not (vault / ".scout-state" / "drift" / f"{REL}.vault-1").exists()
+    assert (vault / REL).read_text() == NEW
+
+
+def test_a_crash_while_parking_leaves_the_edited_file_in_place(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The copy is parked before the file is replaced: if parking fails, the
+    vault's edit must still be live, never already overwritten."""
+    vault = _vault(tmp_path)
+    (vault / "scripts").mkdir()
+    (vault / REL).write_text(EDITED)
+    real_write = vd._write
+
+    def crash_on_park(path: Path, content: str) -> None:
+        if path.name.endswith(".vault"):
+            raise OSError("disk full")
+        real_write(path, content)
+
+    monkeypatch.setattr(vd, "_write", crash_on_park)
+    with pytest.raises(OSError):
+        vd.reconcile(vault, REL, NEW)
+
+    assert (vault / REL).read_text() == EDITED

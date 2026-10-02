@@ -437,3 +437,14 @@ def test_a_drift_check_that_fails_is_a_doctor_warning_not_a_crash(vault: Path, m
     report = run_doctor(vault=vault, check_jobs=False)
 
     assert any("could not check vault drift" in w for w in report.warnings)
+
+
+def test_a_plugin_source_that_disappears_never_costs_a_vault_edit(vault: Path, plugin: Path) -> None:
+    """A partial plugin checkout renders a placeholder; over an edited file that
+    is a plugin change like any other, so the edit is not overwritten."""
+    _append(vault / HEARTBEAT, VAULT_FIX)
+    (plugin / HEARTBEAT_TMPL).unlink()
+
+    upgrade(_config(vault, plugin))
+
+    assert VAULT_FIX in (vault / HEARTBEAT).read_text(encoding="utf-8")
