@@ -1424,6 +1424,9 @@ def _register_bootstrap() -> None:
         typer.echo(f"upgraded: {result.vault}")
         for c in result.conflicts:
             typer.echo(f"  conflict (sidecar): {c}", err=True)
+        for s in result.skipped:
+            live_name = s.removesuffix(".proposed-merge")
+            typer.echo(f"  skipped (sidecar pending): {s} — {live_name} left as is until it is resolved", err=True)
         for b in result.backups:
             typer.echo(f"  backup: {b}", err=True)
         typer.echo(f"doctor: {result.doctor.severity.value}")

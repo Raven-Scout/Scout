@@ -58,6 +58,16 @@ def test_sidecar_proposed_merge_is_yellow(tmp_path):
     assert any("proposed-merge" in w for w in report.warnings)
 
 
+def test_a_pending_brain_sidecar_says_upgrades_skip_the_file(tmp_path):
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / "DREAMING.md.proposed-merge").write_text("conflict markers here")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    (warning,) = [w for w in report.warnings if "DREAMING.md.proposed-merge" in w]
+    assert "upgrades leave DREAMING.md as is" in warning
+    assert "mv DREAMING.md.proposed-merge DREAMING.md" in warning
+    assert "before re-running" not in warning, "a pending sidecar no longer blocks /scout-update"
+
+
 def test_missing_version_stamp_is_red(tmp_path):
     _populate_minimal_vault(tmp_path)
     (tmp_path / "scout-config.yaml").write_text("user:\n  name: Test\n")

@@ -17,6 +17,8 @@ from pathlib import Path
 
 import yaml
 
+from scout.scripts.brain_merge import pending_brain_sidecars
+
 
 class Severity(Enum):
     GREEN = "green"
@@ -335,14 +337,14 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")
 
-    # Sidecar conflict files (yellow).
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
-        sidecar = vault / f"{name}.md.proposed-merge"
-        if sidecar.exists():
-            warnings.append(
-                f"unresolved merge conflict in {sidecar.name} — resolve and "
-                f"`mv {sidecar.name} {name}.md` before re-running /scout-update"
-            )
+    # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
+    # not receiving plugin changes until the sidecar is resolved.
+    for sidecar_name in pending_brain_sidecars(vault):
+        live_name = sidecar_name.removesuffix(".proposed-merge")
+        warnings.append(
+            f"{sidecar_name} pending — upgrades leave {live_name} as is until it is resolved: "
+            f"remove any conflict markers, then `mv {sidecar_name} {live_name}`"
+        )
 
     # Hand-edit backups (yellow but informational).
     for bak in vault.glob("run-*.sh.bak.*"):
