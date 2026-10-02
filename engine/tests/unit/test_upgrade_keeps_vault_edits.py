@@ -10,6 +10,7 @@ Design: docs/superpowers/specs/2026-09-30-upgrade-keeps-vault-edits-design.md
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -293,9 +294,10 @@ def test_first_baseline_never_silently_overwrites_a_hand_edited_value(vault: Pat
     a render with other values."""
     _forget_snapshots(vault)
     runner = vault / "run-scout.sh"
-    text = runner.read_text(encoding="utf-8")
-    assert 'CLAUDE_BIN="/usr/local/bin/claude"' in text
-    runner.write_text(text.replace('CLAUDE_BIN="/usr/local/bin/claude"', 'CLAUDE_BIN="/opt/tools/bin/claude"'))
+    # Whatever claude path the install resolved on this machine, hand-fix it.
+    text, n = re.subn(r'^CLAUDE_BIN="[^"]*"$', 'CLAUDE_BIN="/opt/tools/bin/claude"', runner.read_text(), flags=re.M)
+    assert n == 1
+    runner.write_text(text)
 
     result = upgrade(_config(vault, plugin))
 
