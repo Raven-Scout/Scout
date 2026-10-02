@@ -141,6 +141,12 @@ _CAT1_TEMPLATES = (
     (".gitignore", "templates/.gitignore.tmpl"),
 )
 
+# Cat-1 templates the vault also edits, so an upgrade merges them into the live
+# file instead of overwriting it (see merge_gitignore). A vault's .gitignore can
+# carry lines that keep secrets out of git; the sessions auto-commit the vault,
+# so dropping one of those lines on upgrade can commit a live credential.
+_CAT1_APPEND_ONLY = frozenset({".gitignore"})
+
 _INSTALL_ONLY_TEMPLATES = (
     # Vault-owned files seeded once on install (cat 2). Never overwritten on upgrade.
     ("dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
@@ -208,6 +214,39 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def merge_gitignore(vault_text: str, template_text: str) -> str:
+    """The vault's .gitignore plus any template pattern it lacks. Append-only.
+
+    Every vault line is kept in place and in order; nothing is ever removed, so a
+    line the vault added (a secrets file, a local venv) survives any upgrade.
+    Template patterns the vault is missing are appended after a blank line,
+    together with the comment lines directly above them in the template.
+    Patterns compare with trailing whitespace stripped, which git ignores; leading
+    whitespace is part of a git pattern, so it counts. When the vault already
+    has every template pattern, its text comes back byte-identical.
+    """
+    present = {s for line in vault_text.splitlines() if (s := line.rstrip()) and not s.startswith("#")}
+    additions: list[str] = []
+    comments: list[str] = []
+    for line in template_text.splitlines():
+        s = line.rstrip()
+        if not s:
+            comments = []
+        elif s.startswith("#"):
+            comments.append(line)
+        else:
+            if s not in present:
+                additions += comments + [line]
+                present.add(s)
+            comments = []
+    if not additions:
+        return vault_text
+    if not vault_text.strip():
+        return template_text
+    base = vault_text if vault_text.endswith("\n") else vault_text + "\n"
+    return base + "\n" + "\n".join(additions) + "\n"
+
+
 # ---------- stages ----------
 
 
@@ -217,7 +256,7 @@ def _stage_create_dirs(cfg: BootstrapConfig) -> None:
 
 
 def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
-    """Stage 3: cat 1 file overwrites (always)."""
+    """Stage 3: cat 1 file overwrites (always), except _CAT1_APPEND_ONLY files, which merge."""
     vars_ = _template_vars(cfg)
     for vault_rel, plugin_rel in _CAT1_FILES_FROM_PLUGIN.items():
         src = cfg.plugin_root / plugin_rel
@@ -227,12 +266,25 @@ def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
         _atomic_write(cfg.vault / vault_rel, src.read_text(encoding="utf-8"))
     for vault_rel, tmpl_rel in _CAT1_TEMPLATES:
         src = cfg.plugin_root / tmpl_rel
+        target = cfg.vault / vault_rel
+        merge = vault_rel in _CAT1_APPEND_ONLY and target.exists()
         if not src.exists():
-            _atomic_write(cfg.vault / vault_rel, f"# placeholder: {tmpl_rel}\n")
+            # A placeholder over an append-only file would drop every vault line.
+            if not merge:
+                _atomic_write(target, f"# placeholder: {tmpl_rel}\n")
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
-        _atomic_write(cfg.vault / vault_rel, rendered)
-        (cfg.vault / vault_rel).chmod(0o755)
+        if merge:
+            try:
+                current = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                # Leave it as it is: overwriting would drop its lines, and
+                # raising would leave the vault half-upgraded on every retry.
+                print(f"warning: left {vault_rel} unchanged, could not read it: {e}", file=sys.stderr)
+                continue
+            rendered = merge_gitignore(current, rendered)
+        _atomic_write(target, rendered)
+        target.chmod(0o755)
 
 
 def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
@@ -519,6 +571,101 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
 
 
+def _top_level_blocks(text: str) -> tuple[list[tuple[str, list[str], list[str]]], list[str]] | None:
+    """Split a block-style YAML mapping into ``(key, leading, block)`` segments.
+
+    ``leading`` is the run of comment and blank lines directly above the key;
+    ``block`` is the key line and everything under it. The second return value
+    holds the comment and blank lines after the last block. Returns None for
+    anything this line scanner cannot split with confidence — document markers,
+    flow collections spanning lines, duplicate keys — so the caller can fall
+    back to a plain dump.
+    """
+    lines = text.splitlines(keepends=True)
+    starts: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        if not line.strip() or line[0] in " \t#":
+            continue
+        if line.startswith(("---", "...")):
+            return None
+        if line.startswith("- ") or line.rstrip() == "-":
+            continue  # a sequence item under the previous key
+        try:
+            parsed = yaml.safe_load(line)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(parsed, dict) or len(parsed) != 1:
+            return None
+        starts.append((i, str(next(iter(parsed)))))
+    if len({key for _, key in starts}) != len(starts):
+        return None
+
+    def is_filler(line: str) -> bool:
+        return not line.strip() or line.lstrip().startswith("#")
+
+    segments: list[tuple[str, list[str], list[str]]] = []
+    lead_from = 0
+    for n, (start, key) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        # Comments and blank lines just above the next key belong to that key.
+        while end > start + 1 and is_filler(lines[end - 1]):
+            end -= 1
+        segments.append((key, lines[lead_from:start], lines[start:end]))
+        lead_from = end
+    return segments, lines[lead_from:]
+
+
+def _dump_keeping_comments(text: str, data: dict) -> str:
+    """``yaml.safe_dump(data)``, but written over ``text`` so its comments survive.
+
+    Each top-level block whose value is unchanged comes back byte-for-byte, with
+    every comment inside it. A changed block is re-dumped under its original
+    leading comments; comments inside a changed block are lost. New keys are
+    appended at the end. Falls back to a plain dump whenever the text cannot be
+    split safely, or the result would not load back as ``data``, and then warns
+    on stderr if that loses comments.
+    """
+    plain = yaml.safe_dump(data, sort_keys=False)
+
+    def fallback(reason: str) -> str:
+        if any(line.lstrip().startswith("#") for line in text.splitlines()):
+            print(f"warning: scout-config.yaml comments not preserved ({reason})", file=sys.stderr)
+        return plain
+
+    split = _top_level_blocks(text)
+    try:
+        original = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return fallback("the file does not parse as YAML")
+    if split is None or not isinstance(original, dict):
+        return fallback("its layout cannot be rewritten block by block")
+    segments, trailer = split
+
+    out: list[str] = []
+    for key, leading, block in segments:
+        out += leading
+        if key not in data:
+            continue
+        if key in original and original[key] == data[key]:
+            out += block
+        else:
+            out.append(yaml.safe_dump({key: data[key]}, sort_keys=False))
+    out += trailer
+    added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
+    if added:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.append(yaml.safe_dump(added, sort_keys=False))
+
+    result = "".join(out)
+    try:
+        if yaml.safe_load(result) != data:
+            return fallback("the block-wise rewrite did not load back identically")
+    except yaml.YAMLError:
+        return fallback("the block-wise rewrite did not parse")
+    return result
+
+
 def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     """Stage 7: write/update plugin.version_at_last_{setup,update} plus persist
     connector_inputs so subsequent upgrades render templates with the same values
@@ -527,10 +674,8 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     cat-1b hand-edit detection fire on every upgrade.
     """
     config_path = cfg.vault / "scout-config.yaml"
-    if config_path.exists():
-        existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    else:
-        existing = {}
+    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    existing = yaml.safe_load(text) or {}
     existing.setdefault("user", {})
     existing["user"]["name"] = cfg.user_name
     existing["user"]["email"] = cfg.user_email
@@ -562,7 +707,9 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
         plugin.setdefault("version_at_last_setup", cfg.plugin_version)
     plugin["version_at_last_update"] = cfg.plugin_version
     plugin.setdefault("applied_migrations", [])
-    _atomic_write(config_path, yaml.safe_dump(existing, sort_keys=False))
+    # Not a plain safe_dump: that round-trip deleted every comment in the file
+    # on every upgrade, including the one `scoutctl budget set` writes.
+    _atomic_write(config_path, _dump_keeping_comments(text, existing))
 
 
 # ---------- entry points ----------
