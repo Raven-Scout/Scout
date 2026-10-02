@@ -401,6 +401,8 @@ def resolve(vault: Path, rel: str) -> list[str]:
     copies are deleted. Raises ``ValueError`` when nothing is parked or the
     file still holds conflict markers.
     """
+    if Path(rel).is_absolute() or ".." in Path(rel).parts:
+        raise ValueError(f"{rel}: give the file's vault-relative path, e.g. scripts/heartbeat.sh")
     plugin = _drift_path(vault, rel, PLUGIN_SUFFIX)
     copies = _vault_copies(vault, rel)
     parked_update = _read(plugin)

@@ -410,3 +410,14 @@ def test_report_flags_a_file_the_plugin_changed_since_the_last_upgrade(tmp_path:
 
     assert row.stale
     assert "run `scoutctl bootstrap upgrade`" in row.describe()
+
+
+@pytest.mark.parametrize("rel", ["../outside.sh", "/etc/hosts", "scripts/../../outside.sh"])
+def test_resolve_rejects_a_path_outside_the_vault(tmp_path: Path, rel: str) -> None:
+    """--resolve takes a path from the command line; it must not reach past the vault."""
+    vault = _vault(tmp_path)
+    (vault / ".scout-state" / "drift").mkdir(parents=True)
+    (tmp_path / "outside.sh.plugin").write_text("x\n")  # what a ../ path would find
+    with pytest.raises(ValueError, match="vault-relative"):
+        vd.resolve(vault, rel)
+    assert not (tmp_path / "outside.sh").exists()
