@@ -33,10 +33,13 @@ export SCOUT_DATA_DIR
 # vault helper scripts/vault-freshness.py ranks by git committer date instead,
 # which cannot drift that way; running it here puts both views in .scout-cache/
 # before the model starts. Never fatal: a session must not die because a
-# staleness cache could not be written.
+# staleness cache could not be written. The ranking table on stdout is dropped;
+# errors on stderr reach the run log. The old cache is removed first, so a failed
+# run leaves no ranking rather than a stale one that reads as current.
 if [[ -f "$SCOUT_DATA_DIR/scripts/vault-freshness.py" ]]; then
+    rm -f "$SCOUT_DATA_DIR/.scout-cache/vault-freshness.md" 2>/dev/null || true
     ( cd "$SCOUT_DATA_DIR" && python3 scripts/vault-freshness.py --limit 15 \
-        --out .scout-cache/vault-freshness.md >/dev/null 2>&1 ) || true
+        --out .scout-cache/vault-freshness.md >/dev/null ) || true
 fi
 
 exec "$SCOUTCTL_BIN" hook kb-pre-filter --session-type "${1:-dreaming}"

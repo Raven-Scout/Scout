@@ -153,10 +153,11 @@ fi
 # session step: the failure being watched for is a run that never reaches its
 # phases (an expired login, a dead network), and nothing the session writes can
 # report that. scripts/run-outcome.sh is an optional vault helper; a vault
-# without it skips this step.
+# without it skips this step. Its errors go to the run log, so a broken helper
+# (and with it the failure alerting) leaves a trace.
 OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"
 if [ -x "$OUTCOME" ]; then
-    "$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >/dev/null 2>&1 || true
+    "$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true
 fi
 
 # Regenerate the connector-health surface from the runner, for the same reason:

@@ -590,16 +590,23 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
     every comment inside it. A changed block is re-dumped under its original
     leading comments; comments inside a changed block are lost. New keys are
     appended at the end. Falls back to a plain dump whenever the text cannot be
-    split safely, or the result would not load back as ``data``.
+    split safely, or the result would not load back as ``data``, and then warns
+    on stderr if that loses comments.
     """
     plain = yaml.safe_dump(data, sort_keys=False)
+
+    def fallback(reason: str) -> str:
+        if any(line.lstrip().startswith("#") for line in text.splitlines()):
+            print(f"warning: scout-config.yaml comments not preserved ({reason})", file=sys.stderr)
+        return plain
+
     split = _top_level_blocks(text)
     try:
         original = yaml.safe_load(text) or {}
     except yaml.YAMLError:
-        return plain
+        return fallback("the file does not parse as YAML")
     if split is None or not isinstance(original, dict):
-        return plain
+        return fallback("its layout cannot be rewritten block by block")
     segments, trailer = split
 
     out: list[str] = []
@@ -621,9 +628,9 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
     result = "".join(out)
     try:
         if yaml.safe_load(result) != data:
-            return plain
+            return fallback("the block-wise rewrite did not load back identically")
     except yaml.YAMLError:
-        return plain
+        return fallback("the block-wise rewrite did not parse")
     return result
 
 

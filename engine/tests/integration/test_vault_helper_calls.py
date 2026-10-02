@@ -134,12 +134,19 @@ def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, s
 def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot: str) -> None:
     runner = _render(template, vault, template.removesuffix(".tmpl"))
     _stub_claude(vault, 0)
-    _script(vault / "scripts" / "run-outcome.sh", "#!/bin/bash\nexit 1\n")
-    _script(vault / "scripts" / "connector-health-rollup.sh", "#!/bin/bash\nexit 1\n")
+    _script(vault / "scripts" / "run-outcome.sh", "#!/bin/bash\necho 'run-outcome: ledger not writable' >&2\nexit 1\n")
+    _script(
+        vault / "scripts" / "connector-health-rollup.sh", "#!/bin/bash\necho 'rollup: engine missing' >&2\nexit 1\n"
+    )
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
     assert result.returncode == 0, result.stderr
+    # A broken helper must leave a trace: otherwise the alerting it provides is
+    # dead with nothing anywhere to say so.
+    log = _runner_log(vault)
+    assert "run-outcome: ledger not writable" in log
+    assert "rollup: engine missing" in log
 
 
 # ---------- kb-pre-filter.sh: git-truth staleness ranking ----------
@@ -155,6 +162,8 @@ FRESHNESS_STUB = """#!/usr/bin/env python3
 import os, sys
 with open("freshness.calls", "a") as fh:
     fh.write(os.getcwd() + " " + " ".join(sys.argv[1:]) + "\\n")
+if {exit_code}:
+    print("vault-freshness: boom", file=sys.stderr)
 sys.exit({exit_code})
 """
 
@@ -188,6 +197,21 @@ def test_kb_pre_filter_still_filters_without_a_working_ranking(vault: Path, help
 
     assert result.returncode == 0, result.stderr
     assert scoutctl_calls.read_text(encoding="utf-8").split() == ["hook", "kb-pre-filter", "--session-type", "dreaming"]
+
+
+def test_kb_pre_filter_reports_a_failing_ranking_and_drops_its_stale_cache(vault: Path) -> None:
+    """The runner sends the hook's stderr to the run log, so the crash is visible;
+    and a cache left by an earlier run must not be read as the current ranking."""
+    hook, _ = _kb_pre_filter(vault)
+    _script(vault / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=1))
+    stale = vault / ".scout-cache" / "vault-freshness.md"
+    stale.write_text("# ranking from an earlier run\n", encoding="utf-8")
+
+    result = _run(hook, vault, "briefing")
+
+    assert result.returncode == 0, result.stderr
+    assert "vault-freshness: boom" in result.stderr
+    assert not stale.exists()
 
 
 # ---------- heartbeat.sh: once-a-day session-lane liveness watchdog ----------

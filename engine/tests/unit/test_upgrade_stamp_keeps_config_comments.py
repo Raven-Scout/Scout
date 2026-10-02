@@ -131,3 +131,24 @@ def test_upgrade_still_collapses_a_duplicated_block(vault: Path) -> None:
     parsed = yaml.safe_load(after)
     assert parsed["plugin"]["version_at_last_setup"] == "0.3.0"
     assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
+
+
+def test_upgrade_warns_when_it_cannot_keep_the_comments(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A document marker defeats the block scanner, so the stamp falls back to a
+    plain dump. The comments are lost, as before; the upgrade must say so."""
+    config = vault / "scout-config.yaml"
+    config.write_text("---\n# hand-written note\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    assert yaml.safe_load(config.read_text(encoding="utf-8"))["plugin"]["version_at_last_update"] == "0.4.1"
+    assert "scout-config.yaml comments not preserved" in capsys.readouterr().err
+
+
+def test_upgrade_is_silent_when_there_were_no_comments_to_keep(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = vault / "scout-config.yaml"
+    config.write_text("---\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    assert "comments not preserved" not in capsys.readouterr().err

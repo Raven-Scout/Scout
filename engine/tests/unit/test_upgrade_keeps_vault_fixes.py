@@ -58,7 +58,7 @@ _RUNNER_FIX = [
     'export SCOUT_MODE="$MODE"',
     # Record how the run ended, from the wrapper, out-of-band.
     'OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"',
-    '"$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >/dev/null 2>&1 || true',
+    '"$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true',
     # Connector-health roll-up, so the surface refreshes even when a run dies early.
     'HEALTH_ROLLUP="$SCOUT_DIR/scripts/connector-health-rollup.sh"',
     '"$HEALTH_ROLLUP" >> "$LOG_FILE" 2>&1 || true',
