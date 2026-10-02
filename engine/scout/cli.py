@@ -1526,8 +1526,8 @@ def _register_bootstrap() -> None:
             False, "--patch", help="Print a git-apply-able patch against the plugin's templates/ for the edited files."
         ),
         json_out: bool = typer.Option(False, "--json", help="Machine-readable report (for notifiers and sessions)."),
-        resolve: str = typer.Option(
-            "", "--resolve", metavar="FILE", help="Settle what an upgrade parked for FILE (vault-relative path)."
+        resolve: list[str] = typer.Option(  # noqa: B008
+            [], "--resolve", metavar="FILE", help="Settle what an upgrade parked for FILE (vault-relative; repeatable)."
         ),
         vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
     ) -> None:
@@ -1548,13 +1548,18 @@ def _register_bootstrap() -> None:
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
         if resolve:
-            try:
-                done = vault_drift.resolve(vault, resolve)
-            except ValueError as e:
-                typer.echo(f"scoutctl bootstrap drift: {e}", err=True)
-                raise typer.Exit(code=2) from e
-            for line in done:
-                typer.echo(line)
+            failed = False
+            for rel in resolve:
+                try:
+                    done = vault_drift.resolve(vault, rel)
+                except ValueError as e:
+                    typer.echo(f"scoutctl bootstrap drift: {e}", err=True)
+                    failed = True
+                    continue
+                for line in done:
+                    typer.echo(line)
+            if failed:
+                raise typer.Exit(code=2)
             return
 
         cfg = _vault_bootstrap_config(vault)
@@ -1572,8 +1577,14 @@ def _register_bootstrap() -> None:
             for row in rows:
                 path, render = row.path, renders.get(row.path)
                 if row.status != "edited" or render is None:
-                    if row.status in ("conflict", "replaced"):
-                        typer.echo(f"skipped {path}: {row.status} — resolve it first", err=True)
+                    if row.status == "conflict":
+                        typer.echo(f"skipped {path}: a conflict — merge it and --resolve it first", err=True)
+                    elif row.status == "replaced":
+                        typer.echo(
+                            f"skipped {path}: your copy is parked at {row.parked[-1]} — copy it back over "
+                            f"{path} first if it holds a fix to upstream",
+                            err=True,
+                        )
                     continue
                 if row.stale:
                     typer.echo(

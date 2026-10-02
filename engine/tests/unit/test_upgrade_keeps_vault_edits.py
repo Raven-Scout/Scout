@@ -319,3 +319,18 @@ def test_first_baseline_keeps_an_unknown_parser_running(vault: Path, plugin: Pat
 
 def test_snapshots_are_gitignored(vault: Path) -> None:
     assert ".scout-state/last-rendered/" in (vault / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_parked_copies_are_one_doctor_note_not_one_per_file(vault: Path, plugin: Path) -> None:
+    """A vault carrying several hand fixes gets several parked copies on its
+    first baseline; the doctor names them all in one note."""
+    _forget_snapshots(vault)
+    _append(vault / HEARTBEAT, VAULT_FIX)
+    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+
+    result = upgrade(_config(vault, plugin))
+
+    parked_notes = [n for n in result.doctor.notes if ".vault" in n]
+    assert len(parked_notes) == 1
+    assert f".scout-state/drift/{HEARTBEAT}.vault" in parked_notes[0]
+    assert ".scout-state/drift/run-scout.sh.vault" in parked_notes[0]

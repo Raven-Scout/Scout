@@ -297,6 +297,7 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     notes: list[str] = []
     edited: list[str] = []
+    parked: list[str] = []
     for entry in scan(vault):
         if entry.status == "conflict":
             warnings.append(
@@ -308,17 +309,17 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
         elif entry.status == "edited":
             edited.append(entry.path)
         elif entry.status == "replaced":
-            for copy in entry.parked:
-                notes.append(
-                    f"an upgrade installed the plugin's {entry.path} over a copy no release shipped; "
-                    f"yours is at {copy} — compare with `scoutctl bootstrap drift --diff`, dismiss with "
-                    f"`scoutctl bootstrap drift --resolve {entry.path}`"
-                )
+            parked += entry.parked
     if edited:
-        notes.insert(
-            0,
+        notes.append(
             f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)} "
-            f"— `scoutctl bootstrap drift --patch` turns them into a plugin PR",
+            f"— `scoutctl bootstrap drift --patch` turns them into a plugin PR"
+        )
+    if parked:
+        notes.append(
+            f"an upgrade installed the plugin's version over {len(parked)} vault cop(ies) no release shipped "
+            f"and parked them: {', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
+            f"with `scoutctl bootstrap drift --resolve <file>`"
         )
     return warnings, notes
 

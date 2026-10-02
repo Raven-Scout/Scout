@@ -139,3 +139,15 @@ def test_doctor_prints_notes(vault: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert any(line.startswith("note: ") and HEARTBEAT in line for line in result.stdout.splitlines())
+
+
+def test_drift_resolve_takes_several_files(vault: Path) -> None:
+    shutil.rmtree(vault / ".scout-state" / "last-rendered")
+    _append(vault / HEARTBEAT, FIX)
+    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+    runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
+
+    result = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT, "--resolve", "run-scout.sh"])
+
+    assert result.exit_code == 0, result.output
+    assert not (vault / ".scout-state" / "drift").exists()
