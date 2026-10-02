@@ -37,6 +37,11 @@ class DoctorReport:
         return {Severity.GREEN: 0, Severity.YELLOW: 1, Severity.RED: 2}[self.severity]
 
 
+# Plugin-owned files an engine before .scout-state/last-rendered/ 3-way merged
+# into a blocking sidecar (bootstrap._CAT_MERGE_FILES, which this module can't
+# import). Upgrades no longer write one, but one left behind still blocks.
+_LEGACY_SIDECAR_FILES = ("knowledge-base/ontology/parser.py",)
+
 _REQUIRED_CAT1_FILES = (
     "scripts/heartbeat.sh",
     "knowledge-base/ontology/parser.py",
@@ -378,13 +383,13 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")
 
-    # Sidecar conflict files (yellow).
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
-        sidecar = vault / f"{name}.md.proposed-merge"
+    # Sidecar conflict files (yellow). Each blocks the next upgrade.
+    for rel in (*(f"{name}.md" for name in ("SKILL", "DREAMING", "RESEARCH")), *_LEGACY_SIDECAR_FILES):
+        sidecar = vault / f"{rel}.proposed-merge"
         if sidecar.exists():
             warnings.append(
-                f"unresolved merge conflict in {sidecar.name} — resolve and "
-                f"`mv {sidecar.name} {name}.md` before re-running /scout-update"
+                f"unresolved merge conflict in {rel}.proposed-merge — resolve and "
+                f"`mv {rel}.proposed-merge {rel}` before re-running /scout-update"
             )
 
     # Hand-edit backups (yellow but informational). Upgrades no longer write

@@ -69,9 +69,10 @@ behind still blocks the upgrade until it is resolved, and #244's
 ```
 
 Everything the doctor and `drift` report is worked out from these files, so no
-separate manifest can fall out of step with them. `last-rendered/` is derived
-data and is gitignored, like `last-assembled/`. `drift/` stays tracked, so a
-parked edit is also in the vault's git history.
+separate manifest can fall out of step with them. Both stay tracked by the
+vault's git. Losing `last-rendered/` on a re-clone or `git clean -X` would send
+every edited file back through a first baseline. Tracking `drift/` puts a
+parked edit in the vault's git history too.
 
 ## The decision per file
 

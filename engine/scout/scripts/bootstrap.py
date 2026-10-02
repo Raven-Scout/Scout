@@ -725,7 +725,7 @@ def _refuse_pending_sidecars(vault: Path) -> None:
         raise RuntimeError(
             f"Unresolved proposed-merge sidecar(s): {pending}. "
             f"Edit each to remove conflict markers, then "
-            f"`mv X.md.proposed-merge X.md`, then re-run /scout-update."
+            f"`mv <file>.proposed-merge <file>`, then re-run /scout-update."
         )
 
 

@@ -373,8 +373,10 @@ def reconcile(
         else:
             _remove(vault, draft)
     else:
-        _remove(vault, plugin)
+        # Draft first: a crash in between leaves the .plugin, which still reads
+        # as a conflict and is settled again next time, never a hidden draft.
         _remove(vault, draft)
+        _remove(vault, plugin)
     return VaultEdit(rel, d.outcome, parked, detail=d.reason or "") if d.outcome in REPORTED else None
 
 
@@ -430,6 +432,8 @@ def scan(vault: Path) -> list[DriftEntry]:
         elif _VAULT_COPY_RE.search(name):
             copies.setdefault(_VAULT_COPY_RE.sub("", name), []).append(_rel(vault, path))
 
+    # A .merge draft without its .plugin is a leftover, not a conflict.
+    conflicts = {rel: p for rel, p in conflicts.items() if p[0].endswith(PLUGIN_SUFFIX)}
     entries: list[DriftEntry] = []
     snap_root = vault / SNAPSHOT_DIR
     if snap_root.is_dir():
@@ -442,8 +446,7 @@ def scan(vault: Path) -> list[DriftEntry]:
                 entries.append(DriftEntry(rel, "missing"))
             elif live != _read(snap):
                 entries.append(DriftEntry(rel, "edited"))
-    # A .merge draft without its .plugin is a leftover, not a conflict.
-    entries += [DriftEntry(rel, "conflict", tuple(p)) for rel, p in conflicts.items() if p[0].endswith(PLUGIN_SUFFIX)]
+    entries += [DriftEntry(rel, "conflict", tuple(p)) for rel, p in conflicts.items()]
     entries += [DriftEntry(rel, "replaced", tuple(p)) for rel, p in copies.items()]
     return sorted(entries, key=lambda e: (e.path, e.status))
 
@@ -500,8 +503,8 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
                 f"`cp {_rel(vault, plugin)} {rel}`; to keep your version and drop the update, add --drop-update"
             )
         _write(snapshot_path(vault, rel), parked_update)
-        _remove(vault, plugin)
         _remove(vault, _drift_path(vault, rel, MERGE_SUFFIX))
+        _remove(vault, plugin)
         done.append(f"{rel}: the plugin's update is recorded as merged; your file is now your edit on top of it")
     for copy in copies:
         _remove(vault, copy)
@@ -574,6 +577,9 @@ def report(vault: Path, renders: dict[str, str]) -> list[DriftRow]:
         base = _read(snapshot_path(vault, entry.path))
         stale = render is not None and base is not None and base != render
         if entry.status == "conflict":
+            # The base stays old on purpose after a conflict; stale means a
+            # newer update than the parked one is waiting.
+            stale = render is not None and render != read(entry.parked[0])
             before, after, labels = read(entry.parked[0]), live, (entry.parked[0], f"vault/{entry.path}")
         elif entry.status == "replaced":
             before, after, labels = live, read(entry.parked[-1]), (f"plugin/{entry.path}", entry.parked[-1])

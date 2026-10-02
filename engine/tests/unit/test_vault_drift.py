@@ -401,6 +401,29 @@ def test_scan_reports_edits_conflicts_and_parked_copies(tmp_path: Path) -> None:
     }
 
 
+def test_a_leftover_merge_draft_does_not_hide_an_edit(tmp_path: Path) -> None:
+    """A .merge whose .plugin is gone (deleted by hand, or a crash between the
+    two removals) is not a conflict, and must not mask the file's real state."""
+    vault = _conflicted(tmp_path)
+    (vault / ".scout-state" / "drift" / f"{REL}.plugin").unlink()
+
+    statuses = {(e.path, e.status) for e in vd.scan(vault)}
+
+    assert (REL, "edited") in statuses
+
+
+def test_a_conflict_is_stale_only_when_a_newer_update_exists(tmp_path: Path) -> None:
+    """After a conflict the base stays old on purpose; that alone must not
+    tell the user to upgrade again."""
+    vault = _conflicted(tmp_path)
+
+    [same] = vd.report(vault, {REL: NEW})
+    [newer] = vd.report(vault, {REL: NEW + "six (plugin)\n"})
+
+    assert (same.status, same.stale) == ("conflict", False)
+    assert newer.stale
+
+
 # ---------------------------------------------------------------- resolve ----
 
 

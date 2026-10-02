@@ -350,8 +350,22 @@ def test_first_baseline_keeps_an_unknown_parser_running(vault: Path, plugin: Pat
     upgrade(_config(vault, plugin))  # not blocked
 
 
-def test_snapshots_are_gitignored(vault: Path) -> None:
-    assert ".scout-state/last-rendered/" in (vault / ".gitignore").read_text(encoding="utf-8").splitlines()
+def test_snapshots_are_tracked_by_the_vaults_git(vault: Path) -> None:
+    """The bases must survive a re-clone or `git clean -X`: losing them sends
+    every edited file back through a first baseline."""
+    ignore = (vault / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert not any("last-rendered" in line for line in ignore)
+    assert ".scout-state/" not in ignore
+
+
+def test_a_parser_sidecar_an_older_engine_left_is_a_doctor_warning(vault: Path) -> None:
+    """It still blocks the upgrade (it may hold a half-done merge), so the
+    doctor must name it, with the right path to move it to."""
+    (vault / f"{PARSER}.proposed-merge").write_text("# pending\n", encoding="utf-8")
+
+    report = run_doctor(vault=vault, check_jobs=False)
+
+    assert any(f"mv {PARSER}.proposed-merge {PARSER}" in w for w in report.warnings)
 
 
 def test_parked_copies_are_one_doctor_note_not_one_per_file(vault: Path, plugin: Path) -> None:
@@ -411,9 +425,7 @@ def test_a_file_the_upgrade_cannot_read_is_reported_and_the_rest_still_upgrades(
     assert "0.12.0" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
 
 
-def test_a_drift_check_that_fails_is_a_doctor_warning_not_a_crash(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_drift_check_that_fails_is_a_doctor_warning_not_a_crash(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The doctor runs after every upgrade stage; a crash there would turn a
     finished upgrade into a failed one."""
 

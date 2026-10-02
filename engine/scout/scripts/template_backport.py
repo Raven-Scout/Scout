@@ -16,9 +16,24 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from scout.scripts.phase_assembly import render_template
-from scout.scripts.phase_backport import RISKY_VARS, SAFE_VARS, retemplatize
+from scout.scripts.phase_backport import retemplatize
+
+# Template variables whose values say nothing about the user or the machine.
+_IMPERSONAL_VARS = frozenset({"PLATFORM", "AUTO_UPDATE_ENABLED", "TODAY_DATE"})
+
+
+def _instance_values(lines: list[str], vars_: dict[str, str]) -> list[str]:
+    """What in ``lines`` belongs to this vault: variable names whose value
+    appears, and the home directory. Matching is on values, so after
+    ``retemplatize`` only what it chose not to reverse is left to find."""
+    text = "\n".join(lines)
+    found = [k for k, v in vars_.items() if v and k not in _IMPERSONAL_VARS and v in text]
+    if str(Path.home()) in text:
+        found.append("home directory")
+    return found
 
 
 @dataclass(frozen=True)
@@ -66,15 +81,14 @@ def backport_patch(
         elif tag in ("insert", "replace"):
             added = l_lines[j1:j2]
             if rendered:
-                added, risky = retemplatize(added, vars_)
-            else:
-                risky = [k for k in (*SAFE_VARS, *RISKY_VARS) if vars_.get(k) and any(vars_[k] in ln for ln in added)]
-            flagged += [k for k in risky if k not in flagged]
+                added, _ = retemplatize(added, vars_)
+            flagged += [k for k in _instance_values(added, vars_) if k not in flagged]
             out += added
     after = "\n".join(out)
     warnings = [
-        f"{vault_rel}: added lines contain this vault's value of {{{{{name}}}}} ({vars_[name]!r}) — make them "
-        f"generic before opening a PR; the plugin repo is public"
+        f"{vault_rel}: added lines contain this vault's "
+        + (f"value of {{{{{name}}}}} ({vars_[name]!r})" if name in vars_ else name)
+        + " — make them generic before opening a PR; the plugin repo is public"
         for name in flagged
     ]
     patch = _unified(template, after, plugin_rel) if after != template else ""

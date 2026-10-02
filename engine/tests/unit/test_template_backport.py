@@ -120,3 +120,36 @@ def test_a_missing_final_newline_still_makes_a_valid_patch(tmp_path: Path) -> No
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "apply", str(tmp_path / "fix.patch")], check=True)
     assert render_template((repo / PLUGIN_REL).read_text(encoding="utf-8"), VARS) == live
+
+
+def test_every_instance_specific_value_is_flagged_not_just_the_risky_list() -> None:
+    """A personal claude path or the home directory in an added line must be
+    named before the patch goes to the public plugin repo."""
+    home = str(Path.home())
+    values = {**VARS, "CLAUDE_BIN": "/opt/alex-tools/bin/claude"}
+    live = render_template(TEMPLATE, values) + "exec /opt/alex-tools/bin/claude --debug\n" + f"cd {home}/projects\n"
+    p = backport_patch(
+        vault_rel="scripts/heartbeat.sh",
+        plugin_rel=PLUGIN_REL,
+        template=TEMPLATE,
+        rendered=True,
+        live=live,
+        vars_=values,
+    )
+
+    assert any("CLAUDE_BIN" in w for w in p.warnings)
+    assert any("home directory" in w for w in p.warnings)
+
+
+def test_values_that_say_nothing_about_the_user_are_not_flagged() -> None:
+    values = {**VARS, "PLATFORM": "macos", "AUTO_UPDATE_ENABLED": "false"}
+    live = render_template(TEMPLATE, values) + 'if [ "$OS" = macos ]; then RETRY=false; fi\n'
+    p = backport_patch(
+        vault_rel="scripts/heartbeat.sh",
+        plugin_rel=PLUGIN_REL,
+        template=TEMPLATE,
+        rendered=True,
+        live=live,
+        vars_=values,
+    )
+    assert p.warnings == []
