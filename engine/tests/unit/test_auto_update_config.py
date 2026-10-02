@@ -164,6 +164,17 @@ def test_rewrites_a_flow_style_block_and_nothing_else() -> None:
     assert _block(result) == {"enabled": True, "channel": "stable"}
 
 
+def test_rewrites_a_quoted_child_key_instead_of_duplicating_it() -> None:
+    """pyyaml keeps the last of two duplicate keys, so a second `enabled:` line
+    would pass the load-back check while the quoted one goes stale."""
+    text = 'user:\n  name: Alex\nauto_update:\n  "enabled": false\n  channel: stable\n'
+    result = apply_auto_update(text, enabled=True)
+
+    assert result.startswith("user:\n  name: Alex\n")
+    assert result.count("enabled") == 1
+    assert _block(result) == {"enabled": True, "channel": "stable"}
+
+
 def test_ignores_an_auto_update_key_under_another_parent() -> None:
     text = "features:\n  auto_update: true\n"
     result = apply_auto_update(text, enabled=True)

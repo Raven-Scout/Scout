@@ -85,12 +85,15 @@ def _entry_starts(lines: list[str]) -> list[int]:
 
 
 def _edit_children(
-    lines: list[str], start: int, content_end: int, values: dict[str, Any], changed: list[str]
-) -> list[str]:
+    lines: list[str], start: int, content_end: int, values: dict[str, Any], changed: list[str], held: set[str]
+) -> list[str] | None:
     """Rewrite or insert the ``changed`` child lines of a block-style mapping.
 
-    A rewritten line keeps its indent and any inline comment. Missing keys go in
-    after the block's last content line, at the indent its children already use.
+    A rewritten line keeps its indent and any inline comment. Keys the block
+    lacks go in after its last content line, at the indent its children already
+    use. Returns None when a key in ``held`` (one the block already has) is not
+    on a plain ``key:`` line — quoted, say. Inserting it again would leave a
+    duplicate, which the load-back check cannot see: pyyaml keeps the last one.
     """
     out = list(lines)
     indent = "  "
@@ -115,6 +118,8 @@ def _edit_children(
         out[i] = f"{head} {_scalar(values[key])}{match['comment'] or ''}{_newline(out[i])}"
 
     missing = [key for key in changed if key not in found]
+    if any(key in held for key in missing):
+        return None
     if missing:
         last = content_end - 1
         if not _newline(out[last]):
@@ -193,16 +198,14 @@ def apply_auto_update(text: str, *, enabled: bool | None = None, channel: str | 
 
     inline = (header["rest"] or "").strip()
     if not inline or inline.startswith("#"):
-        if isinstance(current, dict):
-            changed = [key for key in ("enabled", "channel") if key not in current or current[key] != values[key]]
-        else:
-            changed = ["enabled", "channel"]
-        result = "".join(_edit_children(lines, start, content_end, values, changed))
-        if _loads_as(result, expected):
+        held = current if isinstance(current, dict) else {}
+        changed = [key for key in ("enabled", "channel") if key not in held or held[key] != values[key]]
+        edited = _edit_children(lines, start, content_end, values, changed, set(held))
+        if edited is not None and _loads_as(result := "".join(edited), expected):
             return result
 
-    # Flow style, an inline scalar, or a line edit that did not load back:
-    # re-dump this block alone.
+    # Flow style, an inline scalar, a key the line edit could not find, or an
+    # edit that did not load back: re-dump this block alone.
     dumped = yaml.safe_dump({_KEY: values}, sort_keys=False, default_flow_style=False)
     result = "".join(lines[:start]) + dumped + "".join(lines[content_end:])
     if _loads_as(result, expected):
