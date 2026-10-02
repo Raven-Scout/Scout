@@ -182,19 +182,19 @@ EOF
 - If `AUTO_UPDATE_ON`: nothing to say — auto-updates are already configured.
 - If `AUTO_UPDATE_OFF`: tell the user once: "Auto-updates are off — I can turn them on so Scout keeps itself current (sidecar-clean upgrades only; you'll be pinged on conflict). Want me to enable it?"
 
-If the user agrees, write/merge the `auto_update` block into `~/Scout/scout-config.yaml`, preserving any other keys already in the file:
+If the user agrees, turn it on with `scoutctl config set-auto-update`. It rewrites only the `auto_update` block of `~/Scout/scout-config.yaml` (adding it if absent, keeping an existing channel) and leaves every other line and comment as it was. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
 
 ```bash
-"$NEW_ROOT/.venv/bin/python" - <<'EOF'
-import pathlib, yaml
-p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
-cfg = yaml.safe_load(p.read_text()) or {}
-cfg.setdefault("auto_update", {})
-cfg["auto_update"]["enabled"] = True
-cfg["auto_update"].setdefault("channel", "stable")
-p.write_text(yaml.safe_dump(cfg, sort_keys=False))
-print("Auto-update enabled (channel: stable).")
-EOF
+NEW_ROOT="$HOME/scout-plugin"
+[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
+SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
+"$SCOUTCTL" config set-auto-update --enabled
 ```
+
+It prints `auto_update: enabled (channel: stable) — …`. If it exits 1, show the user its `error:` line and suggest setting `auto_update.enabled: true` in the file by hand; don't fall back to rewriting the file yourself.
 
 If the user declines, acknowledge and move on — don't ask again in this session.

@@ -1670,6 +1670,47 @@ def self_update_check(json_out: bool = typer.Option(False, "--json")) -> None:
         typer.echo(msg)
 
 
+# In-place edits to the vault's scout-config.yaml. The file has several
+# producers and carries comments (bootstrap state, `budget set`'s note, hand
+# edits), so each command rewrites only its own block — never a pyyaml
+# round-trip of the whole file, which deletes every comment in it.
+config_app = typer.Typer(help="Edit the vault's scout-config.yaml in place, keeping its comments.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("set-auto-update")
+def config_set_auto_update_cmd(
+    enabled: bool | None = typer.Option(
+        None, "--enabled/--disabled", help="Turn auto-update on or off. Omit to leave it as it is."
+    ),
+    channel: str | None = typer.Option(
+        None, "--channel", help="Release channel (stable). Omit to keep the current one, or stable if unset."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the resulting block as JSON."),
+) -> None:
+    """Write the auto_update block of the vault's scout-config.yaml; every other line is kept."""
+    import json as _json
+
+    from scout.scripts.auto_update_config import AutoUpdateWriteError, write_auto_update
+
+    if enabled is None and channel is None:
+        typer.echo("nothing to set — pass --enabled, --disabled, or --channel", err=True)
+        raise typer.Exit(2)
+
+    try:
+        payload = write_auto_update(enabled=enabled, channel=channel)
+    except AutoUpdateWriteError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    if as_json:
+        typer.echo(_json.dumps(payload, indent=2))
+        return
+    state = "enabled" if payload["enabled"] is True else "disabled"
+    verdict = f"wrote {payload['config_path']}" if payload["changed"] else "already set, nothing written"
+    typer.echo(f"auto_update: {state} (channel: {payload['channel']}) — {verdict}")
+
+
 @app.command()
 def tui() -> None:
     """Launch the Textual action-items TUI."""
