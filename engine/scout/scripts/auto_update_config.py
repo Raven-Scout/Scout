@@ -256,7 +256,7 @@ def write_auto_update(
             text = config_path.read_text(encoding="utf-8")
         except FileNotFoundError as e:
             raise AutoUpdateWriteError(f"no vault config at {config_path} — run /scout-setup first") from e
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             raise AutoUpdateWriteError(f"cannot read {config_path}: {e}") from e
         mtime_at_read = _mtime_ns(config_path)
 

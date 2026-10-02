@@ -175,6 +175,41 @@ def test_rewrites_a_quoted_child_key_instead_of_duplicating_it() -> None:
     assert _block(result) == {"enabled": True, "channel": "stable"}
 
 
+def test_keeps_a_comment_that_opens_the_block() -> None:
+    text = "auto_update:\n  # Flipped by /scout-update.\n  enabled: false\n"
+    assert apply_auto_update(text, enabled=True) == (
+        "auto_update:\n  # Flipped by /scout-update.\n  enabled: true\n  channel: stable\n"
+    )
+
+
+def test_rewrites_the_block_when_a_line_edit_would_not_parse() -> None:
+    """`enabled:` holding a nested mapping: rewriting that line alone leaves its
+    children dangling, so the block is re-dumped instead."""
+    text = "user:\n  name: Alex\nauto_update:\n  enabled:\n    nested: 1\n  channel: stable\n"
+    result = apply_auto_update(text, enabled=True)
+    assert result == "user:\n  name: Alex\nauto_update:\n  enabled: true\n  channel: stable\n"
+
+
+def test_rejects_an_edit_a_second_quoted_block_would_override() -> None:
+    """pyyaml keeps the later, quoted `auto_update`, so no edit to the plain one
+    can take effect; nothing is written rather than a no-op claimed as done."""
+    text = 'auto_update:\n  enabled: false\n"auto_update": {enabled: false}\n'
+    with pytest.raises(AutoUpdateWriteError, match="disturbing"):
+        apply_auto_update(text, enabled=True)
+
+
+def test_rejects_a_block_it_cannot_locate() -> None:
+    with pytest.raises(AutoUpdateWriteError, match="locate"):
+        apply_auto_update('"auto_update":\n  enabled: false\n', enabled=True)
+
+
+def test_rejects_an_append_that_would_change_a_trailing_block_scalar() -> None:
+    """With no final newline, a `|` scalar ends without one; appending after it
+    would add a newline to that value."""
+    with pytest.raises(AutoUpdateWriteError, match="change other settings"):
+        apply_auto_update("notes: |\n  hello", enabled=True)
+
+
 def test_ignores_an_auto_update_key_under_another_parent() -> None:
     text = "features:\n  auto_update: true\n"
     result = apply_auto_update(text, enabled=True)
@@ -269,6 +304,37 @@ def test_write_refuses_a_vault_without_a_config(tmp_path: Path) -> None:
     with pytest.raises(AutoUpdateWriteError, match="/scout-setup"):
         write_auto_update(enabled=True, data_dir=tmp_path)
     assert not (tmp_path / "scout-config.yaml").exists()
+
+
+def test_write_reports_a_config_it_cannot_read(vault: Path) -> None:
+    config_path = vault / "scout-config.yaml"
+    config_path.unlink()
+    config_path.mkdir()
+    with pytest.raises(AutoUpdateWriteError, match="cannot read"):
+        write_auto_update(enabled=True, data_dir=vault)
+
+
+def test_write_reports_a_config_that_is_not_utf8(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_bytes(b"user:\n  name: \xff\n")
+    with pytest.raises(AutoUpdateWriteError, match="cannot read"):
+        write_auto_update(enabled=True, data_dir=vault)
+
+
+def test_write_reports_an_unwritable_vault(vault: Path) -> None:
+    vault.chmod(0o500)  # the tmp file cannot be created beside the config
+    try:
+        with pytest.raises(AutoUpdateWriteError, match="cannot write"):
+            write_auto_update(enabled=True, data_dir=vault)
+    finally:
+        vault.chmod(0o700)
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == _VAULT_CONFIG
+    assert [p.name for p in vault.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_a_vanished_file_has_no_mtime(tmp_path: Path) -> None:
+    """The guard compares mtimes; a file removed mid-write must read as changed,
+    not raise."""
+    assert auto_update_config._mtime_ns(tmp_path / "gone.yaml") is None
 
 
 def test_write_leaves_no_tmp_files(vault: Path) -> None:
