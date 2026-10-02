@@ -120,9 +120,21 @@ Confirm with the user: "Proceed with these connectors? Or pause to enable more f
 
 ---
 
-## Step 3: Hand off to `scoutctl bootstrap install`
+## Step 3: Auto-update preference
 
-Build the comma-separated connector list (only enabled), then run (use the `$SCOUTCTL` resolved in Step 0). Pass every connector input you collected in Step 2 — these get persisted into `scout-config.yaml` and are what cat-1b runner templates (run-scout.sh / run-dreaming.sh / run-research.sh) substitute for `CLAUDE_BIN`, `USER_SLACK_ID`, etc. Omit any flag whose connector you didn't enable; the install command supplies safe defaults.
+Ask the user:
+
+> "Should Scout keep itself up to date automatically? When on, scheduled runs apply sidecar-clean upgrades and ping you if a change needs manual review. (You can change this later via `/scout-update`.)"
+
+Wait for a yes/no answer. Pass it to the install in Step 4 as `--auto-update` (yes) or `--no-auto-update` (no); `bootstrap install` writes it into `~/Scout/scout-config.yaml` as `auto_update.enabled` (channel `stable`). Do NOT edit the config file by hand or with an inline `python3` script — the system `python3` on stock macOS has no PyYAML.
+
+---
+
+## Step 4: Hand off to `scoutctl bootstrap install`
+
+Build the comma-separated connector list (only enabled), then run (use the `$SCOUTCTL` resolved in Step 0). Pass every connector input you collected in Step 2 — these get persisted into `scout-config.yaml` and are what cat-1b runner templates (run-scout.sh / run-dreaming.sh / run-research.sh) substitute for `USER_SLACK_ID`, etc. Omit any flag whose connector you didn't enable; the install command supplies safe defaults.
+
+Omit `--claude-bin` unless the user told you a specific path: by default the engine detects the `claude` CLI (`PATH`, then `~/.local/bin/claude`, then Homebrew) and records the concrete path. If install prints `warning: claude CLI not executable at …`, stop and tell the user Claude Code must be installed (and signed in once with `claude`) before scheduled runs can work.
 
 ```bash
 "$SCOUTCTL" bootstrap install \
@@ -135,8 +147,8 @@ Build the comma-separated connector list (only enabled), then run (use the `$SCO
     --user-slack-id "<USER_SLACK_ID>" \
     --github-username "<GITHUB_USERNAME>" \
     --github-repos "<comma-separated-repos>" \
-    --claude-bin "<absolute-path-to-claude>" \
-    --max-budget "<dollars>"
+    --max-budget "<dollars>" \
+    --auto-update   # or --no-auto-update, per Step 3
 ```
 
 The plist + cron block installed by this step automatically reference `$SCOUTCTL` — `resolve_scoutctl_bin()` derives the path from the running engine's plugin root, so the scheduler is always pinned to the venv the wizard just used.
@@ -145,25 +157,7 @@ Capture exit code and stdout. The command emits one line per concern: `installed
 
 ---
 
-## Step 3b: Auto-update preference
-
-Ask the user:
-
-> "Should Scout keep itself up to date automatically? When on, scheduled runs apply sidecar-clean upgrades and ping you if a change needs manual review. (You can change this later via `/scout-update`.)"
-
-Wait for a yes/no answer. Then persist the preference into the freshly-created `~/Scout/scout-config.yaml` with `scoutctl config set-auto-update`. (The vault template is not rendered at install time, so this is the only way to make the preference stick — do NOT rely on the template.) The command rewrites only the `auto_update` block, adding it if absent, and keeps every other line and comment. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
-
-```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
-SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"
-"$SCOUTCTL" config set-auto-update --enabled   # --disabled if the user declined
-```
-
-Pass `--enabled` if the user said yes, `--disabled` if they said no. If it exits 1, show the user its `error:` line and carry on with Step 4 — the preference can be set later via `/scout-update`.
-
----
-
-## Step 4: Report and offer first-run
+## Step 5: Report and offer first-run
 
 Report the result to the user:
 - Vault path, enabled connectors, doctor severity.

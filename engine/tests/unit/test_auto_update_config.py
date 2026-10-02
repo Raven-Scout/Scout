@@ -1,10 +1,10 @@
 """`scoutctl config set-auto-update` and the writer behind it.
 
-The auto-update opt-in in /scout-setup and /scout-update used to be an inline
-pyyaml round-trip (``safe_load`` → set two keys → ``safe_dump``) that deleted
-every comment in the vault's scout-config.yaml — the note `scoutctl budget set`
-writes above ``budget:``, and anything written by hand. These tests pin the
-replacement: only the ``auto_update:`` block changes, every other byte stays.
+/scout-update's auto-update nudge used to be an inline pyyaml round-trip
+(``safe_load`` → set two keys → ``safe_dump``) that deleted every comment in the
+vault's scout-config.yaml — the note `scoutctl budget set` writes above
+``budget:``, and anything written by hand. These tests pin the replacement: only
+the ``auto_update:`` block changes, every other byte stays.
 """
 
 from __future__ import annotations
@@ -384,7 +384,8 @@ def test_no_prompt_round_trips_scout_config_through_pyyaml() -> None:
     assert offenders == []
 
 
-@pytest.mark.parametrize("command", ["scout-setup.md", "scout-update.md"])
-def test_opt_in_steps_use_the_engine_writer(command: str) -> None:
-    text = (REPO_ROOT / "commands" / command).read_text(encoding="utf-8")
-    assert '"$SCOUTCTL" config set-auto-update' in text
+def test_the_update_nudge_uses_the_engine_writer() -> None:
+    """/scout-setup records its answer through `bootstrap install --auto-update`;
+    /scout-update's nudge is the one place that edits an existing vault's block."""
+    text = (REPO_ROOT / "commands" / "scout-update.md").read_text(encoding="utf-8")
+    assert '"$SCOUTCTL" config set-auto-update --enabled' in text

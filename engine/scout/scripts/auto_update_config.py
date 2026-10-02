@@ -1,7 +1,7 @@
 """Write support for the vault's ``auto_update:`` block.
 
-Serves ``scoutctl config set-auto-update``, which the auto-update opt-in steps
-of /scout-setup and /scout-update call. Those steps used to run an inline pyyaml
+Serves ``scoutctl config set-auto-update``, which /scout-update's auto-update
+nudge calls on an existing vault. The nudge used to run an inline pyyaml
 round-trip — ``safe_load``, set two keys, ``safe_dump`` — and that deleted every
 comment in ``scout-config.yaml``: the note ``scoutctl budget set`` writes above
 ``budget:``, and anything the user wrote by hand.

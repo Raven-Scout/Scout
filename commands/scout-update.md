@@ -20,11 +20,14 @@ Every shell block in this command runs in a **fresh process**, so variables set 
 ```bash
 NEW_ROOT="$HOME/scout-plugin"
 [ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c "import sys,json;print(next(p['installPath'] for m in json.load(sys.stdin).get('plugins',{}).values() for p in m if 'scout-plugin' in p['installPath']))" 2>/dev/null)"
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 ```
 
-This prefers the maintainer git checkout (`~/scout-plugin` when a `.git` dir is present) and otherwise falls back to the freshly-installed marketplace cache path. **Do NOT use `${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}` in any block** — after Step 0.5 refreshes the plugin, `$CLAUDE_PLUGIN_ROOT` may still point at the pre-refresh path.
+This prefers the maintainer git checkout (`~/scout-plugin` when a `.git` dir is present), then the `scout@scout-plugin` entry of `claude plugin list --json` (which has emitted both a flat list and a `{"plugins": {...}}` map — the snippet accepts either), then the newest version directory in the marketplace cache. It never yields an empty root: if all three miss it prints `PLUGIN_ROOT_NOT_FOUND` and stops — tell the user the plugin isn't installed and to re-run the installer. **Do NOT use `${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}` in any block** — after Step 0.5 refreshes the plugin, `$CLAUDE_PLUGIN_ROOT` may still point at the pre-refresh path.
 
 Use `"$SCOUTCTL"` in every subsequent invocation.
 
@@ -54,7 +57,10 @@ Resolve the plugin root that the rest of this upgrade runs from. **Use this reso
 ```bash
 NEW_ROOT="$HOME/scout-plugin"
 [ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c "import sys,json;print(next(p['installPath'] for m in json.load(sys.stdin).get('plugins',{}).values() for p in m if 'scout-plugin' in p['installPath']))" 2>/dev/null)"
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 echo "Upgrading vault against plugin root: $NEW_ROOT"
 [ -x "$NEW_ROOT/.venv/bin/scoutctl" ] || bash "$NEW_ROOT/scripts/install-venv.sh"
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
@@ -71,7 +77,10 @@ bash <<'EOF'
 set -e
 NEW_ROOT="$HOME/scout-plugin"
 [ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c "import sys,json;print(next(p['installPath'] for m in json.load(sys.stdin).get('plugins',{}).values() for p in m if 'scout-plugin' in p['installPath']))" 2>/dev/null)"
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 
 test -f "$HOME/Scout/scout-config.yaml" || { echo "NO_VAULT"; exit 0; }
@@ -114,10 +123,13 @@ Read the current and target plugin versions:
 ```bash
 NEW_ROOT="$HOME/scout-plugin"
 [ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c "import sys,json;print(next(p['installPath'] for m in json.load(sys.stdin).get('plugins',{}).values() for p in m if 'scout-plugin' in p['installPath']))" 2>/dev/null)"
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 "$SCOUTCTL" version
-python3 -c "import json; print(json.load(open('$NEW_ROOT/plugin.json'))['version'])"
+grep -m1 '"version"' "$NEW_ROOT/.claude-plugin/plugin.json"
 grep version_at_last_update ~/Scout/scout-config.yaml || true
 ```
 
@@ -152,10 +164,10 @@ If runner backups appeared (`run-*.sh.bak.*`), tell the user the live runners ha
 
 ## Auto-update nudge
 
-After reporting the upgrade result, check whether the user has auto-updates enabled:
+After reporting the upgrade result, check whether the user has auto-updates enabled. Use the engine venv's Python (it ships PyYAML; the system `python3` on stock macOS does not), with `$NEW_ROOT` from the canonical resolver:
 
 ```bash
-python3 - <<'EOF'
+"$NEW_ROOT/.venv/bin/python" - <<'EOF'
 import pathlib, yaml
 p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
 if p.exists():
@@ -175,7 +187,10 @@ If the user agrees, turn it on with `scoutctl config set-auto-update`. It rewrit
 ```bash
 NEW_ROOT="$HOME/scout-plugin"
 [ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c "import sys,json;print(next(p['installPath'] for m in json.load(sys.stdin).get('plugins',{}).values() for p in m if 'scout-plugin' in p['installPath']))" 2>/dev/null)"
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 "$SCOUTCTL" config set-auto-update --enabled
 ```

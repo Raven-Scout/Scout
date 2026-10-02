@@ -10,6 +10,7 @@ from scout.scripts.bootstrap import (
     BootstrapConfig,
     InstallResult,
     install,
+    resolve_claude_bin,
 )
 
 
@@ -127,3 +128,82 @@ def test_install_persists_connector_inputs(tmp_path):
     # the template defaults — this is the failure mode the friend's vault hit.
     runner_text = (vault / "run-scout.sh").read_text()
     assert "/opt/homebrew/bin/claude" in runner_text
+
+
+# ---------- #254: CLAUDE_BIN detection ----------
+
+
+def _fake_claude(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_resolve_claude_bin_explicit_wins(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    assert resolve_claude_bin("/opt/custom/claude", home=tmp_path) == "/opt/custom/claude"
+
+
+def test_resolve_claude_bin_prefers_path_lookup(tmp_path, monkeypatch):
+    on_path = _fake_claude(tmp_path / "bin" / "claude")
+    _fake_claude(tmp_path / ".local" / "bin" / "claude")
+    monkeypatch.setattr("shutil.which", lambda _name: str(on_path))
+    assert resolve_claude_bin("", home=tmp_path) == str(on_path)
+
+
+def test_resolve_claude_bin_finds_native_installer_location(tmp_path, monkeypatch):
+    """The native installer's ~/.local/bin/claude — not the old /usr/local/bin
+    default — when claude is not on the setup shell's PATH."""
+    native = _fake_claude(tmp_path / ".local" / "bin" / "claude")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("os.access", lambda p, _mode: str(p) == str(native))
+    assert resolve_claude_bin("", home=tmp_path) == str(native)
+
+
+def test_resolve_claude_bin_nothing_found_returns_native_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("os.access", lambda _p, _mode: False)
+    assert resolve_claude_bin("", home=tmp_path) == str(tmp_path / ".local" / "bin" / "claude")
+
+
+def test_install_without_claude_bin_never_renders_usr_local_default(tmp_path, monkeypatch):
+    import shutil
+
+    native = _fake_claude(tmp_path / "home" / ".local" / "bin" / "claude")
+    real_which = shutil.which
+
+    def fake_which(name, *args, **kwargs):
+        return str(native) if name == "claude" else real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr("shutil.which", fake_which)
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    assert f'CLAUDE_BIN="{native}"' in (vault / "run-scout.sh").read_text()
+
+
+# ---------- #255: auto-update preference recorded by install ----------
+
+
+@pytest.mark.parametrize("choice", [True, False])
+def test_install_records_auto_update_choice(tmp_path, choice):
+    import yaml
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.auto_update = choice
+    install(cfg)
+    persisted = yaml.safe_load((vault / "scout-config.yaml").read_text())
+    assert persisted["auto_update"] == {"enabled": choice, "channel": "stable"}
+
+
+def test_install_without_auto_update_choice_leaves_block_absent(tmp_path):
+    import yaml
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    persisted = yaml.safe_load((vault / "scout-config.yaml").read_text())
+    assert "auto_update" not in persisted
