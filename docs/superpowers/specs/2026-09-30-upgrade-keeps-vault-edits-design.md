@@ -148,7 +148,7 @@ template change between versions. Options considered:
      claude path, a budget) is therefore an edit, never a silent overwrite.
      Verbatim (`.py`) files are
      whole-file hashes. Signatures for v0.4.0–v0.11.0 ship in
-     `engine/scout/defaults/render-history.json` (≈20 KB, generated from the
+     `engine/scout/defaults/render-history.json` (≈40 KB, generated from the
      release tags by `scripts/gen-render-history.py`). It is **frozen**:
      releases from this one on record their own snapshots, so only vaults last
      rendered by an older release ever read it.
