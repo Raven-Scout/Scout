@@ -122,6 +122,24 @@ def test_an_edited_render_does_not_match() -> None:
     assert not vd.matches(live.replace(" tick", " tock"), sig)
 
 
+def test_a_value_pinned_to_this_upgrade_must_match() -> None:
+    """With no base, a var line is only "a render with other values" for the
+    values that move on their own (the plugin root). A hand-edited value on a
+    var line is an edit, and must not be overwritten silently."""
+    sig = vd.signature(TEMPLATE, rendered=True)
+    pinned = {"SCOUT_DIR": "/Users/alex/Scout", "INSTANCE_NAME": "Scout"}
+    moved_root = _render("/Users/alex/Scout", "/cache/0.9.0/.venv/bin/scoutctl", "Scout")
+    assert vd.matches(moved_root, sig, pinned=pinned)
+    assert not vd.matches(_render("/Volumes/other/Scout", "/b", "Scout"), sig, pinned=pinned)
+    assert not vd.matches(_render("/Users/alex/Scout", "/b", "Scout --debug"), sig, pinned=pinned)
+
+
+def test_a_free_variable_must_have_one_value_throughout() -> None:
+    sig = vd.signature("A={{X}}\nB={{X}}\n", rendered=True)
+    assert vd.matches("A=1\nB=1\n", sig)
+    assert not vd.matches("A=1\nB=2\n", sig)
+
+
 def test_a_verbatim_file_signature_is_an_exact_hash() -> None:
     text = "x = '{{not a var}}'\n"
     sig = vd.signature(text, rendered=False)

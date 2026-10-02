@@ -291,6 +291,10 @@ class ManagedRender:
     text: str  # what this plugin version writes into the vault
 
 
+# Template variables whose value changes without any edit to the vault.
+_UNPINNED_VARS = frozenset({"SCOUTCTL_BIN", "TODAY_DATE"})
+
+
 def managed_renders(cfg: BootstrapConfig) -> list[ManagedRender]:
     """This plugin version's render of every managed file, in write order.
 
@@ -318,6 +322,10 @@ def _stage_managed_files(cfg: BootstrapConfig) -> list[VaultEdit]:
     parks can block the next upgrade. Returns the edits worth reporting.
     """
     history = vault_drift.load_render_history()
+    # With no recorded base, a file only counts as an unedited render if every
+    # template variable has this upgrade's value — a hand-fixed path or budget
+    # is an edit. The exceptions move on their own: the plugin root, the date.
+    pinned = {k: v for k, v in _template_vars(cfg).items() if k not in _UNPINNED_VARS}
     edits: list[VaultEdit] = []
     for r in managed_renders(cfg):
         m = r.file
@@ -326,7 +334,12 @@ def _stage_managed_files(cfg: BootstrapConfig) -> list[VaultEdit]:
         signatures = [*history.get(m.vault_rel, ()), vault_drift.signature(r.template, rendered=m.rendered)]
         try:
             edit = vault_drift.reconcile(
-                cfg.vault, m.vault_rel, r.text, signatures=signatures, vault_developed=m.vault_developed
+                cfg.vault,
+                m.vault_rel,
+                r.text,
+                signatures=signatures,
+                pinned=pinned,
+                vault_developed=m.vault_developed,
             )
             if m.executable:
                 (cfg.vault / m.vault_rel).chmod(0o755)

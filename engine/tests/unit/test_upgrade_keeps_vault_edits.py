@@ -287,6 +287,39 @@ def test_first_baseline_parks_a_file_no_release_shipped(vault: Path, plugin: Pat
     assert any(parked in n for n in result.doctor.notes)
 
 
+def test_first_baseline_never_silently_overwrites_a_hand_edited_value(vault: Path, plugin: Path) -> None:
+    """A hand fix to a templated value (here the claude path in a runner) sits on
+    a line that holds a {{VAR}}; it must be parked and reported, not taken for
+    a render with other values."""
+    _forget_snapshots(vault)
+    runner = vault / "run-scout.sh"
+    text = runner.read_text(encoding="utf-8")
+    assert 'CLAUDE_BIN="/usr/local/bin/claude"' in text
+    runner.write_text(text.replace('CLAUDE_BIN="/usr/local/bin/claude"', 'CLAUDE_BIN="/opt/tools/bin/claude"'))
+
+    result = upgrade(_config(vault, plugin))
+
+    assert [(e.path, e.outcome) for e in result.vault_edits] == [("run-scout.sh", "replaced")]
+    assert 'CLAUDE_BIN="/opt/tools/bin/claude"' in (vault / ".scout-state/drift/run-scout.sh.vault").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_first_baseline_takes_a_moved_plugin_root_in_its_stride(tmp_path: Path, plugin: Path) -> None:
+    """SCOUTCTL_BIN moves with the plugin root (a marketplace install puts the
+    version in the path): an unedited vault still upgrades silently."""
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin, version="0.11.0"))
+    _forget_snapshots(vault)
+    moved = tmp_path / "plugin-0.12.0"
+    shutil.copytree(plugin, moved)
+
+    result = upgrade(_config(vault, moved))
+
+    assert result.vault_edits == []
+    assert str(moved) in (vault / HEARTBEAT).read_text(encoding="utf-8")  # SCOUTCTL_BIN
+
+
 def test_first_baseline_carries_over_parsers_legacy_snapshot(vault: Path, plugin: Path) -> None:
     rendered = vd.snapshot_path(vault, PARSER)
     legacy = vault / ".scout-state" / "last-assembled" / PARSER

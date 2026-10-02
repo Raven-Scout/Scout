@@ -27,7 +27,7 @@ import difflib
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -158,20 +158,39 @@ def signature(text: str, *, rendered: bool) -> Signature:
     return Signature(sha256=_sha256(text), lines=len(lines), var_lines=var_lines)
 
 
-def _line_pattern(raw: str) -> re.Pattern[str]:
-    """``raw`` with each ``{{VAR}}`` token as a wildcard (values are single-line)."""
-    literals = _VAR_RE.split(raw)[::2]
-    return re.compile(".*".join(re.escape(part) for part in literals))
+def _line_pattern(raw: str, pinned: Mapping[str, str]) -> tuple[re.Pattern[str], list[str]]:
+    """``raw`` as a regex: a pinned ``{{VAR}}`` must be its value, any other
+    token is a capture group. Returns the pattern and the captured names in order."""
+    parts = _VAR_RE.split(raw)  # literal, name, literal, name, …, literal
+    pattern, free = re.escape(parts[0]), []
+    for name, literal in zip(parts[1::2], parts[2::2], strict=True):
+        if name in pinned:
+            pattern += re.escape(pinned[name])
+        else:
+            pattern += "(.*)"  # values are single-line
+            free.append(name)
+        pattern += re.escape(literal)
+    return re.compile(pattern), free
 
 
-def matches(text: str, sig: Signature) -> bool:
-    """True iff ``text`` is the template behind ``sig`` rendered with some values."""
+def matches(text: str, sig: Signature, *, pinned: Mapping[str, str] | None = None) -> bool:
+    """True iff ``text`` is the template behind ``sig`` rendered with some values.
+
+    A variable in ``pinned`` must have exactly that value; any other may have
+    any value, but the same one everywhere it appears.
+    """
     lines = text.split("\n")
     if len(lines) != sig.lines:
         return False
+    seen: dict[str, str] = {}
     for i, raw in sig.var_lines:
-        if not _line_pattern(raw).fullmatch(lines[i]):
+        pattern, free = _line_pattern(raw, pinned or {})
+        m = pattern.fullmatch(lines[i])
+        if m is None:
             return False
+        for name, value in zip(free, m.groups(), strict=True):
+            if seen.setdefault(name, value) != value:
+                return False
         lines[i] = raw
     return _sha256("\n".join(lines)) == sig.sha256
 
@@ -288,6 +307,7 @@ def reconcile(
     new: str,
     *,
     signatures: Iterable[Signature] = (),
+    pinned: Mapping[str, str] | None = None,
     vault_developed: bool = False,
     merge: Merge = three_way_merge,
 ) -> VaultEdit | None:
@@ -295,7 +315,8 @@ def reconcile(
 
     Returns what happened when it is worth reporting (one of ``REPORTED``),
     else None. ``signatures`` recognise unedited renders of older plugin
-    versions; they are consulted only when the vault has no recorded base.
+    versions; they are consulted only when the vault has no recorded base, with
+    the template variables in ``pinned`` held to this upgrade's values.
     """
     live_path, snap = vault / rel, snapshot_path(vault, rel)
     live, base = _read(live_path), _read(snap)
@@ -303,7 +324,7 @@ def reconcile(
     carried = base is None and legacy.is_file()
     if carried:
         base = _read(legacy)
-    known = base is None and live is not None and any(matches(live, s) for s in signatures)
+    known = base is None and live is not None and any(matches(live, s, pinned=pinned) for s in signatures)
     d = decide(new=new, live=live, base=base, known_render=known, vault_developed=vault_developed, merge=merge)
 
     parked: tuple[str, ...] = ()
