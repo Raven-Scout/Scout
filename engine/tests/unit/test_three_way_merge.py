@@ -67,3 +67,16 @@ def test_merge_raises_on_git_timeout(monkeypatch):
     monkeypatch.setattr("scout.scripts.three_way_merge.subprocess.run", fake_run)
     with pytest.raises(RuntimeError, match="timed out"):
         three_way_merge(base="b\n", ours="a\n", theirs="c\n")
+
+
+def test_conflict_markers_carry_the_given_labels():
+    """Labels name the sides in a draft a person resolves by hand; without them
+    git prints the temp-file paths."""
+    result = three_way_merge(
+        base="x\n", ours="plugin side\n", theirs="vault side\n", labels=("plugin", "base", "vault")
+    )
+    assert result.conflicts is True
+    lines = result.content.splitlines()
+    assert "<<<<<<< plugin" in lines
+    assert "||||||| base" in lines
+    assert ">>>>>>> vault" in lines

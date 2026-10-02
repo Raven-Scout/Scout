@@ -26,11 +26,13 @@ class MergeResult:
     conflicts: bool
 
 
-def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
+def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str, str] | None = None) -> MergeResult:
     """Merge ``ours`` and ``theirs`` against common ancestor ``base``.
 
     Wraps ``git merge-file --diff3 -p`` which is shipped with every
     git installation. Exit code 0 = clean; >0 = number of conflicts.
+    ``labels`` names the ours/base/theirs sides in the conflict markers;
+    without it git prints the temporary file paths.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -41,6 +43,7 @@ def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
         base_path.write_text(base, encoding="utf-8")
         theirs_path.write_text(theirs, encoding="utf-8")
 
+        label_args = [arg for label in labels for arg in ("-L", label)] if labels else []
         try:
             proc = subprocess.run(
                 [
@@ -48,6 +51,7 @@ def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
                     "merge-file",
                     "--diff3",
                     "-p",
+                    *label_args,
                     str(ours_path),
                     str(base_path),
                     str(theirs_path),
