@@ -386,7 +386,7 @@ If the update check was unavailable (network error or non-zero exit), display:
 
 If an update is available, add: "Run `/scout-update` to apply it."
 
-From the `bootstrap drift --json` output, add one line when `files` is non-empty (skip it when empty or unavailable):
+From the `bootstrap drift --json` output, add one line when `files` is non-empty (skip it when empty). If the command failed (`DRIFT_UNAVAILABLE`), show `Vault edits:  check failed` with its error output rather than hiding it:
 
 ```
   Vault edits:  <n> edited · <n> conflict · <n> parked   (scoutctl bootstrap drift)

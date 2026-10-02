@@ -140,10 +140,13 @@ template change between versions. Options considered:
      live == base. The check uses a **signature** per template version: the
      sha256 of the raw template text, its line count, and the raw text of the
      lines holding a `{{VAR}}` token. To compare, each of those lines in live
-     must match its raw line with every token as a wildcard, and is then put
-     back to the raw text; the result must hash to the signature. That is
-     exact apart from template-variable values, so it isn't fooled when
-     `SCOUTCTL_BIN` moves with the plugin root. Verbatim (`.py`) files are
+     must match its raw line with each token replaced by this upgrade's value,
+     and is then put back to the raw text; the result must hash to the
+     signature. Only `SCOUTCTL_BIN` (it moves with the plugin root on a
+     marketplace version bump) and `TODAY_DATE` may hold any value, the same
+     one wherever the token repeats. A hand-fixed value on a variable line (a
+     claude path, a budget) is therefore an edit, never a silent overwrite.
+     Verbatim (`.py`) files are
      whole-file hashes. Signatures for v0.4.0–v0.11.0 ship in
      `engine/scout/defaults/render-history.json` (≈20 KB, generated from the
      release tags by `scripts/gen-render-history.py`). It is **frozen**:
@@ -171,7 +174,10 @@ template change between versions. Options considered:
   run `scoutctl bootstrap drift --resolve <rel>`. This records `.plugin` as the
   base, so the upgrade treats the plugin's change as absorbed and what is left as
   the vault's edit, and it removes the parked files. It refuses while the live
-  file still has conflict markers.
+  file still has conflict markers, and when a block of lines the update adds
+  is not in it, which means nobody merged the update yet. Without that check,
+  clearing a yellow doctor by reflex would drop the plugin's change for good.
+  `--drop-update` keeps your version on purpose.
 - **Take the plugin's version:** `cp .scout-state/drift/<rel>.plugin <rel>`. The
   next upgrade sees live == new and clears the conflict by itself.
 - **Replaced copy:** once reviewed, `--resolve <rel>` deletes the `.vault`
@@ -180,8 +186,14 @@ template change between versions. Options considered:
 
 ## Surfacing
 
-- **`UpgradeResult.vault_edits`**: a list of `VaultEdit(path, outcome, parked)`
-  entries for kept, merged, conflict and replaced files. `backups` now lists the
+- **`UpgradeResult.vault_edits`**: a list of `VaultEdit(path, outcome, parked, detail)`
+  entries for kept, merged, conflict and replaced files. There is also an
+  `error` outcome: a file the stage could not read or write (permissions, a
+  locked file) is left untouched and reported, and the other files still
+  upgrade. Vault files are read and written with `surrogateescape`, so a byte
+  that is not valid UTF-8 never stops an upgrade. A conflict caused by `git
+  merge-file` being unable to run (`MergeUnavailable`) says so, instead of
+  asking for a hand merge. `backups` now lists the
   parked `.vault` copies. For `migrate-legacy`, `MigrateLegacyResult` gets the
   same two fields.
 - **`bootstrap upgrade` / `migrate-legacy` CLI**: one line per edit, e.g.

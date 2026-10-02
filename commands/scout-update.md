@@ -158,7 +158,11 @@ Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
 Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`); none of them blocks a later upgrade:
 
 - `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews the patch for personal details first.
-- `conflict`: the edit and the plugin's update overlap. The user's version is still running; the update is parked at `.scout-state/drift/<file>.plugin` with a conflict-marked draft at `<file>.merge`. To keep both: merge by hand into `<file>`, then `scoutctl bootstrap drift --resolve <file>`. To take the plugin's version: `cp .scout-state/drift/<file>.plugin <file>`.
+- `conflict`: the edit and the plugin's update overlap, or (if the line says "could not merge") git could not run. The user's version is still running; the update is parked at `.scout-state/drift/<file>.plugin` with a conflict-marked draft at `<file>.merge`.
+  - To keep both: merge by hand into `<file>`, then run `scoutctl bootstrap drift --resolve <file>`. It refuses until the update's lines are in the file.
+  - To take the plugin's version: `cp .scout-state/drift/<file>.plugin <file>`.
+  - To keep only the user's version: `--resolve <file> --drop-update`. Confirm this with the user first: it drops the plugin's fix.
+- `error`: the file couldn't be read or written (permissions, a locked file). It was left untouched and everything else upgraded. Report the reason shown.
 - `replaced` (with a `backup:` path): this was the vault's first upgrade with no record of the last render, and the file matched no release, so the plugin's version was installed and the vault's copy parked at `.scout-state/drift/<file>.vault`. `scoutctl bootstrap drift --diff` shows what the copy had; dismiss it with `scoutctl bootstrap drift --resolve <file>`, or copy it back over `<file>` to keep its edit (later upgrades then protect it).
 
 - `~/Scout/connector-probes.local.yaml` (custom connector probes) is a user
