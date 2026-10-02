@@ -16,6 +16,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 Every fix above had lived only in a vault and been restored by hand after each upgrade; `test_upgrade_keeps_vault_fixes.py` now upgrades a vault carrying each one and checks it survives. A vault whose runners carry these fixes by hand gets one last `run-*.sh.bak.<date>` on its first upgrade to this version (the template words the comments differently); after that the runners match the template and upgrades back up nothing.
 
+## [0.11.1] - 2026-10-02
+
+
+### Fixed
+- **The one-line installer now actually builds the engine** (`install.sh`). `claude plugin list --json` emits a flat list, but the installer parsed it as `{"plugins": {...}}`; the `AttributeError` was swallowed, the venv step was skipped, and the script still printed ✅. It now accepts either shape (falling back to the marketplace cache), fails loudly with the exact retry command when the engine step fails, and checks `scoutctl` runs before reporting success. On a Mac without Apple's Command Line Tools it stops up front and opens their installer, instead of the system dialog interrupting mid-install. (#253)
+- **No Homebrew or Python needed** (`scripts/install-venv.sh`). When `uv` is available — `install.sh` guarantees it — the engine venv is built with `uv`, which downloads a managed Python 3.12 if the machine has none. The previous `python3.11+` probe stays as the fallback (`SCOUT_INSTALL_NO_UV=1` forces it). (#252)
+- **`CLAUDE_BIN` is detected, not assumed** (`scoutctl bootstrap install` / `migrate-legacy`). Without `--claude-bin`, the engine records the first executable of `which claude`, `~/.local/bin/claude` (native installer), Homebrew, `/usr/local/bin` — instead of defaulting to `/usr/local/bin/claude`, which the native installer doesn't use, so every scheduled run failed to launch. Install warns when the result isn't executable, and `bootstrap doctor` reports red when the rendered runner's `CLAUDE_BIN` is dead. (#254)
+- **`/scout-setup` no longer crashes on its last step** on stock macOS. The auto-update answer is now passed as `bootstrap install --auto-update/--no-auto-update`, which writes `auto_update.enabled` through the engine, instead of an inline system-`python3` script that needs PyYAML. `/scout-update` and `/scout-status` read the setting with the engine venv's Python for the same reason. (#255)
+- **`/scout-update`'s plugin-root resolver** had the same flat-list bug as `install.sh`, silently resolving to an empty root (or a pre-refresh plugin); it now accepts either JSON shape, falls back to the newest cached version, and stops with `PLUGIN_ROOT_NOT_FOUND` rather than continuing with an empty root. Step 1 reads the version from `.claude-plugin/plugin.json` (was a non-existent `plugin.json`). (#234)
+- **Linear connected through claude.ai is detected** — the probe falls back to `mcp__claude_ai_Linear__list_teams` after the local plugin tool, like Slack. (#256)
+- **Landing page** — the Mac-app download points at `Raven-Scout/Scout`, and the install steps lead with the one-line installer plus prerequisites. README install section rewritten for first-time users. (#257)
+
 ## [0.11.0] - 2026-09-29
 
 

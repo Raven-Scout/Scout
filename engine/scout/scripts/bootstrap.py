@@ -16,6 +16,7 @@ See docs/superpowers/specs/2026-05-09-plan-8-scout-setup-repair-design.md.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -54,6 +55,9 @@ class BootstrapConfig:
     connector_inputs: dict[str, str]
     skip_jobs: bool = False
     skip_claude: bool = False
+    # Install-time auto-update preference from /scout-setup. None = not asked:
+    # leave scout-config.yaml's auto_update block untouched.
+    auto_update: bool | None = None
 
     def __post_init__(self) -> None:
         # Vaults configured before a probe-key rename (gmail → email) carry the
@@ -159,6 +163,27 @@ _CAT1B_RUNNERS = (
 )
 
 
+def resolve_claude_bin(explicit: str = "", *, home: Path | None = None) -> str:
+    """Absolute path to the ``claude`` CLI the scheduled runners should call.
+
+    An explicit value (``--claude-bin``, or one persisted in scout-config.yaml)
+    always wins. Otherwise: the first executable among ``which claude``, the
+    native installer's ``~/.local/bin/claude``, Homebrew, then ``/usr/local/bin``
+    — the same order Scout.app's ClaudeLauncher uses. When none is executable,
+    return the native-installer location (the most likely place it will land)
+    rather than a path no current installer uses; the doctor flags it either way.
+    """
+    if explicit:
+        return explicit
+    home = home or Path.home()
+    native = str(home / ".local" / "bin" / "claude")
+    candidates = [shutil.which("claude"), native, "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return native
+
+
 def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
     return {
         "INSTANCE_NAME": cfg.instance_name,
@@ -173,7 +198,7 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         "TIMEZONE": cfg.timezone,
         "PLATFORM": cfg.platform,
         "MAX_BUDGET": cfg.connector_inputs.get("max_budget", "5.00"),
-        "CLAUDE_BIN": cfg.connector_inputs.get("claude_bin", "/usr/local/bin/claude"),
+        "CLAUDE_BIN": resolve_claude_bin(cfg.connector_inputs.get("claude_bin", "")),
         # Today in the timezone being installed (NOT the host clock, and not
         # config.today(): during a fresh install the vault's scout-config.yaml
         # does not exist yet, so the merged config cannot answer). #207.
@@ -665,6 +690,10 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     connectors = existing.setdefault("connectors", {})
     connectors["enabled"] = sorted(cfg.enabled_connectors)
     connectors["inputs"] = dict(cfg.connector_inputs)
+    if cfg.auto_update is not None:
+        auto_update = existing.setdefault("auto_update", {})
+        auto_update["enabled"] = cfg.auto_update
+        auto_update.setdefault("channel", "stable")
     plugin = existing.setdefault("plugin", {})
     if not is_upgrade:
         plugin["version_at_last_setup"] = cfg.plugin_version
