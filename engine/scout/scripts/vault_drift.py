@@ -27,12 +27,13 @@ import difflib
 import hashlib
 import json
 import re
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scout.scripts.three_way_merge import MergeResult, three_way_merge
+from scout.scripts.three_way_merge import MergeResult, MergeUnavailable, three_way_merge
 
 SNAPSHOT_DIR = Path(".scout-state") / "last-rendered"
 DRIFT_DIR = Path(".scout-state") / "drift"
@@ -67,6 +68,7 @@ class Decision:
     live: str | None = None  # write this to the vault's file
     snapshot: str | None = None  # record this as the base for the next upgrade
     merge_draft: str | None = None  # conflict: the conflict-marked merge, when git produced one
+    reason: str | None = None  # conflict: why there is no merge, when it isn't an overlap
 
 
 def decide(
@@ -95,7 +97,7 @@ def decide(
         if known_render:
             return Decision("updated", live=new, snapshot=new)
         if vault_developed:
-            return Decision("conflict")
+            return Decision("conflict", reason="no record of the last render to merge against")
         return Decision("replaced", live=new, snapshot=new)
     if live == base:
         return Decision("updated", live=new, snapshot=new)
@@ -103,9 +105,9 @@ def decide(
         return Decision("kept", snapshot=new)
     try:
         result = merge(base=base, ours=new, theirs=live, labels=MERGE_LABELS)
-    except (RuntimeError, OSError):
+    except MergeUnavailable as e:
         # No git, or git failed: the vault's working file is the safe choice.
-        return Decision("conflict")
+        return Decision("conflict", reason=f"could not merge — {e}")
     if result.conflicts:
         return Decision("conflict", merge_draft=result.content)
     if result.content == new:
@@ -195,18 +197,35 @@ def matches(text: str, sig: Signature, *, pinned: Mapping[str, str] | None = Non
     return _sha256("\n".join(lines)) == sig.sha256
 
 
+def _warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
 def load_render_history(path: Path | None = None) -> dict[str, list[Signature]]:
     """Signatures of the managed files older releases shipped, by vault path.
 
     Releases before last-rendered/ existed recorded no base, so a vault's first
     upgrade uses these to recognise a file it never edited. An unreadable file
-    degrades to no history: unknown files are then parked, never overwritten silently.
+    degrades to no history, and a malformed entry to one fewer signature: those
+    files are then parked and reported, never overwritten silently. Either is
+    warned about on stderr, since it turns unedited files into false reports.
     """
+    source = path or RENDER_HISTORY
     try:
-        data = json.loads((path or RENDER_HISTORY).read_text(encoding="utf-8"))
-        return {rel: [Signature.from_json(s) for s in sigs] for rel, sigs in (data.get("files") or {}).items()}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        files = json.loads(source.read_text(encoding="utf-8")).get("files")
+        if not isinstance(files, dict):
+            raise ValueError("no 'files' mapping")
+    except (OSError, ValueError, AttributeError) as e:
+        _warn(f"render history unreadable ({source}: {e}); unedited files from older releases will be parked")
         return {}
+    history: dict[str, list[Signature]] = {}
+    for rel, entries in files.items():
+        for entry in entries if isinstance(entries, list) else [entries]:
+            try:
+                history.setdefault(rel, []).append(Signature.from_json(entry))
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                _warn(f"render history: skipping a malformed signature for {rel} ({type(e).__name__}: {e})")
+    return history
 
 
 # ------------------------------------------------------------- reconcile ----
@@ -230,9 +249,15 @@ class VaultEdit:
             return "merged with the plugin's update (review: scoutctl bootstrap drift --diff)"
         if self.outcome == "conflict":
             where = self.parked[0] if self.parked else str(DRIFT_DIR / f"{self.path}{PLUGIN_SUFFIX}")
+            why = self.detail or "overlaps the plugin's update"
+            fix = (
+                "Fix git and upgrade again, or merge by hand"
+                if self.detail.startswith("could not merge")
+                else "Merge by hand"
+            )
             return (
-                f"overlaps the plugin's update; your version is still in place and the update is parked at "
-                f"{where}. Merge by hand, then: scoutctl bootstrap drift --resolve {self.path}"
+                f"{why}; your version is still in place and the update is parked at {where}. "
+                f"{fix}, then: scoutctl bootstrap drift --resolve {self.path}"
             )
         where = self.parked[0] if self.parked else str(DRIFT_DIR)
         return (
@@ -350,7 +375,7 @@ def reconcile(
     else:
         _remove(vault, plugin)
         _remove(vault, draft)
-    return VaultEdit(rel, d.outcome, parked) if d.outcome in REPORTED else None
+    return VaultEdit(rel, d.outcome, parked, detail=d.reason or "") if d.outcome in REPORTED else None
 
 
 def prune_snapshots(vault: Path, managed: Iterable[str]) -> None:

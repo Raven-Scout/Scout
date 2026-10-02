@@ -80,3 +80,14 @@ def test_conflict_markers_carry_the_given_labels():
     assert "<<<<<<< plugin" in lines
     assert "||||||| base" in lines
     assert ">>>>>>> vault" in lines
+
+
+def test_a_missing_git_is_reported_as_merge_unavailable(monkeypatch):
+    from scout.scripts.three_way_merge import MergeUnavailable
+
+    def no_git(argv, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr("scout.scripts.three_way_merge.subprocess.run", no_git)
+    with pytest.raises(MergeUnavailable, match="git"):
+        three_way_merge(base="b\n", ours="a\n", theirs="c\n")

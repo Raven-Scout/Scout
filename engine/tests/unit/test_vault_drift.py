@@ -9,12 +9,13 @@ pure function; ``reconcile`` applies it to a vault on disk; ``scan`` and
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from scout.scripts import vault_drift as vd
-from scout.scripts.three_way_merge import MergeResult
+from scout.scripts.three_way_merge import MergeResult, MergeUnavailable
 
 BASE = "#!/bin/bash\none\ntwo\nthree\nfour\nfive\n"
 # The plugin changes line "two"; the vault changes line "five" — far apart.
@@ -71,12 +72,37 @@ def test_overlapping_changes_keep_the_vault_version_and_do_not_advance_the_base(
     assert d.merge_draft is not None and "<<<<<<<" in d.merge_draft
 
 
-def test_a_merge_that_cannot_run_is_treated_as_a_conflict() -> None:
+def test_a_merge_that_cannot_run_is_a_conflict_that_says_why() -> None:
+    """Data-safe (the vault's version stays live), but the report must not send
+    the user to hand-merge a file that only needs git installed."""
+
     def broken_merge(**_kw: str) -> MergeResult:
-        raise RuntimeError("git merge-file exited 128")
+        raise MergeUnavailable("git is not installed")
 
     d = vd.decide(new=NEW, live=EDITED, base=BASE, merge=broken_merge)
     assert (d.outcome, d.live, d.snapshot, d.merge_draft) == ("conflict", None, None, None)
+    assert d.reason is not None and "git is not installed" in d.reason
+
+
+def test_a_bug_in_the_merge_is_not_mistaken_for_a_conflict() -> None:
+    def buggy_merge(**_kw: str) -> MergeResult:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    with pytest.raises(RecursionError):
+        vd.decide(new=NEW, live=EDITED, base=BASE, merge=buggy_merge)
+
+
+def test_a_conflict_report_carries_its_reason(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    vd.reconcile(vault, REL, BASE)
+    (vault / REL).write_text(EDITED)
+
+    def broken_merge(**_kw: str) -> MergeResult:
+        raise MergeUnavailable("git is not installed")
+
+    edit = vd.reconcile(vault, REL, NEW, merge=broken_merge)
+
+    assert edit is not None and "git is not installed" in edit.describe()
 
 
 def test_first_baseline_of_a_known_render_updates_silently() -> None:
@@ -92,6 +118,7 @@ def test_first_baseline_of_an_unknown_file_installs_the_plugin_version() -> None
 def test_first_baseline_of_an_unknown_vault_developed_file_keeps_the_vault_version() -> None:
     d = vd.decide(new=NEW, live=EDITED, base=None, vault_developed=True)
     assert (d.outcome, d.live, d.snapshot, d.merge_draft) == ("conflict", None, None, None)
+    assert d.reason is not None and "no record" in d.reason
 
 
 # ------------------------------------------------------------ signatures ----
@@ -158,6 +185,28 @@ def test_the_shipped_render_history_is_well_formed() -> None:
     for rel, sigs in history.items():
         assert not rel.startswith("templates/"), f"keyed by plugin path, not vault path: {rel}"
         assert sigs and all(isinstance(s, vd.Signature) for s in sigs)
+
+
+def test_an_unreadable_render_history_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Without the history every older release's file reads as "replaced" —
+    a flood of false reports — so the cause must be visible."""
+    missing = tmp_path / "render-history.json"
+
+    assert vd.load_render_history(missing) == {}
+
+    err = capsys.readouterr().err
+    assert "render history" in err and str(missing) in err
+
+
+def test_a_malformed_history_entry_drops_only_itself(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    good = vd.signature("A={{X}}\n", rendered=True).to_json()
+    path = tmp_path / "render-history.json"
+    path.write_text(json.dumps({"files": {"a.sh": [good, {"lines": 2}], "b.sh": [good]}}), encoding="utf-8")
+
+    history = vd.load_render_history(path)
+
+    assert [len(history["a.sh"]), len(history["b.sh"])] == [1, 1]
+    assert "a.sh" in capsys.readouterr().err
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "render-history"

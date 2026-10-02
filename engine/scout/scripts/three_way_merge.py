@@ -26,6 +26,14 @@ class MergeResult:
     conflicts: bool
 
 
+class MergeUnavailable(RuntimeError):
+    """git merge-file could not run at all: git is missing, timed out, or failed.
+
+    Distinct from a merge that ran and found conflicts, so a caller can tell
+    "install git" from "merge by hand".
+    """
+
+
 def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str, str] | None = None) -> MergeResult:
     """Merge ``ours`` and ``theirs`` against common ancestor ``base``.
 
@@ -68,9 +76,11 @@ def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str
                 timeout=30,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError("git merge-file timed out after 30s") from e
+            raise MergeUnavailable("git merge-file timed out after 30s") from e
+        except OSError as e:
+            raise MergeUnavailable(f"could not run git merge-file ({type(e).__name__}: {e})") from e
         # git merge-file: returncode 0 = clean, 1..127 = conflict count,
         # 128/255 = fatal git error. Treat fatal as "raise".
         if proc.returncode < 0 or proc.returncode > 127:
-            raise RuntimeError(f"git merge-file exited {proc.returncode}: {proc.stderr.strip()}")
+            raise MergeUnavailable(f"git merge-file exited {proc.returncode}: {proc.stderr.strip()}")
         return MergeResult(content=proc.stdout, conflicts=proc.returncode > 0)
