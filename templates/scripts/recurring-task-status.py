@@ -267,9 +267,14 @@ def count_missed_windows(cadence: str, last_completed: Optional[date], today: da
     if cad_end is None:
         return 0
     missed = 0
-    cursor = next_due_date(cadence, last_completed + timedelta(days=1))
-    # Count due-dates strictly after last_completed, up to but excluding the
-    # current window's end (today's window is still live, not yet missed).
+    # The completion satisfied the window ending on the first due-date on or
+    # after it, early or not (compute_status reads that window as `done`). Count
+    # the due-dates after that one, up to but excluding the current window's end
+    # (today's window is still live, not yet missed).
+    satisfied = next_due_date(cadence, last_completed)
+    if satisfied is None:
+        return 0
+    cursor = next_due_date(cadence, satisfied + timedelta(days=1))
     while cursor is not None and cursor < cad_end:
         missed += 1
         nxt = next_due_date(cadence, cursor + timedelta(days=1))

@@ -121,3 +121,19 @@ def test_merge_gitignore_treats_leading_whitespace_as_part_of_the_pattern() -> N
     """git reads " .mcp.json" as a different pattern that does not ignore .mcp.json."""
     merged = bootstrap.merge_gitignore(" .mcp.json\n", ".mcp.json\n")
     assert merged.splitlines() == [" .mcp.json", "", ".mcp.json"]
+
+
+def test_upgrade_with_an_undecodable_gitignore_leaves_it_and_still_finishes(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """main overwrote such a file without reading it; the merge must not turn it
+    into an upgrade that aborts halfway (and then again on every auto-update)."""
+    gitignore = vault / ".gitignore"
+    raw = b"# caf\xe9 notes\nsecrets.env\n"
+    gitignore.write_bytes(raw)
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    assert gitignore.read_bytes() == raw
+    assert "0.4.1" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert ".gitignore" in capsys.readouterr().err

@@ -264,3 +264,18 @@ def test_heartbeat_without_the_watchdog_runs_as_before(vault: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run"]
     assert list((vault / ".scout-cache").glob("lane-liveness-*.done")) == []
+
+
+def test_heartbeat_survives_an_unwritable_cache_dir(vault: Path) -> None:
+    """The watchdog block must never stop the heartbeat reaching its real work."""
+    beat, scoutctl_calls = _heartbeat(vault)
+    _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
+    cache = vault / ".scout-cache"
+    cache.chmod(0o555)
+    try:
+        result = _run(beat, vault)
+    finally:
+        cache.chmod(0o755)
+
+    assert result.returncode == 0, result.stderr
+    assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run"]

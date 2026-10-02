@@ -113,3 +113,19 @@ def test_markdown_table_has_a_missed_column(tasks: Path) -> None:
     table = _run(tasks, "2026-05-20").stdout
     assert "| Name | Status | Missed | Cadence |" in table
     assert "| weekly-update | **upcoming** | **2** | weekly:friday |" in table
+
+
+@pytest.mark.parametrize(
+    ("cadence", "completed", "on"),
+    [
+        ("weekly:friday", "2026-05-14", "2026-05-20"),  # done Thursday for Friday's window
+        ("yearly:06-15", "2027-06-13", "2027-07-01"),  # done two days early
+    ],
+)
+def test_completing_before_the_due_day_misses_nothing(tasks: Path, cadence: str, completed: str, on: str) -> None:
+    """An early completion satisfies that window (status reads `done` inside it),
+    so it must not be counted as a missed one afterwards."""
+    _entity(tasks, "early-bird", cadence=cadence, last_completed_date=completed)
+    row = _status(tasks, on)
+    assert row["windows_missed"] == 0
+    assert "missed" not in row["reason"]

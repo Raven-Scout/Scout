@@ -49,10 +49,10 @@ if [[ ${#DRY_RUN_FLAG[@]} -eq 0 ]]; then
     _lane_marker="$SCOUT_DATA_DIR/.scout-cache/lane-liveness-${_lane_day}.done"
     if [[ ! -f "$_lane_marker" ]] \
         && [[ -f "$SCOUT_DATA_DIR/scripts/session-lane-liveness.py" ]]; then
-        mkdir -p "$SCOUT_DATA_DIR/.scout-cache" "$SCOUT_DATA_DIR/.scout-logs"
+        mkdir -p "$SCOUT_DATA_DIR/.scout-cache" "$SCOUT_DATA_DIR/.scout-logs" 2>/dev/null || true
         python3 "$SCOUT_DATA_DIR/scripts/session-lane-liveness.py" --quiet --notify \
             >>"$SCOUT_DATA_DIR/.scout-logs/lane-liveness.log" 2>&1 || true
-        : >"$_lane_marker"
+        : >"$_lane_marker" 2>/dev/null || true
         find "$SCOUT_DATA_DIR/.scout-cache" -name 'lane-liveness-*.done' \
             -mtime +7 -delete 2>/dev/null || true
     fi

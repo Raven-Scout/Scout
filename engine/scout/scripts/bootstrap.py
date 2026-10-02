@@ -250,7 +250,14 @@ def _stage_cat1_writes(cfg: BootstrapConfig) -> None:
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
         if merge:
-            rendered = merge_gitignore(target.read_text(encoding="utf-8"), rendered)
+            try:
+                current = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                # Leave it as it is: overwriting would drop its lines, and
+                # raising would leave the vault half-upgraded on every retry.
+                print(f"warning: left {vault_rel} unchanged, could not read it: {e}", file=sys.stderr)
+                continue
+            rendered = merge_gitignore(current, rendered)
         _atomic_write(target, rendered)
         target.chmod(0o755)
 
@@ -556,7 +563,7 @@ def _top_level_blocks(text: str) -> tuple[list[tuple[str, list[str], list[str]]]
             continue
         if line.startswith(("---", "...")):
             return None
-        if line.startswith("-"):
+        if line.startswith("- ") or line.rstrip() == "-":
             continue  # a sequence item under the previous key
         try:
             parsed = yaml.safe_load(line)

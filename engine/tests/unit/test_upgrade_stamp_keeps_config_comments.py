@@ -152,3 +152,13 @@ def test_upgrade_is_silent_when_there_were_no_comments_to_keep(vault: Path, caps
     upgrade(_config(vault, version="0.4.1"))
 
     assert "comments not preserved" not in capsys.readouterr().err
+
+
+def test_upgrade_does_not_duplicate_a_key_that_starts_with_a_dash(vault: Path) -> None:
+    config = vault / "scout-config.yaml"
+    config.write_text("-legacy: 1\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1"))
+    upgrade(_config(vault, version="0.4.2"))
+
+    assert config.read_text(encoding="utf-8").count("-legacy:") == 1
