@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Turning auto-update on or off no longer deletes every comment in `scout-config.yaml`** (`engine/scout/scripts/auto_update_config.py`, `engine/scout/cli.py`, `commands/scout-setup.md`, `commands/scout-update.md`) — the opt-in steps in `/scout-setup` (Step 3b) and `/scout-update` (the auto-update nudge) had the agent run an inline pyyaml round-trip: `safe_load` the file, set `auto_update.enabled`/`channel`, `safe_dump` it back. That re-serialisation drops every comment — the note `scoutctl budget set` writes above `budget:`, and anything written by hand — every time a user answered the prompt. Both steps now call a new **`scoutctl config set-auto-update --enabled|--disabled [--channel stable] [--json]`**, which rewrites only the `auto_update:` block. An existing line keeps its indent and inline comment, a missing key is added inside the block, and an absent block is appended, so every other byte of the file is unchanged. Without `--channel` an existing channel is kept (`stable` when unset), as before. A re-run that changes nothing writes nothing. Every edit is checked by loading the result back. If the line edit doesn't load back as intended (a flow-style block, say), only that block is re-dumped, and if even that would disturb another setting, nothing is written. The write uses the same mtime-guarded tmp + `os.replace` as `budget set`, so a concurrent write to the file (bootstrap's version stamp, `budget set`, the Mac app) is re-read and kept instead of overwritten. A vault with no `scout-config.yaml` is refused rather than given a new one, because that file is how `bootstrap upgrade` recognises an installed vault. A unit test fails the build if any shell block in `commands/`, `skills/` or `phases/` writes `scout-config.yaml` through `yaml.safe_dump`/`yaml.dump` again.
+
 ## [0.11.0] - 2026-09-29
 
 
