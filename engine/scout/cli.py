@@ -1477,9 +1477,9 @@ def _register_bootstrap() -> None:
         Required: vault must exist with .scout-state/ but no scout-config.yaml.
         Establishes the Plan 8 baseline (snapshots + scout-config.yaml + cat-1
         regen) without touching live SKILL/DREAMING/RESEARCH content. Legacy
-        runners (or any plugin-owned file) that match no release
-        regeneration from the current plugin templates are parked under
-        .scout-state/drift/ first (see `scoutctl bootstrap drift`).
+        runners (or any plugin-owned file) that match no release are parked
+        under .scout-state/drift/ before the current templates are installed
+        (see `scoutctl bootstrap drift`).
         """
         from scout import __version__
         from scout import paths as _paths

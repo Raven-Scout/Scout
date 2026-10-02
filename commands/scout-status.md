@@ -188,7 +188,14 @@ else:
 EOF
 ```
 
-Store both results for rendering in the dashboard below.
+Then list vault edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`):
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+"$PLUGIN_ROOT/.venv/bin/scoutctl" bootstrap drift --json || echo "DRIFT_UNAVAILABLE"
+```
+
+Store all three results for rendering in the dashboard below.
 
 ---
 
@@ -378,6 +385,14 @@ If the update check was unavailable (network error or non-zero exit), display:
 ```
 
 If an update is available, add: "Run `/scout-update` to apply it."
+
+From the `bootstrap drift --json` output, add one line when `files` is non-empty (skip it when empty or unavailable):
+
+```
+  Vault edits:  <n> edited · <n> conflict · <n> parked   (scoutctl bootstrap drift)
+```
+
+A `conflict` means the user is running their own version of a plugin-owned file while the plugin's update waits under `.scout-state/drift/` — say so, and point at `scoutctl bootstrap drift` for how to resolve it.
 
 ---
 

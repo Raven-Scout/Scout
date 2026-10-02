@@ -189,7 +189,8 @@ template change between versions. Options considered:
   - A pending conflict is a *warning*, so the doctor turns yellow and the upgrade
     exits 1: the vault is running an older version of a plugin-owned file.
   - Kept edits and parked `.vault` copies are *notes*, a new
-    `DoctorReport.notes` field. They are printed but leave the severity alone.
+    `DoctorReport.notes` field: one line for all kept edits and one for all
+    parked copies, since a vault with several hand fixes parks several. They are printed but leave the severity alone.
     Carrying an edit on purpose is not a health problem, and a yellow doctor that
     never clears teaches people to ignore it.
 - **`/scout-update`**: step 3 explains each outcome and how to resolve it.
@@ -209,7 +210,7 @@ scoutctl bootstrap drift            # one line per managed file that isn't clean
 scoutctl bootstrap drift --diff     # plugin render vs live, template variables rendered
 scoutctl bootstrap drift --patch    # a git-apply-able patch against templates/ for the edited files
 scoutctl bootstrap drift --json     # machine-readable: status, +/- counts, parked paths, stale flag
-scoutctl bootstrap drift --resolve REL
+scoutctl bootstrap drift --resolve REL [--resolve REL …]
 ```
 
 `--patch` reuses `phase_backport`'s ideas. Rendering substitutes single-line

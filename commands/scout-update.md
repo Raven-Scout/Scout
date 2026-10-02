@@ -5,7 +5,7 @@ description: Upgrade an existing Scout vault to the current plugin version. Idem
 
 # Scout Update
 
-You are the Scout updater. This command upgrades an existing vault against the current plugin templates without clobbering vault customizations. It runs an 8-stage pipeline (pre-flight → migrations → cat-1 file overwrites → cat-1b runner regeneration → cat-4 3-way merge → job lifecycle → version stamp → doctor).
+You are the Scout updater. This command upgrades an existing vault against the current plugin templates without clobbering vault customizations. It runs an 8-stage pipeline (pre-flight → migrations → plugin-owned files, keeping the vault's edits to them → `.gitignore` merge → cat-4 3-way merge → job lifecycle → version stamp → doctor).
 
 This command is for **existing vaults only**. If no vault exists, refuse and tell the user to run `/scout-setup`.
 
@@ -155,7 +155,11 @@ Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
 - If exit 1: list every `warning:` line. Highlight any `conflict (sidecar):` rows — these are the SKILL/DREAMING/RESEARCH files the user must merge by hand. Provide the resolution instructions: edit the sidecar, `mv X.md.proposed-merge X.md`, re-run `/scout-update`.
 - If exit 2: list every `error:` line. Suggest `scoutctl bootstrap doctor` for a clean read of the current state.
 
-If runner backups appeared (`run-*.sh.bak.*`), tell the user the live runners had hand-edits that have been preserved as backups; the fresh templates were installed.
+Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`); none of them blocks a later upgrade:
+
+- `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews the patch for personal details first.
+- `conflict`: the edit and the plugin's update overlap. The user's version is still running; the update is parked at `.scout-state/drift/<file>.plugin` with a conflict-marked draft at `<file>.merge`. To keep both: merge by hand into `<file>`, then `scoutctl bootstrap drift --resolve <file>`. To take the plugin's version: `cp .scout-state/drift/<file>.plugin <file>`.
+- `replaced` (with a `backup:` path): this was the vault's first upgrade with no record of the last render, and the file matched no release, so the plugin's version was installed and the vault's copy parked at `.scout-state/drift/<file>.vault`. `scoutctl bootstrap drift --diff` shows what the copy had; dismiss it with `scoutctl bootstrap drift --resolve <file>`, or copy it back over `<file>` to keep its edit (later upgrades then protect it).
 
 - `~/Scout/connector-probes.local.yaml` (custom connector probes) is a user
   file, never templated, so it is preserved untouched across upgrades.
@@ -180,7 +184,7 @@ EOF
 ```
 
 - If `AUTO_UPDATE_ON`: nothing to say — auto-updates are already configured.
-- If `AUTO_UPDATE_OFF`: tell the user once: "Auto-updates are off — I can turn them on so Scout keeps itself current (sidecar-clean upgrades only; you'll be pinged on conflict). Want me to enable it?"
+- If `AUTO_UPDATE_OFF`: tell the user once: "Auto-updates are off — I can turn them on so Scout keeps itself current (sidecar-clean upgrades only; you'll be pinged on conflict; your own edits to Scout's scripts are kept). Want me to enable it?"
 
 If the user agrees, turn it on with `scoutctl config set-auto-update`. It rewrites only the `auto_update` block of `~/Scout/scout-config.yaml` (adding it if absent, keeping an existing channel) and leaves every other line and comment as it was. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
 
