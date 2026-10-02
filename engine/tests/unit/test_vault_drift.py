@@ -435,6 +435,34 @@ def test_resolve_refuses_a_file_that_still_has_conflict_markers(tmp_path: Path) 
     assert (vault / ".scout-state" / "drift" / f"{REL}.plugin").exists()
 
 
+def test_resolve_refuses_a_conflict_nobody_merged(tmp_path: Path) -> None:
+    """Clearing a yellow doctor by reflex must not drop the plugin's update for
+    good: --resolve checks the update's lines are in the file."""
+    vault = _conflicted(tmp_path)
+
+    with pytest.raises(ValueError, match="doesn't have the parked update"):
+        vd.resolve(vault, REL)
+    assert (vault / ".scout-state" / "drift" / f"{REL}.plugin").exists()
+
+
+def test_resolve_can_drop_the_update_on_purpose(tmp_path: Path) -> None:
+    vault = _conflicted(tmp_path)
+    mine = (vault / REL).read_text()
+
+    vd.resolve(vault, REL, drop_update=True)
+
+    assert vd.reconcile(vault, REL, NEW) == vd.VaultEdit(REL, "kept")
+    assert (vault / REL).read_text() == mine
+
+
+def test_resolve_refuses_when_the_file_is_missing(tmp_path: Path) -> None:
+    vault = _conflicted(tmp_path)
+    (vault / REL).unlink()
+
+    with pytest.raises(ValueError, match="missing"):
+        vd.resolve(vault, REL)
+
+
 def test_resolve_dismisses_parked_vault_copies(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     (vault / "scripts").mkdir()

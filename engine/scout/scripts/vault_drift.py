@@ -452,14 +452,29 @@ def _has_conflict_markers(text: str) -> bool:
     return any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines())
 
 
-def resolve(vault: Path, rel: str) -> list[str]:
+def _update_blocks_missing(base: str, update: str, live: str) -> list[list[str]]:
+    """The blocks of lines ``update`` added to ``base`` that ``live`` lacks."""
+    b_lines, u_lines = base.split("\n"), update.split("\n")
+    matcher = difflib.SequenceMatcher(a=b_lines, b=u_lines, autojunk=False)
+    missing = []
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        block = u_lines[j1:j2]
+        if tag in ("insert", "replace") and any(ln.strip() for ln in block) and "\n".join(block) not in live:
+            missing.append(block)
+    return missing
+
+
+def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
     """Settle what an upgrade parked for ``rel``; returns what was done.
 
     A conflict: the vault's file is taken as merged by hand, so the parked
     plugin version becomes the base. The next upgrade then sees only the
-    vault's own edit on top of the plugin's, which it keeps. Parked ``.vault``
-    copies are deleted. Raises ``ValueError`` when nothing is parked or the
-    file still holds conflict markers.
+    vault's own edit on top of the plugin's, which it keeps. That would drop
+    the plugin's update for good if it was never merged in, so unless
+    ``drop_update`` says that is the intent, every block of lines the update
+    adds must be in the file. Parked ``.vault`` copies are deleted. Raises
+    ``ValueError`` when nothing is parked, the file is missing, still holds
+    conflict markers, or lacks the update.
     """
     if Path(rel).is_absolute() or ".." in Path(rel).parts:
         raise ValueError(f"{rel}: give the file's vault-relative path, e.g. scripts/heartbeat.sh")
@@ -471,8 +486,19 @@ def resolve(vault: Path, rel: str) -> list[str]:
     done: list[str] = []
     if parked_update is not None:
         live = _read(vault / rel)
-        if live is not None and _has_conflict_markers(live):
+        if live is None:
+            raise ValueError(f"{rel} is missing; put the merged file back first")
+        if _has_conflict_markers(live):
             raise ValueError(f"{rel} still has conflict markers; finish the merge first")
+        base = _read(snapshot_path(vault, rel))
+        missing = [] if drop_update or base is None else _update_blocks_missing(base, parked_update, live)
+        if missing:
+            first = next(ln for ln in missing[0] if ln.strip()).strip()
+            raise ValueError(
+                f"{rel} doesn't have the parked update yet ({len(missing)} change(s) missing, e.g. {first!r}). "
+                f"Merge it in (draft: {_rel(vault, _drift_path(vault, rel, MERGE_SUFFIX))}), or take it with "
+                f"`cp {_rel(vault, plugin)} {rel}`; to keep your version and drop the update, add --drop-update"
+            )
         _write(snapshot_path(vault, rel), parked_update)
         _remove(vault, plugin)
         _remove(vault, _drift_path(vault, rel, MERGE_SUFFIX))

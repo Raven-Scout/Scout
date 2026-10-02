@@ -151,3 +151,21 @@ def test_drift_resolve_takes_several_files(vault: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert not (vault / ".scout-state" / "drift").exists()
+
+
+def test_drift_resolve_drop_update_keeps_the_vault_version(vault: Path) -> None:
+    # Make the plugin's current render look like it added its final line (the
+    # exec) since the last upgrade, while the vault edited the same spot.
+    lines = (vault / HEARTBEAT).read_text(encoding="utf-8").splitlines(keepends=True)
+    base = "".join(lines[:-1])
+    (vault / ".scout-state" / "last-rendered" / HEARTBEAT).write_text(base, encoding="utf-8")
+    (vault / HEARTBEAT).write_text(base + FIX, encoding="utf-8")
+    runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
+    assert (vault / ".scout-state/drift/scripts/heartbeat.sh.plugin").exists()
+
+    refused = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT])
+    dropped = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT, "--drop-update"])
+
+    assert refused.exit_code == 2 and "--drop-update" in refused.output
+    assert dropped.exit_code == 0, dropped.output
+    assert not (vault / ".scout-state/drift/scripts/heartbeat.sh.plugin").exists()

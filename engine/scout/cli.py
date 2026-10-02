@@ -1529,6 +1529,9 @@ def _register_bootstrap() -> None:
         resolve: list[str] = typer.Option(  # noqa: B008
             [], "--resolve", metavar="FILE", help="Settle what an upgrade parked for FILE (vault-relative; repeatable)."
         ),
+        drop_update: bool = typer.Option(
+            False, "--drop-update", help="With --resolve: keep your version and drop the parked plugin update."
+        ),
         vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
     ) -> None:
         """Vault edits to plugin-owned files, and a way to upstream them.
@@ -1551,7 +1554,7 @@ def _register_bootstrap() -> None:
             failed = False
             for rel in resolve:
                 try:
-                    done = vault_drift.resolve(vault, rel)
+                    done = vault_drift.resolve(vault, rel, drop_update=drop_update)
                 except ValueError as e:
                     typer.echo(f"scoutctl bootstrap drift: {e}", err=True)
                     failed = True
