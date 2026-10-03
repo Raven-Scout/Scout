@@ -28,6 +28,7 @@ struct EngineSettingsModelTests {
         #expect(m.sourceLabel == "Dev checkout (~/scout-plugin)")
         #expect(m.showsHandOff)
         #expect(!m.canUpdate)
+        #expect(!m.canRepair)
     }
 
     @Test func notInstalledAndRedDoctorMessages() {
@@ -37,5 +38,22 @@ struct EngineSettingsModelTests {
                                      doctor: DoctorReport(severity: .red, errors: ["launchd: com.scout.heartbeat not registered"], warnings: ["w"]), bundledVersion: nil)
         #expect(m2.healthLabel == "Needs attention")
         #expect(m2.messages == ["launchd: com.scout.heartbeat not registered", "w"])
+    }
+
+    @Test func atBundledVersionShowsNeitherUpdateNorHandOff() {
+        let managed = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true), doctor: nil, bundledVersion: "0.10.0")
+        #expect(!managed.canUpdate)
+        #expect(!managed.showsHandOff)
+        let external = EngineSettingsModel(state: .external(install, .devCheckout), doctor: nil, bundledVersion: "0.10.0")
+        #expect(!external.canUpdate)
+        #expect(!external.showsHandOff)
+    }
+
+    @Test func vaultNotBootstrappedShowsHonestHealthLabel() {
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false),
+                                    doctor: DoctorReport(severity: .green, errors: [], warnings: []), bundledVersion: nil)
+        #expect(m.healthLabel == "Vault not set up")
+        #expect(!m.healthIsOK)
+        #expect(m.messages.isEmpty)
     }
 }

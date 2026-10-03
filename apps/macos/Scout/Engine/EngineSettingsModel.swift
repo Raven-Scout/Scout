@@ -38,6 +38,7 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     var healthLabel: String {
         if case .notInstalled = state { return "Not installed" }
         if case .broken = state { return "Broken" }
+        if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Vault not set up" }
         guard let doctor else { return "Unknown" }
         switch doctor.severity {
         case .green: return "Healthy"

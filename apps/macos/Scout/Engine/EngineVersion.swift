@@ -21,8 +21,30 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
         case (nil, nil): return false
         case (.some, nil): return true
         case (nil, .some): return false
-        case (.some(let a), .some(let b)): return a < b
+        case (.some(let a), .some(let b)): return comparePreRelease(a, b) < 0
         }
     }
+
+    /// SemVer 2.0.0 §11: split on `.`, compare identifiers left to right.
+    /// Numeric identifiers compare numerically; a numeric identifier sorts
+    /// before an alphanumeric one; alphanumeric identifiers compare in ASCII
+    /// order; if every shared identifier is equal, the shorter list sorts
+    /// first.
+    private static func comparePreRelease(_ lhs: String, _ rhs: String) -> Int {
+        let lIdentifiers = lhs.split(separator: ".", omittingEmptySubsequences: false)
+        let rIdentifiers = rhs.split(separator: ".", omittingEmptySubsequences: false)
+        for (a, b) in zip(lIdentifiers, rIdentifiers) {
+            if a == b { continue }
+            switch (Int(a), Int(b)) {
+            case (let x?, let y?): return x < y ? -1 : 1
+            case (.some, nil): return -1
+            case (nil, .some): return 1
+            case (nil, nil): return a < b ? -1 : 1
+            }
+        }
+        if lIdentifiers.count == rIdentifiers.count { return 0 }
+        return lIdentifiers.count < rIdentifiers.count ? -1 : 1
+    }
+
     var description: String { "\(major).\(minor).\(patch)" + (preRelease.map { "-\($0)" } ?? "") }
 }
