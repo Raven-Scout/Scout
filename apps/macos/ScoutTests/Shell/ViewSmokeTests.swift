@@ -214,6 +214,18 @@ struct ShellViewSmokeTests {
         }
     }
 
+    @Test("the sidebar renders the Settings attention dot on and off")
+    func sidebarSettingsAttentionRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        for attention in [true, false] {
+            var selection = SidebarItem.controlCenter
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            ViewHost.render(
+                SidebarView(selection: binding, settingsAttention: attention).environmentObject(vault.state),
+                size: CGSize(width: 240, height: 700))
+        }
+    }
+
     @Test("the status bar renders for each menu-bar status")
     func statusBarRendersEveryStatus() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }

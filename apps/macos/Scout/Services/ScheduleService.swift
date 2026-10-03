@@ -107,7 +107,7 @@ final class ScheduleService: ObservableObject {
     private func formatRunnerError(_ error: Error) -> String {
         let text = String(describing: error)
         if text.contains("ENOENT") || text.contains("No such file") {
-            return "scoutctl not found — check that scout-plugin is installed."
+            return "Scout engine not found — open Settings ▸ Engine to install or repair it."
         }
         if text.contains("ProcessResult") || text.contains("exitCode") {
             return "scoutctl returned an error. Try `scoutctl schedule list-upcoming --json` in a terminal."

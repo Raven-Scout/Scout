@@ -258,6 +258,14 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // Same forwarding for the engine health service — drives the window
+        // gate and the Settings sidebar badge (spec §5) through AppState's
+        // own objectWillChange rather than requiring every observer to also
+        // hold an @ObservedObject on engineHealth directly.
+        engineHealth.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         // Keep the menu-bar urgent badge live off the document the app has
         // already parsed (and re-parses on every write / watched change),
         // instead of relying solely on the panel's onAppear disk re-read —

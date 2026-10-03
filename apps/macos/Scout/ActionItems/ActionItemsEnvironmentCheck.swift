@@ -48,7 +48,7 @@ final class ActionItemsEnvironmentCheck: @unchecked Sendable {
         } catch {
             return ActionItemsEnvironmentResult(
                 ok: false,
-                message: "scoutctl not found — install scout-plugin and re-launch."
+                message: "Scout engine not found — open Settings ▸ Engine to install or repair it."
             )
         }
         if probe.exitCode != 0 {

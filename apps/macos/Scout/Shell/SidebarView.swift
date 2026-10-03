@@ -12,6 +12,9 @@ struct SidebarView: View {
     var wishlistBadge: Int = 0
     /// Count of active research topics — drives the badge on the Research row.
     var researchBadge: Int = 0
+    /// True when the engine needs the user's attention (spec §5) — draws a
+    /// small warning dot on the Settings row.
+    var settingsAttention: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -25,7 +28,7 @@ struct SidebarView: View {
             row(.knowledgeBase, label: "Knowledge Base", system: "books.vertical")
             Spacer().frame(height: 10)
             groupLabel("App")
-            row(.settings,      label: "Settings",       system: "gearshape")
+            row(.settings,      label: "Settings",       system: "gearshape", attention: settingsAttention)
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -54,7 +57,7 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0) -> some View {
+    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0, attention: Bool = false) -> some View {
         let isActive = selection == item
         Button {
             selection = item
@@ -67,6 +70,9 @@ struct SidebarView: View {
                 Text(label)
                     .font(DS.sans(13))
                     .foregroundStyle(isActive ? DS.Ink.p1 : DS.Ink.p2)
+                if attention {
+                    Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
+                }
                 Spacer(minLength: 0)
                 if badge > 0 {
                     Text("\(badge)")

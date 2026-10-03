@@ -63,7 +63,7 @@ struct ActionItemsEnvironmentCheckTests {
         )
         let result = try await check.run()
         #expect(!result.ok)
-        #expect(result.message?.contains("scoutctl not found") == true)
+        #expect(result.message?.contains("Settings ▸ Engine") == true)
     }
 }
 
