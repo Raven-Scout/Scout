@@ -26,21 +26,34 @@ class MergeResult:
     conflicts: bool
 
 
-def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
+class MergeUnavailable(RuntimeError):
+    """git merge-file could not run at all: git is missing, timed out, or failed.
+
+    Distinct from a merge that ran and found conflicts, so a caller can tell
+    "install git" from "merge by hand".
+    """
+
+
+def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str, str] | None = None) -> MergeResult:
     """Merge ``ours`` and ``theirs`` against common ancestor ``base``.
 
     Wraps ``git merge-file --diff3 -p`` which is shipped with every
     git installation. Exit code 0 = clean; >0 = number of conflicts.
+    ``labels`` names the ours/base/theirs sides in the conflict markers;
+    without it git prints the temporary file paths.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         ours_path = tmp_path / "ours"
         base_path = tmp_path / "base"
         theirs_path = tmp_path / "theirs"
-        ours_path.write_text(ours, encoding="utf-8")
-        base_path.write_text(base, encoding="utf-8")
-        theirs_path.write_text(theirs, encoding="utf-8")
+        # surrogateescape: text read with it (vault files) keeps any byte that
+        # is not valid UTF-8 through the merge unchanged.
+        ours_path.write_text(ours, encoding="utf-8", errors="surrogateescape")
+        base_path.write_text(base, encoding="utf-8", errors="surrogateescape")
+        theirs_path.write_text(theirs, encoding="utf-8", errors="surrogateescape")
 
+        label_args = [arg for label in labels for arg in ("-L", label)] if labels else []
         try:
             proc = subprocess.run(
                 [
@@ -48,6 +61,7 @@ def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
                     "merge-file",
                     "--diff3",
                     "-p",
+                    *label_args,
                     str(ours_path),
                     str(base_path),
                     str(theirs_path),
@@ -55,15 +69,18 @@ def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="surrogateescape",
                 # A wedged git (e.g. waiting on a lock) must not hang
                 # bootstrap upgrade forever; merge-file on three small text
                 # files is sub-second, so 30s is generous (#47).
                 timeout=30,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError("git merge-file timed out after 30s") from e
+            raise MergeUnavailable("git merge-file timed out after 30s") from e
+        except OSError as e:
+            raise MergeUnavailable(f"could not run git merge-file ({type(e).__name__}: {e})") from e
         # git merge-file: returncode 0 = clean, 1..127 = conflict count,
         # 128/255 = fatal git error. Treat fatal as "raise".
         if proc.returncode < 0 or proc.returncode > 127:
-            raise RuntimeError(f"git merge-file exited {proc.returncode}: {proc.stderr.strip()}")
+            raise MergeUnavailable(f"git merge-file exited {proc.returncode}: {proc.stderr.strip()}")
         return MergeResult(content=proc.stdout, conflicts=proc.returncode > 0)

@@ -442,7 +442,10 @@ Facts the diagram depends on:
 ## Vault runtime scripts
 
 Rendered from `templates/` into the vault at bootstrap and re-rendered on
-upgrade (hand edits are backed up as `run-*.sh.bak.<date>`). Each `scripts/*.sh`
+upgrade. A hand edit is kept, 3-way merged with the plugin's change, or (on a
+conflict) left running with the plugin's update parked under
+`.scout-state/drift/`; `scoutctl bootstrap drift` lists them and turns them into
+a patch against `templates/`. Each `scripts/*.sh`
 is a thin wrapper around one engine command; the runners sequence them. The
 diagram follows `run-scout.sh` left to right; the other two runners share the
 pipeline with the differences noted in their boxes. The numbered order of a run
