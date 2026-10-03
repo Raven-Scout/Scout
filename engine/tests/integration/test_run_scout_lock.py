@@ -32,6 +32,7 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     for placeholder, value in {
         "{{SCOUT_DIR}}": str(scout_dir),
         "{{CLAUDE_BIN}}": "/usr/bin/true",  # never reached — the retry wrapper is stubbed
+        "{{SCOUTCTL_BIN}}": "/nonexistent/scoutctl",  # the connector-health roll-up is skipped
         "{{INSTANCE_NAME_LOWER}}": "scout",
         "{{INSTANCE_NAME}}": "Scout",
         "{{MAX_BUDGET}}": "25",

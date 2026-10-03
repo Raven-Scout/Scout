@@ -1,0 +1,39 @@
+#!/bin/bash
+# {{INSTANCE_NAME}} Heartbeat — polls every 30 minutes to trigger extra sessions
+# when budget is available and there's pending work.
+#
+# Designed to run via launchd every 30 minutes. Lightweight — exits quickly
+# if conditions aren't met.
+#
+# Exit codes:
+#   0 = checked (no action needed OR session launched)
+#   1 = error
+#
+# Usage: heartbeat.sh [--dry-run]
+#
+# This is a thin wrapper around `scoutctl heartbeat run`. The bash version
+# shelled out to python3 -c three times per tick just to walk the same tracker
+# file three different ways. Folded into one Python process here (#74 + #79).
+
+set -euo pipefail
+
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
+if [[ ! -x "$SCOUTCTL_BIN" ]]; then
+    if command -v scoutctl >/dev/null 2>&1; then
+        SCOUTCTL_BIN="$(command -v scoutctl)"
+    else
+        echo "heartbeat.sh: scoutctl not found (looked at ${SCOUTCTL_BIN})" >&2
+        exit 1
+    fi
+fi
+
+SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+export SCOUT_DATA_DIR
+export SCOUTCTL_BIN
+
+DRY_RUN_FLAG=()
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN_FLAG=("--dry-run")
+fi
+
+exec "$SCOUTCTL_BIN" heartbeat run ${DRY_RUN_FLAG[@]+"${DRY_RUN_FLAG[@]}"}
