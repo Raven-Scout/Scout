@@ -2,47 +2,110 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn the overview's single "N notes · M connections" line into a NETWORK section with a **Vault Health** block (orphans, weakly-linked, dangling links, disconnected islands — clickable) and an **Insight** block (top hubs, degree summary, per-type breakdown, components), all from one in-memory pass.
+**Goal:** Turn the overview's single "N notes · M connections" line into a network section with a **Vault Health** block (dangling links, orphans, disconnected islands, weakly-linked — clickable) and an **Insight** block (degree summary, components, top hubs, per-type breakdown), all from one in-memory pass.
 
-**Architecture:** A new `networkStats() -> KBNetworkStats` on `KnowledgeBaseService` computes every metric in a single traversal of the existing index + `undirectedEdges()` adjacency (no new I/O). A new `KBStatsView` renders it — health as count + top-5 + "show all" disclosures, insight as a compact summary — and `KBOverviewView` embeds it.
+**Architecture:** A new `networkStats() -> KBNetworkStats` on `KnowledgeBaseService` computes every metric in a single traversal of the existing index + `undirectedEdges()` adjacency (no new I/O). Adjacency comes from one helper that `localGraph(around:)` shares. Display strings are pure, tested helpers on `KBNetworkStats`. A new `KBStatsView` renders a `KBNetworkStats` value, and `KBOverviewView` computes it once and embeds the view.
 
-**Tech Stack:** Swift, SwiftUI; Swift Testing. Synchronized file groups (no `.pbxproj` edits).
+**Tech Stack:** Swift, SwiftUI; Swift Testing. Synchronized file groups (new files in `Scout/` and `ScoutTests/` auto-compile — no `.pbxproj` edits).
+
+> **Revalidated 2026-10-03** against `main` @ `7a037c9`. Feature 2 (graph navigability) shipped in #90, so the old "stack on feature 2" caveat is gone and this branches from `main`. Every file/line/symbol below was re-checked against that commit. The spec's "Revalidation 2026-10-03" section lists what moved.
 
 ## Global Constraints
 
-- **Stacks on feature 2** (PR #73). This plan assumes feature 2 is merged: `KBOverviewView` already embeds `KBMapView`, and `KBGraph`/degree helpers exist. Base this branch on feature-2 code, not bare `main`.
-- **No new data source / disk I/O:** compute only from `index` (`outByFile`, `stemToPath`, `typeByFile`), `tree.allFiles`, and `undirectedEdges()`.
-- **Definitions (exact):** orphan = degree 0; weakly-linked = degree exactly 1; dangling = an outgoing `[[target]]` with no `stemToPath` resolution; island = a connected component of size ≥ 2 that is **not** the largest component; hub = a note ranked by degree (degree > 0), degree desc / path asc.
-- **Compact by default:** each list shows count + top 5, with a "show all N" disclosure. Empty metric → "✓ none".
-- **Determinism:** all output lists are sorted (paths asc; hubs by degree-then-path) so the UI is stable across reparses.
-- **No real identifiers in tests** (repo `CLAUDE.md`).
-- **Test framework:** Swift Testing; run the whole `ScoutTests` target for a reliable verdict (a `-only-testing:ScoutTests/<StructName>` selector is fine for speed only if it reports "Executed N tests", N > 0).
+- **No new data source / disk I/O:** compute only from `index` (`outByFile`, `stemToPath`, `typeByFile`), `tree.flatMap(\.allFiles)`, and `undirectedEdges()`.
+- **Definitions (exact):** orphan = degree 0; weakly-linked = degree exactly 1; dangling = an outgoing `[[target]]` with no `stemToPath[target.lowercased()]` resolution; island = a connected component of size ≥ 2 that is **not** the largest component; hub = a note ranked by degree (degree > 0), degree desc / path asc.
+- **Determinism:** every output list is sorted. Problem lists are sorted by path; hubs by degree then path. Components are ranked by size desc, then by their first (sorted) path asc, so the "mainland" among equal-size components is stable across reparses.
+- **Compact by default:** each list shows count + top 5, with a "Show all N" disclosure. Empty metric → "✓ none".
+- **Isolation:** the app target uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Model structs are `nonisolated` like their neighbours in `KBGraph.swift`; service-backed test suites are `@MainActor` like `KBServiceGraphTests`.
+- **Public repo — anonymized literals only** (repo `CLAUDE.md`). Every fixture name below (`hub`, `alex`, `priya`, `sam`, `ghost`, `island-a/b`, `lonely`, `duo-a…d`) was checked against `~/Scout` (excluding `~/Scout/.claude/`) at **0** hits on 2026-10-03. Re-check any literal you add.
+- **Buttons:** chip buttons use `.buttonStyle(.plainHit)` (whole padded frame clickable, issue #16), not `.plain`.
+- **Test command:** `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS'`. An `-only-testing:ScoutTests/<StructName>` selector is fine for speed only when it targets a real `@Suite` **type name** and the output shows a non-zero test count. Otherwise it silently runs zero tests. The final verdict is always the whole `ScoutTests` target.
+- **Coverage floor:** CI fails below `scripts/coverage-floor.txt` (70.0%) via `scripts/check-coverage.sh`. New logic gets unit tests; only SwiftUI layout stays untested.
 - **Platform:** macOS 13+; destination `platform=macOS`.
 
 ---
 
 ## File Structure
 
-- **Modify** `Scout/KnowledgeBase/Models/KBGraph.swift` — add `KBNetworkStats` + `KBDanglingLink`, `KBHub`, `KBTypeCount`.
-- **Modify** `Scout/KnowledgeBase/KnowledgeBaseService.swift` — add `networkStats(hubCap:)`.
-- **Create** `Scout/KnowledgeBase/Views/KBStatsView.swift` — the NETWORK section (health + insight).
-- **Modify** `Scout/KnowledgeBase/Views/KBOverviewView.swift` — embed `KBStatsView`.
-- **Create** `ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift` — fixture-based unit tests.
+- **Modify** `Scout/KnowledgeBase/KnowledgeBaseService.swift` — extract `adjacency(of:)`, use it in `localGraph(around:)`, add `networkStats(hubCap:)`.
+- **Modify** `Scout/KnowledgeBase/Models/KBGraph.swift` — add `KBNetworkStats` + `KBDanglingLink`, `KBHub`, `KBTypeCount`, and the display-string extension.
+- **Create** `Scout/KnowledgeBase/Views/KBStatsView.swift` — health + insight blocks.
+- **Modify** `Scout/KnowledgeBase/Views/KBOverviewView.swift` — compute `networkStats()` once, feed the header + `KBStatsView`.
+- **Create** `ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift` — engine + display-string suites.
 
 ---
 
-## Task 1: `KBNetworkStats` model + `networkStats()` engine
+## Task 1: Extract the shared adjacency helper (refactor, no behavior change)
 
 **Files:**
-- Modify: `Scout/KnowledgeBase/Models/KBGraph.swift` (after `KBIndex`, ~line 113)
-- Modify: `Scout/KnowledgeBase/KnowledgeBaseService.swift` (after `hubGraph`/`fullGraph`, ~line 352)
+- Modify: `Scout/KnowledgeBase/KnowledgeBaseService.swift` (`localGraph(around:depth:maxNodes:)`, lines 285-326)
+
+The spec promised a single degree/adjacency source. `localGraph` builds `[String: Set<String>]` inline (lines 287-292). Lift that into a helper so `networkStats()` (Task 2) uses the same one.
+
+- [ ] **Step 1: Confirm the guard tests are green before touching anything**
+
+Run: `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBServiceGraphTests -only-testing:ScoutTests/KnowledgeBaseServiceHubGraphTests 2>&1 | tail -20`
+Expected: PASS with a non-zero test count (`KBServiceGraphTests.resolvesLinksBacklinksAndLocalGraph` exercises `localGraph`).
+
+- [ ] **Step 2: Add the helper and switch `localGraph` to it**
+
+In `KnowledgeBaseService.swift`, directly after `undirectedEdges()` (ends line 281), add:
+
+```swift
+    /// Undirected adjacency over `edges`. Shared by `localGraph(around:)` and
+    /// `networkStats()` so "degree" means the same thing in both.
+    nonisolated static func adjacency(of edges: Set<KBGraphEdge>) -> [String: Set<String>] {
+        var adj: [String: Set<String>] = [:]
+        for e in edges {
+            adj[e.from, default: []].insert(e.to)
+            adj[e.to, default: []].insert(e.from)
+        }
+        return adj
+    }
+```
+
+In `localGraph(around:depth:maxNodes:)`, replace:
+
+```swift
+        // Adjacency.
+        var adj: [String: Set<String>] = [:]
+        for e in edgeSet {
+            adj[e.from, default: []].insert(e.to)
+            adj[e.to, default: []].insert(e.from)
+        }
+```
+
+with:
+
+```swift
+        let adj = Self.adjacency(of: edgeSet)
+```
+
+- [ ] **Step 3: Re-run the guard tests**
+
+Same command as Step 1. Expected: PASS, same test count.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add Scout/KnowledgeBase/KnowledgeBaseService.swift
+git commit -m "refactor(kb): share one adjacency helper across graph builders"
+```
+
+---
+
+## Task 2: `KBNetworkStats` model + `networkStats()` engine
+
+**Files:**
+- Modify: `Scout/KnowledgeBase/Models/KBGraph.swift` (append after `KBIndex`, which ends at line 148 — end of file)
+- Modify: `Scout/KnowledgeBase/KnowledgeBaseService.swift` (after `hubGraph(maxNodes:)`, which ends at line 353)
 - Test: `ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift`
 
 **Interfaces:**
-- Consumes: `undirectedEdges()`, `index.outByFile`/`stemToPath`/`typeByFile`, `tree.allFiles`, `KBEntityGroup.of`, `KBGraphEdge` (existing).
+- Consumes: `undirectedEdges()`, `adjacency(of:)` (Task 1), `index.outByFile`/`stemToPath`/`typeByFile`, `tree.flatMap(\.allFiles)`, `KBEntityGroup.of(_:type:)` / `.allCases`.
 - Produces:
-  - `KBNetworkStats` with fields: `orphans:[String]`, `weaklyLinked:[String]`, `dangling:[KBDanglingLink]`, `islands:[[String]]`, `topHubs:[KBHub]`, `avgDegree:Double`, `maxDegree:Int`, `byType:[KBTypeCount]`, `clusterCount:Int`, `largestComponentSize:Int`; `.empty`.
-  - `KBDanglingLink(source:String,target:String)`, `KBHub(path:String,degree:Int)`, `KBTypeCount(group:KBEntityGroup,count:Int)` — all `Identifiable`.
+  - `KBNetworkStats` with fields `noteCount:Int`, `linkCount:Int`, `orphans:[String]`, `weaklyLinked:[String]`, `dangling:[KBDanglingLink]`, `islands:[[String]]`, `topHubs:[KBHub]`, `avgDegree:Double`, `maxDegree:Int`, `byType:[KBTypeCount]`, `clusterCount:Int`, `largestComponentSize:Int`; and `.empty`.
+  - `KBDanglingLink(source:target:)`, `KBHub(path:degree:)`, `KBTypeCount(group:count:)`, all `Identifiable, Equatable`.
   - `KnowledgeBaseService.networkStats(hubCap: Int = 20) -> KBNetworkStats`.
 
 - [ ] **Step 1: Write the failing test**
@@ -54,90 +117,133 @@ import Foundation
 import Testing
 @testable import Scout
 
+@MainActor
 @Suite("KnowledgeBaseService networkStats")
 struct KBNetworkStatsTests {
-    /// Fixture: a 4-note mainland (hub + 3 leaves), a 2-note island, one orphan,
-    /// and one dangling link (sam → ghost, which doesn't exist).
-    private func makeStatsKB() throws -> URL {
+    /// Write `files` (name → body) into a fresh `<tmp>/knowledge-base/`.
+    private func makeKB(_ files: [String: String]) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kbstats-\(UUID().uuidString)")
         let kb = root.appendingPathComponent("knowledge-base")
         try FileManager.default.createDirectory(at: kb, withIntermediateDirectories: true)
-        func w(_ name: String, _ body: String) throws {
+        for (name, body) in files {
             try body.write(to: kb.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
-        try w("hub.md", "[[alex]] [[priya]] [[sam]]")
-        try w("alex.md", "[[hub]]")
-        try w("priya.md", "[[hub]]")
-        try w("sam.md", "[[hub]] [[ghost]]")          // ghost is dangling
-        try w("island-a.md", "[[island-b]]")
-        try w("island-b.md", "[[island-a]]")
-        try w("lonely.md", "no links here")            // orphan
         return root
     }
 
-    private func stats() async throws -> (URL, KBNetworkStats) {
-        let root = try makeStatsKB()
+    /// A 4-note mainland (hub + 3 leaves, one linking back as `[[Hub]]`), a
+    /// 2-note island, one orphan, and one dangling link (sam → ghost).
+    private static let mainland: [String: String] = [
+        "hub.md": "[[alex]] [[priya]] [[sam]]",
+        "alex.md": "[[Hub]]",                  // case variant — resolves, not dangling
+        "priya.md": "[[hub]]",
+        "sam.md": "[[hub]] [[ghost]]",         // ghost has no note → dangling
+        "island-a.md": "[[island-b]]",
+        "island-b.md": "[[island-a]]",
+        "lonely.md": "no links here",          // orphan
+    ]
+
+    private func load(_ files: [String: String]) async throws -> (KnowledgeBaseService, URL) {
+        let root = try makeKB(files)
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
-        try await svc.reparseAndWait()
-        return (root, svc.networkStats())
+        await svc.reparseAndWait()
+        return (svc, root)
+    }
+
+    private func stats(_ files: [String: String], hubCap: Int = 20) async throws -> KBNetworkStats {
+        let (svc, root) = try await load(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        return svc.networkStats(hubCap: hubCap)
     }
 
     @Test func orphansAndWeaklyLinked() async throws {
-        let (root, s) = try await stats(); defer { try? FileManager.default.removeItem(at: root) }
+        let s = try await stats(Self.mainland)
         #expect(s.orphans == ["knowledge-base/lonely.md"])
-        #expect(Set(s.weaklyLinked) == Set([
-            "knowledge-base/alex.md", "knowledge-base/priya.md", "knowledge-base/sam.md",
-            "knowledge-base/island-a.md", "knowledge-base/island-b.md",
-        ]))
+        #expect(s.weaklyLinked == [
+            "knowledge-base/alex.md", "knowledge-base/island-a.md", "knowledge-base/island-b.md",
+            "knowledge-base/priya.md", "knowledge-base/sam.md",
+        ])
     }
 
-    @Test func danglingLinkDetected() async throws {
-        let (root, s) = try await stats(); defer { try? FileManager.default.removeItem(at: root) }
-        #expect(s.dangling.count == 1)
-        #expect(s.dangling.first?.source == "knowledge-base/sam.md")
-        #expect(s.dangling.first?.target == "ghost")
+    @Test func danglingLinkDetectedAndCaseVariantResolves() async throws {
+        let s = try await stats(Self.mainland)
+        #expect(s.dangling == [KBDanglingLink(source: "knowledge-base/sam.md", target: "ghost")])
     }
 
     @Test func islandsExcludeMainlandAndOrphan() async throws {
-        let (root, s) = try await stats(); defer { try? FileManager.default.removeItem(at: root) }
-        #expect(s.islands.count == 1)                                  // only the 2-note island
-        #expect(Set(s.islands[0]) == Set(["knowledge-base/island-a.md", "knowledge-base/island-b.md"]))
-        #expect(s.largestComponentSize == 4)                            // hub + 3 leaves
-        #expect(s.clusterCount == 2)                                    // mainland + island
+        let s = try await stats(Self.mainland)
+        #expect(s.islands == [["knowledge-base/island-a.md", "knowledge-base/island-b.md"]])
+        #expect(s.largestComponentSize == 4)                       // hub + 3 leaves
+        #expect(s.clusterCount == 2)                               // mainland + island
     }
 
-    @Test func hubsAndDegreeSummary() async throws {
-        let (root, s) = try await stats(); defer { try? FileManager.default.removeItem(at: root) }
-        #expect(s.topHubs.first?.path == "knowledge-base/hub.md")
+    @Test func equalSizeComponentsPickTheMainlandDeterministically() async throws {
+        let s = try await stats([
+            "duo-a.md": "[[duo-b]]", "duo-b.md": "",
+            "duo-c.md": "[[duo-d]]", "duo-d.md": "",
+        ])
+        #expect(s.largestComponentSize == 2)
+        #expect(s.clusterCount == 2)
+        #expect(s.islands == [["knowledge-base/duo-c.md", "knowledge-base/duo-d.md"]])
+    }
+
+    @Test func hubsOrderedByDegreeThenPathAndCapped() async throws {
+        let s = try await stats(Self.mainland)
+        #expect(s.topHubs.map(\.path) == [
+            "knowledge-base/hub.md", "knowledge-base/alex.md", "knowledge-base/island-a.md",
+            "knowledge-base/island-b.md", "knowledge-base/priya.md", "knowledge-base/sam.md",
+        ])                                                         // lonely (degree 0) excluded
         #expect(s.topHubs.first?.degree == 3)
-        #expect(s.maxDegree == 3)
-        #expect(!s.topHubs.contains { $0.degree == 0 })                 // orphans aren't hubs
+        let capped = try await stats(Self.mainland, hubCap: 2)
+        #expect(capped.topHubs.map(\.path) == ["knowledge-base/hub.md", "knowledge-base/alex.md"])
     }
 
-    @Test func byTypeCountsAllNotes() async throws {
-        let (root, s) = try await stats(); defer { try? FileManager.default.removeItem(at: root) }
-        #expect(s.byType.reduce(0) { $0 + $1.count } == 7)              // 7 md notes total
-        #expect(s.byType.count == KBEntityGroup.allCases.count)         // every group present (0s incl.)
+    @Test func degreeSummaryAndTotals() async throws {
+        let (svc, root) = try await load(Self.mainland)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let s = svc.networkStats()
+        #expect(s.maxDegree == 3)
+        #expect(s.avgDegree == 8.0 / 7.0)                          // 2·4 edges / 7 notes
+        #expect(s.noteCount == 7)
+        #expect(s.linkCount == 4)
+        let legacy = svc.graphStats()
+        #expect(s.noteCount == legacy.notes)
+        #expect(s.linkCount == legacy.links)
+    }
+
+    @Test func byTypeCountsEveryNoteInEveryGroup() async throws {
+        let s = try await stats(Self.mainland)
+        #expect(s.byType.map(\.group) == KBEntityGroup.allCases)   // all groups, 0s included
+        #expect(s.byType.reduce(0) { $0 + $1.count } == 7)
+    }
+
+    @Test func emptyVaultIsEmptyStats() async throws {
+        let s = try await stats([:])
+        #expect(s == .empty)
+        #expect(s.byType.count == KBEntityGroup.allCases.count)
+        #expect(s.byType.allSatisfy { $0.count == 0 })
     }
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBNetworkStatsTests 2>&1 | tail -20`
-Expected: compile failure — `networkStats` / `KBNetworkStats` don't exist.
+Run: `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBNetworkStatsTests 2>&1 | tail -20`
+Expected: compile failure — `networkStats` / `KBNetworkStats` / `KBDanglingLink` don't exist.
 
 - [ ] **Step 3: Add the model types**
 
-In `Scout/KnowledgeBase/Models/KBGraph.swift`, after `KBIndex` (line 113), add:
+Append to `Scout/KnowledgeBase/Models/KBGraph.swift`, after `KBIndex`:
 
 ```swift
+
 // MARK: - Network stats
 
+/// An outgoing `[[target]]` that resolves to no note.
 nonisolated struct KBDanglingLink: Identifiable, Equatable {
     let source: String     // note holding the broken link (relative path)
-    let target: String     // unresolved [[target]] text
+    let target: String     // unresolved [[target]] text, original case
     var id: String { source + "→" + target }
 }
 
@@ -153,52 +259,53 @@ nonisolated struct KBTypeCount: Identifiable, Equatable {
     var id: KBEntityGroup { group }
 }
 
-/// High-level network analysis of the whole KB: actionable health signals plus
-/// read-only connectivity insight. Computed in one pass over the index + edges.
+/// Whole-KB network analysis for the overview: totals, actionable health
+/// signals, and read-only connectivity insight. Computed in one pass over the
+/// index + edges by `KnowledgeBaseService.networkStats()`.
 nonisolated struct KBNetworkStats: Equatable {
-    let orphans: [String]                // degree 0
-    let weaklyLinked: [String]           // degree exactly 1
-    let dangling: [KBDanglingLink]       // outgoing [[target]] with no resolution
-    let islands: [[String]]              // components of size >= 2, excluding the largest
+    let noteCount: Int
+    let linkCount: Int
+    let orphans: [String]                // degree 0, path asc
+    let weaklyLinked: [String]           // degree exactly 1, path asc
+    let dangling: [KBDanglingLink]       // source asc, then target asc
+    let islands: [[String]]              // components of size >= 2 except the largest
     let topHubs: [KBHub]                 // degree desc, path asc; degree > 0; capped
     let avgDegree: Double
     let maxDegree: Int
-    let byType: [KBTypeCount]            // count per KBEntityGroup (all groups, 0s included)
-    let clusterCount: Int                // number of components with size >= 2
+    let byType: [KBTypeCount]            // every KBEntityGroup, in allCases order, 0s included
+    let clusterCount: Int                // components with size >= 2
     let largestComponentSize: Int
-    static let empty = KBNetworkStats(orphans: [], weaklyLinked: [], dangling: [], islands: [],
-                                      topHubs: [], avgDegree: 0, maxDegree: 0, byType: [],
-                                      clusterCount: 0, largestComponentSize: 0)
+
+    static let empty = KBNetworkStats(
+        noteCount: 0, linkCount: 0, orphans: [], weaklyLinked: [], dangling: [], islands: [],
+        topHubs: [], avgDegree: 0, maxDegree: 0,
+        byType: KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: 0) },
+        clusterCount: 0, largestComponentSize: 0)
 }
 ```
 
 - [ ] **Step 4: Implement `networkStats()`**
 
-In `Scout/KnowledgeBase/KnowledgeBaseService.swift`, after `hubGraph(maxNodes:)` (added in feature 2), add:
+In `Scout/KnowledgeBase/KnowledgeBaseService.swift`, after `hubGraph(maxNodes:)`, add:
 
 ```swift
-    /// One-pass network analysis for the overview: orphans / weakly-linked /
-    /// dangling / islands (health) + hubs / degree / per-type / components
-    /// (insight). Reads only the in-memory index + edges (no disk I/O).
+
+    /// One-pass network analysis for the overview: totals, orphans /
+    /// weakly-linked / dangling / islands (health) and hubs / degree /
+    /// per-type / components (insight). Reads only the in-memory index + edges.
     func networkStats(hubCap: Int = 20) -> KBNetworkStats {
         let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
         guard !notes.isEmpty else { return .empty }
         let edgeSet = undirectedEdges()
-
-        // Adjacency across all existing notes (degree-0 notes present with []).
-        var adj: [String: Set<String>] = [:]
-        for n in notes { adj[n] = [] }
-        for e in edgeSet {
-            adj[e.from, default: []].insert(e.to)
-            adj[e.to, default: []].insert(e.from)
-        }
+        let adj = Self.adjacency(of: edgeSet)
         let degree: (String) -> Int = { adj[$0]?.count ?? 0 }
 
         // Health: orphans / weakly-linked.
         let orphans = notes.filter { degree($0) == 0 }.sorted()
         let weaklyLinked = notes.filter { degree($0) == 1 }.sorted()
 
-        // Health: dangling links (outgoing target that doesn't resolve).
+        // Health: dangling links. `extractWikilinks` already de-dups targets
+        // per note, so each (source, target) appears once.
         var dangling: [KBDanglingLink] = []
         for (source, targets) in index.outByFile {
             for t in targets where index.stemToPath[t.lowercased()] == nil {
@@ -207,45 +314,55 @@ In `Scout/KnowledgeBase/KnowledgeBaseService.swift`, after `hubGraph(maxNodes:)`
         }
         dangling.sort { $0.source != $1.source ? $0.source < $1.source : $0.target < $1.target }
 
-        // Connected components (iterative DFS over adjacency).
+        // Connected components (iterative DFS). Each is sorted, then ranked by
+        // size desc and first path asc so the mainland is stable on ties.
         var seen = Set<String>()
         var components: [[String]] = []
         for start in notes where !seen.contains(start) {
-            var comp: [String] = []; var stack = [start]; seen.insert(start)
+            var comp: [String] = []
+            var stack = [start]
+            seen.insert(start)
             while let node = stack.popLast() {
                 comp.append(node)
-                for nb in adj[node] ?? [] where !seen.contains(nb) { seen.insert(nb); stack.append(nb) }
+                for nb in adj[node] ?? [] where !seen.contains(nb) {
+                    seen.insert(nb)
+                    stack.append(nb)
+                }
             }
-            components.append(comp)
+            components.append(comp.sorted())
         }
-        let byCount = components.sorted { $0.count > $1.count }
-        let largestComponentSize = byCount.first?.count ?? 0
-        let multi = byCount.filter { $0.count >= 2 }               // clusters
-        let islands = Array(multi.dropFirst()).map { $0.sorted() } // all clusters except the largest
+        components.sort { $0.count != $1.count ? $0.count > $1.count : $0[0] < $1[0] }
+        let clusters = components.filter { $0.count >= 2 }
 
-        // Insight: degree summary + hubs + per-type.
-        let maxDegree = notes.map(degree).max() ?? 0
-        let avgDegree = Double(2 * edgeSet.count) / Double(notes.count)
+        // Insight: degree summary, hubs, per-type.
         let topHubs = notes
+            .filter { degree($0) > 0 }
             .sorted { degree($0) != degree($1) ? degree($0) > degree($1) : $0 < $1 }
             .prefix(hubCap)
             .map { KBHub(path: $0, degree: degree($0)) }
-            .filter { $0.degree > 0 }
         var counts: [KBEntityGroup: Int] = [:]
         for n in notes { counts[KBEntityGroup.of(n, type: index.typeByFile[n]), default: 0] += 1 }
-        let byType = KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: counts[$0] ?? 0) }
 
         return KBNetworkStats(
-            orphans: orphans, weaklyLinked: weaklyLinked, dangling: dangling, islands: islands,
-            topHubs: Array(topHubs), avgDegree: avgDegree, maxDegree: maxDegree, byType: byType,
-            clusterCount: multi.count, largestComponentSize: largestComponentSize)
+            noteCount: notes.count,
+            linkCount: edgeSet.count,
+            orphans: orphans,
+            weaklyLinked: weaklyLinked,
+            dangling: dangling,
+            islands: Array(clusters.dropFirst()),
+            topHubs: Array(topHubs),
+            avgDegree: Double(2 * edgeSet.count) / Double(notes.count),
+            maxDegree: notes.map(degree).max() ?? 0,
+            byType: KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: counts[$0] ?? 0) },
+            clusterCount: clusters.count,
+            largestComponentSize: components.first?.count ?? 0)
     }
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBNetworkStatsTests 2>&1 | tail -20`
-Expected: PASS — "Executed 5 tests, with 0 failures".
+Run: `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBNetworkStatsTests 2>&1 | tail -20`
+Expected: PASS — 8 tests, 0 failures (confirm the count is 8, not 0).
 
 - [ ] **Step 6: Commit**
 
@@ -256,83 +373,222 @@ git commit -m "feat(kb): networkStats() — orphans/dangling/islands + hubs/degr
 
 ---
 
-## Task 2: `KBStatsView` — Vault Health block + embed in overview
+## Task 3: Display-string helpers (tested)
+
+**Files:**
+- Modify: `Scout/KnowledgeBase/Models/KBGraph.swift` (after `KBNetworkStats`)
+- Test: `ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift` (new suite in the same file)
+
+**Interfaces:**
+- Produces: `KBNetworkStats.degreeSummary: String`, `KBNetworkStats.componentsSummary: String`, `static KBNetworkStats.healthTitle(_ count: Int, singular: String, plural: String) -> String`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift`:
+
+```swift
+
+@Suite("KBNetworkStats display strings")
+struct KBNetworkStatsDisplayTests {
+    private func net(avg: Double = 0, max: Int = 0, clusters: Int = 0, largest: Int = 0) -> KBNetworkStats {
+        KBNetworkStats(noteCount: 0, linkCount: 0, orphans: [], weaklyLinked: [], dangling: [],
+                       islands: [], topHubs: [], avgDegree: avg, maxDegree: max, byType: [],
+                       clusterCount: clusters, largestComponentSize: largest)
+    }
+
+    @Test func degreeSummary() {
+        #expect(net(avg: 8.0 / 7.0, max: 3).degreeSummary == "avg 1.1 · max 3 connections per note")
+        #expect(KBNetworkStats.empty.degreeSummary == "avg 0.0 · max 0 connections per note")
+    }
+
+    @Test func componentsSummary() {
+        #expect(net().componentsSummary == "No linked notes yet")
+        #expect(net(clusters: 1, largest: 4).componentsSummary == "1 main cluster · covers 4 notes")
+        #expect(net(clusters: 2, largest: 4).componentsSummary
+                == "1 main cluster + 1 island · largest covers 4 notes")
+        #expect(net(clusters: 4, largest: 10).componentsSummary
+                == "1 main cluster + 3 islands · largest covers 10 notes")
+    }
+
+    @Test func healthTitle() {
+        #expect(KBNetworkStats.healthTitle(0, singular: "orphaned note", plural: "orphaned notes")
+                == "Orphaned notes: ✓ none")
+        #expect(KBNetworkStats.healthTitle(1, singular: "orphaned note", plural: "orphaned notes")
+                == "1 orphaned note")
+        #expect(KBNetworkStats.healthTitle(5, singular: "orphaned note", plural: "orphaned notes")
+                == "5 orphaned notes")
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/KBNetworkStatsDisplayTests 2>&1 | tail -20`
+Expected: compile failure — `degreeSummary` / `componentsSummary` / `healthTitle` don't exist.
+
+- [ ] **Step 3: Implement**
+
+Append to `Scout/KnowledgeBase/Models/KBGraph.swift`, after `KBNetworkStats`:
+
+```swift
+
+extension KBNetworkStats {
+    /// "avg 1.1 · max 3 connections per note".
+    var degreeSummary: String {
+        "avg \(String(format: "%.1f", avgDegree)) · max \(maxDegree) connections per note"
+    }
+
+    /// "1 main cluster + K islands · largest covers M notes", with the
+    /// one-cluster and no-links cases worded on their own.
+    var componentsSummary: String {
+        switch clusterCount {
+        case 0: return "No linked notes yet"
+        case 1: return "1 main cluster · covers \(largestComponentSize) notes"
+        default:
+            let islands = clusterCount - 1
+            return "1 main cluster + \(islands) island\(islands == 1 ? "" : "s")"
+                + " · largest covers \(largestComponentSize) notes"
+        }
+    }
+
+    /// A health row's title: "Orphaned notes: ✓ none", "1 orphaned note",
+    /// "5 orphaned notes".
+    static func healthTitle(_ count: Int, singular: String, plural: String) -> String {
+        switch count {
+        case 0: return plural.prefix(1).uppercased() + plural.dropFirst() + ": ✓ none"
+        case 1: return "1 \(singular)"
+        default: return "\(count) \(plural)"
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Same command as Step 2. Expected: PASS — 3 tests, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Scout/KnowledgeBase/Models/KBGraph.swift ScoutTests/KnowledgeBase/KBNetworkStatsTests.swift
+git commit -m "feat(kb): tested display strings for network stats"
+```
+
+---
+
+## Task 4: `KBStatsView` — Vault Health block + embed in overview
 
 **Files:**
 - Create: `Scout/KnowledgeBase/Views/KBStatsView.swift`
 - Modify: `Scout/KnowledgeBase/Views/KBOverviewView.swift`
 
 **Interfaces:**
-- Consumes: `KnowledgeBaseService.networkStats()`, `graphStats()` (existing); `KBNetworkStats`, `KBNode.displayName(forPath:)` (existing).
-- Produces: `KBStatsView(service:onOpen:)` — `onOpen(String)` opens a note in the editor.
+- Consumes: `KBNetworkStats` + its display helpers (Tasks 2–3), `KBNode.displayName(forPath:)`, `FlowLayout`, `DS.Status.ok/warn`, `DS.Accent.ink`, `DS.Paper.sunk`, `.plainHit` (all exist on `main`).
+- Produces: `KBStatsView(stats:onOpen:)`. `onOpen(String)` opens a note in the editor.
 
-**No unit test** (engine covered in Task 1); build + manual `/run`.
+**No unit test** (logic covered by Tasks 2–3); build + manual `/run`.
 
-- [ ] **Step 1: Create `KBStatsView` with the header + health block**
+- [ ] **Step 1: Create `KBStatsView` with the health block**
 
 Create `Scout/KnowledgeBase/Views/KBStatsView.swift`:
 
 ```swift
 import SwiftUI
 
-/// The overview's NETWORK section: vault-health problem lists (clickable) plus
-/// read-only connectivity insight. All data from `service.networkStats()`.
+/// The overview's network section: vault-health problem lists (clickable) plus
+/// read-only connectivity insight, rendered from one `KBNetworkStats` value.
 struct KBStatsView: View {
-    @ObservedObject var service: KnowledgeBaseService
+    let stats: KBNetworkStats
     /// Open a note in the editor.
     let onOpen: (String) -> Void
 
     private let topN = 5
 
     var body: some View {
-        let stats = service.graphStats()
-        let net = service.networkStats()
         VStack(alignment: .leading, spacing: 20) {
-            Text("\(stats.notes) notes · \(stats.links) connections")
-                .font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
-            healthBlock(net)
-            // insightBlock(net) added in Task 3
+            healthBlock
+            // insightBlock added in Task 5
         }
     }
 
     // MARK: - Health
 
-    @ViewBuilder
-    private func healthBlock(_ net: KBNetworkStats) -> some View {
+    private var healthBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("VAULT HEALTH").font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
-            pathRow("Dangling links", icon: "link.badge.plus",
-                    labels: net.dangling.map { "\(KBNode.displayName(forPath: $0.source)) → \($0.target)" },
-                    paths: net.dangling.map(\.source))
-            pathRow("Orphaned notes", icon: "circle.dashed",
-                    labels: net.orphans.map(KBNode.displayName(forPath:)), paths: net.orphans)
-            islandsRow(net.islands)
-            pathRow("Weakly linked", icon: "link",
-                    labels: net.weaklyLinked.map(KBNode.displayName(forPath:)), paths: net.weaklyLinked)
+            sectionLabel("VAULT HEALTH")
+            row(KBNetworkStats.healthTitle(stats.dangling.count,
+                                           singular: "dangling link", plural: "dangling links"),
+                icon: "link.badge.plus",
+                labels: stats.dangling.map { "\(KBNode.displayName(forPath: $0.source)) → \($0.target)" },
+                paths: stats.dangling.map(\.source))
+            row(KBNetworkStats.healthTitle(stats.orphans.count,
+                                           singular: "orphaned note", plural: "orphaned notes"),
+                icon: "circle.dashed",
+                labels: stats.orphans.map(KBNode.displayName(forPath:)), paths: stats.orphans)
+            islandsRow
+            row(KBNetworkStats.healthTitle(stats.weaklyLinked.count,
+                                           singular: "weakly linked note", plural: "weakly linked notes"),
+                icon: "link",
+                labels: stats.weaklyLinked.map(KBNode.displayName(forPath:)), paths: stats.weaklyLinked)
         }
     }
 
-    /// A health row whose items each open a note. `labels[i]` is shown, `paths[i]`
-    /// is opened. Shows count + top-N chips + a "show all" disclosure; "✓ none"
-    /// when empty.
-    @ViewBuilder
-    private func pathRow(_ title: String, icon: String, labels: [String], paths: [String]) -> some View {
+    /// A health row: an ok/warn icon + title, then the items as chips.
+    private func row(_ title: String, icon: String, labels: [String], paths: [String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 12)).foregroundStyle(labels.isEmpty ? DS.Status.ok : DS.Status.warn)
-                Text(labels.isEmpty ? "\(title): ✓ none" : "\(labels.count) \(title.lowercased())")
-                    .font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+            rowHeader(title, icon: icon, clean: labels.isEmpty)
+            if !labels.isEmpty { chipList(labels, paths) }
+        }
+    }
+
+    /// Islands are lists of lists: one chip row per island, top-N islands
+    /// shown, the rest behind a disclosure.
+    private var islandsRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            rowHeader(KBNetworkStats.healthTitle(stats.islands.count,
+                                                 singular: "disconnected island",
+                                                 plural: "disconnected islands"),
+                      icon: "square.on.square.dashed", clean: stats.islands.isEmpty)
+            ForEach(Array(stats.islands.prefix(topN).enumerated()), id: \.offset) { _, island in
+                chips(island.map(KBNode.displayName(forPath:)), island)
             }
-            if !labels.isEmpty {
-                chips(Array(labels.prefix(topN)), Array(paths.prefix(topN)))
-                if labels.count > topN {
-                    DisclosureGroup("Show all \(labels.count)") {
-                        chips(Array(labels.dropFirst(topN)), Array(paths.dropFirst(topN)))
-                            .padding(.top, 4)
+            if stats.islands.count > topN {
+                DisclosureGroup("Show all \(stats.islands.count)") {
+                    ForEach(Array(stats.islands.dropFirst(topN).enumerated()), id: \.offset) { _, island in
+                        chips(island.map(KBNode.displayName(forPath:)), island)
                     }
-                    .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                    .padding(.top, 4)
                 }
+                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
             }
+        }
+    }
+
+    // MARK: - Building blocks
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text).font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+    }
+
+    private func rowHeader(_ title: String, icon: String, clean: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 12))
+                .foregroundStyle(clean ? DS.Status.ok : DS.Status.warn)
+            Text(title).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+        }
+    }
+
+    /// The first `topN` items as chips, plus a "Show all N" disclosure for the
+    /// rest. `labels[i]` is shown; `paths[i]` is opened.
+    @ViewBuilder
+    private func chipList(_ labels: [String], _ paths: [String]) -> some View {
+        chips(Array(labels.prefix(topN)), Array(paths.prefix(topN)))
+        if labels.count > topN {
+            DisclosureGroup("Show all \(labels.count)") {
+                chips(Array(labels.dropFirst(topN)), Array(paths.dropFirst(topN)))
+                    .padding(.top, 4)
+            }
+            .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
         }
     }
 
@@ -343,132 +599,90 @@ struct KBStatsView: View {
                     Text(pair.0).font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(Capsule().fill(DS.Paper.sunk))
-                }.buttonStyle(.plain)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func islandsRow(_ islands: [[String]]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "square.on.square.dashed").font(.system(size: 12))
-                    .foregroundStyle(islands.isEmpty ? DS.Status.ok : DS.Status.warn)
-                Text(islands.isEmpty ? "Disconnected islands: ✓ none" : "\(islands.count) disconnected islands")
-                    .font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
-            }
-            ForEach(Array(islands.prefix(topN).enumerated()), id: \.offset) { _, island in
-                chips(island.map(KBNode.displayName(forPath:)), island)
-            }
-            if islands.count > topN {
-                DisclosureGroup("Show all \(islands.count)") {
-                    ForEach(Array(islands.dropFirst(topN).enumerated()), id: \.offset) { _, island in
-                        chips(island.map(KBNode.displayName(forPath:)), island)
-                    }
-                }.font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                }
+                .buttonStyle(.plainHit)
             }
         }
     }
 }
 ```
 
-Note: if `DS.Status.ok` doesn't exist, use `DS.Ink.p4` for the "none" state (check `DS.Status` — `warn` is used in `KBEditorView`; pick an existing calm color for ok).
-
 - [ ] **Step 2: Embed in `KBOverviewView`**
 
-In `KBOverviewView.swift` (post-feature-2 form), replace the header's `Text("\(stats.notes) notes · \(stats.links) connections")` line with `KBStatsView(service: service, onOpen: onNavigate)` placed as its own section between the title header and the QUICK ACCESS grid. Remove the now-unused local `stats` binding if nothing else uses it (the `present`/`links` computations stay).
+In `Scout/KnowledgeBase/Views/KBOverviewView.swift`:
+
+1. Line 25 — replace `let stats = service.graphStats()` with `let net = service.networkStats()`. (`stats` has no other use in the file; `present`/`links` stay.)
+2. Line 41 — replace `Text("\(stats.notes) notes · \(stats.links) connections")` with `Text("\(net.noteCount) notes · \(net.linkCount) connections")`.
+3. After the header `VStack` closes (line 43), before `if !links.isEmpty {` (line 45), insert:
+
+```swift
+
+                KBStatsView(stats: net, onOpen: onNavigate)
+```
+
+The resulting order is: title + totals → network section → QUICK ACCESS → MAP (`KBMapView`, line 71) → hint text.
 
 - [ ] **Step 3: Build**
 
-Run: `xcodebuild -scheme Scout -configuration Debug -destination 'platform=macOS' build 2>&1 | tail -15`
-Expected: `** BUILD SUCCEEDED **` (if a `DS` token is missing, swap for the nearest existing one per the note above and rebuild).
+Run: `xcodebuild -project Scout.xcodeproj -scheme Scout -configuration Debug -destination 'platform=macOS' build 2>&1 | tail -15`
+Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 4: Run the full test target**
 
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' 2>&1 | tail -15`
-Expected: PASS — "Executed N tests, with 0 failures".
+Run: `xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests 2>&1 | tail -15`
+Expected: `** TEST SUCCEEDED **`, 0 failures. (Known load-flaky tests: `watcherCoalescesAppendBursts`, `FileWatcherTests`' 3 s ceiling. If one of those fails, re-run it alone before treating it as a regression.)
 
 - [ ] **Step 5: Manual verification**
 
 Via `/run`, on the KB overview:
-1. A VAULT HEALTH block shows counts for dangling links / orphans / islands / weakly-linked.
-2. Each non-empty row shows up to 5 clickable chips; clicking one opens that note.
-3. Rows with > 5 items show "Show all N" that expands the rest.
-4. A metric with zero problems shows "✓ none".
+1. A VAULT HEALTH block sits between the title and QUICK ACCESS, showing dangling links / orphans / islands / weakly-linked.
+2. Each non-empty row shows up to 5 clickable chips; clicking one opens that note (the whole chip is clickable, not just the glyphs).
+3. Rows with > 5 items show "Show all N", which expands the rest.
+4. A metric with zero problems shows "<Metric>: ✓ none" with a green icon.
+5. The header totals match what they showed before the change.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add Scout/KnowledgeBase/Views/KBStatsView.swift Scout/KnowledgeBase/Views/KBOverviewView.swift
-git commit -m "feat(kb): vault-health stats block on the overview (orphans/dangling/islands/weak)"
+git commit -m "feat(kb): vault-health stats block on the overview (dangling/orphans/islands/weak)"
 ```
 
 ---
 
-## Task 3: `KBStatsView` — Insight block
+## Task 5: `KBStatsView` — Insight block
 
 **Files:**
 - Modify: `Scout/KnowledgeBase/Views/KBStatsView.swift`
 
 **Interfaces:**
-- Consumes: `KBNetworkStats.topHubs/avgDegree/maxDegree/byType/clusterCount/largestComponentSize`; `KBEntityGroup.color/label`.
+- Consumes: `KBNetworkStats.degreeSummary/componentsSummary/topHubs/byType`; `KBEntityGroup.color/label` (the same colors `KBGraphLegend` in `KBLocalGraphView.swift:77` draws).
 - Produces: `insightBlock` in `KBStatsView`.
 
-**No unit test**; build + manual `/run`.
+**No unit test** (strings covered in Task 3); build + manual `/run`.
 
 - [ ] **Step 1: Add `insightBlock` and call it from `body`**
 
-In `KBStatsView.body`, uncomment/insert `insightBlock(net)` after `healthBlock(net)`. Add:
+In `KBStatsView.body`, replace the `// insightBlock added in Task 5` comment with `insightBlock`. Add after the health section:
 
 ```swift
     // MARK: - Insight
 
-    @ViewBuilder
-    private func insightBlock(_ net: KBNetworkStats) -> some View {
+    private var insightBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("INSIGHT").font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+            sectionLabel("INSIGHT")
+            Text(stats.degreeSummary).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+            Text(stats.componentsSummary).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
 
-            Text("avg \(String(format: "%.1f", net.avgDegree)) · max \(net.maxDegree) connections per note")
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
-
-            Text(net.clusterCount <= 1
-                 ? "1 connected cluster · largest covers \(net.largestComponentSize) notes"
-                 : "\(net.clusterCount) clusters · largest covers \(net.largestComponentSize) notes")
-                .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
-
-            if !net.topHubs.isEmpty {
+            if !stats.topHubs.isEmpty {
                 Text("Top hubs").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
-                FlowLayout(spacing: 6) {
-                    ForEach(net.topHubs.prefix(5)) { hub in
-                        Button { onOpen(hub.path) } label: {
-                            HStack(spacing: 4) {
-                                Text(KBNode.displayName(forPath: hub.path)).font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
-                                Text("\(hub.degree)").font(DS.mono(10)).foregroundStyle(DS.Ink.p4)
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Capsule().fill(DS.Paper.sunk))
-                        }.buttonStyle(.plain)
-                    }
-                }
-                if net.topHubs.count > 5 {
-                    DisclosureGroup("Show all \(net.topHubs.count)") {
-                        FlowLayout(spacing: 6) {
-                            ForEach(net.topHubs.dropFirst(5)) { hub in
-                                Button { onOpen(hub.path) } label: {
-                                    Text("\(KBNode.displayName(forPath: hub.path)) (\(hub.degree))")
-                                        .font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
-                                        .padding(.horizontal, 8).padding(.vertical, 3)
-                                        .background(Capsule().fill(DS.Paper.sunk))
-                                }.buttonStyle(.plain)
-                            }
-                        }.padding(.top, 4)
-                    }.font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
-                }
+                chipList(stats.topHubs.map { "\(KBNode.displayName(forPath: $0.path)) · \($0.degree)" },
+                         stats.topHubs.map(\.path))
             }
 
             Text("By type").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
             FlowLayout(spacing: 10) {
-                ForEach(net.byType.filter { $0.count > 0 }) { tc in
+                ForEach(stats.byType.filter { $0.count > 0 }) { tc in
                     HStack(spacing: 4) {
                         Circle().fill(tc.group.color).frame(width: 7, height: 7)
                         Text("\(tc.group.label) \(tc.count)").font(DS.sans(11)).foregroundStyle(DS.Ink.p2)
@@ -481,51 +695,66 @@ In `KBStatsView.body`, uncomment/insert `insightBlock(net)` after `healthBlock(n
 
 - [ ] **Step 2: Build**
 
-Run: `xcodebuild -scheme Scout -configuration Debug -destination 'platform=macOS' build 2>&1 | tail -15`
+Run: `xcodebuild -project Scout.xcodeproj -scheme Scout -configuration Debug -destination 'platform=macOS' build 2>&1 | tail -15`
 Expected: `** BUILD SUCCEEDED **`.
 
-- [ ] **Step 3: Run the full test target**
-
-Run: `xcodebuild test -scheme Scout -destination 'platform=macOS' 2>&1 | tail -15`
-Expected: PASS — "Executed N tests, with 0 failures".
-
-- [ ] **Step 4: Manual verification**
+- [ ] **Step 3: Manual verification**
 
 Via `/run`, on the KB overview INSIGHT block:
 1. Degree line reads "avg X.X · max N connections per note".
-2. Clusters line reads "K clusters · largest covers M notes".
-3. Top hubs shows the 5 most-connected notes with their degree; clicking opens one; "show all" expands to 20.
+2. Components line reads "1 main cluster + K islands · largest covers M notes" (or the 1-cluster / no-links wording).
+3. Top hubs shows the 5 most-connected notes as "name · degree"; clicking opens one; "Show all" expands to 20.
 4. "By type" shows a colored count per present entity group, matching the map legend colors.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add Scout/KnowledgeBase/Views/KBStatsView.swift
-git commit -m "feat(kb): network insight block — degree summary, top hubs, per-type, components"
+git commit -m "feat(kb): network insight block — degree summary, components, top hubs, per-type"
 ```
+
+---
+
+## Task 6: Full verification + coverage floor
+
+- [ ] **Step 1: Full test target with a result bundle (as CI runs it)**
+
+Run:
+```bash
+rm -rf TestResults.xcresult
+xcodebuild test -project Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests -resultBundlePath TestResults.xcresult 2>&1 | tail -15
+```
+Expected: `** TEST SUCCEEDED **`.
+
+- [ ] **Step 2: Coverage floor**
+
+Run: `scripts/check-coverage.sh TestResults.xcresult`
+Expected: exit 0, coverage ≥ the floor. A local run reads ~0.5–1 point above CI (see the script header), so treat a local margin under ~1 point as a warning. Don't edit `coverage-floor.txt` from a local number.
+
+- [ ] **Step 3: Literal re-check**
+
+If any test literal changed from this plan, re-run the vault check in repo `CLAUDE.md` (exclude `~/Scout/.claude/`; expect 0 file hits for invented names).
 
 ---
 
 ## Self-Review
 
 **1. Spec coverage** (against `2026-07-07-kb-network-stats-design.md`):
-- All 4 health metrics (orphans, weakly-linked, dangling, islands) → Task 1 (engine) + Task 2 (view). ✓
-- All 4 insight metrics (top hubs, degree summary, per-type, components) → Task 1 + Task 3. ✓
-- Count + top-5 + "show all" disclosure; "✓ none" empty state → Task 2/3. ✓
+- All 4 health metrics (dangling, orphans, islands, weakly-linked) → Task 2 (engine) + Task 4 (view). ✓
+- All 4 insight metrics (top hubs, degree summary, per-type, components) → Task 2 + Task 3 (strings) + Task 5. ✓
+- Count + top-5 + "Show all" disclosure; "✓ none" empty state → Tasks 3/4/5. ✓
 - Click-to-open on every note/hub/island item → `onOpen` throughout. ✓
-- One-pass, no new I/O → `networkStats()` reads only index + edges. ✓
-- Exact definitions (orphan/weak/dangling/island/hub) → encoded + tested in Task 1. ✓
-- Stacks on feature 2 → Global Constraints + KBOverviewView embed note. ✓
+- One pass, no new I/O; overview drops its separate `graphStats()` pass → Task 2 + Task 4 Step 2. ✓
+- Exact definitions (orphan/weak/dangling/island/hub) + determinism incl. equal-size components → encoded + tested in Task 2. ✓
+- Single adjacency source shared with feature 2's code → Task 1. ✓
+- Empty vault + case-variant links → Task 2 tests. ✓
 
-**2. Placeholder scan:** No "TBD"/"handle edge cases"/"similar to"; every code step is complete. The only conditional is the `DS.Status.ok` fallback note — an explicit, resolvable instruction, not a placeholder.
+**2. Placeholder scan:** No "TBD", "handle edge cases" or "similar to". Every code step is complete, and every `DS`/layout symbol was verified to exist on `main` @ `7a037c9`.
 
-**3. Type consistency:** `networkStats(hubCap:)`, `KBNetworkStats` fields, `KBDanglingLink`/`KBHub`/`KBTypeCount`, `KBStatsView(service:onOpen:)` — names identical across tasks. `KBEntityGroup.color/label/allCases` and `KBNode.displayName(forPath:)` used as defined.
+**3. Type consistency:** `adjacency(of:)`, `networkStats(hubCap:)`, `KBNetworkStats` fields (incl. `noteCount`/`linkCount`), `KBDanglingLink`/`KBHub`/`KBTypeCount`, `degreeSummary`/`componentsSummary`/`healthTitle`, and `KBStatsView(stats:onOpen:)` are named identically across tasks.
 
 ## Notes for the implementer
 
-- **Base on feature 2.** Branch from feature-2's code so `KBOverviewView` already has `KBMapView` and the degree helpers exist. If feature 2 changed `KBOverviewView`'s structure, place `KBStatsView` between the title header and QUICK ACCESS; the exact lines depend on the merged feature-2 form.
-- **`DS` tokens:** verify `DS.Status.ok`/`DS.Status.warn` exist (`warn` is used in `KBEditorView`); if `ok` is absent, use a calm existing color (e.g. `DS.Ink.p4`). Don't invent tokens.
-- **Recompute cost:** `networkStats()` runs per overview `body` eval like `graphStats()` already does; O(nodes+edges). Memoize by index identity only if profiling shows churn.
-- **Overlap with feature 2:** `topHubs` here and feature 2's `KBGraph.topHubs` both rank by degree; they operate on different inputs (paths vs `KBGraphNode`s) so no shared type is forced, but keep the degree-desc/id-asc ordering identical for consistency.
-```
-
+- **Hub ordering** matches `KBGraph.topHubs(maxNodes:)` (`KBGraph.swift:107`): degree desc, id asc. Keep them identical.
+- **Recompute cost:** `networkStats()` runs per overview `body` eval, replacing the `graphStats()` call that ran there. O(nodes+edges) on ~500 notes. Memoize by index identity only if profiling shows churn.
+- **`fullGraph()`** keeps its own degree map. Moving it onto `adjacency(of:)` is out of scope (no behavior change, no need).

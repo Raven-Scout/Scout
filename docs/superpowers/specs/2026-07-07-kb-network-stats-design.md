@@ -2,21 +2,22 @@
 
 - **Date:** 2026-07-07
 - **Status:** Approved (design); ready for implementation plan
+- **Revalidated:** 2026-10-03 against `main` @ `7a037c9` — every code reference below re-checked; see "Revalidation 2026-10-03" at the end.
 - **Feature family:** Post-v0.9.0 Knowledge Base follow-ups (feature 3 of 3)
 - **Related:**
-  - Builds on the Knowledge Base tab (v0.9.0)
-  - **Stacks on feature 2 — graph navigability (PR #73):** shares the degree-ranking helper and the `KBOverviewView` layout; implement after #73 merges.
-  - Sibling: "Comment for Scout" (feature 1, PR #72)
+  - Builds on the Knowledge Base tab (v0.9.0, #69)
+  - **Builds on feature 2 — graph navigability** (spec #73, implemented in #90, on `main`): shares the degree ordering (`KBGraph.topHubs`) and the `KBOverviewView` layout, which now embeds `KBMapView`.
+  - Sibling: "Comment for Scout" (feature 1, spec #72, implemented in #77)
 
 ## Summary
 
-Turn the overview's single "272 notes · N connections" line into a **NETWORK** section with two parts: a **Vault Health** block that surfaces actionable problems (orphans, weakly-linked notes, dangling wikilinks, disconnected islands) as clickable lists, and an **Insight** block that summarizes the graph's shape (top hubs, degree summary, per-entity-type breakdown, connected-components summary). All metrics are computed in one pass over the existing in-memory index + edge set — no new disk I/O.
+Turn the overview's single "477 notes · N connections" line into a **NETWORK** section with two parts: a **Vault Health** block that surfaces actionable problems (orphans, weakly-linked notes, dangling wikilinks, disconnected islands) as clickable lists, and an **Insight** block that summarizes the graph's shape (top hubs, degree summary, per-entity-type breakdown, connected-components summary). All metrics are computed in one pass over the existing in-memory index + edge set — no new disk I/O.
 
 ## Goals
 
 - Answer two questions at a glance: **"what should I clean up?"** (health) and **"what's the shape of my knowledge?"** (insight).
 - **Actionable:** every health item and hub clicks through to open that note.
-- **Compact by default:** each list shows a count + top ~5, with a "show all N" disclosure — never a wall of 272 rows.
+- **Compact by default:** each list shows a count + top ~5, with a "show all N" disclosure — never a wall of ~500 rows.
 - Reuse existing machinery (`undirectedEdges()`, degree/adjacency, `KBEntityGroup`, feature 2's degree ranking); add no new data source.
 
 ## Non-goals
@@ -28,9 +29,10 @@ Turn the overview's single "272 notes · N connections" line into a **NETWORK** 
 
 ## Background (current state)
 
-- `graphStats()` returns only `(notes, links)`; `KBOverviewView` shows `"\(notes) notes · \(links) connections"` (line 43-44).
-- `undirectedEdges()` yields the resolved undirected edge set; `index.outByFile`/`index.stemToPath` give raw outgoing targets + resolution (so an unresolved target = a dangling link); `index.typeByFile` + `KBEntityGroup.of` give per-note grouping.
-- Feature 2 adds `KBGraph.topHubs` / degree ranking and a `KBMapView` on the overview — feature 3's "top hubs" is the same ranking, and both render on the overview, hence the stacking.
+- `graphStats()` (`KnowledgeBaseService.swift:329`) returns only `(notes, links)`; `KBOverviewView` shows `"\(stats.notes) notes · \(stats.links) connections"` (`KBOverviewView.swift:41-42`), then QUICK ACCESS, then `KBMapView` (the MAP section, line 71).
+- `undirectedEdges()` (`KnowledgeBaseService.swift:271`, `private`) yields the resolved undirected edge set; `index.outByFile`/`index.stemToPath` give raw outgoing targets + resolution (so an unresolved target = a dangling link — `outgoingLinks(for:)` already models this as `KBLink.resolved == nil`); `index.typeByFile` + `KBEntityGroup.of` give per-note grouping. `KBIndex` and `KBEntityGroup` both live in `Models/KBGraph.swift`.
+- Adjacency is built today in two places: `localGraph(around:)` builds `[String: Set<String>]` and `fullGraph()` builds a degree map. Neither is shared.
+- Feature 2 added `KBGraph.topHubs(maxNodes:)` (degree desc, id asc) and `KnowledgeBaseService.hubGraph(maxNodes:)` feeding `KBMapView`. Feature 3's "top hubs" uses the same ordering on paths rather than `KBGraphNode`s.
 
 ## Design
 
@@ -40,6 +42,9 @@ A new value type computed once from the index + `undirectedEdges()`:
 
 ```
 struct KBNetworkStats {
+    // totals (replaces the overview's separate graphStats() call — same pass)
+    let noteCount: Int
+    let linkCount: Int
     // health
     let orphans: [String]              // degree 0 (relative paths)
     let weaklyLinked: [String]         // degree exactly 1
@@ -55,18 +60,22 @@ struct KBNetworkStats {
 }
 ```
 
-Computation (all over `tree.allFiles` md notes + adjacency built from `undirectedEdges()`):
+Computation (all over `tree.flatMap(\.allFiles)` md notes + adjacency built from `undirectedEdges()`):
+- **adjacency** comes from one small `private static` helper, which `localGraph(around:)` also switches to. That is the "single degree/adjacency source" this spec promises, so the two paths can't drift.
 - **degree(path)** = adjacency neighbour count. `orphans` = degree 0; `weaklyLinked` = degree 1.
 - **dangling** = for each `(source, targets)` in `index.outByFile`, each `target` whose `stemToPath[target.lowercased()]` is nil (skip self). Reuses the same resolution `outgoingLinks` already does per-note.
 - **components** = BFS/union-find over adjacency across *all* md notes (a degree-0 note is its own singleton component). Partition: the largest component is the "mainland"; `islands` = other components with size ≥ 2; singleton components are the `orphans` (already captured). `clusterCount` = count of components with size ≥ 2; `largestComponentSize` = size of the biggest.
 - **topHubs** = notes sorted by degree desc (id asc tiebreak), capped at 20; `avgDegree` = 2·|edges| / |notes|; `maxDegree` = max degree.
 - **byType** = count of md notes per `KBEntityGroup.of(path, type:)`, all 7 groups (0s included).
+- **noteCount / linkCount** = |md notes| / |`undirectedEdges()`|, identical to `graphStats()` (which stays for its existing callers and tests).
 
 Determinism: all lists sorted (paths by degree-then-id for hubs; problem lists by path) so the UI is stable across reparses.
 
+Display strings (the degree line, the components line, and the "N things / ✓ none" row titles) are pure functions on `KBNetworkStats`, so they're unit-tested rather than only eyeballed.
+
 ### Presentation — new `KBStatsView` on the overview
 
-Lives in its own file (like `KBMapView`); `KBOverviewView` embeds it where the `"\(notes) notes · \(links) connections"` line is today, so the header keeps the note/connection totals and the NETWORK section sits above the MAP.
+Lives in its own file (like `KBMapView`). It is a plain view over a `KBNetworkStats` value plus an `onOpen` closure, with no service reference. `KBOverviewView` calls `service.networkStats()` once per body evaluation. The header line reads its totals from `noteCount`/`linkCount` (dropping the separate `graphStats()` pass), and `KBStatsView` sits as its own section between the header and QUICK ACCESS, so it sits above the MAP.
 
 **Vault Health** — one row per metric, in severity order (dangling, orphans, islands, weakly-linked):
 - Row = an icon + "N <label>" + the top ~5 items as clickable chips/links (`onOpen(path)`); dangling shows `source → missing-target`; islands show the island's notes (open any).
@@ -76,14 +85,15 @@ Lives in its own file (like `KBMapView`); `KBOverviewView` embeds it where the `
 **Insight** — compact, read-only:
 - Degree line: "avg 3.1 · max 47 connections".
 - Top hubs: the top ~5 clickable, "show all" expands to 20.
-- Per-type breakdown: a colored count per `KBEntityGroup` (reusing `KBGraphLegend` colors), e.g. small bars or "● Projects 73".
-- Components line: "1 main cluster + K islands · largest covers M notes" (from `clusterCount` / `largestComponentSize`).
+- Per-type breakdown: a colored count per `KBEntityGroup` (`KBEntityGroup.color`, the same colors `KBGraphLegend` in `KBLocalGraphView.swift` draws), e.g. "● Projects 73".
+- Components line: "1 main cluster + K islands · largest covers M notes" (from `clusterCount` / `largestComponentSize`; K = `clusterCount − 1`). With one cluster: "1 main cluster · covers M notes". With no links at all: "No linked notes yet".
 
 ### Data flow
 
 ```
-overview body → service.networkStats()  (one pass; bounded work)
-  → KBStatsView renders Health (top-5 + disclosure) + Insight
+overview body → let net = service.networkStats()  (one pass; bounded work)
+  → header: "\(net.noteCount) notes · \(net.linkCount) connections"
+  → KBStatsView(stats: net, onOpen: onNavigate) renders Health (top-5 + disclosure) + Insight
   → click any note/hub/island item → onOpen(path) → editor
 ```
 
@@ -91,20 +101,33 @@ overview body → service.networkStats()  (one pass; bounded work)
 
 - **Empty vault / no edges:** all lists empty; health shows all "✓ none"; insight shows "avg 0 · max 0", byType all 0; no crash.
 - **All-dangling note:** a note whose only links are unresolved has degree 0 → counts as an orphan *and* contributes dangling rows (both true; intended).
-- **Self-links / duplicate links:** already normalized away by `undirectedEdges()`; dangling dedups per (source,target).
+- **Self-links / duplicate links:** already normalized away by `undirectedEdges()`; dangling dedups per (source,target) for free, since `extractWikilinks` already de-duplicates targets case-insensitively per note.
+- **Case:** `[[Hub]]` resolves to `hub.md` (`stemToPath` is keyed lowercased), so it is not dangling.
 - **Large problem lists:** capped display (top-5 + "show all") keeps the section bounded; "show all" lists can be long but are opt-in.
-- **Recompute cost:** `networkStats()` runs per overview `body` eval like the existing `graphStats()`; if profiling shows churn, memoize by the index identity. O(nodes+edges) either way.
+- **Recompute cost:** `networkStats()` replaces the overview's `graphStats()` call, so the overview does the same number of `undirectedEdges()` passes as today (the map's `hubGraph` does its own, unchanged). O(nodes+edges) on ~500 notes; memoize by index identity only if profiling shows churn.
 
 ## Testing
 
-Pure-logic tests over a small on-disk fixture (neutral names, mirroring the existing `KnowledgeBaseService graph` fixture suite):
+Pure-logic Swift Testing tests over a small on-disk fixture (`@MainActor @Suite`, `NoopFS`, `await reparseAndWait()` — mirroring the existing `KnowledgeBaseService graph` suite in `ScoutTests/KnowledgeBase/KnowledgeBaseTests.swift`). Fixture names are the repo's shared stand-ins (`alex`/`priya`/`sam`) plus generic nouns, checked at zero vault hits:
 - orphan (degree 0) + weakly-linked (degree 1) detection;
-- dangling detection (a `[[missing]]` target with no note);
+- dangling detection (a `[[missing]]` target with no note), and a case-variant link that does resolve;
 - component/island partition (build two clusters + a singleton; assert largest is mainland, the size-2 cluster is an island, the singleton is an orphan);
-- degree summary (avg/max) and per-type counts.
-- The view is build + manual `/run` verification.
+- degree summary (avg/max), hub ordering, per-type counts, totals equal to `graphStats()`;
+- empty vault → `.empty`-shaped stats, no crash;
+- `localGraph` keeps passing its existing tests after the adjacency extraction;
+- the display-string helpers (degree line, components line, row titles incl. singular/plural/"✓ none").
+- The view itself is build + manual `/run` verification. The pure helpers keep the new untested surface to SwiftUI layout only, which matters for the CI coverage floor (`scripts/check-coverage.sh`, 70.0%).
 
 ## Out of scope / follow-ups
 
 - Time/staleness metrics; directed-graph centrality; auto-fix actions; plotted histograms.
-- Sharing the adjacency/degree/component helpers with feature 2 is expected — the plan will extract a single degree/adjacency source rather than duplicate it.
+- `fullGraph()` keeps its own degree map. Moving it onto the shared adjacency helper is a no-behavior-change cleanup this feature doesn't need.
+
+## Revalidation 2026-10-03
+
+Re-checked against `main` @ `7a037c9` after features 1 and 2 shipped (#77, #90). What moved and what changed here:
+
+- **Feature 2 is merged and implemented**, so the "implement after #73 merges / base on feature-2 code" stacking caveat is gone; this branches from `main`.
+- **Line refs:** the overview totals line moved from 43-44 to `KBOverviewView.swift:41-42`; `KBIndex` is now at the end of `KBGraph.swift` (137-148), after `KBGraph.topHubs`/`filtered`; `hubGraph` ends at `KnowledgeBaseService.swift:353`.
+- **Vault size:** ~272 → 477 notes; examples updated.
+- **Design tweaks (flagged for review):** (1) `KBNetworkStats` gains `noteCount`/`linkCount` so the overview drops its separate `graphStats()` pass; (2) `KBStatsView` takes the stats value rather than the service; (3) the adjacency extraction this section used to defer is now in the plan, because feature 2's code exists to share it with; (4) display strings move into tested pure helpers to protect the coverage floor added since (#102/#107).
