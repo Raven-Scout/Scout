@@ -19,6 +19,7 @@ Before doing anything else, read the caches that the runner script generated bef
 | Cache file | What's in it | Replaces |
 |---|---|---|
 | `.scout-cache/kb-filter.md` | Per-file staleness: which KB files are stale, fresh, or undated, with ages | Walking every KB file to check "Last updated" headers |
+| `.scout-cache/vault-freshness.md` | The same files ranked by their last git commit against their freshness budget, plus files whose claimed "Last verified" date disagrees with git | Running `git log` per file to see what actually changed |
 | `.scout-cache/session-context.json` | Recent git log, open PRs, PR review requests, KB file dates, open personal tasks | Running `git log`, `gh pr list`, `gh search prs`, parser queries |
 | `.scout-cache/cc-sessions.md` | Non-{{INSTANCE_NAME}} Claude Code sessions from the last 24h: project paths, first prompts, files touched | Manually discovering + parsing `~/.claude/projects/*/**.jsonl` |
 
