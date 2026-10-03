@@ -54,6 +54,11 @@ REPORTED = ("kept", "merged", "conflict", "replaced")
 
 RENDER_HISTORY = Path(__file__).resolve().parent.parent / "defaults" / "render-history.json"
 
+# Managed files the vault grows on purpose (bootstrap._CAT_MERGE_FILES, which
+# the read-only doctor can't import): their edits are vault content, so they
+# are never offered as a plugin patch.
+VAULT_DEVELOPED_FILES = frozenset({"knowledge-base/ontology/parser.py"})
+
 Merge = Callable[..., MergeResult]
 
 
@@ -455,15 +460,43 @@ def _has_conflict_markers(text: str) -> bool:
     return any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines())
 
 
-def _update_blocks_missing(base: str, update: str, live: str) -> list[list[str]]:
-    """The blocks of lines ``update`` added to ``base`` that ``live`` lacks."""
-    b_lines, u_lines = base.split("\n"), update.split("\n")
+def _lines(text: str) -> list[str]:
+    """Lines compared with trailing whitespace stripped, as a hand merge may leave it."""
+    return [ln.rstrip() for ln in text.split("\n")]
+
+
+def _runs(lines: list[str], block: list[str]) -> int:
+    """How many times ``block`` occurs in ``lines`` as a contiguous run of whole lines."""
+    n = len(block)
+    return sum(1 for i in range(len(lines) - n + 1) if lines[i : i + n] == block)
+
+
+def _update_changes_missing(base: str, update: str, live: str) -> list[str]:
+    """The changes ``update`` made to ``base`` that ``live`` doesn't have, one
+    line describing each (empty: the update looks merged).
+
+    Each block of lines the update adds must be in ``live`` as a run of whole
+    lines, at least as often as it is in the update, so a short line (``fi``)
+    the file already had elsewhere doesn't count. Each block it deletes must
+    occur in ``live`` no more often than in the update. Blank-only blocks are
+    ignored. A line-level check, not a proof: a merge that rewrote the update's
+    lines is refused, and --drop-update records it anyway.
+    """
+    b_lines, u_lines, l_lines = _lines(base), _lines(update), _lines(live)
     matcher = difflib.SequenceMatcher(a=b_lines, b=u_lines, autojunk=False)
-    missing = []
-    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
-        block = u_lines[j1:j2]
-        if tag in ("insert", "replace") and any(ln.strip() for ln in block) and "\n".join(block) not in live:
-            missing.append(block)
+    missing: list[str] = []
+
+    def first(block: list[str]) -> str:
+        return next(ln for ln in block if ln.strip()).strip()
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        added, deleted = u_lines[j1:j2], b_lines[i1:i2]
+        if tag in ("insert", "replace") and any(ln.strip() for ln in added):
+            if _runs(l_lines, added) < _runs(u_lines, added):
+                missing.append(f"adds {first(added)!r}")
+        if tag in ("delete", "replace") and any(ln.strip() for ln in deleted):
+            if _runs(l_lines, deleted) > _runs(u_lines, deleted):
+                missing.append(f"removes {first(deleted)!r}")
     return missing
 
 
@@ -475,9 +508,11 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
     vault's own edit on top of the plugin's, which it keeps. That would drop
     the plugin's update for good if it was never merged in, so unless
     ``drop_update`` says that is the intent, every block of lines the update
-    adds must be in the file. Parked ``.vault`` copies are deleted. Raises
-    ``ValueError`` when nothing is parked, the file is missing, still holds
-    conflict markers, or lacks the update.
+    adds must be in the file and every block it removes gone from it (see
+    ``_update_changes_missing``). With no recorded base there is nothing to
+    check that against, so only ``drop_update`` settles it. Parked ``.vault``
+    copies are deleted. Raises ``ValueError`` when nothing is parked, the file
+    is missing, still holds conflict markers, or lacks the update.
     """
     if Path(rel).is_absolute() or ".." in Path(rel).parts:
         raise ValueError(f"{rel}: give the file's vault-relative path, e.g. scripts/heartbeat.sh")
@@ -494,13 +529,19 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
         if _has_conflict_markers(live):
             raise ValueError(f"{rel} still has conflict markers; finish the merge first")
         base = _read(snapshot_path(vault, rel))
-        missing = [] if drop_update or base is None else _update_blocks_missing(base, parked_update, live)
-        if missing:
-            first = next(ln for ln in missing[0] if ln.strip()).strip()
+        if base is None and not drop_update:
             raise ValueError(
-                f"{rel} doesn't have the parked update yet ({len(missing)} change(s) missing, e.g. {first!r}). "
-                f"Merge it in (draft: {_rel(vault, _drift_path(vault, rel, MERGE_SUFFIX))}), or take it with "
-                f"`cp {_rel(vault, plugin)} {rel}`; to keep your version and drop the update, add --drop-update"
+                f"{rel} has no record of the plugin's last render, so there is no telling whether the parked "
+                f"update ({_rel(vault, plugin)}) is merged into it. Merge it in, or take it with "
+                f"`cp {_rel(vault, plugin)} {rel}`; then, to record your file as it is, add --drop-update"
+            )
+        missing = [] if drop_update or base is None else _update_changes_missing(base, parked_update, live)
+        if missing:
+            raise ValueError(
+                f"{rel} doesn't have the parked update yet ({len(missing)} change(s) missing, e.g. the update "
+                f"{missing[0]}). Merge it in (draft: {_rel(vault, _drift_path(vault, rel, MERGE_SUFFIX))}), or "
+                f"take it with `cp {_rel(vault, plugin)} {rel}`; to keep your file as it is and drop what it "
+                f"lacks of the update, add --drop-update"
             )
         _write(snapshot_path(vault, rel), parked_update)
         _remove(vault, _drift_path(vault, rel, MERGE_SUFFIX))

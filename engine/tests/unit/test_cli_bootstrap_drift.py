@@ -153,6 +153,50 @@ def test_drift_resolve_takes_several_files(vault: Path) -> None:
     assert not (vault / ".scout-state" / "drift").exists()
 
 
+PARSER = "knowledge-base/ontology/parser.py"
+
+
+def test_drift_patch_always_warns_to_review_for_private_content(vault: Path) -> None:
+    """Only template-variable values are detected; a name or ID typed into an
+    added line is not, and the plugin repo is public."""
+    _append(vault / HEARTBEAT, FIX)
+
+    result = runner.invoke(cli.app, ["bootstrap", "drift", "--patch"])
+
+    assert result.exit_code == 0, result.output
+    assert "review every added line" in result.stderr
+
+
+def test_drift_patch_leaves_out_a_vault_developed_file(vault: Path) -> None:
+    """parser.py is grown in the vault on purpose (its ontology); its edits are
+    vault content, never a plugin patch."""
+    _append(vault / PARSER, "# vault ontology extension\n")
+
+    result = runner.invoke(cli.app, ["bootstrap", "drift", "--patch"])
+
+    assert result.exit_code == 0, result.output
+    assert PARSER not in result.stdout and "vault ontology extension" not in result.stdout
+    assert f"skipped {PARSER}" in result.stderr
+
+
+def test_drift_does_not_suggest_upstreaming_a_vault_developed_file(vault: Path) -> None:
+    _append(vault / PARSER, "# vault ontology extension\n")
+
+    listing = runner.invoke(cli.app, ["bootstrap", "drift"])
+    doctor = runner.invoke(cli.app, ["bootstrap", "doctor", "--no-jobs"])
+
+    assert PARSER in listing.stdout and "--patch" not in listing.stdout
+    [note] = [line for line in doctor.stdout.splitlines() if line.startswith("note: ")]
+    assert PARSER in note and "--patch" not in note
+
+
+def test_drift_drop_update_without_resolve_is_an_error(vault: Path) -> None:
+    result = runner.invoke(cli.app, ["bootstrap", "drift", "--drop-update"])
+
+    assert result.exit_code == 2
+    assert "--resolve" in result.output
+
+
 def test_drift_resolve_drop_update_keeps_the_vault_version(vault: Path) -> None:
     # Make the plugin's current render look like it added its final line (the
     # exec) since the last upgrade, while the vault edited the same spot.

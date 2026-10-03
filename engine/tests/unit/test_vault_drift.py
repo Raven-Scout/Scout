@@ -468,6 +468,94 @@ def test_resolve_refuses_a_conflict_nobody_merged(tmp_path: Path) -> None:
     assert (vault / ".scout-state" / "drift" / f"{REL}.plugin").exists()
 
 
+def _parked(tmp_path: Path, *, base: str | None, update: str, live: str) -> Path:
+    """A vault with a conflict parked for REL: ``update`` waiting, ``live`` in place."""
+    vault = _vault(tmp_path)
+    if base is not None:
+        snap = vd.snapshot_path(vault, REL)
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text(base)
+    (vault / REL).parent.mkdir(parents=True, exist_ok=True)
+    (vault / REL).write_text(live)
+    plugin = vault / ".scout-state" / "drift" / f"{REL}.plugin"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_text(update)
+    return vault
+
+
+def test_resolve_refuses_while_a_line_the_update_deletes_is_still_there(tmp_path: Path) -> None:
+    """An update that only removes a line is still an update: resolving without
+    taking it would keep the removed line for good."""
+    base = '#!/bin/bash\none\nrm -rf "$TMP"\ntwo\nthree\n'
+    update = base.replace('rm -rf "$TMP"\n', "")
+    unmerged = base.replace("two\n", "two (vault)\n")
+    vault = _parked(tmp_path, base=base, update=update, live=unmerged)
+
+    with pytest.raises(ValueError, match="doesn't have the parked update"):
+        vd.resolve(vault, REL)
+
+    (vault / REL).write_text(update.replace("two\n", "two (vault)\n"))  # merged by hand
+    vd.resolve(vault, REL)
+    assert vd.snapshot_path(vault, REL).read_text() == update
+
+
+def test_resolve_wants_an_added_line_where_the_update_put_it_not_just_anywhere(tmp_path: Path) -> None:
+    """A short added line (``fi``) that the file already has elsewhere is not
+    proof the update was merged."""
+    base = "#!/bin/bash\nif a; then\n  x\nfi\nif b; then\n  y\n"
+    update = base + "fi\n"
+    unmerged = base.replace("  x\n", "  x (vault)\n").replace("  y\n", "  y (vault)\n")
+    vault = _parked(tmp_path, base=base, update=update, live=unmerged)
+
+    with pytest.raises(ValueError, match="doesn't have the parked update"):
+        vd.resolve(vault, REL)
+
+    (vault / REL).write_text(unmerged + "fi\n")
+    vd.resolve(vault, REL)
+
+
+def test_resolve_matches_whole_lines_not_substrings(tmp_path: Path) -> None:
+    base = "#!/bin/bash\none\ntwo\n"
+    update = base + "done\n"
+    unmerged = "#!/bin/bash\none (vault)\ntwo\necho undone\n"
+    vault = _parked(tmp_path, base=base, update=update, live=unmerged)
+
+    with pytest.raises(ValueError, match="doesn't have the parked update"):
+        vd.resolve(vault, REL)
+
+
+def test_resolve_ignores_trailing_whitespace_in_a_hand_merge(tmp_path: Path) -> None:
+    base = "#!/bin/bash\none\ntwo\n"
+    update = base + "three\n"
+    merged = "#!/bin/bash\none (vault)\ntwo\nthree   \n"
+    vault = _parked(tmp_path, base=base, update=update, live=merged)
+
+    vd.resolve(vault, REL)
+
+    assert vd.snapshot_path(vault, REL).read_text() == update
+
+
+def test_resolve_with_no_recorded_base_needs_drop_update(tmp_path: Path) -> None:
+    """With no base there is no telling whether the update was merged, so a
+    plain --resolve must not record it as merged."""
+    vault = _parked(tmp_path, base=None, update="plugin version with the fix\n", live="vault version\n")
+
+    with pytest.raises(ValueError, match="--drop-update"):
+        vd.resolve(vault, REL)
+    assert (vault / ".scout-state" / "drift" / f"{REL}.plugin").exists()
+
+    vd.resolve(vault, REL, drop_update=True)
+    assert not (vault / ".scout-state" / "drift" / f"{REL}.plugin").exists()
+
+
+def test_vault_developed_files_match_the_bootstrap_table() -> None:
+    """The doctor and drift read the vault-developed set from here; bootstrap
+    from _CAT_MERGE_FILES. They must name the same files."""
+    from scout.scripts.bootstrap import _CAT_MERGE_FILES
+
+    assert set(_CAT_MERGE_FILES) == vd.VAULT_DEVELOPED_FILES
+
+
 def test_resolve_can_drop_the_update_on_purpose(tmp_path: Path) -> None:
     vault = _conflicted(tmp_path)
     mine = (vault / REL).read_text()

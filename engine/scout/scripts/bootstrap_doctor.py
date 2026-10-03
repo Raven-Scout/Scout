@@ -316,9 +316,12 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
         elif entry.status == "replaced":
             parked += entry.parked
     if edited:
+        # A vault-developed file (parser.py) is grown in the vault on purpose:
+        # its edits are vault content, not a fix to send upstream.
+        upstreamable = [p for p in edited if p not in vault_drift.VAULT_DEVELOPED_FILES]
+        hint = " — `scoutctl bootstrap drift --patch` turns them into a plugin PR" if upstreamable else ""
         notes.append(
-            f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)} "
-            f"— `scoutctl bootstrap drift --patch` turns them into a plugin PR"
+            f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)}{hint}"
         )
     if parked:
         notes.append(

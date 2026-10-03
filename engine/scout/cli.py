@@ -1550,6 +1550,9 @@ def _register_bootstrap() -> None:
         from scout.scripts.template_backport import backport_patch
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
+        if drop_update and not resolve:
+            typer.echo("scoutctl bootstrap drift: --drop-update only applies with --resolve FILE", err=True)
+            raise typer.Exit(code=2)
         if resolve:
             failed = False
             for rel in resolve:
@@ -1589,6 +1592,13 @@ def _register_bootstrap() -> None:
                             err=True,
                         )
                     continue
+                if render.file.vault_developed:
+                    typer.echo(
+                        f"skipped {path}: the vault grows this file on purpose — its edits are vault content, "
+                        "not a plugin fix",
+                        err=True,
+                    )
+                    continue
                 if row.stale:
                     typer.echo(
                         f"skipped {path}: the plugin changed it since the last upgrade — upgrade first", err=True
@@ -1614,6 +1624,14 @@ def _register_bootstrap() -> None:
                 else "nothing to back-port",
                 err=True,
             )
+            # Only template-variable values are detected above; a name, company,
+            # ID or path typed into an added line is not.
+            typer.echo(
+                "warning: review every added line for private vault content (names, companies, issue IDs, "
+                "channels, paths) before opening a PR — the plugin repo is public, and only template-variable "
+                "values are flagged automatically",
+                err=True,
+            )
             return
 
         if not rows:
@@ -1624,7 +1642,7 @@ def _register_bootstrap() -> None:
             typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
             if diff and row.diff:
                 typer.echo(row.diff, nl=False)
-        if any(row.status == "edited" for row in rows):
+        if any(row.status == "edited" and row.path not in vault_drift.VAULT_DEVELOPED_FILES for row in rows):
             typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
 
 
