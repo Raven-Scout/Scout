@@ -2,21 +2,39 @@ name: plugin-lint
 
 on:
   pull_request:
-    paths:
-      - "plugin/**"
-      - "install.sh"
-      - "apps/macos/scripts/**"
-      - ".github/workflows/plugin-lint.yml"
   push:
     branches: [main, "migrate/**"]
     paths:
       - "plugin/**"
       - "install.sh"
       - "apps/macos/scripts/**"
+      - ".claude-plugin/**"
       - ".github/workflows/plugin-lint.yml"
 
 jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and every other job gates on its output.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|apps/macos/scripts/|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/changed-paths\.sh$)'
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -82,3 +100,21 @@ jobs:
 
           print("plugin manifests valid")
           PY
+
+  plugin-lint:
+    name: plugin-lint
+    needs: [changes, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

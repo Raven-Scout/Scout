@@ -7,13 +7,34 @@ on:
       - "plugin/**"
       - ".github/workflows/plugin-test.yml"
   pull_request:
-    paths:
-      - "plugin/**"
-      - ".github/workflows/plugin-test.yml"
   workflow_call:
 
 jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and every other job gates on its output. A
+  # workflow_call (release-plugin tagging a release) or workflow_dispatch is
+  # not a pull_request event, so changed-paths.sh always runs it.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/|\.github/workflows/plugin-test\.yml$|\.github/scripts/changed-paths\.sh$)'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +67,8 @@ jobs:
   #      timings honest.
   # The threshold itself lives in [tool.coverage.report] fail_under.
   coverage:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -61,3 +84,21 @@ jobs:
         run: uv pip install -e ".[dev,full]"
       - name: Pytest with coverage
         run: .venv/bin/pytest tests/ --cov --cov-report=term-missing
+
+  plugin-test:
+    name: plugin-test
+    needs: [changes, test, coverage]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

@@ -8,9 +8,6 @@ on:
       - ".github/workflows/app-ci.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "apps/macos/**"
-      - ".github/workflows/app-ci.yml"
 
 # Cancel an in-flight run when new commits land on the same ref.
 concurrency:
@@ -18,8 +15,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and every other job gates on its output.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(apps/macos/|\.github/workflows/app-ci\.yml$|\.github/scripts/changed-paths\.sh$)'
+
   test:
     name: ScoutTests
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -87,3 +106,21 @@ jobs:
             apps/macos/TestResults.xcresult
             apps/macos/xcodebuild.log
           if-no-files-found: ignore
+
+  app-ci:
+    name: app-ci
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

@@ -11,17 +11,33 @@ name: contract
 
 on:
   pull_request:
-    paths:
-      - "plugin/engine/scout/**"
-      - "plugin/engine/tests/fixtures/contract/**"
-      - "apps/**/Fixtures/**"
-      - "apps/**/Resources/**"
-      - ".github/workflows/contract.yml"
   push:
     branches: [main, "migrate/**"]
 
 jobs:
-  contract:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and the verify job gates on its output.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$)'
+
+  verify:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -102,3 +118,21 @@ jobs:
             status=1
           fi
           exit $status
+
+  contract:
+    name: contract
+    needs: [changes, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done
