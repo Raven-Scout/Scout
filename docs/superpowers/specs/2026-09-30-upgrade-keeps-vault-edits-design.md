@@ -174,10 +174,18 @@ template change between versions. Options considered:
   run `scoutctl bootstrap drift --resolve <rel>`. This records `.plugin` as the
   base, so the upgrade treats the plugin's change as absorbed and what is left as
   the vault's edit, and it removes the parked files. It refuses while the live
-  file still has conflict markers, and when a block of lines the update adds
-  is not in it, which means nobody merged the update yet. Without that check,
-  clearing a yellow doctor by reflex would drop the plugin's change for good.
-  `--drop-update` keeps your version on purpose.
+  file still has conflict markers, or while it lacks part of the update, which
+  means nobody merged the update yet. Without that check, clearing a yellow
+  doctor by reflex would drop the plugin's change for good. The check compares
+  whole lines, trailing whitespace ignored: each block of lines the update adds
+  (base → `.plugin`) must occur in the file as a contiguous run at least as
+  often as in the update, so a short line such as `fi` that the file already
+  had elsewhere is not taken as merged; each block the update deletes must
+  occur no more often than in the update. With no recorded base (a
+  `parser.py` conflict on its first upgrade) there is nothing to check
+  against, so a plain `--resolve` refuses. `--drop-update` records the file as
+  it is: it keeps your version on purpose, and settles a hand merge the check
+  can't confirm (a merge that rewrote the update's lines).
 - **Take the plugin's version:** `cp .scout-state/drift/<rel>.plugin <rel>`. The
   next upgrade sees live == new and clears the conflict by itself.
 - **Replaced copy:** once reviewed, `--resolve <rel>` deletes the `.vault`
@@ -234,9 +242,14 @@ template lines and re-templatizes the added lines (`retemplatize`: the
 `templates/<file>.tmpl` in a plugin checkout (`git apply`). Added lines that
 still hold an instance-specific value (`RISKY_VARS`, or any variable value in a
 verbatim `.py`) are listed on stderr. The plugin repo is public, so these must
-be made generic before a PR.
+be made generic before a PR. Only variable values can be detected, so every
+`--patch` run also warns on stderr to review each added line for private vault
+content (names, companies, issue IDs, channels, paths).
 
 Some files are skipped, each with a reason:
+- **Vault-developed files** (`parser.py`): the vault grows them on purpose, so
+  their edits are vault content, not a plugin fix. Neither `drift` nor the
+  doctor suggests `--patch` for them.
 - **Stale files**, where the plugin has changes the vault hasn't taken yet
   (render != snapshot): the diff would revert them, so upgrade first.
 - **Conflicts:** resolve them first.

@@ -16,8 +16,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Options:
   - `--diff` shows the diffs with template variables rendered.
   - `--json` is the machine-readable form, for a notifier or a dreaming session.
-  - `--resolve FILE` (repeatable) settles a conflict after a hand merge or dismisses a parked copy. It refuses while the update isn't in the file yet; `--drop-update` keeps your version on purpose.
-  - `--patch` prints a patch to `git apply` against `templates/` in a plugin checkout, so a fix that lives in one vault can become a plugin PR. Vault paths go back to their template variables. Any instance-specific value left in an added line is flagged, because the plugin repo is public. Files the plugin changed since the last upgrade are skipped: a patch made from them would revert the change.
+  - `--resolve FILE` (repeatable) settles a conflict after a hand merge or dismisses a parked copy. It refuses while the update isn't in the file yet: every block of lines the update adds must be there as whole lines (a short line such as `fi` found elsewhere doesn't count), and every block it deletes must be gone. With no record of the last render (a `parser.py` conflict on its first upgrade) there is nothing to check, so it refuses too. `--drop-update` records the file as it is, to keep your version on purpose; on its own, without `--resolve`, it is an error.
+  - `--patch` prints a patch to `git apply` against `templates/` in a plugin checkout, so a fix that lives in one vault can become a plugin PR. Vault paths go back to their template variables. Any instance-specific value left in an added line is flagged, because the plugin repo is public, and every run warns to review each added line for private vault content, since names, companies and IDs can't be detected. Files the plugin changed since the last upgrade are skipped: a patch made from them would revert the change. So is `parser.py`, which the vault grows on purpose: its edits are vault content, and neither `drift` nor the doctor suggests upstreaming them.
 
   `/scout-status` shows a one-line summary.
 
