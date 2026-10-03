@@ -60,8 +60,8 @@ _RUNNER_FIX = [
     'OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"',
     '"$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true',
     # Connector-health roll-up, so the surface refreshes even when a run dies early.
-    'HEALTH_ROLLUP="$SCOUT_DIR/scripts/connector-health-rollup.sh"',
-    '"$HEALTH_ROLLUP" >> "$LOG_FILE" 2>&1 || true',
+    # The runner calls the engine directly; no vault helper is involved.
+    '"$SCOUTCTL_BIN" connector-health-report >> "$LOG_FILE" 2>&1 || true',
 ]
 
 VAULT_FIXES = [

@@ -701,11 +701,22 @@ def main(argv: list[str] | None = None) -> int:
 
     - 0 on success or no-records short-circuit.
     - 1 on a fatal error (rare).
+
+    The runners append this output to the run log. When there is nothing to
+    roll up but an older connector-health.md exists, that file was not
+    rewritten and still shows whatever alerts it last held, so say so.
     """
     try:
         event = run(cleanup=True)
         if event is None:
-            print("connector-health: no scheduled-run records yet")
+            surface = paths.kb_dir(paths.data_dir()) / "connector-health.md"
+            if surface.exists():
+                print(
+                    f"connector-health: no scheduled-run records in the last {DEFAULT_WINDOW_DAYS} days; "
+                    "connector-health.md was NOT rewritten and may show stale alerts"
+                )
+            else:
+                print("connector-health: no scheduled-run records yet")
             return 0
         n_alerts = len(event.payload.get("alerts", []))
         n_sessions = event.payload.get("sessions_in_window", 0)

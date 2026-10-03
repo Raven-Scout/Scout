@@ -366,7 +366,10 @@ scout-plugin/
     claude-with-retry.sh    -- Launches Claude with retry + auth-failure diagnostics
     write-session-cost.sh   -- Session cost logging
     rate-limit-detect.sh    -- Rate limit signal detection
-    heartbeat.sh            -- Opportunistic session triggering
+    heartbeat.sh            -- Opportunistic session triggering (+ daily lane-liveness check)
+    run-outcome.sh          -- Post-run: record how each run ended; notify on repeated failures
+    vault-freshness.py      -- Pre-session: rank KB files by last git commit vs. freshness budget
+    session-lane-liveness.py -- Daily: flag a session type that has stopped producing commits
     pre-session-data.sh     -- Pre-session: gather git log, PRs, KB dates, tasks
     cc-session-cache.sh     -- Pre-session: summarize non-Scout CC sessions
   knowledge-base/           -- Your persistent knowledge base (Obsidian vault)

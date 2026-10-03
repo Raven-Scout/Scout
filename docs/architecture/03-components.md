@@ -246,7 +246,7 @@ flowchart LR
     tokens["<b>hooks/session_tokens.py</b><br/>[hook session-tokens]<br/>Sum usage turns from the transcript,<br/>price per turn, append one row to<br/>session-tokens.jsonl. Schema shared with<br/>the desktop app"]:::component
     toollog["<b>hooks/session_tool_log.py</b><br/>[hook session-tool-log]<br/>Pair tool_use with tool_result, classify<br/>the connector, one row per call to<br/>connector-calls-DATE.jsonl.<br/>Requires SCOUT_MODE"]:::component
     classify["<b>hooks/connector_log.py</b><br/>[legacy PostToolUse]<br/>classify: Bash with gh becomes github,<br/>mcp__server__tool becomes mcp:server.<br/>Unbound in hooks.json, reused by the Stop hook"]:::component
-    health["<b>scripts/connector_health_report.py</b><br/>[connector-health-report]<br/>14-day rollup into connector-health.md,<br/>alert log, pending-alerts cache.<br/>On demand, no runner calls it"]:::component
+    health["<b>scripts/connector_health_report.py</b><br/>[connector-health-report]<br/>14-day rollup into connector-health.md,<br/>alert log, pending-alerts cache.<br/>Each runner calls it after the session"]:::component
     notify["<b>scripts/notify_telegram.py</b><br/>[notify telegram]<br/>POST sendMessage in 4096-char chunks.<br/>Secrets from ~/.scout-secrets, mode 600"]:::component
   end
 
@@ -478,12 +478,12 @@ flowchart LR
     run_dream["<b>run-dreaming.sh</b><br/>[bash]<br/>Same pipeline with MODE dreaming<br/>for the pre-session hooks. No backfill"]:::component
     run_research["<b>run-research.sh</b><br/>[bash]<br/>Only materialize and the budget gate<br/>before launch. No backfill"]:::component
     lockstep["<b>Session lock</b><br/>[inline in each runner]<br/>.scout-logs/.scout-session.lock holds the<br/>runner PID. Live holder: exit 0. Holder<br/>older than 2h: TERM, KILL, take over,<br/>note in failures.log"]:::component
-    prehooks["<b>Pre-session hooks</b><br/>[hooks/kb-pre-filter.sh,<br/>scripts/pre-session-data.sh,<br/>cc-session-cache.sh, materialize-daily-file.sh]<br/>Each writes one file into .scout-cache or<br/>ensures today's action-items file exists.<br/>Failures never block"]:::component
+    prehooks["<b>Pre-session hooks</b><br/>[hooks/kb-pre-filter.sh with vault-freshness.py,<br/>scripts/pre-session-data.sh,<br/>cc-session-cache.sh, materialize-daily-file.sh]<br/>Each writes into .scout-cache or<br/>ensures today's action-items file exists.<br/>Failures never block"]:::component
     budget["<b>scripts/budget-check.sh</b><br/>[bash]<br/>scoutctl budget check --verbose.<br/>Non-zero ends the run with a log line<br/>and exit 0"]:::component
     retry["<b>scripts/claude-with-retry.sh</b><br/>[bash]<br/>Runs claude -p. Re-runs the whole<br/>invocation up to 2 times with linear<br/>backoff on transient API signatures.<br/>401 and 403 stop with remediation"]:::component
-    post["<b>Post-session</b><br/>[scripts/rate-limit-detect.sh,<br/>post-session-backfill.sh,<br/>write-session-cost.sh]<br/>Rate-limit row on failure. Stable ID<br/>prefixes plus a chore commit.<br/>usage-tracker cost row with exit code"]:::component
+    post["<b>Post-session</b><br/>[scripts/rate-limit-detect.sh,<br/>post-session-backfill.sh, run-outcome.sh,<br/>write-session-cost.sh]<br/>Rate-limit row on failure. Stable ID<br/>prefixes plus a chore commit. Run-outcome<br/>row, Telegram on repeated failure.<br/>Connector-health rollup.<br/>usage-tracker cost row with exit code"]:::component
     tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone from scout-config.yaml<br/>for shell-side timestamps.<br/>Twin of config.today()"]:::component
-    hb["<b>scripts/heartbeat.sh</b><br/>[bash]<br/>launchd entry point every 30 min:<br/>scoutctl heartbeat run"]:::component
+    hb["<b>scripts/heartbeat.sh</b><br/>[bash]<br/>launchd entry point every 30 min:<br/>scoutctl heartbeat run. Once a day,<br/>session-lane-liveness.py"]:::component
     render["<b>action-items/render.py, watch.sh</b><br/>[python, fswatch]<br/>Optional markdown to HTML dashboard<br/>re-rendered on change"]:::component
   end
 
@@ -500,11 +500,11 @@ flowchart LR
   retry -->|"claude -p, permission-mode auto,<br/>opus, max-budget-usd"| session
   prehooks -->|"scoutctl hook kb-pre-filter,<br/>pre-session data, session cc-cache,<br/>action-items materialize"| engine
   budget -->|"scoutctl budget check"| engine
-  post -->|"scoutctl action-items<br/>backfill-prefixes"| engine
+  post -->|"scoutctl action-items<br/>backfill-prefixes,<br/>connector-health-report"| engine
   hb -->|"scoutctl heartbeat run"| engine
   post -->|"TZ"| tz
   prehooks -->|".scout-cache files"| state
-  post -->|"usage-tracker.jsonl, run log"| state
+  post -->|"usage-tracker.jsonl,<br/>run-outcomes.jsonl, run log"| state
   lockstep -->|"lock, failures.log"| state
   post -->|"chore commit"| vault
   render -->|"reads, writes HTML"| vault
