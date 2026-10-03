@@ -44,6 +44,7 @@ Add `scoutctl bootstrap auto` — a single command that:
 | Filesystem state | Action |
 |---|---|
 | `$SCOUT_DIR` doesn't exist OR is empty | `install` |
+| `$SCOUT_DIR/.scout-state/install-incomplete` exists (an install that failed partway) | `install` (resumes it) |
 | `$SCOUT_DIR/.scout-state/` exists, `scout-config.yaml` missing | `migrate-legacy` |
 | `$SCOUT_DIR/scout-config.yaml` exists | `upgrade` |
 | Pending `parser.py.proposed-merge` sidecar present | refuse with sidecar-resolution hint (what `upgrade` does) |

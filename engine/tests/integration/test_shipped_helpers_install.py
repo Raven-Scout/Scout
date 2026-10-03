@@ -49,13 +49,18 @@ def _script(path: Path, body: str) -> Path:
 
 
 @pytest.fixture
-def plugin(tmp_path: Path) -> Path:
-    """The real plugin's templates, phases and engine, with a stand-in scoutctl."""
+def plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The real plugin's templates, phases and engine, with a stand-in scoutctl.
+
+    Templates name the scoutctl beside the interpreter that runs the install
+    (resolve_scoutctl_bin), so point that at the stand-in.
+    """
     root = tmp_path / "plugin"
     root.mkdir()
     for name in ("templates", "phases", "engine"):
         (root / name).symlink_to(PLUGIN_ROOT / name)
-    _script(root / ".venv" / "bin" / "scoutctl", SCOUTCTL_STUB.format(calls=str(tmp_path / "scoutctl.calls")))
+    stub = _script(root / ".venv" / "bin" / "scoutctl", SCOUTCTL_STUB.format(calls=str(tmp_path / "scoutctl.calls")))
+    monkeypatch.setattr("scout.scripts.bootstrap.resolve_scoutctl_bin", lambda: stub)
     return root
 
 

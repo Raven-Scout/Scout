@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import plistlib
 import subprocess
+import sys
 from html import escape
 from pathlib import Path
 
@@ -18,26 +19,19 @@ TEMPLATE = Path(__file__).parent.parent / "defaults" / PLIST_NAME
 
 
 def resolve_scoutctl_bin() -> Path:
-    """Return the scoutctl bound to THIS plugin checkout.
+    """Return the scoutctl console script beside the running interpreter.
 
-    Convention: the venv lives at ``<plugin_root>/.venv/`` and scoutctl is
-    its standard console-script entry point. We derive ``plugin_root`` from
-    the running engine's package location, so the answer is correct
-    whichever install method seeded the venv:
-      - canonical ``~/scout-plugin/`` git clone,
-      - ``LOCAL_PLUGINS/`` dev tree,
-      - marketplace install under ``~/.claude/plugins/marketplaces/...``.
+    The interpreter executing the engine *is* the venv the engine is installed
+    into, so its ``bin/`` sibling ``scoutctl`` is by construction the one that
+    matches the loaded plugin — in every layout: a venv inside the checkout
+    (``<root>/.venv``), a venv outside it (the app-managed layout,
+    ``~/.local/share/scout/venv/<v>``), or a marketplace clone.
 
-    The slash commands enforce this same convention on the way in
-    (``$CLAUDE_PLUGIN_ROOT/.venv/bin/scoutctl`` with a VENV_MISMATCH check
-    against the editable-installed source), so there is intentionally no
-    knob to point the plist at an unrelated scoutctl — that would create
-    drift between the scheduler and the engine the user thinks is loaded.
+    Do NOT ``resolve()`` the path: in a venv ``sys.executable`` is
+    ``<venv>/bin/python``, a symlink to the base interpreter; resolving it
+    would point at ``/opt/homebrew/…/bin/scoutctl``, which does not exist.
     """
-    import scout
-
-    plugin_root = Path(scout.__file__).parent.parent.parent
-    return plugin_root / ".venv" / "bin" / "scoutctl"
+    return Path(sys.executable).absolute().parent / "scoutctl"
 
 
 def install_plist(
@@ -46,8 +40,10 @@ def install_plist(
     agents_dir: Path | None = None,
     force: bool = False,
     bootstrap: bool = False,
+    vault: Path | None = None,
 ) -> Path:
     """Render the template into ~/Library/LaunchAgents/."""
+    vault = vault or (home / "Scout")
     agents_dir = agents_dir or (home / "Library" / "LaunchAgents")
     agents_dir.mkdir(parents=True, exist_ok=True)
     target = agents_dir / PLIST_NAME
@@ -65,6 +61,7 @@ def install_plist(
         TEMPLATE.read_text(encoding="utf-8")
         .replace("__USER_HOME__", escape(str(home), quote=True))
         .replace("__SCOUTCTL_BIN__", escape(str(resolve_scoutctl_bin()), quote=True))
+        .replace("__SCOUT_DIR__", escape(str(vault), quote=True))
     )
     # Fail loudly at install time rather than let launchd silently drop the
     # job on malformed output (#49).

@@ -469,6 +469,29 @@ def test_plist_corrupt_xml_yields_warning(tmp_path, monkeypatch):
     assert any("could not parse" in w and "com.scout.schedule-tick.plist" in w for w in report.warnings)
 
 
+def test_plist_truncated_xml_yields_warning(tmp_path, monkeypatch):
+    """Truncated XML plist (ExpatError) also yields a warning, not a crash."""
+    _populate_minimal_vault(tmp_path)
+    _stub_jobs_present(monkeypatch)
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
+    plist_dir = tmp_path / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    # Truncated XML plist — valid header but no closing tags, triggers ExpatError.
+    truncated = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "<key>Label</key>\n"
+        "<string>com.scout.schedule-tick"
+    )
+    (plist_dir / "com.scout.schedule-tick.plist").write_text(truncated)
+
+    report = run_doctor(vault=tmp_path, check_jobs=True, home=tmp_path)
+    assert any("could not parse" in w and "com.scout.schedule-tick.plist" in w for w in report.warnings)
+
+
 def test_plist_empty_program_arguments_yields_warning(tmp_path, monkeypatch):
     """ProgramArguments=[] in the plist is structurally valid but unusable → warning."""
     import plistlib
@@ -552,6 +575,110 @@ def test_shim_check_warns_when_shim_target_missing(tmp_path):
     _write_shim(tmp_path, tmp_path / "gone" / "scoutctl")
     _errors, warnings = _check_scoutctl_shim(home=tmp_path)
     assert any("missing target" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Engine pointer ↔ plist consistency (A3 / E2b)
+# ---------------------------------------------------------------------------
+
+
+def _write_pointer(home: Path, scoutctl: Path) -> None:
+    from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
+    write_pointer(
+        EnginePointer(
+            version="0.0.0",
+            engine_root=str(scoutctl.parents[2]),
+            python=str(scoutctl.parent / "python"),
+            scoutctl=str(scoutctl),
+            vault=str(home / "Scout"),
+            managed_by="scout-app",
+            written_at="2026-01-01T00:00:00Z",
+        ),
+        home=home,
+    )
+
+
+def test_doctor_silent_when_pointer_and_plist_agree(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = home / ".local" / "share" / "scout" / "venv" / "0.0.0" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    _write_pointer(home, scoutctl)
+    _write_plist(home, scoutctl)
+    assert _check_engine_pointer(home=home) == ([], [])
+
+
+def test_doctor_warns_when_pointer_and_plist_disagree(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = home / "venv" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    _write_pointer(home, scoutctl)
+    _write_plist(home, Path("/somewhere/else/scoutctl"))
+    errors, warnings = _check_engine_pointer(home=home)
+    assert errors == []
+    assert len(warnings) == 1 and "different scoutctl" in warnings[0]
+
+
+def test_doctor_warns_when_pointer_scoutctl_is_missing(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    _write_pointer(home, home / "gone" / "bin" / "scoutctl")
+    _, warnings = _check_engine_pointer(home=home)
+    assert len(warnings) == 1 and "missing scoutctl" in warnings[0]
+
+
+def test_doctor_silent_without_pointer(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    assert _check_engine_pointer(home=tmp_path / "home") == ([], [])
+
+
+def test_doctor_pointer_check_ignores_truncated_xml_plist(tmp_path):
+    """A truncated XML plist (malformed mid-document) must not crash the pointer
+    check — xml.parsers.expat.ExpatError is now caught alongside InvalidFileException."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = home / "venv" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    _write_pointer(home, scoutctl)
+    plist_dir = home / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    # Truncated XML plist — valid header but no closing tags, triggers ExpatError.
+    truncated = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "<key>Label</key>\n"
+        "<string>com.scout.schedule-tick"
+    )
+    (plist_dir / "com.scout.schedule-tick.plist").write_text(truncated)
+    assert _check_engine_pointer(home=home) == ([], [])
+
+
+def test_doctor_pointer_check_ignores_invalid_format_plist(tmp_path):
+    """A plist that isn't valid XML at all (InvalidFileException) is also silently ignored."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = home / "venv" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    _write_pointer(home, scoutctl)
+    plist_dir = home / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    (plist_dir / "com.scout.schedule-tick.plist").write_text("not a valid plist <<<")
+    assert _check_engine_pointer(home=home) == ([], [])
 
 
 # ---------- #254: runner CLAUDE_BIN must be executable ----------

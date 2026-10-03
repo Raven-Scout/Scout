@@ -75,9 +75,9 @@ def _strip_managed_block(text: str) -> str:
 def _render_block(home: Path) -> str:
     """Render the cron-managed-block template with HOME + scoutctl path substituted.
 
-    The scoutctl path is derived from the running engine's plugin root via
-    ``install_schedule_plist.resolve_scoutctl_bin`` — same single source of
-    truth as the macOS plist.
+    The scoutctl path is the console script beside the interpreter running
+    this command (see ``install_schedule_plist.resolve_scoutctl_bin`` for
+    details) — same single source of truth as the macOS plist.
     """
     from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 

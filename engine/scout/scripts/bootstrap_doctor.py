@@ -11,6 +11,7 @@ import platform
 import plistlib
 import re
 import subprocess
+import xml.parsers.expat
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -142,7 +143,7 @@ def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]
     try:
         with plist_path.open("rb") as f:
             data = plistlib.load(f)
-    except (plistlib.InvalidFileException, OSError) as e:
+    except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError) as e:
         warnings.append(f"could not parse {plist_path.name}: {e}")
         return errors, warnings
     args = data.get("ProgramArguments") or []
@@ -262,6 +263,40 @@ def _check_scoutctl_shim(*, home: Path) -> tuple[list[str], list[str]]:
             warnings.append(
                 f"scoutctl shim at {shim} points at a missing target ({m.group(1)}) — "
                 f"re-run `scoutctl bootstrap upgrade`."
+            )
+    return [], warnings
+
+
+def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
+    """Warn (never error) when the engine pointer disagrees with reality.
+
+    Both the pointer and the schedule-tick plist are rewritten by every
+    bootstrap run that installs jobs (a ``--no-jobs`` run writes neither),
+    so disagreement means they were produced by different
+    engines — exactly the drift the pointer exists to make visible. A missing
+    pointer is not flagged (pre-pointer engines; the next bootstrap writes it).
+    """
+    from scout.scripts.engine_pointer import read_pointer
+
+    pointer = read_pointer(home=home)
+    if pointer is None:
+        return [], []
+    warnings: list[str] = []
+    if not Path(pointer.scoutctl).exists():
+        warnings.append(
+            f"engine pointer names a missing scoutctl ({pointer.scoutctl}) — re-run `scoutctl bootstrap upgrade`."
+        )
+    plist_path = home / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist"
+    if plist_path.exists():
+        try:
+            with plist_path.open("rb") as f:
+                args = plistlib.load(f).get("ProgramArguments") or []
+        except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError):
+            args = []
+        if args and args[0] != pointer.scoutctl:
+            warnings.append(
+                f"engine pointer ({pointer.scoutctl}) and {plist_path.name} ({args[0]}) name different "
+                f"scoutctl binaries — re-run `scoutctl bootstrap upgrade` so both track one engine."
             )
     return [], warnings
 
@@ -468,6 +503,9 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         # Interactive/session scoutctl reachability (separate from the plist).
         _, shim_warnings = _check_scoutctl_shim(home=home)
         warnings.extend(shim_warnings)
+        # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
+        _, pointer_warnings = _check_engine_pointer(home=home)
+        warnings.extend(pointer_warnings)
         # The claude CLI the runners launch. Gated with the other host-runtime
         # checks: it inspects this machine's binaries, not the vault's content.
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)

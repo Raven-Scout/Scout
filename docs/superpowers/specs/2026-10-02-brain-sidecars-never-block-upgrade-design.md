@@ -74,9 +74,9 @@ Options weighed:
 
 `_refuse_pending_sidecars` now covers only `_CAT_MERGE_FILES`. Two helpers make
 the split explicit: `brain_merge.pending_brain_sidecars(vault)` and
-`bootstrap.blocking_sidecars(vault)`. #244's `bootstrap_auto.pending_sidecars`
-should switch to `blocking_sidecars` once both are merged, and add `skipped` to
-its `result_dict`.
+`bootstrap.blocking_sidecars(vault)`. `bootstrap auto` (#244) refuses only on
+`blocking_sidecars`, and its `result_dict` (the JSON Scout.app decodes) carries
+`skipped`.
 
 ## Rule 2: fast-forward only over the plugin's own assembly
 
