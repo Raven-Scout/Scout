@@ -25,13 +25,99 @@ struct AppStateEngineWiringTests {
         #expect(layout.home.path.hasPrefix(tmp.path))
     }
 
-    @Test func constructionExposesInitialStateAndRunsNoDoctorCall() {
+    // `.testing(...)` defaults to `startsBackgroundWork: false`, so there is no
+    // launch `Task` to race against — but this used to be a synchronous
+    // `@MainActor` test, which meant the assertion below ran before the
+    // (nonexistent, in this case) `Task` could ever have started: it could
+    // never fail even if `startsBackgroundWork` silently flipped to `true`.
+    // Making it `async` and yielding first means a regression would actually
+    // be caught — proven by the negative control below, which flips
+    // `startsBackgroundWork` on and shows the same shape of test *does*
+    // observe a call within this yield window.
+    @Test func constructionExposesInitialStateAndRunsNoDoctorCall() async throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppStateEngineWiringTests-\(UUID().uuidString)", isDirectory: true)
         let rule = RuleBasedRunner()
         let configuration = AppState.Configuration.testing(scoutDirectory: tmp, runner: rule)
         let appState = AppState(configuration: configuration)
         #expect(appState.engineHealth.state == configuration.initialEngineState)
+        try await Task.sleep(for: .milliseconds(100))
         #expect(rule.calls.isEmpty)
+    }
+
+    /// Negative control for the test above: with `startsBackgroundWork` forced
+    /// on and a real `.managed` engine state backed by an on-disk pointer +
+    /// executable `scoutctl`, the launch `Task` must reach `engineHealth`'s
+    /// doctor call within the same yield window the positive test uses — this
+    /// is what proves that window is long enough to catch a regression, not
+    /// just a coincidence of the positive test never starting a `Task` at all.
+    ///
+    /// Everything lives under a fresh per-test temp directory: `engineLayout`
+    /// points `home` at `<tmp>/fake-home` (never the real
+    /// `~/.local/state/scout`), and the only "subprocess" is `RuleBasedRunner`
+    /// answering in-memory — nothing here shells out for real. `sched.start()`
+    /// / `power.start()` also fire (part of the same launch `Task`) and their
+    /// polling `Timer`s are not explicitly invalidated when this test's
+    /// `AppState` goes out of scope, but both close over `[weak self]`
+    /// (`ScheduleService`/`PowerStateService`), so once nothing retains this
+    /// test's object graph the timers fire into a nil `self` and become
+    /// no-ops — they do not touch other tests' `RuleBasedRunner`s or state.
+    @Test func negativeControlDoctorRunsWhenBackgroundWorkIsOn() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppStateEngineWiringTests-\(UUID().uuidString)", isDirectory: true)
+        let fakeHome = tmp.appendingPathComponent("fake-home", isDirectory: true)
+        let layout = EngineLayout(home: fakeHome)
+        let version = "0.10.0"
+        let scoutctlURL = layout.scoutctl(version: version)
+
+        try FileManager.default.createDirectory(at: scoutctlURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: layout.stateDir, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: scoutctlURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scoutctlURL.path)
+
+        let pointer = EnginePointer(
+            schemaVersion: 1, version: version,
+            engineRoot: layout.engineRoot(version: version).path,
+            python: layout.venv(version: version).appendingPathComponent("bin/python").path,
+            scoutctl: scoutctlURL.path,
+            vault: tmp.path,
+            managedBy: "scout-app",
+            writtenAt: ""
+        )
+        try JSONEncoder().encode(pointer).write(to: layout.pointerURL)
+
+        let locator = EngineLocator(layout: layout)
+        let initialState = locator.locate()
+        guard case .managed = initialState else {
+            Issue.record("fixture did not produce a managed engine state: \(initialState)")
+            return
+        }
+
+        let rule = RuleBasedRunner()
+        rule.on(tool: "scoutctl", prefix: ["bootstrap", "doctor", "--json"],
+                stdout: #"{"severity":"green","errors":[],"warnings":[]}"#)
+
+        var configuration = AppState.Configuration.testing(scoutDirectory: tmp, runner: rule)
+        configuration.startsBackgroundWork = true
+        configuration.engineLayout = layout
+        configuration.initialEngineState = initialState
+
+        let appState = AppState(configuration: configuration)
+        _ = appState // keep the graph alive for the duration of the poll below
+
+        // Poll instead of a single fixed sleep: under real concurrent test
+        // load (e.g. the rest of the target's suites also running) a fixed
+        // 100ms window is flaky — measured failing when run alongside the
+        // view-smoke suites. This still resolves in ~1 poll tick in the
+        // common case and only pays the full budget when the host is slow.
+        var sawDoctorCall = false
+        for _ in 0..<40 {
+            if rule.calls(to: "scoutctl").contains(["bootstrap", "doctor", "--json"]) {
+                sawDoctorCall = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(sawDoctorCall)
     }
 }

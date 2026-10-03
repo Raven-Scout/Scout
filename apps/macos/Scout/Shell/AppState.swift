@@ -73,8 +73,10 @@ final class AppState: ObservableObject {
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
-    /// Production entry point — everything points at `~/Scout` and all the
-    /// background work (timers, file watches, launch-time loads) starts.
+    /// Production entry point — the vault root resolves per spec §4.4 (the
+    /// `scoutDataDir` default, then the engine pointer's `vault`, then
+    /// `~/Scout`) and all the background work (timers, file watches,
+    /// launch-time loads) starts.
     convenience init() {
         self.init(configuration: .production())
     }
@@ -96,8 +98,6 @@ final class AppState: ObservableObject {
         // nothing is found, `production()` hands us the shim path instead:
         // ENOENT there is the honest failure, and `EngineHealthService`
         // reports the same fact so the UI isn't silently broken.
-        // `Configuration.production()` does the resolving; tests pass a
-        // fixed invocation instead.
         let scoutctlResolved = configuration.scoutctl
         let engineHealth = EngineHealthService(
             locator: EngineLocator(layout: configuration.engineLayout),
@@ -296,11 +296,12 @@ final class AppState: ObservableObject {
             await self?.recomputeMenuStatus()
             await self?.refreshUrgentActionCount()
 
-            // Locate + doctor-check the engine, then keep rechecking every
-            // 10 minutes (spec §4.4) — drives the window gate, Settings ▸
-            // Engine, and the sidebar badge.
-            await engineHealth.refresh()
-            await MainActor.run { engineHealth.startPeriodicRefresh() }
+            // Locate + doctor-check the engine concurrently with the Action
+            // Items environment check below — a slow doctor (a real
+            // subprocess round-trip) must not delay the Action Items banner.
+            // Re-checking every 10 minutes (spec §4.4) still starts only
+            // after this first refresh completes, below.
+            async let engineRefresh: Void = engineHealth.refresh()
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
@@ -311,6 +312,10 @@ final class AppState: ObservableObject {
             if let result = try? await check.run() {
                 await MainActor.run { envState.result = result }
             }
+
+            // Drives the window gate, Settings ▸ Engine, and the sidebar badge.
+            await engineRefresh
+            await MainActor.run { engineHealth.startPeriodicRefresh() }
         }
 
         startNotificationWatch()
@@ -576,7 +581,11 @@ final class AppState: ObservableObject {
             if raw.hasPrefix("~/") { return home.appendingPathComponent(String(raw.dropFirst(2))) }
             return URL(fileURLWithPath: raw)
         }
-        if let pointer { return URL(fileURLWithPath: pointer.vault) }
+        // A blank or relative `vault` in the pointer (hand-edited, truncated
+        // write, or a schema we don't fully trust) is not a usable root —
+        // treat it the same as "no pointer" rather than resolving a bogus
+        // relative URL against the process's cwd.
+        if let pointer, pointer.vault.hasPrefix("/") { return URL(fileURLWithPath: pointer.vault) }
         return home.appendingPathComponent("Scout")
     }
 
