@@ -12,10 +12,10 @@
 
 ## Context for the implementer
 
-**Working directory:** Same as Plan 2 — `/Users/jordanburger/scout-plugin/`. This supplement extends Plan 2's branch `migrate/v0.4.0-port-python` with new tasks 13–21. Confirm before starting:
+**Working directory:** Same as Plan 2 — `plugin/`. This supplement extends Plan 2's branch `migrate/v0.4.0-port-python` with new tasks 13–21. Confirm before starting:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git status                                    # Plan 2 work present, working tree clean
 git log --oneline | head -15                  # Plan 2 commits visible
 git branch --show-current                     # migrate/v0.4.0-port-python (or equivalent)
@@ -25,9 +25,9 @@ git branch --show-current                     # migrate/v0.4.0-port-python (or e
 If Plan 2 isn't on the current branch, rebase or branch from its tip before starting.
 
 **Reference docs:**
-- `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` §13 — the canonical contract for IDs, prefixes, events, and projection-consumer contracts.
-- `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — vision context for *why* these specific shapes were chosen.
-- `/Users/jordanburger/scout-app/docs/superpowers/plans/2026-04-24-scout-unification-plan-2-port-existing-python.md` — the parent plan whose deliverables this supplement extends.
+- `docs/superpowers/specs/2026-04-24-scout-unification-design.md` §13 — the canonical contract for IDs, prefixes, events, and projection-consumer contracts.
+- `docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — vision context for *why* these specific shapes were chosen.
+- `docs/superpowers/plans/2026-04-24-scout-unification-plan-2-port-existing-python.md` — the parent plan whose deliverables this supplement extends.
 
 **What this plan does NOT touch:**
 - Hooks (Plan 3).
@@ -40,7 +40,7 @@ If Plan 2 isn't on the current branch, rebase or branch from its tip before star
 ## File structure (what this supplement creates and modifies)
 
 ```
-~/scout-plugin/engine/
+plugin/engine/
 ├── scout/
 │   ├── ids.py                                NEW — Task 13
 │   ├── events.py                             NEW — Task 14
@@ -77,9 +77,9 @@ If Plan 2 isn't on the current branch, rebase or branch from its tip before star
 ## Task 13: Add `scout.ids` — ULIDs and short prefixes
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/ids.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_ids.py`
-- Modify: `~/scout-plugin/engine/pyproject.toml`
+- Create: `plugin/engine/scout/ids.py`
+- Create: `plugin/engine/tests/unit/test_ids.py`
+- Modify: `plugin/engine/pyproject.toml`
 
 **What this builds:** A leaf module that mints ULIDs and 4-char Crockford base32 short prefixes. Collision retry against an external "in-use" set is the caller's responsibility (the prefix↔ULID map landing in Task 15 owns that). This module is pure functions over `random` and `time`.
 
@@ -90,7 +90,7 @@ Edit `engine/pyproject.toml` `[project] dependencies` to add `"python-ulid>=2.2"
 - [ ] **Step 2: Sync the venv**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 uv pip install -e ".[dev]"
 .venv/bin/python -c "from ulid import ULID; print(str(ULID()))"
 ```
@@ -279,7 +279,7 @@ Expected: clean.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/pyproject.toml engine/scout/ids.py engine/tests/unit/test_ids.py
 git commit -m "feat(engine): add scout.ids — ULID + Crockford short-prefix generation"
 ```
@@ -289,8 +289,8 @@ git commit -m "feat(engine): add scout.ids — ULID + Crockford short-prefix gen
 ## Task 14: Add `scout.events` — `Event` dataclass
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/events.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_events.py`
+- Create: `plugin/engine/scout/events.py`
+- Create: `plugin/engine/tests/unit/test_events.py`
 
 **What this builds:** A frozen dataclass representing a single mutation event. v0.4 only uses it as a return value from mutators; v0.5 will persist these into the SQLite event store. The schema must already be its v0.5 shape so the persistence layer is a one-line wire-up.
 
@@ -427,7 +427,7 @@ Expected: 4 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/events.py engine/tests/unit/test_events.py
 git commit -m "feat(engine): add scout.events with Event dataclass + now_iso helper"
 ```
@@ -437,11 +437,11 @@ git commit -m "feat(engine): add scout.events with Event dataclass + now_iso hel
 ## Task 15: Add `scout.id_map` — file-backed prefix↔ULID map
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/id_map.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_id_map.py`
-- Create: `~/scout-plugin/engine/tests/concurrency/test_id_map_concurrent.py`
-- Modify: `~/scout-plugin/engine/scout/paths.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_paths.py`
+- Create: `plugin/engine/scout/id_map.py`
+- Create: `plugin/engine/tests/unit/test_id_map.py`
+- Create: `plugin/engine/tests/concurrency/test_id_map_concurrent.py`
+- Modify: `plugin/engine/scout/paths.py`
+- Modify: `plugin/engine/tests/unit/test_paths.py`
 
 **What this builds:** The on-disk source of truth for the prefix↔ULID mapping, plus the fuzzy-reattach helper for prefix-loss recovery. State file location: `$SCOUT_DATA_DIR/.scout-state/id-map.json`. Schema: a flat dict keyed by ULID, each entry holding the short prefix, last-known title, and last-known file/line position. Read-modify-write happens under `flock(LOCK_EX)` per spec §6 concurrency rules.
 
@@ -810,7 +810,7 @@ Expected: 1 passed (or "no tests ran" if `concurrency` marker filtering excludes
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/id_map.py engine/scout/paths.py \
         engine/tests/unit/test_id_map.py engine/tests/unit/test_paths.py \
         engine/tests/concurrency/__init__.py engine/tests/concurrency/test_id_map_concurrent.py
@@ -822,9 +822,9 @@ git commit -m "feat(engine): add IdMap with file-locked prefix↔ULID storage"
 ## Task 16: Extend the parser to recognize `[#XXXX]` prefixes
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/parser.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_parser.py`
-- Create: `~/scout-plugin/engine/tests/fixtures/action-items-with-prefixes.md`
+- Modify: `plugin/engine/scout/action_items/parser.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_parser.py`
+- Create: `plugin/engine/tests/fixtures/action-items-with-prefixes.md`
 
 **What this builds:** A `short_prefix: str | None` field on `ActionItem`. The parser strips `[#XXXX]` from the visible title (so callers don't see the prefix in the title field) but preserves `raw_line` exactly for substring fallback.
 
@@ -951,7 +951,7 @@ Expected: all parser tests pass (the 4 new ones plus all existing).
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/parser.py engine/tests/unit/test_action_items_parser.py engine/tests/fixtures/action-items-with-prefixes.md
 git commit -m "feat(engine): parser extracts [#XXXX] short prefix into ActionItem.short_prefix"
 ```
@@ -961,8 +961,8 @@ git commit -m "feat(engine): parser extracts [#XXXX] short prefix into ActionIte
 ## Task 17: Extend the writer with prefix-preserving operations
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/writer.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_writer.py`
+- Modify: `plugin/engine/scout/action_items/writer.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_writer.py`
 
 **What this builds:** A new `add_prefix_to_line(target, line_number, prefix)` operation that inserts `[#XXXX] ` after the checkbox marker on the given line. Plus a guarantee that `flip_checkbox` and `insert_below` (Plan 2's existing helpers) leave any existing prefix intact.
 
@@ -1069,7 +1069,7 @@ Expected: all writer tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/writer.py engine/tests/unit/test_action_items_writer.py
 git commit -m "feat(engine): writer.add_prefix_to_line + verify flip_checkbox preserves prefix"
 ```
@@ -1079,8 +1079,8 @@ git commit -m "feat(engine): writer.add_prefix_to_line + verify flip_checkbox pr
 ## Task 18: Update `mark_done` — `[#XXXX]` lookup, Event return
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/mark_done.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_mark_done.py`
+- Modify: `plugin/engine/scout/action_items/mark_done.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_mark_done.py`
 
 **What this builds:** `mark_done` gains a `--by-id PREFIX` argument that looks up the line via `IdMap.lookup_by_prefix(prefix)` → finds the matching `raw_line` substring in the file → flips the checkbox. The legacy `--by-subject SUBSTRING` arm becomes the fallback for unprefixed lines. The function returns an `Event(kind="action_item.completed", source="cli:mark_done", payload={"item_id": ulid, "via": "id"|"subject"})`.
 
@@ -1310,7 +1310,7 @@ Expected: nothing else regresses.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/mark_done.py engine/tests/unit/test_action_items_mark_done.py
 git commit -m "feat(engine): mark_done accepts by_id/by_subject + returns Event"
 ```
@@ -1320,11 +1320,11 @@ git commit -m "feat(engine): mark_done accepts by_id/by_subject + returns Event"
 ## Task 19: Update `snooze` — `[#XXXX]` lookup, `until` payload, Event return
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/_common.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_common.py`
-- Modify: `~/scout-plugin/engine/scout/action_items/snooze.py`
-- Modify: `~/scout-plugin/engine/scout/action_items/mark_done.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_snooze.py`
+- Create: `plugin/engine/scout/action_items/_common.py`
+- Create: `plugin/engine/tests/unit/test_action_items_common.py`
+- Modify: `plugin/engine/scout/action_items/snooze.py`
+- Modify: `plugin/engine/scout/action_items/mark_done.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_snooze.py`
 
 **What this builds:** First, factor `_find_line_number` and the `by_id`/`by_subject` resolution logic out of `mark_done` into `scout.action_items._common` so that `snooze` and `add_comment` can reuse it without copying. Then refactor `snooze` to follow the same `--by-id` / `--by-subject` / `Event`-return pattern. Snooze inserts a sub-bullet `  - snoozed-until: YYYY-MM-DD` beneath the target line via the existing `writer.insert_below`; it does not flip the checkbox.
 
@@ -1780,7 +1780,7 @@ Expected: all pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/_common.py engine/scout/action_items/snooze.py engine/scout/action_items/mark_done.py engine/tests/unit/test_action_items_common.py engine/tests/unit/test_action_items_snooze.py
 git commit -m "feat(engine): factor _common; snooze accepts by_id/by_subject + returns Event"
 ```
@@ -1790,8 +1790,8 @@ git commit -m "feat(engine): factor _common; snooze accepts by_id/by_subject + r
 ## Task 20: Update `add_comment` — `[#XXXX]` lookup, comment payload, Event return
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/add_comment.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_add_comment.py`
+- Modify: `plugin/engine/scout/action_items/add_comment.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_add_comment.py`
 
 **What this builds:** Apply the same pattern as Task 19 to `add_comment`. The function uses `_common.resolve_target` for the `--by-id` / `--by-subject` lookup, then `writer.insert_below` to append `  - <comment>` beneath the target line. Returns `Event(kind="action_item.commented", source="cli:add_comment", payload={"item_id", "via", "title", "comment"})`.
 
@@ -1982,7 +1982,7 @@ Expected: all tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/add_comment.py engine/tests/unit/test_action_items_add_comment.py
 git commit -m "feat(engine): add_comment accepts by_id/by_subject + returns Event"
 ```
@@ -1992,10 +1992,10 @@ git commit -m "feat(engine): add_comment accepts by_id/by_subject + returns Even
 ## Task 21: Update `list` and the Typer sub-app
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/list.py`
-- Modify: `~/scout-plugin/engine/scout/action_items/cli.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_action_items_list.py`
-- Modify: `~/scout-plugin/engine/tests/integration/test_action_items_cli.py` (if Plan 2 created it)
+- Modify: `plugin/engine/scout/action_items/list.py`
+- Modify: `plugin/engine/scout/action_items/cli.py`
+- Modify: `plugin/engine/tests/unit/test_action_items_list.py`
+- Modify: `plugin/engine/tests/integration/test_action_items_cli.py` (if Plan 2 created it)
 
 **What this builds:** `list` surfaces the short prefix in its output (so users have something to copy into `--by-id`). The CLI maps `--by-id PREFIX` and `--by-subject SUBSTRING` flags to the function kwargs introduced in Tasks 18–20.
 
@@ -2084,7 +2084,7 @@ Expected: everything green.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/list.py engine/scout/action_items/cli.py engine/tests/unit/test_action_items_list.py engine/tests/integration/test_action_items_cli.py
 git commit -m "feat(engine): list shows [#XXXX] prefix; CLI accepts --by-id / --by-subject"
 ```
@@ -2096,7 +2096,7 @@ git commit -m "feat(engine): list shows [#XXXX] prefix; CLI accepts --by-id / --
 - [ ] **Step 1: Full test run**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/ -v
 ```
 
@@ -2115,7 +2115,7 @@ Expected: clean.
 - [ ] **Step 3: Manual smoke test**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 
 # Set up a temporary data dir
 export SCOUT_DATA_DIR=$(mktemp -d)
@@ -2175,10 +2175,10 @@ PR description should reference both plans plus the v0.4 spec §13.
 
 - [ ] **Step 5: Update the unification spec's plan list (in scout-app repo)**
 
-In `~/scout-app/docs/superpowers/`, no plan-list file exists today, but if you maintain one elsewhere, mark Plan 2 + supplement merged.
+In `docs/superpowers/`, no plan-list file exists today, but if you maintain one elsewhere, mark Plan 2 + supplement merged.
 
 ```bash
-cd ~/scout-app
+cd apps/macos
 # (Optional housekeeping commit — only if a plan tracker exists.)
 ```
 

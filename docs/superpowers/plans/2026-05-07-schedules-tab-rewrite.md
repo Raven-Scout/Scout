@@ -145,8 +145,8 @@ def test_slot_runtime_invalid_value_raises_config_error(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v -k runtime
+cd plugin/engine
+plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v -k runtime
 ```
 Expected: 4 failures with `ImportError: cannot import name 'SlotRuntime'` or `AttributeError`.
 
@@ -187,18 +187,18 @@ Then pass `runtime=runtime` into the `Slot(...)` constructor.
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v -k runtime
+plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v -k runtime
 ```
 Expected: 4 passing. Then run the full schedule-loader suite to confirm no regression:
 ```bash
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v
+plugin/.venv/bin/pytest tests/unit/test_schedule_loader.py -v
 ```
 Expected: all green (the existing tests don't set `runtime`, so they exercise the default path).
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 .venv/bin/ruff check engine/scout/schedule.py engine/tests/unit/test_schedule_loader.py
 .venv/bin/ruff format --check engine/scout/schedule.py engine/tests/unit/test_schedule_loader.py
 .venv/bin/mypy engine/scout/schedule.py
@@ -248,8 +248,8 @@ def test_spawn_runner_rejects_remote_runtime(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_schedule_tick.py::test_spawn_runner_rejects_remote_runtime -v
+cd plugin/engine
+plugin/.venv/bin/pytest tests/unit/test_schedule_tick.py::test_spawn_runner_rejects_remote_runtime -v
 ```
 Expected: FAIL — likely `ConfigError` not raised; instead `_spawn_runner` calls subprocess (which may fail differently).
 
@@ -277,14 +277,14 @@ from scout.schedule import SlotRuntime
 - [ ] **Step 4: Run tests**
 
 ```bash
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_schedule_tick.py -v
+plugin/.venv/bin/pytest tests/unit/test_schedule_tick.py -v
 ```
 Expected: the new test passes; all existing tests still pass (they construct `Slot(...)` without `runtime=`, so they get the default LOCAL).
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 .venv/bin/ruff check engine/scout/scripts/schedule_tick.py engine/tests/unit/test_schedule_tick.py
 .venv/bin/ruff format --check engine/scout/scripts/schedule_tick.py engine/tests/unit/test_schedule_tick.py
 .venv/bin/mypy engine/scout/scripts/schedule_tick.py
@@ -357,8 +357,8 @@ def test_schedule_validate_no_flag_keeps_default_behavior(tmp_path, monkeypatch)
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v -k validate
+cd plugin/engine
+plugin/.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v -k validate
 ```
 Expected: the three `--target` tests fail (flag doesn't exist); the no-flag test may already pass.
 
@@ -421,20 +421,20 @@ Make sure `from scout.errors import ConfigError` is imported at top of file (it 
 - [ ] **Step 4: Run tests**
 
 ```bash
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v -k validate
+plugin/.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v -k validate
 ```
 Expected: all 4 tests pass.
 
 Then full suite:
 ```bash
-/Users/jordanburger/scout-plugin/.venv/bin/pytest tests/ -q
+plugin/.venv/bin/pytest tests/ -q
 ```
 Expected: 418+ passed (the previous baseline) + the 4 new ones from this task + the runtime tests from Tasks 1–2.
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 .venv/bin/ruff check engine/scout/cli.py engine/tests/unit/test_cli_schedule_subapp.py
 .venv/bin/ruff format --check engine/scout/cli.py engine/tests/unit/test_cli_schedule_subapp.py
 .venv/bin/mypy engine/scout/cli.py
@@ -455,7 +455,7 @@ git commit -m "feat(engine): scoutctl schedule validate --target <path> flag"
 - [ ] **Step 1: Branch scout-app**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git checkout main
 git pull --ff-only
 git checkout -b plan-6-schedules-tab
@@ -547,7 +547,7 @@ final class SlotTests: XCTestCase {
 - [ ] **Step 3: Run test to verify it fails**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 xcodebuild test -only-testing:ScoutTests/SlotTests -project Scout.xcodeproj -scheme Scout 2>&1 | tail -10
 ```
 Expected: BUILD FAILED — `Slot` type doesn't exist.
@@ -2519,7 +2519,7 @@ Open `Scout/Shell/SidebarView.swift`. Replace the multi-line "Schedules tab hidd
 The kept files (`PlistIO`, `ScheduleDiff`, `ScheduleTriggerFormatter`) MAY depend on the legacy `Models/Schedule.swift` type — they were originally written together. Before deleting `Schedule.swift`, grep for callers:
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 grep -rn "\bSchedule\b" Scout/Services/PlistIO.swift Scout/Services/ScheduleDiff.swift Scout/Services/ScheduleTriggerFormatter.swift Scout/Services/SystemLaunchctlClient.swift 2>&1 | grep -v "^#" | head -20
 ```
 
@@ -2716,7 +2716,7 @@ git commit -m "test(app): opt-in E2E test for ScheduleEditService against real v
 The scout-plugin `plan-6-engine` PR should have merged after Task 3 reviewed clean. Confirm `main` is current:
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git checkout main
 git pull --ff-only
 ```
@@ -2724,7 +2724,7 @@ git pull --ff-only
 - [ ] **Step 2: Push scout-app branch**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git push -u origin plan-6-schedules-tab
 ```
 

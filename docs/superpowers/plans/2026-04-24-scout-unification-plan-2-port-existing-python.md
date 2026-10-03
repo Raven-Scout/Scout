@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Port the three existing Python subsystems from `~/Scout` into `~/scout-plugin/engine/scout/`: action-items operations (`mark_done`, `snooze`, `add_comment`, `render`, plus a shared parser/writer), the knowledge-base ontology (`KnowledgeGraph` + schema), and the Textual TUI. Wire the action-items operations behind a `scoutctl action-items {mark-done,snooze,add-comment,render,list}` Typer sub-app and expose `scoutctl tui`. Flip `action_items_cli_v1`, `kb_ontology_v1`, `tui_v1` to `True` in the manifest. Plan 2 ships when CI is green and `scoutctl action-items list` works against a fixture data dir.
+**Goal:** Port the three existing Python subsystems from `~/Scout` into `plugin/engine/scout/`: action-items operations (`mark_done`, `snooze`, `add_comment`, `render`, plus a shared parser/writer), the knowledge-base ontology (`KnowledgeGraph` + schema), and the Textual TUI. Wire the action-items operations behind a `scoutctl action-items {mark-done,snooze,add-comment,render,list}` Typer sub-app and expose `scoutctl tui`. Flip `action_items_cli_v1`, `kb_ontology_v1`, `tui_v1` to `True` in the manifest. Plan 2 ships when CI is green and `scoutctl action-items list` works against a fixture data dir.
 
 **Architecture:** Each subsystem becomes a sub-package under `scout/`. Action-items factors out the markdown parser (currently inside `tui/parser.py`) and atomic-write writer (currently scattered across the three argparse scripts) into shared `scout/action_items/{parser,writer}.py` — TUI then imports those instead of carrying its own copies. Path resolution stops using `Path(__file__).parent` in the source scripts; everything routes through `scout.paths.action_items_dir()`, `scout.paths.kb_dir()`, and helpers added in this plan. KB ontology ships its `schema.yaml` packaged via `importlib.resources` (mirroring Plan 1 polish for `scout-config.yaml`), with `$SCOUT_DATA_DIR/knowledge-base/ontology/schema.yaml` as an optional user override. All heavy third-party imports (`textual`, `rich`, `jinja2`, `watchdog`) remain off `scout.cli`'s startup path — they live inside subcommand bodies in `scout/action_items/cli.py` and `scout/tui/__init__.py:tui()`.
 
@@ -12,21 +12,21 @@
 
 ## Context for the implementer
 
-**Working directory:** All file paths in this plan are relative to `/Users/jordanburger/scout-plugin/`. The plan **lives** in the scout-app repo (`docs/superpowers/plans/`) but is **executed** in scout-plugin. Confirm before starting:
+**Working directory:** All file paths in this plan are relative to `plugin/`. The plan **lives** in the scout-app repo (`docs/superpowers/plans/`) but is **executed** in scout-plugin. Confirm before starting:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git status        # working tree clean
 git remote -v     # origin: https://github.com/jordanrburger/scout-plugin.git
 ```
 
-**Source files** are in `~/Scout` (Jordan's personal data dir, no git remote). Do not modify them — Plan 7 deletes the originals after the migration verifies. For this plan you read from `~/Scout/...` and write under `~/scout-plugin/engine/scout/...`.
+**Source files** are in `~/Scout` (Jordan's personal data dir, no git remote). Do not modify them — Plan 7 deletes the originals after the migration verifies. For this plan you read from `~/Scout/...` and write under `plugin/engine/scout/...`.
 
 **Prerequisites:** Plan 1 merged on `scout-plugin/main`. The polish/plan-1-followups PR (#6) should also be merged before starting; if it has not merged yet, rebase this plan's work branch on top once it does.
 
 **Reference docs:**
-- `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` — see §4 file-migration map, §6 concurrency rules, §9 testing strategy.
-- `/Users/jordanburger/scout-app/docs/superpowers/plans/2026-04-24-scout-unification-plan-1-engine-scaffolding.md` — established conventions (TDD per task, commit per task, lazy imports).
+- `docs/superpowers/specs/2026-04-24-scout-unification-design.md` — see §4 file-migration map, §6 concurrency rules, §9 testing strategy.
+- `docs/superpowers/plans/2026-04-24-scout-unification-plan-1-engine-scaffolding.md` — established conventions (TDD per task, commit per task, lazy imports).
 
 **What this plan does NOT touch** (deferred to later plans):
 - Shell-script ports (`run-*.sh`, `hooks/*.sh`, `scripts/*.sh`, `action-items/watch.sh`) — Plan 3.
@@ -42,7 +42,7 @@ git remote -v     # origin: https://github.com/jordanrburger/scout-plugin.git
 ## File structure (what Plan 2 creates)
 
 ```
-~/scout-plugin/engine/
+plugin/engine/
 ├── scout/
 │   ├── action_items/                    NEW
 │   │   ├── __init__.py
@@ -107,14 +107,14 @@ The shared `parser.py` lives under `action_items/` (not `tui/`) because action-i
 ## Task 0: Branch, conftest fixture, and the daily-filename helper
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/fixtures/action-items-sample.md`
-- Modify: `~/scout-plugin/engine/scout/paths.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_paths.py`
+- Create: `plugin/engine/tests/fixtures/action-items-sample.md`
+- Modify: `plugin/engine/scout/paths.py`
+- Modify: `plugin/engine/tests/unit/test_paths.py`
 
 - [ ] **Step 1: Create the migration branch**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git checkout main
 git pull --ff-only
 git checkout -b migrate/v0.4.0-port-python
@@ -179,7 +179,7 @@ def test_action_items_daily_path_explicit_date(fake_data_dir: Path) -> None:
 - [ ] **Step 4: Run the test, confirm it fails**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_paths.py -v -k action_items_daily_path
 ```
 
@@ -229,7 +229,7 @@ Expected: existing tests still pass plus the 2 new ones.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/paths.py engine/tests/unit/test_paths.py engine/tests/fixtures/action-items-sample.md
 git commit -m "feat(engine): add action_items_daily_path + sample fixture"
 ```
@@ -239,9 +239,9 @@ git commit -m "feat(engine): add action_items_daily_path + sample fixture"
 ## Task 1: Port the markdown parser (shared by action_items + tui)
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/__init__.py`
-- Create: `~/scout-plugin/engine/scout/action_items/parser.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_parser.py`
+- Create: `plugin/engine/scout/action_items/__init__.py`
+- Create: `plugin/engine/scout/action_items/parser.py`
+- Create: `plugin/engine/tests/unit/test_action_items_parser.py`
 
 **Source:** `~/Scout/tui/parser.py` (272 lines). It exposes `ActionItem` dataclass and parsing functions for the four sections (`In Progress`, `To Do`, `Watching`, `Completed Today`) plus the inline-section variants (`### 🔴 URGENT: ...`).
 
@@ -335,7 +335,7 @@ Expected: `ModuleNotFoundError: No module named 'scout.action_items.parser'`.
 - [ ] **Step 4: Port the parser**
 
 ```bash
-cp ~/Scout/tui/parser.py ~/scout-plugin/engine/scout/action_items/parser.py
+cp ~/Scout/tui/parser.py plugin/engine/scout/action_items/parser.py
 ```
 
 The source is self-contained (uses `dataclass`, `re`, `Path`) — no path resolution to retarget. Open the new file and confirm:
@@ -375,7 +375,7 @@ Expected: clean. If mypy complains about untyped fields, add explicit annotation
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/__init__.py engine/scout/action_items/parser.py engine/tests/unit/test_action_items_parser.py
 git commit -m "feat(engine): port action_items parser from tui/parser.py"
 ```
@@ -385,8 +385,8 @@ git commit -m "feat(engine): port action_items parser from tui/parser.py"
 ## Task 2: Port the atomic-write writer
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/writer.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_writer.py`
+- Create: `plugin/engine/scout/action_items/writer.py`
+- Create: `plugin/engine/tests/unit/test_action_items_writer.py`
 
 **Source:** atomic-write helpers are duplicated across `~/Scout/action-items/{mark_done,snooze,add_comment}.py` (search for `tempfile`, `os.replace`). `~/Scout/tui/writer.py` is naive (29 lines, no atomicity). The Plan 2 writer is the canonical atomic version. TUI gets refactored to use it in Task 9.
 
@@ -570,7 +570,7 @@ Expected: 6 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/writer.py engine/tests/unit/test_action_items_writer.py
 git commit -m "feat(engine): add action_items writer with atomic markdown rewrites"
 ```
@@ -580,8 +580,8 @@ git commit -m "feat(engine): add action_items writer with atomic markdown rewrit
 ## Task 3: Port `mark_done`
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/mark_done.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_mark_done.py`
+- Create: `plugin/engine/scout/action_items/mark_done.py`
+- Create: `plugin/engine/tests/unit/test_action_items_mark_done.py`
 
 **Source:** `~/Scout/action-items/mark_done.py` (213 lines). The original is an argparse CLI script. Plan 2 keeps its behavior but exposes a callable function `mark_done(...)` so `scout.action_items.cli` can wire it; argparse goes away.
 
@@ -763,7 +763,7 @@ Expected: 5 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/mark_done.py engine/tests/unit/test_action_items_mark_done.py
 git commit -m "feat(engine): port action-items mark_done as importable module"
 ```
@@ -773,8 +773,8 @@ git commit -m "feat(engine): port action-items mark_done as importable module"
 ## Task 4: Port `snooze`
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/snooze.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_snooze.py`
+- Create: `plugin/engine/scout/action_items/snooze.py`
+- Create: `plugin/engine/tests/unit/test_action_items_snooze.py`
 
 **Source:** `~/Scout/action-items/snooze.py` (362 lines). Behavior: moves a matching task to a future-dated daily file, leaves a snooze breadcrumb in the source file. Same matching rules as `mark_done`.
 
@@ -850,7 +850,7 @@ Expected: ModuleNotFoundError.
 - [ ] **Step 3: Port the source**
 
 ```bash
-cp ~/Scout/action-items/snooze.py ~/scout-plugin/engine/scout/action_items/snooze.py
+cp ~/Scout/action-items/snooze.py plugin/engine/scout/action_items/snooze.py
 ```
 
 Then refactor the new file:
@@ -874,7 +874,7 @@ If a test fails because the source removes the line vs. leaves a marker, **chang
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/snooze.py engine/tests/unit/test_action_items_snooze.py
 git commit -m "feat(engine): port action-items snooze as importable module"
 ```
@@ -884,8 +884,8 @@ git commit -m "feat(engine): port action-items snooze as importable module"
 ## Task 5: Port `add_comment`
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/add_comment.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_add_comment.py`
+- Create: `plugin/engine/scout/action_items/add_comment.py`
+- Create: `plugin/engine/tests/unit/test_action_items_add_comment.py`
 
 **Source:** `~/Scout/action-items/add_comment.py` (270 lines). Inserts a sub-bullet beneath a matched task. Same matching rules as `mark_done`.
 
@@ -939,7 +939,7 @@ def test_ambiguous_match_raises(tmp_path: Path) -> None:
 
 - [ ] **Step 3: Port and refactor**
 
-`cp ~/Scout/action-items/add_comment.py ~/scout-plugin/engine/scout/action_items/add_comment.py`, then apply the same three changes as Task 4 step 3 (drop argparse, route paths through `scout.paths`, use `scout.action_items.writer.insert_below`). Public surface:
+`cp ~/Scout/action-items/add_comment.py plugin/engine/scout/action_items/add_comment.py`, then apply the same three changes as Task 4 step 3 (drop argparse, route paths through `scout.paths`, use `scout.action_items.writer.insert_below`). Public surface:
 
 ```python
 def add_comment(
@@ -962,9 +962,9 @@ git commit -m "feat(engine): port action-items add_comment as importable module"
 ## Task 6: Port `render`
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/render.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_render.py`
-- Modify: `~/scout-plugin/engine/tests/perf/test_no_heavy_imports.py`
+- Create: `plugin/engine/scout/action_items/render.py`
+- Create: `plugin/engine/tests/unit/test_action_items_render.py`
+- Modify: `plugin/engine/tests/perf/test_no_heavy_imports.py`
 
 **Source:** `~/Scout/action-items/render.py` (1094 lines). Largest port in this plan. Renders the daily action-items markdown into a styled Rich/HTML view.
 
@@ -1027,7 +1027,7 @@ def test_render_missing_file_raises(tmp_path: Path) -> None:
 - [ ] **Step 4: Port the file**
 
 ```bash
-cp ~/Scout/action-items/render.py ~/scout-plugin/engine/scout/action_items/render.py
+cp ~/Scout/action-items/render.py plugin/engine/scout/action_items/render.py
 ```
 
 Apply edits in this order:
@@ -1058,7 +1058,7 @@ Append to `tests/perf/test_no_heavy_imports.py` a second AST scan over the new s
 - [ ] **Step 7: Lint, commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/render.py engine/tests/unit/test_action_items_render.py
 git commit -m "feat(engine): port action-items render with rich imports kept lazy"
 ```
@@ -1068,8 +1068,8 @@ git commit -m "feat(engine): port action-items render with rich imports kept laz
 ## Task 7: Implement `list` (new module)
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/list.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_list.py`
+- Create: `plugin/engine/scout/action_items/list.py`
+- Create: `plugin/engine/tests/unit/test_action_items_list.py`
 
 `scoutctl action-items list` is a new operation: enumerate open (or all) tasks from a daily file as a list of `ActionItem` records. The CLI surfaces this as JSON or a human table.
 
@@ -1174,13 +1174,13 @@ git commit -m "feat(engine): add action-items list module with filters"
 ## Task 8: Port the KB ontology + packaged schema
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/kb/__init__.py`
-- Create: `~/scout-plugin/engine/scout/kb/paths.py`
-- Create: `~/scout-plugin/engine/scout/kb/ontology.py`
-- Create: `~/scout-plugin/engine/scout/kb/schema.yaml`
-- Create: `~/scout-plugin/engine/tests/fixtures/kb-sample/schema.yaml`
-- Create: `~/scout-plugin/engine/tests/fixtures/kb-sample/people/jordan.md`
-- Create: `~/scout-plugin/engine/tests/unit/test_kb_ontology.py`
+- Create: `plugin/engine/scout/kb/__init__.py`
+- Create: `plugin/engine/scout/kb/paths.py`
+- Create: `plugin/engine/scout/kb/ontology.py`
+- Create: `plugin/engine/scout/kb/schema.yaml`
+- Create: `plugin/engine/tests/fixtures/kb-sample/schema.yaml`
+- Create: `plugin/engine/tests/fixtures/kb-sample/people/jordan.md`
+- Create: `plugin/engine/tests/unit/test_kb_ontology.py`
 
 **Sources:**
 - `~/Scout/knowledge-base/ontology/parser.py` (287 lines) — defines `KnowledgeGraph` with `schema_path` + `kb_root` constructor args, a `load()` method, and a `query(...)` method. Already path-injected; minimal refactor.
@@ -1190,8 +1190,8 @@ git commit -m "feat(engine): add action-items list module with filters"
 - [ ] **Step 1: Move the schema and create fixtures**
 
 ```bash
-cp ~/Scout/knowledge-base/ontology/schema.yaml ~/scout-plugin/engine/scout/kb/schema.yaml
-mkdir -p ~/scout-plugin/engine/tests/fixtures/kb-sample/people
+cp ~/Scout/knowledge-base/ontology/schema.yaml plugin/engine/scout/kb/schema.yaml
+mkdir -p plugin/engine/tests/fixtures/kb-sample/people
 ```
 
 Create a minimal fixture schema at `engine/tests/fixtures/kb-sample/schema.yaml` (copy of the real one is fine, since it has no personal data — schema is metadata only).
@@ -1299,7 +1299,7 @@ def test_knowledge_graph_query_unknown_type_returns_empty() -> None:
 - [ ] **Step 4: Port `ontology.py`**
 
 ```bash
-cp ~/Scout/knowledge-base/ontology/parser.py ~/scout-plugin/engine/scout/kb/ontology.py
+cp ~/Scout/knowledge-base/ontology/parser.py plugin/engine/scout/kb/ontology.py
 ```
 
 Adjust:
@@ -1316,7 +1316,7 @@ If the source `query()` returns dataclass instances rather than dicts, change th
 - [ ] **Step 6: Lint, commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/kb/ engine/tests/fixtures/kb-sample/ engine/tests/unit/test_kb_ontology.py
 git commit -m "feat(engine): port kb ontology with packaged schema"
 ```
@@ -1326,10 +1326,10 @@ git commit -m "feat(engine): port kb ontology with packaged schema"
 ## Task 9: Wire the action-items Typer sub-app
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/cli.py`
-- Modify: `~/scout-plugin/engine/scout/cli.py`
-- Create: `~/scout-plugin/engine/tests/integration/__init__.py`
-- Create: `~/scout-plugin/engine/tests/integration/test_action_items_cli.py`
+- Create: `plugin/engine/scout/action_items/cli.py`
+- Modify: `plugin/engine/scout/cli.py`
+- Create: `plugin/engine/tests/integration/__init__.py`
+- Create: `plugin/engine/tests/integration/test_action_items_cli.py`
 
 - [ ] **Step 1: Implement `scout/action_items/cli.py`**
 
@@ -1571,7 +1571,7 @@ Expected: all green.
 - [ ] **Step 6: Smoke-check via the shim**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 engine/bin/scoutctl --help              # should show action-items group
 engine/bin/scoutctl action-items --help # five subcommands listed
 ```
@@ -1579,7 +1579,7 @@ engine/bin/scoutctl action-items --help # five subcommands listed
 - [ ] **Step 7: Lint, commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/cli.py engine/scout/cli.py \
     engine/tests/integration/ engine/tests/perf/test_no_heavy_imports.py
 git commit -m "feat(engine): wire scoutctl action-items sub-app"
@@ -1590,17 +1590,17 @@ git commit -m "feat(engine): wire scoutctl action-items sub-app"
 ## Task 10: Port the TUI
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/tui/__init__.py`
-- Create: `~/scout-plugin/engine/scout/tui/app.py`
-- Create: `~/scout-plugin/engine/scout/tui/config.py`
-- Create: `~/scout-plugin/engine/scout/tui/screens/__init__.py`
-- Create: `~/scout-plugin/engine/scout/tui/screens/dashboard.py`
-- Create: `~/scout-plugin/engine/scout/tui/screens/context.py`
-- Create: `~/scout-plugin/engine/scout/tui/screens/note_modal.py`
-- Create: `~/scout-plugin/engine/scout/tui/screens/spawn.py`
-- Modify: `~/scout-plugin/engine/scout/cli.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_tui_smoke.py`
-- Modify: `~/scout-plugin/engine/pyproject.toml`
+- Create: `plugin/engine/scout/tui/__init__.py`
+- Create: `plugin/engine/scout/tui/app.py`
+- Create: `plugin/engine/scout/tui/config.py`
+- Create: `plugin/engine/scout/tui/screens/__init__.py`
+- Create: `plugin/engine/scout/tui/screens/dashboard.py`
+- Create: `plugin/engine/scout/tui/screens/context.py`
+- Create: `plugin/engine/scout/tui/screens/note_modal.py`
+- Create: `plugin/engine/scout/tui/screens/spawn.py`
+- Modify: `plugin/engine/scout/cli.py`
+- Create: `plugin/engine/tests/unit/test_tui_smoke.py`
+- Modify: `plugin/engine/pyproject.toml`
 
 The TUI is hardest to test (Textual is a UI framework). The strategy:
 1. Port files verbatim, then change every import of `tui.parser` and `tui.writer` to import from `scout.action_items.parser` and `scout.action_items.writer`.
@@ -1611,11 +1611,11 @@ The TUI is hardest to test (Textual is a UI framework). The strategy:
 - [ ] **Step 1: Copy the TUI tree, retargeting imports**
 
 ```bash
-mkdir -p ~/scout-plugin/engine/scout/tui/screens
-cp ~/Scout/tui/__init__.py ~/scout-plugin/engine/scout/tui/__init__.py
-cp ~/Scout/tui/app.py      ~/scout-plugin/engine/scout/tui/app.py
-cp ~/Scout/tui/config.py   ~/scout-plugin/engine/scout/tui/config.py
-cp ~/Scout/tui/screens/*.py ~/scout-plugin/engine/scout/tui/screens/
+mkdir -p plugin/engine/scout/tui/screens
+cp ~/Scout/tui/__init__.py plugin/engine/scout/tui/__init__.py
+cp ~/Scout/tui/app.py      plugin/engine/scout/tui/app.py
+cp ~/Scout/tui/config.py   plugin/engine/scout/tui/config.py
+cp ~/Scout/tui/screens/*.py plugin/engine/scout/tui/screens/
 ```
 
 In each copied file, replace:
@@ -1695,7 +1695,7 @@ def tui() -> None:
 The `[full]` extra in pyproject already lists `textual>=0.63` (per Plan 1). Verify:
 
 ```bash
-grep -A3 'optional-dependencies' ~/scout-plugin/engine/pyproject.toml
+grep -A3 'optional-dependencies' plugin/engine/pyproject.toml
 ```
 
 If the `full` extra doesn't include `textual`, add it.
@@ -1720,7 +1720,7 @@ Expected: latency tests still pass. If `scoutctl --help` regresses, a TUI module
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/tui/ engine/scout/cli.py engine/tests/unit/test_tui_smoke.py engine/pyproject.toml
 git commit -m "feat(engine): port TUI; wire scoutctl tui with lazy textual import"
 ```
@@ -1730,8 +1730,8 @@ git commit -m "feat(engine): port TUI; wire scoutctl tui with lazy textual impor
 ## Task 11: Flip the manifest feature flags
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/manifest.py`
-- Modify: `~/scout-plugin/engine/tests/unit/test_manifest.py`
+- Modify: `plugin/engine/scout/manifest.py`
+- Modify: `plugin/engine/tests/unit/test_manifest.py`
 
 - [ ] **Step 1: Update the test to assert the three flags are True**
 
@@ -1790,7 +1790,7 @@ Expected: `['action-items', 'manifest', 'tui', 'version']` (or similar — sorte
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/manifest.py engine/tests/unit/test_manifest.py
 git commit -m "feat(engine): flip action_items_cli_v1, kb_ontology_v1, tui_v1 manifest flags"
 ```
@@ -1804,7 +1804,7 @@ git commit -m "feat(engine): flip action_items_cli_v1, kb_ontology_v1, tui_v1 ma
 - [ ] **Step 1: Run the full suite**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/ -v
 ```
 
@@ -1826,7 +1826,7 @@ Expected: clean.
 - [ ] **Step 3: End-to-end smoke from the shim**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 engine/bin/scoutctl version
 engine/bin/scoutctl manifest show
 engine/bin/scoutctl action-items --help
@@ -1839,7 +1839,7 @@ The list command should fail gracefully (no daily file) with a helpful ActionIte
 - [ ] **Step 4: Review commits**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git log --oneline main..HEAD
 ```
 

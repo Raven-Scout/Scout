@@ -15,22 +15,22 @@
 ## Context for the implementer
 
 **Working directories:**
-- **scout-plugin** at `/Users/jordanburger/scout-plugin/`. Fresh branch off the merged Plan 4 tip:
+- **scout-plugin** at `plugin/`. Fresh branch off the merged Plan 4 tip:
   ```bash
-  cd ~/scout-plugin
+  cd plugin
   git checkout main
   git pull --ff-only
   git checkout -b plan-5-schedule-v2
   cd engine && ../.venv/bin/pytest tests/ -q       # green expected (301 unit + 9 skipped)
   ```
-- **scout-app** at `/Users/jordanburger/scout-app/`. Branch off main (the spec branch `plan-5-schedule-v2-design` already merged or about to). Use a fresh branch `plan-5-scout-app` for the Swift work.
+- **scout-app** at `apps/macos/`. Branch off main (the spec branch `plan-5-schedule-v2-design` already merged or about to). Use a fresh branch `plan-5-scout-app` for the Swift work.
 - **Vault** at `/Users/jordanburger/Scout/`. Local-only repo (no remote). Skill/doc updates and old plist deletions commit here.
 
 **Reference docs (READ BEFORE STARTING):**
-- `~/scout-app/docs/superpowers/specs/2026-05-04-schedule-v2-design.md` — the design spec for this plan. Sections §3 (slot semantics), §4 (dispatcher), §5 (sleep handling), §8 (mode rename), §9 (event taxonomy) are the implementation contract.
-- `~/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` §6 (Layout — amended to include schedule.yaml) and §11 (new "Schedule definition lives in the vault" sub-section).
-- `~/scout-app/docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` Core Concepts → Schedule events sub-section, and Connector Taxonomy + Async-first user comms (`(slot_type, tier)` routing).
-- `~/scout-app/docs/superpowers/plans/2026-04-28-scout-unification-plan-4-connector-subsystem-and-hooks-port.md` — pattern to mirror (single source of truth YAML, `scoutctl <subapp>` CLI, parity test pattern, snapshot sync).
+- `docs/superpowers/specs/2026-05-04-schedule-v2-design.md` — the design spec for this plan. Sections §3 (slot semantics), §4 (dispatcher), §5 (sleep handling), §8 (mode rename), §9 (event taxonomy) are the implementation contract.
+- `docs/superpowers/specs/2026-04-24-scout-unification-design.md` §6 (Layout — amended to include schedule.yaml) and §11 (new "Schedule definition lives in the vault" sub-section).
+- `docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` Core Concepts → Schedule events sub-section, and Connector Taxonomy + Async-first user comms (`(slot_type, tier)` routing).
+- `docs/superpowers/plans/2026-04-28-scout-unification-plan-4-connector-subsystem-and-hooks-port.md` — pattern to mirror (single source of truth YAML, `scoutctl <subapp>` CLI, parity test pattern, snapshot sync).
 - `~/Scout/run-scout.sh` (lines 60–80 — the HOUR-based mode case statement that gets deleted in Task 7) and `~/Scout/run-dreaming.sh` (similar shape).
 
 **What this plan does NOT touch:**
@@ -391,7 +391,7 @@ slots:
 - [ ] **Step 2: Run tests, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_schedule_loader.py -v
 ```
 
@@ -410,7 +410,7 @@ Expected: `ModuleNotFoundError: No module named 'scout.schedule'` (all 12 tests 
 # vocabulary (briefing | consolidation | dreaming | research | manual)
 # that aggregation surfaces (connectors.yaml `required_in_types`,
 # alert routing) reference. See:
-#   ~/scout-app/docs/superpowers/specs/2026-05-04-schedule-v2-design.md
+#   docs/superpowers/specs/2026-05-04-schedule-v2-design.md
 
 schema_version: 1
 
@@ -521,7 +521,7 @@ by default (TZ-aware by construction — travel ET → CEST and the schedule mov
 with you). Optional per-slot `tz: <iana-zone>` field pins a slot to a fixed
 zone if needed.
 
-See ~/scout-app/docs/superpowers/specs/2026-05-04-schedule-v2-design.md.
+See docs/superpowers/specs/2026-05-04-schedule-v2-design.md.
 """
 
 from __future__ import annotations
@@ -738,7 +738,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
 - [ ] **Step 5: Re-run tests, confirm GREEN**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_schedule_loader.py -v
 ```
 
@@ -747,7 +747,7 @@ Expected: 12 passed.
 - [ ] **Step 6: Run the full suite to confirm no regression**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/ -q
 ```
 
@@ -756,7 +756,7 @@ Expected: 313 passed (was 301), 9 skipped.
 - [ ] **Step 7: Lint**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
 ../.venv/bin/mypy scout
@@ -767,7 +767,7 @@ All three should be clean.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/schedule.py engine/scout/defaults/schedule.yaml \
         engine/tests/unit/test_schedule_loader.py \
         engine/tests/fixtures/schedule-default.yaml \
@@ -877,7 +877,7 @@ def test_schedule_reload_succeeds():
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v
 ```
 
@@ -997,7 +997,7 @@ Make sure to add `from pathlib import Path` at the top of `cli.py` if not presen
 - [ ] **Step 4: Re-run, confirm GREEN**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_cli_schedule_subapp.py -v
 ```
 
@@ -1006,9 +1006,9 @@ Expected: 8 passed.
 - [ ] **Step 5: Smoke-check the CLI manually**
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl schedule list 2>&1 | head -10
-~/scout-plugin/.venv/bin/scoutctl schedule show morning-briefing
-~/scout-plugin/.venv/bin/scoutctl schedule validate
+plugin/.venv/bin/scoutctl schedule list 2>&1 | head -10
+plugin/.venv/bin/scoutctl schedule show morning-briefing
+plugin/.venv/bin/scoutctl schedule validate
 ```
 
 Expected: list prints 10 rows; show prints JSON; validate prints `schedule OK: ...`.
@@ -1016,7 +1016,7 @@ Expected: list prints 10 rows; show prints JSON; validate prints `schedule OK: .
 - [ ] **Step 6: Lint and run full suite**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
 ../.venv/bin/mypy scout
@@ -1028,7 +1028,7 @@ All clean; full suite 321 passed (was 313), 9 skipped.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/cli.py engine/tests/unit/test_cli_schedule_subapp.py
 git commit -m "feat(engine): scoutctl schedule {list,show,validate,init,reload} sub-app"
 ```
@@ -1449,7 +1449,7 @@ def test_e2e_tick_handles_wake_from_sleep_with_priority_winner(tmp_path, monkeyp
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_schedule_tick.py tests/integration/test_schedule_tick_e2e.py -v
 ```
 
@@ -1462,7 +1462,7 @@ Expected: ~14 tests fail with `ModuleNotFoundError: No module named 'scout.scrip
 
 Runs every 5 min via launchd (`com.scout.schedule-tick.plist`). Idempotent.
 Concurrency-safe via fcntl flock. See:
-  ~/scout-app/docs/superpowers/specs/2026-05-04-schedule-v2-design.md §4
+  docs/superpowers/specs/2026-05-04-schedule-v2-design.md §4
 """
 
 from __future__ import annotations
@@ -1970,7 +1970,7 @@ In `engine/scout/cli.py`, inside `_register_schedule()`, add:
 - [ ] **Step 5: Re-run, confirm GREEN**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_schedule_tick.py tests/integration/test_schedule_tick_e2e.py -v
 ```
 
@@ -2045,7 +2045,7 @@ def _network_ready(
 - [ ] **Step 7: Lint and run full suite**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
 ../.venv/bin/mypy scout
@@ -2058,7 +2058,7 @@ All clean; full suite ~335 passed (was 321), 9 skipped; bats 1/1 pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/scripts/schedule_tick.py engine/scout/cli.py \
         engine/tests/unit/test_schedule_tick.py \
         engine/tests/integration/test_schedule_tick_e2e.py \
@@ -2187,7 +2187,7 @@ def test_uninstall_plist_silent_when_missing(tmp_path):
 - [ ] **Step 3: Run tests, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_install_schedule_plist.py -v
 ```
 
@@ -2286,7 +2286,7 @@ In `engine/scout/cli.py`, inside `_register_schedule()`, add:
 - [ ] **Step 6: Re-run, confirm GREEN**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_install_schedule_plist.py -v
 ```
 
@@ -2344,7 +2344,7 @@ bash -n ~/Scout/run-scout.sh
 - [ ] **Step 8: Smoke-install the plist (real machine)**
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl schedule install-plist --force --bootstrap
+plugin/.venv/bin/scoutctl schedule install-plist --force --bootstrap
 launchctl list | grep com.scout.schedule-tick     # should show the new job
 ```
 
@@ -2360,7 +2360,7 @@ You should see at least one `schedule.tick.completed` event in the latest log fi
 - [ ] **Step 9: Lint, run suite, commit**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
 ../.venv/bin/mypy scout
@@ -2370,7 +2370,7 @@ cd ~/scout-plugin/engine
 All clean; ~340 passed, 9 skipped.
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/scripts/install_schedule_plist.py engine/scout/cli.py \
         engine/scout/defaults/com.scout.schedule-tick.plist \
         engine/tests/unit/test_install_schedule_plist.py
@@ -2461,7 +2461,7 @@ def test_uninstall_wake_schedule_invokes_pmset_repeat_cancel():
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_install_wake_schedule.py -v
 ```
 
@@ -2564,7 +2564,7 @@ In `engine/scout/cli.py`, inside `_register_schedule()`, add:
 - [ ] **Step 5: Re-run, confirm GREEN, lint, commit**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_install_wake_schedule.py -v
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
@@ -2575,7 +2575,7 @@ cd ~/scout-plugin/engine
 All green; ~344 passed, 9 skipped.
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/scripts/install_wake_schedule.py engine/scout/cli.py \
         engine/tests/unit/test_install_wake_schedule.py
 git commit -m "feat(engine): scoutctl schedule install-wake-schedule (opt-in pmset; AC-only caveat documented)"
@@ -2722,7 +2722,7 @@ def test_slack_is_required_for_briefing_and_consolidation_types():
 Update other relevant tests similarly. Run:
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_connectors_yaml.py -v
 ```
 
@@ -2788,7 +2788,7 @@ def test_chronic_skip_alert_fires_only_when_slot_type_requires_connector(tmp_pat
 - [ ] **Step 6: Regenerate snapshot, run tests, lint, commit**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/scoutctl connectors snapshot                     # regenerates engine/scout/connectors.snapshot.json + scout-app fixture
 ../.venv/bin/pytest tests/ -q
 ../.venv/bin/ruff check scout tests
@@ -2799,7 +2799,7 @@ cd ~/scout-plugin/engine
 All clean.
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/connectors.py engine/scout/connectors.yaml \
         engine/scout/connectors.snapshot.json \
         engine/scout/scripts/connector_health_report.py \
@@ -2912,7 +2912,7 @@ def test_migrate_data_dir_creates_backup(tmp_path):
 - [ ] **Step 3: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_migrate_mode_names.py -v
 ```
 
@@ -3072,7 +3072,7 @@ if __name__ == "__main__":
 - [ ] **Step 6: Run tests, lint, commit**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/unit/test_migrate_mode_names.py -v
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
@@ -3083,7 +3083,7 @@ cd ~/scout-plugin/engine
 All green; ~352 passed, 9 skipped.
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 chmod +x tools/migrate-mode-names.py tools/regenerate-connector-health.py
 git add tools/migrate-mode-names.py tools/regenerate-connector-health.py \
         engine/tests/unit/test_migrate_mode_names.py \
@@ -3094,8 +3094,8 @@ git commit -m "feat(tools): one-shot migrate-mode-names.py + regenerate-connecto
 - [ ] **Step 7: Run the migration on the live vault**
 
 ```bash
-python3 ~/scout-plugin/tools/migrate-mode-names.py --data-dir ~/Scout
-python3 ~/scout-plugin/tools/regenerate-connector-health.py --data-dir ~/Scout
+python3 plugin/tools/migrate-mode-names.py --data-dir ~/Scout
+python3 plugin/tools/regenerate-connector-health.py --data-dir ~/Scout
 ```
 
 Verify:
@@ -3124,9 +3124,9 @@ git commit -m "scout: regenerate connector-health.md after Plan 5 mode rename"
 - Modify: `engine/scout/cli.py` (registers `schedule snapshot [--target] [--check]`)
 - Create: `engine/tests/unit/test_schedule_snapshot.py`
 - Modify: `.github/workflows/test.yml` (CI drift check for schedule snapshot)
-- Create: `~/scout-app/ScoutTests/Fixtures/schedule.snapshot.json` (test target fixture)
+- Create: `apps/macos/ScoutTests/Fixtures/schedule.snapshot.json` (test target fixture)
 
-**What this builds:** Mirrors Plan 4 Task 8 pattern. `scoutctl schedule snapshot` writes a JSON projection of `schedule.yaml` (slot keys + types + fires_at_local + on_miss) to the canonical engine path AND, by default, dual-writes to `~/scout-app/ScoutTests/Fixtures/schedule.snapshot.json`. CI drift-checks the canonical against the seeded vault default. `--check` mode strips `generated_from` SHA before comparing (so committed snapshots don't always look stale).
+**What this builds:** Mirrors Plan 4 Task 8 pattern. `scoutctl schedule snapshot` writes a JSON projection of `schedule.yaml` (slot keys + types + fires_at_local + on_miss) to the canonical engine path AND, by default, dual-writes to `apps/macos/ScoutTests/Fixtures/schedule.snapshot.json`. CI drift-checks the canonical against the seeded vault default. `--check` mode strips `generated_from` SHA before comparing (so committed snapshots don't always look stale).
 
 (Implementation closely follows `engine/scout/scripts/connectors_snapshot.py` from Plan 4 — refer to that file for the exact pattern. Tests follow the same shape as `test_scripts_connectors_snapshot.py`.)
 
@@ -3157,14 +3157,14 @@ The snapshot data shape:
 }
 ```
 
-Default `--target` is `engine/scout/schedule.snapshot.json` (canonical). The `--also-write-app-fixture` flag (default ON) dual-writes to `~/scout-app/ScoutTests/Fixtures/schedule.snapshot.json`; skip with a warning if the path doesn't exist.
+Default `--target` is `engine/scout/schedule.snapshot.json` (canonical). The `--also-write-app-fixture` flag (default ON) dual-writes to `apps/macos/ScoutTests/Fixtures/schedule.snapshot.json`; skip with a warning if the path doesn't exist.
 
 After implementing, run:
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl schedule snapshot
-diff <(jq -S . ~/scout-plugin/engine/scout/schedule.snapshot.json) \
-     <(jq -S . ~/scout-app/ScoutTests/Fixtures/schedule.snapshot.json)
+plugin/.venv/bin/scoutctl schedule snapshot
+diff <(jq -S . plugin/engine/scout/schedule.snapshot.json) \
+     <(jq -S . apps/macos/ScoutTests/Fixtures/schedule.snapshot.json)
 # Should be empty.
 ```
 
@@ -3180,7 +3180,7 @@ Add the CI step:
 Commit:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/scripts/schedule_snapshot.py engine/scout/cli.py \
         engine/scout/schedule.snapshot.json \
         engine/tests/unit/test_schedule_snapshot.py \
@@ -3231,7 +3231,7 @@ Add a small test in `engine/tests/unit/test_cli_schedule_subapp.py` that runs `l
 Commit on scout-plugin side:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/cli.py engine/scout/scripts/schedule_tick.py \
         engine/tests/unit/test_cli_schedule_subapp.py
 git commit -m "feat(engine): scoutctl schedule list-upcoming for scout-app consumption"
@@ -3242,7 +3242,7 @@ git commit -m "feat(engine): scoutctl schedule list-upcoming for scout-app consu
 Switch to scout-app:
 
 ```bash
-cd ~/scout-app
+cd apps/macos
 git checkout main
 git pull --ff-only
 git checkout -b plan-5-scout-app
@@ -3444,7 +3444,7 @@ Create `ScoutTests/Services/ScheduleServiceTests.swift` and `ScoutTests/Services
 - [ ] **Step 7: Build + test the app**
 
 ```bash
-cd ~/scout-app
+cd apps/macos
 xcodebuild -project Scout.xcodeproj -scheme Scout build 2>&1 | tail -20
 xcodebuild test -project Scout.xcodeproj -scheme Scout 2>&1 | tail -20
 ```
@@ -3454,7 +3454,7 @@ Both should succeed.
 - [ ] **Step 8: Commit on scout-app branch**
 
 ```bash
-cd ~/scout-app
+cd apps/macos
 git add Scout/Services/ScheduleService.swift Scout/Services/PowerStateService.swift \
         Scout/ControlCenter/PowerStateBanner.swift Scout/Models/RunType.swift \
         Scout/ControlCenter/UpcomingStripView.swift Scout/ControlCenter/NowStripView.swift \
@@ -3574,7 +3574,7 @@ In `engine/tests/unit/test_manifest.py`, add the corresponding assertion.
 - [ ] **Step 2: Run full suite + lint sweep**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 ../.venv/bin/pytest tests/ -q
 ../.venv/bin/ruff check scout tests
 ../.venv/bin/ruff format --check scout tests
@@ -3588,9 +3588,9 @@ All clean.
 
 ```bash
 launchctl list | grep com.scout                              # 2 jobs (heartbeat + schedule-tick)
-~/scout-plugin/.venv/bin/scoutctl schedule list              # 10 slots
-~/scout-plugin/.venv/bin/scoutctl schedule validate          # OK
-~/scout-plugin/.venv/bin/scoutctl manifest show 2>&1 | grep schedule_v2   # true
+plugin/.venv/bin/scoutctl schedule list              # 10 slots
+plugin/.venv/bin/scoutctl schedule validate          # OK
+plugin/.venv/bin/scoutctl manifest show 2>&1 | grep schedule_v2   # true
 
 # Wait 5 minutes for the next tick, then:
 ls -lat ~/Scout/.scout-logs/schedule-events-*.jsonl | head -1
@@ -3602,7 +3602,7 @@ You should see at least one `schedule.tick.completed` event since the install.
 - [ ] **Step 4: Commit final manifest flip**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/manifest.py engine/tests/unit/test_manifest.py
 git commit -m "feat(engine): Plan 5 manifest flag flip — schedule_v2: true"
 ```
@@ -3614,7 +3614,7 @@ git commit -m "feat(engine): Plan 5 manifest flag flip — schedule_v2: true"
 - [ ] **Step 1: Final scout-plugin sanity sweep**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git log main..HEAD --oneline | wc -l                       # ~13–15 commits
 cd engine && ../.venv/bin/pytest tests/ -q && cd ..
 .venv/bin/scoutctl schedule list
@@ -3624,14 +3624,14 @@ launchctl list | grep com.scout
 - [ ] **Step 2: Push scout-plugin branch**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git push -u origin plan-5-schedule-v2
 ```
 
 - [ ] **Step 3: Open scout-plugin PR**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 gh pr create --title "Plan 5: Schedule v2 + mode rename" --body "$(cat <<'EOF'
 ## Summary
 
@@ -3646,7 +3646,7 @@ Implements Schedule v2 — the next subsystem on the v0.4 unification arc. Same 
 
 ## Spec references
 
-- Plan 5 design: `~/scout-app/docs/superpowers/specs/2026-05-04-schedule-v2-design.md`
+- Plan 5 design: `docs/superpowers/specs/2026-05-04-schedule-v2-design.md`
 - v0.4 unification spec amendments: §6 Layout adds schedule.yaml; new §11 sub-section "Schedule definition lives in the vault"
 - v0.5+ event-architecture spec amendments: `(mode, tier)` → `(slot_type, tier)`; new "Schedule events" sub-section adding `slot.fired`, `slot.skipped`, `slot.fire_failed`, `schedule.tick.completed`
 
@@ -3677,7 +3677,7 @@ EOF
 - [ ] **Step 4: Push scout-app branch + open separate PR**
 
 ```bash
-cd ~/scout-app
+cd apps/macos
 git push -u origin plan-5-scout-app
 gh pr create --title "Plan 5 (app): ScheduleService + PowerStateService; remove in-app dispatcher" --body "..."
 ```

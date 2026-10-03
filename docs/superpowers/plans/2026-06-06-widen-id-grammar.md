@@ -32,7 +32,7 @@
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin && git checkout main && git pull --ff-only && git checkout -b feat/widen-id-grammar-issue-117
+cd plugin && git checkout main && git pull --ff-only && git checkout -b feat/widen-id-grammar-issue-117
 ```
 Expected: on a fresh branch off the latest `main`.
 
@@ -78,7 +78,7 @@ def test_leading_prefix_pattern_anchors_at_start() -> None:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_ids.py -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_ids.py -v`
 Expected: FAIL — `[#RSM]`/`[#AI3026]` not matched by the current 4-Crockford pattern; `leading_prefix_pattern` import error.
 
 - [ ] **Step 3: Implement the widened grammar**
@@ -118,18 +118,18 @@ def leading_prefix_pattern() -> re.Pattern[str]:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_ids.py -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_ids.py -v`
 Expected: PASS (all, including the unchanged `new_short_prefix` tests).
 
 - [ ] **Step 5: Lint**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests`
+Run: `cd plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests`
 Expected: clean. (If `ruff format --check` flags the edited files, run `.venv/bin/ruff format scout tests` and re-check.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add engine/scout/ids.py engine/tests/unit/test_ids.py
 git commit -m "feat(ids): recognize variable-length [#TAG] (2-8 A-Z0-9, >=1 letter)
 
@@ -178,7 +178,7 @@ def test_parser_does_not_extract_midbody_or_numeric_tag(tmp_path) -> None:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_action_items_parser.py -k "semantic_tag or midbody" -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_action_items_parser.py -k "semantic_tag or midbody" -v`
 Expected: FAIL — `short_prefix` is None for `[#AI3026]` (current `.search()` with 4-Crockford pattern doesn't match it).
 
 - [ ] **Step 3: Switch extraction to the anchored pattern**
@@ -193,14 +193,14 @@ In `engine/scout/action_items/parser.py`:
 
 - [ ] **Step 4: Run to verify pass (and the whole parser suite)**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_action_items_parser.py -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_action_items_parser.py -v`
 Expected: PASS, including pre-existing parser tests.
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
-cd /Users/jordanburger/scout-plugin
+cd plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
+cd plugin
 git add engine/scout/action_items/parser.py engine/tests/unit/test_action_items_parser.py
 git commit -m "feat(parser): extract leading [#TAG] with anchored pattern
 
@@ -241,7 +241,7 @@ def test_resolve_target_ambiguous_id_raises(fake_data_dir: Path) -> None:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_action_items_common.py -k ambiguous_id -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_action_items_common.py -k ambiguous_id -v`
 Expected: FAIL — current code `next()`-picks the first match, no error raised.
 
 - [ ] **Step 3: Implement ambiguity detection**
@@ -260,14 +260,14 @@ Everything else in the branch (the `entry is None` auto-register path using `mat
 
 - [ ] **Step 4: Run to verify pass (whole common suite)**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_action_items_common.py -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_action_items_common.py -v`
 Expected: PASS (new ambiguity test + all pre-existing `resolve_target` tests, which use unique prefixes).
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
-cd /Users/jordanburger/scout-plugin
+cd plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
+cd plugin
 git add engine/scout/action_items/_common.py engine/tests/unit/test_action_items_common.py
 git commit -m "feat(action-items): --by-id errors on duplicate open tags
 
@@ -284,7 +284,7 @@ silently picking the first match. Refs #117."
 
 - [ ] **Step 1: Find the existing backfill test module**
 
-Run: `cd /Users/jordanburger/scout-plugin && ls engine/tests/unit/ | grep -i backfill || echo "none — create test_action_items_backfill.py"`
+Run: `cd plugin && ls engine/tests/unit/ | grep -i backfill || echo "none — create test_action_items_backfill.py"`
 
 - [ ] **Step 2: Write the regression test**
 
@@ -310,14 +310,14 @@ def test_backfill_skips_lines_with_semantic_tag(fake_data_dir: Path, tmp_path: P
 
 - [ ] **Step 3: Run**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_action_items_backfill.py -k semantic_tag -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_action_items_backfill.py -k semantic_tag -v`
 Expected: PASS (depends on A1+A2 being in place — the parser now reports `short_prefix` for the tag lines, so backfill skips them).
 
 - [ ] **Step 4: Lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
-cd /Users/jordanburger/scout-plugin
+cd plugin/engine && .venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests
+cd plugin
 git add engine/tests/unit/test_action_items_backfill.py
 git commit -m "test(backfill): regression — never double-prefix a [#TAG] line
 
@@ -375,13 +375,13 @@ If that grep finds anything, the file is non-compliant and scout-app's writes wi
 
 - [ ] **Step 2: Verify the file still reads coherently**
 
-Run: `cd /Users/jordanburger/scout-plugin && sed -n '83,122p' phases/core/action-items.md`
+Run: `cd plugin && sed -n '83,122p' phases/core/action-items.md`
 Expected: the new section is present, grep uses `[#[A-Z0-9]{2,8}]`, no leftover "4-char Crockford" mandate.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add phases/core/action-items.md
 git commit -m "docs(prompt): encourage semantic [#TAG]s, new-prefix as fallback
 
@@ -424,7 +424,7 @@ Append to `ScoutTests/ActionItems/ActionItemsParserTests.swift` (inside the exis
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsParserTests/extractsVariableLengthSemanticTag 2>&1 | tail -25`
+Run: `cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsParserTests/extractsVariableLengthSemanticTag 2>&1 | tail -25`
 Expected: FAIL (shortPrefix nil for `[#AI3026]` under the 4-Crockford regex).
 > SourceKit may emit spurious "Cannot find type" diagnostics; only the `xcodebuild` result counts.
 
@@ -442,13 +442,13 @@ In `Scout/ActionItems/ActionItemsWriter.swift`, change `shortPrefix(inFile:atLin
 
 - [ ] **Step 4: Run the Action Items suites**
 
-Run: `cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsParserTests -only-testing:ScoutTests/ActionItemsWriterTests 2>&1 | tail -25`
+Run: `cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsParserTests -only-testing:ScoutTests/ActionItemsWriterTests 2>&1 | tail -25`
 Expected: `** TEST SUCCEEDED **` — new tests pass; the existing writer test `readsShortPrefixAtLineNumber` (uses `[#AB12]`, still valid) and the `[#A3F7]`/`[#AB12]` cases stay green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/ActionItems/ActionItemsParser.swift Scout/ActionItems/ActionItemsWriter.swift ScoutTests/ActionItems/ActionItemsParserTests.swift
 git commit -m "feat(action-items): recognize variable-length [#TAG] in parser + line reader
 
@@ -520,16 +520,16 @@ In `parser-corpus.json`: update the `_doc` string's `short_prefix` clause from "
 
 - [ ] **Step 2: Run the Python contract suite**
 
-Run: `cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_parser_contract.py -v`
+Run: `cd plugin/engine && python -m pytest tests/unit/test_parser_contract.py -v`
 Expected: the four new `test_short_prefix[...]` and `test_body[...]` PASS; the four new `test_subject[...]`/`test_plain_subject[...]` are `xfailed` (strict). Total: `20 passed, 20 xfailed` (was 16/12; +4 passed short_prefix +4 passed body, +8 xfail).
 > If a `test_body` mismatches, fix the expectation in the JSON to render.py's actual token-aware split (per the M3.1 reconciliation rule — don't loosen the test); if `test_short_prefix` fails, A1/A2 aren't in place on this branch.
 
 - [ ] **Step 3: Validate JSON + lint + commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && python -c "import json,pathlib; json.loads(pathlib.Path('tests/fixtures/contract/parser-corpus.json').read_text())" && echo "JSON ok"
+cd plugin/engine && python -c "import json,pathlib; json.loads(pathlib.Path('tests/fixtures/contract/parser-corpus.json').read_text())" && echo "JSON ok"
 .venv/bin/ruff check tests
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add engine/tests/fixtures/contract/parser-corpus.json
 git commit -m "test(contract): add variable-length [#TAG] corpus entries
 
@@ -547,9 +547,9 @@ Depends on D1 (canonical corpus final) and C1 (Swift parser widened).
 - [ ] **Step 1: Re-copy byte-identically + compute new digest**
 
 ```bash
-cp /Users/jordanburger/scout-plugin/engine/tests/fixtures/contract/parser-corpus.json \
-   /Users/jordanburger/scout-app/ScoutTests/Fixtures/parser-corpus.json
-shasum -a 256 /Users/jordanburger/scout-app/ScoutTests/Fixtures/parser-corpus.json | awk '{print $1}'
+cp plugin/engine/tests/fixtures/contract/parser-corpus.json \
+   apps/macos/ScoutTests/Fixtures/parser-corpus.json
+shasum -a 256 apps/macos/ScoutTests/Fixtures/parser-corpus.json | awk '{print $1}'
 ```
 Note the new 64-char digest.
 
@@ -559,13 +559,13 @@ In `ScoutTests/ActionItems/ParserContractTests.swift`, replace the `static let c
 
 - [ ] **Step 3: Run the Swift contract suite**
 
-Run: `cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ParserContractTests 2>&1 | tail -25`
+Run: `cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ParserContractTests 2>&1 | tail -25`
 Expected: `** TEST SUCCEEDED **` — `corpusMatchesCanonicalChecksum` passes (copy byte-identical), `parserMatchesContract` passes for ALL entries including the four new `[#TAG]` ones (the Swift parser strips the tag, so subject/plain_subject match; no xfail on the Swift side).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add ScoutTests/Fixtures/parser-corpus.json ScoutTests/ActionItems/ParserContractTests.swift
 git commit -m "test(contract): sync [#TAG] corpus to app + update checksum
 

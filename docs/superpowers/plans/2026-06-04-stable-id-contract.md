@@ -28,14 +28,14 @@ Only the briefing/consolidation runner (`run-scout.sh.tmpl`) produces action-ite
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin && git checkout -b feat/stable-id-backfill-issue-10
+cd plugin && git checkout -b feat/stable-id-backfill-issue-10
 ```
 Expected: `Switched to a new branch 'feat/stable-id-backfill-issue-10'`
 
 ### Task M1.1: Failing integration test for the post-session backfill wrapper
 
 **Files:**
-- Test: `/Users/jordanburger/scout-plugin/engine/tests/integration/test_post_session_backfill.py` (create)
+- Test: `plugin/engine/tests/integration/test_post_session_backfill.py` (create)
 
 The test renders the (not-yet-created) template by substituting its two `{{…}}` vars, runs it inside a temp git vault containing an action-items file with unprefixed open tasks, and asserts: prefixes get added, exactly one commit is made, and a second run is a no-op (idempotent).
 
@@ -133,14 +133,14 @@ def test_backfill_adds_prefix_and_commits_once(vault: Path) -> None:
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/integration/test_post_session_backfill.py -v
+cd plugin/engine && python -m pytest tests/integration/test_post_session_backfill.py -v
 ```
 Expected: FAIL — `FileNotFoundError`/read error on `post-session-backfill.sh.tmpl` (template not created yet).
 
 ### Task M1.2: Create the backfill wrapper template
 
 **Files:**
-- Create: `/Users/jordanburger/scout-plugin/templates/scripts/post-session-backfill.sh.tmpl`
+- Create: `plugin/templates/scripts/post-session-backfill.sh.tmpl`
 
 - [ ] **Step 1: Write the template**
 
@@ -192,14 +192,14 @@ fi
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/integration/test_post_session_backfill.py -v
+cd plugin/engine && python -m pytest tests/integration/test_post_session_backfill.py -v
 ```
 Expected: PASS (both assertions: one commit added, second run no-op).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add templates/scripts/post-session-backfill.sh.tmpl engine/tests/integration/test_post_session_backfill.py
 git commit -m "feat(action-items): deterministic post-session prefix backfill wrapper
 
@@ -210,7 +210,7 @@ briefing/consolidation session, independent of prompt compliance. Refs #10."
 ### Task M1.3: Wire the wrapper into the runner template
 
 **Files:**
-- Modify: `/Users/jordanburger/scout-plugin/templates/run-scout.sh.tmpl` (insert after the "run finished" log block, before the cost tracker)
+- Modify: `plugin/templates/run-scout.sh.tmpl` (insert after the "run finished" log block, before the cost tracker)
 
 - [ ] **Step 1: Insert the post-session invocation**
 
@@ -232,14 +232,14 @@ The bootstrap copies `templates/scripts/*.tmpl` → `$SCOUT_DIR/scripts/`, subst
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin && grep -rn "templates/scripts\|SCOUTCTL_BIN" engine/scout/ scripts/ | grep -i "render\|glob\|install\|scripts" | head
+cd plugin && grep -rn "templates/scripts\|SCOUTCTL_BIN" engine/scout/ scripts/ | grep -i "render\|glob\|install\|scripts" | head
 ```
 Expected: a render/copy step that iterates `templates/scripts/*.tmpl` (so the new file is picked up automatically). If instead each script is listed explicitly, add `post-session-backfill.sh` to that list in the same edit and note it here.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add templates/run-scout.sh.tmpl
 git commit -m "feat(action-items): run post-session prefix backfill from runner
 
@@ -299,7 +299,7 @@ Add to `ActionItemsWriterTests`:
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/withShortPrefixReplacesPrefixPreservingPayload 2>&1 | tail -20
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/withShortPrefixReplacesPrefixPreservingPayload 2>&1 | tail -20
 ```
 Expected: FAIL — `value of type 'WriteOp' has no member 'withShortPrefix'`.
 
@@ -329,7 +329,7 @@ Run: same command as Step 2. Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/ActionItems/ActionItemsWriter.swift ScoutTests/ActionItems/ActionItemsWriterTests.swift
 git commit -m "feat(action-items): WriteOp.withShortPrefix helper for safety-net retry
 
@@ -370,7 +370,7 @@ Refs #10."
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/readsShortPrefixAtLineNumber 2>&1 | tail -20
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/readsShortPrefixAtLineNumber 2>&1 | tail -20
 ```
 Expected: FAIL — no member `shortPrefix(inFile:atLine:)`.
 
@@ -405,7 +405,7 @@ Run: same as Step 2. Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/ActionItems/ActionItemsWriter.swift ScoutTests/ActionItems/ActionItemsWriterTests.swift
 git commit -m "feat(action-items): read [#XXXX] prefix at a given line for retry
 
@@ -424,7 +424,7 @@ The recovery needs the target line number and the ability to run a backfill subp
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && grep -n "RecordingRunner\|struct.*ProcessRunner\|func run" ScoutTests/ActionItems/*.swift Scout/**/*.swift | grep -i "runner\|ProcessResult\|func run" | head
+cd apps/macos && grep -n "RecordingRunner\|struct.*ProcessRunner\|func run" ScoutTests/ActionItems/*.swift Scout/**/*.swift | grep -i "runner\|ProcessResult\|func run" | head
 ```
 Expected: locate `RecordingRunner` and the `ProcessRunner` protocol + `ProcessResult` shape. If `RecordingRunner` returns a single canned success, extend it (Step 2) to dequeue scripted results.
 
@@ -485,7 +485,7 @@ Then add the test:
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/backfillsThenRetriesByIdOnNoMatchForUnprefixedOp 2>&1 | tail -25
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests/backfillsThenRetriesByIdOnNoMatchForUnprefixedOp 2>&1 | tail -25
 ```
 Expected: FAIL — `submit` has no `recoveryLineNumber:` parameter.
 
@@ -549,14 +549,14 @@ if result.exitCode != 0 {
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests 2>&1 | tail -25
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItemsWriterTests 2>&1 | tail -25
 ```
 Expected: PASS for the new test and all existing `ActionItemsWriterTests`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/ActionItems/ActionItemsWriter.swift ScoutTests/ActionItems/ActionItemsWriterTests.swift
 git commit -m "feat(action-items): one-shot backfill+by-id retry on noMatch
 
@@ -629,7 +629,7 @@ Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.sh
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild build -project Scout.xcodeproj -scheme Scout 2>&1 | tail -15
+cd apps/macos && xcodebuild build -project Scout.xcodeproj -scheme Scout 2>&1 | tail -15
 ```
 Expected: `** BUILD SUCCEEDED **`.
 
@@ -637,14 +637,14 @@ Expected: `** BUILD SUCCEEDED **`.
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItems 2>&1 | tail -20
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ActionItems 2>&1 | tail -20
 ```
 Expected: all pass.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/ActionItems/ActionItemsView.swift Scout/ActionItems/Views/SectionView.swift Scout/ActionItems/Views/TaskCardView.swift Scout/ActionItems/Views/TaskActionsView.swift
 git commit -m "feat(action-items): thread task line number into write ops for retry
 
@@ -660,7 +660,7 @@ A golden corpus of raw task lines + expected `{short_prefix, subject, plain_subj
 ### Task M3.1: Author the golden corpus (canonical, scout-plugin)
 
 **Files:**
-- Create: `/Users/jordanburger/scout-plugin/engine/tests/fixtures/contract/parser-corpus.json`
+- Create: `plugin/engine/tests/fixtures/contract/parser-corpus.json`
 
 - [ ] **Step 1: Write the corpus**
 
@@ -741,7 +741,7 @@ A golden corpus of raw task lines + expected `{short_prefix, subject, plain_subj
 ### Task M3.2: Python contract test (scout-plugin)
 
 **Files:**
-- Test: `/Users/jordanburger/scout-plugin/engine/tests/unit/test_parser_contract.py` (create)
+- Test: `plugin/engine/tests/unit/test_parser_contract.py` (create)
 
 - [ ] **Step 1: Write the test**
 
@@ -785,7 +785,7 @@ def test_parser_matches_contract(entry: dict) -> None:
 ```
 > Step 1a: confirm the real parser entry point + attribute names. Run:
 > ```bash
-> cd /Users/jordanburger/scout-plugin && grep -n "def parse\|short_prefix\|plain\|title\|body" engine/scout/action_items/parser.py | head -30
+> cd plugin && grep -n "def parse\|short_prefix\|plain\|title\|body" engine/scout/action_items/parser.py | head -30
 > ```
 > Map `parse_lines`/`item.plain_subject`/`item.body` to the actual names (e.g. the parser may expose `parse_file` only — if so, write the corpus line to a temp file and parse that, or factor a `parse_text` helper). Adjust the test to the real API before running.
 
@@ -793,14 +793,14 @@ def test_parser_matches_contract(entry: dict) -> None:
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-plugin/engine && python -m pytest tests/unit/test_parser_contract.py -v
+cd plugin/engine && python -m pytest tests/unit/test_parser_contract.py -v
 ```
 Expected: all parametrized cases PASS. For any failure, decide per the Step-1 note in M3.1 (fix parser vs. fix expectation) and re-run.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-plugin
+cd plugin
 git add engine/tests/fixtures/contract/parser-corpus.json engine/tests/unit/test_parser_contract.py
 git commit -m "test(action-items): cross-language parser contract corpus + Python side
 
@@ -813,23 +813,23 @@ Refs #10."
 
 Run:
 ```bash
-shasum -a 256 /Users/jordanburger/scout-plugin/engine/tests/fixtures/contract/parser-corpus.json | awk '{print $1}'
+shasum -a 256 plugin/engine/tests/fixtures/contract/parser-corpus.json | awk '{print $1}'
 ```
 Expected: a 64-char hex digest. Note it — it is embedded in both the app copy guard (M3.4) and used to prove the copies match.
 
 ### Task M3.4: Copy corpus into scout-app + Swift contract test + checksum guard
 
 **Files:**
-- Create: `/Users/jordanburger/scout-app/ScoutTests/Fixtures/parser-corpus.json` (byte-identical copy)
-- Test: `/Users/jordanburger/scout-app/ScoutTests/ActionItems/ParserContractTests.swift` (create)
+- Create: `apps/macos/ScoutTests/Fixtures/parser-corpus.json` (byte-identical copy)
+- Test: `apps/macos/ScoutTests/ActionItems/ParserContractTests.swift` (create)
 
 - [ ] **Step 1: Copy the corpus byte-for-byte**
 
 Run:
 ```bash
-cp /Users/jordanburger/scout-plugin/engine/tests/fixtures/contract/parser-corpus.json \
-   /Users/jordanburger/scout-app/ScoutTests/Fixtures/parser-corpus.json
-shasum -a 256 /Users/jordanburger/scout-app/ScoutTests/Fixtures/parser-corpus.json | awk '{print $1}'
+cp plugin/engine/tests/fixtures/contract/parser-corpus.json \
+   apps/macos/ScoutTests/Fixtures/parser-corpus.json
+shasum -a 256 apps/macos/ScoutTests/Fixtures/parser-corpus.json | awk '{print $1}'
 ```
 Expected: digest identical to M3.3. (`ScoutTests/Fixtures/` is a file-system-synchronized group, so the file auto-bundles — no pbxproj edit.)
 
@@ -908,14 +908,14 @@ Replace `PASTE_DIGEST_FROM_M3.3` with the digest from Task M3.3.
 
 Run:
 ```bash
-cd /Users/jordanburger/scout-app && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ParserContractTests 2>&1 | tail -25
+cd apps/macos && xcodebuild test -project Scout.xcodeproj -scheme Scout -only-testing:ScoutTests/ParserContractTests 2>&1 | tail -25
 ```
 Expected: both tests PASS. Any `parserMatchesContract` failure is a genuine Swift↔Python drift — fix the Swift parser (or correct the expectation in the canonical corpus and re-copy + re-checksum) per the M3.1 note.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add ScoutTests/Fixtures/parser-corpus.json ScoutTests/ActionItems/ParserContractTests.swift
 git commit -m "test(action-items): cross-language parser contract — Swift side + checksum guard
 
@@ -932,7 +932,7 @@ Refs #10."
 
 Run:
 ```bash
-grep -n "acceptance\|### [1-7]\." /Users/jordanburger/scout-app/docs/superpowers/specs/2026-06-04-stable-id-contract-design.md | head
+grep -n "acceptance\|### [1-7]\." docs/superpowers/specs/2026-06-04-stable-id-contract-design.md | head
 ```
 Expected: the seven items are present (contract, write protocol, read protocol, migration, contract test, hand-edit, fallback). They are — this step is a sanity check.
 

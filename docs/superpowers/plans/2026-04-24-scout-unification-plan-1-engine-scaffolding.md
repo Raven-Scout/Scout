@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Scaffold the `scout-engine` Python package inside `~/scout-plugin/engine/` with a Typer-based `scoutctl` CLI, core modules (`errors`, `paths`, `config`, `manifest`), a launcher shim for LaunchAgent contexts, full unit + performance test coverage, and GitHub Actions CI. When Plan 1 merges, `scoutctl --help`, `scoutctl version`, and `scoutctl manifest show` work; CI is green on macOS + Linux × Python 3.11/3.12; the foundation is in place for Plans 2–7 to port existing scripts and features.
+**Goal:** Scaffold the `scout-engine` Python package inside `plugin/engine/` with a Typer-based `scoutctl` CLI, core modules (`errors`, `paths`, `config`, `manifest`), a launcher shim for LaunchAgent contexts, full unit + performance test coverage, and GitHub Actions CI. When Plan 1 merges, `scoutctl --help`, `scoutctl version`, and `scoutctl manifest show` work; CI is green on macOS + Linux × Python 3.11/3.12; the foundation is in place for Plans 2–7 to port existing scripts and features.
 
 **Architecture:** The engine is a proper Python package (`hatchling` build backend, `pip install -e .` for editable dev installs), with strict separation between a minimal-import CLI surface (Typer, stdlib only at module top) and heavy subsystems (textual, rich, jinja2, kb, tui) that load lazily. All paths resolve via `scout.paths` with `expanduser().resolve()` applied at the boundary. Config layers engine defaults → user overrides → env vars. The manifest (`manifest.json`) is the future contract with scout-app — this plan wires the baseline version/features scaffold.
 
@@ -12,23 +12,23 @@
 
 ## Context for the implementer
 
-**Working directory:** All file paths in this plan are relative to `/Users/jordanburger/scout-plugin/`, which is a **separate repository** from the one where this plan lives. Before starting, `cd` into `~/scout-plugin` and confirm you're on the right repo:
+**Working directory:** All file paths in this plan are relative to `plugin/`, which is a **separate repository** from the one where this plan lives. Before starting, `cd` into `plugin` and confirm you're on the right repo:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git status
 git remote -v
 # Should show origin: https://github.com/jordanrburger/scout-plugin.git
 ```
 
-**This plan does NOT modify** `~/scout-plugin/plugin.json`, `~/scout-plugin/commands/`, `~/scout-plugin/skills/`, `~/scout-plugin/phases/`, or `~/scout-plugin/templates/`. Those stay as they are; they're touched in Plans 4 and 5.
+**This plan does NOT modify** `plugin/plugin.json`, `plugin/commands/`, `plugin/skills/`, `plugin/phases/`, or `plugin/templates/`. Those stay as they are; they're touched in Plans 4 and 5.
 
-**Reference spec:** `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` — see especially §4 (Engine package design) and §9 (Testing strategy).
+**Reference spec:** `docs/superpowers/specs/2026-04-24-scout-unification-design.md` — see especially §4 (Engine package design) and §9 (Testing strategy).
 
 ## File structure (what Plan 1 creates)
 
 ```
-~/scout-plugin/
+plugin/
 ├── engine/
 │   ├── pyproject.toml
 │   ├── README.md
@@ -68,20 +68,20 @@ Every file in this tree has one clear responsibility. `cli.py` wires subcommands
 ## Task 0: Branch + pyproject.toml + package skeleton
 
 **Files:**
-- Create: `~/scout-plugin/engine/pyproject.toml`
-- Create: `~/scout-plugin/engine/README.md`
-- Create: `~/scout-plugin/engine/scout/__init__.py`
-- Create: `~/scout-plugin/engine/scout/__main__.py`
-- Create: `~/scout-plugin/engine/tests/__init__.py`
-- Create: `~/scout-plugin/engine/tests/unit/__init__.py`
-- Create: `~/scout-plugin/engine/tests/perf/__init__.py`
-- Create: `~/scout-plugin/engine/tests/conftest.py`
+- Create: `plugin/engine/pyproject.toml`
+- Create: `plugin/engine/README.md`
+- Create: `plugin/engine/scout/__init__.py`
+- Create: `plugin/engine/scout/__main__.py`
+- Create: `plugin/engine/tests/__init__.py`
+- Create: `plugin/engine/tests/unit/__init__.py`
+- Create: `plugin/engine/tests/perf/__init__.py`
+- Create: `plugin/engine/tests/conftest.py`
 
 - [ ] **Step 1: Create the migration branch**
 
 Run:
 ```bash
-cd ~/scout-plugin
+cd plugin
 git checkout main
 git pull
 git checkout -b migrate/v0.4.0-engine-scaffolding
@@ -263,7 +263,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 uv venv
 uv pip install -e ".[dev]"
 ```
@@ -280,7 +280,7 @@ Expected: the file exists (but currently fails because `scout/cli.py` does not e
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/pyproject.toml engine/README.md engine/scout/__init__.py engine/scout/__main__.py engine/tests/
 git commit -m "feat(engine): scaffold scout-engine package with pyproject + empty package"
 ```
@@ -290,8 +290,8 @@ git commit -m "feat(engine): scaffold scout-engine package with pyproject + empt
 ## Task 1: `scout.errors` with exit-code contract
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/unit/test_errors.py`
-- Create: `~/scout-plugin/engine/scout/errors.py`
+- Create: `plugin/engine/tests/unit/test_errors.py`
+- Create: `plugin/engine/scout/errors.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -348,7 +348,7 @@ def test_all_subclasses_inherit_from_scout_error() -> None:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_errors.py -v
 ```
 
@@ -428,7 +428,7 @@ class ContractViolation(ScoutError):
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_errors.py -v
 ```
 
@@ -437,7 +437,7 @@ Expected: 3 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/errors.py engine/tests/unit/test_errors.py
 git commit -m "feat(engine): add errors module with stable exit-code contract"
 ```
@@ -447,8 +447,8 @@ git commit -m "feat(engine): add errors module with stable exit-code contract"
 ## Task 2: `scout.paths` with tilde/symlink expansion
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/unit/test_paths.py`
-- Create: `~/scout-plugin/engine/scout/paths.py`
+- Create: `plugin/engine/tests/unit/test_paths.py`
+- Create: `plugin/engine/scout/paths.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -527,7 +527,7 @@ def test_derived_paths_under_data_dir(tmp_path: Path) -> None:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_paths.py -v
 ```
 
@@ -618,7 +618,7 @@ def require_data_dir(data: Path | None = None) -> Path:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_paths.py -v
 ```
 
@@ -627,7 +627,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/paths.py engine/tests/unit/test_paths.py
 git commit -m "feat(engine): add paths module with tilde/symlink resolution"
 ```
@@ -637,7 +637,7 @@ git commit -m "feat(engine): add paths module with tilde/symlink resolution"
 ## Task 3: `defaults/scout-config.yaml` (prerequisite for config module)
 
 **Files:**
-- Create: `~/scout-plugin/engine/defaults/scout-config.yaml`
+- Create: `plugin/engine/defaults/scout-config.yaml`
 
 - [ ] **Step 1: Create the defaults file**
 
@@ -672,7 +672,7 @@ features:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/python -c "import yaml; print(yaml.safe_load(open('defaults/scout-config.yaml')))"
 ```
 
@@ -681,7 +681,7 @@ Expected: a dict with keys `schema_version`, `user`, `budgets`, `thresholds`, `f
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/defaults/scout-config.yaml
 git commit -m "feat(engine): add engine defaults scout-config.yaml"
 ```
@@ -691,8 +691,8 @@ git commit -m "feat(engine): add engine defaults scout-config.yaml"
 ## Task 4: `scout.config` with three-layer merge
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/unit/test_config.py`
-- Create: `~/scout-plugin/engine/scout/config.py`
+- Create: `plugin/engine/tests/unit/test_config.py`
+- Create: `plugin/engine/scout/config.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -778,7 +778,7 @@ def test_non_mapping_yaml_raises_config_error(
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_config.py -v
 ```
 
@@ -866,7 +866,7 @@ def load_config(data_dir: Path | None = None) -> dict[str, Any]:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_config.py -v
 ```
 
@@ -875,7 +875,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/config.py engine/tests/unit/test_config.py
 git commit -m "feat(engine): add config module with three-layer merge"
 ```
@@ -885,8 +885,8 @@ git commit -m "feat(engine): add config module with three-layer merge"
 ## Task 5: `scout.manifest` with capability declaration
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/unit/test_manifest.py`
-- Create: `~/scout-plugin/engine/scout/manifest.py`
+- Create: `plugin/engine/tests/unit/test_manifest.py`
+- Create: `plugin/engine/scout/manifest.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -950,7 +950,7 @@ def test_write_manifest_round_trip(tmp_path: Path) -> None:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_manifest.py -v
 ```
 
@@ -1026,7 +1026,7 @@ def write_manifest(path: Path | None = None) -> Path:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_manifest.py -v
 ```
 
@@ -1035,7 +1035,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/manifest.py engine/tests/unit/test_manifest.py
 git commit -m "feat(engine): add manifest module with capability declaration"
 ```
@@ -1045,7 +1045,7 @@ git commit -m "feat(engine): add manifest module with capability declaration"
 ## Task 6: `scout.cli` — Typer app with minimal imports
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/cli.py`
+- Create: `plugin/engine/scout/cli.py`
 
 This task does not have a dedicated test file — `cli.py`'s correctness is covered by the perf test in Task 8 (no heavy imports) and by running the CLI manually. The Typer framework is well-tested upstream.
 
@@ -1122,7 +1122,7 @@ if __name__ == "__main__":
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 uv pip install -e ".[dev]"
 ```
 
@@ -1150,7 +1150,7 @@ Expected: JSON matching the manifest structure (version, schema_version, feature
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/cli.py
 git commit -m "feat(engine): add scoutctl Typer CLI with version + manifest subcommands"
 ```
@@ -1160,7 +1160,7 @@ git commit -m "feat(engine): add scoutctl Typer CLI with version + manifest subc
 ## Task 7: `bin/scoutctl` launcher shim
 
 **Files:**
-- Create: `~/scout-plugin/engine/bin/scoutctl`
+- Create: `plugin/engine/bin/scoutctl`
 
 The shim exists so LaunchAgents (which don't inherit user PATH) can still find the right Python interpreter.
 
@@ -1189,14 +1189,14 @@ fi
 
 Run:
 ```bash
-chmod +x ~/scout-plugin/engine/bin/scoutctl
+chmod +x plugin/engine/bin/scoutctl
 ```
 
 - [ ] **Step 3: Verify the shim runs without the venv on PATH**
 
 Run (explicitly clearing PATH to simulate a LaunchAgent):
 ```bash
-cd ~/scout-plugin
+cd plugin
 env -i PATH=/usr/bin:/bin HOME="$HOME" engine/bin/scoutctl version
 ```
 
@@ -1206,7 +1206,7 @@ Expected: `0.4.0` on stdout.
 
 Run:
 ```bash
-shellcheck ~/scout-plugin/engine/bin/scoutctl
+shellcheck plugin/engine/bin/scoutctl
 ```
 
 Expected: no output (clean). If `shellcheck` is not installed, run `brew install shellcheck` first.
@@ -1214,7 +1214,7 @@ Expected: no output (clean). If `shellcheck` is not installed, run `brew install
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/bin/scoutctl
 git commit -m "feat(engine): add scoutctl bash launcher shim for LaunchAgent contexts"
 ```
@@ -1224,8 +1224,8 @@ git commit -m "feat(engine): add scoutctl bash launcher shim for LaunchAgent con
 ## Task 8: Performance tests — startup + no-heavy-imports
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/perf/test_startup.py`
-- Create: `~/scout-plugin/engine/tests/perf/test_no_heavy_imports.py`
+- Create: `plugin/engine/tests/perf/test_startup.py`
+- Create: `plugin/engine/tests/perf/test_no_heavy_imports.py`
 
 - [ ] **Step 1: Create `tests/perf/test_startup.py`**
 
@@ -1350,7 +1350,7 @@ def test_cli_has_no_banned_top_level_imports() -> None:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/perf/ -v -m perf
 ```
 
@@ -1359,7 +1359,7 @@ Expected: 3 passed. If latency tests fail on a slow machine, examine the actual 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/tests/perf/test_startup.py engine/tests/perf/test_no_heavy_imports.py
 git commit -m "test(engine): add perf tests for startup latency + import discipline"
 ```
@@ -1369,7 +1369,7 @@ git commit -m "test(engine): add perf tests for startup latency + import discipl
 ## Task 9: GitHub Actions — `test.yml`
 
 **Files:**
-- Create: `~/scout-plugin/.github/workflows/test.yml`
+- Create: `plugin/.github/workflows/test.yml`
 
 - [ ] **Step 1: Create the workflow file**
 
@@ -1408,7 +1408,7 @@ jobs:
 
 Run:
 ```bash
-cd ~/scout-plugin
+cd plugin
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/test.yml'))"
 ```
 
@@ -1417,7 +1417,7 @@ Expected: no output (valid YAML).
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add .github/workflows/test.yml
 git commit -m "ci(engine): add GitHub Actions test workflow for macOS + Linux x py3.11/3.12"
 ```
@@ -1427,7 +1427,7 @@ git commit -m "ci(engine): add GitHub Actions test workflow for macOS + Linux x 
 ## Task 10: GitHub Actions — `lint.yml`
 
 **Files:**
-- Create: `~/scout-plugin/.github/workflows/lint.yml`
+- Create: `plugin/.github/workflows/lint.yml`
 
 - [ ] **Step 1: Create the lint workflow**
 
@@ -1469,7 +1469,7 @@ jobs:
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/ruff check scout tests
 .venv/bin/ruff format --check scout tests
 .venv/bin/mypy scout
@@ -1480,7 +1480,7 @@ Expected: each command exits 0 with no errors. If `ruff format --check` reports 
 - [ ] **Step 3: Validate the YAML**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/lint.yml'))"
 ```
 
@@ -1489,7 +1489,7 @@ Expected: no output.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add .github/workflows/lint.yml
 git commit -m "ci(engine): add GitHub Actions lint workflow (ruff + mypy + shellcheck)"
 ```
@@ -1504,7 +1504,7 @@ git commit -m "ci(engine): add GitHub Actions lint workflow (ruff + mypy + shell
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/ -v
 ```
 
@@ -1514,7 +1514,7 @@ Expected: all unit + perf tests pass. Note the count — should be approximately
 
 Run:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/ruff check scout tests
 .venv/bin/ruff format --check scout tests
 .venv/bin/mypy scout
@@ -1526,7 +1526,7 @@ Expected: all green.
 
 Run:
 ```bash
-cd ~/scout-plugin
+cd plugin
 engine/bin/scoutctl version
 engine/bin/scoutctl manifest show
 ```
@@ -1537,7 +1537,7 @@ Expected: version prints `0.4.0`; manifest show prints JSON with the expected ke
 
 Run:
 ```bash
-cd ~/scout-plugin
+cd plugin
 git log --oneline main..HEAD
 ```
 
@@ -1552,7 +1552,7 @@ git push -u origin migrate/v0.4.0-engine-scaffolding
 
 Use `gh` CLI:
 ```bash
-cd ~/scout-plugin
+cd plugin
 gh pr create --draft --title "v0.4.0 Plan 1: engine package scaffolding" --body "$(cat <<'EOF'
 ## Summary
 
@@ -1590,7 +1590,7 @@ Plan 1 is complete when this PR merges. Plans 2–7 in the spec section 8 Migrat
 
 ## What Plans 2–7 will build on
 
-Each subsequent plan operates on the same `migrate/v0.4.0-*` branch pattern in `~/scout-plugin` (or a successor branch), with the scaffolding from Plan 1 in place. Rough outlines:
+Each subsequent plan operates on the same `migrate/v0.4.0-*` branch pattern in `plugin` (or a successor branch), with the scaffolding from Plan 1 in place. Rough outlines:
 
 - **Plan 2 — Port existing Python into the package.** Create `scout/action_items/`, `scout/kb/`, `scout/tui/` from `~/Scout/action-items/*.py`, `~/Scout/knowledge-base/ontology/*`, and `~/Scout/tui/*`. Flip `action_items_cli_v1`, `kb_ontology_v1`, `tui_v1` to True in the manifest.
 - **Plan 3 — Port 11 shell scripts to Python.** `scout/runners/`, `scout/hooks/`, `scout/scripts/`. Each port paired with a parity test (bats diff of old shell vs new Python). Flip `session_tokens_v1`, `connector_health_v1` to True.

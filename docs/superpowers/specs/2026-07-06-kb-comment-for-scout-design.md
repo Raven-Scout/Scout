@@ -28,7 +28,7 @@ Let the user select a block in a Knowledge Base note and attach a comment **for 
 
 ## Background: the mechanism we build on
 
-The Scout dreaming session already has a per-location feedback channel (verified in `~/scout-plugin/phases/modes/kb-deep-work.md` and `~/Scout/DREAMING.md` Step 2-pre):
+The Scout dreaming session already has a per-location feedback channel (verified in `plugin/phases/modes/kb-deep-work.md` and `~/Scout/DREAMING.md` Step 2-pre):
 
 - The user places `//==<< comment >>==//` at the exact spot in any `~/Scout/**/*.md` file.
 - Dreaming scans for them with `rg -F '//==<<'`, acts on each, and **removes the marker when resolved** (removal = the "processed" signal; unresolved markers are left in place).

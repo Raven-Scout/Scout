@@ -7,21 +7,21 @@
 **Architecture:** Two thin slash commands wrap a single Python entry point — `scoutctl bootstrap {install|upgrade|doctor}` — which runs an 8-stage pipeline (pre-flight → migrations → cat-1 writes → cat-1b runners → cat-4 3-way merge → job lifecycle → version stamp → doctor smoke). Cat-4 conflicts produce sidecar files instead of overwriting the live SKILL.md, so the running system stays functional during conflict resolution. macOS uses launchd; Linux uses crontab managed-block writes.
 
 **Tech Stack:**
-- Python 3.11 (engine: `~/scout-plugin/engine/scout/`)
+- Python 3.11 (engine: `plugin/engine/scout/`)
 - Typer (CLI)
 - `git merge-file` via subprocess (3-way merge)
 - pytest (unit + integration)
 - Bash (slash commands, install-venv fallback)
 - launchd plist (macOS scheduling) / crontab (Linux scheduling)
 
-**Spec:** `~/scout-app/docs/superpowers/specs/2026-05-09-plan-8-scout-setup-repair-design.md` (commit `71c3f45`)
+**Spec:** `docs/superpowers/specs/2026-05-09-plan-8-scout-setup-repair-design.md` (commit `71c3f45`)
 
 **Repo locations:**
-- Engine + plugin source: `~/scout-plugin/`
-- Spec/plan tracking + Mac app: `~/scout-app/`
+- Engine + plugin source: `plugin/`
+- Spec/plan tracking + Mac app: `apps/macos/`
 - User vault (target of installs): `~/Scout/`
 
-**Commit conventions:** Per the spec, commits to `~/scout-plugin/` use conventional-commits style (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). The vault repo (`~/Scout/`) is untouched until end-to-end testing.
+**Commit conventions:** Per the spec, commits to `plugin/` use conventional-commits style (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). The vault repo (`~/Scout/`) is untouched until end-to-end testing.
 
 ---
 
@@ -30,12 +30,12 @@
 ### Task A1: Three-way merge helper
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/three_way_merge.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_three_way_merge.py`
+- Create: `plugin/engine/scout/scripts/three_way_merge.py`
+- Create: `plugin/engine/tests/unit/test_three_way_merge.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_three_way_merge.py`:
+Create `plugin/engine/tests/unit/test_three_way_merge.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/three_way_merge.py."""
@@ -86,14 +86,14 @@ def test_empty_inputs():
 - [ ] **Step 2: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_three_way_merge.py -v
+cd plugin/engine && pytest tests/unit/test_three_way_merge.py -v
 ```
 
 Expected: ImportError / ModuleNotFoundError on `scout.scripts.three_way_merge`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/three_way_merge.py`:
+Create `plugin/engine/scout/scripts/three_way_merge.py`:
 
 ```python
 """Three-way merge wrapper around `git merge-file`.
@@ -162,7 +162,7 @@ def three_way_merge(*, base: str, ours: str, theirs: str) -> MergeResult:
 - [ ] **Step 4: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_three_way_merge.py -v
+cd plugin/engine && pytest tests/unit/test_three_way_merge.py -v
 ```
 
 Expected: 4 passed.
@@ -170,7 +170,7 @@ Expected: 4 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/scripts/three_way_merge.py engine/tests/unit/test_three_way_merge.py && git commit -m "feat(engine): add three_way_merge helper for stage 5 cat-4 merges
+cd plugin && git add engine/scout/scripts/three_way_merge.py engine/tests/unit/test_three_way_merge.py && git commit -m "feat(engine): add three_way_merge helper for stage 5 cat-4 merges
 
 Wraps git merge-file --diff3 -p with a typed MergeResult. Used by the
 bootstrap pipeline's cat-4 stage to merge plugin-side phase updates
@@ -182,13 +182,13 @@ against vault-side edits to SKILL.md/DREAMING.md/RESEARCH.md. Plan 8 §4.5."
 ### Task A2: Heartbeat plist installer
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/defaults/com.scout.heartbeat.plist`
-- Create: `~/scout-plugin/engine/scout/scripts/install_heartbeat_plist.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_install_heartbeat_plist.py`
+- Create: `plugin/engine/scout/defaults/com.scout.heartbeat.plist`
+- Create: `plugin/engine/scout/scripts/install_heartbeat_plist.py`
+- Create: `plugin/engine/tests/unit/test_install_heartbeat_plist.py`
 
 - [ ] **Step 1: Write the heartbeat plist defaults file**
 
-Create `~/scout-plugin/engine/scout/defaults/com.scout.heartbeat.plist`:
+Create `plugin/engine/scout/defaults/com.scout.heartbeat.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -234,7 +234,7 @@ Create `~/scout-plugin/engine/scout/defaults/com.scout.heartbeat.plist`:
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_install_heartbeat_plist.py`:
+Create `plugin/engine/tests/unit/test_install_heartbeat_plist.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/install_heartbeat_plist.py."""
@@ -295,14 +295,14 @@ def test_uninstall_plist_silent_when_missing(tmp_path):
 - [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_install_heartbeat_plist.py -v
+cd plugin/engine && pytest tests/unit/test_install_heartbeat_plist.py -v
 ```
 
 Expected: ImportError on `scout.scripts.install_heartbeat_plist`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/install_heartbeat_plist.py`:
+Create `plugin/engine/scout/scripts/install_heartbeat_plist.py`:
 
 ```python
 """Helper for `scoutctl schedule install-heartbeat-plist [--uninstall] [--force]`.
@@ -361,7 +361,7 @@ def uninstall_plist(*, agents_dir: Path | None = None, bootout: bool = False) ->
 - [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_install_heartbeat_plist.py -v
+cd plugin/engine && pytest tests/unit/test_install_heartbeat_plist.py -v
 ```
 
 Expected: 5 passed.
@@ -369,7 +369,7 @@ Expected: 5 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/defaults/com.scout.heartbeat.plist engine/scout/scripts/install_heartbeat_plist.py engine/tests/unit/test_install_heartbeat_plist.py && git commit -m "feat(engine): add heartbeat plist installer
+cd plugin && git add engine/scout/defaults/com.scout.heartbeat.plist engine/scout/scripts/install_heartbeat_plist.py engine/tests/unit/test_install_heartbeat_plist.py && git commit -m "feat(engine): add heartbeat plist installer
 
 Mirrors install_schedule_plist.py for com.scout.heartbeat.plist with
 30-min StartInterval. Removes the gap where the live heartbeat plist
@@ -381,13 +381,13 @@ had no plugin source-of-truth. Plan 8 §5.1."
 ### Task A3: Cron managed-block installer (Linux)
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/defaults/cron-managed-block.tmpl`
-- Create: `~/scout-plugin/engine/scout/scripts/install_cron.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_install_cron.py`
+- Create: `plugin/engine/scout/defaults/cron-managed-block.tmpl`
+- Create: `plugin/engine/scout/scripts/install_cron.py`
+- Create: `plugin/engine/tests/unit/test_install_cron.py`
 
 - [ ] **Step 1: Create the cron managed-block template**
 
-Create `~/scout-plugin/engine/scout/defaults/cron-managed-block.tmpl`:
+Create `plugin/engine/scout/defaults/cron-managed-block.tmpl`:
 
 ```
 # >>> scout-managed >>>
@@ -402,7 +402,7 @@ PATH=__USER_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_install_cron.py`:
+Create `plugin/engine/tests/unit/test_install_cron.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/install_cron.py.
@@ -528,14 +528,14 @@ def test_uninstall_silent_when_no_block(fake, tmp_path):
 - [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_install_cron.py -v
+cd plugin/engine && pytest tests/unit/test_install_cron.py -v
 ```
 
 Expected: ImportError on `scout.scripts.install_cron`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/install_cron.py`:
+Create `plugin/engine/scout/scripts/install_cron.py`:
 
 ```python
 """Helper for `scoutctl schedule install-cron [--uninstall]`.
@@ -645,7 +645,7 @@ def uninstall_cron(*, home: Path, backup_dir: Path | None = None) -> None:
 - [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_install_cron.py -v
+cd plugin/engine && pytest tests/unit/test_install_cron.py -v
 ```
 
 Expected: 6 passed.
@@ -653,7 +653,7 @@ Expected: 6 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/defaults/cron-managed-block.tmpl engine/scout/scripts/install_cron.py engine/tests/unit/test_install_cron.py && git commit -m "feat(engine): add cron managed-block installer for Linux
+cd plugin && git add engine/scout/defaults/cron-managed-block.tmpl engine/scout/scripts/install_cron.py engine/tests/unit/test_install_cron.py && git commit -m "feat(engine): add cron managed-block installer for Linux
 
 Atomic rewrite via NamedTemporaryFile + single 'crontab <tmpfile>' call,
 so a failed apply leaves the original crontab intact. Previous crontab
@@ -665,13 +665,13 @@ backed up to ~/.crontab.scout-bak.YYYY-MM-DD. Plan 8 §4.8."
 ### Task A4: Connector probe registry loader
 
 **Files:**
-- Create: `~/scout-plugin/templates/connector-probes.yaml`
-- Create: `~/scout-plugin/engine/scout/scripts/connector_probes.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_connector_probe_registry.py`
+- Create: `plugin/templates/connector-probes.yaml`
+- Create: `plugin/engine/scout/scripts/connector_probes.py`
+- Create: `plugin/engine/tests/unit/test_connector_probe_registry.py`
 
 - [ ] **Step 1: Create the probe registry**
 
-Create `~/scout-plugin/templates/connector-probes.yaml`:
+Create `plugin/templates/connector-probes.yaml`:
 
 ```yaml
 # Declarative probe registry for /scout-setup connector detection.
@@ -711,7 +711,7 @@ claude_sessions:
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_connector_probe_registry.py`:
+Create `plugin/engine/tests/unit/test_connector_probe_registry.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/connector_probes.py."""
@@ -826,14 +826,14 @@ def test_probe_emits_user_input_default_empty(tmp_path):
 - [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_connector_probe_registry.py -v
+cd plugin/engine && pytest tests/unit/test_connector_probe_registry.py -v
 ```
 
 Expected: ImportError on `scout.scripts.connector_probes`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/connector_probes.py`:
+Create `plugin/engine/scout/scripts/connector_probes.py`:
 
 ```python
 """Loader for templates/connector-probes.yaml.
@@ -901,7 +901,7 @@ def load_registry(path: Path) -> dict[str, Probe]:
 - [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_connector_probe_registry.py -v
+cd plugin/engine && pytest tests/unit/test_connector_probe_registry.py -v
 ```
 
 Expected: 6 passed.
@@ -909,7 +909,7 @@ Expected: 6 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin && git add templates/connector-probes.yaml engine/scout/scripts/connector_probes.py engine/tests/unit/test_connector_probe_registry.py && git commit -m "feat(plugin+engine): add connector probe registry
+cd plugin && git add templates/connector-probes.yaml engine/scout/scripts/connector_probes.py engine/tests/unit/test_connector_probe_registry.py && git commit -m "feat(plugin+engine): add connector probe registry
 
 YAML at templates/connector-probes.yaml lists primary + fallback tool
 names per connector. When MCP namespaces shift (which they have, per
@@ -924,13 +924,13 @@ wizard prose. Plan 8 §4.7."
 The bootstrap pipeline needs Python code that does what scout-setup.md tells Claude to do today: read `phases/{core,connectors,modes,research}/` files, parse multi-section YAML frontmatter, filter by enabled connectors, render template variables, and concatenate into a final SKILL.md / DREAMING.md / RESEARCH.md.
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/phase_assembly.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_phase_assembly.py`
-- Create: `~/scout-plugin/engine/tests/unit/fixtures/phases/core/dummy.md` (test fixture)
+- Create: `plugin/engine/scout/scripts/phase_assembly.py`
+- Create: `plugin/engine/tests/unit/test_phase_assembly.py`
+- Create: `plugin/engine/tests/unit/fixtures/phases/core/dummy.md` (test fixture)
 
 - [ ] **Step 1: Create test fixtures**
 
-Create `~/scout-plugin/engine/tests/unit/fixtures/phases/core/dummy-core.md`:
+Create `plugin/engine/tests/unit/fixtures/phases/core/dummy-core.md`:
 
 ```markdown
 ---
@@ -946,7 +946,7 @@ requires: null
 Hello {{USER_NAME}} from core. SCOUT_DIR is {{SCOUT_DIR}}.
 ```
 
-Create `~/scout-plugin/engine/tests/unit/fixtures/phases/connectors/dummy-slack.md`:
+Create `plugin/engine/tests/unit/fixtures/phases/connectors/dummy-slack.md`:
 
 ```markdown
 ---
@@ -976,7 +976,7 @@ Outbound for {{USER_NAME}}.
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_phase_assembly.py`:
+Create `plugin/engine/tests/unit/test_phase_assembly.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/phase_assembly.py."""
@@ -1058,19 +1058,19 @@ def test_select_filters_by_slot():
 - [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_phase_assembly.py -v
+cd plugin/engine && pytest tests/unit/test_phase_assembly.py -v
 ```
 
 Expected: ImportError on `scout.scripts.phase_assembly`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/phase_assembly.py`:
+Create `plugin/engine/scout/scripts/phase_assembly.py`:
 
 ```python
 """Phase file parsing, selection, and template rendering.
 
-Phase files (under ``~/scout-plugin/phases/{core,connectors,modes,research}/``)
+Phase files (under ``plugin/phases/{core,connectors,modes,research}/``)
 have YAML frontmatter and may contain multiple sections separated by ``---``
 fences with their own frontmatter blocks. The bootstrap pipeline uses this
 module to assemble SKILL.md / DREAMING.md / RESEARCH.md from phase files
@@ -1164,7 +1164,7 @@ def render_template(text: str, variables: dict[str, str]) -> str:
 - [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_phase_assembly.py -v
+cd plugin/engine && pytest tests/unit/test_phase_assembly.py -v
 ```
 
 Expected: 7 passed.
@@ -1172,7 +1172,7 @@ Expected: 7 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/scripts/phase_assembly.py engine/tests/unit/test_phase_assembly.py engine/tests/unit/fixtures && git commit -m "feat(engine): add phase_assembly module
+cd plugin && git add engine/scout/scripts/phase_assembly.py engine/tests/unit/test_phase_assembly.py engine/tests/unit/fixtures && git commit -m "feat(engine): add phase_assembly module
 
 Parses multi-section phase files (YAML frontmatter + body), filters
 by enabled connectors and slot, renders {{VAR}} templates. Foundation
@@ -1184,12 +1184,12 @@ for stage 5 of the bootstrap pipeline. Plan 8 §4.5 / §5.1."
 ### Task A6: Bootstrap state + lock module
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/bootstrap_lock.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_bootstrap_lock.py`
+- Create: `plugin/engine/scout/scripts/bootstrap_lock.py`
+- Create: `plugin/engine/tests/unit/test_bootstrap_lock.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_bootstrap_lock.py`:
+Create `plugin/engine/tests/unit/test_bootstrap_lock.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/bootstrap_lock.py."""
@@ -1266,14 +1266,14 @@ def test_acquire_raises_when_held_by_live_pid(tmp_path):
 - [ ] **Step 2: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_lock.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_lock.py -v
 ```
 
 Expected: ImportError.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/bootstrap_lock.py`:
+Create `plugin/engine/scout/scripts/bootstrap_lock.py`:
 
 ```python
 """Global pipeline lock for `scoutctl bootstrap install|upgrade`.
@@ -1400,7 +1400,7 @@ Use the cleaner form when implementing. Drop the `isinstance_proc_lookup` helper
 - [ ] **Step 4: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_lock.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_lock.py -v
 ```
 
 Expected: 8 passed.
@@ -1408,7 +1408,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/scripts/bootstrap_lock.py engine/tests/unit/test_bootstrap_lock.py && git commit -m "feat(engine): add bootstrap_lock — global pipeline lock helpers
+cd plugin && git add engine/scout/scripts/bootstrap_lock.py engine/tests/unit/test_bootstrap_lock.py && git commit -m "feat(engine): add bootstrap_lock — global pipeline lock helpers
 
 Provides acquire/release for .scout-session.lock with stale-PID cleanup
 and waited acquisition. Bootstrap install/upgrade hold this lock for
@@ -1421,12 +1421,12 @@ Plan 8 §4.9."
 ### Task A7: Bootstrap doctor (read-only health check)
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/bootstrap_doctor.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_bootstrap_doctor.py`
+- Create: `plugin/engine/scout/scripts/bootstrap_doctor.py`
+- Create: `plugin/engine/tests/unit/test_bootstrap_doctor.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `~/scout-plugin/engine/tests/unit/test_bootstrap_doctor.py`:
+Create `plugin/engine/tests/unit/test_bootstrap_doctor.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/bootstrap_doctor.py."""
@@ -1511,14 +1511,14 @@ def test_exit_code_matches_severity(tmp_path):
 - [ ] **Step 2: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_doctor.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_doctor.py -v
 ```
 
 Expected: ImportError.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `~/scout-plugin/engine/scout/scripts/bootstrap_doctor.py`:
+Create `plugin/engine/scout/scripts/bootstrap_doctor.py`:
 
 ```python
 """Read-only health check for the bootstrap pipeline.
@@ -1652,7 +1652,7 @@ def run_doctor(*, vault: Path, check_jobs: bool = True) -> DoctorReport:
 - [ ] **Step 4: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_doctor.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_doctor.py -v
 ```
 
 Expected: 5 passed.
@@ -1660,7 +1660,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/scripts/bootstrap_doctor.py engine/tests/unit/test_bootstrap_doctor.py && git commit -m "feat(engine): add bootstrap_doctor (read-only health check)
+cd plugin && git add engine/scout/scripts/bootstrap_doctor.py engine/tests/unit/test_bootstrap_doctor.py && git commit -m "feat(engine): add bootstrap_doctor (read-only health check)
 
 Returns DoctorReport(severity, errors, warnings) with exit codes
 0/1/2 for green/yellow/red. Used as pipeline stage 8 and as a
@@ -1674,14 +1674,14 @@ standalone diagnostic. Plan 8 §8.3."
 This task implements the 8-stage pipeline orchestrator. Each stage is a small function. The orchestrator wires them together and acquires/releases the global lock.
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/bootstrap.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_bootstrap_install.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_bootstrap_upgrade.py`
-- Modify: `~/scout-plugin/engine/scout/scripts/__init__.py` (export bootstrap)
+- Create: `plugin/engine/scout/scripts/bootstrap.py`
+- Create: `plugin/engine/tests/unit/test_bootstrap_install.py`
+- Create: `plugin/engine/tests/unit/test_bootstrap_upgrade.py`
+- Modify: `plugin/engine/scout/scripts/__init__.py` (export bootstrap)
 
 - [ ] **Step 1: Write install pipeline tests (failing)**
 
-Create `~/scout-plugin/engine/tests/unit/test_bootstrap_install.py`:
+Create `plugin/engine/tests/unit/test_bootstrap_install.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/bootstrap.py — install pipeline."""
@@ -1718,7 +1718,7 @@ def _config(vault: Path, *, plugin_root: Path) -> BootstrapConfig:
 
 
 def test_install_creates_directory_tree(tmp_path):
-    plugin = Path(__file__).parent.parent.parent.parent  # repo root: ~/scout-plugin
+    plugin = Path(__file__).parent.parent.parent.parent  # repo root: plugin
     vault = tmp_path / "Scout"
     result = install(_config(vault, plugin_root=plugin))
     assert isinstance(result, InstallResult)
@@ -1780,7 +1780,7 @@ def test_install_records_plugin_version(tmp_path):
 
 - [ ] **Step 2: Write upgrade pipeline tests (failing)**
 
-Create `~/scout-plugin/engine/tests/unit/test_bootstrap_upgrade.py`:
+Create `plugin/engine/tests/unit/test_bootstrap_upgrade.py`:
 
 ```python
 """Unit tests for engine/scout/scripts/bootstrap.py — upgrade pipeline."""
@@ -1897,14 +1897,14 @@ def test_upgrade_runner_hand_edit_creates_backup(tmp_path):
 - [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_install.py tests/unit/test_bootstrap_upgrade.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_install.py tests/unit/test_bootstrap_upgrade.py -v
 ```
 
 Expected: ImportError on `scout.scripts.bootstrap`.
 
 - [ ] **Step 4: Write the bootstrap orchestrator**
 
-Create `~/scout-plugin/engine/scout/scripts/bootstrap.py`:
+Create `plugin/engine/scout/scripts/bootstrap.py`:
 
 ```python
 """Bootstrap pipeline — install/upgrade orchestrator for /scout-setup and /scout-update.
@@ -2283,7 +2283,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
 - [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
-cd ~/scout-plugin/engine && pytest tests/unit/test_bootstrap_install.py tests/unit/test_bootstrap_upgrade.py -v
+cd plugin/engine && pytest tests/unit/test_bootstrap_install.py tests/unit/test_bootstrap_upgrade.py -v
 ```
 
 Expected: 11 passed (6 install + 5 upgrade). If a test fails because `phases/` files don't render cleanly under the test fixture, debug by adding a minimal `phases/core/dummy.md` directly under the plugin root (mirroring tests/unit/fixtures) — but the real plugin's `phases/` directory already contains valid files, so this should pass on the real codebase.
@@ -2291,7 +2291,7 @@ Expected: 11 passed (6 install + 5 upgrade). If a test fails because `phases/` f
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/scripts/bootstrap.py engine/tests/unit/test_bootstrap_install.py engine/tests/unit/test_bootstrap_upgrade.py && git commit -m "feat(engine): add bootstrap pipeline orchestrator
+cd plugin && git add engine/scout/scripts/bootstrap.py engine/tests/unit/test_bootstrap_install.py engine/tests/unit/test_bootstrap_upgrade.py && git commit -m "feat(engine): add bootstrap pipeline orchestrator
 
 Implements install/upgrade entry points with the 8-stage pipeline,
 global lock, sidecar conflict policy on cat-4 merges, runner hand-edit
@@ -2306,19 +2306,19 @@ detection with backup, and version-stamp recording. Plan 8 §4.3, §4.5,
 ### Task B1: `scoutctl bootstrap` subcommand group
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/cli.py` (add `bootstrap_app`)
+- Modify: `plugin/engine/scout/cli.py` (add `bootstrap_app`)
 
 - [ ] **Step 1: Read the existing cli.py structure**
 
 ```bash
-grep -n "^def main\|app.add_typer" ~/scout-plugin/engine/scout/cli.py
+grep -n "^def main\|app.add_typer" plugin/engine/scout/cli.py
 ```
 
 Identify a good insertion point — after `notify_app` registration (around line 628) but before `def main()`.
 
 - [ ] **Step 2: Add the bootstrap subcommand group**
 
-Insert into `~/scout-plugin/engine/scout/cli.py` immediately before `def main()` (or after the last `app.add_typer` block):
+Insert into `plugin/engine/scout/cli.py` immediately before `def main()` (or after the last `app.add_typer` block):
 
 ```python
 def _register_bootstrap() -> None:
@@ -2433,7 +2433,7 @@ _register_bootstrap()
 - [ ] **Step 3: Test the CLI surface**
 
 ```bash
-cd ~/scout-plugin/engine && python -m scout.cli bootstrap --help
+cd plugin/engine && python -m scout.cli bootstrap --help
 ```
 
 Expected: usage line + `install`, `upgrade`, `doctor` subcommands listed.
@@ -2441,7 +2441,7 @@ Expected: usage line + `install`, `upgrade`, `doctor` subcommands listed.
 - [ ] **Step 4: Run the full test suite to ensure nothing broke**
 
 ```bash
-cd ~/scout-plugin/engine && pytest -q
+cd plugin/engine && pytest -q
 ```
 
 Expected: all tests pass.
@@ -2449,7 +2449,7 @@ Expected: all tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/cli.py && git commit -m "feat(engine): register scoutctl bootstrap {install,upgrade,doctor}
+cd plugin && git add engine/scout/cli.py && git commit -m "feat(engine): register scoutctl bootstrap {install,upgrade,doctor}
 
 Wires the bootstrap pipeline into the scoutctl CLI surface. Plan 8 §4.1."
 ```
@@ -2459,11 +2459,11 @@ Wires the bootstrap pipeline into the scoutctl CLI surface. Plan 8 §4.1."
 ### Task B2: `scoutctl schedule install-heartbeat-plist` + `install-cron` + `install-all`
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/cli.py`
+- Modify: `plugin/engine/scout/cli.py`
 
 - [ ] **Step 1: Add the three new schedule subcommands**
 
-Inside the existing `_register_schedule_subapp` block in `~/scout-plugin/engine/scout/cli.py` (the `def _register_schedule_subapp()` function around line 256), add three new commands at the end:
+Inside the existing `_register_schedule_subapp` block in `plugin/engine/scout/cli.py` (the `def _register_schedule_subapp()` function around line 256), add three new commands at the end:
 
 ```python
     @schedule_app.command("install-heartbeat-plist")
@@ -2548,7 +2548,7 @@ Inside the existing `_register_schedule_subapp` block in `~/scout-plugin/engine/
 - [ ] **Step 2: Test the new CLI surfaces**
 
 ```bash
-cd ~/scout-plugin/engine && python -m scout.cli schedule install-heartbeat-plist --help
+cd plugin/engine && python -m scout.cli schedule install-heartbeat-plist --help
 python -m scout.cli schedule install-cron --help
 python -m scout.cli schedule install-all --help
 ```
@@ -2558,7 +2558,7 @@ Expected: each command lists its options.
 - [ ] **Step 3: Run the full test suite**
 
 ```bash
-cd ~/scout-plugin/engine && pytest -q
+cd plugin/engine && pytest -q
 ```
 
 Expected: all tests pass (no test regression).
@@ -2566,7 +2566,7 @@ Expected: all tests pass (no test regression).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/cli.py && git commit -m "feat(engine): register schedule install-{heartbeat-plist,cron,all}
+cd plugin && git add engine/scout/cli.py && git commit -m "feat(engine): register schedule install-{heartbeat-plist,cron,all}
 
 Three new scoutctl schedule subcommands. install-all is the
 platform-aware wrapper used by stage 6 of the bootstrap pipeline.
@@ -2580,14 +2580,14 @@ Plan 8 §4.7."
 ### Task C1: Extract inline templates from scout-setup.md
 
 **Files:**
-- Create: `~/scout-plugin/templates/dreaming-proposals.md.tmpl`
-- Create: `~/scout-plugin/templates/scout-mistake-audit.md.tmpl`
-- Create: `~/scout-plugin/templates/review-queue.md.tmpl`
-- Create: `~/scout-plugin/templates/.gitignore.tmpl`
+- Create: `plugin/templates/dreaming-proposals.md.tmpl`
+- Create: `plugin/templates/scout-mistake-audit.md.tmpl`
+- Create: `plugin/templates/review-queue.md.tmpl`
+- Create: `plugin/templates/.gitignore.tmpl`
 
 - [ ] **Step 1: Create dreaming-proposals.md.tmpl**
 
-Create `~/scout-plugin/templates/dreaming-proposals.md.tmpl`:
+Create `plugin/templates/dreaming-proposals.md.tmpl`:
 
 ```markdown
 # Dreaming Proposals
@@ -2610,7 +2610,7 @@ Proposals for changes to SKILL.md, generated by dreaming feedback processing run
 
 - [ ] **Step 2: Create scout-mistake-audit.md.tmpl**
 
-Create `~/scout-plugin/templates/scout-mistake-audit.md.tmpl`:
+Create `plugin/templates/scout-mistake-audit.md.tmpl`:
 
 ```markdown
 # {{INSTANCE_NAME}} Mistake Audit
@@ -2635,7 +2635,7 @@ This file records specific mistakes {{INSTANCE_NAME}} has made, groups them into
 
 - [ ] **Step 3: Create review-queue.md.tmpl**
 
-Create `~/scout-plugin/templates/review-queue.md.tmpl`:
+Create `plugin/templates/review-queue.md.tmpl`:
 
 ```markdown
 # Review Queue
@@ -2656,7 +2656,7 @@ Items {{INSTANCE_NAME}} is uncertain about. {{USER_NAME}} reviews these and eith
 
 - [ ] **Step 4: Create .gitignore.tmpl**
 
-Create `~/scout-plugin/templates/.gitignore.tmpl`:
+Create `plugin/templates/.gitignore.tmpl`:
 
 ```
 .scout-logs/
@@ -2672,7 +2672,7 @@ __pycache__/
 
 - [ ] **Step 5: Add these template paths to bootstrap.py's `_CAT1_TEMPLATES` (or extend `_CAT1_FILES_FROM_PLUGIN`)**
 
-Modify `~/scout-plugin/engine/scout/scripts/bootstrap.py` to also seed these on install. Add to `_CAT1_TEMPLATES`:
+Modify `plugin/engine/scout/scripts/bootstrap.py` to also seed these on install. Add to `_CAT1_TEMPLATES`:
 
 ```python
 _CAT1_TEMPLATES = (
@@ -2710,7 +2710,7 @@ Call `_stage_install_only_seeds(cfg)` from `install()` between `_stage_cat1_writ
 - [ ] **Step 6: Run all tests to confirm nothing broke**
 
 ```bash
-cd ~/scout-plugin/engine && pytest -q
+cd plugin/engine && pytest -q
 ```
 
 Expected: all tests pass.
@@ -2718,7 +2718,7 @@ Expected: all tests pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/scout-plugin && git add templates/dreaming-proposals.md.tmpl templates/scout-mistake-audit.md.tmpl templates/review-queue.md.tmpl templates/.gitignore.tmpl engine/scout/scripts/bootstrap.py && git commit -m "feat(plugin+engine): extract inline templates + install-only seeds
+cd plugin && git add templates/dreaming-proposals.md.tmpl templates/scout-mistake-audit.md.tmpl templates/review-queue.md.tmpl templates/.gitignore.tmpl engine/scout/scripts/bootstrap.py && git commit -m "feat(plugin+engine): extract inline templates + install-only seeds
 
 Moves four inline content blocks out of scout-setup.md into proper
 template files, and adds _stage_install_only_seeds for cat-2 files
@@ -2730,8 +2730,8 @@ seeded on first install only. Plan 8 §5.1."
 ### Task C2: Fix runner templates (drop clock-derived MODE; add SCOUT_DATA_DIR)
 
 **Files:**
-- Modify: `~/scout-plugin/templates/run-scout.sh.tmpl`
-- Modify: `~/scout-plugin/templates/run-dreaming.sh.tmpl`
+- Modify: `plugin/templates/run-scout.sh.tmpl`
+- Modify: `plugin/templates/run-dreaming.sh.tmpl`
 
 - [ ] **Step 1: Update `templates/run-scout.sh.tmpl`**
 
@@ -2739,7 +2739,7 @@ Read the current file and replace lines 7 (single SCOUT_DIR line) through the mo
 - After `SCOUT_DIR="{{SCOUT_DIR}}"` add: `export SCOUT_DATA_DIR="$SCOUT_DIR"`
 - Replace the `case $HOUR in {{BRIEFING_HOUR}})` block (lines ~54-71) with a single line that reads `MODE="${SCOUT_FORCE_MODE:-manual}"`
 
-Open `~/scout-plugin/templates/run-scout.sh.tmpl` and:
+Open `plugin/templates/run-scout.sh.tmpl` and:
 
 Apply this exact substitution. Replace this block:
 
@@ -2815,7 +2815,7 @@ MODE="${SCOUT_FORCE_MODE:-dreaming-manual}"
 - [ ] **Step 3: Verify run-research.sh.tmpl is already correct**
 
 ```bash
-grep -n "SCOUT_FORCE_MODE\|case \$HOUR\|export SCOUT_DATA_DIR" ~/scout-plugin/templates/run-research.sh.tmpl
+grep -n "SCOUT_FORCE_MODE\|case \$HOUR\|export SCOUT_DATA_DIR" plugin/templates/run-research.sh.tmpl
 ```
 
 If `SCOUT_FORCE_MODE` is missing, apply the same edits (add SCOUT_DATA_DIR export; replace any clock-derived MODE block with `MODE="${SCOUT_FORCE_MODE:-research-manual}"`).
@@ -2830,7 +2830,7 @@ diff <(sed -e 's/{{SCOUT_DIR}}/\/Users\/jordanburger\/Scout/g' \
            -e 's/{{USER_SLACK_ID}}/U02T4ADKB38/g' \
            -e 's/{{CLAUDE_BIN}}/\/Users\/jordanburger\/.local\/bin\/claude/g' \
            -e 's/{{MAX_BUDGET}}/5.00/g' \
-           ~/scout-plugin/templates/run-scout.sh.tmpl) \
+           plugin/templates/run-scout.sh.tmpl) \
      ~/Scout/run-scout.sh
 ```
 
@@ -2839,7 +2839,7 @@ Expected: minimal diff — only structural differences from any vault-side hand 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add templates/run-scout.sh.tmpl templates/run-dreaming.sh.tmpl templates/run-research.sh.tmpl && git commit -m "fix(templates): runners read SCOUT_FORCE_MODE; export SCOUT_DATA_DIR
+cd plugin && git add templates/run-scout.sh.tmpl templates/run-dreaming.sh.tmpl templates/run-research.sh.tmpl && git commit -m "fix(templates): runners read SCOUT_FORCE_MODE; export SCOUT_DATA_DIR
 
 Drops legacy clock-derived case \$HOUR mode block — the dispatcher
 already passes SCOUT_FORCE_MODE per slot. Adds SCOUT_DATA_DIR export
@@ -2852,18 +2852,18 @@ runners. Plan 8 §5.2."
 ### Task C3: Plugin install-venv.sh fallback script
 
 **Files:**
-- Create: `~/scout-plugin/scripts/install-venv.sh`
+- Create: `plugin/scripts/install-venv.sh`
 
 - [ ] **Step 1: Create the fallback script**
 
-Create `~/scout-plugin/scripts/install-venv.sh`:
+Create `plugin/scripts/install-venv.sh`:
 
 ```bash
 #!/bin/bash
-# Fallback installer for ~/scout-plugin/.venv — invoked manually if
+# Fallback installer for plugin/.venv — invoked manually if
 # /scout-setup's automatic venv install times out.
 #
-# Usage: bash ~/scout-plugin/scripts/install-venv.sh
+# Usage: bash plugin/scripts/install-venv.sh
 #
 # After this completes, retry /scout-setup or run /scout-setup --skip-venv-install.
 
@@ -2901,21 +2901,21 @@ echo "verify: $VENV/bin/scoutctl version"
 - [ ] **Step 2: chmod +x**
 
 ```bash
-chmod +x ~/scout-plugin/scripts/install-venv.sh
+chmod +x plugin/scripts/install-venv.sh
 ```
 
 - [ ] **Step 3: Verify script runs (smoke)**
 
 ```bash
-bash ~/scout-plugin/scripts/install-venv.sh
+bash plugin/scripts/install-venv.sh
 ```
 
-Expected output ending in: `ok: venv ready at /Users/jordanburger/scout-plugin/.venv` and a successful `scoutctl version` line.
+Expected output ending in: `ok: venv ready at plugin/.venv` and a successful `scoutctl version` line.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin && git add scripts/install-venv.sh && git commit -m "feat(plugin): add scripts/install-venv.sh fallback
+cd plugin && git add scripts/install-venv.sh && git commit -m "feat(plugin): add scripts/install-venv.sh fallback
 
 Documented manual fallback for users whose /scout-setup automatic
 venv install times out. Idempotent — recreates the venv if present.
@@ -2927,11 +2927,11 @@ Plan 8 §5.1, §6.1."
 ### Task C4: Rewrite `commands/scout-setup.md`
 
 **Files:**
-- Modify: `~/scout-plugin/commands/scout-setup.md` (full rewrite)
+- Modify: `plugin/commands/scout-setup.md` (full rewrite)
 
 - [ ] **Step 1: Replace the entire scout-setup.md with the new wizard prose**
 
-Open `~/scout-plugin/commands/scout-setup.md` and replace its full content with:
+Open `plugin/commands/scout-setup.md` and replace its full content with:
 
 ```markdown
 ---
@@ -2974,10 +2974,10 @@ test -x "$HOME/scout-plugin/.venv/bin/scoutctl" && echo "VENV_OK" || echo "VENV_
 - If `VENV_MISSING`: tell the user "Engine venv missing. Installing now (this typically takes 30–60 seconds)..." then run, with explicit 5-minute timeout:
 
   ```bash
-  bash ~/scout-plugin/scripts/install-venv.sh
+  bash plugin/scripts/install-venv.sh
   ```
 
-  (Use the Bash tool with `timeout: 300000`.) If install fails: stop and instruct the user to run `bash ~/scout-plugin/scripts/install-venv.sh` manually, then retry `/scout-setup`.
+  (Use the Bash tool with `timeout: 300000`.) If install fails: stop and instruct the user to run `bash plugin/scripts/install-venv.sh` manually, then retry `/scout-setup`.
 
 ---
 
@@ -3023,7 +3023,7 @@ Confirm with the user: "Proceed with these connectors? Or pause to enable more f
 Build the comma-separated connector list (only enabled), then run:
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl bootstrap install \
+plugin/.venv/bin/scoutctl bootstrap install \
     --instance-name "<INSTANCE_NAME>" \
     --user-name "<USER_NAME>" \
     --user-email "<USER_EMAIL>" \
@@ -3076,7 +3076,7 @@ Then re-run `/scout-setup`.
 - [ ] **Step 2: Confirm scout-setup.md parses (no template leftovers)**
 
 ```bash
-grep -n "{{" ~/scout-plugin/commands/scout-setup.md
+grep -n "{{" plugin/commands/scout-setup.md
 ```
 
 Expected: only `{{SCOUT_DIR}}` and similar inside example bash blocks; no orphan template variables. (The new file should reference `<INSTANCE_NAME>` placeholders that the wizard fills with user input — those are intentional.)
@@ -3084,7 +3084,7 @@ Expected: only `{{SCOUT_DIR}}` and similar inside example bash blocks; no orphan
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-plugin && git add commands/scout-setup.md && git commit -m "rewrite(commands): scout-setup as thin wrapper around scoutctl bootstrap install
+cd plugin && git add commands/scout-setup.md && git commit -m "rewrite(commands): scout-setup as thin wrapper around scoutctl bootstrap install
 
 Removes 700+ lines of stale Markdown that hardcoded legacy plist
 generation, MCP probe names, and clock-derived schedule variables.
@@ -3098,11 +3098,11 @@ Plan 8 §5.2."
 ### Task C5: Add `commands/scout-update.md`
 
 **Files:**
-- Create: `~/scout-plugin/commands/scout-update.md`
+- Create: `plugin/commands/scout-update.md`
 
 - [ ] **Step 1: Create the new command**
 
-Create `~/scout-plugin/commands/scout-update.md`:
+Create `plugin/commands/scout-update.md`:
 
 ```markdown
 ---
@@ -3134,7 +3134,7 @@ EOF
 
 - `NO_VAULT`: "No Scout vault found at `~/Scout/`. Run `/scout-setup` for a fresh install."
 - `PENDING_SIDECARS`: "Unresolved merge conflicts from a prior `/scout-update`:" — list the sidecar files. Then: "Edit each file to remove conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), then run `mv X.md.proposed-merge X.md` for each. Then re-run `/scout-update`."
-- `VENV_MISSING`: "Engine venv missing. Run `bash ~/scout-plugin/scripts/install-venv.sh` then re-run `/scout-update`."
+- `VENV_MISSING`: "Engine venv missing. Run `bash plugin/scripts/install-venv.sh` then re-run `/scout-update`."
 - `READY`: continue.
 
 ---
@@ -3144,7 +3144,7 @@ EOF
 Read the current and target plugin versions:
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl version
+plugin/.venv/bin/scoutctl version
 python3 -c "import json; print(json.load(open('${CLAUDE_PLUGIN_ROOT}/plugin.json'))['version'])"
 grep version_at_last_update ~/Scout/scout-config.yaml || true
 ```
@@ -3158,7 +3158,7 @@ If user declines, stop.
 ## Step 2: Run `scoutctl bootstrap upgrade`
 
 ```bash
-~/scout-plugin/.venv/bin/scoutctl bootstrap upgrade
+plugin/.venv/bin/scoutctl bootstrap upgrade
 ```
 
 Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
@@ -3177,7 +3177,7 @@ If runner backups appeared (`run-*.sh.bak.*`), tell the user the live runners ha
 - [ ] **Step 2: Commit**
 
 ```bash
-cd ~/scout-plugin && git add commands/scout-update.md && git commit -m "feat(commands): add /scout-update for idempotent vault upgrades
+cd plugin && git add commands/scout-update.md && git commit -m "feat(commands): add /scout-update for idempotent vault upgrades
 
 Thin wrapper around scoutctl bootstrap upgrade. Pre-flight refuses
 on missing vault, missing venv, or pending sidecar conflicts.
@@ -3191,13 +3191,13 @@ Plan 8 §4.1, §6.2."
 ### Task D1: Update stale "Plan 7" labels in engine
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/schedule.py:47`
-- Modify: `~/scout-plugin/engine/scout/scripts/schedule_tick.py:387–395`
+- Modify: `plugin/engine/scout/schedule.py:47`
+- Modify: `plugin/engine/scout/scripts/schedule_tick.py:387–395`
 
 - [ ] **Step 1: Read line 47 of schedule.py**
 
 ```bash
-sed -n '45,50p' ~/scout-plugin/engine/scout/schedule.py
+sed -n '45,50p' plugin/engine/scout/schedule.py
 ```
 
 Expected:
@@ -3209,7 +3209,7 @@ class SlotRuntime(StrEnum):
 
 - [ ] **Step 2: Update the comment**
 
-In `~/scout-plugin/engine/scout/schedule.py` line 47, replace:
+In `plugin/engine/scout/schedule.py` line 47, replace:
 
 ```python
     REMOTE = "remote"  # Reserved for Plan 7. Loader accepts; dispatcher rejects.
@@ -3223,7 +3223,7 @@ with:
 
 - [ ] **Step 3: Update the error message in schedule_tick.py**
 
-In `~/scout-plugin/engine/scout/scripts/schedule_tick.py` lines ~387–395, replace this block:
+In `plugin/engine/scout/scripts/schedule_tick.py` lines ~387–395, replace this block:
 
 ```python
     if slot.runtime == SlotRuntime.REMOTE:
@@ -3250,7 +3250,7 @@ with:
 - [ ] **Step 4: Run tests to ensure error message change doesn't break any test**
 
 ```bash
-cd ~/scout-plugin/engine && pytest -q -k "schedule"
+cd plugin/engine && pytest -q -k "schedule"
 ```
 
 Expected: all schedule-related tests pass. If any test asserts the literal string `"reserved for Plan 7"`, update the assertion to match the new error.
@@ -3258,7 +3258,7 @@ Expected: all schedule-related tests pass. If any test asserts the literal strin
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/scout/schedule.py engine/scout/scripts/schedule_tick.py && git commit -m "fix(engine): drop stale 'reserved for Plan 7' labels on runtime: remote
+cd plugin && git add engine/scout/schedule.py engine/scout/scripts/schedule_tick.py && git commit -m "fix(engine): drop stale 'reserved for Plan 7' labels on runtime: remote
 
 Plan 7 shipped as the schedules-tab visual rewrite — remote routine
 execution was bumped to a future plan with no number yet (likely
@@ -3270,20 +3270,20 @@ post-Plan-9). Engine error/comment now reflects reality. Plan 8 §5.2."
 ### Task D2: Delete dead templates; update plugin.json
 
 **Files:**
-- Delete: `~/scout-plugin/templates/launchd-plist.tmpl`
-- Delete: `~/scout-plugin/templates/cron-entry.tmpl`
-- Modify: `~/scout-plugin/plugin.json`
+- Delete: `plugin/templates/launchd-plist.tmpl`
+- Delete: `plugin/templates/cron-entry.tmpl`
+- Modify: `plugin/plugin.json`
 
 - [ ] **Step 1: Delete dead templates**
 
 ```bash
-rm ~/scout-plugin/templates/launchd-plist.tmpl
-rm ~/scout-plugin/templates/cron-entry.tmpl
+rm plugin/templates/launchd-plist.tmpl
+rm plugin/templates/cron-entry.tmpl
 ```
 
 - [ ] **Step 2: Update plugin.json**
 
-Open `~/scout-plugin/plugin.json` and replace its content with:
+Open `plugin/plugin.json` and replace its content with:
 
 ```json
 {
@@ -3309,16 +3309,16 @@ Open `~/scout-plugin/plugin.json` and replace its content with:
 - [ ] **Step 3: Bump engine version to match**
 
 ```bash
-sed -i.bak 's/^version = "0.4.0"$/version = "0.4.0"/' ~/scout-plugin/engine/pyproject.toml
-rm ~/scout-plugin/engine/pyproject.toml.bak
+sed -i.bak 's/^version = "0.4.0"$/version = "0.4.0"/' plugin/engine/pyproject.toml
+rm plugin/engine/pyproject.toml.bak
 ```
 
-(If `engine/pyproject.toml` already declares `version = "0.4.0"`, this is a no-op — verify with `grep version ~/scout-plugin/engine/pyproject.toml`. The shipped plan-7 version is already `0.4.0`, so this should be a no-op.)
+(If `engine/pyproject.toml` already declares `version = "0.4.0"`, this is a no-op — verify with `grep version plugin/engine/pyproject.toml`. The shipped plan-7 version is already `0.4.0`, so this should be a no-op.)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin && git add -A templates/ plugin.json && git commit -m "chore(plugin): delete dead templates; register scout-update; bump to 0.4.0
+cd plugin && git add -A templates/ plugin.json && git commit -m "chore(plugin): delete dead templates; register scout-update; bump to 0.4.0
 
 Removes templates/launchd-plist.tmpl (per-mode plist generator deleted
 in Plan 5) and templates/cron-entry.tmpl (replaced by managed-block
@@ -3332,22 +3332,22 @@ approach). Adds commands/scout-update.md to the manifest. Plan 8 §5.3."
 ### Task E1: Integration smoke test
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/integration/test_bootstrap_smoke.sh`
+- Create: `plugin/engine/tests/integration/test_bootstrap_smoke.sh`
 
 - [ ] **Step 1: Write the smoke test**
 
 ```bash
-mkdir -p ~/scout-plugin/engine/tests/integration
+mkdir -p plugin/engine/tests/integration
 ```
 
-Create `~/scout-plugin/engine/tests/integration/test_bootstrap_smoke.sh`:
+Create `plugin/engine/tests/integration/test_bootstrap_smoke.sh`:
 
 ```bash
 #!/bin/bash
 # Integration smoke test for scoutctl bootstrap install + upgrade.
 # Runs against a temp vault — no host pollution.
 #
-# Usage: bash ~/scout-plugin/engine/tests/integration/test_bootstrap_smoke.sh
+# Usage: bash plugin/engine/tests/integration/test_bootstrap_smoke.sh
 
 set -euo pipefail
 
@@ -3415,8 +3415,8 @@ echo "PASS: bootstrap smoke test"
 - [ ] **Step 2: chmod and run**
 
 ```bash
-chmod +x ~/scout-plugin/engine/tests/integration/test_bootstrap_smoke.sh
-bash ~/scout-plugin/engine/tests/integration/test_bootstrap_smoke.sh
+chmod +x plugin/engine/tests/integration/test_bootstrap_smoke.sh
+bash plugin/engine/tests/integration/test_bootstrap_smoke.sh
 ```
 
 Expected: ends with `PASS: bootstrap smoke test`.
@@ -3424,7 +3424,7 @@ Expected: ends with `PASS: bootstrap smoke test`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-plugin && git add engine/tests/integration/test_bootstrap_smoke.sh && git commit -m "test(integration): bootstrap install + upgrade smoke
+cd plugin && git add engine/tests/integration/test_bootstrap_smoke.sh && git commit -m "test(integration): bootstrap install + upgrade smoke
 
 Runs against a temp vault with --no-jobs --skip-claude so it doesn't
 pollute the host. Asserts directory tree, cat-1 files, cat-4 assembled
@@ -3498,18 +3498,18 @@ cd ~/Scout && git add -A && git commit -m "scout: Plan 8 /scout-update applied �
 ### Task E3: Tag scout-plugin v0.4.0
 
 **Files:**
-- Tag: `~/scout-plugin` `v0.4.0`
+- Tag: `plugin` `v0.4.0`
 
 - [ ] **Step 1: Verify all Plan 8 commits are pushed (if a remote exists)**
 
 ```bash
-cd ~/scout-plugin && git status && git log --oneline -10
+cd plugin && git status && git log --oneline -10
 ```
 
 - [ ] **Step 2: Run the full test suite once more**
 
 ```bash
-cd ~/scout-plugin/engine && pytest -q
+cd plugin/engine && pytest -q
 ```
 
 Expected: all green.
@@ -3517,7 +3517,7 @@ Expected: all green.
 - [ ] **Step 3: Tag and push**
 
 ```bash
-cd ~/scout-plugin && git tag -a v0.4.0 -m "Plan 8: scout-setup repair + onboarding/upgrade flow
+cd plugin && git tag -a v0.4.0 -m "Plan 8: scout-setup repair + onboarding/upgrade flow
 
 - /scout-setup rewritten as thin wrapper around scoutctl bootstrap install
 - /scout-update added — idempotent upgrade with sidecar conflict policy
@@ -3535,7 +3535,7 @@ git push --tags 2>/dev/null || echo "no remote — local tag only"
 - [ ] **Step 4: Update scout-app FOLLOWUPS to mark Plan 8 resolved**
 
 ```bash
-cd ~/scout-app && grep -n "Plan 8\|scout-setup" docs/superpowers/FOLLOWUPS.md | head -5
+cd apps/macos && grep -n "Plan 8\|scout-setup" docs/superpowers/FOLLOWUPS.md | head -5
 ```
 
 If there are entries, move them to the Resolved section with:
@@ -3554,7 +3554,7 @@ If there are entries, move them to the Resolved section with:
 Commit:
 
 ```bash
-cd ~/scout-app && git add docs/superpowers/FOLLOWUPS.md && git commit -m "docs: mark Plan 8 resolved in FOLLOWUPS"
+cd apps/macos && git add docs/superpowers/FOLLOWUPS.md && git commit -m "docs: mark Plan 8 resolved in FOLLOWUPS"
 ```
 
 ---

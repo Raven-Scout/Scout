@@ -6,39 +6,39 @@
 
 **Architecture:** A one-time Python migration script (TDD'd, committed to scout-plugin) splits each existing bullet/checklist item into a per-file `YYYY-MM-DD-slug.md` with YAML frontmatter, lifting the detectable status/priority/date markers and keeping the remaining text as the body. Then the vault workflow prose (`DREAMING.md` Phase 3, `RESEARCH.md` Phase 1) and the scout-plugin seed templates are updated to the per-file format. This is sub-project 2 of 3 (the app tabs are a later plan).
 
-**Tech Stack:** Python 3 (stdlib only — `re`, `pathlib`); markdown with YAML frontmatter; three git repos — **scout-plugin** (`~/scout-plugin`, the script + templates), the **vault** (`~/Scout`, the migrated data + DREAMING.md/RESEARCH.md). Not scout-app.
+**Tech Stack:** Python 3 (stdlib only — `re`, `pathlib`); markdown with YAML frontmatter; three git repos — **scout-plugin** (`plugin`, the script + templates), the **vault** (`~/Scout`, the migrated data + DREAMING.md/RESEARCH.md). Not scout-app.
 
 **Spec:** `docs/superpowers/specs/2026-06-16-wishlist-research-queue-per-file-design.md`
 
 **Conventions / facts for the implementer:**
 - The vault `~/Scout` is a git repo; DREAMING.md / RESEARCH.md and the migrated data commit there.
-- scout-plugin `~/scout-plugin` is a separate git repo; the script + templates commit there.
+- scout-plugin `plugin` is a separate git repo; the script + templates commit there.
 - Per-file schema (from the spec): frontmatter `title`, `status` (`open|in-progress|done|dropped`), `priority` (`urgent|high|medium|low`), `date` (`YYYY-MM-DD`), optional `source`, optional `area`; body below. Filenames `YYYY-MM-DD-slug.md`.
 - Status mapping: wishlist `[in progress]`→`in-progress`, `[done]`/in `-done` file→`done`, else `open`; research `[x]`→`done`, `[ ]`→`open`. Priority: wishlist `HIGH`→`high`/`MEDIUM`→`medium` (default `medium`); research `🔴`/`START IMMEDIATELY`→`urgent`, `🟡`→`medium`, `🟢`→`low` (default `medium`).
-- Run Python tests with: `python3 -m pytest <file> -q` (the vault already uses pytest; `~/scout-plugin` has pytest available).
+- Run Python tests with: `python3 -m pytest <file> -q` (the vault already uses pytest; `plugin` has pytest available).
 
 ---
 
 ## File Structure
 
-- **Create** `~/scout-plugin/scripts/migrate_wishlist_research.py` — pure parsing helpers + a migration driver.
-- **Create** `~/scout-plugin/scripts/test_migrate_wishlist_research.py` — unit tests for the pure helpers.
+- **Create** `plugin/scripts/migrate_wishlist_research.py` — pure parsing helpers + a migration driver.
+- **Create** `plugin/scripts/test_migrate_wishlist_research.py` — unit tests for the pure helpers.
 - **Modify (vault)** `~/Scout/DREAMING.md` — Phase 3 (Steps 3a, 3b, 3d) read/write per-file `docs/wishlist/`.
 - **Modify (vault)** `~/Scout/RESEARCH.md` — Phase 1 reads `knowledge-base/research-queue/` + urgent preemption.
 - **Generated (vault, by the script)** `~/Scout/docs/wishlist/*.md`, `~/Scout/knowledge-base/research-queue/*.md`, rewritten thin `~/Scout/knowledge-base/research-queue.md`; deleted `~/Scout/docs/Wishlist.md`, `Wishlist-in-progress.md`, `Wishlist-done.md`.
-- **Modify (plugin)** `~/scout-plugin/templates/docs/Wishlist.md.tmpl` + `Wishlist-in-progress.md.tmpl` + `Wishlist-done.md.tmpl` (remove), add `~/scout-plugin/templates/docs/wishlist/.gitkeep`; reshape `~/scout-plugin/templates/knowledge-base/research-queue.md.tmpl` + add `research-queue/.gitkeep`; `~/scout-plugin/templates/run-research.sh.tmpl` (path reference); `~/scout-plugin/commands/scout-status.md` (if it reads these paths).
+- **Modify (plugin)** `plugin/templates/docs/Wishlist.md.tmpl` + `Wishlist-in-progress.md.tmpl` + `Wishlist-done.md.tmpl` (remove), add `plugin/templates/docs/wishlist/.gitkeep`; reshape `plugin/templates/knowledge-base/research-queue.md.tmpl` + add `research-queue/.gitkeep`; `plugin/templates/run-research.sh.tmpl` (path reference); `plugin/commands/scout-status.md` (if it reads these paths).
 
 ---
 
 ## Task 1: Wishlist bullet parser
 
 **Files:**
-- Create: `~/scout-plugin/scripts/migrate_wishlist_research.py`
-- Test: `~/scout-plugin/scripts/test_migrate_wishlist_research.py`
+- Create: `plugin/scripts/migrate_wishlist_research.py`
+- Test: `plugin/scripts/test_migrate_wishlist_research.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `~/scout-plugin/scripts/test_migrate_wishlist_research.py`:
+Create `plugin/scripts/test_migrate_wishlist_research.py`:
 
 ```python
 from migrate_wishlist_research import parse_wishlist_item
@@ -69,12 +69,12 @@ def test_done_marker_maps_to_done():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: FAIL — `ImportError` / `parse_wishlist_item` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `~/scout-plugin/scripts/migrate_wishlist_research.py`:
+Create `plugin/scripts/migrate_wishlist_research.py`:
 
 ```python
 """One-time migration: split the single-file Wishlist and Research Queue into
@@ -149,13 +149,13 @@ def parse_wishlist_item(bullet: str, in_done_file: bool = False) -> Item:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit (scout-plugin repo)**
 
 ```bash
-cd ~/scout-plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
+cd plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
 git commit -m "feat(migrate): wishlist bullet parser for per-file migration"
 ```
 
@@ -164,8 +164,8 @@ git commit -m "feat(migrate): wishlist bullet parser for per-file migration"
 ## Task 2: Research-queue item parser
 
 **Files:**
-- Modify: `~/scout-plugin/scripts/migrate_wishlist_research.py`
-- Test: `~/scout-plugin/scripts/test_migrate_wishlist_research.py`
+- Modify: `plugin/scripts/migrate_wishlist_research.py`
+- Test: `plugin/scripts/test_migrate_wishlist_research.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -199,7 +199,7 @@ def test_research_green_low():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: FAIL — `parse_research_item` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -239,13 +239,13 @@ def parse_research_item(line: str, area: str | None = None) -> Item:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
+cd plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
 git commit -m "feat(migrate): research-queue item parser"
 ```
 
@@ -254,8 +254,8 @@ git commit -m "feat(migrate): research-queue item parser"
 ## Task 3: Slug + frontmatter emit
 
 **Files:**
-- Modify: `~/scout-plugin/scripts/migrate_wishlist_research.py`
-- Test: `~/scout-plugin/scripts/test_migrate_wishlist_research.py`
+- Modify: `plugin/scripts/migrate_wishlist_research.py`
+- Test: `plugin/scripts/test_migrate_wishlist_research.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -301,7 +301,7 @@ def test_render_omits_absent_optional_fields():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: FAIL — `slugify` / `render_item` / `filename_for` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -336,13 +336,13 @@ def render_item(item: Item) -> str:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: PASS (11 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
+cd plugin && git add scripts/migrate_wishlist_research.py scripts/test_migrate_wishlist_research.py
 git commit -m "feat(migrate): slugify + frontmatter rendering"
 ```
 
@@ -351,8 +351,8 @@ git commit -m "feat(migrate): slugify + frontmatter rendering"
 ## Task 4: Migration driver + run against the vault
 
 **Files:**
-- Modify: `~/scout-plugin/scripts/migrate_wishlist_research.py` (add `migrate()` + `__main__`)
-- Test: `~/scout-plugin/scripts/test_migrate_wishlist_research.py`
+- Modify: `plugin/scripts/migrate_wishlist_research.py` (add `migrate()` + `__main__`)
+- Test: `plugin/scripts/test_migrate_wishlist_research.py`
 
 - [ ] **Step 1: Write the failing test (driver on a temp vault)**
 
@@ -385,7 +385,7 @@ def test_migrate_wishlist_file_writes_one_file_per_bullet(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: FAIL — `split_bullets` / `migrate_wishlist_file` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -496,14 +496,14 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
+Run: `cd plugin/scripts && python3 -m pytest test_migrate_wishlist_research.py -q`
 Expected: PASS (13 tests).
 
 - [ ] **Step 5: Dry-run the migration against a COPY of the vault and verify counts**
 
 ```bash
 rm -rf /tmp/vault-mig && cp -R ~/Scout /tmp/vault-mig
-cd ~/scout-plugin/scripts && python3 migrate_wishlist_research.py /tmp/vault-mig 2026-06-16
+cd plugin/scripts && python3 migrate_wishlist_research.py /tmp/vault-mig 2026-06-16
 echo "--- wishlist source bullets ---"; grep -cE "^\* " /tmp/vault-mig/docs/Wishlist.md /tmp/vault-mig/docs/Wishlist-in-progress.md /tmp/vault-mig/docs/Wishlist-done.md 2>/dev/null
 echo "--- wishlist files written ---"; ls /tmp/vault-mig/docs/wishlist/ | wc -l
 echo "--- research queue items written ---"; ls /tmp/vault-mig/knowledge-base/research-queue/ | wc -l
@@ -514,7 +514,7 @@ Expected: written file counts ≈ source bullet/checklist counts (allow small di
 - [ ] **Step 6: Run the migration against the REAL vault + clean up old files + reduce the log**
 
 ```bash
-cd ~/scout-plugin/scripts && python3 migrate_wishlist_research.py ~/Scout 2026-06-16
+cd plugin/scripts && python3 migrate_wishlist_research.py ~/Scout 2026-06-16
 # Reduce research-queue.md to the thin log: keep the title + the latest
 # "Last verified" paragraph, drop the migrated ## Queue items.
 # (Do this edit by hand/Edit tool — preserve the most recent Last-verified note.)
@@ -642,14 +642,14 @@ git -C ~/Scout commit -m "research: Phase 1 reads per-file queue, urgent-first"
 ## Task 7: scout-plugin templates (fresh-install seeds + runner refs)
 
 **Files:**
-- Delete: `~/scout-plugin/templates/docs/Wishlist.md.tmpl`, `Wishlist-in-progress.md.tmpl`, `Wishlist-done.md.tmpl`
-- Create: `~/scout-plugin/templates/docs/wishlist/.gitkeep`, `~/scout-plugin/templates/knowledge-base/research-queue/.gitkeep`
-- Modify: `~/scout-plugin/templates/knowledge-base/research-queue.md.tmpl`, `~/scout-plugin/templates/run-research.sh.tmpl`, `~/scout-plugin/commands/scout-status.md`
+- Delete: `plugin/templates/docs/Wishlist.md.tmpl`, `Wishlist-in-progress.md.tmpl`, `Wishlist-done.md.tmpl`
+- Create: `plugin/templates/docs/wishlist/.gitkeep`, `plugin/templates/knowledge-base/research-queue/.gitkeep`
+- Modify: `plugin/templates/knowledge-base/research-queue.md.tmpl`, `plugin/templates/run-research.sh.tmpl`, `plugin/commands/scout-status.md`
 
 - [ ] **Step 1: Replace the wishlist templates with a seeded directory**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git rm templates/docs/Wishlist.md.tmpl templates/docs/Wishlist-in-progress.md.tmpl templates/docs/Wishlist-done.md.tmpl
 mkdir -p templates/docs/wishlist && touch templates/docs/wishlist/.gitkeep
 mkdir -p templates/knowledge-base/research-queue && touch templates/knowledge-base/research-queue/.gitkeep
@@ -657,7 +657,7 @@ mkdir -p templates/knowledge-base/research-queue && touch templates/knowledge-ba
 
 - [ ] **Step 2: Reshape `research-queue.md.tmpl` into the thin-log template**
 
-Use the Edit tool to set `~/scout-plugin/templates/knowledge-base/research-queue.md.tmpl` to:
+Use the Edit tool to set `plugin/templates/knowledge-base/research-queue.md.tmpl` to:
 
 ```
 # Research Queue — run log
@@ -673,20 +673,20 @@ _No runs yet._
 
 - [ ] **Step 3: Fix the runner + any path references**
 
-In `~/scout-plugin/templates/run-research.sh.tmpl`, change the Phase-1 prompt line "check research-queue.md first" to "check the `research-queue/` folder first".
-Then audit `~/scout-plugin/commands/scout-status.md`:
-Run: `grep -n "Wishlist\|research-queue" ~/scout-plugin/commands/scout-status.md`
+In `plugin/templates/run-research.sh.tmpl`, change the Phase-1 prompt line "check research-queue.md first" to "check the `research-queue/` folder first".
+Then audit `plugin/commands/scout-status.md`:
+Run: `grep -n "Wishlist\|research-queue" plugin/commands/scout-status.md`
 For each hit that reads/globs the old single files, update it to the new dirs (`docs/wishlist/*.md`, `knowledge-base/research-queue/*.md`). If a hit is only descriptive prose, update the wording. (Show the diffs in the report.)
 
 - [ ] **Step 4: Sanity-check no stale references remain in the plugin**
 
-Run: `grep -rn "Wishlist.md\|Wishlist-done\|Wishlist-in-progress" ~/scout-plugin --include=*.tmpl --include=*.md --include=*.sh | grep -v "/.git/"`
+Run: `grep -rn "Wishlist.md\|Wishlist-done\|Wishlist-in-progress" plugin --include=*.tmpl --include=*.md --include=*.sh | grep -v "/.git/"`
 Expected: no hits (or only historical changelog/docs entries, which are fine — note them).
 
 - [ ] **Step 5: Commit (scout-plugin repo)**
 
 ```bash
-cd ~/scout-plugin && git add -A
+cd plugin && git add -A
 git commit -m "feat(templates): seed per-file wishlist + research-queue dirs; thin research log"
 ```
 

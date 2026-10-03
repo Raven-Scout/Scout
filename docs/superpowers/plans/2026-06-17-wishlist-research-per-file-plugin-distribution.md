@@ -22,8 +22,8 @@
 ## Task 1: Phase prose → per-file (assembles into DREAMING/RESEARCH for all users)
 
 **Files:**
-- Modify: `~/scout-plugin/phases/modes/wishlist.md` (Phase 3)
-- Modify: `~/scout-plugin/phases/research/research-targets.md` (Phase 1 queue read)
+- Modify: `plugin/phases/modes/wishlist.md` (Phase 3)
+- Modify: `plugin/phases/research/research-targets.md` (Phase 1 queue read)
 
 - [ ] **Wishlist (`phases/modes/wishlist.md`)** — replace Step 3a's "Read the three wishlist files (`docs/Wishlist.md` / `-in-progress` / `-done`)" + the `[in progress]`/`[done]` three-file-move model with the per-file model:
   - Read every `*.md` in `docs/wishlist/`; each is one item with frontmatter (`title`, `status` ∈ open|in-progress|done|dropped, `priority` ∈ urgent|high|medium|low, `date`, optional `source`) + body.
@@ -31,7 +31,7 @@
   - Mirror the exact wording from the (already-correct) vault edit guidance in the original plan `2026-06-16-…-plugin-migration.md` Task 5.
 - [ ] **Research (`phases/research/research-targets.md`)** — replace the `knowledge-base/research-queue.md` single-file read with: read every `*.md` in `knowledge-base/research-queue/` (the thin `research-queue.md` is the run log); `status: open/in-progress` are the queue, `done/dropped` resolved; **run `priority: urgent` items first** (START-IMMEDIATELY preemption); after a topic, set frontmatter `status` + add findings; write the "Last verified" note to `research-queue.md`. (Mirror original plan Task 6.)
 - [ ] **Verify:** assemble locally and confirm the new prose lands —
-  `cd ~/scout-plugin && .venv/bin/scoutctl bootstrap assemble --kind DREAMING --out /tmp/DREAMING.md` (confirm the exact assemble subcommand via `scoutctl bootstrap --help`); grep the output for `docs/wishlist/` and absence of `Wishlist-done.md`. Same for RESEARCH.
+  `cd plugin && .venv/bin/scoutctl bootstrap assemble --kind DREAMING --out /tmp/DREAMING.md` (confirm the exact assemble subcommand via `scoutctl bootstrap --help`); grep the output for `docs/wishlist/` and absence of `Wishlist-done.md`. Same for RESEARCH.
 - [ ] **Commit** (scout-plugin, explicit paths): `git add phases/modes/wishlist.md phases/research/research-targets.md && git commit -m "feat(phases): per-file wishlist + research queue workflow"`
 
 ## Task 2: Fresh-install templates (per-file dir seeds)
@@ -40,14 +40,14 @@
 - [ ] `git rm` `templates/docs/Wishlist.md.tmpl`, `Wishlist-in-progress.md.tmpl`, `Wishlist-done.md.tmpl`; `mkdir -p templates/docs/wishlist && touch templates/docs/wishlist/.gitkeep`; `mkdir -p templates/knowledge-base/research-queue && touch templates/knowledge-base/research-queue/.gitkeep`.
 - [ ] Reshape `templates/knowledge-base/research-queue.md.tmpl` to the thin run-log form (title + "items live in [[research-queue/]] … run log" + `_No runs yet._`).
 - [ ] Fix `templates/run-research.sh.tmpl` ("check research-queue.md first" → "check the `research-queue/` folder first"); audit `commands/scout-status.md` for `Wishlist`/`research-queue` path reads and update to the new dirs.
-- [ ] Confirm no stale refs: `grep -rn "Wishlist.md\|Wishlist-done\|Wishlist-in-progress" ~/scout-plugin --include=*.tmpl --include=*.md --include=*.sh | grep -v /.git/` (only historical changelog entries OK).
+- [ ] Confirm no stale refs: `grep -rn "Wishlist.md\|Wishlist-done\|Wishlist-in-progress" plugin --include=*.tmpl --include=*.md --include=*.sh | grep -v /.git/` (only historical changelog entries OK).
 - [ ] **Commit** (explicit paths).
 
 ## Task 3: Engine migration module (idempotent) + tests — TDD
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/scripts/migrate_perfile.py` (port the prototype logic from `scripts/migrate_wishlist_research.py`)
-- Create: `~/scout-plugin/engine/tests/unit/test_migrate_perfile.py`
+- Create: `plugin/engine/scout/scripts/migrate_perfile.py` (port the prototype logic from `scripts/migrate_wishlist_research.py`)
+- Create: `plugin/engine/tests/unit/test_migrate_perfile.py`
 
 - [ ] **Step 1 (test first):** in `engine/tests/unit/test_migrate_perfile.py`, build a synthetic legacy vault in `tmp_path` (a `docs/Wishlist.md` with 2 bullets, a `knowledge-base/research-queue.md` with a `## Queue` + 1 item), then:
   - `needs_migration(vault)` is True for the legacy vault; after `migrate_perfile(vault)`, `docs/wishlist/` has 2 files, `knowledge-base/research-queue/` has 1, old `Wishlist*.md` gone, `research-queue.md` reduced to thin log.
@@ -63,12 +63,12 @@
 ## Task 4: Wire into the upgrade "migrations" stage
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/scripts/bootstrap.py` (the migrations stage within `upgrade()` ~line 579, alongside the existing migration handling)
-- Test: `~/scout-plugin/engine/tests/unit/test_bootstrap_upgrade.py` (or `test_migrate_perfile.py`)
+- Modify: `plugin/engine/scout/scripts/bootstrap.py` (the migrations stage within `upgrade()` ~line 579, alongside the existing migration handling)
+- Test: `plugin/engine/tests/unit/test_bootstrap_upgrade.py` (or `test_migrate_perfile.py`)
 
 - [ ] **Step 1 (test):** extend the upgrade test so that running `upgrade()` on a synthetic legacy-format vault leaves it per-file migrated (calls `migrate_perfile` in the migrations stage). Watch fail.
 - [ ] **Step 2:** in `upgrade()`'s migrations stage, call `migrate_perfile(cfg.vault)` (idempotent, so safe every upgrade). Place it before the cat-4 3-way merge so the new assembled DREAMING/RESEARCH land on an already-migrated vault.
-- [ ] **Step 3:** run engine unit tests green: `cd ~/scout-plugin && .venv/bin/python -m pytest engine/tests/unit/test_migrate_perfile.py engine/tests/unit/test_bootstrap_upgrade.py -q`
+- [ ] **Step 3:** run engine unit tests green: `cd plugin && .venv/bin/python -m pytest engine/tests/unit/test_migrate_perfile.py engine/tests/unit/test_bootstrap_upgrade.py -q`
 - [ ] **Step 4:** commit.
 
 ## Task 5: End-to-end verification

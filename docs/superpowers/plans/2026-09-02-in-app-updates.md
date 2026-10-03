@@ -2128,7 +2128,7 @@ struct MainWindowView: View {
 
 - [ ] **Step 5: Build, full suite, eyeball**
 
-Run the full `-only-testing:ScoutTests` selector → `TEST SUCCEEDED`. Launch the Debug app: with the local plugin checkout at the same version as the installed cache there is no badge; to see the badge, temporarily bump `version` in `~/scout-plugin/.claude-plugin/plugin.json` (e.g. `0.8.0` → `0.8.1`), relaunch: Settings row shows **1**, the menu-bar icon carries a dot, the menu-bar extra shows *Plugin update available — open Settings*, Settings ▸ Updates shows `0.8.0 → 0.8.1 available` with **Copy /scout-update** (clipboard gets `/scout-update`). **Revert the plugin.json edit** (`git -C ~/scout-plugin checkout -- .claude-plugin/plugin.json`). Quit the app.
+Run the full `-only-testing:ScoutTests` selector → `TEST SUCCEEDED`. Launch the Debug app: with the local plugin checkout at the same version as the installed cache there is no badge; to see the badge, temporarily bump `version` in `plugin/.claude-plugin/plugin.json` (e.g. `0.8.0` → `0.8.1`), relaunch: Settings row shows **1**, the menu-bar icon carries a dot, the menu-bar extra shows *Plugin update available — open Settings*, Settings ▸ Updates shows `0.8.0 → 0.8.1 available` with **Copy /scout-update** (clipboard gets `/scout-update`). **Revert the plugin.json edit** (`git -C plugin checkout -- .claude-plugin/plugin.json`). Quit the app.
 
 - [ ] **Step 6: Commit**
 
@@ -2960,7 +2960,7 @@ If an error sheet appears: `log show --last 10m --predicate 'process == "Scout" 
 
 - [ ] **Step 4: Plugin track on the rc build**
 
-In rc.2, Settings ▸ Updates shows the *scout-plugin* row (`0.8.0 · up to date` on the dev machine's `directory` source). Temporarily bump `version` in `~/scout-plugin/.claude-plugin/plugin.json`, click **Check now** → `0.8.0 → x.y.z available`, **Copy /scout-update** puts `/scout-update` on the clipboard, the badge count becomes 1 (or 2 while the app update is also pending). Revert the plugin.json edit.
+In rc.2, Settings ▸ Updates shows the *scout-plugin* row (`0.8.0 · up to date` on the dev machine's `directory` source). Temporarily bump `version` in `plugin/.claude-plugin/plugin.json`, click **Check now** → `0.8.0 → x.y.z available`, **Copy /scout-update** puts `/scout-update` on the clipboard, the badge count becomes 1 (or 2 while the app update is also pending). Revert the plugin.json edit.
 
 - [ ] **Step 5: Clean up**
 

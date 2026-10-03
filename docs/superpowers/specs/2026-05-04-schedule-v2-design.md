@@ -211,7 +211,7 @@ Following the Plan 4 / connectors precedent:
 
 - `scoutctl schedule snapshot` writes a JSON projection of `schedule.yaml` to two paths by default:
   - Canonical: `engine/scout/schedule.snapshot.json` (in scout-plugin checkout). CI drift-checks this against the seeded vault default.
-  - App fixture: `~/scout-app/ScoutTests/Fixtures/schedule.snapshot.json` (best-effort dual-write; skips with a warning if the path doesn't exist).
+  - App fixture: `apps/macos/ScoutTests/Fixtures/schedule.snapshot.json` (best-effort dual-write; skips with a warning if the path doesn't exist).
 - `--check` mode exits 1 on drift, prints unified diff (with `generated_from` SHA stripped, like the connectors snapshot).
 - Scout.app's tests assert `ScheduleService` parses the snapshot fixture without errors.
 

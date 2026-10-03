@@ -18,10 +18,10 @@
 
 ## Context for the implementer
 
-**Working directory:** `/Users/jordanburger/scout-plugin/`. New branch off the merged Plan 2 + supplement tip:
+**Working directory:** `plugin/`. New branch off the merged Plan 2 + supplement tip:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git checkout main
 git pull --ff-only
 git checkout -b plan-3-action-items-watch
@@ -29,9 +29,9 @@ git checkout -b plan-3-action-items-watch
 ```
 
 **Reference docs:**
-- `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` §13.3 — projection-consumer contract.
-- `/Users/jordanburger/scout-app/docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — v0.5 substitution target.
-- `/Users/jordanburger/scout-app/docs/superpowers/plans/2026-04-26-scout-unification-plan-2-supplement-stable-ids-and-events.md` — defines `ActionItem.short_prefix`, `Event`, `IdMap`. Read before starting.
+- `docs/superpowers/specs/2026-04-24-scout-unification-design.md` §13.3 — projection-consumer contract.
+- `docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — v0.5 substitution target.
+- `docs/superpowers/plans/2026-04-26-scout-unification-plan-2-supplement-stable-ids-and-events.md` — defines `ActionItem.short_prefix`, `Event`, `IdMap`. Read before starting.
 
 **What this plan does NOT do:**
 - Render HTML. The legacy `~/Scout/action-items/watch.sh` re-rendered an HTML dashboard on every change. The user does not use it; v0.4 retires the auto-render. `scout.action_items.render.render_html` (the existing HTML renderer Plan 2 ports) stays available as `scoutctl action-items render` but is no longer wired to file changes.
@@ -41,7 +41,7 @@ git checkout -b plan-3-action-items-watch
 ## File structure
 
 ```
-~/scout-plugin/engine/
+plugin/engine/
 ├── scout/
 │   └── action_items/
 │       ├── diff.py                   NEW — Task 1
@@ -63,8 +63,8 @@ git checkout -b plan-3-action-items-watch
 ## Task 1: `scout.action_items.diff` — pure diff over `ActionItem` snapshots
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/diff.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_diff.py`
+- Create: `plugin/engine/scout/action_items/diff.py`
+- Create: `plugin/engine/tests/unit/test_action_items_diff.py`
 
 **What this builds:** A `ChangeEvent` dataclass and a `diff(prev, curr)` function that takes two ordered lists of `ActionItem` (typically from successive parses of the same daily file) and emits the deltas. Matching strategy: short-prefix first, fall back to `(section, title)` tuple.
 
@@ -208,7 +208,7 @@ def test_change_event_has_section_for_display() -> None:
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_action_items_diff.py -v
 ```
 
@@ -382,7 +382,7 @@ Expected: 11 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/diff.py engine/tests/unit/test_action_items_diff.py
 git commit -m "feat(engine): action_items.diff — ChangeEvent + ID-aware diff over snapshots"
 ```
@@ -392,8 +392,8 @@ git commit -m "feat(engine): action_items.diff — ChangeEvent + ID-aware diff o
 ## Task 2: Add `render_changes` to `scout.action_items.render`
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/render.py`
-- Create: `~/scout-plugin/engine/tests/unit/test_action_items_render_changes.py`
+- Modify: `plugin/engine/scout/action_items/render.py`
+- Create: `plugin/engine/tests/unit/test_action_items_render_changes.py`
 
 **What this builds:** A `render_changes(events: list[ChangeEvent], *, now: dt.datetime, color: bool) -> list[str]` function that formats each `ChangeEvent` as a single line of output. Examples:
 
@@ -594,7 +594,7 @@ Expected: 9 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/render.py engine/tests/unit/test_action_items_render_changes.py
 git commit -m "feat(engine): render_changes — TTY-aware one-line-per-change formatter"
 ```
@@ -604,8 +604,8 @@ git commit -m "feat(engine): render_changes — TTY-aware one-line-per-change fo
 ## Task 3: `scout.action_items.watch` — file-watcher driver
 
 **Files:**
-- Create: `~/scout-plugin/engine/scout/action_items/watch.py`
-- Modify: `~/scout-plugin/engine/tests/perf/test_no_heavy_imports.py`
+- Create: `plugin/engine/scout/action_items/watch.py`
+- Modify: `plugin/engine/tests/perf/test_no_heavy_imports.py`
 
 **What this builds:** The watch module's pure core (`process_change(prev_text, curr_text, now, color)`) is testable without spawning a real watcher; the `run_watch_loop(target, color)` function wraps it in a `watchdog.observers.Observer`. The Typer command (Task 4) calls `run_watch_loop` directly.
 
@@ -831,7 +831,7 @@ If it fails, the most likely cause is a stray top-level import — re-check `wat
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/watch.py engine/tests/unit/test_action_items_watch.py engine/tests/perf/test_no_heavy_imports.py
 git commit -m "feat(engine): action_items.watch — process_change + run_watch_loop"
 ```
@@ -841,7 +841,7 @@ git commit -m "feat(engine): action_items.watch — process_change + run_watch_l
 ## Task 4: Wire `scoutctl action-items watch` in the Typer sub-app
 
 **Files:**
-- Modify: `~/scout-plugin/engine/scout/action_items/cli.py`
+- Modify: `plugin/engine/scout/action_items/cli.py`
 
 **What this builds:** Replace Plan 2's stub `cli_watch` (which raises `ScoutError("watch is implemented in Plan 3")`) with the real command. CLI shape:
 
@@ -956,7 +956,7 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/action_items/cli.py engine/tests/unit/test_action_items_cli.py
 git commit -m "feat(engine): wire scoutctl action-items watch (replaces Plan 2 stub)"
 ```
@@ -966,7 +966,7 @@ git commit -m "feat(engine): wire scoutctl action-items watch (replaces Plan 2 s
 ## Task 5: End-to-end integration test
 
 **Files:**
-- Create: `~/scout-plugin/engine/tests/integration/test_action_items_watch.py`
+- Create: `plugin/engine/tests/integration/test_action_items_watch.py`
 
 **What this builds:** Exercises the full path: spawn `scoutctl action-items watch <path>` as a subprocess, mutate the watched file, observe a single diff line on stdout. This is the smoke test that catches regressions in the watchdog wiring.
 
@@ -1067,7 +1067,7 @@ def test_watch_emits_completed_line_on_checkbox_flip(tmp_path: Path) -> None:
 - [ ] **Step 2: Run the test**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/integration/test_action_items_watch.py -v -m slow
 ```
 
@@ -1086,7 +1086,7 @@ If it times out, debug:
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/tests/integration/test_action_items_watch.py
 git commit -m "test(engine): integration test for scoutctl action-items watch"
 ```
@@ -1098,7 +1098,7 @@ git commit -m "test(engine): integration test for scoutctl action-items watch"
 - [ ] **Step 1: Full unit + integration suite**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/ -v
 .venv/bin/pytest tests/integration/ -v -m slow
 ```
@@ -1147,7 +1147,7 @@ Expected: a green `completed` line in Terminal A within ~1s of the file write in
 - [ ] **Step 4: Push branch + open PR**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git push -u origin plan-3-action-items-watch
 gh pr create \
     --title "feat(engine): Plan 3 — scoutctl action-items watch" \
@@ -1183,7 +1183,7 @@ EOF
 
 - [ ] **Step 5: After PR merges, update FOLLOWUPS.md**
 
-If any review-derived items surface during PR review, capture them in `~/scout-app/docs/superpowers/FOLLOWUPS.md` per its format. None expected from this plan's design but stay alert during review.
+If any review-derived items surface during PR review, capture them in `docs/superpowers/FOLLOWUPS.md` per its format. None expected from this plan's design but stay alert during review.
 
 ---
 

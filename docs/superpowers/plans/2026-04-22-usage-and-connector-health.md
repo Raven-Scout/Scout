@@ -2114,7 +2114,7 @@ Expected: a fresh row with non-zero tokens and a valid model. Launch Scout.app (
 Move both bullets (*Budget panel shows $0…* and *Connector health card + alert banner…*) from the *Control Center view → Soon* section to the *Shipped* section with today's date (2026-04-22). Leave the Phase 2 note in the Budget bullet pointing forward to the quota work.
 
 ```bash
-cd /Users/jordanburger/scout-app && git add BACKLOG.md
+cd apps/macos && git add BACKLOG.md
 git commit -m "docs: mark Usage Rail Card + Connector Health as shipped in BACKLOG"
 ```
 

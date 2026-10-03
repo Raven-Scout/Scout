@@ -72,7 +72,7 @@ scheduler must run the same `scoutctl` the plugin loads:
 |---|---|
 | Marketplace install (`install.sh`, `/plugin install scout@scout-plugin`) | `~/.claude/plugins/marketplaces/<marketplace>/scout-plugin/` |
 | Local plugins or dev tree (`claude --plugin-dir`) | any directory |
-| Canonical clone | `~/scout-plugin/` |
+| Canonical clone | `plugin/` |
 
 `scoutctl schedule install-plist` and `install-cron` derive the scheduler's
 binary from the running engine's own package location

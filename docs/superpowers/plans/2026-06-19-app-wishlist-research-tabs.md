@@ -106,7 +106,7 @@ struct ItemStatusPriorityTests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/ItemStatusPriorityTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/ItemStatusPriorityTests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'ItemStatus' in scope` (types not defined).
 
 - [ ] **Step 3: Write minimal implementation**
@@ -189,13 +189,13 @@ nonisolated enum ItemPriority: String, Equatable, Sendable, Comparable, CaseIter
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/ItemStatusPriorityTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/ItemStatusPriorityTests 2>&1 | tail -20`
 Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Models/ItemStatus.swift Scout/PerFileItems/Models/ItemPriority.swift ScoutTests/PerFile/ItemStatusPriorityTests.swift
+cd apps/macos && git add Scout/PerFileItems/Models/ItemStatus.swift Scout/PerFileItems/Models/ItemPriority.swift ScoutTests/PerFile/ItemStatusPriorityTests.swift
 git commit -m "feat(perfile): ItemStatus + ItemPriority enums"
 ```
 
@@ -236,7 +236,7 @@ struct MarkdownBodyBlockTests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/MarkdownBodyBlockTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/MarkdownBodyBlockTests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'MarkdownBodyBlock' in scope`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -314,13 +314,13 @@ nonisolated enum MarkdownBodyBlock: Equatable, Sendable, Identifiable {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/MarkdownBodyBlockTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/MarkdownBodyBlockTests 2>&1 | tail -20`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Models/MarkdownBodyBlock.swift ScoutTests/PerFile/MarkdownBodyBlockTests.swift
+cd apps/macos && git add Scout/PerFileItems/Models/MarkdownBodyBlock.swift ScoutTests/PerFile/MarkdownBodyBlockTests.swift
 git commit -m "feat(perfile): MarkdownBodyBlock body parser"
 ```
 
@@ -360,13 +360,13 @@ nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -5`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -5`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Models/PerFileItem.swift
+cd apps/macos && git add Scout/PerFileItems/Models/PerFileItem.swift
 git commit -m "feat(perfile): PerFileItem model"
 ```
 
@@ -452,7 +452,7 @@ struct PerFileItemParserTests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemParserTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemParserTests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'PerFileItemParser' in scope`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -543,13 +543,13 @@ private extension String {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemParserTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemParserTests 2>&1 | tail -20`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/PerFileItemParser.swift ScoutTests/PerFile/PerFileItemParserTests.swift
+cd apps/macos && git add Scout/PerFileItems/PerFileItemParser.swift ScoutTests/PerFile/PerFileItemParserTests.swift
 git commit -m "feat(perfile): PerFileItemParser"
 ```
 
@@ -595,7 +595,7 @@ struct PerFileTabConfigTests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileTabConfigTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileTabConfigTests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'PerFileTabConfig' in scope`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -650,13 +650,13 @@ struct PerFileTabConfig: Sendable, Equatable {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileTabConfigTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileTabConfigTests 2>&1 | tail -20`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/PerFileTabConfig.swift ScoutTests/PerFile/PerFileTabConfigTests.swift
+cd apps/macos && git add Scout/PerFileItems/PerFileTabConfig.swift ScoutTests/PerFile/PerFileTabConfigTests.swift
 git commit -m "feat(perfile): PerFileTabConfig (.wishlist/.research)"
 ```
 
@@ -796,7 +796,7 @@ struct PerFileItemWriterE2ETests {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemWriterPureTests -only-testing:ScoutTests/PerFileItemWriterE2ETests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemWriterPureTests -only-testing:ScoutTests/PerFileItemWriterE2ETests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'PerFileItemWriter' in scope`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -978,13 +978,13 @@ private extension String {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemWriterPureTests -only-testing:ScoutTests/PerFileItemWriterE2ETests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileItemWriterPureTests -only-testing:ScoutTests/PerFileItemWriterE2ETests 2>&1 | tail -20`
 Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/PerFileItemWriter.swift ScoutTests/PerFile/PerFileItemWriterTests.swift
+cd apps/macos && git add Scout/PerFileItems/PerFileItemWriter.swift ScoutTests/PerFile/PerFileItemWriterTests.swift
 git commit -m "feat(perfile): PerFileItemWriter (add + resolve, git-scoped)"
 ```
 
@@ -1046,7 +1046,7 @@ struct PerFileDocumentServiceTests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileDocumentServiceTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileDocumentServiceTests 2>&1 | tail -20`
 Expected: FAIL — `Cannot find 'PerFileDocumentService' in scope`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1136,13 +1136,13 @@ final class PerFileDocumentService: ObservableObject {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileDocumentServiceTests 2>&1 | tail -20`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests/PerFileDocumentServiceTests 2>&1 | tail -20`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/PerFileDocumentService.swift ScoutTests/PerFile/PerFileDocumentServiceTests.swift
+cd apps/macos && git add Scout/PerFileItems/PerFileDocumentService.swift ScoutTests/PerFile/PerFileDocumentServiceTests.swift
 git commit -m "feat(perfile): PerFileDocumentService (FSEvents list)"
 ```
 
@@ -1246,13 +1246,13 @@ NOTE for the implementer: `DS.Status.todo`, `DS.Status.ok`, `DS.SlotType.consoli
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -5`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -5`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Views/MarkdownBodyView.swift Scout/PerFileItems/Views/ItemStatusPill.swift Scout/PerFileItems/Views/ItemPriorityPill.swift
+cd apps/macos && git add Scout/PerFileItems/Views/MarkdownBodyView.swift Scout/PerFileItems/Views/ItemStatusPill.swift Scout/PerFileItems/Views/ItemPriorityPill.swift
 git commit -m "feat(perfile): body view + status/priority pills"
 ```
 
@@ -1355,13 +1355,13 @@ NOTE: confirm `DS.Ink.p1`, `DS.Paper.base` token names against the design system
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -5`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -5`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Views/AddItemSheet.swift
+cd apps/macos && git add Scout/PerFileItems/Views/AddItemSheet.swift
 git commit -m "feat(perfile): AddItemSheet form"
 ```
 
@@ -1454,13 +1454,13 @@ NOTE: `.editorialCard(padding:)`, `.buttonStyle(.plainHit)`, `DS.Status.warn`, `
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -5`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -5`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Views/PerFileItemCardView.swift
+cd apps/macos && git add Scout/PerFileItems/Views/PerFileItemCardView.swift
 git commit -m "feat(perfile): PerFileItemCardView (Done/Drop)"
 ```
 
@@ -1598,13 +1598,13 @@ NOTE: confirm `DS.*` token names, `.buttonStyle(.plainHit)`, and the header/scro
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -5`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -5`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/PerFileItems/Views/PerFileListView.swift
+cd apps/macos && git add Scout/PerFileItems/Views/PerFileListView.swift
 git commit -m "feat(perfile): PerFileListView (list + add + resolve)"
 ```
 
@@ -1731,13 +1731,13 @@ section(label: "Wishlist & Research") {
 
 - [ ] **Step 5: Build the whole app**
 
-Run: `cd ~/scout-app && xcodebuild build -scheme Scout 2>&1 | tail -8`
+Run: `cd apps/macos && xcodebuild build -scheme Scout 2>&1 | tail -8`
 Expected: `** BUILD SUCCEEDED **`. Fix any token/property-name mismatches against the actual files.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/scout-app && git add Scout/Shell/MainWindowView.swift Scout/Shell/SidebarView.swift Scout/Shell/AppState.swift Scout/Shell/SettingsView.swift
+cd apps/macos && git add Scout/Shell/MainWindowView.swift Scout/Shell/SidebarView.swift Scout/Shell/AppState.swift Scout/Shell/SettingsView.swift
 git commit -m "feat(perfile): wire Wishlist + Research tabs (sidebar, AppState, settings)"
 ```
 
@@ -1749,7 +1749,7 @@ git commit -m "feat(perfile): wire Wishlist + Research tabs (sidebar, AppState, 
 
 - [ ] **Step 1: Run the full ScoutTests suite**
 
-Run: `cd ~/scout-app && xcodebuild test -scheme Scout -only-testing:ScoutTests 2>&1 | tail -25`
+Run: `cd apps/macos && xcodebuild test -scheme Scout -only-testing:ScoutTests 2>&1 | tail -25`
 Expected: all tests pass (the new `PerFile/*` suites + all pre-existing suites incl. Proposals). If a Proposals test broke, you violated "don't modify Proposals" — revert that change.
 
 - [ ] **Step 2: Launch the app and verify both tabs against a real/temp vault**

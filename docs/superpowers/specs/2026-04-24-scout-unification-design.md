@@ -10,13 +10,13 @@
 Scout today consists of three tightly-coupled pieces with inconsistent distribution:
 
 - **`~/Scout`** — Jordan's private, actively-evolving engine instance. Contains a mix of (a) shippable engine code (shell scripts, Python files, hooks, runners, skills) and (b) personal data (knowledge-base, action-items, drafts, session logs). Local-only, no git remote.
-- **`~/scout-plugin`** — a Claude Code plugin published at `github.com/jordanrburger/scout-plugin`. Intended to be the shareable engine, but lags `~/Scout` substantially. Many engine pieces exist only as templates; several are missing entirely.
-- **`~/scout-app`** — a SwiftUI Mac menu-bar app published at `github.com/jordanrburger/Scout`. Hardcodes `~/Scout` as the engine root; invokes scripts and reads JSONL artifacts from there.
+- **`plugin`** — a Claude Code plugin published at `github.com/jordanrburger/scout-plugin`. Intended to be the shareable engine, but lags `~/Scout` substantially. Many engine pieces exist only as templates; several are missing entirely.
+- **`apps/macos`** — a SwiftUI Mac menu-bar app published at `github.com/jordanrburger/Scout`. Hardcodes `~/Scout` as the engine root; invokes scripts and reads JSONL artifacts from there.
 
 ### Observable symptoms
 
-1. **Colleague installs break silently.** Features in scout-app (connector health, session tokens, action-item CLI) depend on engine artifacts produced only by scripts that live in `~/Scout` but have no template or package equivalent in `~/scout-plugin`. A colleague who installs scout-plugin + scout-app hits empty cards and unresponsive buttons with no diagnostic surface.
-2. **Improvements flow the wrong way.** Jordan edits engine code in `~/Scout` (edit-and-go). Porting changes to `~/scout-plugin` is manual and rarely done, so the published plugin perpetually trails.
+1. **Colleague installs break silently.** Features in scout-app (connector health, session tokens, action-item CLI) depend on engine artifacts produced only by scripts that live in `~/Scout` but have no template or package equivalent in `plugin`. A colleague who installs scout-plugin + scout-app hits empty cards and unresponsive buttons with no diagnostic surface.
+2. **Improvements flow the wrong way.** Jordan edits engine code in `~/Scout` (edit-and-go). Porting changes to `plugin` is manual and rarely done, so the published plugin perpetually trails.
 3. **Personal data is tangled with skill definitions.** `SKILL.md`, `DREAMING.md`, `RESEARCH.md` contain family names, phone numbers, colleague rosters, and internal project codes inlined as context. They cannot be shipped as-is.
 4. **`scout-app` hardcodes paths.** `AppState.swift:34-36` resolves `scoutDir` from `~/Scout` with no override. Even if a colleague had a complete plugin install at a different path, the app wouldn't find it.
 5. **No contract between app and engine.** If the engine is missing a feature the app needs, the app silently renders an empty view instead of telling the user the engine is out of date.
@@ -53,7 +53,7 @@ Three locations with clear, non-overlapping roles.
 ```
 ┌─────────────────────────────────────┐   ┌─────────────────────────────────┐
 │  ENGINE  (shippable, git-tracked)   │   │  DATA DIR  (personal, never     │
-│  ~/scout-plugin (dev clone)         │   │  in git, never bundled)         │
+│  plugin (dev clone)         │   │  in git, never bundled)         │
 │  = Claude Code plugin               │   │  ~/Scout  (default)             │
 │                                     │   │                                 │
 │  engine/                            │   │  knowledge-base/                │
@@ -607,7 +607,7 @@ try CapabilityChecker.require(manifest, features: [
 On failure: app launches normally, a non-dismissable banner appears:
 
 > "This app needs scout-plugin ≥ 0.5 for connector health. You have 0.3.
-> Run `scoutctl upgrade` or `cd ~/scout-plugin && git pull`."
+> Run `scoutctl upgrade` or `cd plugin && git pull`."
 
 Feature-specific cards degrade to "Requires plugin update" stubs. Rest of app works.
 
@@ -663,17 +663,17 @@ Rollback: revert migration branch; restore `~/Scout` from backup; reload old lau
 
 One-time:
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 uv venv
 uv pip install -e ".[dev]"
-claude plugin add --dev ~/scout-plugin  # or symlink to ~/.claude/plugins/
+claude plugin add --dev plugin  # or symlink to ~/.claude/plugins/
 ```
 
 Daily:
 ```bash
-$EDITOR ~/scout-plugin/engine/scout/hooks/connector_log.py  # edit-and-go
+$EDITOR plugin/engine/scout/hooks/connector_log.py  # edit-and-go
 # ... iterate locally ...
-cd ~/scout-plugin && git commit -am "fix: ..." && git push
+cd plugin && git commit -am "fix: ..." && git push
 ```
 
 Cross-repo contract changes bump manifest version AND scout-app required floor in the same linked-PR pair.
@@ -685,8 +685,8 @@ Cross-repo contract changes bump manifest version AND scout-app required floor i
 claude plugin install github:jordanrburger/scout-plugin
 
 # 2. Dev clone (optional, for modification)
-git clone https://github.com/jordanrburger/scout-plugin.git ~/scout-plugin
-cd ~/scout-plugin/engine && uv pip install -e ".[dev]"
+git clone https://github.com/jordanrburger/scout-plugin.git plugin
+cd plugin/engine && uv pip install -e ".[dev]"
 
 # 3. Setup
 scoutctl setup
@@ -708,8 +708,8 @@ Five commands + one app install. Every step idempotent.
 
 Fix ships:
 ```bash
-cd ~/scout-plugin && git push                   # Jordan
-cd ~/scout-plugin && git pull \
+cd plugin && git push                   # Jordan
+cd plugin && git pull \
     && cd engine && uv pip install -e ".[dev]" --upgrade \
     && scoutctl setup verify                     # colleague
 ```

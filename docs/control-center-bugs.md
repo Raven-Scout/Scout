@@ -182,7 +182,7 @@ fails. `refresh()` was catching and swallowing the error silently, so
 `upcoming` stayed empty with no signal to the user.
 **Fix:**
   1. `AppState.resolveScoutctlPath()` now tries known install locations
-     in priority order (`~/scout-plugin/bin`, miniconda, `.local/bin`,
+     in priority order (`plugin/bin`, miniconda, `.local/bin`,
      homebrew) and uses the first concrete executable it finds. Falls
      back to `/usr/bin/env scoutctl` only if none exist.
   2. `ScheduleService.lastError` is now a `@Published` string set on

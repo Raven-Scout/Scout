@@ -24,10 +24,10 @@ The runners (`run-scout.sh` etc.) are **untouched** in Plan 4 — they invoke th
 
 ## Context for the implementer
 
-**Working directory:** `/Users/jordanburger/scout-plugin/`. Fresh branch off the merged Plan 3 tip:
+**Working directory:** `plugin/`. Fresh branch off the merged Plan 3 tip:
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git checkout main
 git pull --ff-only
 git checkout -b plan-4-connector-subsystem-and-hooks-port
@@ -35,13 +35,13 @@ git checkout -b plan-4-connector-subsystem-and-hooks-port
 ```
 
 **Reference docs (READ BEFORE STARTING):**
-- `~/scout-app/docs/superpowers/specs/2026-04-24-scout-unification-design.md` §4 (file migration map), §6 (KB schema with multi-ID person frontmatter), §11 (personal-data scrub + plugin/vault content boundary).
-- `~/scout-app/docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — particularly the new "Connector taxonomy and discovery" and "Working with the user as collaborator" sections (capture the long-term direction Plan 4 must remain consistent with).
+- `docs/superpowers/specs/2026-04-24-scout-unification-design.md` §4 (file migration map), §6 (KB schema with multi-ID person frontmatter), §11 (personal-data scrub + plugin/vault content boundary).
+- `docs/superpowers/specs/2026-04-25-scout-event-architecture-design.md` — particularly the new "Connector taxonomy and discovery" and "Working with the user as collaborator" sections (capture the long-term direction Plan 4 must remain consistent with).
 - `~/Scout/scripts/connector-health-report.sh` — the bash original being ported. Lines 43–73 are the connector dict + REQUIRED_IN map; lines 240–328 are the alert logic. Preserve all rules exactly.
 - `~/Scout/hooks/connector-log.sh` — the bash original being ported. Lines 65–76 are the `classify(name, tinput)` function.
-- `~/scout-app/docs/superpowers/plans/2026-04-26-scout-unification-plan-2-supplement-stable-ids-and-events.md` — defines `Event`, `emit()` shape, `scout.events.now_iso()`. Reuse, don't redefine.
-- `~/scout-app/docs/superpowers/plans/2026-04-22-usage-and-connector-health.md` Tasks 1–3 — the bash side of `sum-session-tokens.sh`. The Python port mirrors the JSONL schema exactly so existing scout-app `SessionTokenEntry` decoders keep working.
-- `~/scout-app/docs/superpowers/FOLLOWUPS.md` — open items in `scout.action_items.diff` and `scout.action_items.watch.py` are NOT Plan 4's concern; do not address them here.
+- `docs/superpowers/plans/2026-04-26-scout-unification-plan-2-supplement-stable-ids-and-events.md` — defines `Event`, `emit()` shape, `scout.events.now_iso()`. Reuse, don't redefine.
+- `docs/superpowers/plans/2026-04-22-usage-and-connector-health.md` Tasks 1–3 — the bash side of `sum-session-tokens.sh`. The Python port mirrors the JSONL schema exactly so existing scout-app `SessionTokenEntry` decoders keep working.
+- `docs/superpowers/FOLLOWUPS.md` — open items in `scout.action_items.diff` and `scout.action_items.watch.py` are NOT Plan 4's concern; do not address them here.
 
 **What this plan does NOT touch:**
 - The 7 runner-side scripts (`budget-check`, `heartbeat`, `rate-limit-detect`, `collect-events`, `pre-session-data`, `cc-session-cache`, `write-session-cost`). Reserved for Plan 4-supplement.
@@ -304,7 +304,7 @@ connectors:
           2. Bridge crashed — `launchctl kickstart` to restart.
           3. macOS Network Extension permissions reset — re-grant in System Settings.
 
-        Setup docs: ~/scout-plugin/docs/connectors/whatsapp-setup.md
+        Setup docs: plugin/docs/connectors/whatsapp-setup.md
 
   notify:telegram:
     display_name: Telegram (outbound)
@@ -317,7 +317,7 @@ connectors:
         Telegram outbound is a Bot API curl wrapped behind `scoutctl notify telegram`.
         Token + numeric chat ID stored in ~/.scout-secrets/ (gitignored, mode 600).
 
-        Setup walkthrough: ~/scout-plugin/docs/connectors/telegram-setup.md
+        Setup walkthrough: plugin/docs/connectors/telegram-setup.md
         (one-time @BotFather flow + chat-ID capture).
 
         Bidirectional Telegram (the inbound return-bridge for replies as feedback
@@ -345,7 +345,7 @@ dependencies = [
 Sync the venv:
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 uv pip install -e ".[dev]" --python .venv/bin/python
 ```
 
@@ -494,7 +494,7 @@ connectors:
 - [ ] **Step 4: Run, confirm RED**
 
 ```bash
-cd ~/scout-plugin/engine
+cd plugin/engine
 .venv/bin/pytest tests/unit/test_connectors_yaml.py -v
 ```
 
@@ -685,7 +685,7 @@ Expected: 10 passed.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git add engine/scout/connectors.yaml engine/scout/connectors.py engine/tests/unit/test_connectors_yaml.py engine/pyproject.toml
 git commit -m "feat(engine): connectors.yaml + scout.connectors registry — single source of truth"
 ```

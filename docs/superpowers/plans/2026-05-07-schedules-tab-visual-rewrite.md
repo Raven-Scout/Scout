@@ -112,7 +112,7 @@ struct DSSlotTypeTests {
 - [ ] **Step 2: Run test — expect BUILD FAILED (`DS.SlotType` doesn't exist)**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 xcodebuild test -only-testing:ScoutTests/DSSlotTypeTests -project Scout.xcodeproj -scheme Scout 2>&1 | tail -10
 ```
 
@@ -174,7 +174,7 @@ Expected: BUILD SUCCEEDED.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git add Scout/Utilities/DesignSystem.swift ScoutTests/Schedules/DSSlotTypeTests.swift
 git commit -m "feat(app): DS.SlotType color palette (briefing/consolidation/dreaming/research/manual)"
 ```
@@ -1787,7 +1787,7 @@ struct SchedulesView: View {
 - [ ] **Step 2: Build — expect compile errors pointing at Plan 6's SlotRow + SlotSummaryRow references**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 xcodebuild -project Scout.xcodeproj -scheme Scout build 2>&1 | tail -20
 ```
 
@@ -1825,7 +1825,7 @@ git commit -m "feat(app): SchedulesView rewrite — NavigationSplitView, header,
 - [ ] **Step 1: `git rm` the obsolete files**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git rm Scout/Schedules/SlotRow.swift
 git rm Scout/Schedules/SlotSummaryRow.swift
 git rm ScoutTests/Schedules/SlotSummaryRowTests.swift
@@ -1866,7 +1866,7 @@ git commit -m "feat(app): remove SlotRow + SlotSummaryRow — replaced by master
 
 ```bash
 osascript -e 'tell application "Scout" to quit' 2>&1 ; sleep 2
-cd /Users/jordanburger/scout-app
+cd apps/macos
 xcodebuild -project Scout.xcodeproj -scheme Scout build 2>&1 | tail -3
 open ~/Library/Developer/Xcode/DerivedData/Scout-*/Build/Products/Debug/Scout.app
 sleep 2
@@ -1941,7 +1941,7 @@ gh pr merge --merge --delete-branch
 - [ ] **Step 5: Sync local main**
 
 ```bash
-cd /Users/jordanburger/scout-app
+cd apps/macos
 git stash push -m "carryforwards" -- docs/superpowers/FOLLOWUPS.md .gitignore 2>&1 | tail -2 || true
 git checkout main
 git pull --ff-only
@@ -1953,7 +1953,7 @@ git stash pop 2>&1 | tail -2 || true
 
 ```bash
 osascript -e 'tell application "Scout" to quit' 2>&1 ; sleep 2
-cd /Users/jordanburger/scout-app
+cd apps/macos
 xcodebuild -project Scout.xcodeproj -scheme Scout build 2>&1 | tail -3
 open ~/Library/Developer/Xcode/DerivedData/Scout-*/Build/Products/Debug/Scout.app
 ```

@@ -336,11 +336,11 @@ Refuses (with actionable message) if any of:
 - Linux: `crontab -l` contains `# >>> scout-managed >>>`
 
 Verifies engine venv:
-- `~/scout-plugin/.venv/bin/scoutctl` — required. If missing, `/scout-setup` runs as a *separate pre-stage* (before stage 1):
+- `plugin/.venv/bin/scoutctl` — required. If missing, `/scout-setup` runs as a *separate pre-stage* (before stage 1):
   - User-visible message: `"Engine venv missing. Installing now (this typically takes 30–60 seconds)..."`
-  - Bash invocation: `python3 -m venv ~/scout-plugin/.venv && ~/scout-plugin/.venv/bin/pip install -e ~/scout-plugin/engine` with explicit `timeout: 300000` (5 min) to cover slow networks and dependency resolution.
-  - Slash command supports a `--skip-venv-install` flag for users who pre-built the venv (e.g., via `bash ~/scout-plugin/scripts/install-venv.sh`, which Plan 8 ships as a documented manual fallback).
-  - On failure, abort with: `"Engine venv install failed. Run manually: bash ~/scout-plugin/scripts/install-venv.sh, then retry /scout-setup."`
+  - Bash invocation: `python3 -m venv plugin/.venv && plugin/.venv/bin/pip install -e plugin/engine` with explicit `timeout: 300000` (5 min) to cover slow networks and dependency resolution.
+  - Slash command supports a `--skip-venv-install` flag for users who pre-built the venv (e.g., via `bash plugin/scripts/install-venv.sh`, which Plan 8 ships as a documented manual fallback).
+  - On failure, abort with: `"Engine venv install failed. Run manually: bash plugin/scripts/install-venv.sh, then retry /scout-setup."`
 
 ### 6.2 `/scout-update` pre-flight
 
@@ -363,7 +363,7 @@ Validates current vault:
 
 | Stage | Failure | Recovery |
 |-------|---------|----------|
-| 0 (pre-stage) | engine venv install fails (timeout, dep error, no network) | Abort with `bash ~/scout-plugin/scripts/install-venv.sh` instructions |
+| 0 (pre-stage) | engine venv install fails (timeout, dep error, no network) | Abort with `bash plugin/scripts/install-venv.sh` instructions |
 | 1 | Vault detected during `/scout-setup` | Abort with manual reset snippet |
 | 1 | Orphan jobs without vault (half-reset state) | Abort with manual reset snippet |
 | 1 | Sidecar `*.proposed-merge` from prior failed update | Abort with resolution instructions |
@@ -464,12 +464,12 @@ Output: green (all checks pass) / yellow (warnings) / red (errors). Exit code: 0
 ## 11. Risks
 
 - **3-way merge surprises on phase rewrites.** If a phase file gets restructured (sections renamed, INSERT markers reorganized), the merge sees it as "ours changed everything" and any vault edit becomes a conflict. Mitigation: when shipping phase rewrites in future plans, ship them as multi-step PRs (rename first, restructure later) so each individual update merges cleanly. The sidecar conflict policy (§4.5) keeps the running system functional even when conflicts arise; user resolves at their convenience. Plan 9's structured-proposal model eliminates this risk entirely for proposal-driven edits.
-- **Engine venv drift.** `~/scout-plugin/.venv/` is outside the vault and not version-tracked. If it gets out of sync with the plugin code, `scoutctl bootstrap` fails opaquely. Mitigation: pre-flight runs `scoutctl --version` and compares against `plugin.json`; if mismatch, runs `pip install -e ~/scout-plugin/engine` before proceeding (with the same 5-min timeout as the cold-install case).
+- **Engine venv drift.** `plugin/.venv/` is outside the vault and not version-tracked. If it gets out of sync with the plugin code, `scoutctl bootstrap` fails opaquely. Mitigation: pre-flight runs `scoutctl --version` and compares against `plugin.json`; if mismatch, runs `pip install -e plugin/engine` before proceeding (with the same 5-min timeout as the cold-install case).
 - **Linux `cron` doesn't run in a login shell.** PATH/HOME drift risk. Mitigation: managed block sets explicit `PATH=` and `SHELL=/bin/bash` headers; smoke test covers a non-login-shell environment.
 - **Dispatcher-tick interleaving with pipeline stages.** Without the global lock, a 5-min tick fires a runner mid-pipeline. The runner reads partially-written runner script (stage 4), reads SKILL.md mid-merge (stage 5), or executes against an old plist about to be replaced (stage 6). Mitigation: §4.9 global pipeline lock — bootstrap acquires `.scout-session.lock` at start of stage 1, holds through stage 8. Runners and dispatcher already respect this lock; ticks become no-ops until the pipeline completes.
 - **Crontab clobber on partial failure.** If the Linux install path strips the managed block before successfully writing the new one, the user permanently loses their schedule. Mitigation: §4.8 atomic rewrite — compose entire new crontab in memory, write to temp file, apply with single `crontab <tmpfile>` call. On failure, original crontab is intact. Previous crontab also backed up to `~/.crontab.scout-bak.YYYY-MM-DD` for one-revision rollback.
 - **Conflict markers reaching the running system.** If we wrote `<<<<<<< HEAD` markers into the live SKILL.md on conflict, the next dispatcher fire would feed them as a Claude prompt — runs would produce garbage. Mitigation: §4.5 sidecar policy — live SKILL.md is never overwritten on conflict; markers go to `SKILL.md.proposed-merge`. Dispatcher fires keep using the last-known-good content.
-- **Venv install timeout under Claude tool-use.** Default Bash timeout is 2 min; cold `pip install` on slow networks can exceed that. Mitigation: §6.1 explicit `timeout: 300000` (5 min) on the venv install bash call; documented `~/scout-plugin/scripts/install-venv.sh` as a manual fallback; `--skip-venv-install` flag on `/scout-setup` for users who pre-built.
+- **Venv install timeout under Claude tool-use.** Default Bash timeout is 2 min; cold `pip install` on slow networks can exceed that. Mitigation: §6.1 explicit `timeout: 300000` (5 min) on the venv install bash call; documented `plugin/scripts/install-venv.sh` as a manual fallback; `--skip-venv-install` flag on `/scout-setup` for users who pre-built.
 
 ## 12. Open questions resolved during brainstorm
 
