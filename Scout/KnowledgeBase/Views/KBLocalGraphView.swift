@@ -1,0 +1,125 @@
+import SwiftUI
+import Grape
+
+/// Force-directed graph rendered with Grape (native d3-force for SwiftUI). Shared
+/// by the per-note local graph (right panel) and the whole-KB global graph
+/// (overview). Tapping a node navigates to it; drag pans, pinch zooms.
+struct KBGraphCanvas: View {
+    let graph: KBGraph
+    let onNavigate: (String) -> Void
+    /// Only label nodes at/above this degree (keeps a dense global graph legible).
+    /// The center is always labeled.
+    let labelMinDegree: Int
+
+    @State private var state: ForceDirectedGraphState
+
+    init(graph: KBGraph, onNavigate: @escaping (String) -> Void,
+         labelMinDegree: Int = 1, initialScale: Double = 1.8) {
+        self.graph = graph
+        self.onNavigate = onNavigate
+        self.labelMinDegree = labelMinDegree
+        // Start zoomed in so node labels are legible without manual pinching;
+        // the simulation runs (initialIsRunning) and the user can pan/zoom.
+        _state = State(initialValue: ForceDirectedGraphState(
+            initialIsRunning: true,
+            initialModelTransform: .identity.scale(by: initialScale)
+        ))
+    }
+
+    var body: some View {
+        // Grape renders node symbols and text labels at a fixed pixel size — the
+        // viewport zoom only spreads node positions apart, it does NOT scale
+        // symbols/text. To get Obsidian-like behavior (zoom in → bigger, readable
+        // labels) we read the live zoom and multiply node radius + label font by
+        // it. `state` is Observable, so a pinch re-renders and re-rasterizes the
+        // labels at the new size.
+        let z = min(5.0, max(0.6, Double(state.modelTransform.scale)))
+        return ForceDirectedGraph(states: state) {
+            Series(graph.nodes) { node in
+                NodeMark(id: node.id)
+                    .symbol(Circle())
+                    .symbolSize(radius: radius(node) * z)
+                    .foregroundStyle(node.group.color)
+                    .stroke()
+                    .annotation(alignment: .bottom, offset: .init(dx: 0, dy: 1)) { () -> Text? in
+                        guard node.isCenter || node.degree >= labelMinDegree else { return nil }
+                        return Text(node.label)
+                            .font(DS.sans(CGFloat((node.isCenter ? 9.0 : 8.0) * z),
+                                          weight: node.isCenter ? .bold : .medium))
+                            .foregroundColor(DS.Ink.p1)
+                    }
+            }
+            Series(graph.edges) { edge in
+                LinkMark(from: edge.from, to: edge.to)
+            }
+        } force: {
+            .manyBody(strength: -45)
+            .center()
+            .link(originalLength: 26.0, stiffness: .weightedByDegree { _, _ in 1.0 })
+        }
+        .graphOverlay { proxy in
+            Rectangle().fill(.clear).contentShape(Rectangle())
+                .withGraphDragGesture(proxy, of: String.self)
+                .withGraphMagnifyGesture(proxy)
+                .withGraphTapGesture(proxy, of: String.self) { onNavigate($0) }
+        }
+    }
+
+    /// Base node radius (multiplied by the live zoom in `body`). Kept generous
+    /// so the node is an easy target for the drag-to-reposition gesture — the
+    /// drag hit area is derived from the symbol size.
+    private func radius(_ node: KBGraphNode) -> Double {
+        node.isCenter ? 5.2 : max(3.4, min(6.2, 3.4 + Double(node.degree) * 0.4))
+    }
+}
+
+/// Legend of entity-type colors present in a graph.
+struct KBGraphLegend: View {
+    let groups: [KBEntityGroup]
+    var body: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(groups, id: \.self) { g in
+                HStack(spacing: 4) {
+                    Circle().fill(g.color).frame(width: 7, height: 7)
+                    Text(g.label).font(DS.sans(9.5)).foregroundStyle(DS.Ink.p3)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+}
+
+/// The per-note neighbourhood graph for the right panel, with empty state.
+struct KBLocalGraphView: View {
+    let graph: KBGraph
+    let onNavigate: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if graph.nodes.count <= 1 {
+                emptyState
+            } else {
+                KBGraphCanvas(graph: graph, onNavigate: onNavigate)
+                KBGraphLegend(groups: presentGroups)
+            }
+        }
+    }
+
+    private var presentGroups: [KBEntityGroup] {
+        Array(Set(graph.nodes.map(\.group))).sorted { $0.label < $1.label }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 22)).foregroundStyle(DS.Ink.p4)
+            Text("No linked notes")
+                .font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+            Text("This note has no [[wikilinks]] to or from other notes.")
+                .font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(16)
+    }
+}

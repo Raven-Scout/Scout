@@ -58,14 +58,18 @@ struct MainWindowView: View {
             PerFileListView(config: .research)
                 .environmentObject(appState.researchDocumentService)
                 .environmentObject(appState.perFileWriterBox)
+        case .knowledgeBase:
+            KnowledgeBaseView()
+                .environmentObject(appState.knowledgeBaseService)
+                .environmentObject(appState.knowledgeBaseWriterBox)
         case .settings:
             SettingsView()
         }
     }
 }
 
-enum SidebarItem: Hashable {
-    case controlCenter, actionItems, schedules, proposals, wishlist, research, settings
+enum SidebarItem: Hashable, CaseIterable {
+    case controlCenter, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
@@ -76,6 +80,7 @@ enum SidebarItem: Hashable {
         case .proposals:     return "proposals"
         case .wishlist:      return "wishlist"
         case .research:      return "research"
+        case .knowledgeBase: return "knowledge"
         case .settings:      return "settings"
         }
     }

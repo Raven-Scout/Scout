@@ -93,7 +93,7 @@ struct ActionItemsParserTests {
     }
 
     @Test func nestedTasksParsedWithIndentLevel() throws {
-        // Synthetic doc that mirrors the Prague-trip nesting pattern in the
+        // Synthetic doc that mirrors the offsite-trip nesting pattern in the
         // real action-items files (1 tab for child, 2 tabs for grand-child).
         let synthetic = """
         # Action Items — Synthetic
@@ -118,10 +118,10 @@ struct ActionItemsParserTests {
 
     @Test func extractsVariableLengthSemanticTag() throws {
         let url = URL(fileURLWithPath: "/tmp/action-items-2026-06-06.md")
-        let text = "# T\n\n## 🔴 Urgent\n\n- [ ] [#AI3026] **Validate tracing** — overnight\n"
+        let text = "# T\n\n## 🔴 Urgent\n\n- [ ] [#XI7391] **Validate tracing** — overnight\n"
         let doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
         let t = try #require(doc.sections.flatMap { $0.tasks }.first)
-        #expect(t.shortPrefix == "AI3026")
+        #expect(t.shortPrefix == "XI7391")
         #expect(t.subject == "**Validate tracing**")
     }
 
@@ -173,7 +173,7 @@ struct ActionItemsParserTests {
 
         let withComment = Self.stableDoc.replacingOccurrences(
             of: "- [ ] **First task** — needs attention",
-            with: "- [ ] **First task** — needs attention\n  - jordan: looking into it"
+            with: "- [ ] **First task** — needs attention\n  - alex: looking into it"
         )
         let after = try ActionItemsParser.parse(
             text: withComment, sourceURL: Self.stableURL, sourceBytes: withComment.utf8.count)

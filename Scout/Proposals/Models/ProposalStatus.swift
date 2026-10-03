@@ -9,7 +9,7 @@ import Foundation
 /// `Applied`. The app only ever writes `Approved` / `Rejected` — applying the
 /// underlying SKILL.md change stays with the dreaming run.
 nonisolated enum ProposalStatus: Equatable, Sendable {
-    /// `Proposed (awaiting Adam approval)` — needs an explicit decision.
+    /// `Proposed (awaiting Alex approval)` — needs an explicit decision.
     case proposed
     /// `Pending (auto-apply after <date>)` — opt-out; auto-applies unless
     /// rejected. `autoApplyDate` is the ISO date when present.

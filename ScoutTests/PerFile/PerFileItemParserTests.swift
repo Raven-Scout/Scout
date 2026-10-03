@@ -14,21 +14,21 @@ struct PerFileItemParserTests {
         status: in-progress
         priority: high
         date: 2026-06-12
-        source: "Jordan Slack DM"
+        source: "Alex Slack DM"
         ---
 
         # Upgrade the graph system
 
-        Evaluate TinkerPop + Gremlin.
+        Evaluate the graph query engine.
         """
         let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("2026-06-12-graph.md")))
         #expect(item.title == "Upgrade the graph system")
         #expect(item.status == .inProgress)
         #expect(item.priority == .high)
         #expect(item.date == "2026-06-12")
-        #expect(item.source == "Jordan Slack DM")
+        #expect(item.source == "Alex Slack DM")
         #expect(item.area == nil)
-        #expect(item.bodyMarkdown == "Evaluate TinkerPop + Gremlin.")   // H1 stripped
+        #expect(item.bodyMarkdown == "Evaluate the graph query engine.")   // H1 stripped
     }
 
     @Test func parsesResearchAreaAndUrgent() throws {

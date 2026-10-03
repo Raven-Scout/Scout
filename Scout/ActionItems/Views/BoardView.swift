@@ -53,9 +53,7 @@ struct BoardView: View {
     @ViewBuilder
     private func header(_ column: ActionBoardColumn, collapsed: Bool) -> some View {
         let row = HStack(spacing: 8) {
-            Circle()
-                .fill(DS.priorityColor(column.kind))
-                .frame(width: 8, height: 8)
+            KindMarker(kind: column.kind, size: 14)
             Text(column.title)
                 .font(DS.sans(12, weight: .medium))
                 .tracking(0.4)

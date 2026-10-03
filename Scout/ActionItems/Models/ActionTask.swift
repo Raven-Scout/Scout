@@ -1,6 +1,6 @@
 import Foundation
 
-struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
+nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     /// Deterministic across reparses: derived by `ActionItemsParser.stableID`
     /// from the task's owning-section index, its index within that section,
     /// and its subject. This stability is what lets SwiftUI diff the list in

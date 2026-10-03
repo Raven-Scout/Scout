@@ -593,7 +593,7 @@ extension RunType {
     /// 12h dreaming) were way too loose and produced multi-hour false
     /// "running" badges in the Now strip and Sessions list. CC-1/CC-5.
     ///
-    /// Observed P95s (May 2026 on Jordan's box):
+    /// Observed P95s (May 2026 on Alex's box):
     ///   briefing: ~6 min   · consolidation: ~3 min
     ///   dreaming: ~25 min  · research: ~40 min
     /// Cutoffs leave ~3× headroom so a legitimately long run still resolves

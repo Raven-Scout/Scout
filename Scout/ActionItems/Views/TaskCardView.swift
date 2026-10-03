@@ -14,6 +14,7 @@ struct TaskCardView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
+    let selection: Binding<Set<UUID>>?
     // `@MainActor` is load-bearing: with default-MainActor + approachable
     // concurrency, a non-isolated async closure type would carry the WriteOp
     // across an isolation boundary as a `sending` value, and the reabstraction
@@ -24,18 +25,21 @@ struct TaskCardView: View {
     @State private var inlineError: String?
     @State private var expanded: Bool
     @State private var showingQuickSnooze = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         task: ActionTask,
         kind: ActionSection.Kind,
         displayedDate: Date,
         scoutDirectory: URL,
+        selection: Binding<Set<UUID>>? = nil,
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
         self.kind = kind
         self.displayedDate = displayedDate
         self.scoutDirectory = scoutDirectory
+        self.selection = selection
         self.onOp = onOp
         // Urgent opens by default — its detail is what you want immediately.
         _expanded = State(initialValue: (task.snoozedFromKind ?? kind) == .urgent)
@@ -71,8 +75,11 @@ struct TaskCardView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
+                )
         )
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2)
@@ -82,17 +89,20 @@ struct TaskCardView: View {
                 .opacity(task.done ? 0.5 : 1)
         }
         .padding(.bottom, 10)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
     }
 
     // MARK: - Header (always visible, scannable)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // Computed once per body pass — `chips` walks the task's deep links and
+        // formats the carried-from date, so gating and rendering off two
+        // separate evaluations doubles that work for every card.
+        let chips = self.chips
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if let prefix = task.shortPrefix {
-                    Text("#\(prefix)")
-                        .font(DS.mono(10.5, weight: .medium))
-                        .foregroundStyle(DS.Ink.p4)
+                if selection != nil {
+                    selectionButton
                 }
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
@@ -107,8 +117,18 @@ struct TaskCardView: View {
                 trailingStatus
                 chevron
             }
+            if !expanded && !task.body.isEmpty {
+                InlineMarkdownText(task.body)
+                    .font(DS.serif(13))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggle() }
+            }
             if !chips.isEmpty {
-                chipRow
+                chipRow(chips)
             }
         }
         .padding(14)
@@ -124,6 +144,7 @@ struct TaskCardView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
+        .help(expanded ? "Collapse action item" : "Expand action item")
     }
 
     private func toggle() { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
@@ -137,7 +158,7 @@ struct TaskCardView: View {
         )
     }
 
-    private var chipRow: some View {
+    private func chipRow(_ chips: [TaskChip]) -> some View {
         HStack(spacing: 6) {
             ForEach(chips) { chip in
                 chipView(for: chip)
@@ -196,10 +217,13 @@ struct TaskCardView: View {
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
         switch glyph {
-        case .github: return "arrow.triangle.pull"
-        case .linear: return "circle.grid.2x2"
-        case .slack:  return "bubble.left.and.bubble.right"
-        case .carry:  return "calendar"
+        case .github:   return "arrow.triangle.pull"
+        case .linear:   return "circle.grid.2x2"
+        case .slack:    return "bubble.left.and.bubble.right"
+        case .carry:    return "calendar"
+        case .entity:   return "doc.text"
+        case .crossRef: return "number.square"
+        case .plain:    return "tag"
         }
     }
 
@@ -340,6 +364,9 @@ struct TaskCardView: View {
 
     private var nestedRow: some View {
         HStack(alignment: .top, spacing: 10) {
+            if selection != nil {
+                selectionButton
+            }
             Circle()
                 .fill(DS.priorityColor(effectiveKind))
                 .frame(width: 5, height: 5)
@@ -368,6 +395,32 @@ struct TaskCardView: View {
 
     // MARK: - Helpers
 
+    private var isSelected: Bool {
+        selection?.wrappedValue.contains(task.id) == true
+    }
+
+    private var selectionButton: some View {
+        Button {
+            guard let selection else { return }
+            if isSelected {
+                selection.wrappedValue.remove(task.id)
+            } else {
+                selection.wrappedValue.insert(task.id)
+            }
+        } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(isSelected ? "Remove from copy selection" : "Add to copy selection")
+        .accessibilityLabel(isSelected ? "Selected for copying" : "Select for copying")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    }
+
     /// Dispatches a write through `onOp` and threads any failure into the
     /// inline error label.
     private func runOp(_ op: WriteOp) async {
@@ -395,8 +448,17 @@ struct TaskCardView: View {
         }
     }
 
+    /// Shared "MMM d" formatter — DateFormatter init is expensive, and this
+    /// runs for every card with a snooze pill or carried-from chip in a render
+    /// pass. MainActor-bound (module default isolation), so sharing is safe.
+    private static let shortDateFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d"
+        fmt.timeZone = .current
+        return fmt
+    }()
+
     private func dateShort(_ d: Date) -> String {
-        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"; fmt.timeZone = .current
-        return fmt.string(from: d)
+        Self.shortDateFormatter.string(from: d)
     }
 }

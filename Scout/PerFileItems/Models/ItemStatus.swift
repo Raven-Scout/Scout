@@ -16,11 +16,14 @@ nonisolated enum ItemStatus: Equatable, Sendable {
         }
     }
 
-    /// open/in-progress are active (Awaiting); done/dropped/unknown are resolved.
+    /// open/in-progress are active (Awaiting); done/dropped are resolved.
+    /// Unknown statuses count as active: an unrecognized value (e.g. an ad-hoc
+    /// `status: filed` from a newer engine) is far more likely unfinished work
+    /// than completed work, so hiding it under Resolved is the damaging default (#85).
     var isActive: Bool {
         switch self {
-        case .open, .inProgress: return true
-        case .done, .dropped, .unknown: return false
+        case .open, .inProgress, .unknown: return true
+        case .done, .dropped: return false
         }
     }
 

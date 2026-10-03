@@ -34,6 +34,9 @@ final class ConnectorHealthService: ObservableObject {
     private let fileEvents: any FileSystemEventSource
     private let connectors: [String]
     private var watchTask: Task<Void, Never>?
+    /// Memoises per-file parses so an append to today's log doesn't re-read
+    /// two weeks of immutable history.
+    private var parseCache = ConnectorCallCache()
 
     private static let log = Logger(subsystem: "com.scout.Scout", category: "ConnectorHealth")
 
@@ -191,7 +194,12 @@ final class ConnectorHealthService: ObservableObject {
 
     // MARK: - Internals
 
-    private func refresh() async {
+    /// Number of completed reloads. Lets callers (and tests) see that an
+    /// append storm coalesced instead of driving one reload per event.
+    @Published private(set) var refreshCount: Int = 0
+
+    func refresh() async {
+        defer { refreshCount += 1 }
         // 1. Matrix from all connector-calls-*.jsonl in logsDirectory within 14d window.
         let calls = await loadCallsWithinWindow()
         matrix = ConnectorHealthMatrix(calls: calls, connectors: connectors)
@@ -221,32 +229,38 @@ final class ConnectorHealthService: ObservableObject {
     }
 
     private func loadCallsWithinWindow() async -> [ConnectorCall] {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: logsDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-        let jsonlURLs = entries.filter {
-            let name = $0.lastPathComponent
-            return name.hasPrefix("connector-calls-") && name.hasSuffix(".jsonl")
-        }
         let windowStart = Date().addingTimeInterval(-14 * 24 * 3600)
-        return await Task.detached { () -> [ConnectorCall] in
-            var out: [ConnectorCall] = []
-            for url in jsonlURLs {
-                out.append(contentsOf: ConnectorCall.parseFile(at: url)
-                    .filter { $0.ts >= windowStart })
-            }
-            return out
-        }.value
+        // Pick the files by their day *before* reading them. Parsing all
+        // history and filtering rows afterwards made every refresh O(all
+        // history) — 29k records and ~3.4s on a real logs directory.
+        let jsonlURLs = ConnectorCall.logURLs(in: logsDirectory, since: windowStart)
+
+        // Only files whose size/mtime moved need parsing; history is
+        // immutable, so a steady append storm re-parses one file, not the
+        // whole window. The parse itself stays off this actor.
+        let calls = await parseCache.calls(for: jsonlURLs) { stale in
+            await Task.detached { () -> [URL: [ConnectorCall]] in
+                var acc: [URL: [ConnectorCall]] = [:]
+                for url in stale { acc[url] = ConnectorCall.parseFile(at: url) }
+                return acc
+            }.value
+        }
+        return calls.filter { $0.ts >= windowStart }
     }
 
     private func startWatching() {
         watchTask?.cancel()
+        // A live Scout run appends to `connector-calls-<today>.jsonl`
+        // continuously. Undebounced, every append triggered a full reload and
+        // the service could never catch up — observed pinning a core for
+        // hours. Same coalescing SessionLogService uses for session logs (#22).
+        // Subscribe synchronously so events emitted before the task starts
+        // are not dropped.
+        let events = DebouncedFileEvents(base: fileEvents, interval: .milliseconds(250))
+            .events(for: logsDirectory)
         watchTask = Task { [weak self] in
-            guard let self else { return }
-            for await event in self.fileEvents.events(for: self.logsDirectory) {
+            for await event in events {
+                guard let self else { return }
                 let name = event.url.lastPathComponent
                 let relevant = name.hasPrefix("connector-calls-")
                     || name == "connector-alerts.log"

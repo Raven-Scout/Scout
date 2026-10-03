@@ -2,15 +2,40 @@ import Foundation
 import AppKit
 
 /// Launches an interactive Claude session seeded with the context of an
-/// action item. Two targets are supported — a Claude Code CLI session
+/// action item. Two target families are supported — a Claude Code CLI session
 /// (target is configurable in Settings: Auto prefers Ghostty/tmux and falls
 /// back to Terminal.app; Terminal.app, iTerm2, and a custom command are also
-/// supported), or Claude Desktop's main chat.
+/// supported), or Claude Desktop (a new Claude Code session in the Code tab,
+/// the main chat, or a Cowork task).
 ///
 /// The full action-item context is always copied to the clipboard so the
 /// user can paste it with Cmd+V as a reliable fallback if the platform's
 /// native prefill mechanism is flaky.
 enum ClaudeLauncher {
+    enum CopyFormat: String, CaseIterable, Identifiable {
+        case fullContext
+        case concise
+        case markdownChecklist
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .fullContext:       return "Full context"
+            case .concise:           return "Concise"
+            case .markdownChecklist: return "Markdown checklist"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .fullContext:       return "doc.text"
+            case .concise:           return "text.alignleft"
+            case .markdownChecklist: return "checklist"
+            }
+        }
+    }
+
     enum DesktopMode {
         /// `claude://claude.ai/new` — main chat. Reliably opens a fresh chat
         /// with the prompt prefilled from any screen.
@@ -20,6 +45,11 @@ enum ClaudeLauncher {
         /// currently mountable, and appends to any existing composer text
         /// rather than replacing it.
         case cowork
+        /// `claude://code/new` — new Claude Code session in the Code tab,
+        /// prefilled with the prompt. `folder` becomes the session's working
+        /// directory; Claude Desktop shows a one-time trust confirmation for
+        /// folders adopted via deep link.
+        case code(folder: URL)
     }
 
     enum Target {
@@ -76,7 +106,53 @@ enum ClaudeLauncher {
     /// Build the prompt text for a task — subject, plus body, recent
     /// comments, and any deep links.
     static func prompt(for task: ActionTask) -> String {
-        var out = "Help me make progress on this action item:\n\n\(task.plainSubject)"
+        prompt(for: task, format: .fullContext)
+    }
+
+    static func prompt(for task: ActionTask, format: CopyFormat) -> String {
+        switch format {
+        case .fullContext:
+            return "Help me make progress on this action item:\n\n" + fullContextBody(for: task)
+        case .concise:
+            return conciseBody(for: task)
+        case .markdownChecklist:
+            return checklistBody(for: task)
+        }
+    }
+
+    static func prompt(for tasks: [ActionTask], format: CopyFormat) -> String {
+        guard let first = tasks.first else { return "" }
+        guard tasks.count > 1 else { return prompt(for: first, format: format) }
+
+        switch format {
+        case .fullContext:
+            let items = tasks.enumerated().map { index, task in
+                "## \(index + 1). \(fullContextBody(for: task))"
+            }
+            return "Help me make progress on these \(tasks.count) action items:\n\n"
+                + items.joined(separator: "\n\n---\n\n")
+        case .concise:
+            return tasks.enumerated()
+                .map {
+                    let body = conciseBody(for: $0.element)
+                        .replacingOccurrences(of: "\n", with: "\n   ")
+                    return "\($0.offset + 1). \(body)"
+                }
+                .joined(separator: "\n\n")
+        case .markdownChecklist:
+            return tasks.map { checklistBody(for: $0) }.joined(separator: "\n")
+        }
+    }
+
+    /// Subject line with completion state, for the formats that don't carry a
+    /// `[x]` checkbox — without it a bulk "make progress on these N items"
+    /// prompt presents finished work as open.
+    private static func subjectLine(for task: ActionTask) -> String {
+        task.done ? "\(task.plainSubject) (completed)" : task.plainSubject
+    }
+
+    private static func fullContextBody(for task: ActionTask) -> String {
+        var out = subjectLine(for: task)
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
@@ -91,11 +167,30 @@ enum ClaudeLauncher {
         }
         if !task.deepLinks.isEmpty {
             let block = task.deepLinks
-                .map { "- \($0.displayLabel): \($0.openURL.absoluteString)" }
+                .compactMap { link in link.openURL.map { "- \(link.displayLabel): \($0.absoluteString)" } }
                 .joined(separator: "\n")
             out += "\n\nLinks:\n\(block)"
         }
         return out
+    }
+
+    private static func conciseBody(for task: ActionTask) -> String {
+        guard !task.body.isEmpty else { return subjectLine(for: task) }
+        return "\(subjectLine(for: task))\n\(task.body)"
+    }
+
+    private static func checklistBody(for task: ActionTask) -> String {
+        var lines = ["- [\(task.done ? "x" : " ")] \(task.plainSubject)"]
+        if !task.body.isEmpty {
+            lines.append(contentsOf: task.body.split(separator: "\n").map { "  \($0)" })
+        }
+        // Non-URL refs (crossRef/plainRef) are omitted, matching the expanded
+        // Links list and fullContext: a checklist link without a target would
+        // render as a broken `[label]()`.
+        lines.append(contentsOf: task.deepLinks.compactMap { link in
+            link.openURL.map { "  - [\(link.displayLabel)](\($0.absoluteString))" }
+        })
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Command builders (pure, unit-tested)
@@ -464,22 +559,30 @@ enum ClaudeLauncher {
         ) != nil else {
             throw LaunchError.claudeDesktopNotInstalled
         }
-
-        var components = URLComponents()
-        components.scheme = "claude"
-        switch mode {
-        case .chat:
-            components.host = "claude.ai"
-            components.path = "/new"
-        case .cowork:
-            components.host = "cowork"
-            components.path = "/new"
-        }
-        components.queryItems = [URLQueryItem(name: "q", value: prompt)]
-
-        guard let url = components.url else {
+        guard let url = makeDesktopURL(prompt: prompt, mode: mode) else {
             throw LaunchError.urlBuildFailed
         }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Build the claude:// deep link for a desktop mode. Pure and unit-tested;
+    /// URLComponents handles percent-encoding of the prompt and folder path.
+    /// Routes documented at support.claude.com article 14729294.
+    static func makeDesktopURL(prompt: String, mode: DesktopMode) -> URL? {
+        var components = URLComponents()
+        components.scheme = "claude"
+        components.path = "/new"
+        components.queryItems = [URLQueryItem(name: "q", value: prompt)]
+        switch mode {
+        case .chat:
+            components.host = "claude.ai"
+        case .cowork:
+            components.host = "cowork"
+        case .code(let folder):
+            components.host = "code"
+            components.queryItems?.append(
+                URLQueryItem(name: "folder", value: folder.path))
+        }
+        return components.url
     }
 }

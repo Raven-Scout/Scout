@@ -43,12 +43,15 @@ The tabs are currently write-once. Make them workable:
 | [#50](https://github.com/Raven-Scout/Scout/issues/50) | Rich detail for **implemented** proposals — diff/commits, files changed, plain-language explanation, link to the run. (Pairs with #43.) |
 | [#49](https://github.com/Raven-Scout/Scout/issues/49) | **"Auto-apply"** a locally-proven change *upstream* into the engine (`scout-plugin`) — for Proposals + Wishlist. Cross-repo; design the promotion unit + gating. |
 
-## Phase 5 — Onboarding & distribution
+## Phase 5 — Onboarding & distribution (1-click install)
+
+Umbrella: [#115](https://github.com/Raven-Scout/Scout/issues/115). The goal is DMG → open → sign in to Claude → toggle connectors → first briefing, with no Terminal.
 
 | Issue | What |
 |---|---|
-| [#51](https://github.com/Raven-Scout/Scout/issues/51) | **New-user onboarding (large).** Hermes-style (Nous Research): install the Mac app first; if the engine/vault is missing, the app guides install + verify. Detect engine presence, guided `/scout-setup`, configurable vault root, route empty states into onboarding instead of silent blanks. |
-| — | **Notarization** *(roadmap only).* Ad-hoc signing forces the right-click-to-open dance on every machine; Apple Developer enrollment + notarization removes it. Defer unless distributing widely. |
+| scout-plugin [#252](https://github.com/Raven-Scout/scout-plugin/issues/252)–[#257](https://github.com/Raven-Scout/scout-plugin/issues/257) | **Quick fixes to today's install path (ship first).** Python via uv (no Homebrew), no false ✅ from `install.sh`, detect `CLAUDE_BIN`, `/scout-setup` step 3b crash, claude.ai Linear probe, stale landing-page links. The app-managed install reuses this path, so these are prerequisites for #51. |
+| [#104](https://github.com/Raven-Scout/Scout/pull/104) → [#51](https://github.com/Raven-Scout/Scout/issues/51) | **App-managed engine + new-user onboarding (large).** Hermes-style (Nous Research): install the Mac app first; the app bundles and installs the engine, hands off Claude Code install + login, and verifies. Detect engine presence, native setup wizard in place of `/scout-setup`, configurable vault root, route empty states into onboarding instead of silent blanks. |
+| [#99](https://github.com/Raven-Scout/Scout/pull/99) | **Monorepo consolidation.** One repo, one version, one release for app + engine, so the bundled engine can't drift from the app. |
 
 ## Phase 6 — Tech debt / maintainability
 
@@ -69,5 +72,5 @@ The tabs are currently write-once. Make them workable:
 ## Recommended sequencing
 1. **Phase 1 hardening PR** (#44–48) — highest value, lowest risk, matches the correctness-first priority. Start with #44 (the one real data-loss path).
 2. **Wishlist/Research v2** (#41, #42, #43 + reopen/search) — make the new tabs actually workable.
-3. **Onboarding** (#51) — the path to new users; large, its own spec→plan→build.
+3. **Onboarding** (#115) — the path to new users. Plugin quick fixes (scout-plugin #252–#257) first, then #104 → #51 (its own spec→plan→build), then #99.
 4. Performance (Phase 2), Proposals depth (#50/#49), and tech debt as they fit.

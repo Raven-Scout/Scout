@@ -59,10 +59,12 @@ struct NowStripView: View {
                 sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
             } else if let r = resolved {
                 bigName(r.displayName)
-                sub(
-                    "\(tick(for: r.status)) \(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")",
-                    color: r.status == .success ? DS.Status.ok : DS.Status.err
-                )
+                HStack(spacing: 4) {
+                    Image(systemName: statusIcon(for: r.status)).imageScale(.small)
+                    Text("\(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
+                }
+                .font(DS.mono(12))
+                .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
                 // than pretending the latest is fine.
@@ -122,8 +124,8 @@ struct NowStripView: View {
             .foregroundStyle(color)
     }
 
-    private func tick(for status: RunStatus) -> String {
-        status == .success ? "✓" : status == .running ? "●" : "✗"
+    private func statusIcon(for status: RunStatus) -> String {
+        status == .success ? "checkmark" : status == .running ? "circle.fill" : "xmark"
     }
 
     private func todayRuns() -> [Run] {

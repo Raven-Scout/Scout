@@ -1,7 +1,14 @@
 import CryptoKit
 import Foundation
 
-enum ActionItemsParser {
+/// `nonisolated` so the whole parser can run off the main actor. The module
+/// compiles with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, which would
+/// otherwise pin every one of these statics to the main thread — and parsing a
+/// real 1.8 MB day costs hundreds of milliseconds, blocking the UI on every
+/// load and every write. Nothing here touches shared mutable state: the regexes
+/// are immutable `static let`s, and the one `UserDefaults` read this used to do
+/// per inline comment is now passed in by the caller.
+nonisolated enum ActionItemsParser {
     // Parser entry point + helpers land over the next tasks.
 
     /// Deterministic ``UUID`` derived from a stable content key.
@@ -22,7 +29,7 @@ enum ActionItemsParser {
     }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     /// Strip markdown tokens from a subject so it matches the Python CLIs'
     /// ``_strip_markdown_tokens`` output byte-for-byte.
     ///
@@ -42,6 +49,30 @@ extension ActionItemsParser {
         return s
     }
 
+    /// Split a leading ordered-list marker (`1. `, `12) `) off a 💡 Focus line.
+    ///
+    /// The focus section is authored as a numbered markdown list wrapped in
+    /// narrative prose — a lede paragraph above it and a `⏸️ Verified
+    /// negatives` paragraph below. The parser keeps all of it as bullets, so
+    /// the renderer needs to tell the two apart: a line with an ordinal is a
+    /// ranked focus item and keeps *its own* number, and everything else is
+    /// prose that shouldn't be numbered at all. Without this the view counted
+    /// rows itself and drew "1  1. …" over lines that already had a number.
+    static func focusOrdinal(_ raw: String) -> (number: Int?, text: String) {
+        let range = NSRange(raw.startIndex..., in: raw)
+        guard let m = focusOrdinalRe.firstMatch(in: raw, range: range),
+              let digits = Range(m.range(at: 1), in: raw),
+              let full = Range(m.range, in: raw),
+              let n = Int(raw[digits]) else {
+            return (nil, raw)
+        }
+        return (n, String(raw[full.upperBound...]))
+    }
+
+    /// `1. ` / `12) ` at the start of a line. The trailing space is required so
+    /// `1.5x the cost` stays prose.
+    private static let focusOrdinalRe = try! NSRegularExpression(pattern: #"^(\d{1,3})[.)]\s+"#)
+
     private static func replaceRegex(in s: String, pattern: String, template: String) -> String {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
         let range = NSRange(s.startIndex..., in: s)
@@ -51,8 +82,8 @@ extension ActionItemsParser {
     /// Extract a leading `[#TAG] ` short-prefix marker from a task body and
     /// return both the bare prefix and the body with the marker removed.
     /// Mirrors scout-plugin's widened `scout.ids.short_prefix_pattern`:
-    /// 2–8 chars of `[A-Z0-9]` with at least one letter (so `[#MIRO]`,
-    /// `[#AI3026]`, `[#RSM]`, `[#5864M]` are recognized). Pure-numeric refs
+    /// 2–8 chars of `[A-Z0-9]` with at least one letter (so `[#IOTA]`,
+    /// `[#XI7391]`, `[#NTX]`, `[#7391K]` are recognized). Pure-numeric refs
     /// like `[#555]` are rejected — those are GitHub issue refs rendered by
     /// the GitHubRefLinkifier. Returns `(nil, raw)` on absence.
     static func extractShortPrefix(_ raw: String) -> (prefix: String?, rest: String) {
@@ -72,7 +103,7 @@ extension ActionItemsParser {
     }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     /// Scan ``text`` for Linear IDs, GitHub PR URLs, and Slack thread URLs.
     /// Emits them in first-match order with duplicates removed.
     ///
@@ -126,15 +157,99 @@ extension ActionItemsParser {
         }
         return result
     }
+
+    /// `owner/repo#N` GitHub shorthand. Compiled once — `parseRefs` runs per
+    /// task, and `NSRegularExpression` compilation dominates the cost
+    /// (cf. `InlineMarkdownText.wikilinkRe`).
+    private static let ghShorthandRe = try! NSRegularExpression(
+        pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#
+    )
+
+    /// `[[entity]]` / `[[entity|Label]]` wikilink ref.
+    private static let wikilinkRe = try! NSRegularExpression(
+        pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#
+    )
+
+    /// Parse the ` · `-separated token list from a task's `- Refs:` sub-bullet
+    /// into deep links. Each token runs through ``detectDeepLinks`` first
+    /// (Linear id / GitHub PR URL / Slack permalink — this also catches a
+    /// Linear id wrapped in a `[[PROJ-1234]]` wikilink), then the Refs-only
+    /// shapes: `owner/repo#N` GitHub shorthand, `[[entity]]` / `[[entity|Label]]`
+    /// wikilink refs, and `#XREF` cross-reference hashtags. Anything
+    /// unrecognized is preserved verbatim as a `.plainRef` so nothing is
+    /// dropped.
+    static func parseRefs(_ tokensString: String) -> [TaskDeepLink] {
+        var result: [TaskDeepLink] = []
+        for rawToken in tokensString.components(separatedBy: "·") {
+            let token = rawToken.trimmingCharacters(in: .whitespaces)
+            if token.isEmpty { continue }
+
+            // 1. Linear id / GitHub PR URL / Slack permalink.
+            let detected = detectDeepLinks(in: token)
+            if !detected.isEmpty { result.append(contentsOf: detected); continue }
+
+            let ns = token as NSString
+            let full = NSRange(location: 0, length: ns.length)
+
+            // 2. GitHub shorthand `owner/repo#N` (no URL form). The canonical
+            //    `/issues/N` path redirects to `/pull/N`, matching
+            //    GitHubRefLinkifier.
+            if let m = ghShorthandRe.firstMatch(in: token, range: full),
+               let n = Int(ns.substring(with: m.range(at: 2))),
+               let url = URL(string: "https://github.com/\(ns.substring(with: m.range(at: 1)))/issues/\(n)") {
+                result.append(.githubPR(repo: ns.substring(with: m.range(at: 1)), number: n, rawURL: url))
+                continue
+            }
+
+            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`.
+            if let m = wikilinkRe.firstMatch(in: token, range: full) {
+                let path = ns.substring(with: m.range(at: 1))
+                let label = m.range(at: 2).location == NSNotFound ? nil : ns.substring(with: m.range(at: 2))
+                result.append(.entity(path: path, label: label))
+                continue
+            }
+
+            // 4. Cross-reference hashtag `#XREF`. Deferred to `KBTag` so the
+            //    Refs block honors the one tag grammar the rest of the app
+            //    uses (2–8 `[A-Z0-9]`, at least one letter): digit-leading
+            //    mnemonics like `#7391K` are tags, while a purely numeric
+            //    `#123` has no letter and stays a GitHub ref.
+            if token.hasPrefix("#"), let tag = KBTag.normalized(token) {
+                result.append(.crossRef(tag: tag))
+                continue
+            }
+
+            // 5. Unrecognized — preserve verbatim.
+            result.append(.plainRef(text: token))
+        }
+        return result
+    }
 }
 
-extension ActionItemsParser {
+nonisolated extension ActionItemsParser {
     enum ParseError: Error {
         case noTitle
         case invalidDateInFilename
     }
 
-    static func parse(text: String, sourceURL: URL, sourceBytes: Int) throws -> ActionItemsDocument {
+    /// How many lines of the main loop run between `Task.isCancelled` checks.
+    /// A superseded parse should stop promptly, but the check is an atomic
+    /// load in a loop that runs tens of thousands of times on a real day, so
+    /// it is amortized rather than paid per line.
+    static var cancellationCheckInterval: Int { 256 }
+
+    /// - Parameter inlineCommentAuthor: byline for Obsidian `//==<< … >>==//`
+    ///   inline comments. Passed in rather than read from `UserDefaults` here:
+    ///   this type is `nonisolated` so it can parse off the main actor, and a
+    ///   Cocoa-backed default read from a background thread is exactly the
+    ///   shape that used to fault. It was also being re-read once per inline
+    ///   comment rather than once per parse.
+    static func parse(
+        text: String,
+        sourceURL: URL,
+        sourceBytes: Int,
+        inlineCommentAuthor: String = "user"
+    ) throws -> ActionItemsDocument {
         let lines = text.components(separatedBy: "\n")
 
         // --- title + preamble ---
@@ -182,6 +297,23 @@ extension ActionItemsParser {
         var pendingTableHeaders: [String]? = nil
         var pendingTableRows: [[String]] = []
 
+        // --- `<details>` archive regions ---
+        // While a region is open the task/bullet accumulators are redirected
+        // into it, so the whole existing parse path keeps working unchanged and
+        // archived content simply lands somewhere else. See
+        // `ActionSection.CollapsedGroup` for why it's kept rather than dropped.
+        var currentCollapsed: [ActionSection.CollapsedGroup] = []
+        var inCollapsed = false
+        var detailsDepth = 0
+        var collapsedSummary = ""
+        var parkedTasks: [ActionTask] = []
+        var parkedBullets: [String] = []
+        var parkedTables: [ActionSection.Table] = []
+        /// Namespace for task ``stableID`` keys. Without it a parked row and a
+        /// live row with the same subject at the same index hash to the same
+        /// UUID, and SwiftUI sees two rows claiming one identity.
+        var idScope = "0"
+
         func flushTable() {
             if let headers = pendingTableHeaders {
                 currentTables.append(.init(headers: headers, rows: pendingTableRows))
@@ -190,7 +322,35 @@ extension ActionItemsParser {
             pendingTableRows = []
         }
 
+        /// Seal the open `<details>` region and restore the live accumulators.
+        /// A no-op outside a region, so it's safe to call defensively wherever
+        /// a region must not outlive its context — notably at a `## ` heading,
+        /// which is how the file's unbalanced tags are kept from swallowing
+        /// everything after the orphan.
+        func closeCollapsedGroup() {
+            detailsDepth = 0
+            guard inCollapsed else { return }
+            inCollapsed = false
+            flushTable()
+            currentCollapsed.append(ActionSection.CollapsedGroup(
+                id: stableID("collapsed|\(sections.count)|\(currentCollapsed.count)|\(collapsedSummary)"),
+                summary: collapsedSummary,
+                tasks: currentTasks,
+                bullets: currentBullets,
+                tables: currentTables
+            ))
+            currentTasks = parkedTasks
+            currentBullets = parkedBullets
+            currentTables = parkedTables
+            parkedTasks = []
+            parkedBullets = []
+            parkedTables = []
+            collapsedSummary = ""
+            idScope = "\(sections.count)"
+        }
+
         func flushSection() {
+            closeCollapsedGroup()
             flushTable()
             if inSection {
                 // Stable identity: section index + kind + title. Survives a
@@ -204,16 +364,19 @@ extension ActionItemsParser {
                     tasks: currentTasks,
                     bullets: currentBullets,
                     tables: currentTables,
-                    subheads: currentSubheads
+                    subheads: currentSubheads,
+                    collapsed: currentCollapsed
                 ))
             }
             currentTasks = []
             currentBullets = []
             currentTables = []
             currentSubheads = []
+            currentCollapsed = []
             currentEmoji = ""
             currentTitle = ""
             currentKind = .neutral
+            idScope = "\(sections.count)"
         }
 
         let taskRe = try NSRegularExpression(pattern: #"^(\s*)- \[([ xX])\] (.+?)\s*$"#)
@@ -225,6 +388,14 @@ extension ActionItemsParser {
         /// task body, not a comment. v0.5.2 added this so comments written
         /// through scoutctl actually round-trip into the app's reparse.
         let subBulletCommentRe = try NSRegularExpression(pattern: #"^(\s+)-\s+([A-Za-z][A-Za-z0-9._-]*)\s*:\s*(.+?)\s*$"#)
+        /// The `- Refs:` sub-bullet (Action Items redesign): an indented
+        /// ` · `-separated list of machine refs under a task line. Recognized
+        /// like the comment sub-lines and attached to the preceding task as
+        /// deep links, never rendered as body prose or a comment. Anchored on
+        /// the literal `Refs:` so ordinary `- Source:` / `- Context:` bullets
+        /// are untouched. MUST be checked before `subBulletCommentRe`, which
+        /// would otherwise expose it as a comment from author "Refs".
+        let refsSubBulletRe = try NSRegularExpression(pattern: #"^\s+-\s+Refs:\s*(.+?)\s*$"#)
         /// scoutctl's snooze marker: `  - snoozed-until: YYYY-MM-DD`,
         /// optionally followed by `(from-kind: <kind>)`. Captured as task
         /// metadata (`task.snoozedUntil`, `task.snoozedFromKind`) rather than
@@ -253,7 +424,21 @@ extension ActionItemsParser {
         let carryInRe = try NSRegularExpression(pattern: #"_\(carried in from (\d{4}-\d{2}-\d{2})\)_"#)
         let snoozeDateFmt = DateFormatter(); snoozeDateFmt.dateFormat = "yyyy-MM-dd"; snoozeDateFmt.timeZone = .current
 
+        // A parse runs detached, and two can overlap — a slow day switching to
+        // a fast one, or the FSEvent reparse landing on top of the explicit
+        // one. The service cancels the superseded task; cancellation is
+        // cooperative, so the walk has to look. Counting down rather than
+        // testing `i % n` because several branches below advance `i` by more
+        // than one and would step over the multiple.
+        var linesUntilCancellationCheck = cancellationCheckInterval
+
         while i < lines.count {
+            linesUntilCancellationCheck -= 1
+            if linesUntilCancellationCheck <= 0 {
+                try Task.checkCancellation()
+                linesUntilCancellationCheck = cancellationCheckInterval
+            }
+
             let line = lines[i]
             let stripped = line.trimmingCharacters(in: .whitespaces)
 
@@ -287,10 +472,50 @@ extension ActionItemsParser {
                 i += 1; continue
             }
 
+            // `<details>` region boundary. Tag lines are markup, never content
+            // — emitting them is what put rows reading `</details>` in Today's
+            // Focus. Content *between* the tags falls through to the ordinary
+            // branches below and lands in the redirected accumulators, so
+            // archived tasks stay real `ActionTask`s inside their group.
+            if inSection {
+                let scan = HTMLDetailsScanner.scan(line)
+                if scan.isTagLine {
+                    if detailsDepth == 0 && scan.opens > 0 {
+                        // Outermost open: park the live lists and start a group.
+                        flushTable()
+                        inCollapsed = true
+                        collapsedSummary = scan.summary ?? ""
+                        parkedTasks = currentTasks
+                        parkedBullets = currentBullets
+                        parkedTables = currentTables
+                        currentTasks = []
+                        currentBullets = []
+                        currentTables = []
+                        idScope = "\(sections.count)|collapsed\(currentCollapsed.count)"
+                    } else if let inner = scan.summary, !inner.isEmpty {
+                        // Nested open: flattened into the outermost group, but
+                        // its summary survives as prose so the archive still
+                        // reads in order.
+                        currentBullets.append(inner)
+                    }
+                    detailsDepth += scan.opens
+                    detailsDepth -= scan.closes
+                    if detailsDepth <= 0 { closeCollapsedGroup() }
+                    i += 1; continue
+                }
+            }
+
             // Subhead
             if line.hasPrefix("### ") && inSection {
                 flushTable()
-                currentSubheads.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                // Inside a region this is archived structure, not a live
+                // subhead — keep the text with the group rather than promoting
+                // it to the section.
+                if detailsDepth > 0 {
+                    currentBullets.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                } else {
+                    currentSubheads.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                }
                 i += 1; continue
             }
 
@@ -349,13 +574,13 @@ extension ActionItemsParser {
                    let r = Range(cm.range(at: 1), in: body) {
                     carryInKind = ActionSection.Kind(rawValue: String(body[r]).lowercased())
                 }
-                // Stable identity: owning-section index + task index within
-                // that section + subject. Adding a comment to a task doesn't
-                // change any of these, so the row keeps its identity across
-                // the reparse the write triggers and the scroll holds. See
-                // `stableID`.
+                // Stable identity: owning scope (the section index, or the
+                // collapsed group within it) + task index within that scope +
+                // subject. Adding a comment to a task doesn't change any of
+                // these, so the row keeps its identity across the reparse the
+                // write triggers and the scroll holds. See `stableID`.
                 currentTasks.append(ActionTask(
-                    id: stableID("task|\(sections.count)|\(currentTasks.count)|\(subject)"),
+                    id: stableID("task|\(idScope)|\(currentTasks.count)|\(subject)"),
                     lineNumber: i + 1,
                     done: done,
                     subject: subject,
@@ -436,10 +661,44 @@ extension ActionItemsParser {
                 i += 1; continue
             }
 
+            // Refs sub-bullet: `  - Refs: [[people/alex]] · PROJ-1 · … · #XREF`.
+            // Parse the ` · `-separated tokens into deep links and merge them
+            // onto the preceding task, then consume the line so it never
+            // renders as body prose or a comment. Must precede
+            // subBulletCommentRe, which would otherwise read it as a comment
+            // from author "Refs".
+            if inSection,
+               let last = currentTasks.last,
+               let rm = refsSubBulletRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let tokensString = (line as NSString).substring(with: rm.range(at: 1))
+                var merged = last.deepLinks
+                var seen = Set(merged.map(\.id))
+                for link in parseRefs(tokensString) where seen.insert(link.id).inserted {
+                    merged.append(link)
+                }
+                let updated = ActionTask(
+                    id: last.id,
+                    lineNumber: last.lineNumber,
+                    done: last.done,
+                    subject: last.subject,
+                    plainSubject: last.plainSubject,
+                    body: last.body,
+                    comments: last.comments,
+                    deepLinks: merged,
+                    snoozedUntil: last.snoozedUntil,
+                    carriedInFrom: last.carriedInFrom,
+                    indentLevel: last.indentLevel,
+                    shortPrefix: last.shortPrefix,
+                    snoozedFromKind: last.snoozedFromKind
+                )
+                currentTasks[currentTasks.count - 1] = updated
+                i += 1; continue
+            }
+
             // Sub-bullet comment line attached to the last task: scoutctl
             // writes `  - <author>: <text>`. Distinct from the blockquote
             // form above. Match must run BEFORE the bare-bullet `bulletRe`
-            // path so `  - jordan: hello` becomes a comment rather than a
+            // path so `  - alex: hello` becomes a comment rather than a
             // sub-task body.
             if inSection,
                let last = currentTasks.last,
@@ -473,8 +732,7 @@ extension ActionItemsParser {
                let im = inlineCommentRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
                 let nsLine = line as NSString
                 let body = nsLine.substring(with: im.range(at: 2))
-                let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                let newComment = TaskComment(author: author, timestamp: "", text: body)
+                let newComment = TaskComment(author: inlineCommentAuthor, timestamp: "", text: body)
                 let updated = ActionTask(
                     id: last.id,
                     lineNumber: last.lineNumber,
@@ -569,64 +827,87 @@ extension ActionItemsParser {
     /// and ``[label](url)`` tokens. Falls back to ``": "`` separator. Mirrors
     /// ``action-items/render.py`` ``_split_subject``.
     static func splitSubjectBody(_ rest: String) -> (String, String) {
-        let separators = [" — ", " – ", " - "]
-        if let idx = firstSeparatorOutsideTokens(in: rest, separators: separators) {
-            for sep in separators {
-                let sepLen = sep.count
-                if rest.distance(from: idx, to: rest.endIndex) >= sepLen,
-                   rest[idx ..< rest.index(idx, offsetBy: sepLen)] == sep {
-                    return (
-                        String(rest[..<idx]).trimmingCharacters(in: .whitespaces),
-                        String(rest[rest.index(idx, offsetBy: sepLen)...]).trimmingCharacters(in: .whitespaces)
-                    )
-                }
-            }
+        // Materialize the grapheme clusters once. Every index below is then an
+        // `Int` into this array, which is what keeps the scan O(n): the previous
+        // version walked `String.Index` and asked `text.distance(from:to:)` —
+        // itself O(n) — three times per character, making the whole function
+        // quadratic in line length. Task lines run to ~9,700 characters, so that
+        // cost 465 ms at `-O` across one day's file, 68% of the entire parse.
+        let chars = Array(rest)
+
+        if let hit = firstSeparatorOutsideTokens(in: chars, separators: dashSeparators) {
+            return split(rest, at: hit)
         }
-        if let idx = firstSeparatorOutsideTokens(in: rest, separators: [": "]) {
-            let sepLen = 2
-            return (
-                String(rest[..<idx]).trimmingCharacters(in: .whitespaces),
-                String(rest[rest.index(idx, offsetBy: sepLen)...]).trimmingCharacters(in: .whitespaces)
-            )
+        if let hit = firstSeparatorOutsideTokens(in: chars, separators: colonSeparator) {
+            return split(rest, at: hit)
         }
         return (rest, "")
     }
 
-    private static func firstSeparatorOutsideTokens(in text: String, separators: [String]) -> String.Index? {
+    /// ` — ` / ` – ` / ` - `, in the order the scanner tries them at each
+    /// position. Hoisted so the arrays aren't rebuilt per task line.
+    private static let dashSeparators: [[Character]] = [
+        Array(" — "), Array(" – "), Array(" - "),
+    ]
+    private static let colonSeparator: [[Character]] = [Array(": ")]
+
+    /// Slice `rest` around the separator at Character offset `hit.index`. The
+    /// offset is mapped back to a `String.Index` once — O(subject length) — so
+    /// both halves are plain substring copies rather than a Character-by-
+    /// Character rebuild of the whole line.
+    private static func split(
+        _ rest: String,
+        at hit: (index: Int, length: Int)
+    ) -> (String, String) {
+        let sepStart = rest.index(rest.startIndex, offsetBy: hit.index)
+        let bodyStart = rest.index(sepStart, offsetBy: hit.length)
+        return (
+            String(rest[..<sepStart]).trimmingCharacters(in: .whitespaces),
+            String(rest[bodyStart...]).trimmingCharacters(in: .whitespaces)
+        )
+    }
+
+    /// First separator lying outside `**bold**`, `~~strike~~`, `` `code` ``,
+    /// `[[wikilink]]` and `[label](url)` tokens, as a `(offset, length)` pair.
+    ///
+    /// Returning the matched length as well as the offset lets the caller slice
+    /// directly. The original re-tested each separator at the returned index to
+    /// recover its length; because the scan already tries them in order at every
+    /// position, the first one that matched there is the same one, so this is
+    /// equivalent — and the `SplitSubjectBodyTests` differential pins it.
+    private static func firstSeparatorOutsideTokens(
+        in chars: [Character],
+        separators: [[Character]]
+    ) -> (index: Int, length: Int)? {
         var inBold = false, inStrike = false, inCode = false
         var bracketDepth = 0, parenDepth = 0
-        var i = text.startIndex
-        while i < text.endIndex {
-            let rem = text[i...]
-            let two = rem.prefix(2)
-            let ch = text[i]
-            if ch == "`" && !inBold && !inStrike { inCode.toggle(); i = text.index(after: i); continue }
-            if inCode { i = text.index(after: i); continue }
-            if two == "**" { inBold.toggle(); i = text.index(i, offsetBy: 2); continue }
-            if two == "~~" { inStrike.toggle(); i = text.index(i, offsetBy: 2); continue }
-            if two == "[[" { bracketDepth += 1; i = text.index(i, offsetBy: 2); continue }
-            if two == "]]" && bracketDepth > 0 { bracketDepth -= 1; i = text.index(i, offsetBy: 2); continue }
-            if ch == "[" && bracketDepth == 0 { bracketDepth = 1; i = text.index(after: i); continue }
-            if ch == "]" && bracketDepth > 0 && two != "]]" {
+        var i = 0
+        let n = chars.count
+        while i < n {
+            let ch = chars[i]
+            let next: Character? = i + 1 < n ? chars[i + 1] : nil
+            if ch == "`" && !inBold && !inStrike { inCode.toggle(); i += 1; continue }
+            if inCode { i += 1; continue }
+            if ch == "*" && next == "*" { inBold.toggle(); i += 2; continue }
+            if ch == "~" && next == "~" { inStrike.toggle(); i += 2; continue }
+            if ch == "[" && next == "[" { bracketDepth += 1; i += 2; continue }
+            if ch == "]" && next == "]" && bracketDepth > 0 { bracketDepth -= 1; i += 2; continue }
+            if ch == "[" && bracketDepth == 0 { bracketDepth = 1; i += 1; continue }
+            if ch == "]" && bracketDepth > 0 && next != "]" {
                 bracketDepth = 0
-                let next = text.index(after: i)
-                if next < text.endIndex && text[next] == "(" {
+                if next == "(" {
                     parenDepth = 1
-                    i = text.index(i, offsetBy: 2); continue
+                    i += 2; continue
                 }
-                i = text.index(after: i); continue
+                i += 1; continue
             }
-            if ch == ")" && parenDepth > 0 { parenDepth -= 1; i = text.index(after: i); continue }
+            if ch == ")" && parenDepth > 0 { parenDepth -= 1; i += 1; continue }
             if !inBold && !inStrike && bracketDepth == 0 && parenDepth == 0 {
-                for sep in separators {
-                    let sepLen = sep.count
-                    if text.distance(from: i, to: text.endIndex) >= sepLen,
-                       text[i ..< text.index(i, offsetBy: sepLen)] == sep {
-                        return i
-                    }
+                for sep in separators where chars[i...].starts(with: sep) {
+                    return (i, sep.count)
                 }
             }
-            i = text.index(after: i)
+            i += 1
         }
         return nil
     }
