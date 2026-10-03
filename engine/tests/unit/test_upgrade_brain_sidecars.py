@@ -19,6 +19,7 @@ from scout.scripts.bootstrap import (
     _template_vars,
     install,
     migrate_legacy,
+    resolve_brain_file,
     upgrade,
 )
 from scout.scripts.brain_merge import PROVENANCE_FILE
@@ -196,6 +197,67 @@ def test_a_vault_from_before_provenance_takes_a_routine_change(tmp_path: Path) -
     assert result.conflicts == []
 
 
+def test_a_write_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Path) -> None:
+    """Without a record, a snapshot copied over by hand looks like an
+    assembly. The one-time fallback may then replace live, so it keeps the
+    replaced file and says so."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
+    _snapshot(vault, "SKILL").write_text(live.read_text(), encoding="utf-8")
+    edited = live.read_text()
+
+    _write_phase(plugin, "SKILL", "Added by the plugin.")
+    result = upgrade(_config(vault, plugin, "0.4.1"))
+
+    (backup,) = vault.glob("SKILL.md.bak.*")
+    assert backup.read_text() == edited
+    assert result.backups == [backup.name]
+
+
+def test_a_merge_that_changes_nothing_writes_no_backup(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
+    edited = live.read_bytes()
+
+    result = upgrade(_config(vault, plugin, "0.4.1"))  # no plugin change
+
+    assert live.read_bytes() == edited
+    assert result.backups == [] and not list(vault.glob("SKILL.md.bak.*"))
+
+
+def test_an_upgrade_that_fails_part_way_keeps_what_it_recorded(tmp_path: Path) -> None:
+    """Provenance is written per file. If RESEARCH.md breaks the upgrade after
+    SKILL.md's snapshot advanced, SKILL.md must still merge next time instead
+    of being proposed (which would offer to drop the vault's edit)."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
+    research = vault / "RESEARCH.md"
+    research_text = research.read_text()
+    research.write_bytes(b"\xff\xfe not utf-8")
+
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    with pytest.raises(UnicodeDecodeError):
+        upgrade(_config(vault, plugin, "0.4.1"))
+    research.write_text(research_text, encoding="utf-8")
+    _change_line(plugin, "check the calendar.", "check the calendar and the tasks.")
+    result = upgrade(_config(vault, plugin, "0.4.1"))
+
+    merged = live.read_text()
+    assert "SKILL.md.proposed-merge" not in result.conflicts
+    assert "A vault-local step." in merged and "check the calendar and the tasks." in merged
+
+
 def test_a_conflicting_vault_edit_keeps_live_and_does_not_block(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
@@ -328,6 +390,103 @@ def test_adopting_the_proposal_converges_on_the_next_upgrade(tmp_path: Path) -> 
     assert "SKILL.md.proposed-merge" not in result.conflicts
     assert not (vault / "SKILL.md.proposed-merge").exists()
     assert _snapshot(vault, "SKILL").read_text() == live
+
+
+def test_an_adopted_proposal_edited_before_the_next_upgrade_converges_once_resolved(tmp_path: Path) -> None:
+    """The Phase-2 path for an M3-shaped vault: adopt the plugin's brain, let a
+    dreaming run edit it, and still take later plugin changes."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    _legacy_vault(vault)
+    migrate_legacy(_config(vault, plugin))
+    _write_phase(plugin, "SKILL", "Added by the plugin.")
+    upgrade(_config(vault, plugin, "0.4.1"))
+
+    live = vault / "SKILL.md"
+    (vault / "SKILL.md.proposed-merge").rename(live)
+    live.write_text(live.read_text() + "\nA step applied by a dreaming run.\n", encoding="utf-8")
+    resolved = resolve_brain_file(vault, "SKILL")
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    result = upgrade(_config(vault, plugin, "0.4.2"))
+
+    assert resolved.recorded_base and not resolved.removed_sidecar
+    text = live.read_text()
+    assert "A step applied by a dreaming run." in text and "triage the inbox." in text
+    assert result.conflicts == []
+
+
+def test_resolving_a_conflict_merges_the_next_change_against_the_resolution(tmp_path: Path) -> None:
+    """Without the recorded resolution the next merge would still diff against
+    the pre-conflict base and conflict on the same line again."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    upgrade(_config(vault, plugin, "0.4.1"))
+
+    live.write_text(live.read_text().replace("read the inbox twice.", "triage the inbox twice."), encoding="utf-8")
+    resolved = resolve_brain_file(vault, "SKILL")
+    _change_line(plugin, "notify Alex.", "notify Alex and Priya.")
+    result = upgrade(_config(vault, plugin, "0.4.2"))
+
+    assert resolved.removed_sidecar and not (vault / "SKILL.md.proposed-merge").exists()
+    assert result.conflicts == []
+    text = live.read_text()
+    assert "triage the inbox twice." in text and "notify Alex and Priya." in text
+
+
+def test_resolve_refuses_while_conflict_markers_remain(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    upgrade(_config(vault, plugin, "0.4.1"))
+    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar_text = sidecar.read_text()
+    sidecar.rename(live)  # moved into place without removing the markers
+
+    with pytest.raises(ValueError, match="conflict markers"):
+        resolve_brain_file(vault, "SKILL")
+    assert live.read_text() == sidecar_text
+
+
+def test_resolve_with_nothing_pending_refuses(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    with pytest.raises(ValueError, match="nothing to resolve"):
+        resolve_brain_file(vault, "SKILL")
+
+
+def test_resolve_refuses_when_the_live_file_is_missing(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / "SKILL.md.proposed-merge").write_text("pending\n", encoding="utf-8")
+    (vault / "SKILL.md").unlink()
+    with pytest.raises(FileNotFoundError, match="SKILL.md is missing"):
+        resolve_brain_file(vault, "SKILL")
+    assert (vault / "SKILL.md.proposed-merge").exists()
+
+
+def test_resolve_removes_a_sidecar_an_older_engine_left(tmp_path: Path) -> None:
+    """No recorded proposal: the sidecar goes, the base stays, and the next
+    upgrade merges the file again."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / "SKILL.md.proposed-merge").write_text("from an older engine\n", encoding="utf-8")
+    snapshot_before = _snapshot(vault, "SKILL").read_bytes()
+
+    resolved = resolve_brain_file(vault, "SKILL")
+
+    assert resolved.removed_sidecar and not resolved.recorded_base
+    assert not (vault / "SKILL.md.proposed-merge").exists()
+    assert _snapshot(vault, "SKILL").read_bytes() == snapshot_before
 
 
 # ---------- phases backport still sees exactly the vault's edits ----------

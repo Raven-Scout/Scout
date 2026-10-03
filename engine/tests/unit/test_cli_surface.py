@@ -923,6 +923,40 @@ def test_bootstrap_upgrade_empty_config_falls_back_to_defaults(vault: Path, monk
     assert seen == {"instance_name": "Scout", "user_name": "", "timezone": "America/New_York"}
 
 
+def test_bootstrap_resolve_records_each_named_brain_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts.bootstrap import ResolveResult
+
+    calls: list[tuple[Path, str]] = []
+
+    def fake_resolve(v: Path, kind: str) -> ResolveResult:
+        calls.append((v, kind))
+        return ResolveResult(name=f"{kind}.md", recorded_base=kind == "SKILL", removed_sidecar=True)
+
+    monkeypatch.setattr("scout.scripts.bootstrap.resolve_brain_file", fake_resolve)
+    result = runner.invoke(cli.app, ["bootstrap", "resolve", "SKILL.md", "dreaming"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(vault, "SKILL"), (vault, "DREAMING")]
+    assert "resolved: SKILL.md — the next upgrade merges plugin changes into it" in result.stdout
+    assert "resolved: DREAMING.md — sidecar removed; the next upgrade merges it again" in result.stdout
+
+
+def test_bootstrap_resolve_rejects_a_file_that_is_not_a_brain_file(vault: Path) -> None:
+    result = runner.invoke(cli.app, ["bootstrap", "resolve", "parser.py"])
+    assert result.exit_code == 2
+    assert "SKILL.md, DREAMING.md or RESEARCH.md" in result.output
+
+
+def test_bootstrap_resolve_refusal_exits_one(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_resolve(v: Path, kind: str):
+        raise ValueError("SKILL.md still has conflict markers")
+
+    monkeypatch.setattr("scout.scripts.bootstrap.resolve_brain_file", fake_resolve)
+    result = runner.invoke(cli.app, ["bootstrap", "resolve", "SKILL"])
+    assert result.exit_code == 1
+    assert "SKILL.md still has conflict markers" in result.output
+
+
 def test_bootstrap_doctor_reports_severity_and_findings(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 

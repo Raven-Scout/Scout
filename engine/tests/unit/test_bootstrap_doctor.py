@@ -66,6 +66,28 @@ def test_a_pending_brain_sidecar_says_upgrades_skip_the_file(tmp_path):
     assert "upgrades leave DREAMING.md as is" in warning
     assert "mv DREAMING.md.proposed-merge DREAMING.md" in warning
     assert "before re-running" not in warning, "a pending sidecar no longer blocks /scout-update"
+    assert "scoutctl bootstrap resolve DREAMING.md" in warning
+
+
+def test_a_sidecar_removed_without_resolve_is_flagged(tmp_path):
+    """The proposal is still on record but the sidecar is gone and live isn't
+    the proposal: the next upgrade would merge or propose from the old base."""
+    _populate_minimal_vault(tmp_path)
+    proposed = tmp_path / ".scout-state" / "last-assembled" / "proposed"
+    proposed.mkdir()
+    (proposed / "SKILL.md").write_text("# SKILL\nthe plugin's proposal\n")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    (warning,) = [w for w in report.warnings if "SKILL.md" in w]
+    assert "scoutctl bootstrap resolve SKILL.md" in warning
+
+
+def test_a_proposal_adopted_verbatim_is_not_flagged(tmp_path):
+    _populate_minimal_vault(tmp_path)
+    proposed = tmp_path / ".scout-state" / "last-assembled" / "proposed"
+    proposed.mkdir()
+    (proposed / "SKILL.md").write_text((tmp_path / "SKILL.md").read_text())
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.GREEN
 
 
 def test_missing_version_stamp_is_red(tmp_path):

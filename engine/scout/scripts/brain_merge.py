@@ -13,7 +13,9 @@ Two rules keep an upgrade from stalling without risking vault content:
   (the M3 incident), so for those ``base == theirs`` proves nothing, and the
   plugin's version is proposed in a sidecar instead.
 
-``provenance.json`` next to the snapshots records which ones the engine wrote.
+``provenance.json`` next to the snapshots records which ones the engine wrote;
+``proposed/<KIND>.md`` keeps the assembly behind a pending sidecar, which
+``scoutctl bootstrap resolve`` records as the new merge base.
 Design: docs/superpowers/specs/2026-10-02-brain-sidecars-never-block-upgrade-design.md
 """
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -28,10 +31,14 @@ from pathlib import Path
 
 BRAIN_KINDS: tuple[str, ...] = ("SKILL", "DREAMING", "RESEARCH")
 PROVENANCE_FILE = "provenance.json"
+PROPOSED_DIR = "proposed"
 _PROVENANCE_VERSION = 1
 
 ASSEMBLED = "assembled"
 SEEDED = "seeded"
+# A snapshot record that is present but unrecognised. It fails closed: never
+# treated as the plugin's, and never sent to the weaker fingerprint check.
+INVALID = "invalid"
 
 
 def sidecar_name(kind: str) -> str:
@@ -59,20 +66,31 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_CONFLICT_MARKER = re.compile(r"^(?:<{7}|>{7})(?: |$)", re.MULTILINE)
+
+
+def has_conflict_markers(text: str) -> bool:
+    """True if ``text`` still holds a ``git merge-file`` conflict marker line.
+
+    Only the ``<<<<<<<`` and ``>>>>>>>`` lines count: a bare ``=======`` line is
+    also a Markdown setext heading underline.
+    """
+    return _CONFLICT_MARKER.search(text) is not None
+
+
 @dataclass(frozen=True)
 class Provenance:
     """What the engine knows about one brain file's snapshot.
 
     ``snapshot`` is ``"assembled"`` (the engine wrote it from an assembly),
-    ``"seeded"`` (``migrate-legacy`` copied it from the live file) or ``None``
-    (not recorded: the vault was last upgraded before provenance existed).
-    ``sha256`` is the snapshot's hash as written. ``proposed_sha256`` is the
-    hash of the assembly last written to a sidecar.
+    ``"seeded"`` (``migrate-legacy`` copied it from the live file),
+    ``"invalid"`` (a record that couldn't be understood) or ``None`` (not
+    recorded: the vault was last upgraded before provenance existed).
+    ``sha256`` is the snapshot's hash as written.
     """
 
     snapshot: str | None = None
     sha256: str | None = None
-    proposed_sha256: str | None = None
 
     @classmethod
     def assembled(cls, content: str) -> Provenance:
@@ -112,18 +130,20 @@ def decide(
     theirs: str,
     base: str | None,
     prov: Provenance,
+    proposed: str | None,
     sidecar_pending: bool,
 ) -> Action:
     """Choose what an upgrade does with one brain file.
 
     ``ours`` is the fresh assembly, ``theirs`` the live file, ``base`` the
-    snapshot (``None`` when missing).
+    snapshot (``None`` when missing), ``proposed`` the assembly behind the
+    last sidecar (``None`` when there is none on record).
     """
     if sidecar_pending:
         return Action.SKIP
     if ours == theirs:
         return Action.ADVANCE
-    if prov.proposed_sha256 is not None and prov.proposed_sha256 == sha256_text(theirs):
+    if proposed is not None and proposed == theirs:
         # The vault adopted an earlier proposal verbatim, so the live file holds
         # nothing but plugin output, whatever the snapshot says.
         return Action.FAST_FORWARD
@@ -142,9 +162,11 @@ def load_provenance(snapshot_dir: Path) -> dict[str, Provenance]:
     """Read ``provenance.json`` from ``snapshot_dir``, keyed by ``<KIND>.md``.
 
     A missing file means no records. A file that can't be parsed is treated
-    the same way, with a warning, which leaves each brain file on the
-    fingerprint check of a vault from before provenance existed. Fields with an
-    unexpected type are dropped.
+    the same way: it is renamed to ``provenance.json.corrupt`` (so the next
+    write can't destroy what it held) with a warning, which leaves each brain
+    file on the fingerprint check of a vault from before provenance existed.
+    A ``snapshot`` value other than ``assembled``/``seeded`` becomes
+    ``invalid`` and fails closed; a non-string ``sha256`` is dropped.
     """
     path = snapshot_dir / PROVENANCE_FILE
     if not path.exists():
@@ -155,18 +177,21 @@ def load_provenance(snapshot_dir: Path) -> dict[str, Provenance]:
         if not isinstance(files, dict):
             raise ValueError("expected an object under 'files'")
     except (OSError, UnicodeDecodeError, ValueError, KeyError) as e:
-        print(f"warning: ignoring unreadable {path}: {e}", file=sys.stderr)
+        aside = path.with_name(f"{PROVENANCE_FILE}.corrupt")
+        print(f"warning: ignoring unreadable {path} (kept as {aside.name}): {e}", file=sys.stderr)
+        try:
+            path.replace(aside)
+        except OSError:
+            pass  # best-effort: the warning above already names the file
         return {}
     out: dict[str, Provenance] = {}
     for name, entry in files.items():
         if not isinstance(entry, dict):
             continue
-        snapshot = _str_or_none(entry.get("snapshot"))
-        out[name] = Provenance(
-            snapshot=snapshot if snapshot in (ASSEMBLED, SEEDED) else None,
-            sha256=_str_or_none(entry.get("sha256")),
-            proposed_sha256=_str_or_none(entry.get("proposed_sha256")),
-        )
+        snapshot = entry.get("snapshot")
+        if snapshot is not None and snapshot not in (ASSEMBLED, SEEDED):
+            snapshot = INVALID
+        out[name] = Provenance(snapshot=snapshot, sha256=_str_or_none(entry.get("sha256")))
     return out
 
 

@@ -17,7 +17,8 @@ from pathlib import Path
 
 import yaml
 
-from scout.scripts.brain_merge import pending_brain_sidecars
+from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, pending_brain_sidecars
+from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
 
 
 class Severity(Enum):
@@ -339,12 +340,27 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
 
     # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
     # not receiving plugin changes until the sidecar is resolved.
-    for sidecar_name in pending_brain_sidecars(vault):
+    pending = pending_brain_sidecars(vault)
+    for sidecar_name in pending:
         live_name = sidecar_name.removesuffix(".proposed-merge")
         warnings.append(
             f"{sidecar_name} pending — upgrades leave {live_name} as is until it is resolved: "
-            f"remove any conflict markers, then `mv {sidecar_name} {live_name}`"
+            f"make {live_name} the version you want (e.g. `mv {sidecar_name} {live_name}` and remove "
+            f"any conflict markers), then `scoutctl bootstrap resolve {live_name}`"
         )
+    # A sidecar removed without `bootstrap resolve`: the proposal behind it is
+    # still on record, so the next upgrade merges or proposes from the old base.
+    for kind in BRAIN_KINDS:
+        live_name = f"{kind}.md"
+        proposed = snapshot_dir / PROPOSED_DIR / live_name
+        live = vault / live_name
+        if sidecar_name_for(kind) in pending or not proposed.exists() or not live.exists():
+            continue
+        if proposed.read_bytes() != live.read_bytes():
+            warnings.append(
+                f"{sidecar_name_for(kind)} was removed without `scoutctl bootstrap resolve {live_name}` — "
+                f"if {live_name} is your resolution, run it; otherwise the next upgrade proposes the change again"
+            )
 
     # Hand-edit backups (yellow but informational).
     for bak in vault.glob("run-*.sh.bak.*"):

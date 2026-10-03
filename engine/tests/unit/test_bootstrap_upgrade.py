@@ -57,7 +57,7 @@ def test_upgrade_idempotent_after_install(tmp_path):
     assert new_cfg["plugin"]["version_at_last_setup"] == "0.4.0"  # unchanged
 
 
-def test_upgrade_sidecar_on_conflict(tmp_path):
+def test_upgrade_proposes_when_the_snapshot_was_changed_by_hand(tmp_path):
     """Vault edits + a snapshot changed outside the engine → the plugin's
     version goes to a sidecar; live is untouched."""
     plugin = Path(__file__).parent.parent.parent.parent

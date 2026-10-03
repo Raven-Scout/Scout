@@ -19,7 +19,7 @@ import datetime as _dt
 import os
 import shutil
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -417,7 +417,18 @@ def _stage_cat4_install(cfg: BootstrapConfig) -> None:
     _write_provenance(snapshot_dir, records)
 
 
-def _stage_cat4_upgrade(cfg: BootstrapConfig) -> tuple[list[str], list[str]]:
+def _proposed_path(snapshot_dir: Path, name: str) -> Path:
+    return snapshot_dir / brain_merge.PROPOSED_DIR / name
+
+
+@dataclass
+class _Cat4Outcome:
+    conflicts: list[str] = field(default_factory=list)  # sidecars written this run
+    skipped: list[str] = field(default_factory=list)  # already-pending sidecars
+    backups: list[str] = field(default_factory=list)  # live files replaced on the fingerprint alone
+
+
+def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
     """Stage 5 (upgrade): reconcile each brain file with its fresh assembly.
 
     ``brain_merge.decide`` picks the action per file; see its module docstring
@@ -429,14 +440,13 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> tuple[list[str], list[str]]:
     snapshot advances only once live has absorbed the assembly, which is what
     ``phases backport`` diffs against.
 
-    Returns ``(conflicts, skipped)``: the sidecars written this run, and the
-    already-pending sidecars whose file was skipped.
+    Provenance is persisted after each file, so a failure on a later file
+    can't leave an earlier, already-advanced snapshot without its record.
     """
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     records = brain_merge.load_provenance(snapshot_dir)
-    conflicts: list[str] = []
-    skipped: list[str] = []
+    out = _Cat4Outcome()
     for kind in brain_merge.BRAIN_KINDS:
         name = f"{kind}.md"
         ours = _assemble(cfg, kind)
@@ -444,18 +454,21 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> tuple[list[str], list[str]]:
         theirs = live.read_text(encoding="utf-8") if live.exists() else ours
         snap = snapshot_dir / name
         base = snap.read_text(encoding="utf-8") if snap.exists() else None
+        proposed_path = _proposed_path(snapshot_dir, name)
+        proposed = proposed_path.read_text(encoding="utf-8") if proposed_path.exists() else None
         sidecar = cfg.vault / brain_merge.sidecar_name(kind)
         prov = records.get(name, brain_merge.Provenance())
 
         action = brain_merge.decide(
-            kind, ours=ours, theirs=theirs, base=base, prov=prov, sidecar_pending=sidecar.exists()
+            kind, ours=ours, theirs=theirs, base=base, prov=prov, proposed=proposed, sidecar_pending=sidecar.exists()
         )
         if action is brain_merge.Action.SKIP:
-            skipped.append(sidecar.name)
+            out.skipped.append(sidecar.name)
             continue
+        new_live = theirs
         proposal: str | None = None  # what goes to the sidecar, if anything
         if action is brain_merge.Action.FAST_FORWARD:
-            _atomic_write(live, ours)
+            new_live = ours
         elif action is brain_merge.Action.PROPOSE:
             proposal = ours
         elif action is brain_merge.Action.MERGE:
@@ -464,19 +477,79 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> tuple[list[str], list[str]]:
             if result.conflicts:
                 proposal = result.content
             else:
-                _atomic_write(live, result.content)
+                new_live = result.content
         # ADVANCE: live already equals ours.
 
         if proposal is not None:
+            # The assembly is kept so `bootstrap resolve` can make it the base.
+            _atomic_write(proposed_path, ours)
             _atomic_write(sidecar, proposal)
-            records[name] = replace(prov, proposed_sha256=brain_merge.sha256_text(ours))
-            conflicts.append(sidecar.name)
-        else:
-            # Live has absorbed ``ours``: it becomes the merge base.
-            _atomic_write(snap, ours)
-            records[name] = brain_merge.Provenance.assembled(ours)
-    _write_provenance(snapshot_dir, records)
-    return conflicts, skipped
+            out.conflicts.append(sidecar.name)
+            continue
+        if new_live != theirs:
+            if prov.snapshot is None and theirs != proposed:
+                # Only the fingerprint vouches for the base (a vault from before
+                # provenance): keep the file being replaced, once.
+                bak = _unique_backup_path(live)
+                shutil.copy2(live, bak)
+                out.backups.append(bak.name)
+            _atomic_write(live, new_live)
+        # Live has absorbed ``ours``: it becomes the merge base.
+        _atomic_write(snap, ours)
+        records[name] = brain_merge.Provenance.assembled(ours)
+        _write_provenance(snapshot_dir, records)
+        proposed_path.unlink(missing_ok=True)
+    return out
+
+
+@dataclass(frozen=True)
+class ResolveResult:
+    name: str  # "SKILL.md"
+    recorded_base: bool  # the proposal behind the sidecar became the merge base
+    removed_sidecar: bool
+
+
+def resolve_brain_file(vault: Path, kind: str) -> ResolveResult:
+    """Record that the vault's ``<KIND>.md`` is now the resolution of its sidecar.
+
+    The user has made the live file the version they want (moved the sidecar
+    into place, merged it by hand, or kept their own). The assembly the
+    sidecar was built from becomes the merge base, so the next upgrade merges
+    only later plugin changes into the resolution, and the sidecar is removed.
+    A sidecar an older engine left has no recorded assembly: it is removed and
+    the base stays, so the next upgrade merges the file again.
+
+    Raises ``ValueError`` while the live file holds conflict markers, or when
+    there is nothing to resolve; ``FileNotFoundError`` if the live file is missing.
+    """
+    name = f"{kind}.md"
+    live = vault / name
+    sidecar = vault / brain_merge.sidecar_name(kind)
+    snapshot_dir = vault / ".scout-state" / "last-assembled"
+    proposed_path = _proposed_path(snapshot_dir, name)
+    if not live.exists():
+        raise FileNotFoundError(f"{name} is missing from {vault}")
+    if brain_merge.has_conflict_markers(live.read_text(encoding="utf-8")):
+        raise ValueError(f"{name} still has conflict markers (<<<<<<< / >>>>>>>); finish the merge first")
+    if not proposed_path.exists() and not sidecar.exists():
+        raise ValueError(f"nothing to resolve for {name}: no pending sidecar or recorded proposal")
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    acquire_lock_with_wait(lock)
+    try:
+        recorded = proposed_path.exists()
+        if recorded:
+            proposal = proposed_path.read_text(encoding="utf-8")
+            _atomic_write(snapshot_dir / name, proposal)
+            records = brain_merge.load_provenance(snapshot_dir)
+            records[name] = brain_merge.Provenance.assembled(proposal)
+            _write_provenance(snapshot_dir, records)
+            proposed_path.unlink()
+        removed = sidecar.exists()
+        sidecar.unlink(missing_ok=True)
+    finally:
+        release_lock(lock)
+    return ResolveResult(name=name, recorded_base=recorded, removed_sidecar=removed)
 
 
 def _merge_snapshot_path(cfg: BootstrapConfig, vault_rel: str) -> Path:
@@ -840,8 +913,9 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         # to the packaged default.
         _stage_seed_schedule(cfg)
         backups = _stage_cat1b_runners(cfg, is_upgrade=True)
-        conflicts, skipped = _stage_cat4_upgrade(cfg)
-        conflicts += _stage_merge_files_upgrade(cfg)
+        cat4 = _stage_cat4_upgrade(cfg)
+        backups += cat4.backups
+        conflicts = cat4.conflicts + _stage_merge_files_upgrade(cfg)
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
@@ -853,7 +927,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         doctor=report,
         conflicts=conflicts,
         backups=backups,
-        skipped=skipped,
+        skipped=cat4.skipped,
     )
 
 
