@@ -33,6 +33,18 @@ Use `"$SCOUTCTL"` in every subsequent invocation.
 
 ---
 
+## Step 0.1: Stop if Scout.app manages this engine
+
+Run this before anything else — otherwise Step 0.5 would refresh Claude Code's copy of the plugin and Step 2 would re-point the scheduled jobs, the `scoutctl` shim and the engine pointer at it:
+
+```bash
+grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/dev/null && echo "APP_MANAGED"
+```
+
+- If output is `APP_MANAGED`: tell the user "This Scout engine is managed by Scout.app, which updates it together with the app. Please update Scout.app instead." Stop here.
+
+---
+
 ## Step 0.5: Refresh the plugin (Surface A) before upgrading the vault (Surface B)
 
 This command updates **both** surfaces — the plugin first, then the vault against the freshly-refreshed plugin. That order matters: upgrading the vault against a stale plugin would apply old templates and miss engine fixes that landed since the last `claude plugin install`.
@@ -83,6 +95,7 @@ NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 
+test -f "$HOME/Scout/.scout-state/install-incomplete" && { echo "INSTALL_INCOMPLETE"; exit 0; }
 test -f "$HOME/Scout/scout-config.yaml" || { echo "NO_VAULT"; exit 0; }
 # Any one sidecar blocks the upgrade. parser.py's can only be one an older
 # engine left behind; current upgrades park parser.py conflicts instead.
@@ -106,6 +119,7 @@ echo "READY"
 EOF
 ```
 
+- `INSTALL_INCOMPLETE`: "The Scout install at `~/Scout/` was interrupted before it finished, so there is nothing to upgrade yet. Run `/scout-setup` to finish it — it resumes the interrupted install rather than starting over." Stop here (`bootstrap upgrade` refuses a vault in this state).
 - `NO_VAULT`: "No Scout vault found at `~/Scout/`. Run `/scout-setup` for a fresh install."
 - `PENDING_SIDECARS:<files>`: "Unresolved merge conflicts from a prior `/scout-update`:" — list the sidecar files (paths are relative to `~/Scout/`). Then: "Edit each file to remove conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), then run `mv <file>.proposed-merge <file>` for each. Then re-run `/scout-update`." A `knowledge-base/ontology/parser.py.proposed-merge` was left by an older engine; the vault's `parser.py` is the one running, so either merge the sidecar into it as above, or delete the sidecar: this upgrade then retries the merge itself and parks any conflict under `.scout-state/drift/` without blocking.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:
@@ -147,8 +161,21 @@ If user declines, stop.
 
 ## Step 2: Run `scoutctl bootstrap upgrade`
 
+A maintainer git checkout records itself as `dev`; the marketplace install as `claude-code`:
+
 ```bash
-"$SCOUTCTL" bootstrap upgrade
+NEW_ROOT="$HOME/scout-plugin"
+[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
+SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
+if [ -d "$HOME/scout-plugin/.git" ]; then
+  "$SCOUTCTL" bootstrap upgrade --managed-by dev
+else
+  "$SCOUTCTL" bootstrap upgrade --managed-by claude-code
+fi
 ```
 
 Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.

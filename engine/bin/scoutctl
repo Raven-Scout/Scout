@@ -7,6 +7,8 @@
 #   1. ${PLUGIN_ROOT}/.venv         — canonical location written by
 #                                     scripts/install-venv.sh
 #   2. ${PLUGIN_ROOT}/engine/.venv  — legacy / hand-built layout
+#   2b. engine pointer              — ~/.local/state/scout/engine.json "python"
+#                                     (matches engine_pointer.state_dir)
 #   3. Sibling marketplaces/ tree   — recover when we're loaded from
 #                                     Claude Code's cache/ copy but the
 #                                     venv lives in marketplaces/
@@ -39,6 +41,22 @@ candidates=(
     "${PLUGIN_ROOT}/.venv/bin/python"
     "${ENGINE_DIR}/.venv/bin/python"
 )
+
+# The engine pointer (~/.local/state/scout/engine.json, written by every
+# `scoutctl bootstrap …` that installs jobs) names the venv that matches the
+# installed engine.
+# Consulted AFTER the in-tree venv so a dev checkout keeps edit-and-go, and
+# BEFORE the marketplaces/ cross-jump so Claude Code's cache copy of an
+# app-managed engine (whose venv lives outside the tree) resolves without
+# guessing. Parsed with sed on purpose: this launcher has to work with only
+# /bin/sh tools — finding Python is the whole point.
+POINTER="$HOME/.local/state/scout/engine.json"
+if [ -r "$POINTER" ]; then
+    POINTER_PY="$(sed -n 's/^[[:space:]]*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$POINTER" | head -n 1)"
+    if [ -n "$POINTER_PY" ]; then
+        candidates+=("$POINTER_PY")
+    fi
+fi
 
 # Claude Code installs a marketplace plugin twice: a frozen copy under
 # plugins/cache/<marketplace>/<plugin>/<version>/ (used at runtime) and a
