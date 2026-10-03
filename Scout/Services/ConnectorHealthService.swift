@@ -155,14 +155,14 @@ final class ConnectorHealthService: ObservableObject {
     /// (`mcp:plugin_slack_slack`, `mcp:plugin_linear_linear`) never matched
     /// what `connector_health_report.sh` actually emitted, so the rail card
     /// silently showed those rows as dark even when the connectors were fine.
-    /// The fallback now includes WhatsApp + Telegram (10 connectors) to
-    /// match the YAML.
+    /// Mirrors the YAML roster (11 connectors, Fathom added 2026-10-03).
     nonisolated static let fallbackConnectors: [String] = [
         "mcp:claude_ai_Slack",
         "mcp:claude_ai_Linear",
         "mcp:claude_ai_Gmail",
         "mcp:claude_ai_Google_Calendar",
         "mcp:claude_ai_Granola",
+        "mcp:fathom",
         "mcp:claude_ai_Google_Drive",
         "github",
         "mcp:claude-in-chrome",
