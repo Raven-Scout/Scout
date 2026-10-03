@@ -33,6 +33,7 @@ from scout.scripts.bootstrap_lock import (
     release_lock,
 )
 from scout.scripts.connector_probes import normalize_connector_keys
+from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
     parse_phase_file,
@@ -58,6 +59,7 @@ class BootstrapConfig:
     connector_inputs: dict[str, str]
     skip_jobs: bool = False
     skip_claude: bool = False
+    managed_by: str = "unknown"
     # Install-time auto-update preference from /scout-setup. None = not asked:
     # leave scout-config.yaml's auto_update block untouched.
     auto_update: bool | None = None
@@ -74,6 +76,7 @@ class BootstrapConfig:
 class InstallResult:
     vault: Path
     doctor: DoctorReport
+    pointer: Path | None = None
 
 
 @dataclass
@@ -86,6 +89,7 @@ class UpgradeResult:
     backups: list[str] = field(default_factory=list)
     # Every vault edit to a managed file the upgrade kept, merged, or parked.
     vault_edits: list[VaultEdit] = field(default_factory=list)
+    pointer: Path | None = None
 
 
 @dataclass
@@ -95,6 +99,7 @@ class MigrateLegacyResult:
     backups: list[str] = field(default_factory=list)
     snapshots_recorded: list[str] = field(default_factory=list)
     vault_edits: list[VaultEdit] = field(default_factory=list)
+    pointer: Path | None = None
 
 
 # ---------- shared helpers ----------
@@ -230,7 +235,7 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         "GITHUB_USERNAME": cfg.connector_inputs.get("github_username", ""),
         "GITHUB_REPOS": cfg.connector_inputs.get("github_repos", ""),
         "SCOUT_DIR": str(cfg.vault),
-        "SCOUTCTL_BIN": str(cfg.plugin_root / ".venv" / "bin" / "scoutctl"),
+        "SCOUTCTL_BIN": str(resolve_scoutctl_bin()),
         "TIMEZONE": cfg.timezone,
         "PLATFORM": cfg.platform,
         "MAX_BUDGET": cfg.connector_inputs.get("max_budget", "5.00"),
@@ -528,8 +533,8 @@ def _stage_jobs_install(cfg: BootstrapConfig) -> None:
         from scout.scripts.install_heartbeat_plist import install_plist as install_hb
         from scout.scripts.install_schedule_plist import install_plist as install_st
 
-        install_st(home=Path.home(), force=True, bootstrap=True)
-        install_hb(home=Path.home(), force=True, bootstrap=True)
+        install_st(home=Path.home(), force=True, bootstrap=True, vault=cfg.vault)
+        install_hb(home=Path.home(), force=True, bootstrap=True, vault=cfg.vault)
     elif cfg.platform == "linux":
         from scout.scripts.install_cron import install_cron
 
@@ -706,15 +711,52 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
     _atomic_write(config_path, _dump_keeping_comments(text, existing))
 
 
+def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path | None:
+    """Record where THIS engine lives (~/.local/state/scout/engine.json, §4.2).
+
+    Gated by `skip_jobs` like the plists and `_stage_install_scoutctl_shim`
+    (spec §4.2): the pointer must track the plists the doctor compares it
+    with. A `--no-jobs` run leaves plists, shim and pointer alone, so a
+    scratch install can never repoint Scout.app. migrate-legacy installs no
+    shim but still writes the pointer, after its version stamp.
+    Returns the pointer path, or None when skipped.
+    """
+    if cfg.skip_jobs:
+        return None
+    from scout.scripts.engine_pointer import current_pointer, write_pointer
+
+    return write_pointer(current_pointer(vault=cfg.vault, managed_by=cfg.managed_by), home=Path.home())
+
+
 # ---------- entry points ----------
 
 _VAULT_MARKERS = ("scout-config.yaml", ".scout-state")
 
+# Written by install() right after it creates the vault directory and removed
+# right after the version stamp (which writes scout-config.yaml). While it
+# exists the directory is an unfinished install, not a vault: detection sends
+# it back to install (which resumes it) and upgrade/migrate-legacy refuse it.
+# Without it, a failure between the first stage (.scout-state/) and the last
+# (scout-config.yaml) looked like a legacy vault to the retry.
+INSTALL_INCOMPLETE_MARKER = ".scout-state/install-incomplete"
+
+
+def install_incomplete(vault: Path) -> bool:
+    return (vault / INSTALL_INCOMPLETE_MARKER).exists()
+
 
 def _vault_exists(vault: Path) -> bool:
-    if not vault.exists():
+    if not vault.exists() or install_incomplete(vault):
         return False
     return any((vault / m).exists() for m in _VAULT_MARKERS)
+
+
+def _refuse_interrupted_install(vault: Path) -> None:
+    if install_incomplete(vault):
+        raise FileNotFoundError(
+            f"{vault} holds an interrupted install ({INSTALL_INCOMPLETE_MARKER} present) — "
+            f"re-run `scoutctl bootstrap install` (or `scoutctl bootstrap auto`) to finish it."
+        )
 
 
 def _refuse_pending_sidecars(vault: Path) -> None:
@@ -737,17 +779,39 @@ def _refuse_pending_sidecars(vault: Path) -> None:
 
 
 def install(cfg: BootstrapConfig) -> InstallResult:
-    """Run the install pipeline. Stage 1 refuses if vault already exists."""
+    """Run the install pipeline. Stage 1 refuses if vault already exists.
+
+    An interrupted install (INSTALL_INCOMPLETE_MARKER present) is not a vault,
+    so re-running install() resumes it: every stage is safe to repeat. The
+    existence check is repeated once the lock is held, so a second concurrent
+    install of the same folder refuses rather than re-running the stages.
+    """
     if _vault_exists(cfg.vault):
         raise FileExistsError(
             f"vault detected at {cfg.vault} — run /scout-update instead, "
             f"or manually remove the vault first (see Plan 8 §4.6 reset snippet)."
         )
     cfg.vault.mkdir(parents=True, exist_ok=True)
+    marker = cfg.vault / INSTALL_INCOMPLETE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     lock = cfg.vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
     try:
+        # Re-check under the lock. A concurrent install of this folder hides
+        # behind the marker until its version stamp, so the check above can
+        # pass while it is still running; this run then waits here for its
+        # lock. Only the version stamp writes scout-config.yaml, so finding it
+        # now means an install finished: refuse instead of re-running every
+        # stage over it, and drop the marker this run touched (or one a crash
+        # right after the stamp left behind) so the vault reads as installed.
+        if (cfg.vault / "scout-config.yaml").exists():
+            marker.unlink(missing_ok=True)
+            raise FileExistsError(
+                f"vault detected at {cfg.vault} — another install finished it while this one "
+                f"waited for the lock; run /scout-update (or `scoutctl bootstrap upgrade`) instead."
+            )
         _stage_create_dirs(cfg)
         _stage_managed_files(cfg)
         _stage_gitignore(cfg)
@@ -757,10 +821,12 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
+        marker.unlink(missing_ok=True)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
-    return InstallResult(vault=cfg.vault, doctor=report)
+    return InstallResult(vault=cfg.vault, doctor=report, pointer=pointer)
 
 
 def _is_legacy_vault(vault: Path) -> bool:
@@ -768,7 +834,11 @@ def _is_legacy_vault(vault: Path) -> bool:
 
     Indicates a Plan-5-era vault that pre-dates the Plan 8 config conventions.
     Such vaults need `scoutctl bootstrap migrate-legacy` before `upgrade` works.
+    An interrupted install has the same shape but is not legacy (see
+    INSTALL_INCOMPLETE_MARKER).
     """
+    if install_incomplete(vault):
+        return False
     return (vault / ".scout-state").exists() and not (vault / "scout-config.yaml").exists()
 
 
@@ -783,7 +853,8 @@ def _stage_migrations(cfg: BootstrapConfig) -> None:
 
 
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
-    """Run the upgrade pipeline. Refuses if no vault or if vault is legacy (pre-Plan-8)."""
+    """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
+    _refuse_interrupted_install(cfg.vault)
     if not _vault_exists(cfg.vault):
         raise FileNotFoundError(f"no vault at {cfg.vault} — run /scout-setup instead.")
     if _is_legacy_vault(cfg.vault):
@@ -813,6 +884,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
@@ -822,6 +894,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         conflicts=conflicts,
         backups=_parked_copies(vault_edits),
         vault_edits=vault_edits,
+        pointer=pointer,
     )
 
 
@@ -846,7 +919,9 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       8. Doctor.
 
     After this, the vault is Plan 8-compatible and `upgrade()` works normally.
+    Refuses an interrupted install, which has a legacy vault's shape.
     """
+    _refuse_interrupted_install(cfg.vault)
     if not (cfg.vault / ".scout-state").exists():
         raise FileNotFoundError(
             f"no vault at {cfg.vault} (no .scout-state/ directory) — run /scout-setup for a fresh install."
@@ -888,6 +963,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         #    version_at_last_update are written; setup marks "migrated at this
         #    plugin version", matching how a freshly-installed vault records it).
         _stage_version_stamp(cfg, is_upgrade=False)
+        pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
@@ -897,4 +973,5 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         backups=_parked_copies(vault_edits),
         snapshots_recorded=snapshots_recorded,
         vault_edits=vault_edits,
+        pointer=pointer,
     )
