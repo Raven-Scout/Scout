@@ -1,0 +1,100 @@
+name: contract
+
+# The cross-client contract gate. Before the monorepo, these artifacts were
+# single logical files living in two or three repositories, and no CI job could
+# see across a repo edge — so two of the three drifted, one of them into the
+# shipped app bundle. This job is the whole reason the repos were merged.
+#
+# Deliberately cheap (ubuntu, Python only, no Xcode) so it can run on every PR
+# touching either side without cost pressure. Never path-filter it OUT of a
+# cross-cutting change.
+
+on:
+  pull_request:
+    paths:
+      - "plugin/engine/scout/*.yaml"
+      - "plugin/engine/scout/*.snapshot.json"
+      - "plugin/engine/scout/scripts/connectors_snapshot.py"
+      - "plugin/engine/scout/scripts/schedule_snapshot.py"
+      - "plugin/engine/tests/fixtures/contract/**"
+      - "apps/**/Fixtures/**"
+      - "apps/**/Resources/**"
+      - ".github/workflows/contract.yml"
+  push:
+    branches: [main, "migrate/**"]
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Setup Python
+        run: uv python install 3.12
+      - name: Create venv
+        working-directory: plugin/engine
+        run: uv venv --python 3.12
+      - name: Install engine
+        working-directory: plugin/engine
+        run: uv pip install -e ".[dev]"
+
+      # 1. The canonical snapshots must match their YAML sources. (This check
+      #    existed pre-merge and is retained verbatim.)
+      - name: Canonical connectors snapshot matches connectors.yaml
+        working-directory: plugin/engine
+        run: .venv/bin/python -m scout.scripts.connectors_snapshot --check --target scout/connectors.snapshot.json
+      - name: Canonical schedule snapshot matches schedule.yaml
+        working-directory: plugin/engine
+        run: .venv/bin/python -m scout.scripts.schedule_snapshot --check --target scout/schedule.snapshot.json
+
+      # 2. Every client copy must match the canonical file. This is the check
+      #    that could not exist before the merge. Resources/ is included
+      #    because it SHIPS — a fixtures-only check would have left the
+      #    user-facing drift live for another four months.
+      - name: Client copies match the canonical snapshots
+        run: |
+          set -uo pipefail
+          status=0
+          check() {
+            local canonical="$1" copy="$2"
+            if [ ! -f "$copy" ]; then
+              echo "::error file=$copy::missing client copy of $(basename "$canonical")"
+              status=1
+              return
+            fi
+            # generated_from carries the source repo SHA and legitimately
+            # differs between regenerations; every other field must agree.
+            if diff -u \
+                 <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("generated_from", None); print(json.dumps(d, indent=2, sort_keys=True))' "$canonical") \
+                 <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("generated_from", None); print(json.dumps(d, indent=2, sort_keys=True))' "$copy"); then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::drifted from $canonical — regenerate, do not hand-edit"
+              status=1
+            fi
+          }
+
+          check plugin/engine/scout/connectors.snapshot.json apps/macos/ScoutTests/Fixtures/connectors.snapshot.json
+          check plugin/engine/scout/connectors.snapshot.json apps/macos/Scout/Resources/connectors.snapshot.json
+          check plugin/engine/scout/schedule.snapshot.json   apps/macos/ScoutTests/Fixtures/schedule.snapshot.json
+
+          exit $status
+
+      # 3. The parser corpus must be byte-identical across every client that
+      #    vendors it. Same-tree now, so a plain cmp replaces the two
+      #    hand-maintained SHA-256 constants (those come out in Stage 2).
+      - name: Parser corpus is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/parser-corpus.json
+          status=0
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/parser-corpus.json; do
+            [ -f "$copy" ] || continue
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::parser-corpus.json is not byte-identical to $canonical"
+              status=1
+            fi
+          done
+          exit $status
