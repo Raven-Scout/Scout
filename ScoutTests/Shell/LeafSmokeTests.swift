@@ -9,6 +9,8 @@ import Testing
 @Suite("View smoke — leaves", .serialized)
 struct LeafSmokeTests {
 
+    static let vault = URL(fileURLWithPath: "/tmp/scout")
+
     // MARK: - Control Center rows
 
     @Test("a run row renders for every status, selected and not")
@@ -60,7 +62,7 @@ struct LeafSmokeTests {
         for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal,
                      .focus, .meetings, .done, .digest, .neutral] {
             ViewHost.render(
-                BoardCardView(task: SmokeFixtures.task(), kind: kind),
+                BoardCardView(task: SmokeFixtures.task(), kind: kind, scoutDirectory: Self.vault),
                 size: CGSize(width: 280, height: 160))
         }
     }
@@ -68,13 +70,13 @@ struct LeafSmokeTests {
     @Test("a board card renders a done and a snoozed task")
     func boardCardRendersDoneAndSnoozed() {
         ViewHost.render(
-            BoardCardView(task: SmokeFixtures.task(done: true), kind: .done),
+            BoardCardView(task: SmokeFixtures.task(done: true), kind: .done, scoutDirectory: Self.vault),
             size: CGSize(width: 280, height: 160))
         ViewHost.render(
             BoardCardView(
                 task: SmokeFixtures.task(
                     snoozedUntil: SmokeFixtures.day.addingTimeInterval(86_400)),
-                kind: .todo),
+                kind: .todo, scoutDirectory: Self.vault),
             size: CGSize(width: 280, height: 160))
     }
 
@@ -86,8 +88,8 @@ struct LeafSmokeTests {
             SmokeFixtures.section(kind: .watching),
             SmokeFixtures.section(kind: .done),
         ]
-        ViewHost.render(BoardView(sections: sections), size: CGSize(width: 1200, height: 700))
-        ViewHost.render(BoardView(sections: []), size: CGSize(width: 1200, height: 400))
+        ViewHost.render(BoardView(sections: sections, scoutDirectory: Self.vault), size: CGSize(width: 1200, height: 700))
+        ViewHost.render(BoardView(sections: [], scoutDirectory: Self.vault), size: CGSize(width: 1200, height: 400))
     }
 
     // MARK: - Schedules master views

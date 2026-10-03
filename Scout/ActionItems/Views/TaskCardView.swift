@@ -21,6 +21,9 @@ struct TaskCardView: View {
     // thunk over-releases its String payloads → EXC_BAD_ACCESS reading the op
     // in the writer. Keeping the closure MainActor-isolated avoids that hop.
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
+    /// Called when the user collapses the card. Recently Completed uses it to
+    /// turn an opened done task back into its one-line row.
+    let onCollapse: (() -> Void)?
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -33,6 +36,8 @@ struct TaskCardView: View {
         displayedDate: Date,
         scoutDirectory: URL,
         selection: Binding<Set<UUID>>? = nil,
+        startsExpanded: Bool? = nil,
+        onCollapse: (() -> Void)? = nil,
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
@@ -41,8 +46,9 @@ struct TaskCardView: View {
         self.scoutDirectory = scoutDirectory
         self.selection = selection
         self.onOp = onOp
+        self.onCollapse = onCollapse
         // Urgent opens by default — its detail is what you want immediately.
-        _expanded = State(initialValue: (task.snoozedFromKind ?? kind) == .urgent)
+        _expanded = State(initialValue: startsExpanded ?? ((task.snoozedFromKind ?? kind) == .urgent))
     }
 
     var body: some View {
@@ -147,7 +153,17 @@ struct TaskCardView: View {
         .help(expanded ? "Collapse action item" : "Expand action item")
     }
 
-    private func toggle() { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
+    private func toggle() {
+        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        if !expanded { onCollapse?() }
+    }
+
+    /// Whether the comment composer shows. Open tasks always; a done task only
+    /// with a `[#TAG]`, because scoutctl reaches a done task by `--by-id` alone
+    /// (its `--subject` lookup matches open tasks).
+    static func canComment(_ task: ActionTask) -> Bool {
+        !task.done || task.shortPrefix != nil
+    }
 
     // MARK: - Source/context chips
 
@@ -306,9 +322,11 @@ struct TaskCardView: View {
             }
 
             if !task.comments.isEmpty {
+                // Editing and deleting reach the task the same way adding does,
+                // so they follow the same rule.
                 CommentListView(
                     comments: task.comments,
-                    onEdit: { index, newText in
+                    onEdit: !Self.canComment(task) ? nil : { index, newText in
                         await runOp(.editComment(
                             subject: task.matchableSubject,
                             shortPrefix: task.shortPrefix,
@@ -316,7 +334,7 @@ struct TaskCardView: View {
                             newText: newText
                         ))
                     },
-                    onDelete: { index in
+                    onDelete: !Self.canComment(task) ? nil : { index in
                         await runOp(.deleteComment(
                             subject: task.matchableSubject,
                             shortPrefix: task.shortPrefix,
@@ -339,7 +357,7 @@ struct TaskCardView: View {
                 await runOp(op)
             }
 
-            if !task.done {
+            if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
                     let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
                     await runOp(.addComment(
