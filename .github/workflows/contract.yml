@@ -12,10 +12,7 @@ name: contract
 on:
   pull_request:
     paths:
-      - "plugin/engine/scout/*.yaml"
-      - "plugin/engine/scout/*.snapshot.json"
-      - "plugin/engine/scout/scripts/connectors_snapshot.py"
-      - "plugin/engine/scout/scripts/schedule_snapshot.py"
+      - "plugin/engine/scout/**"
       - "plugin/engine/tests/fixtures/contract/**"
       - "apps/**/Fixtures/**"
       - "apps/**/Resources/**"
@@ -26,6 +23,7 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -88,8 +86,10 @@ jobs:
           set -uo pipefail
           canonical=plugin/engine/tests/fixtures/contract/parser-corpus.json
           status=0
+          checked=0
           for copy in apps/*/[Ss]cout*Tests/Fixtures/parser-corpus.json; do
             [ -f "$copy" ] || continue
+            ((checked++))
             if cmp -s "$canonical" "$copy"; then
               echo "OK  $copy"
             else
@@ -97,4 +97,8 @@ jobs:
               status=1
             fi
           done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of parser-corpus.json found — the glob may be stale"
+            status=1
+          fi
           exit $status
