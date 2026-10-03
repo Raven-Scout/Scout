@@ -69,3 +69,46 @@ def test_probe_registry_default_is_tab_separated():
     parts = first.split("\t")
     assert len(parts) == 3
     assert parts[1] in ("bash", "mcp_tool")
+
+
+def test_detect_json_is_unknown_for_mcp_probes_when_claude_is_missing(monkeypatch):
+    """A claude binary that does not exist must degrade to `unknown`, never crash.
+
+    The bash probes (``claude_sessions``, ``github``) still run for real, so
+    ``run_bash_probe`` is faked deterministically here: it must not shell out
+    to the real `gh` CLI (whose auth state varies by machine/CI). The fake
+    targets ``scout.scripts.connector_detect.run_bash_probe`` — the CLI
+    imports that name inside the command body at call time, so patching the
+    module attribute is what actually takes effect.
+    """
+    import scout.scripts.connector_detect as connector_detect
+
+    def fake_bash_probe(command: str) -> int:
+        return 0 if command.startswith("test -d") else 1
+
+    monkeypatch.setattr(connector_detect, "run_bash_probe", fake_bash_probe)
+
+    result = runner.invoke(app, ["connectors", "detect", "--json", "--claude-bin", "/nonexistent/claude"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    data = json.loads(result.stdout)
+    assert data["slack"]["status"] == "unknown"
+    assert data["claude_sessions"]["status"] == "connected"
+    assert data["github"]["status"] == "unavailable"
+    assert set(data["github"]) == {"status", "needs_user_input", "evidence"}
+
+
+def test_detect_text_mode_prints_tab_separated_lines(monkeypatch):
+    """No --json: one tab-separated `name\\tstatus\\tevidence` line per connector.
+
+    Like the JSON test above, the bash probes are faked so this never runs the
+    real `gh` (machine-dependent auth state, and a network call)."""
+    import scout.scripts.connector_detect as connector_detect
+
+    monkeypatch.setattr(connector_detect, "run_bash_probe", lambda command: 1)
+    result = runner.invoke(app, ["connectors", "detect", "--claude-bin", "/nonexistent/claude"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert any(line.startswith("slack\tunknown\t") for line in lines)
+    for line in lines:
+        assert not line.startswith("{")
+        assert len(line.split("\t", 2)) == 3

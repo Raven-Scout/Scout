@@ -313,7 +313,7 @@ def test_schedule_fire_now_failure_without_error_key_says_unknown(monkeypatch: p
 def test_install_plist_reports_installed_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
-    def fake_install(*, home: Path, force: bool, bootstrap: bool) -> Path:
+    def fake_install(*, home: Path, force: bool, bootstrap: bool, vault: Path) -> Path:
         seen.update(force=force, bootstrap=bootstrap)
         return tmp_path / "com.scout.schedule-tick.plist"
 
