@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scout.scripts import vault_drift
 from scout.scripts.bootstrap import (
     BootstrapConfig,
     _template_vars,
@@ -213,9 +214,14 @@ def test_a_write_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Pa
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
-    (backup,) = vault.glob("SKILL.md.bak.*")
-    assert backup.read_text() == edited
-    assert result.backups == [backup.name]
+    # Parked like any replaced vault copy: the doctor notes it and
+    # `drift --resolve` dismisses it.
+    parked = vault / ".scout-state" / "drift" / "SKILL.md.vault"
+    assert parked.read_text() == edited
+    assert ".scout-state/drift/SKILL.md.vault" in result.backups
+    assert any("SKILL.md.vault" in n for n in result.doctor.notes)
+    vault_drift.resolve(vault, "SKILL.md")
+    assert not parked.exists()
 
 
 def test_a_merge_that_changes_nothing_writes_no_backup(tmp_path: Path) -> None:
@@ -230,7 +236,7 @@ def test_a_merge_that_changes_nothing_writes_no_backup(tmp_path: Path) -> None:
     result = upgrade(_config(vault, plugin, "0.4.1"))  # no plugin change
 
     assert live.read_bytes() == edited
-    assert result.backups == [] and not list(vault.glob("SKILL.md.bak.*"))
+    assert result.backups == [] and not list(vault.glob(".scout-state/drift/SKILL.md.vault*"))
 
 
 def test_an_upgrade_that_fails_part_way_keeps_what_it_recorded(tmp_path: Path) -> None:

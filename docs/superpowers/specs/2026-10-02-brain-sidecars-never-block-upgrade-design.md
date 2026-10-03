@@ -140,7 +140,7 @@ The base counts as a **plugin assembly** when:
 The fingerprint fallback can't see a snapshot someone copied over by hand. So
 whenever it is the only thing vouching for the base, and the upgrade is about
 to change the live file (row 5 or a clean row 6), the replaced file is kept as
-`<KIND>.md.bak.<date>` and reported in `UpgradeResult.backups`. This happens at
+`.scout-state/drift/<KIND>.md.vault`, the same place `vault_drift` parks any vault copy an upgrade replaces. It is reported in `UpgradeResult.backups` and as a doctor note, and `scoutctl bootstrap drift --resolve <KIND>.md` dismisses it. This happens at
 most once per file.
 
 A hard kill between writing a snapshot and writing `provenance.json` fails the

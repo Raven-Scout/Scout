@@ -162,9 +162,10 @@ the engine wrote (hash-checked) and which `migrate-legacy` seeded from live;
 | Both diverged, conflicts | Conflict-marked text to the sidecar; live and snapshot untouched |
 
 `scoutctl bootstrap resolve <file>` records a resolved sidecar's proposal as
-the new merge base. A pending brain-file sidecar only skips that file. A pending
-`knowledge-base/ontology/parser.py` sidecar (same merge, no provenance) still
-blocks the next `bootstrap upgrade` until the owner resolves it.
+the new merge base. A pending brain-file sidecar only skips that file. The
+plugin-owned scripts and `parser.py` follow the drift policy instead
+(`scripts/vault_drift.py`), which never blocks; only a `parser.py.proposed-merge`
+an older engine left behind still blocks the next `bootstrap upgrade`.
 
 ## Engine: scheduling, session preparation and telemetry
 
@@ -450,7 +451,10 @@ Facts the diagram depends on:
 ## Vault runtime scripts
 
 Rendered from `templates/` into the vault at bootstrap and re-rendered on
-upgrade (hand edits are backed up as `run-*.sh.bak.<date>`). Each `scripts/*.sh`
+upgrade. A hand edit is kept, 3-way merged with the plugin's change, or (on a
+conflict) left running with the plugin's update parked under
+`.scout-state/drift/`; `scoutctl bootstrap drift` lists them and turns them into
+a patch against `templates/`. Each `scripts/*.sh`
 is a thin wrapper around one engine command; the runners sequence them. The
 diagram follows `run-scout.sh` left to right; the other two runners share the
 pipeline with the differences noted in their boxes. The numbered order of a run

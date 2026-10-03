@@ -32,11 +32,18 @@ class DoctorReport:
     severity: Severity
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Worth knowing, not a health problem: never changes the severity.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def exit_code(self) -> int:
         return {Severity.GREEN: 0, Severity.YELLOW: 1, Severity.RED: 2}[self.severity]
 
+
+# Plugin-owned files an engine before .scout-state/last-rendered/ 3-way merged
+# into a blocking sidecar (bootstrap._CAT_MERGE_FILES, which this module can't
+# import). Upgrades no longer write one, but one left behind still blocks.
+_LEGACY_SIDECAR_FILES = ("knowledge-base/ontology/parser.py",)
 
 _REQUIRED_CAT1_FILES = (
     "scripts/heartbeat.sh",
@@ -285,10 +292,54 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
+    """Vault edits to plugin-owned files, as (warnings, notes).
+
+    A conflict is a warning: the vault runs an older version of a plugin-owned
+    file until it is resolved. An edit upgrades keep, and a copy the first
+    baseline parked, are notes: deliberate state, so they must not hold the
+    doctor yellow forever.
+    """
+    from scout.scripts import vault_drift
+
+    warnings: list[str] = []
+    notes: list[str] = []
+    edited: list[str] = []
+    parked: list[str] = []
+    for entry in vault_drift.scan(vault):
+        if entry.status == "conflict":
+            warnings.append(
+                f"vault edit to {entry.path} conflicts with a plugin update — your version is still "
+                f"running and the update is parked at {entry.parked[0]}. Merge by hand, then "
+                f"`scoutctl bootstrap drift --resolve {entry.path}` (or copy the parked file over yours "
+                f"to take the plugin's version)"
+            )
+        elif entry.status == "edited":
+            edited.append(entry.path)
+        elif entry.status == "replaced":
+            parked += entry.parked
+    if edited:
+        # A vault-developed file (parser.py) is grown in the vault on purpose:
+        # its edits are vault content, not a fix to send upstream.
+        upstreamable = [p for p in edited if p not in vault_drift.VAULT_DEVELOPED_FILES]
+        hint = " — `scoutctl bootstrap drift --patch` turns them into a plugin PR" if upstreamable else ""
+        notes.append(
+            f"{len(edited)} plugin-owned file(s) carry vault edits that upgrades keep: {', '.join(edited)}{hint}"
+        )
+    if parked:
+        notes.append(
+            f"an upgrade installed the plugin's version over {len(parked)} vault cop(ies) no release shipped "
+            f"and parked them: {', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
+            f"with `scoutctl bootstrap drift --resolve <file>`"
+        )
+    return warnings, notes
+
+
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
     """Run all doctor checks against ``vault``. Pure read."""
     errors: list[str] = []
     warnings: list[str] = []
+    notes: list[str] = []
     home = home or Path.home()
 
     if not vault.is_dir():
@@ -361,10 +412,27 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
                 f"{sidecar_name_for(kind)} was removed without `scoutctl bootstrap resolve {live_name}` — "
                 f"if {live_name} is your resolution, run it; otherwise the next upgrade proposes the change again"
             )
+    # A parser.py sidecar an older engine left (yellow) still blocks the next upgrade.
+    for rel in _LEGACY_SIDECAR_FILES:
+        sidecar = vault / f"{rel}.proposed-merge"
+        if sidecar.exists():
+            warnings.append(
+                f"unresolved merge conflict in {rel}.proposed-merge — resolve and "
+                f"`mv {rel}.proposed-merge {rel}` before re-running /scout-update"
+            )
 
-    # Hand-edit backups (yellow but informational).
+    # Hand-edit backups (yellow but informational). Upgrades no longer write
+    # them — vault edits are kept or parked under .scout-state/drift/ — but a
+    # vault can still hold ones an older engine left.
     for bak in vault.glob("run-*.sh.bak.*"):
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
+
+    try:
+        drift_warnings, drift_notes = _check_vault_drift(vault=vault)
+    except OSError as e:
+        drift_warnings, drift_notes = [f"could not check vault drift: {e}"], []
+    warnings.extend(drift_warnings)
+    notes.extend(drift_notes)
 
     # Recent Claude-CLI auth failure — scan the newest run log for a rejected
     # credential. Read-only and offline (no API call); self-clears on the next
@@ -407,7 +475,7 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         warnings.extend(claude_warnings)
 
     if errors:
-        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings)
+        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes)
     if warnings:
-        return DoctorReport(severity=Severity.YELLOW, warnings=warnings)
-    return DoctorReport(severity=Severity.GREEN)
+        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes)
+    return DoctorReport(severity=Severity.GREEN, notes=notes)

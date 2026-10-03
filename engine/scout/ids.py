@@ -8,7 +8,7 @@ also U) so that hand-typed prefixes are unambiguous.
 
 Recognition is broader than minting: an existing `[#TAG]` is recognized when
 it is 2–8 chars of `[A-Z0-9]` with at least one letter (so semantic tags
-like `[#MIRO]` count), while `new_short_prefix` MINTS 4-char Crockford codes.
+like `[#IOTA]` count), while `new_short_prefix` MINTS 4-char Crockford codes.
 Minting guarantees at least one letter (pure-digit draws are re-rolled), so
 every minted prefix is a strict subset of the recognition grammar.
 """

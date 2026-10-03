@@ -67,3 +67,27 @@ def test_merge_raises_on_git_timeout(monkeypatch):
     monkeypatch.setattr("scout.scripts.three_way_merge.subprocess.run", fake_run)
     with pytest.raises(RuntimeError, match="timed out"):
         three_way_merge(base="b\n", ours="a\n", theirs="c\n")
+
+
+def test_conflict_markers_carry_the_given_labels():
+    """Labels name the sides in a draft a person resolves by hand; without them
+    git prints the temp-file paths."""
+    result = three_way_merge(
+        base="x\n", ours="plugin side\n", theirs="vault side\n", labels=("plugin", "base", "vault")
+    )
+    assert result.conflicts is True
+    lines = result.content.splitlines()
+    assert "<<<<<<< plugin" in lines
+    assert "||||||| base" in lines
+    assert ">>>>>>> vault" in lines
+
+
+def test_a_missing_git_is_reported_as_merge_unavailable(monkeypatch):
+    from scout.scripts.three_way_merge import MergeUnavailable
+
+    def no_git(argv, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr("scout.scripts.three_way_merge.subprocess.run", no_git)
+    with pytest.raises(MergeUnavailable, match="git"):
+        three_way_merge(base="b\n", ours="a\n", theirs="c\n")

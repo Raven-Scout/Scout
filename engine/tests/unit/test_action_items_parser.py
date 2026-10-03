@@ -192,13 +192,13 @@ def test_parse_skips_tilde_fenced_blocks(tmp_path):
 def test_parser_extracts_semantic_tag(tmp_path: Path) -> None:
     f = tmp_path / "action-items-2026-06-06.md"
     f.write_text(
-        "# T\n\n## 🔴 Urgent\n\n- [ ] [#AI3026] **Validate tracing** — overnight\n",
+        "# T\n\n## 🔴 Urgent\n\n- [ ] [#XI7391] **Validate tracing** — overnight\n",
         encoding="utf-8",
     )
     items = parse_file(f)
     assert len(items) == 1
-    assert items[0].short_prefix == "AI3026"
-    assert "[#AI3026]" not in items[0].title  # stripped from the title
+    assert items[0].short_prefix == "XI7391"
+    assert "[#XI7391]" not in items[0].title  # stripped from the title
 
 
 def test_parser_does_not_extract_midbody_or_numeric_tag(tmp_path: Path) -> None:
@@ -219,7 +219,7 @@ def test_parser_does_not_extract_midtitle_tag(tmp_path: Path) -> None:
     # No leading id; a [#TAG]-shaped token (with a letter) appears mid-title.
     # Unanchored .search() would wrongly extract it; anchored .match() must not.
     f.write_text(
-        "# T\n\n## 🔴 Urgent\n\n- [ ] Discuss [#AI3026] rollout with team\n",
+        "# T\n\n## 🔴 Urgent\n\n- [ ] Discuss [#XI7391] rollout with team\n",
         encoding="utf-8",
     )
     items = parse_file(f)

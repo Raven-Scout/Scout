@@ -160,33 +160,6 @@ def test_an_unparseable_phase_file_is_skipped_with_a_loud_warning(
 
 
 # ---------------------------------------------------------------------------
-# Backup-name collision
-# ---------------------------------------------------------------------------
-
-
-def test_backup_names_disambiguate_within_a_day(tmp_path: Path) -> None:
-    """Two upgrades on the same date must not have the second's backup
-    overwrite the first's — that would lose the older hand-edits."""
-    target = tmp_path / "run-scout.sh"
-    target.write_text("v1\n", encoding="utf-8")
-
-    import datetime as dt
-
-    today = dt.date.today().isoformat()
-
-    first = bootstrap._unique_backup_path(target)
-    assert first.name == f"run-scout.sh.bak.{today}"
-    first.write_text("v1\n", encoding="utf-8")
-
-    second = bootstrap._unique_backup_path(target)
-    assert second.name == f"run-scout.sh.bak.{today}-1"
-    second.write_text("v2\n", encoding="utf-8")
-
-    third = bootstrap._unique_backup_path(target)
-    assert third.name == f"run-scout.sh.bak.{today}-2"
-
-
-# ---------------------------------------------------------------------------
 # Job / shim installation stages
 # ---------------------------------------------------------------------------
 
