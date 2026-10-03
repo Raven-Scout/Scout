@@ -787,7 +787,9 @@ def install(cfg: BootstrapConfig) -> InstallResult:
     """Run the install pipeline. Stage 1 refuses if vault already exists.
 
     An interrupted install (INSTALL_INCOMPLETE_MARKER present) is not a vault,
-    so re-running install() resumes it: every stage is safe to repeat.
+    so re-running install() resumes it: every stage is safe to repeat. The
+    existence check is repeated once the lock is held, so a second concurrent
+    install of the same folder refuses rather than re-running the stages.
     """
     if _vault_exists(cfg.vault):
         raise FileExistsError(
@@ -802,6 +804,19 @@ def install(cfg: BootstrapConfig) -> InstallResult:
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
     try:
+        # Re-check under the lock. A concurrent install of this folder hides
+        # behind the marker until its version stamp, so the check above can
+        # pass while it is still running; this run then waits here for its
+        # lock. Only the version stamp writes scout-config.yaml, so finding it
+        # now means an install finished: refuse instead of re-running every
+        # stage over it, and drop the marker this run touched (or one a crash
+        # right after the stamp left behind) so the vault reads as installed.
+        if (cfg.vault / "scout-config.yaml").exists():
+            marker.unlink(missing_ok=True)
+            raise FileExistsError(
+                f"vault detected at {cfg.vault} — another install finished it while this one "
+                f"waited for the lock; run /scout-update (or `scoutctl bootstrap upgrade`) instead."
+            )
         _stage_create_dirs(cfg)
         _stage_cat1_writes(cfg)
         _stage_install_only_seeds(cfg)  # <-- NEW

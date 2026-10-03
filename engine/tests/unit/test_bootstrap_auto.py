@@ -255,6 +255,57 @@ def test_interrupted_install_resumes_as_install(tmp_path, monkeypatch):
     assert (vault / "knowledge-base" / "ontology" / "parser.py").exists()
 
 
+def test_install_that_waited_for_the_lock_refuses_the_vault_finished_meanwhile(tmp_path, monkeypatch):
+    """Two installs of one folder: the second passes the up-front check (the
+    first's marker hides its half-built vault), then blocks on the lock while
+    the first runs every stage. Once it gets the lock it must refuse, not
+    re-run the stages over the finished vault."""
+    import scout.scripts.bootstrap as bootstrap
+
+    vault = tmp_path / "Scout"
+    real_acquire = bootstrap.acquire_lock_with_wait
+    stage_runs: list[str] = []
+    real_cat1 = bootstrap._stage_cat1_writes
+
+    def counting_cat1(cfg: BootstrapConfig) -> None:
+        stage_runs.append(cfg.user_name)
+        real_cat1(cfg)
+
+    def wait_while_the_first_install_runs(lock: Path, **kwargs: object) -> None:
+        monkeypatch.setattr(bootstrap, "acquire_lock_with_wait", real_acquire)
+        bootstrap.install(_cfg(vault))  # the first install, start to finish
+        real_acquire(lock, **kwargs)
+
+    monkeypatch.setattr(bootstrap, "_stage_cat1_writes", counting_cat1)
+    monkeypatch.setattr(bootstrap, "acquire_lock_with_wait", wait_while_the_first_install_runs)
+    second = _cfg(vault)
+    second.user_name = "Second Caller"
+    with pytest.raises(FileExistsError, match="another install finished"):
+        bootstrap.install(second)
+
+    assert stage_runs == [_cfg(vault).user_name]  # only the first install ran the stages
+    assert not (vault / ".scout-state" / "install-incomplete").exists()
+    assert "Second Caller" not in (vault / "scout-config.yaml").read_text()
+    assert not (vault / ".scout-logs" / ".scout-session.lock").exists()  # the lock was released
+    assert detect(vault).action is AutoAction.UPGRADE
+
+
+def test_install_clears_a_stale_marker_on_a_stamped_vault(tmp_path):
+    """A crash between the version stamp and the marker's removal leaves a
+    finished vault that still reads as an interrupted install. Resuming it
+    clears the marker and refuses, so the next run upgrades."""
+    from scout.scripts.bootstrap import install
+
+    vault = tmp_path / "Scout"
+    install(_cfg(vault))
+    (vault / ".scout-state" / "install-incomplete").touch()
+    assert detect(vault).action is AutoAction.INSTALL
+    d, code = run(_cfg(vault))
+    assert d["action"] == "refused" and code == 2
+    assert d["mutated"] is False
+    assert detect(vault).action is AutoAction.UPGRADE
+
+
 def test_upgrade_and_migrate_legacy_refuse_an_interrupted_install(tmp_path):
     """A marker-bearing vault is not a vault: only install may touch it."""
     from scout.scripts.bootstrap import migrate_legacy, upgrade
