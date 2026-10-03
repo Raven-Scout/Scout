@@ -45,23 +45,23 @@ final class UsageTrackerService: ObservableObject {
     }
 
     nonisolated private func parseFile(_ url: URL) -> [UsageEntry] {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return [] }
+        guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { dec in
             let c = try dec.singleValueContainer()
             let s = try c.decode(String.self)
-            let f = ISO8601DateFormatter()
-            f.formatOptions = [.withInternetDateTime]
-            if let d = f.date(from: s) { return d }
-            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let d = f.date(from: s) { return d }
+            if let d = UsageTimestampFormatters.plain.date(from: s) { return d }
+            if let d = UsageTimestampFormatters.fractional.date(from: s) { return d }
             throw DecodingError.dataCorruptedError(in: c, debugDescription: "unparseable ts: \(s)")
         }
         var out: [UsageEntry] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = line.data(using: .utf8) else { continue }
-            if let entry = try? decoder.decode(UsageEntry.self, from: d) {
+        // Split the UTF-8 bytes rather than decoding the file to a String
+        // first. Decoding up front made a single torn byte — this file is
+        // appended by a shell script while runs are in flight — discard every
+        // entry, and `String.split(separator:)` walks Characters, paying
+        // Unicode grapheme breaking per byte.
+        for lineData in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
+            if let entry = try? decoder.decode(UsageEntry.self, from: lineData) {
                 out.append(entry)
             }
             // Skip un-parseable lines silently — defensive against historical
@@ -69,4 +69,26 @@ final class UsageTrackerService: ObservableObject {
         }
         return out
     }
+}
+
+/// Two formatters built once, not once per decoded timestamp.
+/// `ISO8601DateFormatter()` construction goes all the way into ICU
+/// (`udat_open`), and a fresh one per `ts` showed up as 1855 samples of pure
+/// allocation in a launch stackshot — the same defect #108 fixed in
+/// `ConnectorCall`. The old code retried by mutating `formatOptions` in
+/// place, which is exactly why it could not simply be hoisted; two
+/// separately-configured instances, never mutated after setup, can be shared
+/// (`ISO8601DateFormatter` is documented thread-safe once configured).
+private enum UsageTimestampFormatters {
+    nonisolated(unsafe) static let plain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    nonisolated(unsafe) static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 }

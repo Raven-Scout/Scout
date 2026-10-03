@@ -102,7 +102,8 @@ struct ConnectorHealthHotPathTests {
         let before = service.refreshCount
 
         // A burst the way a live Scout run appends.
-        for _ in 0..<50 { fs.emit(FileSystemEvent(url: url, kind: .modified)) }
+        let burst = 50
+        for _ in 0..<burst { fs.emit(FileSystemEvent(url: url, kind: .modified)) }
 
         // Poll rather than sleep a fixed span: under full-suite parallelism a
         // fixed wait is a coin flip, and a flaky perf guard is worse than none.
@@ -115,6 +116,20 @@ struct ConnectorHealthHotPathTests {
         // Let any further coalesced flushes land before bounding the count.
         try await Task.sleep(nanoseconds: 750_000_000)
         let added = service.refreshCount - before
-        #expect(added <= 3, "50 appends must coalesce into a couple of refreshes, got \(added)")
+
+        // What this guards is *coalescing happened at all* — without it the
+        // count tracks the burst (~50). The bound has to stay well clear of
+        // how many 250 ms windows the emits happen to straddle: the coalescer
+        // opens a fixed window on the first event after a flush, and under
+        // full-suite parallelism the consumer task is descheduled mid-burst,
+        // so the 50 emits spread over more windows on a loaded runner than on
+        // an idle one. Pinned at 3 this failed on CI as `added → 4` twice
+        // (PR #108's own branch, then PR #117, both unrelated to the change
+        // under test) while passing on re-run. A fifth of the burst keeps the
+        // regression it exists to catch and stops it blocking other PRs.
+        #expect(
+            added <= burst / 5,
+            "\(burst) appends must coalesce into a handful of refreshes, got \(added)"
+        )
     }
 }

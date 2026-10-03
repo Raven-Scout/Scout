@@ -99,4 +99,20 @@ struct ConnectorCallCacheTests {
         #expect(out.isEmpty)
         #expect(cache.cachedFileCount == 0)
     }
+
+    @Test func oneInvalidUTF8ByteDoesNotDiscardTheWholeFile() throws {
+        // The hook appends this file while sessions run, so a torn write can
+        // leave a byte that is not valid UTF-8. Decoding the whole file as a
+        // String first dropped every call for the day, silently.
+        let dir = try Self.tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var bytes = Data((Self.line("a") + "\n").utf8)
+        bytes.append(0xFF)                      // never valid in UTF-8
+        bytes.append(contentsOf: Data(("\n" + Self.line("b") + "\n").utf8))
+        let url = dir.appendingPathComponent("connector-calls-2026-09-11.jsonl")
+        try bytes.write(to: url)
+
+        let calls = ConnectorCall.parseFile(at: url)
+        #expect(calls.map(\.sessionId) == ["a", "b"])
+    }
 }
