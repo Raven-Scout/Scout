@@ -11,11 +11,16 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
+
+if TYPE_CHECKING:
+    from scout.scripts.bootstrap import BootstrapConfig
+    from scout.scripts.vault_drift import VaultEdit
 
 # Reserved for non-ScoutError exceptions escaping app(). Kept distinct
 # from ScoutError.exit_code == 1 so scout-app can decode "the CLI
@@ -1424,8 +1429,7 @@ def _register_bootstrap() -> None:
         typer.echo(f"upgraded: {result.vault}")
         for c in result.conflicts:
             typer.echo(f"  conflict (sidecar): {c}", err=True)
-        for b in result.backups:
-            typer.echo(f"  backup: {b}", err=True)
+        _echo_vault_edits(result.vault_edits, result.backups)
         typer.echo(f"doctor: {result.doctor.severity.value}")
         raise typer.Exit(code=result.doctor.exit_code)
 
@@ -1441,6 +1445,8 @@ def _register_bootstrap() -> None:
         typer.echo(f"severity: {report.severity.value}")
         for w in report.warnings:
             typer.echo(f"warning: {w}")
+        for n in report.notes:
+            typer.echo(f"note: {n}")
         for e in report.errors:
             typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=report.exit_code)
@@ -1471,8 +1477,9 @@ def _register_bootstrap() -> None:
         Required: vault must exist with .scout-state/ but no scout-config.yaml.
         Establishes the Plan 8 baseline (snapshots + scout-config.yaml + cat-1
         regen) without touching live SKILL/DREAMING/RESEARCH content. Legacy
-        runners with hand-edits are backed up to .bak.YYYY-MM-DD before
-        regeneration from the current plugin templates.
+        runners (or any plugin-owned file) that match no release are parked
+        under .scout-state/drift/ before the current templates are installed
+        (see `scoutctl bootstrap drift`).
         """
         from scout import __version__
         from scout import paths as _paths
@@ -1504,14 +1511,182 @@ def _register_bootstrap() -> None:
         result = migrate_legacy(cfg)
         typer.echo(f"migrated: {result.vault}")
         typer.echo(f"snapshots recorded: {', '.join(result.snapshots_recorded) or 'none'}")
-        for b in result.backups:
-            typer.echo(f"  backup: {b}")
+        _echo_vault_edits(result.vault_edits, result.backups, err=False)
         typer.echo(f"doctor: {result.doctor.severity.value}")
         for w in result.doctor.warnings:
             typer.echo(f"  warning: {w}", err=True)
         for e in result.doctor.errors:
             typer.echo(f"  error: {e}", err=True)
         raise typer.Exit(code=result.doctor.exit_code)
+
+    @bootstrap_app.command("drift")
+    def cli_bootstrap_drift(
+        diff: bool = typer.Option(False, "--diff", help="Show each file's diff against the plugin's version."),
+        patch: bool = typer.Option(
+            False, "--patch", help="Print a git-apply-able patch against the plugin's templates/ for the edited files."
+        ),
+        json_out: bool = typer.Option(False, "--json", help="Machine-readable report (for notifiers and sessions)."),
+        resolve: list[str] = typer.Option(  # noqa: B008
+            [], "--resolve", metavar="FILE", help="Settle what an upgrade parked for FILE (vault-relative; repeatable)."
+        ),
+        drop_update: bool = typer.Option(
+            False, "--drop-update", help="With --resolve: keep your version and drop the parked plugin update."
+        ),
+        vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+    ) -> None:
+        """Vault edits to plugin-owned files, and a way to upstream them.
+
+        Lists every managed file (scripts, hooks, runners, render.py, parser.py)
+        that differs from what the plugin last wrote: edited (upgrades keep it),
+        conflict (an update is parked; merge by hand, then --resolve), replaced
+        (your previous copy is parked). --patch turns the edits into a patch for
+        a plugin PR; the plugin repo is public, so review it before you open one.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.scripts import vault_drift
+        from scout.scripts.bootstrap import _template_vars, managed_renders
+        from scout.scripts.template_backport import backport_patch
+
+        vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
+        if drop_update and not resolve:
+            typer.echo("scoutctl bootstrap drift: --drop-update only applies with --resolve FILE", err=True)
+            raise typer.Exit(code=2)
+        if resolve:
+            failed = False
+            for rel in resolve:
+                try:
+                    done = vault_drift.resolve(vault, rel, drop_update=drop_update)
+                except ValueError as e:
+                    typer.echo(f"scoutctl bootstrap drift: {e}", err=True)
+                    failed = True
+                    continue
+                for line in done:
+                    typer.echo(line)
+            if failed:
+                raise typer.Exit(code=2)
+            return
+
+        cfg = _vault_bootstrap_config(vault)
+        renders = {r.file.vault_rel: r for r in managed_renders(cfg)}
+        rows = vault_drift.report(vault, {rel: r.text for rel, r in renders.items()})
+
+        if json_out:
+            files = [row.to_json() for row in rows]
+            typer.echo(_json.dumps({"schema_version": 1, "vault": str(vault), "files": files}, indent=2))
+            return
+
+        if patch:
+            vars_ = _template_vars(cfg)
+            produced = 0
+            for row in rows:
+                path, render = row.path, renders.get(row.path)
+                if row.status != "edited" or render is None:
+                    if row.status == "conflict":
+                        typer.echo(f"skipped {path}: a conflict — merge it and --resolve it first", err=True)
+                    elif row.status == "replaced":
+                        typer.echo(
+                            f"skipped {path}: your copy is parked at {row.parked[-1]} — copy it back over "
+                            f"{path} first if it holds a fix to upstream",
+                            err=True,
+                        )
+                    continue
+                if render.file.vault_developed:
+                    typer.echo(
+                        f"skipped {path}: the vault grows this file on purpose — its edits are vault content, "
+                        "not a plugin fix",
+                        err=True,
+                    )
+                    continue
+                if row.stale:
+                    typer.echo(
+                        f"skipped {path}: the plugin changed it since the last upgrade — upgrade first", err=True
+                    )
+                    continue
+                fp = backport_patch(
+                    vault_rel=path,
+                    plugin_rel=render.file.plugin_rel,
+                    template=render.template,
+                    rendered=render.file.rendered,
+                    live=row.live,
+                    vars_=vars_,
+                )
+                for w in fp.warnings:
+                    typer.echo(f"warning: {w}", err=True)
+                if fp.patch:
+                    typer.echo(vault_drift.printable(fp.patch), nl=False)
+                    produced += 1
+            typer.echo(
+                f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "
+                "then open a PR"
+                if produced
+                else "nothing to back-port",
+                err=True,
+            )
+            # Only template-variable values are detected above; a name, company,
+            # ID or path typed into an added line is not.
+            typer.echo(
+                "warning: review every added line for private vault content (names, companies, issue IDs, "
+                "channels, paths) before opening a PR — the plugin repo is public, and only template-variable "
+                "values are flagged automatically",
+                err=True,
+            )
+            return
+
+        if not rows:
+            typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
+            return
+        typer.echo(f"vault drift — {len(rows)} plugin-owned file(s) differ from what the plugin last wrote:")
+        for row in rows:
+            typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
+            if diff and row.diff:
+                typer.echo(row.diff, nl=False)
+        if any(row.status == "edited" and row.path not in vault_drift.VAULT_DEVELOPED_FILES for row in rows):
+            typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
+
+
+def _echo_vault_edits(edits: list[VaultEdit], backups: list[str], *, err: bool = True) -> None:
+    """One line per vault edit an upgrade found; backups the edits don't already name."""
+    named = {p for e in edits for p in e.parked}
+    for e in edits:
+        typer.echo(f"  vault edit {e.outcome}: {e.path} — {e.describe()}", err=err)
+    for b in backups:
+        if b not in named:
+            typer.echo(f"  backup: {b}", err=err)
+
+
+def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent)."""
+    import yaml as _yaml
+
+    from scout import __version__
+    from scout.scripts.bootstrap import BootstrapConfig
+
+    cfg_path = vault / "scout-config.yaml"
+    if not cfg_path.exists():
+        typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
+        raise typer.Exit(code=2)
+    try:
+        existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except (_yaml.YAMLError, UnicodeDecodeError) as e:
+        typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
+        raise typer.Exit(code=ConfigError.exit_code) from e
+    instance = existing.get("instance", {})
+    user = existing.get("user", {})
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=Path(__file__).parent.parent.parent,
+        instance_name=instance.get("name", "Scout"),
+        instance_name_lower=instance.get("name_lower", "scout"),
+        user_name=user.get("name", ""),
+        user_email=user.get("email", ""),
+        timezone=existing.get("timezone", "America/New_York"),
+        platform=existing.get("platform", "macos"),
+        plugin_version=__version__,
+        enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
+        connector_inputs=existing.get("connectors", {}).get("inputs", {}),
+    )
 
 
 _register_bootstrap()
@@ -1668,6 +1843,47 @@ def self_update_check(json_out: bool = typer.Option(False, "--json")) -> None:
             else f"up to date ({status.installed})"
         )
         typer.echo(msg)
+
+
+# In-place edits to the vault's scout-config.yaml. The file has several
+# producers and carries comments (bootstrap state, `budget set`'s note, hand
+# edits), so each command rewrites only its own block — never a pyyaml
+# round-trip of the whole file, which deletes every comment in it.
+config_app = typer.Typer(help="Edit the vault's scout-config.yaml in place, keeping its comments.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("set-auto-update")
+def config_set_auto_update_cmd(
+    enabled: bool | None = typer.Option(
+        None, "--enabled/--disabled", help="Turn auto-update on or off. Omit to leave it as it is."
+    ),
+    channel: str | None = typer.Option(
+        None, "--channel", help="Release channel (stable). Omit to keep the current one, or stable if unset."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the resulting block as JSON."),
+) -> None:
+    """Write the auto_update block of the vault's scout-config.yaml; every other line is kept."""
+    import json as _json
+
+    from scout.scripts.auto_update_config import AutoUpdateWriteError, write_auto_update
+
+    if enabled is None and channel is None:
+        typer.echo("nothing to set — pass --enabled, --disabled, or --channel", err=True)
+        raise typer.Exit(2)
+
+    try:
+        payload = write_auto_update(enabled=enabled, channel=channel)
+    except AutoUpdateWriteError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    if as_json:
+        typer.echo(_json.dumps(payload, indent=2))
+        return
+    state = "enabled" if payload["enabled"] is True else "disabled"
+    verdict = f"wrote {payload['config_path']}" if payload["changed"] else "already set, nothing written"
+    typer.echo(f"auto_update: {state} (channel: {payload['channel']}) — {verdict}")
 
 
 @app.command()
