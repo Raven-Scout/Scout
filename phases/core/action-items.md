@@ -168,7 +168,7 @@ Good vs bad (anonymized):
 
 ### Hard Rule: Plan Markers Carry Verbatim
 
-`/scout-plan` writes up to three machine sub-bullets under a task, always in this order and only through `scoutctl action-items set-estimate | set-block | set-actual | clear-block`:
+`/scout-plan` writes up to three machine sub-bullets under a task, always in this order and only through `scoutctl action-items set-estimate | set-block | set-actual | clear-block | clear-plan`:
 
     - [ ] [#REPLYX] **Reply to Alex about her purchase question**
       - estimate: 45m (raw: 30m, kind: comms)
@@ -332,7 +332,7 @@ For each carryover item from the previous action-items file:
 
 This is the file-side counterpart of the wrap-DM continuity line (see the notification phase) — the DM opens with the throughline; this section carries the reasoning.
 
-**Day-planning line.** When the engine advertises `planning_v1` (`scoutctl manifest show`), check today's plan with `scoutctl action-items list --json --with-plan`. Add at most one Focus bullet:
+**Day-planning line.** When the engine advertises `planning_v1` (`scoutctl manifest show`), check today's plan with `scoutctl action-items list --json --with-plan --include-done` (a task checked off after its block still needs its actual time). Add at most one Focus bullet:
 - items carry a `block:` dated before today with no `actual:` -> `**Log yesterday's actual times**: run /scout-plan review (N blocks)`;
 - otherwise, no open item carries a `block:` dated today -> `**Plan the day**: run /scout-plan (N open to-dos, none scheduled)`.
 

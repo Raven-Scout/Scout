@@ -367,6 +367,8 @@ def cli_list(
     from scout import paths
     from scout.action_items.list import format_items, list_items
 
+    if with_plan and not json_out:
+        raise typer.BadParameter("--with-plan needs --json", param_hint="--with-plan")
     target = path or paths.action_items_daily_path()
     items = list_items(target, include_done=include_done, priority=priority, section=section)
     if json_out:

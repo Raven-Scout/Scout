@@ -207,3 +207,10 @@ def test_clear_plan_via_cli(vault: Path) -> None:
     result = runner.invoke(action_items_app, ["clear-plan", "--by-id", "OPS2", str(target)])
     assert result.exit_code == 0, result.output
     assert "- estimate:" not in target.read_text(encoding="utf-8")
+
+
+def test_with_plan_needs_json(vault: Path) -> None:
+    target = _seed(vault)
+    result = runner.invoke(action_items_app, ["list", str(target), "--with-plan"])
+    assert result.exit_code != 0
+    assert "--with-plan needs --json" in result.output

@@ -18,14 +18,14 @@ In one conversation, the user gets a realistic plan for the day. Scout estimates
 
 ### Flow (the command)
 
-1. **Feedback first.** Tasks with a past `block:` and no `actual:` are listed in one question. Finished ones get `set-actual`. Unfinished ones can be replanned or have their block cleared.
+1. **Feedback first.** Tasks, open or done, whose `block:` has ended and that have no `actual:` are listed in one question (the listing includes done tasks, because a task checked off after its block is the usual case). Finished ones get `set-actual`. Unfinished ones can be replanned or have their block cleared.
 2. **Read the day.** `list_events` over the work window. Busy time is every timed, non-declined event plus a gap around each one, with edges rounded inward to the grid. Earlier Scout blocks count as busy and their tasks as already planned.
 3. **Pick candidates** from 🔴, 🟡 and 💡. Skipped: Watching items, waiting or blocked items, snoozed items, personal items unless asked. Each candidate is checked before it is estimated: its age comes from the vault history (`git log -S "[#TAG]"`), because every briefing rewrites the item text, and a linked Linear issue or GitHub issue or PR that is already closed or merged takes the task out of the plan and offers it for check-off.
-4. **Estimate.** A kind of work (`deep`, `shallow`, `comms`, `review`), a raw estimate with a one-sentence reason, then a factor: calibrated per kind, else the configured buffer. The result is rounded up to the grid, and anything over 2h is split.
+4. **Estimate.** A kind of work (`deep`, `shallow`, `comms`, `review`), a raw estimate with a one-sentence reason, then a factor: calibrated per kind, else the configured buffer. The result is rounded up to the grid. Each task gets exactly one block, so a task planned above `deep_block_minutes` is not placed: it is listed for the user to split into smaller tasks.
 5. **Pack.** Deep work goes into the longest windows. Small tasks share batch blocks. Packing stops at `capacity_pct` of free time, and what does not fit is listed for another day.
 6. **Agree, then act.** The plan is shown as a table. After an explicit yes, `create_event` runs per block (busy, private, no notifications by default), then `set-estimate` and `set-block` per task, then a vault commit `plan [HH:MM]:`.
 
-The command only ever edits or deletes events it created: an event whose id is recorded in a task's `block:` marker, or one with the title prefix plus a `[scout:TAG]` marker in the description. Step 1 covers every block that has already ended, today's included, so planning tomorrow in the evening still logs today.
+The command only ever edits or deletes events it created: the event id must be recorded in a task's `block:` marker, and `get_event` must show the user as the organizer with no other attendees. The title prefix plus a `[scout:TAG]` marker is enough to count an event as an earlier Scout block (busy time), never to edit or delete it, because anyone can put both into an invite. Step 1 covers every block that has already ended, today's included, so planning tomorrow in the evening still logs today.
 
 ### Markers (the grammar)
 
@@ -46,25 +46,27 @@ The command only ever edits or deletes events it created: an event whose id is r
 
 | Command | Does |
 |---|---|
-| `action-items set-estimate <dur> [--raw <dur>] [--kind <k>]` | write or replace `estimate:` |
+| `action-items set-estimate <dur> [--raw <dur>] [--kind <k>]` | write or replace `estimate:`; `--kind` without `--raw` stores no raw value (such a sample does not calibrate) |
 | `action-items set-block --date --start --end [--event-id]` | write or replace `block:` (edges and length on the grid) |
 | `action-items clear-block` | remove `block:` (no-op when absent) |
 | `action-items clear-plan` | remove all three markers from a task (no-op when absent); the log keeps any recorded actual |
-| `action-items set-actual <dur> [--on <date>]` | write or replace `actual:` and append a row to `.scout-state/planning-log.jsonl` |
-| `action-items list --json --with-plan` | adds `plan` (estimate, raw, kind, block, actual) per item |
+| `action-items set-actual <dur> [--on <date>]` | write or replace `actual:` and record a row in `.scout-state/planning-log.jsonl`, one per task per day (a correction replaces the earlier row) |
+| `action-items list --json --with-plan` | adds `plan` (estimate, raw, kind, block, actual) per item; `--with-plan` without `--json` is an error |
 | `planning show [--json]` | effective `planning:` block |
 | `planning calibration [--json]` | per-kind `samples`, `median_ratio`, `factor`, `source` |
 
 - The command finds the engine through `SCOUT_SCOUTCTL`, then `${CLAUDE_PLUGIN_ROOT}/.venv/bin/scoutctl`, then `scoutctl` on `PATH`. A `claude --plugin-dir` session gets neither of the last two pointing at the checkout, so testing a checkout means starting Claude Code with `SCOUT_SCOUTCTL=<checkout>/.venv/bin/scoutctl`.
 - All verbs take `--by-id` / `--subject` and the optional daily-file path, like `snooze`.
-- The comment lister (`_common.list_comment_lines`) and the HTML renderer (`render.COMMENT_METADATA_KEYS`) treat `estimate`, `block` and `actual` as metadata.
+- A line is a marker only when its value parses (`- block: waiting on Priya` is left alone), and the scan for a task stops at the next task line, so a parent never touches a child task's markers.
+- The comment lister (`_common.list_comment_lines`) and the HTML renderer still count the markers as comments, exactly as the Mac and iOS apps do. `delete-comment` and `edit-comment` address comments by the index the apps show, so the engine, the Mac app and iOS must start skipping the markers in the same release (see Out of scope).
+- `planning show` and `planning calibration` read the vault from `SCOUT_DATA_DIR`; the command sets it to the vault it works in.
 - The manifest advertises `planning_v1`.
 
 ### Config (`planning:`)
 
 `work_start`, `work_end`, `increment_minutes` (5, 10, 15, 20, 30 or 60), `capacity_pct`, `buffer`, `new_work_buffer`, `deep_block_minutes`, `batch_block_minutes`, `meeting_gap_minutes`, `calibration_min_samples`, `calibration_window`, `calibration_min_factor`, `calibration_max_factor`, `event_title_prefix`, `event_visibility`, `event_availability`.
 
-- Every value is bounded. A bad value warns and falls back to its default, the same as the `agent_sessions` block.
+- Every value is bounded. A bad value warns and falls back to its default, the same as the `agent_sessions` block. `work_start` and `work_end` must sit on the grid too.
 - `PlanningSettings()` and `defaults/scout-config.yaml` are pinned equal by a parity test.
 
 ### Feedback loop
@@ -76,7 +78,7 @@ The command only ever edits or deletes events it created: an event whose id is r
 
 ### Briefing integration
 
-- A new hard rule in `phases/core/action-items.md` makes carry-forward copy the markers verbatim, keeps them out of the `- Refs:` line, and forbids writing them by hand.
+- A new hard rule in `phases/core/action-items.md` makes carry-forward, section moves (including Recently Completed) and full rewrites copy the markers verbatim, keeps them out of the `- Refs:` line, and forbids writing them by hand.
 - A Focus line (gated on `planning_v1`) suggests `/scout-plan review` when past blocks still need their actual time. Otherwise it suggests `/scout-plan` when today has no block.
 - `materialize` already copies the previous day verbatim, and a test pins that the markers survive it.
 
@@ -96,7 +98,8 @@ The command only ever edits or deletes events it created: an event whose id is r
 
 - **Reading calendar edits back.** A moved block locks the new time, and a deleted block returns the task to planning.
 - **Week planning** (`/scout-plan week`) and a weekly capacity line in the briefing.
-- **The Mac and iOS apps.** Their parsers read any `  - word: text` sub-bullet as a comment, so until they learn these three keys the markers show up as comments from `estimate`, `block` and `actual`. A companion scout-app PR adds the carve-outs and a chip. iOS needs the same carve-outs.
+- **Skipping the markers as comments, in all three at once.** The Mac and iOS parsers read any `  - word: text` sub-bullet as a comment, so for now the markers show up as comments from `estimate`, `block` and `actual`, and the engine counts them the same way to keep comment indexes in agreement. A follow-up lands the carve-out in the engine lister and renderer, the Mac app (with a plan chip on the task card) and iOS together.
+- **Several blocks per task**, if splitting long tasks across blocks turns out to be needed.
 
 ## Testing
 

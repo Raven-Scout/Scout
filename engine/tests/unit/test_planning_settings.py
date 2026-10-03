@@ -126,3 +126,15 @@ def test_float_coercion(raw: object, expected: float | None) -> None:
 def test_string_numbers_in_the_vault_file_are_accepted() -> None:
     s = PlanningSettings.from_config({"planning": {"capacity_pct": "70", "buffer": "1.5"}})
     assert (s.capacity_pct, s.buffer) == (70, 1.5)
+
+
+def test_work_hours_off_the_grid_fall_back_to_both_defaults(capsys: pytest.CaptureFixture[str]) -> None:
+    s = PlanningSettings.from_config({"planning": {"work_start": "09:10", "work_end": "17:00"}})
+    assert (s.work_start, s.work_end) == (PlanningSettings().work_start, PlanningSettings().work_end)
+    assert "not on the 15-minute grid" in capsys.readouterr().err
+
+
+def test_work_hours_follow_a_coarser_increment(capsys: pytest.CaptureFixture[str]) -> None:
+    s = PlanningSettings.from_config({"planning": {"increment_minutes": 30, "work_start": "08:45"}})
+    assert s.work_start == PlanningSettings().work_start
+    assert "30-minute grid" in capsys.readouterr().err

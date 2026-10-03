@@ -12,6 +12,7 @@ from scout.planning.calibration import (
     calibration,
     load_entries,
     log_path,
+    record_entry,
 )
 from scout.planning.settings import PlanningSettings
 
@@ -117,3 +118,26 @@ def test_unusable_rows_are_ignored() -> None:
 def test_boolean_minutes_are_not_samples() -> None:
     result = calibration([{"kind": "deep", "raw_minutes": True, "actual_minutes": 30}], PlanningSettings())
     assert result == {}
+
+
+def test_record_entry_keeps_one_row_per_task_and_day(fake_data_dir: Path) -> None:
+    record_entry(_entry("deep", 60, 90), data_dir=fake_data_dir)
+    record_entry(_entry("deep", 60, 75), data_dir=fake_data_dir)
+    record_entry(_entry("deep", 60, 60, day="2026-10-01"), data_dir=fake_data_dir)
+    rows = load_entries(fake_data_dir)
+    assert [(r["date"], r["actual_minutes"]) for r in rows] == [("2026-09-30", 75), ("2026-10-01", 60)]
+
+
+def test_record_entry_keeps_rows_it_cannot_read(fake_data_dir: Path) -> None:
+    record_entry(_entry("deep", 60, 90), data_dir=fake_data_dir)
+    with log_path(fake_data_dir).open("a", encoding="utf-8") as fh:
+        fh.write("not json\n")
+    record_entry(_entry("deep", 60, 75), data_dir=fake_data_dir)
+    assert "not json" in log_path(fake_data_dir).read_text(encoding="utf-8")
+
+
+def test_record_entry_without_a_tag_appends(fake_data_dir: Path) -> None:
+    row = {"date": "2026-09-30", "kind": "deep", "raw_minutes": 30, "actual_minutes": 45}
+    record_entry(row, data_dir=fake_data_dir)
+    record_entry(row, data_dir=fake_data_dir)
+    assert len(load_entries(fake_data_dir)) == 2

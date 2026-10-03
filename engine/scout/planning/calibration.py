@@ -38,6 +38,34 @@ def append_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None
         fh.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
 
 
+def record_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None:
+    """Write one sample per task per day: an earlier row with the same tag and
+    date is replaced, so correcting an actual time does not count it twice.
+    Rows without a tag or date, and lines that do not parse, are kept as they are.
+    """
+    tag, day = entry.get("tag"), entry.get("date")
+    path = log_path(data_dir)
+    if not (tag and day) or not path.exists():
+        append_entry(entry, data_dir=data_dir)
+        return
+    kept: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if isinstance(row, dict) and row.get("tag") == tag and row.get("date") == day:
+            continue
+        kept.append(line)
+    kept.append(json.dumps(entry, sort_keys=True, ensure_ascii=False))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def load_entries(data_dir: Path | None = None) -> list[dict[str, Any]]:
     """All log rows in file order. Unreadable lines are skipped with a warning."""
     path = log_path(data_dir)

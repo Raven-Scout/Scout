@@ -88,6 +88,16 @@ class PlanningSettings:
                     f"got {block['increment_minutes']!r}; using default"
                 )
 
+        for name in ("work_start", "work_end"):
+            hh, mm = getattr(out, name).split(":")
+            if (int(hh) * 60 + int(mm)) % out.increment_minutes:
+                _warn(
+                    f"planning.{name} ({getattr(out, name)}) is not on the {out.increment_minutes}-minute grid; "
+                    "using the default work hours"
+                )
+                out = replace(out, work_start=default.work_start, work_end=default.work_end)
+                break
+
         for name, (low, high) in _INT_BOUNDS.items():
             if name not in block:
                 continue

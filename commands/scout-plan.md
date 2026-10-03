@@ -31,12 +31,12 @@ Arguments (`$ARGUMENTS`):
    On `PLANNING_UNAVAILABLE`, tell the user the engine at that path predates `/scout-plan`, then stop. A normal install needs `/scout-update`. A session testing a checkout needs Claude Code started with `SCOUT_SCOUTCTL=<checkout>/.venv/bin/scoutctl`.
 3. **Settings and calibration.**
    ```bash
-   "$SCOUTCTL" planning show --json
-   "$SCOUTCTL" planning calibration --json
-   "$SCOUTCTL" action-items list <today's file> --json --with-plan
+   SCOUT_DATA_DIR=<vault> "$SCOUTCTL" planning show --json
+   SCOUT_DATA_DIR=<vault> "$SCOUTCTL" planning calibration --json
+   "$SCOUTCTL" action-items list <today's file> --json --with-plan --include-done
    ```
    Use these values everywhere below: `work_start`, `work_end`, `increment_minutes` (the grid, 15 by default), `capacity_pct`, `buffer`, `new_work_buffer`, `deep_block_minutes`, `batch_block_minutes`, `meeting_gap_minutes`, `event_title_prefix`, `event_visibility`, `event_availability`. Never hardcode them.
-4. **Calendar tools.** Use the Google Calendar MCP: `list_events`, `create_event`, `delete_event`. If they are not loaded, find them with ToolSearch. If there is no calendar connector, say so and offer a plan without calendar blocks.
+4. **Calendar tools.** Use the Google Calendar MCP: `list_events`, `get_event`, `create_event`, `delete_event`. If they are not loaded, find them with ToolSearch. If there is no calendar connector, say so and offer a plan without calendar blocks.
 
 ---
 
@@ -54,7 +54,7 @@ This is how Scout learns how long work really takes. Do it first, every time.
    If a stated time is off the grid, round it up and say so.
 5. For a task that is not finished: do not record an actual. Ask whether to plan it again today; if yes it becomes a candidate below and its old block marker is replaced when the new block is set. If the user drops it, run `clear-block` for it.
 6. Show the effect in one line from a fresh `planning calibration --json`, e.g. "Deep work is now calibrated at 1.4x from 6 samples."
-7. For `review`, commit (Phase 6) and stop here.
+7. For `review`, commit (Phase 6, step 3) and stop here.
 
 ---
 
@@ -92,7 +92,7 @@ For each candidate:
 3. **Factor:** the calibration `factor` for that kind when its `source` is `calibrated`; otherwise `buffer`. For a kind of work the user has not done before, use the larger of that and `new_work_buffer`.
 4. **Planned:** raw x factor, rounded **up** to the grid. Never below one grid step.
    Small tasks that go into a shared batch block (Phase 5) are the exception: apply the factor **once** to the sum of their raw estimates and round the batch up, instead of rounding each task. Otherwise every 15-minute task would be booked as 30 minutes. Their `estimate` marker then records the raw estimate as planned.
-5. **Split:** planned time above 2h becomes parts of at most `deep_block_minutes`, planned as separate blocks.
+5. **Too big for one block:** a task whose planned time is above `deep_block_minutes` is not planned. Each task gets exactly one block, so list it under "Does not fit" with "split into smaller tasks" and let the user break it up.
 
 When calibration exists, say so once in the plan: "Deep work runs 1.4x your first guess (6 samples), I planned with that."
 
@@ -146,10 +146,10 @@ Only after the yes:
 
 ## Re-planning and cleanup
 
-- **Moving a block:** a task that already has a block for the target day is shown, not replanned silently. To move it, with an explicit yes: `delete_event` the old event, create the new one, then `set-block` with the new id.
-- **Removing a block:** with an explicit yes, `delete_event` it and run `clear-block` for its tasks.
+- **Moving a block:** a task that already has a block for the target day is shown, not replanned silently. To move it, with an explicit yes: `delete_event` the old event (see the rule below), create the new one, then `set-block` with the new id.
+- **Removing a block:** with an explicit yes, `delete_event` it (see the rule below) and run `clear-block` for its tasks.
 - **Dropping a task from the plan:** with an explicit yes, delete its event and run `clear-plan`, which removes the estimate, the block and any actual from the task. Recorded actuals stay in the planning log.
-- **Only ever touch events Scout created:** the event id is recorded in a task's `block:` marker, or the title starts with `event_title_prefix` **and** the description carries a `[scout:TAG]` marker. A changed prefix (for example a test prefix) does not orphan earlier blocks, because the recorded id still matches. Never edit or delete anything else on the calendar.
+- **Only ever edit or delete events Scout created:** the event id must be recorded in a task's `block:` marker, and `get_event` must show the user as the organizer with no other attendees. A title prefix or a `[scout:TAG]` marker alone is never enough, because anyone can put both into an invite. Recognising earlier Scout blocks as busy time (Phase 2) may use the prefix and marker, since that only reads. Never edit or delete anything else on the calendar.
 
 ## Important Notes
 
@@ -157,5 +157,5 @@ Only after the yes:
 - **Everything sits on the grid:** estimates, block edges, actual times. Round up, never down, and say when you rounded.
 - **Be honest in estimates.** A plan that fits on paper and fails in practice is worse than a shorter plan. When in doubt, estimate the larger step and leave the task for tomorrow.
 - **Actual times are the user's word.** Never infer them from the calendar or from when a task was checked off.
-- **The markers are machine data.** Write them only through `scoutctl action-items set-estimate | set-block | set-actual | clear-block`, never by editing the file.
+- **The markers are machine data.** Write them only through `scoutctl action-items set-estimate | set-block | set-actual | clear-block | clear-plan`, never by editing the file.
 - **Commit format:** `plan [HH:MM]: <summary>`, consistent with `work [HH:MM]:` and the session types.

@@ -5,11 +5,16 @@
       - block: 2026-09-30 10:00-10:45 (event: <calendar event id>)
       - actual: 1h (2026-09-30)
 
-Like the ``snoozed-until`` marker these are machine metadata, not comments:
-``_common.list_comment_lines`` and the HTML renderer skip them. Unlike snooze,
-each marker is replaced in place when it already exists, so re-planning a
-task never stacks markers. They always sit in the order estimate, block,
-actual, directly under the task line.
+They are machine metadata, written only through these functions. Each
+marker is replaced in place when it already exists, so re-planning a task
+never stacks markers, and they always sit in the order estimate, block,
+actual, directly under the task line. A line only counts as a marker when its
+value parses: a hand-written ``- block: waiting on Priya`` is left alone.
+
+The comment lister (``_common.list_comment_lines``) and the HTML renderer still
+count the markers as comments, as the Mac and iOS apps do. ``delete-comment``
+and ``edit-comment`` address comments by index, so engine and apps have to skip
+the markers in the same release; until then they agree by counting them.
 
 ``set_actual`` also appends one row to the planning log, which is what the
 estimate calibration learns from (``scout.planning.calibration``).
@@ -31,7 +36,7 @@ from scout.errors import ActionItemError
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
 from scout.planning import durations
-from scout.planning.calibration import UNKNOWN_KIND, append_entry
+from scout.planning.calibration import UNKNOWN_KIND, record_entry
 from scout.planning.settings import load_settings
 
 MARK_ORDER = ("estimate", "block", "actual")
@@ -40,12 +45,17 @@ PLAN_MARK_KEYS = frozenset(MARK_ORDER)
 _KIND_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_@.-]{1,1024}$")
 _MARK_LINE_RE = re.compile(r"^\s+-\s+(?P<key>estimate|block|actual):\s*(?P<value>.*?)\s*$")
-_ESTIMATE_VALUE_RE = re.compile(r"^(?P<dur>\S+)(?:\s+\(raw:\s*(?P<raw>\S+?),\s*kind:\s*(?P<kind>[a-z0-9-]+)\))?$")
+_ESTIMATE_VALUE_RE = re.compile(
+    r"^(?P<dur>\S+)(?:\s+\((?:raw:\s*(?P<raw>[^,\s)]+),\s*)?kind:\s*(?P<kind>[a-z0-9-]+)\))?$"
+)
 _BLOCK_VALUE_RE = re.compile(
     r"^(?P<day>\d{4}-\d{2}-\d{2})\s+(?P<start>\d{2}:\d{2})-(?P<end>\d{2}:\d{2})"
     r"(?:\s+\(event:\s*(?P<event>[^)\s]+)\))?$"
 )
 _ACTUAL_VALUE_RE = re.compile(r"^(?P<dur>\S+)(?:\s+\((?P<day>\d{4}-\d{2}-\d{2})\))?$")
+# Any task line, at any depth: the marker scan for a task stops at the next one,
+# so a parent never reads or rewrites its child task's markers.
+_TASK_LINE_RE = re.compile(r"^\s*-\s+\[[ xX]\]")
 
 
 def _today(data_dir: Path | None = None) -> dt.date:
@@ -102,11 +112,21 @@ def _mark_lines(lines: list[str], task_line_number: int) -> dict[str, tuple[int,
         line = lines[j]
         if not line.strip() or not (line.startswith(" ") or line.startswith("\t")):
             break
+        if _TASK_LINE_RE.match(line):
+            break
         m = _MARK_LINE_RE.match(line)
-        if m is not None and m.group("key") not in found:
+        if m is not None and m.group("key") not in found and _value_parses(m.group("key"), m.group("value")):
             found[m.group("key")] = (j + 1, m.group("value"))
         j += 1
     return found
+
+
+def _value_parses(key: str, value: str) -> bool:
+    """True when `value` is something set_estimate / set_block / set_actual would write."""
+    if key == "block":
+        return _BLOCK_VALUE_RE.match(value) is not None
+    m = (_ESTIMATE_VALUE_RE if key == "estimate" else _ACTUAL_VALUE_RE).match(value)
+    return m is not None and _safe_duration(m.group("dur")) is not None
 
 
 def _safe_duration(text: str | None) -> int | None:
@@ -211,9 +231,10 @@ def set_estimate(
     target_path, match, item_ulid, via = _resolve(by_id=by_id, by_subject=by_subject, date=date, data_dir=data_dir)
 
     text = f"  - estimate: {durations.format_duration(minutes)}"
-    if raw_minutes is not None or kind is not None:
-        raw_text = durations.format_duration(raw_minutes if raw_minutes is not None else minutes)
-        text += f" (raw: {raw_text}, kind: {kind or UNKNOWN_KIND})"
+    if raw_minutes is not None:
+        text += f" (raw: {durations.format_duration(raw_minutes)}, kind: {kind or UNKNOWN_KIND})"
+    elif kind is not None:
+        text += f" (kind: {kind})"
     _upsert(target_path, task_line_number=match.line_number, key="estimate", text=text)
     return _event(
         "action_item.estimated",
@@ -310,7 +331,11 @@ def set_actual(
     date: dt.date | None = None,
     data_dir: Path | None = None,
 ) -> Event:
-    """Write ``- actual: <minutes> (<day>)`` and append the sample to the planning log."""
+    """Write ``- actual: <minutes> (<day>)`` and record the sample in the planning log.
+
+    Correcting an actual replaces that task's row for the day instead of adding
+    a second sample.
+    """
     increment = load_settings(data_dir).increment_minutes
     _grid_minutes(minutes, increment, "actual")
     try:
@@ -326,7 +351,7 @@ def set_actual(
         key="actual",
         text=f"  - actual: {durations.format_duration(minutes)} ({worked_on.isoformat()})",
     )
-    append_entry(
+    record_entry(
         {
             "date": worked_on.isoformat(),
             "tag": match.short_prefix,

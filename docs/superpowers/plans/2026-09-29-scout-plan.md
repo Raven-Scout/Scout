@@ -10,7 +10,7 @@
   - `settings` (the `planning:` block),
   - `calibration` (the log and the factors),
   - `cli` (`scoutctl planning`).
-- **New module `engine/scout/action_items/plan_marks.py`**, modelled on `snooze.py`, with four new verbs in `action_items/cli.py`.
+- **New module `engine/scout/action_items/plan_marks.py`**, modelled on `snooze.py`, with five new verbs in `action_items/cli.py` (`set-estimate`, `set-block`, `clear-block`, `clear-plan`, `set-actual`) and `list --with-plan`.
 - **No change** to the parser contract or to any existing verb's behaviour.
 
 **Tech Stack:** Python 3.11, pytest, typer. Run from `engine/` with the repo venv.
@@ -28,7 +28,7 @@
 - [x] `scout/planning/calibration.py` (`append_entry`, `load_entries`, `calibration`).
 
 ### Task 4: Plan markers
-- [x] Tests: `tests/unit/test_action_items_plan_marks.py` (insert, replace, order, clear, actual plus log row, grid and kind validation, CRLF, explicit date, not counted or rendered as comments).
+- [x] Tests: `tests/unit/test_action_items_plan_marks.py` (insert, replace, order, clear, actual plus log row, grid and kind validation, CRLF, explicit date, still counted as comments until the apps skip them, unparsable user lines left alone, the scan stopping at a child task, one log row per task per day).
 - [x] `scout/action_items/plan_marks.py`.
 - [x] `estimate`, `block`, `actual` added to `_common._SNOOZE_MARKER_AUTHORS` and `render.COMMENT_METADATA_KEYS`.
 

@@ -4,8 +4,10 @@
   - block: 2026-09-30 10:00-10:45 (event: abc123)
   - actual: 1h (2026-09-30)
 
-They are machine metadata (like `snoozed-until`), replaced in place rather than
-stacked, and never counted or rendered as comments.
+They are machine metadata, replaced in place rather than stacked. A line only
+counts as a marker when its value parses, and the scan never reaches into a
+child task. Until the apps skip them too, the comment lister and the renderer
+still count them as comments, so comment indexes agree across engine and apps.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import pytest
 from scout.action_items._common import list_comment_lines
 from scout.action_items.plan_marks import (
     clear_block,
+    clear_plan,
     read_plan_marks,
     set_actual,
     set_block,
@@ -174,11 +177,17 @@ def test_set_actual_rejects_a_bad_day(daily: Path, fake_data_dir: Path) -> None:
         set_actual(minutes=30, on="yesterday", by_id="PROJ1", data_dir=fake_data_dir)
 
 
-def test_set_actual_replaces_the_marker_but_appends_to_the_log(daily: Path, fake_data_dir: Path) -> None:
+def test_correcting_an_actual_keeps_one_log_row(daily: Path, fake_data_dir: Path) -> None:
     set_actual(minutes=30, by_id="PROJ1", data_dir=fake_data_dir)
     set_actual(minutes=45, by_id="PROJ1", data_dir=fake_data_dir)
     assert daily.read_text(encoding="utf-8").count("- actual:") == 1
-    assert [r["actual_minutes"] for r in load_entries(fake_data_dir)] == [30, 45]
+    assert [r["actual_minutes"] for r in load_entries(fake_data_dir)] == [45]
+
+
+def test_actuals_on_different_days_are_separate_samples(daily: Path, fake_data_dir: Path) -> None:
+    set_actual(minutes=30, on="2026-09-29", by_id="PROJ1", data_dir=fake_data_dir)
+    set_actual(minutes=45, on="2026-09-30", by_id="PROJ1", data_dir=fake_data_dir)
+    assert [r["date"] for r in load_entries(fake_data_dir)] == ["2026-09-29", "2026-09-30"]
 
 
 def test_read_plan_marks(daily: Path, fake_data_dir: Path) -> None:
@@ -223,17 +232,20 @@ def test_read_plan_marks_out_of_range(tmp_path: Path) -> None:
         read_plan_marks(path, task_line_number=9)
 
 
-def test_plan_marks_are_not_comments(daily: Path, fake_data_dir: Path) -> None:
+def test_plan_marks_still_count_as_comments_like_the_apps(daily: Path, fake_data_dir: Path) -> None:
+    # delete-comment / edit-comment take the index the apps show. The apps still
+    # list the markers as comments, so the engine has to count them the same way
+    # until all three skip them in one release.
     set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
     set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
     set_actual(minutes=60, by_id="PROJ1", data_dir=fake_data_dir)
 
     comments = list_comment_lines(daily, task_line_number=_task_line(daily, "PROJ1"))
-    assert [author for _, author, _ in comments] == ["Source", "alex"]
+    assert [author for _, author, _ in comments] == ["estimate", "block", "actual", "Source", "alex"]
 
     _title, _preamble, sections = render_parse(daily)
     task = next(t for s in sections for t in s.tasks if "PROJ1" in t.raw)
-    assert [c.author for c in task.comments] == ["alex"]
+    assert [c.author for c in task.comments] == ["estimate", "block", "actual", "alex"]
 
 
 def test_crlf_files_keep_their_line_endings(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,3 +312,38 @@ def test_clear_plan_without_markers_is_a_no_op(daily: Path, fake_data_dir: Path)
     event = clear_plan(by_id="OPS2", data_dir=fake_data_dir)
     assert event.payload["cleared"] == []
     assert daily.read_text(encoding="utf-8") == before
+
+
+def test_a_user_line_that_does_not_parse_is_not_a_marker(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = fake_data_dir / "action-items" / f"action-items-{_DAY}.md"
+    path.write_text(f"{_TASK}\n  - block: waiting on Priya\n  - estimate: soon\n", encoding="utf-8")
+    monkeypatch.setattr("scout.action_items.plan_marks._today", lambda *a, **kw: dt.date(2026, 9, 30))
+
+    set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
+    clear_plan(by_id="PROJ1", data_dir=fake_data_dir)
+    assert _lines(path)[1:] == ["  - block: waiting on Priya", "  - estimate: soon"]
+
+
+def test_the_scan_stops_at_a_child_task(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = fake_data_dir / "action-items" / f"action-items-{_DAY}.md"
+    path.write_text(
+        f"{_TASK}\n  - [ ] [#SUB1] **Pull the numbers**\n    - estimate: 30m (raw: 15m, kind: shallow)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scout.action_items.plan_marks._today", lambda *a, **kw: dt.date(2026, 9, 30))
+
+    set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
+    assert _lines(path) == [
+        _TASK,
+        "  - estimate: 45m (raw: 30m, kind: deep)",
+        "  - [ ] [#SUB1] **Pull the numbers**",
+        "    - estimate: 30m (raw: 15m, kind: shallow)",
+    ]
+    assert read_plan_marks(path, task_line_number=1).raw_minutes == 30
+
+
+def test_a_kind_without_raw_stores_no_raw(daily: Path, fake_data_dir: Path) -> None:
+    set_estimate(minutes=45, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
+    assert "  - estimate: 45m (kind: deep)" in _lines(daily)
+    marks = read_plan_marks(daily, task_line_number=_task_line(daily, "PROJ1"))
+    assert (marks.estimate_minutes, marks.raw_minutes, marks.kind) == (45, None, "deep")
