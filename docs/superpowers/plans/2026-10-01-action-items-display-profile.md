@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-profile.json` in the vault root and editable both in Settings and from the Action Items toolbar (#52).
+> **Revised 2026-10-03 per review:** no "oldest first" sort, no `fields.plan`, no reserved keys, no commits from the app, the List/Board switch is session-only, sub-tasks whose parent is filtered out stand alone, and the arranged sections are cached. Details in the spec's revision note.
 
-**Architecture:** A pure `DisplayProfileCodec` parses and patches the file under the rules in spec section 4. `DisplayProfileService` (`@MainActor ObservableObject`) owns the file: it reads it at init, follows outside edits through `FileSystemEventSource`, writes in-app changes as patches, and makes one path-scoped commit after a quiet period. A pure `ActionItemsArrangement` applies sort and grouping to the already filtered sections. Views take the display values as plain parameters with today's behavior as the default, so every existing call site and test keeps compiling.
+**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-profile.json` in the vault root and editable in Settings and from a View menu in the Action Items toolbar (#52).
+
+**Architecture:** A pure `DisplayProfileCodec` parses and patches the file under the rules in spec section 4. `DisplayProfileService` (`@MainActor ObservableObject`) owns the file: it reads it at init, follows outside edits through `FileSystemEventSource`, and writes in-app changes as patches. It never commits. It also holds the session-only current List/Board view. A pure `ActionItemsArrangement` applies sort and grouping to the already filtered sections, and `ActionItemsView` caches its result. Views take the display values as plain parameters with today's behavior as the default, so every existing call site and test keeps compiling.
 
 **Tech Stack:** Swift 5 mode with default MainActor isolation, SwiftUI, Swift Testing (`import Testing`, `@Test`, `#expect`), Xcode project with filesystem-synchronized groups.
 
@@ -14,6 +16,7 @@
 
 - **Defaults render exactly as today.** `ActionItemsDisplay()` is file order, grouped by section, comfortable, refs and snooze on, comment count off. Every new view parameter defaults to that.
 - **The app reads and writes JSON only.** No YAML, no `scout-config.yaml`, nothing under `knowledge-base/`.
+- **The app never commits the profile,** and the List/Board switch never writes it.
 - **The path always comes from `AppState.scoutDirectory`.** Never `~/Scout` in code.
 - **Never overwrite a file the app could not fully read** (unreadable, or `schema` above 1).
 - **New files need no project edits.** `PBXFileSystemSynchronizedRootGroup` picks up files under `Scout/` and `ScoutTests/`.
@@ -145,8 +148,8 @@ The rules from spec section 4, as pure functions. `JSONSerialization` rather tha
 - Produces:
   - `nonisolated struct DisplayProfile: Equatable, Sendable` with `var actionItems: ActionItemsDisplay`, `static let currentSchema = 1`, `var entries: [Entry]`, `func changedEntries(from:) -> [Entry]`.
   - `DisplayProfile.Entry { let path: [String]; let value: Value }`, `Value { case string(String), bool(Bool) }`.
-  - `nonisolated struct ActionItemsDisplay: Equatable, Sendable` with `defaultView: ActionItemsViewMode`, `sort: Sort`, `grouping: Grouping` (JSON key `group`), `density: Density`, `fields: Fields`; each enum `String, CaseIterable, Identifiable, Sendable` with `displayName`.
-  - `nonisolated enum DisplayProfileCodec` with `fileName`, `reservedKeys`, `Failure { case unreadable(String), unsupportedSchema(Int) }`, `Decoded { profile, warnings }`, `decode(_:) -> Result<Decoded, Failure>`, `patch(_:with:) throws -> Data`.
+  - `nonisolated struct ActionItemsDisplay: Equatable, Sendable` with `defaultView: ActionItemsViewMode`, `sort: Sort` (`fileOrder`, `alphabetical`), `grouping: Grouping` (JSON key `group`; `section`, `none`), `density: Density` (`comfortable`, `compact`), `fields: Fields` (`refs`, `snooze`, `comments`); each enum `String, CaseIterable, Identifiable, Sendable` with `displayName`.
+  - `nonisolated enum DisplayProfileCodec` with `fileName`, `Failure { case unreadable(String), unsupportedSchema(Int) }`, `Decoded { profile, warnings }`, `decode(_:) -> Result<Decoded, Failure>`, `patch(_:with:) throws -> Data`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -177,10 +180,10 @@ struct DisplayProfileCodecTests {
         ("{}", DisplayProfile()),
         (#"{"schema":1}"#, DisplayProfile()),
         (#"{"schema":1,"actionItems":{"defaultView":"board"}}"#, profile { $0.defaultView = .board }),
-        (#"{"schema":1,"actionItems":{"sort":"oldestFirst","group":"none","density":"compact"}}"#,
-         profile { $0.sort = .oldestFirst; $0.grouping = .none; $0.density = .compact }),
-        (#"{"schema":1,"actionItems":{"fields":{"refs":false,"snooze":false,"plan":false,"comments":true}}}"#,
-         profile { $0.fields = .init(refs: false, snooze: false, plan: false, comments: true) }),
+        (#"{"schema":1,"actionItems":{"sort":"alphabetical","group":"none","density":"compact"}}"#,
+         profile { $0.sort = .alphabetical; $0.grouping = .none; $0.density = .compact }),
+        (#"{"schema":1,"actionItems":{"fields":{"refs":false,"snooze":false,"comments":true}}}"#,
+         profile { $0.fields = .init(refs: false, snooze: false, comments: true) }),
         (#"{"schema":1.0,"actionItems":{"sort":"alphabetical"}}"#, profile { $0.sort = .alphabetical }),
     ]
 
@@ -197,12 +200,13 @@ struct DisplayProfileCodecTests {
         (#"{"actionItems":{"density":"compact"}}"#, profile { $0.density = .compact },
          [#""schema" is missing; reading it as 1"#]),
         (#"{"schema":1,"theme":"dark"}"#, DisplayProfile(), [#"unknown key "theme""#]),
+        (#"{"schema":1,"sidebar":{"order":["kb"]}}"#, DisplayProfile(), [#"unknown key "sidebar""#]),
         (#"{"schema":1,"actionItems":{"foo":1,"sort":"alphabetical"}}"#, profile { $0.sort = .alphabetical },
          [#"unknown key "actionItems.foo""#]),
-        (#"{"schema":1,"actionItems":{"fields":{"tags":true}}}"#, DisplayProfile(),
-         [#"unknown key "actionItems.fields.tags""#]),
-        (#"{"schema":1,"actionItems":{"defaultView":"grid","density":"compact"}}"#, profile { $0.density = .compact },
-         [#""actionItems.defaultView" has an unsupported value; using the default"#]),
+        (#"{"schema":1,"actionItems":{"fields":{"plan":true}}}"#, DisplayProfile(),
+         [#"unknown key "actionItems.fields.plan""#]),
+        (#"{"schema":1,"actionItems":{"sort":"oldestFirst","density":"compact"}}"#, profile { $0.density = .compact },
+         [#""actionItems.sort" has an unsupported value; using the default"#]),
         (#"{"schema":1,"actionItems":{"fields":{"refs":"no","snooze":0}}}"#, DisplayProfile(),
          [#""actionItems.fields.refs" is not true or false; using the default"#,
           #""actionItems.fields.snooze" is not true or false; using the default"#]),
@@ -214,11 +218,6 @@ struct DisplayProfileCodecTests {
         let decoded = try Self.decode(json).get()
         #expect(decoded.profile == expected)
         #expect(decoded.warnings == warnings)
-    }
-
-    @Test func reservedSectionsAreAcceptedSilently() throws {
-        let json = #"{"schema":1,"sidebar":{"order":["actionItems"]},"controlCenter":[],"preset":"maker","axes":{},"rhythm":"off"}"#
-        #expect(try Self.decode(json).get().warnings.isEmpty)
     }
 
     // MARK: decode: files the app must not use
@@ -316,8 +315,9 @@ Create `Scout/Profile/DisplayProfile.swift`:
 import Foundation
 
 /// The user's display choices, kept in `scout-profile.json` in the vault root.
-/// Only the Action Items section exists so far; the file reserves room for
-/// more (see `DisplayProfileCodec.reservedKeys`).
+/// Only the Action Items section exists so far. Other sections are added with
+/// the features that read them; until then the codec reports them as unknown
+/// and preserves them on write.
 nonisolated struct DisplayProfile: Equatable, Sendable {
     static let currentSchema = 1
 
@@ -349,12 +349,11 @@ nonisolated struct DisplayProfile: Equatable, Sendable {
 /// Action Items display options (#52). Every default is today's rendering.
 nonisolated struct ActionItemsDisplay: Equatable, Sendable {
     enum Sort: String, CaseIterable, Identifiable, Sendable {
-        case fileOrder, oldestFirst, alphabetical
+        case fileOrder, alphabetical
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .fileOrder:    return "File order"
-            case .oldestFirst:  return "Oldest first"
             case .alphabetical: return "Alphabetical"
             }
         }
@@ -387,7 +386,6 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
     struct Fields: Equatable, Sendable {
         var refs = true
         var snooze = true
-        var plan = true
         var comments = false
     }
 
@@ -405,7 +403,6 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
             .init(path: ["density"], value: .string(density.rawValue)),
             .init(path: ["fields", "refs"], value: .bool(fields.refs)),
             .init(path: ["fields", "snooze"], value: .bool(fields.snooze)),
-            .init(path: ["fields", "plan"], value: .bool(fields.plan)),
             .init(path: ["fields", "comments"], value: .bool(fields.comments)),
         ]
     }
@@ -423,10 +420,6 @@ import Foundation
 /// rewritten.
 nonisolated enum DisplayProfileCodec {
     static let fileName = "scout-profile.json"
-
-    /// Top-level sections later releases add. Accepted without a warning and
-    /// preserved on write; not read yet.
-    static let reservedKeys: Set<String> = ["sidebar", "controlCenter", "preset", "axes", "rhythm"]
 
     enum Failure: Error, Equatable, Sendable {
         case unreadable(String)
@@ -459,7 +452,7 @@ nonisolated enum DisplayProfileCodec {
         }
 
         let known: Set<String> = ["schema", "actionItems"]
-        for key in root.keys.sorted() where !known.contains(key) && !reservedKeys.contains(key) {
+        for key in root.keys.sorted() where !known.contains(key) {
             warnings.append("unknown key \"\(key)\"")
         }
 
@@ -528,13 +521,12 @@ nonisolated enum DisplayProfileCodec {
                 return out
             }
             let fieldsPath = "\(path).fields"
-            let knownFields: Set<String> = ["refs", "snooze", "plan", "comments"]
+            let knownFields: Set<String> = ["refs", "snooze", "comments"]
             for key in fields.keys.sorted() where !knownFields.contains(key) {
                 warnings.append("unknown key \"\(fieldsPath).\(key)\"")
             }
             if let v = flag(fields, "refs", in: fieldsPath, &warnings) { out.fields.refs = v }
             if let v = flag(fields, "snooze", in: fieldsPath, &warnings) { out.fields.snooze = v }
-            if let v = flag(fields, "plan", in: fieldsPath, &warnings) { out.fields.plan = v }
             if let v = flag(fields, "comments", in: fieldsPath, &warnings) { out.fields.comments = v }
         }
         return out
@@ -586,11 +578,11 @@ private extension DisplayProfile.Entry.Value {
 }
 ```
 
-In `Scout/ActionItems/ActionItemsViewMode.swift`, change the declaration to `nonisolated enum ActionItemsViewMode: String, CaseIterable, Identifiable, Hashable, Sendable` (the codec decodes it outside the main actor) and replace "Persists across launches via `@SceneStorage("actionItemsView")`" with "The default is `scout-profile.json`'s `actionItems.defaultView`; see `DisplayProfileService`".
+In `Scout/ActionItems/ActionItemsViewMode.swift`, change the declaration to `nonisolated enum ActionItemsViewMode: String, CaseIterable, Identifiable, Hashable, Sendable` (the codec decodes it outside the main actor) and replace "Persists across launches via `@SceneStorage("actionItemsView")`" with "The tab opens in `scout-profile.json`'s `actionItems.defaultView`; the toolbar switch changes the session's view through `DisplayProfileService.currentView`".
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: same command. Expected: PASS, 10 test functions (29 cases with their arguments).
+Run: same command. Expected: PASS, 9 test functions.
 
 - [ ] **Step 5: Commit**
 
@@ -603,17 +595,17 @@ git commit -m "feat(profile): scout-profile.json model and codec for Action Item
 
 ### Task 3: `DisplayProfileService`
 
-Owns the file at runtime. Shape follows `UsageTrackerService` (`Scout/Services/UsageTrackerService.swift:18-45`); the commit follows `ProposalsWriter` (`ProposalsWriter.swift:107-111`); the logger follows `ConnectorHealthService.swift:41`.
+Owns the file at runtime and holds the session-only current view. The load and watch shape follows `UsageTrackerService` (`loadInitial()` at `Scout/Services/UsageTrackerService.swift:18`, `startWatching()` at `:34`); the logger follows `ConnectorHealthService.swift:41`. It never commits: the next session that commits the vault picks the file up.
 
 **Files:**
 - Create: `Scout/Profile/DisplayProfileService.swift`
 - Create: `ScoutTests/Profile/DisplayProfileServiceTests.swift`
 
 **Interfaces:**
-- Consumes: `DisplayProfileCodec`, `FileSystemEventSource`, `GitServiceProtocol`, `URL.resolvingRealPath()`.
+- Consumes: `DisplayProfileCodec`, `FileSystemEventSource`, `URL.resolvingRealPath()`.
 - Produces:
   - `enum DisplayProfileStatus: Equatable { case ok(warnings: [String]), unreadable(reason: String), unsupportedSchema(found: Int); var canWrite: Bool }`
-  - `@MainActor final class DisplayProfileService: ObservableObject` with `@Published private(set) var profile`, `status`, `writeError: String?`; `let fileURL: URL`; `init(scoutDirectory:fileEvents:gitService:commitDelay:)`; `startWatching()`; `reload()`; `update(_:)`; `static let commitMessage = "app: update display profile"`.
+  - `@MainActor final class DisplayProfileService: ObservableObject` with `@Published private(set) var profile`, `status`, `writeError: String?`; `@Published var currentView: ActionItemsViewMode`; `let fileURL: URL`; `init(scoutDirectory:fileEvents:)`; `startWatching()`; `reload()`; `update(_:)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -624,19 +616,10 @@ import Foundation
 import Testing
 @testable import Scout
 
-/// Records path-scoped commits instead of running git.
-private actor RecordingGit: GitServiceProtocol {
-    private(set) var commits: [(paths: [String], message: String)] = []
-    func commitPaths(_ relPaths: [String], message: String) async throws {
-        commits.append((relPaths, message))
-    }
-}
-
 @MainActor
 @Suite("DisplayProfileService", .serialized)
 struct DisplayProfileServiceTests {
     private let vault: URL
-    private let git = RecordingGit()
     private let fs = InjectableFS()
 
     init() throws {
@@ -645,7 +628,7 @@ struct DisplayProfileServiceTests {
     }
 
     private func makeService() -> DisplayProfileService {
-        DisplayProfileService(scoutDirectory: vault, fileEvents: fs, gitService: git, commitDelay: .milliseconds(50))
+        DisplayProfileService(scoutDirectory: vault, fileEvents: fs)
     }
 
     private func write(_ json: String, to service: DisplayProfileService) throws {
@@ -658,41 +641,42 @@ struct DisplayProfileServiceTests {
         return try JSONSerialization.jsonObject(with: data) as? NSDictionary
     }
 
-    private func waitForCommits(_ count: Int) async -> Int {
-        for _ in 0..<40 {
-            if await git.commits.count >= count { break }
-            try? await Task.sleep(nanoseconds: 25_000_000)
-        }
-        try? await Task.sleep(nanoseconds: 120_000_000)   // a late extra commit would land here
-        return await git.commits.count
-    }
-
     @Test func missingFileGivesDefaultsAndStaysMissing() throws {
         let service = makeService()
         #expect(service.profile == DisplayProfile())
         #expect(service.status == .ok(warnings: []))
+        #expect(service.currentView == .list)
         #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
         #expect(service.fileURL.lastPathComponent == "scout-profile.json")
         #expect(service.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)
     }
 
-    @Test func firstChangeCreatesTheFileAndABurstMakesOneCommit() async throws {
+    @Test func firstChangeCreatesTheFile() throws {
         let service = makeService()
-        service.update { $0.defaultView = .board }
-        service.update { $0.defaultView = .list }
-        service.update { $0.defaultView = .board }
-        #expect(try onDisk(service) == ["schema": 1, "actionItems": ["defaultView": "board"]] as NSDictionary)
-        #expect(await waitForCommits(1) == 1)
-        let commit = try #require(await git.commits.first)
-        #expect(commit.paths == ["scout-profile.json"])
-        #expect(commit.message == DisplayProfileService.commitMessage)
+        service.update { $0.density = .compact }
+        #expect(try onDisk(service) == ["schema": 1, "actionItems": ["density": "compact"]] as NSDictionary)
     }
 
-    @Test func aNoOpChangeWritesNothing() async {
+    @Test func aNoOpChangeWritesNothing() {
         let service = makeService()
         service.update { $0.sort = .fileOrder }
         #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
-        #expect(await waitForCommits(1) == 0)
+    }
+
+    @Test func switchingTheCurrentViewWritesNothing() {
+        let service = makeService()
+        service.currentView = .board
+        #expect(service.profile.actionItems.defaultView == .list)
+        #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
+    }
+
+    @Test func theTabOpensInTheDefaultViewAndChoosingADefaultShowsIt() throws {
+        try Data(#"{"schema":1,"actionItems":{"defaultView":"board"}}"#.utf8)
+            .write(to: vault.appendingPathComponent("scout-profile.json"))
+        let service = makeService()
+        #expect(service.currentView == .board)
+        service.update { $0.defaultView = .list }
+        #expect(service.currentView == .list)
     }
 
     @Test func aHandEditIsPickedUpThroughTheWatcher() async throws {
@@ -724,8 +708,7 @@ struct DisplayProfileServiceTests {
 
         service.update { $0.density = .compact }
         #expect(service.profile.actionItems.density == .compact)          // applies for this session
-        let text = try String(contentsOf: service.fileURL, encoding: .utf8)
-        #expect(text == "{ broken")                                      // never overwritten
+        #expect(try String(contentsOf: service.fileURL, encoding: .utf8) == "{ broken")   // never overwritten
     }
 
     @Test func aBrokenFileAtLaunchGivesDefaults() throws {
@@ -740,7 +723,7 @@ struct DisplayProfileServiceTests {
         try Data(newer.utf8).write(to: vault.appendingPathComponent("scout-profile.json"))
         let service = makeService()
         #expect(service.status == .unsupportedSchema(found: 2))
-        service.update { $0.defaultView = .board }
+        service.update { $0.density = .compact }
         #expect(try String(contentsOf: service.fileURL, encoding: .utf8) == newer)
     }
 
@@ -799,8 +782,8 @@ enum DisplayProfileStatus: Equatable {
 }
 
 /// Owns `scout-profile.json` (spec sections 4 and 5): reads it once at init,
-/// follows edits made outside the app, writes in-app changes as patches, and
-/// makes one path-scoped commit after a quiet period.
+/// follows edits made outside the app, and writes in-app changes as patches.
+/// It never commits; the next session that commits the vault picks the file up.
 @MainActor
 final class DisplayProfileService: ObservableObject {
     @Published private(set) var profile: DisplayProfile
@@ -808,41 +791,34 @@ final class DisplayProfileService: ObservableObject {
     /// Set when the last write failed (permissions, full disk); cleared by the
     /// next successful write.
     @Published private(set) var writeError: String?
+    /// The List/Board view for this session. The toolbar switch sets it and it
+    /// is never written. It starts from the profile's default view and follows
+    /// the default whenever that changes.
+    @Published var currentView: ActionItemsViewMode
 
     let fileURL: URL
-    static let commitMessage = "app: update display profile"
 
     private let fileEvents: any FileSystemEventSource
-    private let gitService: (any GitServiceProtocol)?
-    private let commitDelay: Duration
     private var watchTask: Task<Void, Never>?
-    private var commitTask: Task<Void, Never>?
     private var loggedContent: Data??
 
     private static let log = Logger(subsystem: "com.scout.Scout", category: "DisplayProfile")
 
-    init(
-        scoutDirectory: URL,
-        fileEvents: any FileSystemEventSource,
-        gitService: (any GitServiceProtocol)?,
-        commitDelay: Duration = .seconds(2)
-    ) {
+    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
         // FSEvents reports real paths; see `URL.resolvingRealPath()`.
         self.fileURL = scoutDirectory.resolvingRealPath().appendingPathComponent(DisplayProfileCodec.fileName)
         self.fileEvents = fileEvents
-        self.gitService = gitService
-        self.commitDelay = commitDelay
         // One small synchronous read, so the tab opens in the saved view
         // instead of flashing List first.
         let snapshot = Self.read(fileURL, lastGood: DisplayProfile())
         self.profile = snapshot.profile
         self.status = snapshot.status
+        self.currentView = snapshot.profile.actionItems.defaultView
         logOnce(snapshot)
     }
 
     deinit {
         watchTask?.cancel()
-        commitTask?.cancel()
     }
 
     func startWatching() {
@@ -861,20 +837,20 @@ final class DisplayProfileService: ObservableObject {
     /// to the value already published, so nothing republishes.
     func reload() {
         let snapshot = Self.read(fileURL, lastGood: profile)
-        if snapshot.profile != profile { profile = snapshot.profile }
+        if snapshot.profile != profile { apply(snapshot.profile) }
         if snapshot.status != status { status = snapshot.status }
         logOnce(snapshot)
     }
 
-    /// Apply a change from Settings or the Action Items toolbar. It always
-    /// takes effect on screen; it reaches the file only when the file is one
-    /// the app may rewrite.
+    /// Apply a change from Settings or the View menu. It always takes effect
+    /// on screen; it reaches the file only when the file is one the app may
+    /// rewrite.
     func update(_ change: (inout ActionItemsDisplay) -> Void) {
         var next = profile
         change(&next.actionItems)
         let entries = next.changedEntries(from: profile)
         guard !entries.isEmpty else { return }
-        profile = next
+        apply(next)
         guard status.canWrite else { return }
         write(entries)
     }
@@ -885,6 +861,14 @@ final class DisplayProfileService: ObservableObject {
         let data: Data?
         let profile: DisplayProfile
         let status: DisplayProfileStatus
+    }
+
+    /// Publish a new profile; a new default view is also shown right away.
+    private func apply(_ next: DisplayProfile) {
+        if next.actionItems.defaultView != profile.actionItems.defaultView {
+            currentView = next.actionItems.defaultView
+        }
+        profile = next
     }
 
     private static func read(_ url: URL, lastGood: DisplayProfile) -> Snapshot {
@@ -915,27 +899,12 @@ final class DisplayProfileService: ObservableObject {
             let data = try DisplayProfileCodec.patch(existing, with: entries)
             try data.write(to: fileURL, options: .atomic)
             writeError = nil
-            scheduleCommit()
         } catch let failure as DisplayProfileCodec.Failure {
             // The file turned unreadable since the last load; hold writes.
             status = Self.status(for: failure)
         } catch {
             writeError = error.localizedDescription
             Self.log.error("couldn't write \(self.fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// One commit per burst of changes: each write restarts the wait.
-    private func scheduleCommit() {
-        guard let gitService else { return }
-        commitTask?.cancel()
-        let delay = commitDelay
-        commitTask = Task {
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled else { return }
-            // Best effort, like the other app writers: the file is already on
-            // disk, and the next run that commits the vault picks it up.
-            try? await gitService.commitPaths([DisplayProfileCodec.fileName], message: Self.commitMessage)
         }
     }
 
@@ -960,7 +929,7 @@ final class DisplayProfileService: ObservableObject {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: same command. Expected: PASS, 11 test functions.
+Run: same command. Expected: PASS, 13 test functions.
 
 - [ ] **Step 5: Commit**
 
@@ -974,7 +943,7 @@ git commit -m "feat(profile): DisplayProfileService reads, follows and patches s
 ### Task 4: Wire the service into `AppState`
 
 **Files:**
-- Modify: `Scout/Shell/AppState.swift` (property next to `gitService` at `:21-66`, construction after `GitService` at `:102`, assignment block `:211-238`, `startWatching()` in the background-work block after `:270`)
+- Modify: `Scout/Shell/AppState.swift` (property with the other `let` services at `:21-66`, construction next to the other file-watching services after `:102`, assignment block `:211-238`, `startWatching()` in the background-work block after `:270`)
 - Modify: `Scout/Shell/MainWindowView.swift:39-45` (`.environmentObject(appState.displayProfileService)` on `ActionItemsView`)
 - Modify: `ScoutTests/Shell/TabViewSmokeTests.swift:39,55` (same injection, otherwise the render traps on a missing environment object)
 - Create: `ScoutTests/Shell/AppStateDisplayProfileTests.swift`
@@ -1001,7 +970,7 @@ struct AppStateDisplayProfileTests {
 
         let state = AppState(configuration: .testing(scoutDirectory: vault))
         #expect(state.displayProfileService.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)
-        #expect(state.displayProfileService.profile.actionItems.defaultView == .board)
+        #expect(state.displayProfileService.currentView == .board)
     }
 }
 ```
@@ -1016,14 +985,14 @@ Expected: FAIL, `value of type 'AppState' has no member 'displayProfileService'`
 // AppState properties
 let displayProfileService: DisplayProfileService
 
-// init, after `let git = GitService(repoURL: scoutDir, runner: runner)`
-let displayProfile = DisplayProfileService(scoutDirectory: scoutDir, fileEvents: events, gitService: git)
+// init, with the other services built from `scoutDir` and `events`
+let displayProfile = DisplayProfileService(scoutDirectory: scoutDir, fileEvents: events)
 
 // assignment block
 self.displayProfileService = displayProfile
 
 // inside the `startsBackgroundWork` block
-displayProfile.startWatching()
+displayProfileService.startWatching()
 ```
 
 `MainWindowView` and both `TabViewSmokeTests` renders add `.environmentObject(appState.displayProfileService)` (tests: `vault.state.displayProfileService`).
@@ -1043,13 +1012,15 @@ git commit -m "feat(profile): own the display profile in AppState"
 
 **Files:**
 - Create: `Scout/ActionItems/ActionItemsArrangement.swift`
-- Modify: `Scout/ActionItems/Models/ActionBoardColumn.swift` (`columns(from:sort:)`, `sort` defaults to `.fileOrder`)
+- Modify: `Scout/ActionItems/Models/ActionBoardColumn.swift` (`columns(from:sort:parents:)`, `sort` defaults to `.fileOrder` and `parents` to `[:]`)
 - Create: `ScoutTests/ActionItems/ActionItemsArrangementTests.swift`
 
 **Interfaces:**
 - Produces:
-  - `nonisolated enum ActionItemsArrangement` with `struct Arranged { var sections: [ActionSection]; var kinds: [UUID: ActionSection.Kind] }`, `static func arrange(_:sort:grouping:) -> Arranged`, `static func sorted(_:by:) -> [ActionTask]`.
-  - `ActionBoardColumn.columns(from:sort:)`.
+  - `nonisolated enum ActionItemsArrangement` with `struct Arranged { var sections: [ActionSection]; var kinds: [UUID: ActionSection.Kind] }`, `static func parents(in:) -> [UUID: UUID]`, `static func arrange(_:parents:sort:grouping:) -> Arranged`, `static func sorted(_:by:parents:) -> [ActionTask]`.
+  - `ActionBoardColumn.columns(from:sort:parents:)`.
+
+**Sub-tasks and filters.** `parents(in:)` runs on the parsed document, before consolidation and filters: a sub-task's parent is the nearest task above it in the same section (or archive group) with a smaller indent. Sorting attaches a sub-task to the block in front of it only when that block holds its parent. A sub-task whose parent was filtered out becomes its own block, so it never attaches to an unrelated task, and in One list it never crosses into another section's task.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1060,15 +1031,11 @@ import Testing
 
 @Suite("ActionItemsArrangement")
 struct ActionItemsArrangementTests {
-    private static func day(_ d: Int) -> Date {
-        DateComponents(calendar: .init(identifier: .gregorian), year: 2026, month: 6, day: d).date!
-    }
-
-    private static func task(_ subject: String, carried: Int? = nil, indent: Int = 0) -> ActionTask {
+    private static func task(_ subject: String, indent: Int = 0, key: String? = nil) -> ActionTask {
         ActionTask(
-            id: ActionItemsParser.stableID("t|\(subject)"), lineNumber: 1, done: false,
+            id: ActionItemsParser.stableID("t|\(key ?? subject)"), lineNumber: 1, done: false,
             subject: subject, plainSubject: subject, body: "", comments: [], deepLinks: [],
-            snoozedUntil: nil, carriedInFrom: carried.map(day), indentLevel: indent
+            snoozedUntil: nil, carriedInFrom: nil, indentLevel: indent
         )
     }
 
@@ -1083,26 +1050,20 @@ struct ActionItemsArrangementTests {
 
     @Test func defaultsReturnTheInputUnchanged() {
         let sections = [Self.section(.urgent, [Self.task("b"), Self.task("a")]), Self.section(.focus, [])]
-        let out = ActionItemsArrangement.arrange(sections, sort: .fileOrder, grouping: .section)
+        let out = ActionItemsArrangement.arrange(sections, parents: [:], sort: .fileOrder, grouping: .section)
         #expect(out.sections == sections)
         #expect(out.kinds.isEmpty)
     }
 
     static let sorts: [(ActionItemsDisplay.Sort, [String])] = [
         (.fileOrder,    ["Review PROJ-1234", "Ask Priya", "Call Sam", "Book travel"]),
-        (.oldestFirst,  ["Call Sam", "Review PROJ-1234", "Ask Priya", "Book travel"]),
         (.alphabetical, ["Ask Priya", "Book travel", "Call Sam", "Review PROJ-1234"]),
     ]
 
     @Test(arguments: sorts)
     func sortOrders(_ sort: ActionItemsDisplay.Sort, _ expected: [String]) {
-        let tasks = [
-            Self.task("Review PROJ-1234", carried: 10),
-            Self.task("Ask Priya", carried: 12),
-            Self.task("Call Sam", carried: 3),
-            Self.task("Book travel"),
-        ]
-        #expect(Self.subjects(ActionItemsArrangement.sorted(tasks, by: sort)) == expected)
+        let tasks = ["Review PROJ-1234", "Ask Priya", "Call Sam", "Book travel"].map { Self.task($0) }
+        #expect(Self.subjects(ActionItemsArrangement.sorted(tasks, by: sort, parents: [:])) == expected)
     }
 
     @Test func subTasksMoveWithTheirParent() {
@@ -1110,13 +1071,35 @@ struct ActionItemsArrangementTests {
             Self.task("Zip the release"), Self.task("upload notes", indent: 1),
             Self.task("Ask Alex"), Self.task("draft question", indent: 1), Self.task("send it", indent: 2),
         ]
-        #expect(Self.subjects(ActionItemsArrangement.sorted(tasks, by: .alphabetical)) ==
+        let parents = ActionItemsArrangement.parents(in: [Self.section(.todo, tasks)])
+        #expect(Self.subjects(ActionItemsArrangement.sorted(tasks, by: .alphabetical, parents: parents)) ==
                 ["Ask Alex", "draft question", "send it", "Zip the release", "upload notes"])
     }
 
     @Test func tiesKeepFileOrder() {
-        let tasks = [Self.task("one", carried: 5), Self.task("two", carried: 5), Self.task("three", carried: 5)]
-        #expect(Self.subjects(ActionItemsArrangement.sorted(tasks, by: .oldestFirst)) == ["one", "two", "three"])
+        let tasks = [Self.task("Same", key: "1"), Self.task("Same", key: "2"), Self.task("Same", key: "3")]
+        #expect(ActionItemsArrangement.sorted(tasks, by: .alphabetical, parents: [:]).map(\.id) == tasks.map(\.id))
+    }
+
+    /// A search removed "Ask Alex" and kept its sub-task. The sub-task must
+    /// not ride along with "Zip the release", the task that now sits above it.
+    @Test func aSubTaskWhoseParentWasFilteredOutStandsAlone() {
+        let zip = Self.task("Zip the release"), upload = Self.task("upload notes", indent: 1)
+        let ask = Self.task("Ask Alex"), draft = Self.task("draft question", indent: 1)
+        let parents = ActionItemsArrangement.parents(in: [Self.section(.todo, [zip, upload, ask, draft])])
+        let filtered = [zip, upload, draft]
+        #expect(Self.subjects(ActionItemsArrangement.sorted(filtered, by: .alphabetical, parents: parents)) ==
+                ["draft question", "Zip the release", "upload notes"])
+    }
+
+    @Test func inOneListAnOrphanedSubTaskDoesNotCrossSections() {
+        let zebra = Self.task("Zebra crossing"), zNotes = Self.task("zebra notes", indent: 1)
+        let apple = Self.task("Apple order"), aNotes = Self.task("apple notes", indent: 1)
+        let source = [Self.section(.urgent, [zebra, zNotes]), Self.section(.todo, [apple, aNotes])]
+        let parents = ActionItemsArrangement.parents(in: source)
+        let filtered = [Self.section(.urgent, [zebra, zNotes]), Self.section(.todo, [aNotes])]
+        let out = ActionItemsArrangement.arrange(filtered, parents: parents, sort: .alphabetical, grouping: .none)
+        #expect(Self.subjects(out.sections[0].tasks) == ["apple notes", "Zebra crossing", "zebra notes"])
     }
 
     @Test func oneListMergesOpenSectionsAndKeepsEachKind() {
@@ -1128,7 +1111,7 @@ struct ActionItemsArrangementTests {
             Self.section(.watching, [watch]),
             Self.section(.done, [Self.task("Shipped")]),
         ]
-        let out = ActionItemsArrangement.arrange(sections, sort: .fileOrder, grouping: .none)
+        let out = ActionItemsArrangement.arrange(sections, parents: [:], sort: .fileOrder, grouping: .none)
         #expect(out.sections.map(\.kind) == [.focus, .neutral, .done])
         #expect(Self.subjects(out.sections[1].tasks) == ["Fix the demo", "Check PROJ-1234"])
         #expect(out.kinds == [urgent.id: .urgent, watch.id: .watching])
@@ -1136,7 +1119,7 @@ struct ActionItemsArrangementTests {
 
     @Test func oneListWithNoOpenSectionsChangesNothing() {
         let sections = [Self.section(.focus, []), Self.section(.done, [Self.task("Shipped")])]
-        #expect(ActionItemsArrangement.arrange(sections, sort: .fileOrder, grouping: .none).sections == sections)
+        #expect(ActionItemsArrangement.arrange(sections, parents: [:], sort: .fileOrder, grouping: .none).sections == sections)
     }
 
     @MainActor
@@ -1159,7 +1142,7 @@ import Foundation
 
 /// Sort and grouping for the Action Items list and board (spec section 6).
 /// Runs after done-task consolidation and the filters, so List and Board keep
-/// showing the same task set.
+/// showing the same task set. `ActionItemsView` caches the result.
 nonisolated enum ActionItemsArrangement {
     struct Arranged: Equatable, Sendable {
         var sections: [ActionSection]
@@ -1172,27 +1155,52 @@ nonisolated enum ActionItemsArrangement {
     static let mergedKinds: Set<ActionSection.Kind> = [.urgent, .todo, .watching, .personal]
     static let mergedSectionID = ActionItemsParser.stableID("section|arranged-open")
 
+    /// Each sub-task's parent in the source file: the nearest task above it, in
+    /// the same section or archive group, with a smaller indent. Built from the
+    /// parsed document before consolidation and filters, so a later filter
+    /// cannot change who a sub-task belongs to.
+    static func parents(in sections: [ActionSection]) -> [UUID: UUID] {
+        var out: [UUID: UUID] = [:]
+        for section in sections {
+            for list in [section.tasks] + section.collapsed.map(\.tasks) {
+                var stack: [ActionTask] = []
+                for task in list {
+                    while let last = stack.last, last.indentLevel >= task.indentLevel { stack.removeLast() }
+                    if task.indentLevel > 0, let parent = stack.last { out[task.id] = parent.id }
+                    stack.append(task)
+                }
+            }
+        }
+        return out
+    }
+
     static func arrange(
         _ sections: [ActionSection],
+        parents: [UUID: UUID],
         sort: ActionItemsDisplay.Sort,
         grouping: ActionItemsDisplay.Grouping
     ) -> Arranged {
         if sort == .fileOrder && grouping == .section { return Arranged(sections: sections, kinds: [:]) }
-        let sorted = sections.map { replacing(tasks: Self.sorted($0.tasks, by: sort), in: $0) }
+        let sorted = sections.map { replacing(tasks: Self.sorted($0.tasks, by: sort, parents: parents), in: $0) }
         guard grouping == .none else { return Arranged(sections: sorted, kinds: [:]) }
-        return merged(sorted, sort: sort)
+        return merged(sorted, sort: sort, parents: parents)
     }
 
-    /// Stable sort that moves a top-level task together with the sub-tasks
-    /// under it. Ties keep file order.
-    static func sorted(_ tasks: [ActionTask], by sort: ActionItemsDisplay.Sort) -> [ActionTask] {
+    /// Stable sort that moves a top-level task together with its sub-tasks.
+    /// A sub-task joins the block in front of it only when that block holds its
+    /// parent; otherwise it is a block of its own. Ties keep file order.
+    static func sorted(_ tasks: [ActionTask], by sort: ActionItemsDisplay.Sort, parents: [UUID: UUID]) -> [ActionTask] {
         guard sort != .fileOrder, tasks.count > 1 else { return tasks }
         var blocks: [[ActionTask]] = []
+        var members: [Set<UUID>] = []
         for task in tasks {
-            if task.indentLevel > 0, !blocks.isEmpty {
-                blocks[blocks.count - 1].append(task)
+            if task.indentLevel > 0, let parent = parents[task.id], let last = members.indices.last,
+               members[last].contains(parent) {
+                blocks[last].append(task)
+                members[last].insert(task.id)
             } else {
                 blocks.append([task])
+                members.append([task.id])
             }
         }
         return blocks.enumerated()
@@ -1208,21 +1216,14 @@ nonisolated enum ActionItemsArrangement {
 
     private static func compare(_ a: ActionTask, _ b: ActionTask, by sort: ActionItemsDisplay.Sort) -> ComparisonResult {
         switch sort {
-        case .fileOrder:
-            return .orderedSame
-        case .oldestFirst:
-            switch (a.carriedInFrom, b.carriedInFrom) {
-            case let (x?, y?): return x == y ? .orderedSame : (x < y ? .orderedAscending : .orderedDescending)
-            case (.some, nil): return .orderedAscending
-            case (nil, .some): return .orderedDescending
-            case (nil, nil):   return .orderedSame
-            }
-        case .alphabetical:
-            return a.plainSubject.localizedStandardCompare(b.plainSubject)
+        case .fileOrder:    return .orderedSame
+        case .alphabetical: return a.plainSubject.localizedStandardCompare(b.plainSubject)
         }
     }
 
-    private static func merged(_ sections: [ActionSection], sort: ActionItemsDisplay.Sort) -> Arranged {
+    private static func merged(
+        _ sections: [ActionSection], sort: ActionItemsDisplay.Sort, parents: [UUID: UUID]
+    ) -> Arranged {
         var out: [ActionSection] = []
         var insertAt: Int?
         var kinds: [UUID: ActionSection.Kind] = [:]
@@ -1247,7 +1248,7 @@ nonisolated enum ActionItemsArrangement {
         guard let insertAt else { return Arranged(sections: sections, kinds: [:]) }
         out.insert(ActionSection(
             id: mergedSectionID, emoji: "", title: "Open", kind: .neutral,
-            tasks: Self.sorted(tasks, by: sort), bullets: bullets, tables: tables,
+            tasks: Self.sorted(tasks, by: sort, parents: parents), bullets: bullets, tables: tables,
             subheads: subheads, collapsed: collapsed
         ), at: insertAt)
         return Arranged(sections: out, kinds: kinds)
@@ -1262,15 +1263,15 @@ nonisolated enum ActionItemsArrangement {
 }
 ```
 
-`ActionBoardColumn.columns(from:sort:)` gains `sort: ActionItemsDisplay.Sort = .fileOrder` and builds each column with `tasks: ActionItemsArrangement.sorted(tasks, by: sort)`.
+`ActionBoardColumn.columns(from:sort:parents:)` gains `sort: ActionItemsDisplay.Sort = .fileOrder, parents: [UUID: UUID] = [:]` and builds each column with `tasks: ActionItemsArrangement.sorted(tasks, by: sort, parents: parents)`.
 
-- [ ] **Step 4: Run** `-only-testing:ScoutTests/ActionItemsArrangementTests -only-testing:ScoutTests/ActionBoardColumnTests`. Expected: PASS.
+- [ ] **Step 4: Run** `-only-testing:ScoutTests/ActionItemsArrangementTests -only-testing:ScoutTests/ActionBoardColumnTests`. Expected: PASS, 9 test functions in the new suite.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add Scout/ActionItems/ActionItemsArrangement.swift Scout/ActionItems/Models/ActionBoardColumn.swift ScoutTests/ActionItems/ActionItemsArrangementTests.swift
-git commit -m "feat(action-items): sort and one-list grouping as pure arrangement (#52)"
+git commit -m "feat(action-items): alphabetical sort and one-list grouping as pure arrangement (#52)"
 ```
 
 ---
@@ -1288,7 +1289,7 @@ Plain parameters with today's values as defaults, so `ComponentSmokeTests`, `Lea
 
 **Interfaces:**
 - `TaskCardView(..., density: ActionItemsDisplay.Density = .comfortable, fields: ActionItemsDisplay.Fields = .init())` and `static func startsExpanded(kind:density:) -> Bool`, `static func visibleChips(_:fields:) -> [TaskChip]`.
-- `BoardCardView(task:kind:density:fields:)`, `BoardView(sections:sort:density:fields:)`, `SectionView(..., density:fields:kinds:)` with `kinds: [UUID: ActionSection.Kind] = [:]` (each card gets `kinds[task.id] ?? section.kind`, in the live list and in archive groups).
+- `BoardCardView(task:kind:density:fields:)`, `BoardView(columns:density:fields:)` plus the existing `BoardView(sections:)` as a convenience that builds unsorted columns, `SectionView(..., density:fields:kinds:)` with `kinds: [UUID: ActionSection.Kind] = [:]` (each card gets `kinds[task.id] ?? section.kind`, in the live list and in archive groups).
 
 - [ ] **Step 1: Write the failing tests** (`ScoutTests/ActionItems/CardDisplayRulesTests.swift`)
 
@@ -1333,13 +1334,12 @@ struct CardDisplayRulesTests {
 - `init` stores `density` and `fields`; `_expanded = State(initialValue: Self.startsExpanded(kind: task.snoozedFromKind ?? kind, density: density))`, where `startsExpanded` is `kind == .urgent && density == .comfortable`.
 - header padding `density == .compact ? 8 : 14`; the collapsed body preview renders only when `density == .comfortable`.
 - `chips` becomes `Self.visibleChips(TaskChip.chips(...), fields: fields)`, which drops every chip except `.carry` when `!fields.refs`.
-- when `fields.comments` and the task has comments, the chip row ends with a comment count chip (`bubble.left` glyph, `"\(n)"`, same `chipBody` styling).
+- when `fields.comments` and the task has comments, the chip row ends with a comment count chip (`text.bubble` glyph, `"\(n)"`, same `chipBody` styling).
 - `trailingStatus` shows the snooze pill only when `fields.snooze`.
-- `fields.plan` has nothing to gate on `main`; the planned-time chip arrives with the plan marks work and reads `fields.plan` there.
 
 `BoardCardView`: padding `density == .compact ? 8 : 12`, subject `lineLimit(density == .compact ? 2 : 3)`, moon icon only when `fields.snooze`, link footer only when `fields.refs`, comment count in the footer when `fields.comments`.
 
-`BoardView`: passes `sort` to `ActionBoardColumn.columns(from:sort:)` and `density`/`fields` to each card.
+`BoardView`: renders the `columns` it is given (sorted and cached by `ActionItemsView`, Task 7) and passes `density`/`fields` to each card.
 
 `SectionView`: passes `density`/`fields` to every `TaskCardView` and `kind: kinds[task.id] ?? section.kind`.
 
@@ -1351,55 +1351,75 @@ Smoke additions: `TaskCardView` and `BoardCardView` rendered once with `.compact
 
 ---
 
-### Task 7: Action Items toolbar and Settings
+### Task 7: Toolbar, Settings and the arrangement cache
 
 **Files:**
 - Modify: `Scout/ActionItems/ActionItemsView.swift`
 - Create: `Scout/Profile/ActionItemsDisplayMenu.swift`
 - Create: `Scout/Shell/ActionItemsDisplaySection.swift`
 - Modify: `Scout/Shell/SettingsView.swift` (new section after General, and the header comment's section count)
-- Modify: `ScoutTests/Shell/ViewSmokeTests.swift` or `ComponentSmokeTests.swift` (renders of the menu and the section)
+- Modify: `ScoutTests/Shell/ComponentSmokeTests.swift` (renders of the menu and the section)
+- Create: `ScoutTests/ActionItems/ActionItemsLayoutTests.swift`
 
 **Interfaces:**
 - `extension DisplayProfileService { func binding<V>(_ keyPath: WritableKeyPath<ActionItemsDisplay, V>) -> Binding<V> }` (in `ActionItemsDisplayMenu.swift`, imports SwiftUI).
 - `ActionItemsDisplayMenu` (toolbar), `ActionItemsDisplaySection` (Settings), both `@EnvironmentObject var service: DisplayProfileService`.
+- `nonisolated struct ActionItemsLayout: Equatable { let list: ActionItemsArrangement.Arranged; let boardSections: [ActionSection] }` with `static func make(document:filtered:display:) -> ActionItemsLayout`, where `filtered` is the consolidated and filtered sections `ActionItemsView` already computes.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```swift
+import Foundation
+import SwiftUI
+import Testing
+@testable import Scout
+
 @MainActor
-@Suite("DisplayProfileService bindings")
-struct DisplayProfileBindingTests {
+@Suite("Action Items layout")
+struct ActionItemsLayoutTests {
     @Test func aBindingWritesThroughUpdate() throws {
         let vault = FileManager.default.temporaryDirectory.appendingPathComponent("bind-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
-        let service = DisplayProfileService(scoutDirectory: vault, fileEvents: InjectableFS(), gitService: nil)
-        let binding = service.binding(\.fields.comments)
-        binding.wrappedValue = true
+        let service = DisplayProfileService(scoutDirectory: vault, fileEvents: InjectableFS())
+        service.binding(\.fields.comments).wrappedValue = true
         #expect(service.profile.actionItems.fields.comments)
         #expect(FileManager.default.fileExists(atPath: service.fileURL.path))
+    }
+
+    @Test func theBoardIsSortedButNeverMerged() {
+        let section = SmokeFixtures.section(kind: .todo, tasks: [
+            SmokeFixtures.task(subject: "Book travel"), SmokeFixtures.task(subject: "Ask Priya"),
+        ])
+        var display = ActionItemsDisplay()
+        display.sort = .alphabetical
+        display.grouping = .none
+        let layout = ActionItemsLayout.make(document: [section], filtered: [section], display: display)
+        #expect(layout.list.sections.map(\.kind) == [.neutral])
+        #expect(layout.boardSections.map(\.kind) == [.todo])
+        #expect(layout.boardSections[0].tasks.map(\.subject) == ["Ask Priya", "Book travel"])
     }
 }
 ```
 
-- [ ] **Step 2: Run** `-only-testing:ScoutTests/DisplayProfileBindingTests`. Expected: FAIL, `value of type 'DisplayProfileService' has no member 'binding'`.
+- [ ] **Step 2: Run** `-only-testing:ScoutTests/ActionItemsLayoutTests`. Expected: FAIL, `cannot find 'ActionItemsLayout' in scope`.
 
 - [ ] **Step 3: Implementation notes**
 
+`ActionItemsLayout.make` computes `parents(in: document)` once, then the list arrangement (`sort` and `grouping`) and the board sections (`sort` only, grouping kept by section). It lives next to `ActionItemsArrangement`.
+
 `ActionItemsView`:
 - remove `@SceneStorage("actionItemsView")`; add `@EnvironmentObject var displayProfile: DisplayProfileService` and `private var display: ActionItemsDisplay { displayProfile.profile.actionItems }`.
-- `EditorialSegmentedControl(selection: displayProfile.binding(\.defaultView), ...)`; every `viewMode` read becomes `display.defaultView`, including `.onChange(of:)`.
+- `EditorialSegmentedControl(selection: $displayProfile.currentView, ...)`; every `viewMode` read becomes `displayProfile.currentView`, including `.onChange(of:)`.
 - `ActionItemsDisplayMenu()` sits right after the segmented control.
-- `loadedContent` renders `ActionItemsArrangement.arrange(filteredSections(doc).map(filtered), sort: display.sort, grouping: display.grouping)` and passes `density`, `fields` and `kinds` to `SectionView`. The default profile takes the early return in `arrange`, so the default path does no extra work per body pass (#83/#88).
-- `BoardView(sections: boardSections(doc), sort: display.sort, density: display.density, fields: display.fields)`.
+- **Cache:** `@State private var layout: ActionItemsLayout?`, recomputed by `relayout()` in `.onAppear` and in `.onChange` of `docService.state`, `filter` and `display`, next to the existing `reconcileSelection()` calls (`ActionItemsView.swift:105-106`). `loadedContent` renders `layout.list.sections` with `density`, `fields` and `kinds`; the board renders `ActionBoardColumn.columns(from: layout.boardSections)` through `BoardView(columns:density:fields:)`. Until the first `relayout()` the body falls back to `filteredSections(doc).map(filtered)`, which is today's path.
 
-`ActionItemsDisplayMenu`: a `Menu` labelled `Label("View", systemImage: "slider.horizontal.3")` in `DS.sans(11.5, weight: .medium)`, `.menuStyle(.borderlessButton)`, `.fixedSize()`, with inline pickers for Sort, Group (List only), Density, and a "Show on cards" section of four toggles: References, Snooze date, Planned time, Comment count.
+`ActionItemsDisplayMenu`: a `Menu` labelled `Label("View", systemImage: "slider.horizontal.3")` in `DS.sans(11.5, weight: .medium)`, `.menuStyle(.borderlessButton)`, `.fixedSize()`, with inline pickers for Sort, Group (List only), Density, and a "Show on cards" section of three toggles: References, Snooze date, Comment count.
 
-`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view, Sort, Group, Density (each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()`, as at `SettingsView.swift:85-92`), then the four fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
+`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view, Sort, Group, Density (each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()`, as at `SettingsView.swift:85-92`), then the three fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
 
 `SettingsView`: `section(label: "Action Items") { ActionItemsDisplaySection().environmentObject(appState.displayProfileService) }` after General, the same way Budget injects its service at `:113-116`.
 
-- [ ] **Step 4: Run** the binding test and the full suite. Expected: PASS.
+- [ ] **Step 4: Run** the layout tests and the full suite. Expected: PASS.
 
 - [ ] **Step 5: Commit** `feat(action-items): view options in the toolbar and in Settings, kept in scout-profile.json (#52)`
 
@@ -1407,7 +1427,7 @@ struct DisplayProfileBindingTests {
 
 ### Task 8: Pairwise rendering
 
-Every pair of values across view, density, sort, grouping, the four fields and light/dark appears together in at least one of 8 profiles (the full product is 768). The test also checks that property, so a later edit to the table cannot silently drop a pair.
+Every pair of values across view, density, sort, grouping, the three fields and light/dark appears together in at least one of 7 profiles (the full product is 256). The test also checks that property, so a later edit to the table cannot silently drop a pair.
 
 **Files:**
 - Create: `ScoutTests/Shell/DisplayProfileRenderTests.swift`
@@ -1435,31 +1455,30 @@ struct DisplayProfileRenderTests {
         }
         var values: [String] {
             [view.rawValue, density.rawValue, sort.rawValue, grouping.rawValue,
-             "\(fields.refs)", "\(fields.snooze)", "\(fields.plan)", "\(fields.comments)", "\(dark)"]
+             "\(fields.refs)", "\(fields.snooze)", "\(fields.comments)", "\(dark)"]
         }
         var testDescription: String { values.joined(separator: " ") }
     }
 
-    private static func f(_ refs: Bool, _ snooze: Bool, _ plan: Bool, _ comments: Bool) -> ActionItemsDisplay.Fields {
-        .init(refs: refs, snooze: snooze, plan: plan, comments: comments)
+    private static func f(_ refs: Bool, _ snooze: Bool, _ comments: Bool) -> ActionItemsDisplay.Fields {
+        .init(refs: refs, snooze: snooze, comments: comments)
     }
 
     /// Generated as a strength-2 covering array; `coversEveryPair` checks it.
     static let cases: [Case] = [
-        Case(view: .list,  density: .compact,     sort: .oldestFirst,  grouping: .section, fields: f(true, true, true, false),    dark: true),
-        Case(view: .board, density: .comfortable, sort: .oldestFirst,  grouping: .none,    fields: f(false, false, false, true),  dark: false),
-        Case(view: .list,  density: .compact,     sort: .fileOrder,    grouping: .none,    fields: f(false, false, true, true),   dark: true),
-        Case(view: .list,  density: .comfortable, sort: .alphabetical, grouping: .section, fields: f(true, true, false, true),    dark: false),
-        Case(view: .board, density: .compact,     sort: .fileOrder,    grouping: .none,    fields: f(true, true, false, false),   dark: false),
-        Case(view: .board, density: .comfortable, sort: .alphabetical, grouping: .section, fields: f(false, false, true, false),  dark: true),
-        Case(view: .list,  density: .compact,     sort: .alphabetical, grouping: .none,    fields: f(true, false, false, false),  dark: true),
-        Case(view: .list,  density: .comfortable, sort: .fileOrder,    grouping: .section, fields: f(false, true, true, true),    dark: false),
+        Case(view: .list,  density: .compact,     sort: .fileOrder,    grouping: .section, fields: f(true, true, true),    dark: false),
+        Case(view: .board, density: .compact,     sort: .alphabetical, grouping: .none,    fields: f(false, false, false), dark: true),
+        Case(view: .list,  density: .comfortable, sort: .fileOrder,    grouping: .section, fields: f(true, false, false),  dark: true),
+        Case(view: .board, density: .comfortable, sort: .alphabetical, grouping: .section, fields: f(false, true, true),   dark: false),
+        Case(view: .list,  density: .comfortable, sort: .fileOrder,    grouping: .none,    fields: f(false, true, false),  dark: false),
+        Case(view: .list,  density: .comfortable, sort: .alphabetical, grouping: .none,    fields: f(true, true, true),    dark: true),
+        Case(view: .board, density: .compact,     sort: .fileOrder,    grouping: .section, fields: f(true, false, true),   dark: false),
     ]
 
     @Test func coversEveryPair() {
         let domains: [Set<String>] = [
-            ["list", "board"], ["comfortable", "compact"], ["fileOrder", "oldestFirst", "alphabetical"],
-            ["section", "none"], ["true", "false"], ["true", "false"], ["true", "false"], ["true", "false"], ["true", "false"],
+            ["list", "board"], ["comfortable", "compact"], ["fileOrder", "alphabetical"], ["section", "none"],
+            ["true", "false"], ["true", "false"], ["true", "false"], ["true", "false"],
         ]
         for i in domains.indices {
             for j in domains.indices where j > i {
@@ -1473,11 +1492,11 @@ struct DisplayProfileRenderTests {
     }
 
     @Test(arguments: cases)
-    func renders(_ c: Case) throws {
+    func renders(_ c: Case) async throws {
         let vault = try SmokeVault()
         defer { vault.tearDown() }
         vault.state.displayProfileService.update { $0 = c.display }
-        vault.loadDocuments()
+        await vault.loadDocuments()
         ViewHost.render(
             ActionItemsView(
                 scoutDirectory: vault.state.scoutDirectory,
@@ -1491,9 +1510,7 @@ struct DisplayProfileRenderTests {
 }
 ```
 
-(Match `SmokeVault`'s real initializer and loading call from `ViewSmokeTests.swift:54-108` when implementing; the shape above follows `TabViewSmokeTests.swift:31-44`.)
-
-- [ ] **Step 2: Run** `-only-testing:ScoutTests/DisplayProfileRenderTests`. Expected: PASS, 2 test functions (9 cases).
+- [ ] **Step 2: Run** `-only-testing:ScoutTests/DisplayProfileRenderTests`. Expected: PASS, 2 test functions (8 cases).
 
 - [ ] **Step 3: Commit** `test(action-items): pairwise renders of the display profile`
 
@@ -1506,11 +1523,12 @@ struct DisplayProfileRenderTests {
 - [ ] Warnings: clean build on `main` and on the branch, same `warning:` count.
 - [ ] Manual, Debug build ("Scout Dev") against a real vault, after tagging the vault's git:
   1. No file: the tab looks as before; no file appears after launch.
-  2. Switch to Board: the file appears with `schema: 1` and `defaultView: board`; one commit `app: update display profile` about 2 seconds later; relaunch opens Board.
-  3. Edit the file by hand to `"density": "compact"` while the app runs: cards compact without relaunch.
-  4. Write `{ broken` into the file: no crash, last good profile stays, Settings shows the reason, changes are not written; fixing the file resumes.
-  5. Add `"sidebar": {}` and `"actionItems": {"foo": 1}`: one warning for `foo`; after an in-app change both keys are still in the file.
-  6. A vault without the file behaves as in 1.
+  2. Switch List and Board in the toolbar a few times: no file appears.
+  3. Set Default view to Board in Settings: the file appears with `schema: 1` and `defaultView: board`, the tab shows Board, and a relaunch opens Board. The app makes no commit.
+  4. Edit the file by hand to `"density": "compact"` while the app runs: cards compact without relaunch.
+  5. Write `{ broken` into the file: no crash, last good profile stays, Settings shows the reason, changes are not written; fixing the file resumes.
+  6. Add `"sidebar": {}` and `"actionItems": {"foo": 1}`: two warnings; after an in-app change both keys are still in the file.
+  7. A vault without the file behaves as in 1.
 
 ## Plan Self-Review
 
@@ -1519,16 +1537,17 @@ struct DisplayProfileRenderTests {
 | Spec section | Task |
 |---|---|
 | 3. File and schema | 2 |
-| 4. Reading and writing rules | 2 (codec), 3 (service) |
+| 4. Reading and writing rules, no commits | 2 (codec), 3 (service) |
 | 5. Service | 1 (real path), 3, 4 |
-| 6. UI: toolbar, Settings | 7 |
-| 6. Rendering: sort and group | 5, 7 |
-| 6. Rendering: fields and density | 6 |
+| 6. Toolbar (session view), Settings | 3 (`currentView`), 7 |
+| 6. Sort, group, orphaned sub-tasks | 5 |
+| 6. Cache | 7 |
+| 6. Fields and density | 6 |
 | 7. Testing | 1 to 8, 9 (manual) |
-| 8. Migration | 4 (missing file at launch), 7 (`@SceneStorage` removed) |
+| 8. Migration | 3 (default view at launch), 7 (`@SceneStorage` removed) |
 
-**Type consistency.** `ActionItemsDisplay.grouping` is the Swift name for the JSON key `group` (a `Group` type would collide with SwiftUI's in view code). `ActionItemsViewMode` is reused for `defaultView` rather than a second List/Board enum.
+**Type consistency.** `ActionItemsDisplay.grouping` is the Swift name for the JSON key `group` (a `Group` type would collide with SwiftUI's in view code). `ActionItemsViewMode` is reused for `defaultView` and `currentView` rather than a second List/Board enum.
 
-**Dependencies.** None on other open PRs. The #52 fix PR adds `scoutDirectory` to `BoardView` and `BoardCardView`; whichever merges second resolves that small overlap. The planned-time chip lands in its own PR and reads `fields.plan` there.
+**Dependencies.** None on other open PRs. The #52 fix PR touches the same views: it adds `scoutDirectory` to `BoardView` and `BoardCardView` and a `startsExpanded:` parameter to `TaskCardView`. Whichever lands second takes the other's parameters; the density rule in Task 6 then applies when no explicit `startsExpanded` is passed.
 
-**Deliberate divergences.** `JSONSerialization` instead of `Codable` (per-key fallback and preservation need the raw object). The service reads synchronously in `init`, unlike the async `loadInitial()` of larger services, because the file is under 1 KB and the first frame needs it.
+**Deliberate divergences.** `JSONSerialization` instead of `Codable` (per-key fallback and preservation need the raw object). The service reads synchronously in `init`, unlike the async `loadInitial()` of larger services, because the file is under 1 KB and the first frame needs it. The session view lives in the service rather than in `@SceneStorage`, so it survives switching sidebar sections and the default view applies at every launch.
