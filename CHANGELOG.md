@@ -20,6 +20,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - `--patch` prints a patch to `git apply` against `templates/` in a plugin checkout, so a fix that lives in one vault can become a plugin PR. Vault paths go back to their template variables. Any instance-specific value left in an added line is flagged, because the plugin repo is public, and every run warns to review each added line for private vault content, since names, companies and IDs can't be detected. Files the plugin changed since the last upgrade are skipped: a patch made from them would revert the change. So is `parser.py`, which the vault grows on purpose: its edits are vault content, and neither `drift` nor the doctor suggests upstreaming them.
 
   `/scout-status` shows a one-line summary.
+- `scoutctl kb lint` — pre-commit ratchet for vault structure: over-budget files may not grow, run-diary headings and mega-lines are blocked (report mode by default; `kb_lint.mode: block` to enforce), plus `--report` and a `--lossless-*` split check.
+- `scoutctl kb install-hook` and a bootstrap stage that installs the fail-open pre-commit hook.
+- KB WRITE PROTOCOL phase: source notes → topic notes → project pages.
+
+### Changed
+- `action-items materialize` carries items only; run narration is dropped (verbatim fallback whenever any item's status or priority would change).
+- Scout Digest moves to `action-items/digests/YYYY-MM-DD.md`; session-log rows go to monthly shards.
 
 ### Fixed
 - **An upgrade never silently loses a vault's edit to a plugin-owned file** (`engine/scout/scripts/bootstrap.py`, `engine/scout/scripts/vault_drift.py`). Before this, an upgrade handled a vault's own edits like this:
