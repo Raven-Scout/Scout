@@ -84,6 +84,8 @@ NEW_ROOT="${NEW_ROOT%/}"
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 
 test -f "$HOME/Scout/scout-config.yaml" || { echo "NO_VAULT"; exit 0; }
+# A pending parser.py sidecar still makes the upgrade refuse.
+test -e "$HOME/Scout/knowledge-base/ontology/parser.py.proposed-merge" && { echo "BLOCKING_SIDECAR"; exit 0; }
 # Pending brain-file sidecars don't block the upgrade (it skips just those
 # files), but the user should hear about them before it runs.
 for f in "$HOME/Scout/"{SKILL,DREAMING,RESEARCH}.md.proposed-merge; do
@@ -105,7 +107,8 @@ EOF
 ```
 
 - `NO_VAULT`: "No Scout vault found at `~/Scout/`. Run `/scout-setup` for a fresh install."
-- `PENDING_SIDECAR:<file>` (zero or more lines, before `READY`): not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then continue with the `READY` line.
+- `BLOCKING_SIDECAR`: "`knowledge-base/ontology/parser.py.proposed-merge` from a prior `/scout-update` is unresolved, and it blocks the upgrade. Edit it to remove the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), run `mv knowledge-base/ontology/parser.py.proposed-merge knowledge-base/ontology/parser.py`, then re-run `/scout-update`."
+- `PENDING_SIDECAR:<file>` (zero or more lines): informational, not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then act on the line that follows, `READY` or one of the refusals below.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:
   ```
   bash "$NEW_ROOT/scripts/install-venv.sh"
@@ -157,11 +160,15 @@ Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
 
 - If exit 0: "Upgrade complete. Doctor: green. New version recorded."
 - If exit 1: list every `warning:` line, then explain the brain-file rows:
-  - `conflict (sidecar): X.md.proposed-merge` — this upgrade wrote a sidecar and left `X.md` running unchanged. If the sidecar has conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), the vault and the plugin changed the same lines: edit it to keep what's wanted, then `mv X.md.proposed-merge X.md`. If it has no markers, it's the plugin's full version, proposed because the vault's `X.md` wasn't written by the plugin (for example, a vault migrated with `migrate-legacy`): `mv X.md.proposed-merge X.md` adopts it and replaces the vault's version, so review the diff first.
-  - `skipped (sidecar pending): X.md.proposed-merge` — a sidecar from an earlier upgrade is still there, so this upgrade left `X.md` alone and updated everything else. Resolve it the same way; there's no need to re-run `/scout-update` straight away, the next upgrade merges `X.md` against whatever plugin version is current then.
+  - `conflict (sidecar): X.md.proposed-merge` — this upgrade wrote a sidecar and left `X.md` running unchanged. If the sidecar has conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), the vault and the plugin changed the same lines. If it has no markers, it's the plugin's full version, proposed because the vault's `X.md` wasn't written by the plugin (for example, a vault migrated with `migrate-legacy`); adopting it replaces the vault's version, so review the diff first.
+  - `skipped (sidecar pending): X.md.proposed-merge` — a sidecar from an earlier upgrade is still there, so this upgrade left `X.md` alone and updated everything else. There's no need to re-run `/scout-update` straight away: once it's resolved, the next upgrade merges `X.md` against whatever plugin version is current then.
+
+  To resolve either kind: make `X.md` the version the user wants (for example `mv X.md.proposed-merge X.md` and remove any markers, or merge the parts they want into `X.md` by hand), then run `"$SCOUTCTL" bootstrap resolve X.md`. That records the plugin's version as the merge base, so later edits to `X.md` (a dreaming run applying a proposal, say) merge cleanly with the next plugin change, and it removes the sidecar. It refuses while conflict markers remain. Deleting the sidecar without `resolve` means "decide later": the next upgrade proposes the same change again.
 - If exit 2: list every `error:` line. Suggest `scoutctl bootstrap doctor` for a clean read of the current state.
 
 If runner backups appeared (`run-*.sh.bak.*`), tell the user the live runners had hand-edits that have been preserved as backups; the fresh templates were installed.
+
+If a brain-file backup appeared (`SKILL.md.bak.*`, `DREAMING.md.bak.*`, `RESEARCH.md.bak.*`), tell the user the file took the plugin's new version on the strength of its assembly header alone (a vault last upgraded before Scout recorded which snapshots it wrote), so the replaced copy was kept. This happens at most once per file; delete the backup once they've checked nothing in it is missing.
 
 - `~/Scout/connector-probes.local.yaml` (custom connector probes) is a user
   file, never templated, so it is preserved untouched across upgrades.

@@ -114,7 +114,7 @@ auto_update:
   channel: stable
 ```
 - **Build now:** `scoutctl self-update --check` — read-only; compares installed vs the marketplace's published version; powers `/scout-status` and the nudge. Unit-tested against a mocked remote version.
-- **Deferred (gated):** when `enabled`, a scheduled/heartbeat run runs the coordinated upgrade **only if sidecar-clean**; on any conflict it does not touch the vault and notifies the user (Slack/Telegram) to run `/scout-update`. Reuses the existing scheduler — no new daemon. Auto-update can never leave a broken state (same contract as the manual path).
+- **Deferred (gated):** when `enabled`, a scheduled/heartbeat run runs the coordinated upgrade **unless a blocking sidecar is pending** (`bootstrap.blocking_sidecars`: the `parser.py` one); a brain-file conflict only leaves that file as it is (reported as `conflicts`/`skipped`), and either case notifies the user (Slack/Telegram) to run `/scout-update`. Reuses the existing scheduler — no new daemon. Auto-update can never leave a broken state (same contract as the manual path).
 
 ## Testing
 

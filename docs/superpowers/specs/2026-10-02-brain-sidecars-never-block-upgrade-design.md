@@ -2,8 +2,8 @@
 
 **Status:** implemented on `fix/brain-sidecars-never-block-upgrade`
 **Date:** 2026-10-02
-**Related:** `fix/upgrade-never-loses-vault-edits` (the non-blocking policy for
-plugin-owned scripts, not merged yet), #244 (`bootstrap auto`)
+**Related:** #263 (`fix/upgrade-never-loses-vault-edits`, the non-blocking
+policy for plugin-owned scripts, open), #244 (`bootstrap auto`, open)
 
 ## Problem
 
@@ -48,11 +48,8 @@ Out of scope:
 - `knowledge-base/ontology/parser.py` (`_CAT_MERGE_FILES`). Its sidecar still
   blocks, as before. The drift branch moves it to the non-blocking
   `.scout-state/drift/` policy.
-- The stale base after a hand-resolved conflict, a limitation that predates this
-  change. When a user resolves a conflict sidecar by editing it, the snapshot
-  stays at the older base. The next merge can then report conflicts that aren't
-  real, but it never loses content. An explicit resolve command could fix it,
-  like `drift --resolve` does.
+- Keeping a vault's own brain for good (pinning). Deleting a sidecar means
+  "decide later": the next upgrade proposes the same change again, as before.
 - Restoring a deleted brain file. A missing live file is still treated as
   `theirs = ours` (the snapshot advances, nothing is written), as before.
 
@@ -105,39 +102,53 @@ Options weighed:
 
 ### Provenance
 
-`.scout-state/last-assembled/provenance.json` (gitignored like the snapshots):
+Two pieces of state live next to the snapshots under
+`.scout-state/last-assembled/` (gitignored like them). The first is
+`provenance.json`:
 
 ```json
 {
   "version": 1,
   "files": {
-    "SKILL.md": {"snapshot": "assembled", "sha256": "<sha256 of the snapshot as the engine wrote it>",
-                 "proposed_sha256": "<sha256 of the assembly last written to a sidecar>"}
+    "SKILL.md": {"snapshot": "assembled", "sha256": "<sha256 of the snapshot as the engine wrote it>"}
   }
 }
 ```
 
+The second is `proposed/<KIND>.md`, the assembly a pending sidecar was built
+from.
+
 - `install`, and every upgrade outcome that advances the snapshot, records
-  `"snapshot": "assembled"` with the snapshot's hash and clears
-  `proposed_sha256`.
+  `"snapshot": "assembled"` with the snapshot's hash and removes
+  `proposed/<KIND>.md`. Provenance is written after each file, not once at the
+  end, so a failure on a later file can't leave an earlier, already-advanced
+  snapshot without its record.
 - `migrate-legacy` records `"snapshot": "seeded"`.
-- Writing a sidecar records `proposed_sha256` = the hash of `ours`. The
-  snapshot fields stay as they are.
+- Writing a sidecar writes `proposed/<KIND>.md` = `ours`. The snapshot and its
+  record stay as they are.
 
 The base counts as a **plugin assembly** when:
 - the entry records the snapshot: it is `assembled` and its hash matches the
-  snapshot file. A `seeded` snapshot, or one changed outside the engine, does
-  not count.
+  snapshot file. A `seeded` snapshot, one changed outside the engine, or a
+  `snapshot` value that can't be understood does not count. An unknown value
+  fails closed rather than falling back to the weaker fingerprint.
 - the entry has no snapshot record (a vault last upgraded before this change):
   the snapshot starts with the assembly fingerprint. This fallback is used until
   the first upgrade that advances the snapshot.
 - in any case, the snapshot file exists.
 
-An upgrade interrupted between writing a snapshot and writing `provenance.json`
-fails the hash check next time, so the file is proposed, not overwritten. A
-provenance file that can't be read counts as absent, with a warning on stderr,
-which puts every brain file back on the fingerprint fallback until the next
-snapshot write.
+The fingerprint fallback can't see a snapshot someone copied over by hand. So
+whenever it is the only thing vouching for the base, and the upgrade is about
+to change the live file (row 5 or a clean row 6), the replaced file is kept as
+`<KIND>.md.bak.<date>` and reported in `UpgradeResult.backups`. This happens at
+most once per file.
+
+A hard kill between writing a snapshot and writing `provenance.json` fails the
+hash check next time, so the file is proposed rather than overwritten, and
+`bootstrap resolve` gets it back on track. A `provenance.json` that can't be
+parsed is renamed to `provenance.json.corrupt`, with a warning, so the next
+write can't destroy what it held. Every brain file then goes back to the
+fingerprint fallback, with its backup, until its next snapshot write.
 
 ### The decision per brain file
 
@@ -148,7 +159,7 @@ snapshot write.
 |---|---|---|---|---|
 | 1 | sidecar pending | **skip**: touch nothing | unchanged | `skipped` |
 | 2 | `ours == theirs` | nothing to write | → ours | — |
-| 3 | live is a proposal adopted verbatim (`sha256(theirs) == proposed_sha256`) | **fast-forward**: live → ours | → ours | — |
+| 3 | live is a proposal adopted verbatim (`theirs == proposed/<KIND>.md`) | **fast-forward**: live → ours | → ours | — |
 | 4 | base isn't a plugin assembly | **propose**: sidecar = ours; live untouched | unchanged | `conflicts` |
 | 5 | `base == theirs` | **fast-forward**: live → ours | → ours | — |
 | 6 | both changed, merge clean | live → merge | → ours | — |
@@ -160,11 +171,37 @@ apply "delete the legacy brain, add the plugin's" to the vault. That is the M3
 loss along another path. So the vault gets the plugin's version as a proposal
 and decides, as the brain-structure ADR asks: Phase 2 adoption is deliberate.
 
-Row 3 is how a proposal converges. A vault that adopts the plugin's version
-(`mv SKILL.md.proposed-merge SKILL.md`) holds a file byte-identical to an
-assembly the plugin produced, so the next upgrade can fast-forward it even
-though the snapshot is still the seed. Without row 3, an adopted legacy vault
-would get a fresh proposal on every release that touches the file.
+Row 3 lets a plain `mv SKILL.md.proposed-merge SKILL.md` converge. The vault
+then holds a file byte-identical to an assembly the plugin produced, so the next
+upgrade can fast-forward it even though the snapshot is still the seed. It only
+covers a file nobody touched after the `mv`. Dreaming runs edit brain files when
+they apply approved proposals, and an edited adoption can't be told apart from
+any other edit. For that case there is `bootstrap resolve`.
+
+## Resolving: `scoutctl bootstrap resolve <KIND>.md`
+
+Once the live file is the version the user wants, `resolve` makes
+`proposed/<KIND>.md` the snapshot (recorded `assembled`) and removes the sidecar.
+That works whether the user moved the sidecar into place, merged parts of it by
+hand, or kept their own version. The next upgrade then merges only *later*
+plugin changes into the resolution. This makes three things converge:
+
+- an adopted proposal that was edited before the next upgrade: the Phase-2 path
+  for an M3-shaped vault;
+- a conflict resolved by hand: without `resolve`, the next merge still diffs
+  against the pre-conflict base and conflicts on the same lines again;
+- a file stuck proposing after the hard-kill case above.
+
+`resolve` refuses while the live file still holds `<<<<<<<` / `>>>>>>>` lines.
+A bare `=======` doesn't count, because it is also a Markdown heading underline.
+It also refuses when there's no sidecar and no recorded proposal. A sidecar
+left by an older engine has no recorded proposal: `resolve` removes it and
+leaves the base alone, so the next upgrade merges the file again. `resolve`
+takes the same session lock as `upgrade`.
+
+Deleting a sidecar without `resolve` is "decide later". The doctor flags a
+recorded proposal whose sidecar is gone while the live file differs from it,
+because the next upgrade will propose or merge from the old base again.
 
 The snapshot still advances only when the live file has absorbed `ours` (rows
 2, 3, 5, 6). `phases backport` therefore still sees exactly the vault's edits:
@@ -179,9 +216,11 @@ otherwise, and the edits since migration for a seeded vault.
   next to the existing `conflict (sidecar):` lines.
 - **Doctor**: a pending brain sidecar is still a warning, so the doctor shows
   yellow. A vault whose brain isn't receiving plugin changes needs attention.
-  The message now says upgrades skip the file, not that they are blocked.
+  The message now says upgrades skip the file and points to
+  `bootstrap resolve`. A sidecar removed without `resolve` is also a warning.
 - **`/scout-update`**: step 0 no longer refuses on brain sidecars. It names
-  them and continues. Step 3 explains `skipped` rows.
+  them and continues, and still refuses on the blocking `parser.py` sidecar.
+  Step 3 explains conflict, proposal, skipped and backup rows, and `resolve`.
 
 ## Testing
 
@@ -196,7 +235,14 @@ otherwise, and the edits since migration for a seeded vault.
     A vault from before provenance existed (no `provenance.json`) does too.
   - An M3-shaped legacy vault, unedited or edited since migration, with or
     without a provenance record, keeps its live brain byte-identical across
-    upgrades. Adopting the proposal converges on the next upgrade.
-  - A snapshot overwritten by hand is never fast-forwarded over.
+    upgrades. Adopting the proposal converges on the next upgrade, and so does
+    adopting, editing and resolving it.
+  - A snapshot overwritten by hand is never fast-forwarded over. Without a
+    record, a write that rests only on the fingerprint keeps a backup. A merge
+    that changes nothing writes nothing.
+  - An upgrade that fails on a later file keeps the earlier files' records.
+  - `resolve`: a resolved conflict merges the next change cleanly; it refuses
+    on conflict markers or with nothing pending; it removes an older engine's
+    sidecar without touching the base.
   - `phases backport` still maps a vault edit after a skipped upgrade, and sees
     no edits after a fast-forward.

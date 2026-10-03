@@ -148,7 +148,8 @@ flowchart LR
 **Upgrade merge rules** (`_stage_cat4_upgrade`, decided by `scripts/brain_merge.py`),
 per brain file, with `base` = last-assembled snapshot, `ours` = fresh assembly,
 `theirs` = live file. `last-assembled/provenance.json` records which snapshots
-the engine wrote (hash-checked) and which `migrate-legacy` seeded from live:
+the engine wrote (hash-checked) and which `migrate-legacy` seeded from live;
+`last-assembled/proposed/` keeps the assembly behind each pending sidecar:
 
 | Situation | Result |
 |---|---|
@@ -160,7 +161,8 @@ the engine wrote (hash-checked) and which `migrate-legacy` seeded from live:
 | Both diverged, `git merge-file` clean | Write the merge to the live file; advance the snapshot |
 | Both diverged, conflicts | Conflict-marked text to the sidecar; live and snapshot untouched |
 
-A pending brain-file sidecar only skips that file. A pending
+`scoutctl bootstrap resolve <file>` records a resolved sidecar's proposal as
+the new merge base. A pending brain-file sidecar only skips that file. A pending
 `knowledge-base/ontology/parser.py` sidecar (same merge, no provenance) still
 blocks the next `bootstrap upgrade` until the owner resolves it.
 
