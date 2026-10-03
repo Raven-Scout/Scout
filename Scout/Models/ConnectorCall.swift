@@ -36,8 +36,7 @@ struct ConnectorCall: Codable, Equatable, Hashable, Sendable {
     /// Tolerant parser — skips corrupt lines silently, matching
     /// `UsageTrackerService.parseFile`.
     static func parseFile(at url: URL) -> [ConnectorCall] {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return [] }
+        guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { dec in
             let c = try dec.singleValueContainer()
@@ -47,9 +46,11 @@ struct ConnectorCall: Codable, Equatable, Hashable, Sendable {
             throw DecodingError.dataCorruptedError(in: c, debugDescription: s)
         }
         var out: [ConnectorCall] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = line.data(using: .utf8) else { continue }
-            if let call = try? decoder.decode(ConnectorCall.self, from: d) {
+        // Split bytes, not a decoded String: the hook appends this file while
+        // sessions run, and one torn byte made `String(data:encoding:)` drop
+        // every call in the file.
+        for lineData in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
+            if let call = try? decoder.decode(ConnectorCall.self, from: lineData) {
                 out.append(call.canonicalized())
             }
         }
