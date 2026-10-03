@@ -720,10 +720,11 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
 def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path | None:
     """Record where THIS engine lives (~/.local/state/scout/engine.json, §4.2).
 
-    Gated by `skip_jobs` exactly like `_stage_install_scoutctl_shim`: the
-    pointer belongs to the same stage as the shim (spec §4.2) and must track
-    the plists the doctor compares it with. A `--no-jobs` run leaves plists,
-    shim and pointer alone, so a scratch install can never repoint Scout.app.
+    Gated by `skip_jobs` like the plists and `_stage_install_scoutctl_shim`
+    (spec §4.2): the pointer must track the plists the doctor compares it
+    with. A `--no-jobs` run leaves plists, shim and pointer alone, so a
+    scratch install can never repoint Scout.app. migrate-legacy installs no
+    shim but still writes the pointer, after its version stamp.
     Returns the pointer path, or None when skipped.
     """
     if cfg.skip_jobs:

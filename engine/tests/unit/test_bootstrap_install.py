@@ -131,8 +131,8 @@ def test_install_persists_connector_inputs(tmp_path):
 
 
 def test_install_without_jobs_writes_no_engine_pointer(tmp_path):
-    """The pointer is written in the same stage as the shim, and that stage is
-    gated by skip_jobs (spec §4.2): a --no-jobs install leaves plists, shim
+    """The pointer is gated by skip_jobs like the plists and the shim
+    (spec §4.2): a --no-jobs install leaves plists, shim
     AND pointer alone, so a scratch run can never repoint Scout.app. HOME is
     the hermetic per-test home from conftest, so Path.home() is safe to read."""
     from scout.scripts.engine_pointer import read_pointer
