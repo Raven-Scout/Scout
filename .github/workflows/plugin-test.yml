@@ -1,9 +1,15 @@
-name: test
+name: plugin-test
 
 on:
   push:
     branches: [main, "migrate/**"]
+    paths:
+      - "plugin/**"
+      - ".github/workflows/plugin-test.yml"
   pull_request:
+    paths:
+      - "plugin/**"
+      - ".github/workflows/plugin-test.yml"
   workflow_call:
 
 jobs:
@@ -16,7 +22,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: engine
+        working-directory: plugin/engine
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -28,18 +34,8 @@ jobs:
         run: uv pip install -e ".[dev]"
       - name: Pytest
         run: .venv/bin/pytest tests/ -v
-      - name: Verify connectors.snapshot.json drift
-        # The canonical snapshot lives at engine/scout/connectors.snapshot.json
-        # (Plan 4 Task 8). scout-app's bundled fixture is a synced copy. CI
-        # here checks the canonical file is in sync with the YAML — drift =
-        # someone edited connectors.yaml and forgot to regenerate.
-        run: .venv/bin/python -m scout.scripts.connectors_snapshot --check --target scout/connectors.snapshot.json
-      - name: Verify schedule.snapshot.json drift
-        # The canonical snapshot lives at engine/scout/schedule.snapshot.json
-        # (Plan 5 Task 8). scout-app's bundled fixture is a synced copy. CI
-        # here checks the canonical file is in sync with the YAML — drift =
-        # someone edited schedule.yaml and forgot to regenerate.
-        run: .venv/bin/python -m scout.scripts.schedule_snapshot --check --target scout/schedule.snapshot.json
+      # (removed) Verify connectors.snapshot.json drift  -> contract.yml
+      # (removed) Verify schedule.snapshot.json drift    -> contract.yml
 
   # Coverage runs once, not across the matrix, for two reasons:
   #   1. The `[full]` extra is required. Every scout/tui test is gated on
@@ -53,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: engine
+        working-directory: plugin/engine
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3

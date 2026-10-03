@@ -1,10 +1,16 @@
-name: CI
+name: app-ci
 
 on:
   push:
     branches: [main]
+    paths:
+      - "apps/macos/**"
+      - ".github/workflows/app-ci.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "apps/macos/**"
+      - ".github/workflows/app-ci.yml"
 
 # Cancel an in-flight run when new commits land on the same ref.
 concurrency:

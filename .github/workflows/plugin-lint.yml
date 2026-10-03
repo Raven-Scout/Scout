@@ -1,16 +1,22 @@
-name: lint
+name: plugin-lint
 
 on:
   pull_request:
+    paths:
+      - "plugin/**"
+      - ".github/workflows/plugin-lint.yml"
   push:
     branches: [main, "migrate/**"]
+    paths:
+      - "plugin/**"
+      - ".github/workflows/plugin-lint.yml"
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: engine
+        working-directory: plugin/engine
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -28,28 +34,30 @@ jobs:
         run: .venv/bin/mypy scout
       - name: Version sync guard
         run: .venv/bin/python -m scout.scripts.versioning check
-        working-directory: engine
+        working-directory: plugin/engine
       - name: Shellcheck
         working-directory: ${{ github.workspace }}
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           # engine launcher — full severity (existing guard)
-          shellcheck engine/bin/scoutctl
-          # installer + release scripts — error severity
-          shellcheck -S error install.sh scripts/*.sh
+          shellcheck plugin/engine/bin/scoutctl
+          # installer (repo root) + both release scripts — error severity
+          shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh
           # all shell templates seeded into user vaults (placeholders don't
           # break shellcheck parsing) — error severity
-          find templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error
+          find plugin/templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error
       - name: Validate plugin manifests
         working-directory: ${{ github.workspace }}
         run: |
-          # Parse both manifests as JSON (the version-sync guard above uses
-          # regex, so a malformed manifest that still regex-matches its version
-          # would slip past it) and assert required keys are present.
+          # plugin.json lives in the plugin subtree; marketplace.json is the
+          # repo's entry point and lives at the repo root. Parse both as JSON
+          # (the version-sync guard above uses regex, so a malformed manifest
+          # that still regex-matches its version would slip past it) and assert
+          # required keys are present.
           python3 - <<'PY'
           import json, sys
 
-          plugin = json.load(open(".claude-plugin/plugin.json"))
+          plugin = json.load(open("plugin/.claude-plugin/plugin.json"))
           for key in ("name", "version"):
               if key not in plugin:
                   sys.exit(f"plugin.json missing required key: {key!r}")
@@ -64,6 +72,9 @@ jobs:
               for key in ("name", "source", "version"):
                   if key not in entry:
                       sys.exit(f"marketplace.json plugins[{i}] missing required key: {key!r}")
+
+          if plugins[0]["source"] != "./plugin":
+              sys.exit(f"marketplace.json source must be './plugin', got {plugins[0]['source']!r}")
 
           print("plugin manifests valid")
           PY
