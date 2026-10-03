@@ -89,7 +89,7 @@ jobs:
           checked=0
           for copy in apps/*/[Ss]cout*Tests/Fixtures/parser-corpus.json; do
             [ -f "$copy" ] || continue
-            ((checked++))
+            checked=$((checked + 1))
             if cmp -s "$canonical" "$copy"; then
               echo "OK  $copy"
             else
