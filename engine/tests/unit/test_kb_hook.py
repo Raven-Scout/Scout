@@ -133,9 +133,19 @@ def test_bootstrap_stage_skips_non_git_vault(tmp_path) -> None:
     vault = tmp_path / "v"
     vault.mkdir()
     cfg = BootstrapConfig(
-        vault=vault, plugin_root=tmp_path, instance_name="T", instance_name_lower="t",
-        user_name="T", user_email="t@example.com", timezone="America/New_York", platform="macos",
-        plugin_version="0.0.0", enabled_connectors=set(), connector_inputs={}, skip_jobs=True, skip_claude=True,
+        vault=vault,
+        plugin_root=tmp_path,
+        instance_name="T",
+        instance_name_lower="t",
+        user_name="T",
+        user_email="t@example.com",
+        timezone="America/New_York",
+        platform="macos",
+        plugin_version="0.0.0",
+        enabled_connectors=set(),
+        connector_inputs={},
+        skip_jobs=True,
+        skip_claude=True,
     )
     _stage_install_git_hook(cfg)  # must not raise
     assert not (vault / ".git").exists()

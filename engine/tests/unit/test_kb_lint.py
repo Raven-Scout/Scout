@@ -124,9 +124,7 @@ def test_lint_staged_no_head(tmp_path) -> None:
 def test_lint_staged_in_worktree(kb_repo, tmp_path) -> None:
     wt = tmp_path / "wt"
     kb_repo.git("worktree", "add", "-q", "-b", "wt-branch", str(wt))
-    (wt / "scout-config.yaml").write_text(
-        "kb_budgets:\n  'knowledge-base/projects/**': 100\n", encoding="utf-8"
-    )
+    (wt / "scout-config.yaml").write_text("kb_budgets:\n  'knowledge-base/projects/**': 100\n", encoding="utf-8")
     p = wt / PROJECT
     p.parent.mkdir(parents=True)
     p.write_text("x" * 200 + "\n", encoding="utf-8")
@@ -193,8 +191,10 @@ def test_override_count_window(tmp_path) -> None:
     now = datetime(2026, 9, 28, 12, tzinfo=UTC)
     log = tmp_path / "lint-overrides.log"
     log.write_text(
-        json.dumps({"ts": (now - timedelta(days=1)).isoformat()}) + "\n"
-        + json.dumps({"ts": (now - timedelta(days=20)).isoformat()}) + "\n"
+        json.dumps({"ts": (now - timedelta(days=1)).isoformat()})
+        + "\n"
+        + json.dumps({"ts": (now - timedelta(days=20)).isoformat()})
+        + "\n"
         + "not json\n",
         encoding="utf-8",
     )

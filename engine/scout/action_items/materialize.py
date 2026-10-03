@@ -110,9 +110,7 @@ def compact(body: str) -> str:
 
 
 def _signature(body: str) -> list[tuple[str, str, str, tuple[str, ...]]]:
-    return sorted(
-        (i.raw_line.strip(), i.status, i.priority, tuple(i.details)) for i in parse_lines(body.splitlines())
-    )
+    return sorted((i.raw_line.strip(), i.status, i.priority, tuple(i.details)) for i in parse_lines(body.splitlines()))
 
 
 def materialize(

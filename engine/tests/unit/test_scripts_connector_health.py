@@ -745,8 +745,10 @@ def test_health_md_reports_kb_lint_overrides(fake_data_dir, monkeypatch):
         calls={"mcp:claude_ai_Slack": (1, 0)},
     )
     (log_dir / "lint-overrides.log").write_text(
-        json.dumps({"ts": (_frozen_now() - timedelta(days=1)).isoformat(), "reason": "r"}) + "\n"
-        + json.dumps({"ts": (_frozen_now() - timedelta(days=3)).isoformat(), "reason": "r"}) + "\n"
+        json.dumps({"ts": (_frozen_now() - timedelta(days=1)).isoformat(), "reason": "r"})
+        + "\n"
+        + json.dumps({"ts": (_frozen_now() - timedelta(days=3)).isoformat(), "reason": "r"})
+        + "\n"
     )
     chr_mod.run(data_dir=fake_data_dir)
     body = (fake_data_dir / "knowledge-base" / "connector-health.md").read_text()

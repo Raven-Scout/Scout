@@ -70,7 +70,5 @@ def test_invalid_mode_falls_back_to_report(tmp_path: Path) -> None:
 
 
 def test_null_budget_means_unlimited(tmp_path: Path) -> None:
-    (tmp_path / "scout-config.yaml").write_text(
-        "kb_budgets:\n  'knowledge-base/big/**': null\n", encoding="utf-8"
-    )
+    (tmp_path / "scout-config.yaml").write_text("kb_budgets:\n  'knowledge-base/big/**': null\n", encoding="utf-8")
     assert load_lint_config(tmp_path).budget_for("knowledge-base/big/x.md") is None

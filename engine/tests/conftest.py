@@ -77,9 +77,7 @@ class KbRepo:
     root: Path
 
     def git(self, *args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=self.root, check=True, capture_output=True, text=True
-        ).stdout
+        return subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, text=True).stdout
 
     def write(self, rel: str, text: str) -> Path:
         p = self.root / rel

@@ -56,6 +56,4 @@ def test_url_prefix_is_not_a_false_match(kb_repo) -> None:
     kb_repo.commit()
     kb_repo.write("knowledge-base/a.md", "# gone\n")
     kb_repo.write("knowledge-base/b.md", "https://github.com/example/widget/pull/123\n")
-    assert lossless_check(kb_repo.root, "HEAD", "knowledge-base/a.md") == [
-        "https://github.com/example/widget/pull/12"
-    ]
+    assert lossless_check(kb_repo.root, "HEAD", "knowledge-base/a.md") == ["https://github.com/example/widget/pull/12"]

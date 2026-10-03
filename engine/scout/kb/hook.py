@@ -73,9 +73,7 @@ def install_hook(repo: Path, *, scoutctl: str | None = None) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     target = d / "pre-commit"
     if target.exists() and MARKER not in target.read_text(encoding="utf-8", errors="replace"):
-        raise HookConflict(
-            f"{target} exists and is not Scout-managed — add `scoutctl kb lint --staged` to it by hand"
-        )
+        raise HookConflict(f"{target} exists and is not Scout-managed — add `scoutctl kb lint --staged` to it by hand")
     target.write_text(render_hook(scoutctl or default_scoutctl()), encoding="utf-8")
     target.chmod(0o755)
     return target

@@ -28,8 +28,14 @@ def test_kb_lint_lossless_exit_codes(kb_repo) -> None:
     kb_repo.commit()
     kb_repo.write("knowledge-base/a.md", "gone\n")
     args = [
-        "kb", "lint", "--lossless-rev", "HEAD", "--lossless-path", "knowledge-base/a.md",
-        "--repo", str(kb_repo.root),
+        "kb",
+        "lint",
+        "--lossless-rev",
+        "HEAD",
+        "--lossless-path",
+        "knowledge-base/a.md",
+        "--repo",
+        str(kb_repo.root),
     ]
     result = runner.invoke(cli.app, args)
     assert result.exit_code == 1 and "PROJ-9" in result.output

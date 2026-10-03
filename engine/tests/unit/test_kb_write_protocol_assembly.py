@@ -13,9 +13,19 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 
 def _cfg(tmp_path: Path) -> BootstrapConfig:
     return BootstrapConfig(
-        vault=tmp_path / "Scout", plugin_root=PLUGIN_ROOT, instance_name="Scout", instance_name_lower="scout",
-        user_name="Taylor", user_email="taylor@example.com", timezone="America/New_York", platform="macos",
-        plugin_version="0.0.0", enabled_connectors=set(), connector_inputs={}, skip_jobs=True, skip_claude=True,
+        vault=tmp_path / "Scout",
+        plugin_root=PLUGIN_ROOT,
+        instance_name="Scout",
+        instance_name_lower="scout",
+        user_name="Taylor",
+        user_email="taylor@example.com",
+        timezone="America/New_York",
+        platform="macos",
+        plugin_version="0.0.0",
+        enabled_connectors=set(),
+        connector_inputs={},
+        skip_jobs=True,
+        skip_claude=True,
     )
 
 

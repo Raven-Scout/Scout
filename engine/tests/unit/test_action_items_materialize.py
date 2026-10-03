@@ -168,19 +168,13 @@ def test_compact_function_is_idempotent() -> None:
     assert compact(once) == once
 
 
-def test_signature_change_in_sub_bullets_triggers_verbatim_fallback(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_signature_change_in_sub_bullets_triggers_verbatim_fallback(tmp_path: Path, monkeypatch) -> None:
     """A compact() bug that silently dropped an item's comment sub-bullet must
     still be caught by the verbatim fallback — the signature has to cover
     ActionItem.details, not just the item line itself."""
     import scout.action_items.materialize as materialize_mod
 
-    body = (
-        "## 🔴 Urgent\n"
-        "- [ ] [#AAAA] 🔴 **call the bank**\n"
-        "  - owner: they close at 5\n"
-    )
+    body = "## 🔴 Urgent\n- [ ] [#AAAA] 🔴 **call the bank**\n  - owner: they close at 5\n"
     _write_daily(_vault(tmp_path), "2026-07-05", "# Action Items — Sunday, Jul 5, 2026\n" + body)
 
     def _broken_compact(_body: str) -> str:

@@ -99,9 +99,7 @@ def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple
     destination side (``+++ b/<rel>``) are parsed.
     """
     if head_rel and head_rel != rel:
-        out = git(
-            repo, "diff", "--cached", "-M", "-U0", "--no-color", "--no-ext-diff", "--", head_rel, rel
-        ).stdout
+        out = git(repo, "diff", "--cached", "-M", "-U0", "--no-color", "--no-ext-diff", "--", head_rel, rel).stdout
         return _parse_added_lines(out, rel)
     out = git(repo, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--", rel).stdout
     return _parse_added_lines(out, None)
