@@ -88,9 +88,9 @@ struct ConnectorHealthServiceTests {
         let result = ConnectorHealthService.loadRoster(from: snapshotURL)
         switch result {
         case .success(let keys):
-            // Sanity: 10 connectors; canonical claude.ai keys, not the legacy
+            // Sanity: 11 connectors; canonical claude.ai keys, not the legacy
             // mcp:plugin_* keys.
-            #expect(keys.count == 10)
+            #expect(keys.count == 11)
             #expect(keys.contains("mcp:claude_ai_Slack"))
             #expect(keys.contains("mcp:claude_ai_Linear"))
             #expect(keys.contains("mcp:claude_ai_Gmail"))
@@ -134,7 +134,7 @@ struct ConnectorHealthServiceTests {
 
         // Matrix is keyed on the snapshot connectors.
         let matrix = await service.matrix
-        #expect(matrix.connectors.count == 10)
+        #expect(matrix.connectors.count == 11)
         #expect(matrix.connectors.contains("mcp:claude_ai_Slack"))
     }
 
@@ -179,7 +179,7 @@ struct ConnectorHealthServiceTests {
         #expect(fb.contains("mcp:claude_ai_Linear"))
         #expect(!fb.contains("mcp:plugin_slack_slack"))
         #expect(!fb.contains("mcp:plugin_linear_linear"))
-        #expect(fb.count == 10)
+        #expect(fb.count == 11)
     }
 
     /// Malformed snapshot → loadRoster returns failure, not a crash.

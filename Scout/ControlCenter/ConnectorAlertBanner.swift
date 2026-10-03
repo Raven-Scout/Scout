@@ -74,8 +74,9 @@ struct ConnectorAlertBanner: View {
     }
 
     private func displayName(for connector: String) -> String {
-        // Same labels as the rail card's header row. Kept duplicated
-        // locally to avoid a cross-file dependency just for 8 strings.
+        // Same labels as the rail card's header row, duplicated locally;
+        // anything unlisted gets the rail card's prettifier rather than the
+        // raw key.
         // Alert keys are pre-canonicalized by `ConnectorAlert.parseFile`, so
         // we only need the canonical entries here.
         switch connector {
@@ -84,10 +85,12 @@ struct ConnectorAlertBanner: View {
         case "mcp:claude_ai_Gmail":             return "Gmail"
         case "mcp:claude_ai_Google_Calendar":   return "Calendar"
         case "mcp:claude_ai_Granola":           return "Granola"
+        case "mcp:fathom":                      return "Fathom"
         case "mcp:claude_ai_Google_Drive":      return "Drive"
         case "github":                          return "GitHub"
         case "mcp:claude-in-chrome":            return "Chrome"
-        default:                                return connector
+        default:
+            return ConnectorHealthRailCard.heuristicLabel(for: connector)
         }
     }
 }
