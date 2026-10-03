@@ -3,19 +3,21 @@
 Several fixes a vault carried by hand are calls from a plugin-owned script into
 a helper script only that vault has:
 
-  - each runner records the run's outcome (``scripts/run-outcome.sh record``) and
-    regenerates the connector-health surface (``scripts/connector-health-rollup.sh``)
-    after the session, from the wrapper, so both still happen when the session
+  - each runner records the run's outcome (``scripts/run-outcome.sh record``)
+    after the session, from the wrapper, so it still happens when the session
     dies before reaching its phases;
   - ``hooks/kb-pre-filter.sh`` caches the git-truth staleness ranking
     (``scripts/vault-freshness.py``) before the session starts;
   - ``scripts/heartbeat.sh`` runs the session-lane liveness watchdog
     (``scripts/session-lane-liveness.py``) once a day.
 
-The helpers are not shipped by the plugin, so every call is optional: a vault
-without the helper, or with one that fails, must run exactly as before. These
-tests render each template into a temporary vault, stand in for the helpers and
-for ``claude`` / ``scoutctl``, and run the real shell.
+The plugin now ships these helpers (see test_shipped_helpers_install.py), but
+every call stays guarded: a vault without the helper, or with one that fails,
+must run exactly as before. Each runner also regenerates the connector-health
+surface itself, calling ``scoutctl connector-health-report`` directly, for the
+same reason as the outcome record. These tests render each template into a
+temporary vault, stand in for the helpers and for ``claude`` / ``scoutctl``, and
+run the real shell.
 """
 
 from __future__ import annotations
@@ -87,9 +89,22 @@ RUNNERS = [
     pytest.param("run-research.sh.tmpl", "research", id="run-research"),
 ]
 
+# Records each call with the vault it was pointed at, and says so in the log.
+ROLLUP_SCOUTCTL = """#!/bin/bash
+echo "$SCOUT_DATA_DIR $*" >> "{calls}"
+echo "connector-health: 2 sessions in window, 0 alert(s)"
+exit {exit_code}
+"""
+
 
 def _stub_claude(vault: Path, exit_code: int) -> None:
     _script(vault / "scripts" / "claude-with-retry.sh", f"#!/bin/bash\nexit {exit_code}\n")
+
+
+def _rollup_scoutctl(vault: Path, exit_code: int = 0) -> tuple[Path, Path]:
+    calls = vault / "scoutctl.calls"
+    stub = _script(vault / "bin" / "scoutctl", ROLLUP_SCOUTCTL.format(calls=calls, exit_code=exit_code))
+    return stub, calls
 
 
 def _runner_log(vault: Path) -> str:
@@ -103,11 +118,11 @@ def _runner_log(vault: Path) -> str:
 def test_runner_records_the_outcome_and_rolls_up_connector_health(
     vault: Path, template: str, slot: str, exit_code: int
 ) -> None:
-    runner = _render(template, vault, template.removesuffix(".tmpl"))
+    scoutctl, calls = _rollup_scoutctl(vault)
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, exit_code)
     outcome_args = vault / "outcome.args"
     _script(vault / "scripts" / "run-outcome.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{outcome_args}"\n')
-    _script(vault / "scripts" / "connector-health-rollup.sh", "#!/bin/bash\necho 'connector-health-rollup: ok'\n")
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
@@ -116,28 +131,31 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    assert "connector-health-rollup: ok" in _runner_log(vault)
+    assert calls.read_text(encoding="utf-8").splitlines() == [f"{vault} connector-health-report"]
+    assert "connector-health: 2 sessions in window" in _runner_log(vault)
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_runner_without_the_helpers_runs_as_before(vault: Path, template: str, slot: str) -> None:
-    runner = _render(template, vault, template.removesuffix(".tmpl"))
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(vault / "bin" / "absent"))
     _stub_claude(vault, 0)
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
     assert result.returncode == 0, result.stderr
-    assert "run finished" in _runner_log(vault)
+    log = _runner_log(vault)
+    assert "run finished" in log
+    assert "connector-health roll-up skipped" in log
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot: str) -> None:
-    runner = _render(template, vault, template.removesuffix(".tmpl"))
+    scoutctl = _script(
+        vault / "bin" / "scoutctl", "#!/bin/bash\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n"
+    )
+    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)
     _script(vault / "scripts" / "run-outcome.sh", "#!/bin/bash\necho 'run-outcome: ledger not writable' >&2\nexit 1\n")
-    _script(
-        vault / "scripts" / "connector-health-rollup.sh", "#!/bin/bash\necho 'rollup: engine missing' >&2\nexit 1\n"
-    )
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
@@ -146,7 +164,7 @@ def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot
     # dead with nothing anywhere to say so.
     log = _runner_log(vault)
     assert "run-outcome: ledger not writable" in log
-    assert "rollup: engine missing" in log
+    assert "connector-health: fatal error: engine broken" in log
 
 
 # ---------- kb-pre-filter.sh: git-truth staleness ranking ----------
