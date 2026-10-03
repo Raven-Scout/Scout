@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "plugin/**"
+      - "install.sh"
+      - "apps/macos/scripts/**"
       - ".github/workflows/plugin-lint.yml"
   push:
     branches: [main, "migrate/**"]
     paths:
       - "plugin/**"
+      - "install.sh"
+      - "apps/macos/scripts/**"
       - ".github/workflows/plugin-lint.yml"
 
 jobs:
