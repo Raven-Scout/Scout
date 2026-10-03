@@ -120,6 +120,11 @@ _CAT1_FILES_FROM_PLUGIN = {
     "knowledge-base/ontology/__init__.py": "templates/knowledge-base/ontology/__init__.py",
     "action-items/render.py": "templates/action-items/render.py",
     "scripts/recurring-task-status.py": "templates/scripts/recurring-task-status.py",
+    # Optional helpers the plugin-owned scripts call, guarded: the git-truth
+    # staleness ranking (hooks/kb-pre-filter.sh) and the session-lane watchdog
+    # (scripts/heartbeat.sh). Standard-library Python, run with python3.
+    "scripts/vault-freshness.py": "templates/scripts/vault-freshness.py",
+    "scripts/session-lane-liveness.py": "templates/scripts/session-lane-liveness.py",
 }
 
 # Plugin-owned files the vault is known to extend, not just patch: parser.py is
@@ -146,6 +151,8 @@ _CAT1_TEMPLATES = (
     ("scripts/claude-with-retry.sh", "templates/scripts/claude-with-retry.sh.tmpl"),
     ("scripts/post-session-backfill.sh", "templates/scripts/post-session-backfill.sh.tmpl"),
     ("scripts/materialize-daily-file.sh", "templates/scripts/materialize-daily-file.sh.tmpl"),
+    # The runners' out-of-band record of how each run ended (run-outcomes.jsonl).
+    ("scripts/run-outcome.sh", "templates/scripts/run-outcome.sh.tmpl"),
     ("hooks/kb-pre-filter.sh", "templates/hooks/kb-pre-filter.sh.tmpl"),
     (".gitignore", "templates/.gitignore.tmpl"),
 )

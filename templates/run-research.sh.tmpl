@@ -9,6 +9,7 @@ SCOUT_DIR="{{SCOUT_DIR}}"
 export SCOUT_DATA_DIR="$SCOUT_DIR"
 LOG_DIR="$SCOUT_DIR/.scout-logs"
 CLAUDE_BIN="{{CLAUDE_BIN}}"
+SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
 LOG_FILE="$LOG_DIR/research-$TIMESTAMP.log"
 LOCK_FILE="$LOG_DIR/.scout-session.lock"
@@ -150,11 +151,12 @@ fi
 # Regenerate the connector-health surface from the runner, for the same reason:
 # a run that dies early has still logged its tool calls, but never refreshes
 # knowledge-base/connector-health.md, which then goes stale while still looking
-# current (showing alerts that later runs already resolved). Optional vault
-# helper, skipped when absent.
-HEALTH_ROLLUP="$SCOUT_DIR/scripts/connector-health-rollup.sh"
-if [ -x "$HEALTH_ROLLUP" ]; then
-    "$HEALTH_ROLLUP" >> "$LOG_FILE" 2>&1 || true
+# current (showing alerts that later runs already resolved). The engine does the
+# roll-up and says in this log when it had nothing to rewrite. Never fatal.
+if [ -x "$SCOUTCTL_BIN" ]; then
+    "$SCOUTCTL_BIN" connector-health-report >> "$LOG_FILE" 2>&1 || true
+else
+    echo "connector-health roll-up skipped: scoutctl not found at $SCOUTCTL_BIN" >> "$LOG_FILE"
 fi
 
 # Track session cost (skill self-reports actual cost from inside the session via the

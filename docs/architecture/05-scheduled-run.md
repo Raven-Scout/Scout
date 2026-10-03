@@ -86,9 +86,13 @@ C4Dynamic
     every new action item a stable `[#XXXX]` prefix from
     `.scout-state/id-map.json` and commits it separately, so the companion apps
     can key on IDs. On a non-zero exit, `rate-limit-detect.sh` scans the log
-    and may append a `rate_limit` row. The runner then appends its own
-    `usage-tracker.jsonl` row (`source=runner`, exit code), which is what the
-    next tick and the heartbeat read.
+    and may append a `rate_limit` row. `run-outcome.sh` records how the run
+    ended in `run-outcomes.jsonl` (with a failure class read from the log) and
+    sends a Telegram notice at the first and second consecutive failure. The
+    runner calls `scoutctl connector-health-report`, so `connector-health.md`
+    refreshes even after a run that died before its phases. The runner then
+    appends its own `usage-tracker.jsonl` row (`source=runner`, exit code),
+    which is what the next tick and the heartbeat read.
 
 ## The opportunistic path
 
