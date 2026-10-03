@@ -6,7 +6,8 @@
 #            plugin tree Claude Code copies into its cache (spec §4.1).
 # Builder:   uv when available ($SCOUT_UV, `uv` on PATH, or ~/.local/bin/uv).
 #            uv downloads a managed CPython, so this works on Macs whose only
-#            python3 is Apple's 3.9. Falls back to `python3.1x -m venv` + pip.
+#            python3 is Apple's 3.9. Falls back to `python3.1x -m venv` + pip
+#            (SCOUT_INSTALL_NO_UV=1 forces the fallback).
 # Extras:    $SCOUT_VENV_EXTRAS (default: dev). Scout.app passes `full`.
 # Python:    $SCOUT_PYTHON_VERSION (default: 3.12) — uv path only.
 #
@@ -27,9 +28,17 @@ if [ ! -d "$PLUGIN_ROOT/engine" ]; then
     exit 1
 fi
 
-UV="${SCOUT_UV:-}"
-if [ -z "$UV" ] && command -v uv >/dev/null 2>&1; then UV="$(command -v uv)"; fi
-if [ -z "$UV" ] && [ -x "${HOME:-/nonexistent}/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; fi
+# The uv and Claude Code installers put binaries here; a fresh shell may lack it.
+export PATH="${HOME:-/nonexistent}/.local/bin:$PATH"
+
+# Builder: uv when available (install.sh guarantees it). SCOUT_INSTALL_NO_UV=1
+# forces the python3.1x + pip fallback below.
+UV=""
+if [ -z "${SCOUT_INSTALL_NO_UV:-}" ]; then
+    UV="${SCOUT_UV:-}"
+    if [ -z "$UV" ] && command -v uv >/dev/null 2>&1; then UV="$(command -v uv)"; fi
+    if [ -z "$UV" ] && [ -x "${HOME:-/nonexistent}/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; fi
+fi
 
 # Choose the builder BEFORE touching an existing venv: a machine with neither
 # uv nor a Python >= 3.11 must keep the venv it has, not lose it to the error.
@@ -48,7 +57,10 @@ if [ -z "$UV" ]; then
     if [ -z "$PYTHON" ]; then
         cat >&2 <<EOF
 error: neither uv nor a Python >= 3.11 was found on PATH.
-Install uv (https://docs.astral.sh/uv) — it downloads Python for you — or one of:
+scout-engine requires Python 3.11 or newer. Easiest fix — install uv, which
+provides Python automatically, then re-run:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+Or install a Python yourself:
   macOS:   brew install python@3.13
   Debian:  sudo apt install python3.13 python3.13-venv
 then re-run: bash $PLUGIN_ROOT/scripts/install-venv.sh
@@ -81,5 +93,5 @@ if [ ! -x "$VENV/bin/scoutctl" ]; then
     exit 1
 fi
 
-echo "ok: venv ready at $VENV"
+echo "ok: venv ready at $VENV ($("$VENV/bin/python" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'))"
 echo "verify: $VENV/bin/scoutctl version"

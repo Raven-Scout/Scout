@@ -229,8 +229,14 @@ def test_refusal_text_mode_omits_a_reason_that_repeats_the_error(tmp_path, monke
 
 
 def test_auto_claude_bin_auto_resolves_via_which(tmp_path, monkeypatch):
+    """`--claude-bin auto` uses install's resolver (#254): the PATH hit wins
+    when it is executable."""
     vault = _vault(tmp_path, monkeypatch)
-    monkeypatch.setattr("shutil.which", lambda name: "/opt/homebrew/bin/claude")
+    claude = tmp_path / "homebrew" / "bin" / "claude"
+    claude.parent.mkdir(parents=True)
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    monkeypatch.setattr("shutil.which", lambda name: str(claude))
     result = runner.invoke(
         app,
         [
@@ -247,7 +253,7 @@ def test_auto_claude_bin_auto_resolves_via_which(tmp_path, monkeypatch):
     )
     assert result.exit_code in (0, 1), result.stdout + result.stderr
     config = yaml.safe_load((vault / "scout-config.yaml").read_text())
-    assert config["connectors"]["inputs"]["claude_bin"] == "/opt/homebrew/bin/claude"
+    assert config["connectors"]["inputs"]["claude_bin"] == str(claude)
 
 
 def test_auto_upgrade_ignores_identity_flags_note_on_stderr(tmp_path, monkeypatch):
@@ -457,7 +463,14 @@ def test_auto_with_jobs_writes_one_consistent_engine_pointer(tmp_path, monkeypat
     vault is the plist's SCOUT_DATA_DIR — the consistency the doctor checks."""
     vault = _vault(tmp_path, monkeypatch)
     home = Path.home()  # the hermetic per-test HOME from conftest
-    result = runner.invoke(app, ["bootstrap", "auto", *JOBS_ENABLED, *IDENTITY])
+    # The doctor reports red when the runner's CLAUDE_BIN is not executable
+    # (#254), so point it at a stub instead of the HEADLESS /usr/local/bin path.
+    claude = tmp_path / "fakebin" / "claude"
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    argv = [*JOBS_ENABLED]
+    argv[argv.index("--claude-bin") + 1] = str(claude)
+    result = runner.invoke(app, ["bootstrap", "auto", *argv, *IDENTITY])
     assert result.exit_code in (0, 1), result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["action"] == "install"

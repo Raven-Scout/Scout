@@ -27,6 +27,24 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may reach the real ``gh`` (Agent Sessions spec §7).
+
+    ``gh`` reads the developer's auth and hits the network. Every test sees gh as
+    absent, and the default runner fails loudly if something calls it anyway. Tests
+    that need gh behaviour inject a fake through ``BuildOptions`` or their own
+    monkeypatch, which runs after this fixture and so wins.
+    """
+    import scout.sessions.github as gh
+
+    def _real_gh_blocked(argv: list[str]) -> str | None:
+        raise AssertionError("real gh called from a test")
+
+    monkeypatch.setattr(gh, "gh_available", lambda: False)
+    monkeypatch.setattr(gh, "default_runner", _real_gh_blocked)
+
+
 @pytest.fixture
 def fake_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A writable tmp data dir wired up via SCOUT_DATA_DIR."""

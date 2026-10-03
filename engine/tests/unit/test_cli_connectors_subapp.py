@@ -29,6 +29,16 @@ def test_probe_registry_json_lists_shipped_connectors():
     assert data["github"]["kind"] == "bash"
 
 
+def test_probe_registry_linear_accepts_claude_ai_connector():
+    """#256: a user who connected Linear at claude.ai (the connector scheduled
+    runs use and connector health tracks) must probe ✓, not only plugin users."""
+    result = runner.invoke(app, ["connectors", "probe-registry", "--json"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    chain = json.loads(result.stdout)["linear"]["tool_chain"]
+    assert "mcp__claude_ai_Linear__list_teams" in chain
+    assert "mcp__plugin_linear_linear__list_teams" in chain
+
+
 def test_probe_registry_json_includes_overlay(tmp_path, monkeypatch):
     """A vault overlay adds a connector the wizard will then probe (#97)."""
     data_dir = tmp_path / "Scout"

@@ -723,6 +723,36 @@ def test_bootstrap_install_creates_the_vault(tmp_path: Path, monkeypatch: pytest
     assert "github" in config and "slack" in config
 
 
+@pytest.mark.parametrize(("flag", "expected"), [("--auto-update", True), ("--no-auto-update", False), (None, None)])
+def test_bootstrap_install_forwards_auto_update(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, flag: str | None, expected: bool | None
+) -> None:
+    """#255: /scout-setup records the auto-update choice through the engine
+    (which has PyYAML) instead of an inline system-python3 script."""
+    seen: dict[str, object] = {}
+
+    def fake_install(cfg):
+        seen["auto_update"] = cfg.auto_update
+
+        class R:
+            vault = cfg.vault
+
+            class doctor:
+                class severity:
+                    value = "ok"
+
+                warnings: list[str] = []
+                errors: list[str] = []
+                exit_code = 0
+
+        return R()
+
+    monkeypatch.setattr("scout.scripts.bootstrap.install", fake_install)
+    result = runner.invoke(cli.app, _install_argv(*([flag] if flag else [])))
+    assert result.exit_code == 0, result.output
+    assert seen["auto_update"] is expected
+
+
 def test_bootstrap_install_forwards_connector_inputs(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The "regen ships placeholders" bug was a dropped connector_inputs dict —
     assert every flag lands in the BootstrapConfig."""

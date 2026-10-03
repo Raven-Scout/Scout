@@ -176,7 +176,7 @@ Capture the output. The command prints the installed version, the available vers
 Then read `auto_update.enabled` from `~/Scout/scout-config.yaml` (absent ⇒ treat as `false`):
 
 ```bash
-python3 - <<'EOF'
+"$PLUGIN_ROOT/.venv/bin/python" - <<'EOF'
 import pathlib, yaml
 p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
 if p.exists():

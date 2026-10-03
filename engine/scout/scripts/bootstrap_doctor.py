@@ -291,6 +291,32 @@ def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
     return [], warnings
 
 
+_CLAUDE_BIN_LINE = re.compile(r'^CLAUDE_BIN="([^"]*)"\s*$', re.MULTILINE)
+
+
+def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
+    """The rendered run-scout.sh must point CLAUDE_BIN at an executable claude.
+
+    A dead path (e.g. the old /usr/local/bin/claude default on a machine using the
+    native ~/.local/bin installer) makes every scheduled run fail before Claude
+    starts, and nothing else surfaces it.
+    """
+    runner = vault / "run-scout.sh"
+    if not runner.exists():
+        return [], []  # missing runner is reported by the cat-1 file check
+    match = _CLAUDE_BIN_LINE.search(runner.read_text(encoding="utf-8", errors="replace"))
+    if match is None:
+        return [], []
+    claude_bin = match.group(1)
+    if not claude_bin or not os.access(claude_bin, os.X_OK):
+        return [
+            f"run-scout.sh: CLAUDE_BIN={claude_bin or '(empty)'} is not an executable claude CLI — "
+            "every scheduled run will fail. Fix: in scout-config.yaml set connectors.inputs.claude_bin "
+            'to the output of `command -v claude` (or to "" to auto-detect), then run /scout-update.'
+        ], []
+    return [], []
+
+
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
     """Run all doctor checks against ``vault``. Pure read."""
     errors: list[str] = []
@@ -394,6 +420,11 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
         _, pointer_warnings = _check_engine_pointer(home=home)
         warnings.extend(pointer_warnings)
+        # The claude CLI the runners launch. Gated with the other host-runtime
+        # checks: it inspects this machine's binaries, not the vault's content.
+        claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
+        errors.extend(claude_errors)
+        warnings.extend(claude_warnings)
 
     if errors:
         return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings)
