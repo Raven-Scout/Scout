@@ -9,6 +9,7 @@ the subcommand functions, not at module level.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -212,35 +213,72 @@ def budget_set_cmd(
     typer.echo(f"skip at: {payload['skip_at_pct']:.0f}% → ${payload['skip_threshold_usd']:.2f}")
 
 
-# `scoutctl session cc-cache` replaces ~/Scout/scripts/cc-session-cache.sh
-# (#74 + #75). The bash version spawned one python3 cold start per JSONL file
-# in ~/.claude/projects/* plus a 5-stage subprocess pipeline per file — often
-# dozens of starts per Scout session-start. This is one process and reuses
-# unchanged-mtime entries from a JSON cache.
+# `scoutctl session index` builds .scout-cache/sessions-index.json from
+# desktop records, transcripts, live PIDs and gh (Agent Sessions plan 1,
+# #74 + #75). `session list` reads that index back. `cc-cache` is the
+# back-compat alias for `index --render` that vault scripts/cc-session-cache.sh
+# still calls — it replaces the old ~/Scout/scripts/cc-session-cache.sh, whose
+# bash version spawned one python3 cold start per JSONL file in
+# ~/.claude/projects/* plus a 5-stage subprocess pipeline per file.
 session_app = typer.Typer(help="Pre-session data caches for scheduled Scout runs.")
 app.add_typer(session_app, name="session")
 
 
+@session_app.command("index")
+def session_index_cmd(
+    json_out: bool = typer.Option(False, "--json", help="Print the index JSON to stdout."),
+    render: bool = typer.Option(False, "--render", help="Also write the cc-sessions.md digest."),
+    no_gh: bool = typer.Option(False, "--no-gh", help="Skip gh; PR states come from cache or read 'unknown'."),
+    hours: int = typer.Option(24, "--hours", "-h", help="Activity window for the digest (default 24h)."),
+    instance_name: str = typer.Option("Scout", "--instance-name", help="Instance name used in the digest header."),
+    timezone: str = typer.Option(None, "--timezone", help="IANA zone for rendered timestamps (default: vault's)."),
+    strict: bool = typer.Option(False, "--strict", help="Exit 1 if any source reported an error."),
+) -> None:
+    """Build .scout-cache/sessions-index.json from desktop records, transcripts, PIDs and gh."""
+    from scout.sessions.index import main as index_main
+
+    raise typer.Exit(
+        index_main(
+            json_out=json_out,
+            render=render,
+            use_gh=not no_gh,
+            hours=hours,
+            instance_name=instance_name,
+            tz_name=timezone,
+            strict=strict,
+        )
+    )
+
+
+@session_app.command("list")
+def session_list_cmd(
+    state: list[str] = typer.Option([], "--state", help="Only these states (repeatable)."),
+    project: str = typer.Option(None, "--project", help="Project name, folder name or key."),
+    include_archived: bool = typer.Option(False, "--include-archived"),
+    include_scout_runs: bool = typer.Option(False, "--include-scout-runs"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List sessions from the written index (builds it first if missing)."""
+    from scout.sessions.index import list_main
+
+    raise typer.Exit(
+        list_main(
+            states=list(state),
+            project=project,
+            include_archived=include_archived,
+            include_scout_runs=include_scout_runs,
+            json_out=json_out,
+        )
+    )
+
+
 @session_app.command("cc-cache")
 def session_cc_cache_cmd(
-    hours: int = typer.Option(
-        24,
-        "--hours",
-        "-h",
-        help="Lookback window for CC session JSONLs (default 24h).",
-    ),
-    instance_name: str = typer.Option(
-        "Scout",
-        "--instance-name",
-        help="Instance name suffix to exclude (skip Scout's own sessions).",
-    ),
-    timezone: str = typer.Option(
-        None,
-        "--timezone",
-        help="IANA zone for the rendered timestamps (default: the vault's configured timezone).",
-    ),
+    hours: int = typer.Option(24, "--hours", "-h", help="Activity window for the digest (default 24h)."),
+    instance_name: str = typer.Option("Scout", "--instance-name", help="Instance name used in the digest header."),
+    timezone: str = typer.Option(None, "--timezone", help="IANA zone for rendered timestamps (default: vault's)."),
 ) -> None:
-    """Refresh .scout-cache/cc-sessions.md with metadata from recent CC sessions."""
+    """Back-compat alias for `session index --render` (vault scripts/cc-session-cache.sh calls this)."""
     from scout.scripts.cc_session_cache import main as cc_main
 
     raise typer.Exit(cc_main(hours=hours, instance_name=instance_name, tz_name=timezone))
@@ -1255,6 +1293,22 @@ def _register_notify() -> None:
 _register_notify()
 
 
+def _resolve_claude_bin_or_warn(explicit: str, resolve: Callable[[str], str]) -> str:
+    """Resolve ``--claude-bin`` once so the value persisted in scout-config.yaml
+    is the concrete path the runners were rendered with; warn when it is not
+    executable (every scheduled run would fail to launch Claude)."""
+    import os as _os
+
+    resolved = resolve(explicit)
+    if not _os.access(resolved, _os.X_OK):
+        typer.echo(
+            f"  warning: claude CLI not executable at {resolved} — scheduled runs will fail until "
+            "Claude Code is installed there (or re-run with --claude-bin <path>).",
+            err=True,
+        )
+    return resolved
+
+
 def _register_bootstrap() -> None:
     bootstrap_app = typer.Typer(help="Bootstrap pipeline (install/upgrade/doctor).")
     app.add_typer(bootstrap_app, name="bootstrap")
@@ -1278,15 +1332,23 @@ def _register_bootstrap() -> None:
         user_slack_id: str = typer.Option("", "--user-slack-id"),
         github_username: str = typer.Option("", "--github-username"),
         github_repos: str = typer.Option("", "--github-repos"),
-        claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
+        claude_bin: str = typer.Option(
+            "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
+        ),
         max_budget: str = typer.Option("5.00", "--max-budget"),
+        auto_update: bool | None = typer.Option(
+            None,
+            "--auto-update/--no-auto-update",
+            help="Record the auto-update preference (auto_update.enabled) in scout-config.yaml.",
+        ),
     ) -> None:
         """Install Scout into the user's vault directory."""
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, install
+        from scout.scripts.bootstrap import BootstrapConfig, install, resolve_claude_bin
 
         vault = _paths.data_dir()
+        claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
             vault=vault,
             plugin_root=Path(__file__).parent.parent.parent,
@@ -1307,6 +1369,7 @@ def _register_bootstrap() -> None:
             },
             skip_jobs=skip_jobs,
             skip_claude=skip_claude,
+            auto_update=auto_update,
         )
         result = install(cfg)
         typer.echo(f"installed: {result.vault}")
@@ -1390,7 +1453,9 @@ def _register_bootstrap() -> None:
         user_slack_id: str = typer.Option("", "--user-slack-id"),
         github_username: str = typer.Option("", "--github-username"),
         github_repos: str = typer.Option("", "--github-repos"),
-        claude_bin: str = typer.Option("/usr/local/bin/claude", "--claude-bin"),
+        claude_bin: str = typer.Option(
+            "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
+        ),
         timezone: str = typer.Option("America/New_York", "--timezone"),
         max_budget: str = typer.Option("5.00", "--max-budget"),
         platform: str = typer.Option("macos", "--platform"),
@@ -1411,9 +1476,10 @@ def _register_bootstrap() -> None:
         """
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy
+        from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy, resolve_claude_bin
 
         vault = _paths.data_dir()
+        claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
             vault=vault,
             plugin_root=Path(__file__).parent.parent.parent,
@@ -1602,6 +1668,47 @@ def self_update_check(json_out: bool = typer.Option(False, "--json")) -> None:
             else f"up to date ({status.installed})"
         )
         typer.echo(msg)
+
+
+# In-place edits to the vault's scout-config.yaml. The file has several
+# producers and carries comments (bootstrap state, `budget set`'s note, hand
+# edits), so each command rewrites only its own block — never a pyyaml
+# round-trip of the whole file, which deletes every comment in it.
+config_app = typer.Typer(help="Edit the vault's scout-config.yaml in place, keeping its comments.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("set-auto-update")
+def config_set_auto_update_cmd(
+    enabled: bool | None = typer.Option(
+        None, "--enabled/--disabled", help="Turn auto-update on or off. Omit to leave it as it is."
+    ),
+    channel: str | None = typer.Option(
+        None, "--channel", help="Release channel (stable). Omit to keep the current one, or stable if unset."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the resulting block as JSON."),
+) -> None:
+    """Write the auto_update block of the vault's scout-config.yaml; every other line is kept."""
+    import json as _json
+
+    from scout.scripts.auto_update_config import AutoUpdateWriteError, write_auto_update
+
+    if enabled is None and channel is None:
+        typer.echo("nothing to set — pass --enabled, --disabled, or --channel", err=True)
+        raise typer.Exit(2)
+
+    try:
+        payload = write_auto_update(enabled=enabled, channel=channel)
+    except AutoUpdateWriteError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    if as_json:
+        typer.echo(_json.dumps(payload, indent=2))
+        return
+    state = "enabled" if payload["enabled"] is True else "disabled"
+    verdict = f"wrote {payload['config_path']}" if payload["changed"] else "already set, nothing written"
+    typer.echo(f"auto_update: {state} (channel: {payload['channel']}) — {verdict}")
 
 
 @app.command()

@@ -7,3 +7,10 @@ __pycache__/
 *.pyc
 *.bak.*
 *.proposed-merge
+
+# Local Python environment for vault-side scripts
+.venv/
+
+# MCP server config — holds API keys. Sessions auto-commit the vault, so this
+# line is what keeps a live key out of git history.
+.mcp.json

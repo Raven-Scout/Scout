@@ -53,24 +53,56 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
+### Before you start
+
+| You need | Why | How |
+|---|---|---|
+| **A Mac on macOS 13+** (Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the [Mac app](https://github.com/Raven-Scout/Scout) is macOS-only | — |
+| **A paid Claude plan** — Max recommended | Every scheduled run is a Claude Code session on Opus (~$2.50–$5 each, ~8 runs on a weekday) | [claude.com/pricing](https://claude.com/pricing) |
+| **Claude Code, installed and signed in** | Scout runs as headless `claude -p` sessions under your login | [Install Claude Code](https://docs.claude.com/claude-code), then run `claude` once in Terminal to sign in |
+| **Your tools connected on claude.ai** | Scout reads Slack, Gmail, Calendar, Linear, Granola, Drive through claude.ai connectors | [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — turn on the ones you use |
+| **Slack (strongly recommended)** | Scout's daily summary and the 👍/👎 feedback loop arrive as a Slack DM — without Slack, results only appear in files and the Mac app | Connect Slack at the link above |
+| *GitHub CLI (optional)* | PR / review-request tracking | `brew install gh && gh auth login` |
+| *Your Mac awake at run times* | launchd doesn't fire while the lid is closed; missed runs catch up later | Optional: `scoutctl schedule install-wake-schedule` (on AC power) |
+
+You do **not** need Homebrew or Python — the installer gets everything else (including a private Python for the engine, via [uv](https://docs.astral.sh/uv)). On a brand-new Mac it will first ask you to install Apple's Command Line Tools (one dialog, a few minutes); re-run it afterwards.
+
+### 1. Install the plugin + engine
+
+In Terminal:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
 ```
 
-Then open Claude Code and run `/scout-setup` to create your vault.
+It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin, and builds the engine. It ends with `✅ Scout plugin + engine installed.` — if anything fails it stops with the exact command to retry instead.
 
-**Updating later:** run `/scout-update` — it refreshes the plugin and upgrades your vault (sidecar-safe).
+### 2. Create your vault
+
+Open Claude Code and run:
+
+```
+/scout-setup
+```
+
+The wizard asks for your name, email and timezone, detects which tools are connected, asks for your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), and whether Scout should keep itself updated. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
+
+### 3. (Optional) Install the Mac app
+
+Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it. It's signed and notarized, so it opens normally. It shows your action items, upcoming runs, costs and schedule on top of `~/Scout/`.
+
+**Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
 ## Quick Start
 
-Scout is distributed as a Claude Code plugin via a built-in marketplace catalog (`.claude-plugin/marketplace.json`). Install it with:
+The one-line installer above is the recommended path. Under the hood, Scout is distributed as a Claude Code plugin via a built-in marketplace catalog (`.claude-plugin/marketplace.json`); to install it by hand instead:
 
 ```
 /plugin marketplace add Raven-Scout/scout-plugin
 /plugin install scout@scout-plugin
 ```
 
-The first command registers this repo as a plugin marketplace; the second installs the `scout` plugin from it. After installing, the `/scout-*` commands and skills are available in every Claude Code session.
+The first command registers this repo as a plugin marketplace; the second installs the `scout` plugin from it. After installing, the `/scout-*` commands and skills are available in every Claude Code session. Installed this way, the engine is built the first time you run `/scout-setup` (about a minute).
 
 > **Other ways to install**
 >
@@ -79,7 +111,7 @@ The first command registers this repo as a plugin marketplace; the second instal
 >
 > See [Discover and install plugins](https://code.claude.com/docs/en/discover-plugins) for the full Claude Code plugin documentation.
 
-Then run `/scout-setup` in any Claude Code session. The setup wizard detects your connected tools (MCP connectors, `gh` CLI, local directories), collects your details (name, Slack ID, email), scaffolds the Scout directory with a knowledge graph ontology, assembles personalized skill files from phase modules matching your connectors, sets up budget tracking scripts, and configures scheduling. Done in under 5 minutes.
+Then run `/scout-setup` in any Claude Code session. The setup wizard detects your connected tools (MCP connectors, `gh` CLI, local directories), collects your details (name, Slack ID, email), scaffolds the Scout directory with a knowledge graph ontology, assembles personalized skill files from phase modules matching your connectors, sets up budget tracking scripts, and configures scheduling. Done in under 5 minutes. `/scout-setup` is for fresh installs only — on an existing vault it refuses and points you at `/scout-update`.
 
 Check your installation at any time:
 
@@ -187,17 +219,18 @@ The `.scout-cache/` directory is gitignored — everything in it is recomputed o
 
 ## Supported Connectors
 
-| Connector | What it provides | Required? |
-|-----------|-----------------|-----------|
-| Slack | Message monitoring, outbound tracking, feedback loop | No (enables dreaming feedback) |
-| Google Calendar | Meeting context, scheduling verification | No |
-| Gmail | Email tracking, sent mail verification | No |
-| Linear | Issue tracking, status sync | No |
-| GitHub (`gh` CLI) | PR tracking, commit monitoring, review requests | No |
-| Granola | Meeting transcripts | No |
-| Google Drive | Documents, meeting notes | No |
-| Claude Code sessions | Work session history | No (auto-detected) |
-Scout works with any subset of connectors. More connectors means richer cross-checking, but even a Calendar-only Scout is useful. The setup wizard detects what you have and assembles skill files accordingly.
+| Connector | What it provides | Required? | Connect via |
+|-----------|-----------------|-----------|-------------|
+| Slack | Message monitoring, outbound tracking, **the daily summary DM and the feedback loop** | No — but without it Scout sends no notifications | claude.ai connector |
+| Google Calendar | Meeting context, scheduling verification | No | claude.ai connector |
+| Gmail | Email tracking, sent mail verification | No | claude.ai connector |
+| Linear | Issue tracking, status sync | No | claude.ai connector (or the Linear Claude Code plugin) |
+| GitHub (`gh` CLI) | PR tracking, commit monitoring, review requests | No | `gh auth login` |
+| Granola | Meeting transcripts | No | claude.ai connector |
+| Google Drive | Documents, meeting notes | No | claude.ai connector |
+| Claude Code sessions | Work session history | No (auto-detected) | — |
+
+Scout works with any subset of connectors. More connectors means richer cross-checking, but even a Calendar-only Scout is useful. The setup wizard detects what you have and assembles skill files accordingly. Connect claude.ai connectors at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — scheduled runs use these. You can also add your own connector to detection via `~/Scout/connector-probes.local.yaml` (see `/scout-setup`).
 
 ## Knowledge Graph
 
@@ -260,7 +293,7 @@ Personal task entities (`knowledge-base/personal/task-*.md`) track non-work item
 
 Scout includes a budget tracking and rate limit detection system:
 
-- **Budget check** (`scripts/budget-check.sh`) — runs before every session. Calculates rolling window cost, checks for recent rate limits, and skips sessions when budget is exhausted.
+- **Budget check** (`scoutctl budget check`, called by `scripts/budget-check.sh`) — runs before every session. Calculates rolling window cost, checks for recent rate limits, and skips sessions when budget is exhausted. Inspect the limits with `scoutctl budget show`; change them with `scoutctl budget set` (defaults: $50/day, 5-hour window, skip at 80%).
 - **Session cost tracker** (`scripts/write-session-cost.sh`) — logs each session's cost as JSONL for analysis.
 - **Rate limit detection** (`scripts/rate-limit-detect.sh`) — scans session logs for rate limit signals and triggers backoff.
 - **Heartbeat** (`scripts/heartbeat.sh`) — polls every 30 minutes to trigger extra dreaming or research sessions when budget is available and work is pending.
@@ -276,16 +309,20 @@ scout-plugin/
   .claude-plugin/
     plugin.json             -- Plugin manifest
     marketplace.json        -- Marketplace catalog (lets the repo install via /plugin marketplace add)
+  install.sh                -- One-line installer (plugin + engine)
+  scripts/install-venv.sh   -- Builds the engine venv (uses uv when available)
+  engine/                   -- Python engine: `scoutctl` (bootstrap, schedule, budget, connectors, …)
   commands/
-    scout-setup.md          -- Interactive setup wizard
+    scout-setup.md          -- Interactive setup wizard (fresh installs)
+    scout-update.md         -- Upgrade plugin + vault (existing installs)
     scout-status.md         -- Dashboard command
     scout-work.md           -- Interactive work session (in-conversation)
     scout-meta-review.md    -- System-level diagnostic audit (in-conversation)
   skills/
-    scout-briefing.md       -- Launch a briefing session (background)
-    scout-consolidation.md  -- Launch a consolidation session (background)
-    scout-dream.md          -- Launch a dreaming session (background)
-    scout-research.md       -- Launch a research session (background)
+    scout-briefing/         -- Launch a briefing session (background)
+    scout-consolidation/    -- Launch a consolidation session (background)
+    scout-dream/            -- Launch a dreaming session (background)
+    scout-research/         -- Launch a research session (background)
   phases/
     core/                   -- Always included (git, KB management, action items, inbox, meetings)
     connectors/             -- One per tool (Slack, Calendar, Linear, etc.)
@@ -303,8 +340,8 @@ scout-plugin/
     run-dreaming.sh.tmpl
     run-research.sh.tmpl
     scout-config.yaml.tmpl
-    launchd-plist.tmpl
-    cron-entry.tmpl
+    connector-probes.yaml   -- How /scout-setup detects each connector
+  engine/scout/defaults/    -- launchd plists (schedule-tick, heartbeat), default schedule + config
 ```
 
 ### What gets created in your Scout directory
@@ -317,14 +354,16 @@ scout-plugin/
   run-scout.sh              -- Briefing/consolidation runner (calls pre-session hooks)
   run-dreaming.sh           -- Dreaming runner (calls pre-session hooks)
   run-research.sh           -- Research runner
-  scout-config.yaml         -- Your configuration
+  scout-config.yaml         -- Your configuration (connectors, budget, auto-update)
+  .scout-state/schedule.yaml -- When each session type runs (edit here or in the Mac app)
   inbox.md                  -- Quick-capture file (processed every run)
   meetings/                 -- Meeting registry + per-meeting folders (prep/notes/synthesis)
   dreaming-proposals.md     -- Proposal gate for skill improvements
   hooks/
     kb-pre-filter.sh        -- Pre-session: bucket KB files by staleness
   scripts/
-    budget-check.sh         -- Pre-run budget verification
+    budget-check.sh         -- Pre-run budget verification (wraps `scoutctl budget check`)
+    claude-with-retry.sh    -- Launches Claude with retry + auth-failure diagnostics
     write-session-cost.sh   -- Session cost logging
     rate-limit-detect.sh    -- Rate limit signal detection
     heartbeat.sh            -- Opportunistic session triggering
@@ -353,17 +392,17 @@ scout-plugin/
   .scout-logs/              -- Run logs and usage-tracker.jsonl (gitignored)
 ```
 
-The assembled skill files are self-contained — they don't reference the plugin at runtime. You can customize them freely. Run `/scout-setup` again to regenerate from the latest phase modules.
+The assembled skill files are self-contained — they don't reference the plugin at runtime. You can customize them freely. Run `/scout-update` to bring in the latest phase modules — it merges them with your edits rather than overwriting.
 
 ## Customization
 
 - **Edit skill files directly**: The assembled `SKILL.md`, `DREAMING.md`, and `RESEARCH.md` are yours to modify. Add checks, remove sections, change wording — they're plain markdown.
-- **Change schedule**: Edit the launchd plist or cron entries, or re-run `/scout-setup` to reconfigure timing.
+- **Change schedule**: Edit `~/Scout/.scout-state/schedule.yaml` (times, weekdays, on-miss policy per slot) — or use the Schedules tab in the Mac app — then check it with `scoutctl schedule validate`. `scoutctl schedule list-upcoming` shows the next fire times. A single launchd agent (`com.scout.schedule-tick`) reads this file every 5 minutes, so there are no plists to edit.
 - **Add KB files**: Create new project folders following the convention `projects/<name>/<name>.md`. Scout will pick them up on the next run.
 - **Extend the ontology**: Add new entity types and relationships in `knowledge-base/ontology/schema.yaml`. The parser validates against this schema.
 - **Queue research topics**: Add a file to `knowledge-base/research-queue/` (e.g. `knowledge-base/research-queue/<date>-<topic-slug>.md`) with frontmatter (`title`, `status: open`, `priority`, `date`) describing what to research. Scout picks it up during research sessions.
 - **Adjust cross-checks**: The cross-check logic in `SKILL.md` scales with connectors — add or remove verification points as needed.
-- **Re-assemble**: After plugin updates, run `/scout-setup` and choose Reassemble to regenerate skill files with new improvements while preserving your configuration.
+- **Re-assemble**: After plugin updates, run `/scout-update` — it regenerates skill files from the new phase modules with a 3-way merge that keeps your edits, writing a `*.md.proposed-merge` sidecar for you to review wherever it can't merge safely.
 
 ## Design Philosophy
 
@@ -412,7 +451,7 @@ The heartbeat system opportunistically triggers extra sessions (dreaming or rese
 ## FAQ / Troubleshooting
 
 **My scheduled runs aren't firing.**
-On macOS, check `launchctl list | grep scout`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed. Verify the plist is loaded with `launchctl list`. Check logs in `.scout-logs/` for errors from the last attempted run.
+Run `scoutctl bootstrap doctor` first — it checks the schedule, the launchd agents, and that the `claude` path the runners use actually exists. On macOS, `launchctl list | grep scout` should show `com.scout.schedule-tick` and `com.scout.heartbeat`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed (missed runs catch up when it wakes). Check logs in `.scout-logs/` for errors from the last attempted run. If a log mentions a 401/403, Claude Code's sign-in expired: run `claude` once in Terminal to sign in again.
 
 **My runs keep getting skipped because of budget.**
 If a session log ends with `=== Budget check: skipping this run ===`, the budget check is stopping it before Claude even starts. Diagnose with:
@@ -424,28 +463,35 @@ scoutctl budget check --verbose
 This prints what you've spent in the current window and the threshold it's comparing against, e.g.:
 
 ```
-[budget-check] budget OK — $4.10 spent (threshold: $16.88)
-[budget-check] window: 3h, daily: $150.00, window budget: $18.75, skip at: $16.88
+[budget-check] budget OK — $4.10 spent (threshold: $8.34)
+[budget-check] window: 5h, daily: $50.00, window budget: $10.42, skip at: $8.34
 ```
 
-The threshold is derived from `daily_budget_estimate_usd` in `scout-config.yaml`:
+The threshold comes from the `budget:` block in `scout-config.yaml` (`scoutctl budget show` prints the effective values and where they came from):
 
-- **window budget** = `daily_budget_estimate_usd` × (`rate_limit_window_hours` ÷ 24) — the spend allowed in one rolling window (default: $150 × 3/24 = $18.75)
-- **skip at** = window budget × (`skip_threshold_pct` ÷ 100) — sessions are skipped once window spend crosses this (default: 90% = $16.88)
+- **window budget** = `daily_usd` × (`window_hours` ÷ 24) — the spend allowed in one rolling window (default: $50 × 5/24 = $10.42)
+- **skip at** = window budget × (`skip_at_pct` ÷ 100) — sessions are skipped once window spend crosses this (default: 80% = $8.34)
+- **backoff** — after a failed run, sessions wait `failure_backoff_minutes` (default 60)
 
-With sessions averaging ~$4 each, the default leaves room for ~4 sessions per 3-hour window. If your schedule packs more sessions into a window than that — or you simply want more headroom — raise `daily_budget_estimate_usd` (e.g. $150 → $200 lifts the skip threshold to $22.50). Re-run `scoutctl budget check --verbose` to confirm the new numbers. The change takes effect on the next scheduled run; no reassemble needed.
+With sessions averaging ~$4 each, the default leaves room for ~2 sessions per 5-hour window, so a busy morning (briefing + two consolidations) can skip one. For more headroom, raise the daily budget:
+
+```
+scoutctl budget set --daily-usd 100
+```
+
+Re-run `scoutctl budget check --verbose` to confirm the new numbers. The change takes effect on the next scheduled run; no reassemble needed. (These limits are Scout's own estimate-based guard rails; your Claude plan's usage limits apply separately.)
 
 **A connector stopped working.**
-Re-authenticate the MCP connector in Claude Code settings. Run `/scout-status` to see which tools are currently available and which are returning errors.
+Reconnect it at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) (or, for a local Claude Code plugin/MCP server, via `/mcp` in Claude Code). Run `/scout-status` to see which tools are currently available and which are returning errors.
 
 **The KB is getting stale.**
 Check run logs in `.scout-logs/`. Verify your schedule is active with `launchctl list | grep scout` or by checking cron with `crontab -l`. Run `/scout-status` to see file freshness — it reports the last-modified time for every KB file.
 
 **I want to add a new connector.**
-Run `/scout-setup` and choose Reconfigure. The wizard will re-detect available tools and reassemble your skill files to include the new connector's phase modules.
+Connect it on claude.ai (or `gh auth login` for GitHub), add its key (`slack`, `calendar`, `email`, `linear`, `github`, `granola`, `drive`, `claude_sessions`) to `connectors.enabled` in `~/Scout/scout-config.yaml` — plus any input it needs under `connectors.inputs` (e.g. `user_slack_id`) — then run `/scout-update`. The upgrade reassembles your skill files to include that connector's phase modules, keeping your edits.
 
 **I want to customize the skill file.**
-Edit `SKILL.md`, `DREAMING.md`, or `RESEARCH.md` directly in your Scout directory. Your changes persist until you explicitly run Reassemble from `/scout-setup`. The plugin never overwrites your skill files without asking.
+Edit `SKILL.md`, `DREAMING.md`, or `RESEARCH.md` directly in your Scout directory. `/scout-update` 3-way merges plugin improvements into your edited files; wherever it can't merge safely it leaves a `*.md.proposed-merge` sidecar for you to review instead of overwriting. The plugin never overwrites your skill files without asking.
 
 **How do I queue research topics?**
 Add a file to `knowledge-base/research-queue/` (e.g. `knowledge-base/research-queue/<date>-<topic-slug>.md`) with frontmatter (`title`, `status: open`, `priority`, `date`) describing what to research. Scout picks it up during the next research session.
@@ -460,10 +506,16 @@ Yes. The KB is just markdown files with `[[wikilinks]]` between them. Obsidian p
 Each person runs their own Scout instance with their own KB. Scout is designed around individual context — your meetings, your messages, your action items. Team-wide knowledge sharing happens through your normal tools; Scout helps each person stay on top of what matters to them.
 
 **How do I update the plugin?**
-Pull the latest version of the plugin repo. Then run `/scout-setup` and choose Reassemble to regenerate your skill files with the latest phase module improvements. Your configuration and KB are preserved.
+Run `/scout-update` in Claude Code. It refreshes the plugin from the marketplace (or `git pull`s a `~/scout-plugin` maintainer checkout), then upgrades your vault against it. Your configuration, KB and skill-file edits are preserved.
+
+**Where do Scout's results show up? Do I get notified?**
+Each run updates `~/Scout/action-items/action-items-YYYY-MM-DD.md` and the knowledge base (both readable in the Mac app or Obsidian). If Slack is connected, Scout also DMs you a short summary whenever something material changed — that DM is also where your 👍/👎 feedback goes. Without Slack there is no push notification yet; check the Mac app or the action-items file.
 
 **What about costs?**
-Run `/scout-status` to see the budget tracking section. The usage tracker logs every session's cost. The budget check automatically skips sessions when the rolling-window spend crosses the skip threshold. To inspect or adjust the limits, see *"My runs keep getting skipped because of budget"* above — the key knobs are `daily_budget_estimate_usd`, `rate_limit_window_hours`, and `skip_threshold_pct` in `scout-config.yaml`.
+Run `/scout-status` to see the budget tracking section, or `scoutctl budget show`. The usage tracker logs every session's cost. The budget check automatically skips sessions when the rolling-window spend crosses the skip threshold. To inspect or adjust the limits, see *"My runs keep getting skipped because of budget"* above — the knobs are `daily_usd`, `window_hours`, `skip_at_pct` and `failure_backoff_minutes`, set with `scoutctl budget set`.
+
+**How do I uninstall / start over?**
+See *Manual Reset* at the bottom of [`commands/scout-setup.md`](commands/scout-setup.md): it unloads the launchd agents and removes `~/Scout`. Remove the plugin with `claude plugin uninstall scout@scout-plugin`.
 
 ## License & legal
 

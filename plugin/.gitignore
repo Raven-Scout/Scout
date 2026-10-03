@@ -23,3 +23,6 @@ engine/manifest.json
 # Local per-checkout artifacts (not part of the plugin)
 .claude/
 .scoutctl-py-cache
+
+# superpowers plugin scratch (SDD ledgers, briefs, review packages)
+.superpowers/
