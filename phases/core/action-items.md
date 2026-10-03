@@ -109,9 +109,9 @@ All action items files must include `[[wikilinks]]` to any KB files referenced b
 
 ### Hard Rule — Every Task Line Has a Stable `[#TAG]`
 
-**Every new task line you write MUST start with a stable `[#TAG]` identifier** — 2–8 uppercase letters/digits with at least one letter (e.g. `[#NAHSEND]`, `[#AI3026]`, `[#RSM]`). The tag is the structural identifier scout-app uses to mark tasks done, snooze them, and attach comments — without it, the app falls back to brittle markdown-substring matching that fails on emoji, italics, em-dashes, embedded links, or any non-ASCII drift. Issue #10 of scout-app catalogs the failure modes.
+**Every new task line you write MUST start with a stable `[#TAG]` identifier** — 2–8 uppercase letters/digits with at least one letter (e.g. `[#PLANREV]`, `[#XI7391]`, `[#NTX]`). The tag is the structural identifier scout-app uses to mark tasks done, snooze them, and attach comments — without it, the app falls back to brittle markdown-substring matching that fails on emoji, italics, em-dashes, embedded links, or any non-ASCII drift. Issue #10 of scout-app catalogs the failure modes.
 
-**Prefer a short, meaningful mnemonic** that hints at the task and is easy to cross-reference from other lines (e.g. `[#NAHSEND]`, `[#MIRO]`, `[#AI3026]`). When nothing meaningful fits, mint a random one:
+**Prefer a short, meaningful mnemonic** that hints at the task and is easy to cross-reference from other lines (e.g. `[#PLANREV]`, `[#IOTA]`, `[#XI7391]`). When nothing meaningful fits, mint a random one:
 
 ```bash
 PFX=$(scoutctl action-items new-prefix)   # random 4-char fallback id

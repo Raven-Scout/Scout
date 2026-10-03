@@ -110,6 +110,7 @@ def test_result_dict_has_the_contract_keys(tmp_path):
         "backups",
         "snapshots_recorded",
         "pointer",
+        "vault_edits",
         "mutated",
     }
     assert d["mutated"] is False
@@ -255,6 +256,47 @@ def test_interrupted_install_resumes_as_install(tmp_path, monkeypatch):
     assert (vault / "knowledge-base" / "ontology" / "parser.py").exists()
 
 
+@pytest.mark.parametrize("interrupted", [False, True], ids=["fresh", "resumed"])
+def test_auto_install_records_a_last_rendered_base_for_every_managed_file(tmp_path, interrupted, monkeypatch):
+    """`auto` installs through install()'s shared managed-files stage, so the
+    vault starts with a base for each plugin-owned file and no drift — also
+    when it resumes an interrupted install (#263's drift policy relies on it)."""
+    import scout.scripts.bootstrap as bootstrap
+    from scout.scripts import vault_drift
+
+    vault = tmp_path / "Scout"
+    if interrupted:
+
+        def disk_full(cfg: BootstrapConfig) -> None:
+            raise OSError(28, "No space left on device")
+
+        with monkeypatch.context() as m:
+            m.setattr(bootstrap, "_stage_cat4_install", disk_full)
+            with pytest.raises(OSError):
+                bootstrap.install(_cfg(vault))
+    d, code = run(_cfg(vault))
+    assert d["action"] == "install" and code in (0, 1), d
+    renders = bootstrap.managed_renders(_cfg(vault))
+    assert renders
+    for r in renders:
+        assert vault_drift.snapshot_path(vault, r.file.vault_rel).is_file(), r.file.vault_rel
+    assert vault_drift.report(vault, {r.file.vault_rel: r.text for r in renders}) == []
+
+
+def test_upgrade_json_reports_vault_edits(tmp_path):
+    """The JSON result carries each vault edit an upgrade found (#263), so
+    Scout.app can show what was kept, merged or parked."""
+    vault = tmp_path / "Scout"
+    run(_cfg(vault))
+    heartbeat = vault / "scripts" / "heartbeat.sh"
+    heartbeat.write_text(heartbeat.read_text(encoding="utf-8") + "# a local fix\n", encoding="utf-8")
+    d, _ = run(_cfg(vault))
+    assert d["action"] == "upgrade"
+    edits = {e["path"]: e for e in d["vault_edits"]}
+    assert edits["scripts/heartbeat.sh"]["outcome"] == "kept"
+    assert edits["scripts/heartbeat.sh"]["message"]
+
+
 def test_install_that_waited_for_the_lock_refuses_the_vault_finished_meanwhile(tmp_path, monkeypatch):
     """Two installs of one folder: the second passes the up-front check (the
     first's marker hides its half-built vault), then blocks on the lock while
@@ -265,18 +307,18 @@ def test_install_that_waited_for_the_lock_refuses_the_vault_finished_meanwhile(t
     vault = tmp_path / "Scout"
     real_acquire = bootstrap.acquire_lock_with_wait
     stage_runs: list[str] = []
-    real_cat1 = bootstrap._stage_cat1_writes
+    real_managed = bootstrap._stage_managed_files
 
-    def counting_cat1(cfg: BootstrapConfig) -> None:
+    def counting_managed(cfg: BootstrapConfig) -> list:
         stage_runs.append(cfg.user_name)
-        real_cat1(cfg)
+        return real_managed(cfg)
 
     def wait_while_the_first_install_runs(lock: Path, **kwargs: object) -> None:
         monkeypatch.setattr(bootstrap, "acquire_lock_with_wait", real_acquire)
         bootstrap.install(_cfg(vault))  # the first install, start to finish
         real_acquire(lock, **kwargs)
 
-    monkeypatch.setattr(bootstrap, "_stage_cat1_writes", counting_cat1)
+    monkeypatch.setattr(bootstrap, "_stage_managed_files", counting_managed)
     monkeypatch.setattr(bootstrap, "acquire_lock_with_wait", wait_while_the_first_install_runs)
     second = _cfg(vault)
     second.user_name = "Second Caller"
@@ -341,7 +383,7 @@ def test_stage_failure_is_refused_and_flagged_mutated(tmp_path, monkeypatch, exc
     def boom(cfg: BootstrapConfig) -> None:
         raise exc
 
-    monkeypatch.setattr(bootstrap, "_stage_cat1_writes", boom)
+    monkeypatch.setattr(bootstrap, "_stage_managed_files", boom)
     vault = tmp_path / "Scout"
     d, code = run(_cfg(vault))
     assert code == 2

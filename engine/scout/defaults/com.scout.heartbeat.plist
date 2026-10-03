@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.scout.heartbeat.plist — runs __SCOUT_DIR__/scripts/heartbeat.sh every 30 min.
+  com.scout.heartbeat.plist — runs the vault's scripts/heartbeat.sh every 30 min.
 
-  Installed by `scoutctl schedule install-heartbeat-plist`, which fills
-  `__USER_HOME__` and `__SCOUT_DIR__` at install time. Mirrors the
-  schedule-tick plist pattern.
+  Installed by `scoutctl schedule install-heartbeat-plist`, which fills the
+  USER_HOME and SCOUT_DIR placeholders (spelled with surrounding double
+  underscores in the values below) at install time. SCOUT_DIR is the
+  bootstrapped vault. Mirrors the schedule-tick plist pattern.
+
+  Never write the placeholder tokens verbatim in this comment: install-time
+  substitution is a whole-file replace, and a substituted path containing a
+  double hyphen is illegal inside an XML comment no matter how it is escaped.
 -->
 <plist version="1.0">
 <dict>

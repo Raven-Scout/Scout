@@ -86,7 +86,7 @@ def test_doctor_json_shape(tmp_path, monkeypatch):
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     result = runner.invoke(app, ["bootstrap", "doctor", "--no-jobs", "--json"])
     payload = json.loads(result.stdout)
-    assert set(payload) == {"severity", "errors", "warnings"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes"}
 
 
 def test_install_json_matches_auto_contract(tmp_path, monkeypatch):

@@ -99,6 +99,7 @@ def doctor_dict(report: DoctorReport | None) -> dict[str, Any] | None:
         "severity": report.severity.value,
         "errors": list(getattr(report, "errors", None) or []),
         "warnings": list(getattr(report, "warnings", None) or []),
+        "notes": list(getattr(report, "notes", None) or []),
     }
 
 
@@ -129,6 +130,16 @@ def result_dict(
         "conflicts": list(getattr(result, "conflicts", None) or []),
         "backups": list(getattr(result, "backups", None) or []),
         "snapshots_recorded": list(getattr(result, "snapshots_recorded", None) or []),
+        "vault_edits": [
+            {
+                "path": e.path,
+                "outcome": e.outcome,
+                "parked": list(e.parked),
+                "detail": e.detail,
+                "message": e.describe(),
+            }
+            for e in getattr(result, "vault_edits", None) or []
+        ],
         "pointer": str(pointer) if pointer else None,
         "mutated": mutated,
     }
