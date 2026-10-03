@@ -7,6 +7,8 @@ import Foundation
 nonisolated struct KBDocSegment: Identifiable, Equatable {
     enum Kind: Equatable {
         case heading(Int), paragraph, list, quote, code, table, rule, frontmatter
+        /// A standalone `//==<< … >>==//` Scout-feedback marker line.
+        case scoutComment
     }
 
     let kind: Kind
@@ -46,6 +48,10 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
 
             if t.isEmpty { i += 1; continue }
 
+            // Scout feedback marker on its own line: isolate it so it never
+            // merges into an adjacent paragraph and renders as a chip, not prose.
+            if ScoutMarker.isMarkerLine(t) { segs.append(make(.scoutComment, i, i)); i += 1; continue }
+
             // Fenced code block.
             if t.hasPrefix("```") {
                 var j = i + 1
@@ -64,6 +70,7 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
                 while j < lines.count {
                     let rt = lines[j].trimmingCharacters(in: .whitespaces)
                     if rt.isEmpty || !rt.contains("|") { break }
+                    if ScoutMarker.isMarkerLine(rt) { break }
                     if KBMarkdownLexer.isTableSeparator(lines[j]) { j += 1; continue }
                     var cells = KBMarkdownLexer.splitRow(lines[j])
                     if cells.count < headers.count {
@@ -96,17 +103,24 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
             // List item (one line each).
             if KBMarkdownLexer.listItem(line) != nil { segs.append(make(.list, i, i)); i += 1; continue }
 
-            // Paragraph: consecutive "normal" lines.
-            var j = i
+            // Paragraph: consecutive "normal" lines. `j` starts at `i + 1`:
+            // every other block kind has already been ruled out above, so line
+            // `i` belongs to this paragraph by construction and the loop only
+            // has to find where the paragraph *ends*. Starting at `i` instead
+            // lets a line that opens with `#` but isn't a valid heading (a bare
+            // `#TAG`, a `#123` ref, 7+ hashes) break on its own first line,
+            // leaving `j == i` and forming the empty range `i...(i-1)` below.
+            var j = i + 1
             while j < lines.count {
                 let lt = lines[j].trimmingCharacters(in: .whitespaces)
                 if lt.isEmpty || lt.hasPrefix("#") || lt.hasPrefix(">") || lt.hasPrefix("```")
                     || lt == "---" || lt == "***" || lt == "___" { break }
                 if KBMarkdownLexer.listItem(lines[j]) != nil { break }
+                if ScoutMarker.isMarkerLine(lines[j]) { break }
                 if lt.contains("|"), j + 1 < lines.count, KBMarkdownLexer.isTableSeparator(lines[j + 1]) { break }
                 j += 1
             }
-            segs.append(make(.paragraph, i, j - 1)); i = max(j, i + 1)
+            segs.append(make(.paragraph, i, j - 1)); i = j
         }
         return segs
     }
@@ -155,6 +169,25 @@ nonisolated struct KBDocSegment: Identifiable, Equatable {
         var lines = source.components(separatedBy: "\n")
         guard start >= 0, end < lines.count, start <= end else { return source }
         lines.replaceSubrange(start...end, with: newText.components(separatedBy: "\n"))
+        return lines.joined(separator: "\n")
+    }
+
+    /// Insert `line` as a whole new line immediately after source line index
+    /// `end`, leaving every other line byte-identical. `end` is clamped: a
+    /// value ≥ last index appends at EOF; a negative value prepends.
+    static func insertLine(in source: String, afterLineEnd end: Int, line: String) -> String {
+        var lines = source.components(separatedBy: "\n")
+        let at = min(max(end, -1) + 1, lines.count)
+        lines.insert(line, at: at)
+        return lines.joined(separator: "\n")
+    }
+
+    /// Delete source lines `start...end` entirely. Returns `source` unchanged
+    /// if the range is out of bounds or inverted.
+    static func removeLines(in source: String, start: Int, end: Int) -> String {
+        var lines = source.components(separatedBy: "\n")
+        guard start >= 0, end < lines.count, start <= end else { return source }
+        lines.removeSubrange(start...end)
         return lines.joined(separator: "\n")
     }
 

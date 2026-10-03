@@ -65,6 +65,47 @@ struct ClaudeLauncherPromptTests {
         #expect(!out.contains("Links:"))
     }
 
+    @Test func conciseIncludesOnlySubjectAndBody() {
+        let task = makeTask(
+            plainSubject: "Prepare release notes",
+            body: "Summarize the fixes.",
+            comments: [TaskComment(author: "alex", timestamp: "", text: "Include metrics.")],
+            deepLinks: [.linear(id: "PROJ-123")]
+        )
+        let out = ClaudeLauncher.prompt(for: task, format: .concise)
+        #expect(out == "Prepare release notes\nSummarize the fixes.")
+    }
+
+    @Test func markdownChecklistIncludesStatusContextAndLinks() {
+        let task = makeTask(
+            plainSubject: "Land PROJ-123",
+            body: "Confirm the rollout plan.",
+            deepLinks: [
+                .githubPR(
+                    repo: "example-org/app",
+                    number: 42,
+                    rawURL: URL(string: "https://github.com/example-org/app/pull/42")!
+                ),
+            ]
+        )
+        let out = ClaudeLauncher.prompt(for: task, format: .markdownChecklist)
+        #expect(out.contains("- [ ] Land PROJ-123"))
+        #expect(out.contains("  Confirm the rollout plan."))
+        #expect(out.contains("[PR example-org/app#42](https://github.com/example-org/app/pull/42)"))
+    }
+
+    @Test func bulkFullContextHasOneHeadingPerTask() {
+        let tasks = [makeTask(plainSubject: "First"), makeTask(plainSubject: "Second")]
+        let out = ClaudeLauncher.prompt(for: tasks, format: .fullContext)
+        #expect(out.hasPrefix("Help me make progress on these 2 action items:"))
+        #expect(out.contains("## 1. First"))
+        #expect(out.contains("## 2. Second"))
+    }
+
+    @Test func emptyBulkCopyIsEmpty() {
+        #expect(ClaudeLauncher.prompt(for: [], format: .fullContext).isEmpty)
+    }
+
     private func makeTask(
         plainSubject: String,
         body: String = "",

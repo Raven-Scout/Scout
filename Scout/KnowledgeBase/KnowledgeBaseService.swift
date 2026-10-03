@@ -345,23 +345,44 @@ final class KnowledgeBaseService: ObservableObject {
         return KBGraph(nodes: nodes, edges: Array(edgeSet))
     }
 
+    /// The overview's default seed: the most-connected notes across the whole
+    /// KB, bounded so the map opens readable rather than as a full-vault
+    /// hairball. Degree/grouping come from `fullGraph()`.
+    func hubGraph(maxNodes: Int = 40) -> KBGraph {
+        fullGraph().topHubs(maxNodes: maxNodes)
+    }
+
     /// Full-text search across note names and contents (from the index's cached
     /// text — no disk reads), returning a snippet for the first matching line.
     /// Capped at 30 hits.
     func searchContent(_ query: String) -> [KBSearchHit] {
         let q = query.lowercased()
         guard q.count >= 2 else { return [] }
+
+        // A query that is exactly a tag (typed, or arrived from a chip click)
+        // matches tag occurrences, not substrings — otherwise `#RELONE` also
+        // reports every `#RELONEX` note, and tags are short enough that the
+        // collisions are common.
+        let tag = KBTag.normalized(query.trimmingCharacters(in: .whitespaces))
+        let matches: (String) -> Bool = if let tag {
+            { KBTag.tags(in: $0).contains(tag) }
+        } else {
+            { $0.lowercased().contains(q) }
+        }
+
         var hits: [KBSearchHit] = []
         for file in tree.flatMap(\.allFiles) where file.ext == "md" {
-            let nameMatch = file.displayName.lowercased().contains(q)
-                || file.relativePath.lowercased().contains(q)
+            // A tag query is about content, so don't let a filename that merely
+            // contains the letters masquerade as a hit.
+            let nameMatch = tag == nil && (file.displayName.lowercased().contains(q)
+                || file.relativePath.lowercased().contains(q))
             guard let text = index.textByFile[file.relativePath] else {
                 if nameMatch {
                     hits.append(KBSearchHit(path: file.relativePath, name: file.displayName, snippet: ""))
                 }
                 continue
             }
-            if let line = text.components(separatedBy: "\n").first(where: { $0.lowercased().contains(q) }) {
+            if let line = text.components(separatedBy: "\n").first(where: matches) {
                 hits.append(KBSearchHit(path: file.relativePath, name: file.displayName,
                                         snippet: line.trimmingCharacters(in: .whitespaces).prefix(120).description))
             } else if nameMatch {

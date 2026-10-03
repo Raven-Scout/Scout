@@ -14,6 +14,15 @@ struct KBEditableView: View {
     @State private var showMeta = false
     @State private var cache = SegmentCache()
 
+    /// Persist immediately after a Scout comment is added or retracted (the
+    /// parent routes this to its `save()`). Defaults to no-op so ordinary
+    /// double-click edits keep their edit → ⌘S flow.
+    var onRequestSave: () -> Void = {}
+
+    @State private var commentingOn: Int? = nil   // segment id the composer is open on
+    @State private var commentBuffer: String = ""
+    @State private var hovering: Int? = nil        // segment id currently hovered
+
     /// Memoizes the segment parse: `body` re-evaluates on every editing/
     /// disclosure state change, but the parse only depends on the source text.
     final class SegmentCache {
@@ -50,18 +59,28 @@ struct KBEditableView: View {
 
     @ViewBuilder
     private func segmentView(_ seg: KBDocSegment) -> some View {
-        if editing == seg.id {
+        if case .scoutComment = seg.kind {
+            scoutCommentChip(seg)
+        } else if editing == seg.id {
             inlineEditor(seg)
         } else if case .table = seg.kind {
             KBEditableTableView(headers: seg.headers, rows: seg.rows, rowLines: seg.rowLines) { line, col, value in
                 source = KBDocSegment.replaceCell(in: source, sourceLine: line, col: col, value: value)
             }
         } else {
-            rendered(seg)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { startEdit(seg) }
-                .help("Double-click to edit")
+            VStack(alignment: .leading, spacing: 4) {
+                rendered(seg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { startEdit(seg) }
+                    .help("Double-click to edit")
+                if commentingOn == seg.id {
+                    scoutCommentComposer(seg)
+                } else if hovering == seg.id {
+                    commentAffordance(seg)
+                }
+            }
+            .onHover { hovering = $0 ? seg.id : (hovering == seg.id ? nil : hovering) }
         }
     }
 
@@ -104,6 +123,76 @@ struct KBEditableView: View {
         editing = nil
     }
 
+    // MARK: - Comment for Scout
+
+    private func commentAffordance(_ seg: KBDocSegment) -> some View {
+        Button { commentBuffer = ""; commentingOn = seg.id } label: {
+            Label("Comment for Scout", systemImage: "bubble.left.and.text.bubble.right")
+                .font(DS.sans(11)).foregroundStyle(DS.Ink.p3)
+        }
+        .buttonStyle(.plain)
+        .help("Leave a note here for Scout to act on during its next dreaming session")
+    }
+
+    private func scoutCommentComposer(_ seg: KBDocSegment) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextEditor(text: $commentBuffer)
+                .font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 52)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(DS.Paper.sunk))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DS.Accent.fill.opacity(0.6), lineWidth: 1))
+            HStack(spacing: 8) {
+                Text("Scout reads this on its next dreaming run")
+                    .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)
+                Spacer()
+                Button("Cancel") { commentingOn = nil }
+                    .buttonStyle(.plain).font(DS.sans(12)).foregroundStyle(DS.Ink.p3)
+                    .keyboardShortcut(.cancelAction)
+                Button("Send to Scout") { submitComment(seg) }
+                    .buttonStyle(.plain).font(DS.sans(12, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill(DS.Accent.fill))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(commentBuffer.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func scoutCommentChip(_ seg: KBDocSegment) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.system(size: 10)).foregroundStyle(DS.Accent.ink)
+            Text(ScoutMarker.body(of: seg.raw) ?? seg.raw)
+                .font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("for Scout · pending").font(DS.sans(10)).foregroundStyle(DS.Ink.p4)
+            Spacer(minLength: 8)
+            Button { retractComment(seg) } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(DS.Ink.p4)
+            }
+            .buttonStyle(.plain).help("Retract this comment (removes the marker)")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(DS.Accent.wash))
+    }
+
+    private func submitComment(_ seg: KBDocSegment) {
+        guard let marker = ScoutMarker.format(commentBuffer) else { return }
+        source = KBDocSegment.insertLine(in: source, afterLineEnd: seg.lineEnd, line: marker)
+        commentingOn = nil
+        commentBuffer = ""
+        onRequestSave()
+    }
+
+    private func retractComment(_ seg: KBDocSegment) {
+        source = KBDocSegment.removeLines(in: source, start: seg.lineStart, end: seg.lineEnd)
+        onRequestSave()
+    }
+
     // MARK: - Rendering
 
     @ViewBuilder
@@ -139,6 +228,8 @@ struct KBEditableView: View {
             metaText(seg.raw)
         case .table:
             EmptyView()   // handled in segmentView
+        case .scoutComment:
+            EmptyView()   // rendered as a chip in segmentView, never here
         }
     }
 

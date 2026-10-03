@@ -14,7 +14,18 @@ struct ProposalsView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            // Deliberately VStack, not LazyVStack (#83, third occurrence).
+            // Same non-convergent height-estimation loop fixed in
+            // ActionItemsView (#84) and SectionView (#86): a lazy stack under
+            // this width-constraining frame chain wedges layout at 100% CPU
+            // with enough variable-height content, and proposals are unbounded
+            // markdown — ProposalsDocumentService parses every .md in the
+            // folder with no cap. All of it is materialized up front anyway,
+            // so laziness buys nothing. The .leading alignment on the
+            // maxWidth-920 frame below is now load-bearing: a plain VStack
+            // hugs its widest child, where the width-greedy LazyVStack made
+            // the horizontal alignment moot.
+            VStack(alignment: .leading, spacing: 16) {
                 header
                 content
             }

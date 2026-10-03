@@ -18,7 +18,11 @@ struct ItemStatusPriorityTests {
         #expect(ItemStatus.inProgress.isActive)
         #expect(!ItemStatus.done.isActive)
         #expect(!ItemStatus.dropped.isActive)
-        #expect(!ItemStatus.unknown("x").isActive)
+        // Unrecognized statuses (e.g. ad-hoc `status: filed`) are far more likely
+        // unfinished work from a newer engine than completed work — treat as active
+        // so they surface under Awaiting instead of hiding under Resolved (#85).
+        #expect(ItemStatus.unknown("filed").isActive)
+        #expect(ItemStatus.unknown("x").isActive)
     }
     @Test func statusFrontmatterValue() {
         #expect(ItemStatus.open.frontmatterValue == "open")

@@ -21,10 +21,10 @@ struct MatchableSubjectTests {
         // verbatim — its parser doesn't reduce them. So Scout's needle must
         // keep the brackets too, otherwise the substring lookup misses.
         let task = make(
-            subject: "**Reply to MJ on [[MKT-301]] with consolidated GA-scope answer** _(carries from 5/15…)_",
-            plainSubject: "Reply to MJ on MKT-301 with consolidated GA-scope answer _(carries from 5/15…)_"
+            subject: "**Reply to Alex on [[PROJ-301]] with consolidated GA-scope answer** _(carries from 5/15…)_",
+            plainSubject: "Reply to Alex on PROJ-301 with consolidated GA-scope answer _(carries from 5/15…)_"
         )
-        #expect(task.matchableSubject == "Reply to MJ on [[MKT-301]] with consolidated GA-scope answer")
+        #expect(task.matchableSubject == "Reply to Alex on [[PROJ-301]] with consolidated GA-scope answer")
     }
 
     @Test func preservesMarkdownLinkInBoldPortion() {
@@ -104,10 +104,10 @@ struct MatchableSubjectTests {
         // takes the whole bold portion (including the em-dash), then
         // body separator trimming doesn't apply because we returned early.
         let task = make(
-            subject: "**Andrea — Soustruh koncert** _(today 7:30 PM)_",
-            plainSubject: "Andrea — Soustruh koncert _(today 7:30 PM)_"
+            subject: "**Alex — Quartet koncert** _(today 7:30 PM)_",
+            plainSubject: "Alex — Quartet koncert _(today 7:30 PM)_"
         )
-        #expect(task.matchableSubject == "Andrea — Soustruh koncert")
+        #expect(task.matchableSubject == "Alex — Quartet koncert")
     }
 
     // MARK: - Helper

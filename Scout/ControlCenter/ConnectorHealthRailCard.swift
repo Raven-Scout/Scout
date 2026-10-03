@@ -49,7 +49,7 @@ struct ConnectorHealthRailCard: View {
     /// hardcoded fallback list.
     private func rosterFallbackBanner(reason: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("⚠")
+            Image(systemName: "exclamationmark.triangle")
                 .font(DS.mono(12))
                 .foregroundStyle(DS.Status.warn)
             Text(reason)
@@ -87,11 +87,14 @@ struct ConnectorHealthRailCard: View {
                         .frame(width: 22)
                         .help(sessionHeaderTooltip(session: session, index: idx))
                 }
-                Text("✓%")
-                    .font(DS.mono(10))
-                    .foregroundStyle(DS.Ink.p4)
-                    .frame(width: 40, alignment: .trailing)
-                    .help("Health rate across the visible sessions where this connector was actually called.")
+                HStack(spacing: 1) {
+                    Image(systemName: "checkmark").imageScale(.small)
+                    Text("%")
+                }
+                .font(DS.mono(10))
+                .foregroundStyle(DS.Ink.p4)
+                .frame(width: 40, alignment: .trailing)
+                .help("Health rate across the visible sessions where this connector was actually called.")
             }
             ForEach(matrix.connectors, id: \.self) { key in
                 row(matrix: matrix, key: key, visibleSessions: visibleSessions)
@@ -126,10 +129,10 @@ struct ConnectorHealthRailCard: View {
     @ViewBuilder
     private func cellView(_ cell: ConnectorHealthMatrix.Cell) -> some View {
         switch cell {
-        case .ok:      Text("✓").foregroundStyle(DS.Status.ok)
-        case .error:   Text("✗").foregroundStyle(DS.Status.err)
-        case .partial: Text("!").foregroundStyle(DS.Status.warn)
-        case .absent:  Text("·").foregroundStyle(DS.Ink.p4)
+        case .ok:      Image(systemName: "checkmark").imageScale(.small).foregroundStyle(DS.Status.ok)
+        case .error:   Image(systemName: "xmark").imageScale(.small).foregroundStyle(DS.Status.err)
+        case .partial: Image(systemName: "exclamationmark").imageScale(.small).foregroundStyle(DS.Status.warn)
+        case .absent:  Image(systemName: "minus").imageScale(.small).foregroundStyle(DS.Ink.p4)
         }
     }
 

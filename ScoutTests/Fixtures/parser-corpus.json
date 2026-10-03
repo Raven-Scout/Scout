@@ -71,9 +71,9 @@
     },
     {
       "name": "semantic-tag-4char-non-crockford",
-      "line": "- [ ] [#MIRO] **Team 1:1 follow-through** — 3 quick sends",
+      "line": "- [ ] [#IOTA] **Team 1:1 follow-through** — 3 quick sends",
       "expected": {
-        "short_prefix": "MIRO",
+        "short_prefix": "IOTA",
         "subject": "**Team 1:1 follow-through**",
         "plain_subject": "Team 1:1 follow-through",
         "body": "3 quick sends"
@@ -82,9 +82,9 @@
     },
     {
       "name": "semantic-tag-6char",
-      "line": "- [ ] [#AI3026] **Validate the tracing job**",
+      "line": "- [ ] [#XI7391] **Validate the tracing job**",
       "expected": {
-        "short_prefix": "AI3026",
+        "short_prefix": "XI7391",
         "subject": "**Validate the tracing job**",
         "plain_subject": "Validate the tracing job",
         "body": ""
@@ -93,9 +93,9 @@
     },
     {
       "name": "semantic-tag-3char",
-      "line": "- [ ] [#RSM] Review SL tester",
+      "line": "- [ ] [#NTX] Review SL tester",
       "expected": {
-        "short_prefix": "RSM",
+        "short_prefix": "NTX",
         "subject": "Review SL tester",
         "plain_subject": "Review SL tester",
         "body": ""
@@ -104,9 +104,9 @@
     },
     {
       "name": "semantic-tag-digit-led",
-      "line": "- [ ] [#5864M] **Merge the web PR** — APPROVED",
+      "line": "- [ ] [#7391K] **Merge the web PR** — APPROVED",
       "expected": {
-        "short_prefix": "5864M",
+        "short_prefix": "7391K",
         "subject": "**Merge the web PR**",
         "plain_subject": "Merge the web PR",
         "body": "APPROVED"

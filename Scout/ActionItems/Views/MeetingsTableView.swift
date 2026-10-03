@@ -3,10 +3,13 @@ import SwiftUI
 /// Editorial meetings table. Mirrors the handoff bundle:
 /// header row in sans-smallcaps, time column in mono, tag column right-aligned.
 struct MeetingsTableView: View {
-    let section: ActionSection
+    /// The tables to draw. Takes the array rather than the whole section so a
+    /// collapsed `<details>` group can reuse the same renderer for its
+    /// archived tables.
+    let tables: [ActionSection.Table]
 
     var body: some View {
-        ForEach(Array(section.tables.enumerated()), id: \.offset) { _, table in
+        ForEach(Array(tables.enumerated()), id: \.offset) { _, table in
             tableView(table)
         }
     }

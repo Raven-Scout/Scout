@@ -13,6 +13,10 @@ build/
 *.dmg
 *.profraw
 
+# Test + coverage output (see scripts/check-coverage.sh)
+*.xcresult
+xcodebuild.log
+
 # Swift Package Manager
 .build/
 .swiftpm/
