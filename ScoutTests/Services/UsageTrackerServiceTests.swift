@@ -42,7 +42,7 @@ struct UsageTrackerServiceTests {
         {"ts":"2026-04-19T12:03:00Z","ts_et":"2026-04-19 08:03 EDT","type":"briefing","budget_cap":10,"budget_spent":4.12,"exit_code":0,"source":"session"}
 
         """.utf8)
-        bytes.append(0xFF)                      // lone continuation byte
+        bytes.append(0xFF)                      // never valid in UTF-8
         bytes.append(contentsOf: Data("\n".utf8))
         bytes.append(contentsOf: Data("""
         {"ts":"2026-04-19T13:03:00Z","ts_et":"2026-04-19 09:03 EDT","type":"dreaming","budget_cap":10,"budget_spent":1.50,"exit_code":0,"source":"session"}
