@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# run-outcome.sh — record how a scheduled {{INSTANCE_NAME}} run ended, and send an
+# out-of-band notice when runs start failing.
+#
+# This has to run from the runner, not from inside the session: the failure it
+# exists to catch is a run that never reaches its phases (an expired login, a
+# dead network). Every in-session signal is blind to that:
+#   .scout-state/last-fire.json  records that a slot was dispatched, not how it ended
+#   connector-health.md          rolls up tool calls; a run that dies at startup
+#                                makes none, which looks like a quiet window
+#   the wrap-up message          is composed by the run itself
+# So the watcher is the wrapper, and the channel is Telegram.
+#
+# Usage (from each run-*.sh, after the session):
+#     scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file>
+#     scripts/run-outcome.sh clear-stale-locks
+#
+# Ledger: .scout-logs/run-outcomes.jsonl (gitignored; one JSON object per run).
+# Never fails the run: every path of `record` exits 0.
+
+set -uo pipefail
+
+SCOUT_DIR="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+LOG_DIR="$SCOUT_DIR/.scout-logs"
+LEDGER="$LOG_DIR/run-outcomes.jsonl"
+SCOUTCTL="${SCOUTCTL_BIN:-{{SCOUTCTL_BIN}}}"
+if [ ! -x "$SCOUTCTL" ]; then
+    SCOUTCTL="$(command -v scoutctl 2>/dev/null || true)"
+fi
+
+# Log patterns per failure class, matched case-insensitively against the tail of
+# the run's log. Kept narrow on purpose: the log also holds the pre-session
+# steps' output, and the budget check's preamble names the budget on every run.
+AUTH_RE='OAuth session expired|OAuth token (has )?expired|Failed to authenticate|Invalid authentication credentials|API Error: 40[13]|40[13] (Unauthorized|Forbidden)'
+NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
+GIT_LOCK_RE='index\.lock|HEAD\.lock'
+RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit'
+BUDGET_RE='Exceeded USD budget'
+
+# classify_failure <log_file> <exit_code> — name the failure class, so a streak
+# of failures reads as "three auth expiries and a network blip" rather than
+# "four runs produced nothing".
+classify_failure() {
+    local log="$1" code="$2" tail_txt
+    [ "$code" -eq 0 ] && { echo "ok"; return; }
+    [ -f "$log" ] || { echo "unknown"; return; }
+    tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
+    if grep -qiE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
+    elif grep -qiE "$NETWORK_RE" <<<"$tail_txt"; then echo "network"
+    elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"
+    elif grep -qiE "$RATE_LIMIT_RE" <<<"$tail_txt"; then echo "rate_limited"
+    elif grep -qiE "$BUDGET_RE" <<<"$tail_txt"; then echo "budget"
+    else echo "unknown"
+    fi
+}
+
+cmd_record() {
+    local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}"
+    local finished duration klass streak tier hint
+    case "$code" in ''|*[!0-9]*) code=1 ;; esac
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
+    finished="$(date +%s)"
+    duration=$(( finished - started ))
+    [ "$duration" -lt 0 ] && duration=0
+    klass="$(classify_failure "$log" "$code")"
+
+    mkdir -p "$LOG_DIR"
+    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" <<'PY' || true
+import json, os, sys
+ledger, mode, code, started, finished, duration, klass, log = sys.argv[1:9]
+row = {
+    "slot": os.environ.get("SCOUT_FORCE_MODE") or mode,
+    "mode": mode,
+    "started_at": int(started),
+    "finished_at": int(finished),
+    "duration_s": int(duration),
+    "exit_code": int(code),
+    "failure_class": klass,
+    "log": os.path.basename(log) if log else None,
+}
+with open(ledger, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")
+PY
+
+    [ "$code" -eq 0 ] && return 0
+
+    # One failed run is noise; two in a row is an outage. Notify at the first
+    # (silent push) and the second (loud push), then stop: a notice on every
+    # failed slot of a long outage is its own failure mode.
+    streak="$(python3 - "$LEDGER" <<'PY' 2>/dev/null || echo 0
+import json, sys
+rows = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+except OSError:
+    pass
+n = 0
+for row in reversed(rows):
+    if row.get("exit_code", 0) == 0:
+        break
+    n += 1
+print(n)
+PY
+)"
+    case "$streak" in
+        1) tier="info" ;;
+        2) tier="action_required" ;;
+        *) return 0 ;;
+    esac
+
+    case "$klass" in
+        oauth_expired) hint="Re-authenticate the claude binary this runner uses." ;;
+        git_lock)      hint="A stale .git lock blocked the commit; run scripts/run-outcome.sh clear-stale-locks." ;;
+        network)       hint="Transient network failure; usually clears on its own." ;;
+        rate_limited)  hint="Rate limited; the next slot backs off." ;;
+        budget)        hint="The run hit its --max-budget-usd cap." ;;
+        *)             hint="See the log for details." ;;
+    esac
+
+    if [ -n "$SCOUTCTL" ] && [ -x "$SCOUTCTL" ]; then
+        "$SCOUTCTL" notify telegram --tier "$tier" --body \
+"{{INSTANCE_NAME}} run failed: ${mode} (exit ${code}, ${klass}), ${streak} in a row.
+${hint}
+Log: ${log}" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+# clear-stale-locks — remove .git lock files left behind by a run that died
+# mid-commit, which otherwise block every later commit. Only locks older than
+# two hours are removed; a younger one may belong to a live run.
+cmd_clear_stale_locks() {
+    local lock mtime now cleared=0
+    now="$(date +%s)"
+    for lock in "$SCOUT_DIR/.git/index.lock" "$SCOUT_DIR/.git/HEAD.lock"; do
+        [ -f "$lock" ] || continue
+        # GNU stat first (it errors on BSD), BSD stat second.
+        mtime="$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo "")"
+        case "$mtime" in ''|*[!0-9]*) continue ;; esac
+        if [ $(( now - mtime )) -gt 7200 ]; then
+            rm -f "$lock" && cleared=$((cleared + 1))
+            echo "cleared stale lock: $lock" >&2
+        else
+            echo "lock present but recent, leaving alone: $lock" >&2
+        fi
+    done
+    [ "$cleared" -gt 0 ] && echo "$cleared stale lock(s) cleared"
+    return 0
+}
+
+# Dispatch only when executed, not when sourced, so the classifier can be
+# exercised on its own.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    case "${1:-}" in
+        record)            shift; cmd_record "$@" ;;
+        clear-stale-locks) cmd_clear_stale_locks ;;
+        *) echo "usage: $0 {record <mode> <exit_code> <started_epoch> <log_file>|clear-stale-locks}" >&2
+           exit 64 ;;
+    esac
+fi

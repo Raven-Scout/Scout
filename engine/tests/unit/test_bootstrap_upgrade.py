@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as _dt
-import shutil
 from pathlib import Path
 
 import pytest
@@ -89,7 +87,9 @@ def test_upgrade_refuses_with_pending_sidecar(tmp_path):
         upgrade(_config(vault, plugin_root=plugin))
 
 
-def test_upgrade_runner_hand_edit_creates_backup(tmp_path):
+def test_upgrade_keeps_a_runner_hand_edit_in_place(tmp_path):
+    """A runner hand edit used to be moved to run-scout.sh.bak.<date> and the
+    template installed over it, so the live runner lost it. It now stays live."""
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
@@ -97,10 +97,10 @@ def test_upgrade_runner_hand_edit_creates_backup(tmp_path):
     runner.write_text(runner.read_text() + "\n# hand edit\n")
     cfg = _config(vault, plugin_root=plugin)
     cfg.plugin_version = "0.4.1"
-    upgrade(cfg)
-    backups = list(vault.glob("run-scout.sh.bak.*"))
-    assert len(backups) == 1
-    assert "# hand edit" in backups[0].read_text()
+    result = upgrade(cfg)
+    assert "# hand edit" in runner.read_text()
+    assert [(e.path, e.outcome) for e in result.vault_edits] == [("run-scout.sh", "kept")]
+    assert list(vault.glob("run-scout.sh.bak.*")) == []
 
 
 def test_upgrade_seeds_missing_schedule_yaml(tmp_path):
@@ -149,11 +149,12 @@ def test_upgrade_backfills_missing_version_at_last_setup(tmp_path):
 
 
 _PARSER_REL = "knowledge-base/ontology/parser.py"
-_PARSER_SNAP = ".scout-state/last-assembled/knowledge-base/ontology/parser.py"
+_PARSER_SNAP = ".scout-state/last-rendered/knowledge-base/ontology/parser.py"
+_PARSER_PARKED = ".scout-state/drift/knowledge-base/ontology/parser.py.plugin"
 
 
 def test_install_seeds_parser_merge_snapshot(tmp_path):
-    """parser.py is now a 3-way-merge file: install must write it live AND
+    """parser.py is a 3-way-merged managed file: install must write it live AND
     record a snapshot baseline (otherwise upgrades have no merge base)."""
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
@@ -185,9 +186,10 @@ def test_upgrade_preserves_vault_edit_to_parser(tmp_path):
     assert not any("parser.py" in c for c in result.conflicts)
 
 
-def test_upgrade_parser_conflict_writes_sidecar_live_untouched(tmp_path):
-    """Overlapping plugin + vault edits to parser.py → conflict → sidecar;
-    the working parser.py is left untouched (never a broken .py in place)."""
+def test_upgrade_parser_conflict_parks_the_update_live_untouched(tmp_path):
+    """Overlapping plugin + vault edits to parser.py → conflict → the plugin's
+    version is parked under .scout-state/drift/; the working parser.py is left
+    untouched (never a broken .py in place) and no blocking sidecar is written."""
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
@@ -205,15 +207,17 @@ def test_upgrade_parser_conflict_writes_sidecar_live_untouched(tmp_path):
     cfg.plugin_version = "0.4.1"
     result = upgrade(cfg)
 
-    sidecar = vault / f"{_PARSER_REL}.proposed-merge"
-    assert sidecar.exists()
+    assert not (vault / f"{_PARSER_REL}.proposed-merge").exists()
+    assert (vault / _PARSER_PARKED).exists()
     assert "# VAULT_MARKER" in parser.read_text(), "live parser.py must be untouched on conflict"
-    assert any("parser.py" in c for c in result.conflicts)
+    assert [(e.path, e.outcome) for e in result.vault_edits] == [(_PARSER_REL, "conflict")]
+    upgrade(cfg)  # a conflict never blocks the next upgrade
 
 
-def test_upgrade_parser_migration_no_snapshot_writes_sidecar(tmp_path):
+def test_upgrade_parser_migration_no_snapshot_keeps_the_vault_edit(tmp_path):
     """Vaults predating the merge-managed parser have no snapshot. First
-    upgrade with a vault-edited parser must sidecar (not overwrite) the edit."""
+    upgrade with a vault-edited parser must keep the edit live (not overwrite
+    it) and park the plugin's version for review."""
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
@@ -226,13 +230,14 @@ def test_upgrade_parser_migration_no_snapshot_writes_sidecar(tmp_path):
     cfg.plugin_version = "0.4.1"
     upgrade(cfg)
 
-    assert (vault / f"{_PARSER_REL}.proposed-merge").exists()
+    assert (vault / _PARSER_PARKED).exists()
+    assert not (vault / f"{_PARSER_REL}.proposed-merge").exists()
     assert "# LEGACY_VAULT_EDIT = 1" in parser.read_text(), "legacy vault edit must survive"
 
 
 def test_upgrade_refuses_with_pending_parser_sidecar(tmp_path):
-    """A pending parser.py sidecar must block the next upgrade, same as the
-    brain-file sidecars."""
+    """A parser.py sidecar an older engine left behind must still block the
+    next upgrade, same as the brain-file sidecars: it may hold a half-done merge."""
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
@@ -255,32 +260,6 @@ def test_upgrade_leaves_existing_version_at_last_setup_alone(tmp_path):
     after = yaml.safe_load((vault / "scout-config.yaml").read_text())
     assert after["plugin"]["version_at_last_setup"] == "0.4.0"
     assert after["plugin"]["version_at_last_update"] == "0.4.5"
-
-
-def test_unique_backup_path_never_clobbers_same_day(tmp_path, monkeypatch):
-    """#62: two backups of the same runner on the same calendar day must get
-    distinct paths, so the first hand-edit's backup is never overwritten."""
-    import scout.scripts.bootstrap as bs
-
-    # Backup names come from the configured-zone day boundary now (#207).
-    monkeypatch.setattr(bs.scout_config, "today", lambda *a, **kw: _dt.date(2026, 6, 15))
-
-    target = tmp_path / "run-scout.sh"
-
-    target.write_text("A\n")
-    first = bs._unique_backup_path(target)
-    shutil.copy2(target, first)
-    assert first.exists()
-
-    target.write_text("B\n")
-    second = bs._unique_backup_path(target)
-    assert second != first, "same-day second backup reused the first backup path"
-    shutil.copy2(target, second)
-
-    assert first.read_text() == "A\n"  # first backup preserved
-    assert second.read_text() == "B\n"
-    # First path keeps the familiar dated name.
-    assert first.name == "run-scout.sh.bak.2026-06-15"
 
 
 def test_upgrade_migrates_legacy_wishlist_and_research(tmp_path):

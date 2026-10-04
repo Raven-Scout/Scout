@@ -52,10 +52,10 @@ def test_short_prefix_pattern_matches_well_formed_prefix() -> None:
     # 4-char Crockford (minted) still valid.
     assert rx.fullmatch("[#A3F7]")
     # Variable length 2–8, semantic tags (incl. non-Crockford I/L/O/U).
-    assert rx.fullmatch("[#RSM]")  # 3 chars
-    assert rx.fullmatch("[#MIRO]")  # contains I and O
-    assert rx.fullmatch("[#AI3026]")  # 6 chars, contains I
-    assert rx.fullmatch("[#5864M]")  # digit-led, 5 chars
+    assert rx.fullmatch("[#NTX]")  # 3 chars
+    assert rx.fullmatch("[#IOTA]")  # contains I and O
+    assert rx.fullmatch("[#XI7391]")  # 6 chars, contains I
+    assert rx.fullmatch("[#7391K]")  # digit-led, 5 chars
     assert rx.fullmatch("[#AB]")  # length 2 lower bound
     assert rx.fullmatch("[#ABCDEFGH]")  # length 8 upper bound
     # Rejections.
@@ -71,10 +71,10 @@ def test_leading_prefix_pattern_anchors_at_start() -> None:
     from scout.ids import leading_prefix_pattern
 
     rx = leading_prefix_pattern()
-    m = rx.match("[#MIRO] **Miro 1:1**")
-    assert m is not None and m.group(1) == "MIRO"
+    m = rx.match("[#IOTA] **Team 1:1**")
+    assert m is not None and m.group(1) == "IOTA"
     # Does NOT match a tag that isn't at the very start (e.g. a body GitHub ref).
-    assert rx.match("see [#AI3026] in body") is None
+    assert rx.match("see [#XI7391] in body") is None
     assert rx.match("[#555] pure digits") is None
 
 

@@ -486,6 +486,29 @@ def test_main_reports_the_no_records_short_circuit(
     assert "no scheduled-run records yet" in capsys.readouterr().out
 
 
+def test_main_says_when_an_existing_surface_was_left_stale(
+    fake_data_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A roll-up that runs but rewrites nothing leaves the old surface looking
+    current. The runner logs what main() prints, so it has to say so."""
+    surface = fake_data_dir / "knowledge-base" / "connector-health.md"
+    surface.write_text("# Connector Health\n\n2 CRITICAL alerts\n", encoding="utf-8")
+
+    assert chr_mod.main() == 0
+
+    out = capsys.readouterr().out
+    assert "no scheduled-run records" in out
+    assert "connector-health.md was NOT rewritten" in out
+    assert surface.read_text(encoding="utf-8") == "# Connector Health\n\n2 CRITICAL alerts\n"
+
+
+def test_main_does_not_warn_when_there_is_no_surface_yet(
+    fake_data_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert chr_mod.main() == 0
+    assert "NOT rewritten" not in capsys.readouterr().out
+
+
 def test_main_summarizes_the_report(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     from scout.events import Event
 

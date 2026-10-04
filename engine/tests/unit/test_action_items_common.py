@@ -215,28 +215,28 @@ def test_resolve_target_ambiguous_id_raises(fake_data_dir: Path) -> None:
     items = [
         ActionItem(
             priority="🔴",
-            title="Miro 1:1 follow-through",
+            title="Team 1:1 follow-through",
             status="open",
             section="To Do",
             context_links=[],
             notes=[],
             details=[],
-            raw_line="- [ ] [#MIRO] Miro 1:1 follow-through",
+            raw_line="- [ ] [#IOTA] Team 1:1 follow-through",
             line_number=5,
-            short_prefix="MIRO",
+            short_prefix="IOTA",
         ),
         ActionItem(
             priority="🟡",
-            title="Miro design doc review",
+            title="Design doc review",
             status="open",
             section="To Do",
             context_links=[],
             notes=[],
             details=[],
-            raw_line="- [ ] [#MIRO] Miro design doc review",
+            raw_line="- [ ] [#IOTA] Design doc review",
             line_number=9,
-            short_prefix="MIRO",
+            short_prefix="IOTA",
         ),
     ]
     with pytest.raises(ActionItemError, match="ambiguous id"):
-        resolve_target(items=items, data_dir=fake_data_dir, by_id="MIRO", by_subject=None)
+        resolve_target(items=items, data_dir=fake_data_dir, by_id="IOTA", by_subject=None)
