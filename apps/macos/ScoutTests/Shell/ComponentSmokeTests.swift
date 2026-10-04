@@ -208,6 +208,24 @@ struct ComponentSmokeTests {
         }
     }
 
+    @Test("the View menu and the Settings section render")
+    func displayControlsRender() throws {
+        let vault = FileManager.default.temporaryDirectory.appendingPathComponent("controls-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let service = DisplayProfileService(scoutDirectory: vault, fileEvents: InjectableFS())
+        for grouping in [true, false] {
+            ViewHost.render(
+                ActionItemsDisplayMenu(showsGrouping: grouping).environmentObject(service),
+                size: CGSize(width: 300, height: 60))
+        }
+        try Data("{ broken".utf8).write(to: service.fileURL)
+        service.reload()
+        ViewHost.render(
+            ActionItemsDisplaySection().environmentObject(service),
+            size: CGSize(width: 720, height: 700))
+    }
+
     @Test("a section renders for every kind")
     func sectionRendersEveryKind() {
         for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal,

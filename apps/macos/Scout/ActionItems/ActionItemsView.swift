@@ -5,12 +5,15 @@ struct ActionItemsView: View {
     @EnvironmentObject var docService: ActionItemsDocumentService
     @EnvironmentObject var writerBox: ActionItemsWriterBox
     @EnvironmentObject var envCheck: ActionItemsEnvironmentState
+    @EnvironmentObject var displayProfile: DisplayProfileService
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
     @State private var displayedDate: Date = Self.today()
     @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
-    @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
+    /// Sort and grouping for the current document, filter and profile, rebuilt
+    /// only when one of them changes (#83/#88). `nil` with the default profile.
+    @State private var layout: ActionItemsLayout?
     @State private var toast: String?
     @State private var toastTask: Task<Void, Never>?
     @State private var isSelecting = false
@@ -45,9 +48,10 @@ struct ActionItemsView: View {
                     FilterChipsView(filter: $filter)
                 }
                 EditorialSegmentedControl(
-                    selection: $viewMode,
+                    selection: $displayProfile.currentView,
                     options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
                 )
+                ActionItemsDisplayMenu(showsGrouping: viewMode == .list)
                 if viewMode == .list, case .loaded = docService.state {
                     Button {
                         toggleSelectionMode()
@@ -103,7 +107,10 @@ struct ActionItemsView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .onAppear { load() }
+        .onAppear {
+            load()
+            relayout()
+        }
         .onChange(of: displayedDate) { _, _ in
             endSelectionMode()
             windows = [:]
@@ -117,8 +124,15 @@ struct ActionItemsView: View {
         // write op, every watched external rewrite) can invalidate them, and
         // a filter/search change can hide checked rows that would otherwise
         // be silently copied.
-        .onChange(of: docService.state) { _, _ in reconcileSelection() }
-        .onChange(of: filter) { _, _ in reconcileSelection() }
+        .onChange(of: docService.state) { _, _ in
+            reconcileSelection()
+            relayout()
+        }
+        .onChange(of: filter) { _, _ in
+            reconcileSelection()
+            relayout()
+        }
+        .onChange(of: display) { _, _ in relayout() }
     }
 
     // MARK: - Content
@@ -129,7 +143,12 @@ struct ActionItemsView: View {
         // Every other case (List mode, plus the loading/missing/failed states)
         // uses the editorial reading page below.
         if case .loaded(let doc) = docService.state, viewMode == .board {
-            BoardView(sections: boardSections(doc), scoutDirectory: scoutDirectory)
+            BoardView(
+                columns: layout?.boardColumns ?? ActionBoardColumn.columns(from: boardSections(doc)),
+                scoutDirectory: scoutDirectory,
+                density: display.density,
+                fields: display.fields
+            )
         } else if case .loaded(let doc) = docService.state, viewMode == .topics {
             TopicBoardView(
                 sections: doc.sections,
@@ -199,16 +218,21 @@ struct ActionItemsView: View {
         if !doc.preamble.isEmpty {
             preamble(doc.preamble)
         }
-        ForEach(filteredSections(doc)) { section in
+        let arranged = layout?.list
+            ?? ActionItemsArrangement.Arranged(sections: filteredSections(doc).map(filtered), kinds: [:])
+        ForEach(arranged.sections) { section in
             SectionView(
-                section: filtered(section),
+                section: section,
                 displayedDate: displayedDate,
                 scoutDirectory: scoutDirectory,
                 selection: isSelecting ? $selectedTaskIDs : nil,
                 window: window(for: section),
                 onShowMore: { showMore(in: section) },
                 onShowAll: { showAll(in: filtered(section)) },
-                onOp: handleOp
+                onOp: handleOp,
+                density: display.density,
+                fields: display.fields,
+                kinds: arranged.kinds
             )
         }
     }
@@ -672,6 +696,23 @@ struct ActionItemsView: View {
     /// board buckets these by kind into columns.
     private func boardSections(_ doc: ActionItemsDocument) -> [ActionSection] {
         filteredSections(doc).map { filtered($0) }
+    }
+
+    private var display: ActionItemsDisplay { displayProfile.profile.actionItems }
+
+    /// The session's List/Board choice. The toolbar switch sets it; the tab
+    /// opens in the profile's default view.
+    private var viewMode: ActionItemsViewMode { displayProfile.currentView }
+
+    /// Rebuild the cached sort and grouping. The default profile keeps no
+    /// cache and renders the filtered sections directly, as before.
+    private func relayout() {
+        guard case .loaded(let doc) = docService.state, !ActionItemsLayout.isPassThrough(display) else {
+            layout = nil
+            return
+        }
+        layout = ActionItemsLayout.make(
+            document: doc.sections, filtered: filteredSections(doc).map(filtered), display: display)
     }
 
     private func filteredSections(_ doc: ActionItemsDocument) -> [ActionSection] {
