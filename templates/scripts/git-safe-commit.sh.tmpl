@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# git-safe-commit.sh — commit explicit paths to the vault without sweeping in
+# another session's work.
+#
+# Scheduled sessions overlap and share one working tree. Committing with
+# `git add -A && git commit` goes wrong two ways:
+#   co-mingling  `-A` stages whatever a concurrent session has half-written,
+#                and a bare `git commit` writes the whole index, so a file a
+#                peer left staged rides along under this run's message.
+#   stale locks  a session killed mid-commit leaves .git/index.lock (or
+#                HEAD.lock) behind, and every later commit fails on it.
+#
+# This helper stages and commits ONLY the paths it is given, serialises the
+# stage→commit step across sessions behind a mutex, and clears a git lock only
+# when it is provably stale.
+#
+# Usage:
+#     scripts/git-safe-commit.sh "commit message" <path> [<path> ...]
+#
+# Paths are relative to the vault; the working directory does not matter.
+# SCOUT_DATA_DIR overrides the vault path. A path that is gitignored, or that
+# neither exists nor is tracked, is skipped with a warning, so a step may name a
+# fixed set of paths it is allowed to touch. A deleted tracked file is committed
+# as a deletion.
+#
+# Exit codes:
+#   0  committed
+#   2  usage error, or a blanket pathspec (-A, --all, ., ./, :/)
+#   3  could not take the commit mutex within LOCK_WAIT_SECS
+#   4  nothing to commit from the given paths (not an error for the caller)
+#   5  git failed: a lock that is not provably stale, a hook, a bad path
+#
+# The mutex lives under .scout-cache/ (gitignored), so it never shows in
+# `git status`: `flock` on .scout-cache/commit.lock where flock exists, else an
+# atomic `mkdir` of .scout-cache/commit.lock.d (macOS ships no flock), which
+# records its holder's pid.
+#
+# Tunables: LOCK_WAIT_SECS (default 120) is how long to wait for the mutex;
+# LOCK_STALE_SECS (default 120) is how old an abandoned lock must be before it
+# is cleared.
+
+set -euo pipefail
+
+VAULT="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+LOCK_WAIT_SECS="${LOCK_WAIT_SECS:-120}"
+LOCK_STALE_SECS="${LOCK_STALE_SECS:-120}"
+FLOCK_FILE=".scout-cache/commit.lock"
+MKDIR_LOCK=".scout-cache/commit.lock.d"
+# A git process that may hold a lock: argv0 is git, and a subcommand that writes
+# the index or refs appears among its arguments. Broad on purpose: a false match
+# only leaves a stale lock for a later run to clear.
+GIT_WRITER_RE='(^|/)git( .*)? (commit|merge|rebase|am|cherry-pick|revert|add|rm|mv|pull|push|fetch|checkout|switch|reset|restore|stash|gc)( |$)'
+
+die() {
+  local code="$1"
+  shift
+  echo "git-safe-commit: $*" >&2
+  exit "$code"
+}
+
+[ "$#" -ge 2 ] || die 2 'usage: git-safe-commit.sh "commit message" <path> [<path> ...]'
+MSG="$1"
+shift
+[ -n "$MSG" ] || die 2 "empty commit message"
+
+# The footgun this helper exists to remove.
+for p in "$@"; do
+  case "$p" in
+    -A | --all | . | ./ | :/ | :)
+      die 2 "refusing blanket stage ('$p') — pass explicit file paths"
+      ;;
+  esac
+done
+
+cd "$VAULT" 2>/dev/null || die 2 "vault not found: $VAULT"
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)" || die 5 "not a git repository: $VAULT"
+mkdir -p .scout-cache
+
+# Seconds since the file was last modified; 0 when that can't be read, so an
+# unreadable lock is never taken for a stale one. GNU stat first: BSD's
+# `stat -f` means something else to GNU stat and prints to stdout regardless.
+age_of() {
+  local mtime
+  mtime="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)"
+  case "$mtime" in
+    '' | *[!0-9]*) echo 0 ;;
+    *) echo $(($(date +%s) - mtime)) ;;
+  esac
+}
+
+# Is a git process that may hold a lock running? Without pgrep, assume so.
+git_writer_live() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f "$GIT_WRITER_RE" >/dev/null 2>&1
+}
+
+clear_stale_git_lock() {
+  local lock="$1" age
+  [ -e "$lock" ] || return 0
+  age="$(age_of "$lock")"
+  [ "$age" -ge "$LOCK_STALE_SECS" ] || return 0
+  if git_writer_live; then
+    return 0
+  fi
+  rm -f "$lock" && echo "git-safe-commit: cleared stale $lock (age ${age}s, no live git process)" >&2
+}
+
+# The mkdir mutex is stale when the holder it recorded is gone, or when it is
+# old and no git process is live (a holder killed before it recorded itself, or
+# a mutex left by a helper that never recorded one).
+mkdir_mutex_stale() {
+  local pid
+  pid="$(cat "$MKDIR_LOCK/pid" 2>/dev/null || true)"
+  case "$pid" in
+    '' | *[!0-9]*) ;;
+    *) ps -p "$pid" >/dev/null 2>&1 || return 0 ;;
+  esac
+  [ "$(age_of "$MKDIR_LOCK")" -ge "$LOCK_STALE_SECS" ] || return 1
+  if git_writer_live; then
+    return 1
+  fi
+  return 0
+}
+
+release_mkdir_mutex() {
+  # Only our own: if ours was cleared as stale, a peer may hold it now.
+  if [ "$(cat "$MKDIR_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$MKDIR_LOCK/pid"
+    rmdir "$MKDIR_LOCK" 2>/dev/null || true
+  fi
+}
+
+# mkdir is atomic: exactly one racer creates the directory.
+acquire_mkdir_mutex() {
+  local waited=0
+  while ! mkdir "$MKDIR_LOCK" 2>/dev/null; do
+    if mkdir_mutex_stale; then
+      rm -f "$MKDIR_LOCK/pid"
+      if rmdir "$MKDIR_LOCK" 2>/dev/null; then
+        echo "git-safe-commit: cleared stale commit mutex $MKDIR_LOCK" >&2
+        continue
+      fi
+    fi
+    [ "$waited" -lt "$LOCK_WAIT_SECS" ] || return 1
+    sleep 1
+    waited=$((waited + 1))
+  done
+  trap release_mkdir_mutex EXIT
+  echo "$$" >"$MKDIR_LOCK/pid"
+}
+
+# ── critical section, serialised across sessions ──
+if command -v flock >/dev/null 2>&1; then
+  # Held until this script exits and fd 9 closes, however it exits.
+  exec 9>"$FLOCK_FILE"
+  flock -w "$LOCK_WAIT_SECS" 9 || die 3 "could not acquire the commit lock in ${LOCK_WAIT_SECS}s"
+else
+  acquire_mkdir_mutex || die 3 "could not acquire the commit mutex in ${LOCK_WAIT_SECS}s"
+fi
+
+clear_stale_git_lock "$GIT_DIR_PATH/index.lock"
+clear_stale_git_lock "$GIT_DIR_PATH/HEAD.lock"
+
+# Keep the paths git can stage; say why for the rest. (bash 3.2 with set -u
+# treats "${empty[@]}" as unbound, so every expansion below is length-guarded.)
+STAGE=()
+for p in "$@"; do
+  if git check-ignore -q -- "$p" 2>/dev/null; then
+    echo "git-safe-commit: skipping '$p' — it is gitignored" >&2
+  elif [ -e "$p" ] || [ -L "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+    STAGE+=("$p")
+  else
+    echo "git-safe-commit: skipping '$p' — no such path, and git does not track it" >&2
+  fi
+done
+[ "${#STAGE[@]}" -gt 0 ] || die 4 "nothing to commit — none of the given paths can be staged"
+
+git add -- "${STAGE[@]}" || die 5 "git add failed"
+
+# Only the paths with staged changes: a peer's staged file is not ours to
+# count, and naming an unchanged untracked directory would fail the commit.
+COMMIT=()
+for p in "${STAGE[@]}"; do
+  git diff --cached --quiet -- "$p" || COMMIT+=("$p")
+done
+[ "${#COMMIT[@]}" -gt 0 ] || die 4 "nothing staged from the given paths — no commit made"
+
+# A pathspec-scoped commit, not a bare `git commit`: the bare form writes the
+# whole index, so anything a peer left staged would ride along.
+git commit -q -m "$MSG" -- "${COMMIT[@]}" || die 5 "git commit failed"
+echo "git-safe-commit: committed $(git rev-parse --short HEAD) (${#COMMIT[@]} path(s))" >&2

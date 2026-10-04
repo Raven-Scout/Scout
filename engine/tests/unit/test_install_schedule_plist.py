@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from scout.scripts.install_schedule_plist import (
+    PLIST_NAME,
     install_plist,
     resolve_scoutctl_bin,
     uninstall_plist,
@@ -35,14 +36,29 @@ def test_install_plist_substitutes_resolver_output(tmp_path):
     assert f"<string>{resolve_scoutctl_bin()}</string>" in content
 
 
-def test_resolve_scoutctl_bin_points_at_running_engine_venv():
-    """Resolver always derives plugin_root from the running engine's package
-    location and appends `.venv/bin/scoutctl` — single source of truth for
-    'the scoutctl that matches the currently-loaded engine'."""
-    import scout
+def test_resolve_scoutctl_bin_is_the_running_interpreters_sibling():
+    """The scoutctl that matches the running engine is the console script
+    beside the interpreter executing this test — whatever venv that is, and
+    wherever it lives relative to the plugin tree (spec E1)."""
+    import sys
 
-    expected_plugin_root = Path(scout.__file__).parent.parent.parent
-    assert resolve_scoutctl_bin() == expected_plugin_root / ".venv" / "bin" / "scoutctl"
+    assert resolve_scoutctl_bin() == Path(sys.executable).absolute().parent / "scoutctl"
+
+
+def test_resolve_scoutctl_bin_does_not_follow_symlinks(monkeypatch, tmp_path):
+    """A venv's bin/python is a symlink to the base interpreter; resolving it
+    would name a scoutctl that does not exist."""
+    import sys
+
+    real = tmp_path / "base" / "bin" / "python3"
+    real.parent.mkdir(parents=True)
+    real.write_text("")
+    venv_py = tmp_path / "venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.symlink_to(real)
+    monkeypatch.setattr(sys, "executable", str(venv_py))
+
+    assert resolve_scoutctl_bin() == venv_py.parent / "scoutctl"
 
 
 def test_install_plist_refuses_to_overwrite_without_force(tmp_path):
@@ -145,3 +161,34 @@ def test_install_plist_bootstrap_boots_out_first(tmp_path, monkeypatch):
     assert calls[0][:2] == ["launchctl", "bootout"]
     assert calls[0][2].endswith("/com.scout.schedule-tick")
     assert calls[1][:2] == ["launchctl", "bootstrap"]
+
+
+def test_install_plist_renders_vault_into_env_and_paths(tmp_path):
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    vault = tmp_path / "Vaults" / "Work"
+    install_plist(home=tmp_path, agents_dir=target_dir, vault=vault)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert "__SCOUT_DIR__" not in content
+    assert f"<key>SCOUT_DATA_DIR</key>\n        <string>{vault}</string>" in content
+    assert f"{vault}/.scout-logs/" in content
+    assert f"{tmp_path}/Scout" not in content
+
+
+def test_install_plist_vault_defaults_to_home_scout(tmp_path):
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    install_plist(home=tmp_path, agents_dir=target_dir)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert f"<string>{tmp_path}/Scout</string>" in content
+
+
+def test_install_plist_escapes_ampersand_in_vault(tmp_path):
+    """A vault path with `&` (legal on macOS, e.g. ~/R&D Vault) must be
+    XML-escaped like every other substituted value (#49)."""
+    target_dir = tmp_path / "LaunchAgents"
+    target_dir.mkdir()
+    vault = tmp_path / "R&D Vault"
+    install_plist(home=tmp_path, agents_dir=target_dir, vault=vault)
+    content = (target_dir / PLIST_NAME).read_text()
+    assert "R&amp;D Vault" in content

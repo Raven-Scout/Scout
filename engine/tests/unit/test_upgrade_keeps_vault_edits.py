@@ -307,19 +307,24 @@ def test_first_baseline_never_silently_overwrites_a_hand_edited_value(vault: Pat
     )
 
 
-def test_first_baseline_takes_a_moved_plugin_root_in_its_stride(tmp_path: Path, plugin: Path) -> None:
-    """SCOUTCTL_BIN moves with the plugin root (a marketplace install puts the
-    version in the path): an unedited vault still upgrades silently."""
+def test_first_baseline_takes_a_moved_plugin_root_in_its_stride(
+    tmp_path: Path, plugin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SCOUTCTL_BIN moves with the engine's venv (a marketplace install puts the
+    version in the path; resolve_scoutctl_bin follows the running interpreter):
+    an unedited vault still upgrades silently."""
     vault = tmp_path / "Scout"
+    monkeypatch.setattr("scout.scripts.bootstrap.resolve_scoutctl_bin", lambda: plugin / ".venv" / "bin" / "scoutctl")
     install(_config(vault, plugin, version="0.11.0"))
     _forget_snapshots(vault)
     moved = tmp_path / "plugin-0.12.0"
     shutil.copytree(plugin, moved)
+    monkeypatch.setattr("scout.scripts.bootstrap.resolve_scoutctl_bin", lambda: moved / ".venv" / "bin" / "scoutctl")
 
     result = upgrade(_config(vault, moved))
 
     assert result.vault_edits == []
-    assert str(moved) in (vault / HEARTBEAT).read_text(encoding="utf-8")  # SCOUTCTL_BIN
+    assert str(moved / ".venv" / "bin" / "scoutctl") in (vault / HEARTBEAT).read_text(encoding="utf-8")  # SCOUTCTL_BIN
 
 
 def test_first_baseline_carries_over_parsers_legacy_snapshot(vault: Path, plugin: Path) -> None:
