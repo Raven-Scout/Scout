@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from scout.ids import leading_prefix_pattern
+
 _HEADING = re.compile(r"^#{1,6}\s")
 _SECTION_MARK = re.compile(r"§\s*\d+\S*\s*·")
 _BACKTICK_SESSION = re.compile(r"`(?:[a-z]+-)*(?:briefing|consolidation|dreaming|research)`", re.I)
@@ -26,6 +28,24 @@ _DATE = re.compile(
 )
 _CITATION = re.compile(r"\[\[[^\]]+\]\]|https?://")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+_CHECKBOX = re.compile(r"\[[ xX]\]")
+_ITEM_LEAD = re.compile(r"^\s*(?:[-*+]\s+)?(?:\[_\]\s*)?")
+
+
+def normalize_line(line: str) -> str:
+    """A line's identity for "is this really new?": checkbox state, a leading
+    ``[#XXXX]`` short-id prefix, ``~~`` strike-through and trailing whitespace
+    are ignored, so ticking, id-backfilling or striking a legacy line does not
+    re-add it."""
+    s = _CHECKBOX.sub("[_]", line.rstrip()).replace("~~", "")
+    lead = _ITEM_LEAD.match(s)
+    head, rest = (s[: lead.end()], s[lead.end() :]) if lead else ("", s)
+    m = leading_prefix_pattern().match(rest)
+    if m:
+        rest = rest[m.end() :].lstrip()
+    return (head + rest).rstrip()
 
 
 def is_heading(line: str) -> bool:

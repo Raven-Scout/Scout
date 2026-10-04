@@ -88,8 +88,23 @@ def staged_text(repo: Path, rel: str) -> str:
     return git(repo, "show", f":{rel}").stdout
 
 
-def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
-    """Added (``+``) lines with their 1-based line numbers in ``rel``.
+def head_text(repo: Path, rel: str) -> str | None:
+    """``rel``'s content at HEAD, or None when it (or HEAD) does not exist."""
+    proc = git(repo, "show", f"HEAD:{rel}", check=False)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def head_files(repo: Path, prefix: str) -> list[str]:
+    """Paths under ``prefix`` that exist at HEAD (empty before the first commit)."""
+    if not _has_head(repo):
+        return []
+    out = git(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", prefix).stdout
+    return sorted(p for p in out.split("\0") if p)
+
+
+def changed_lines(repo: Path, rel: str, head_rel: str | None = None) -> tuple[list[tuple[int, str]], list[str]]:
+    """Added (``+``) lines with their 1-based line numbers in ``rel``, and the
+    removed (``-``) lines of the same file diff.
 
     A pure rename restricts the pathspec to the destination, which prevents
     git from pairing it with its source: the whole file then shows as added,
@@ -100,9 +115,14 @@ def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple
     """
     if head_rel and head_rel != rel:
         out = git(repo, "diff", "--cached", "-M", "-U0", "--no-color", "--no-ext-diff", "--", head_rel, rel).stdout
-        return _parse_added_lines(out, rel)
+        return _parse_changed_lines(out, rel)
     out = git(repo, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--", rel).stdout
-    return _parse_added_lines(out, None)
+    return _parse_changed_lines(out, None)
+
+
+def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
+    """Added lines only — see ``changed_lines``."""
+    return changed_lines(repo, rel, head_rel)[0]
 
 
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
@@ -144,12 +164,15 @@ def _header_path(line: str) -> str:
     return s
 
 
-def _parse_added_lines(diff_text: str, want_rel: str | None) -> list[tuple[int, str]]:
+def _parse_changed_lines(diff_text: str, want_rel: str | None) -> tuple[list[tuple[int, str]], list[str]]:
     result: list[tuple[int, str]] = []
+    removed: list[str] = []
     lineno = 0
     in_hunk = False
     in_wanted_file = want_rel is None
-    for ln in diff_text.splitlines():
+    # split("\n"), not splitlines(): a form feed or U+2028 inside a markdown
+    # line must not split it into two diff lines.
+    for ln in diff_text.split("\n"):
         if ln.startswith("diff --git "):
             # Start of a new file's diff entry: reset header-parsing state so a
             # multi-file diff (e.g. a rename pair) doesn't leak the previous
@@ -172,7 +195,9 @@ def _parse_added_lines(diff_text: str, want_rel: str | None) -> list[tuple[int, 
         if ln.startswith("+"):
             result.append((lineno, ln[1:]))
             lineno += 1
-    return result
+        elif ln.startswith("-"):
+            removed.append(ln[1:])
+    return result, removed
 
 
 def tracked_files(repo: Path) -> list[str]:

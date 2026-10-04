@@ -5,13 +5,17 @@ Blocking (in ``block`` mode): an over-budget file that grew, a new file over
 budget, an added run-diary heading outside log paths, an added line over the
 line limit. Warnings: a topic-note paragraph with no citation, a wikilink that
 resolves nowhere. Only ADDED lines are line-checked, so existing debt never
-blocks a commit; it drains through the dreaming shrink pass instead.
+blocks a commit; it drains through the dreaming shrink pass instead. A line
+that only re-adds a removed one with a cosmetic edit (checkbox tick, short-id
+prefix, strike-through) is not "added", and a new daily action-items file is
+compared against the newest earlier daily file, not against nothing.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -21,8 +25,10 @@ from typing import TextIO
 
 from scout import paths
 from scout.kb.git_io import (
-    added_lines,
+    changed_lines,
+    head_files,
     head_size,
+    head_text,
     main_root,
     staged_paths,
     staged_size,
@@ -30,7 +36,7 @@ from scout.kb.git_io import (
     tracked_files,
 )
 from scout.kb.lint_config import LintConfig, load_lint_config
-from scout.kb.lint_rules import has_citation, is_diary_heading, is_heading, wikilink_targets
+from scout.kb.lint_rules import has_citation, is_diary_heading, is_heading, normalize_line, wikilink_targets
 
 OVERRIDE_ENV = "SCOUT_LINT_OVERRIDE"
 
@@ -196,14 +202,54 @@ def _check_links(rel: str, added: list[tuple[int, str]], known: set[str]) -> lis
     return out
 
 
+_DAILY = re.compile(r"^action-items/action-items-(\d{4}-\d{2}-\d{2})\.md$")
+
+
+def _daily_baseline(repo: Path, rel: str) -> str | None:
+    """For a daily action-items file, the newest EARLIER daily file at HEAD.
+
+    Today's file is new at HEAD, so without a baseline every carried-forward
+    line would count as added and the size check would treat it as a
+    brand-new file — re-checking existing debt every day."""
+    m = _DAILY.match(rel)
+    if not m:
+        return None
+    earlier = [p for p in head_files(repo, "action-items") if (d := _DAILY.match(p)) and d.group(1) < m.group(1)]
+    return max(earlier) if earlier else None
+
+
+def _new_lines(repo: Path, rel: str, head_rel: str | None, baseline_text: str | None) -> list[tuple[int, str]]:
+    """The added lines that are really new, for the line checks.
+
+    With a baseline (a new daily file), a line is new when its normalized form
+    is not among the baseline's lines. Otherwise it comes from the staged diff,
+    minus lines that only re-add a removed line with a cosmetic change
+    (checkbox tick, ``[#XXXX]`` prefix, strike-through) — see
+    ``normalize_line``."""
+    if baseline_text is not None:
+        seen = {normalize_line(ln) for ln in baseline_text.split("\n")}
+        lines = staged_text(repo, rel).split("\n")
+        return [(n, t) for n, t in enumerate(lines, 1) if t.strip() and normalize_line(t) not in seen]
+    added, removed = changed_lines(repo, rel, head_rel)
+    gone = {normalize_line(ln) for ln in removed}
+    return [(n, t) for n, t in added if normalize_line(t) not in gone]
+
+
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
     for sp in staged_paths(repo):
         if not cfg.in_scope(sp.rel):
             continue
-        result.findings += _check_size(repo, sp.rel, sp.head_rel, cfg)
-        added = added_lines(repo, sp.rel, sp.head_rel)
+        size_base = sp.head_rel
+        baseline_text: str | None = None
+        if sp.head_rel is None:
+            baseline = _daily_baseline(repo, sp.rel)
+            if baseline is not None:
+                size_base = baseline
+                baseline_text = head_text(repo, baseline)
+        result.findings += _check_size(repo, sp.rel, size_base, cfg)
+        added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         result.findings += _check_lines(sp.rel, added, cfg)
         if cfg.is_topic(sp.rel):
             result.findings += _check_citations(sp.rel, staged_text(repo, sp.rel), {n for n, _ in added})

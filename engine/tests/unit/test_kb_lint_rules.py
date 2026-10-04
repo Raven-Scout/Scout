@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scout.kb.lint_rules import has_citation, is_diary_heading, wikilink_targets
+from scout.kb.lint_rules import has_citation, is_diary_heading, normalize_line, wikilink_targets
 
 REAL_DIARY_HEADINGS = [
     "## ✅ 2026-09-03 (8:0x AM ET, `morning-briefing` — Phase-4 quick pass): **the Fri Sep 4 freeze is not holding**",
@@ -51,6 +51,17 @@ def test_has_citation() -> None:
     assert has_citation("Widget retrieves by BM25 ([[sources/2026-09/2026-09-07-acme-daily]]).")
     assert has_citation("See https://github.com/example/widget/pull/12.")
     assert not has_citation("Widget retrieves by BM25 over chunked PDFs.")
+
+
+def test_normalize_line_ignores_checkbox_prefix_strikethrough_and_trailing_space() -> None:
+    base = normalize_line("- [ ] 🔴 **Send the deck** — due 2026-10-07")
+    assert normalize_line("- [x] 🔴 **Send the deck** — due 2026-10-07") == base
+    assert normalize_line("- [X] 🔴 **Send the deck** — due 2026-10-07  ") == base
+    assert normalize_line("- [ ] [#AB12] 🔴 **Send the deck** — due 2026-10-07") == base
+    assert normalize_line("- [x] [#AB12] ~~🔴 **Send the deck** — due 2026-10-07~~") == base
+    assert normalize_line("- [ ] 🔴 **Send the slides** — due 2026-10-07") != base
+    # a [#TAG] that is not the leading id stays significant
+    assert normalize_line("- [ ] 🔴 see [#AB12]") != normalize_line("- [ ] 🔴 see")
 
 
 def test_wikilink_targets_strip_alias_and_anchor() -> None:

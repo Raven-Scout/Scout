@@ -94,6 +94,88 @@ def test_mega_line_limits(kb_repo) -> None:
     assert [f.check for f in lint_staged(kb_repo.root, cfg).blocking] == ["mega-line"]
 
 
+DAILY = "action-items/action-items-2026-09-28.md"
+LEGACY_LONG = "- [ ] 🔴 **Legacy item** — " + "context " * 80  # ~670 chars, over the 500 strict limit
+
+
+def _block_mode(kb_repo, budgets: str = "") -> None:
+    kb_repo.write("scout-config.yaml", "kb_lint:\n  mode: block\n" + budgets)
+
+
+def test_ticking_checkbox_on_long_legacy_line_passes(kb_repo) -> None:
+    _block_mode(kb_repo)
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG + "\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG.replace("- [ ]", "- [x]", 1) + "\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking == []
+
+
+def test_inserting_short_id_prefix_on_long_legacy_line_passes(kb_repo) -> None:
+    _block_mode(kb_repo)
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG + "\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG.replace("- [ ] ", "- [ ] [#AB12] ", 1) + "\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking == []
+
+
+def test_genuinely_new_long_line_still_blocks(kb_repo) -> None:
+    _block_mode(kb_repo)
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG + "\n")
+    kb_repo.commit()
+    new_long = "- [ ] 🟡 **New item** — " + "detail " * 90
+    kb_repo.stage(DAILY, "# Action Items\n" + LEGACY_LONG + "\n" + new_long + "\n")
+    blocking = lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking
+    assert [(f.check, f.line) for f in blocking] == [("mega-line", 3)]
+
+
+def _yesterday_body() -> str:
+    return (
+        "## 🔴 Urgent\n"
+        + LEGACY_LONG
+        + "\n### ⬇️ Re-tiered Sat Aug 29 (`weekend-briefing`) — 92 rows\n"
+        + "".join(f"- [ ] 🟡 item {i} [[no-such-note-{i}]]\n" for i in range(20))
+    )
+
+
+def test_new_daily_file_only_line_checks_items_not_in_yesterdays_file(kb_repo) -> None:
+    _block_mode(kb_repo)
+    kb_repo.stage("action-items/action-items-2026-09-26.md", "# Older\n")
+    kb_repo.stage("action-items/action-items-2026-09-27.md", "# Action Items — Sep 27\n" + _yesterday_body())
+    kb_repo.commit()
+    today = "# Action Items — Sep 28\n" + _yesterday_body().replace("- [ ] 🟡 item 3 ", "- [x] 🟡 item 3 ")
+    kb_repo.stage(DAILY, today + "- [ ] 🟢 brand new item\n")
+    result = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    assert result.blocking == []
+    # carried-forward lines are not re-checked for dangling links either
+    assert result.warnings == []
+    new_long = "- [ ] 🟡 **New item** — " + "detail " * 90
+    kb_repo.stage(DAILY, today + new_long + "\n")
+    blocking = lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking
+    assert [(f.check, f.line) for f in blocking] == [("mega-line", len(today.splitlines()) + 1)]
+
+
+def test_new_daily_file_size_compares_against_yesterdays_file(kb_repo) -> None:
+    _block_mode(kb_repo, "kb_budgets:\n  'action-items/action-items-*.md': 500\n")
+    yesterday = "# Action Items — Sep 27\n" + _yesterday_body()
+    assert len(yesterday.encode()) > 500
+    kb_repo.stage("action-items/action-items-2026-09-27.md", yesterday)
+    kb_repo.stage("action-items/action-items-2026-09-30.md", "# a later file is never the baseline\n")
+    kb_repo.commit()
+    cfg = load_lint_config(kb_repo.root)
+    lines = yesterday.splitlines(keepends=True)
+    shrunk = "".join(lines[:-2]) + "- [ ] 🟢 new\n"
+    kb_repo.stage(DAILY, shrunk)
+    assert lint_staged(kb_repo.root, cfg).blocking == []
+    kb_repo.stage(DAILY, yesterday + "- [ ] 🟢 new\n")
+    assert [f.check for f in lint_staged(kb_repo.root, cfg).blocking] == ["size"]
+
+
+def test_new_daily_file_with_no_earlier_baseline_is_a_new_file(kb_repo) -> None:
+    _block_mode(kb_repo)
+    kb_repo.stage(DAILY, LEGACY_LONG + "\n")
+    assert [f.check for f in lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking] == ["mega-line"]
+
+
 def test_out_of_scope_files_ignored(kb_repo) -> None:
     kb_repo.stage("SKILL.md", "## §1 · 2026-09-28 (8:0x AM, `morning-briefing`)\n" + "x" * 5000 + "\n")
     assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).findings == []

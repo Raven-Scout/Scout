@@ -5,7 +5,10 @@ from __future__ import annotations
 from scout.kb.git_io import (
     StagedPath,
     added_lines,
+    changed_lines,
+    head_files,
     head_size,
+    head_text,
     main_root,
     repo_root,
     staged_paths,
@@ -83,6 +86,40 @@ def test_added_lines_rename_plus_one_line(kb_repo) -> None:
     (kb_repo.root / "knowledge-base/new.md").write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
     kb_repo.git("add", "--", "knowledge-base/new.md")
     assert added_lines(kb_repo.root, "knowledge-base/new.md", head_rel="knowledge-base/old.md") == [(4, "l4")]
+
+
+def test_changed_lines_returns_added_and_removed(kb_repo) -> None:
+    kb_repo.stage("knowledge-base/a.md", "l1\n- [ ] item\nl3\n")
+    kb_repo.commit()
+    kb_repo.stage("knowledge-base/a.md", "l1\n- [x] item\nl3\nl4\n")
+    added, removed = changed_lines(kb_repo.root, "knowledge-base/a.md", "knowledge-base/a.md")
+    assert added == [(2, "- [x] item"), (4, "l4")]
+    assert removed == ["- [ ] item"]
+
+
+def test_changed_lines_rename_scopes_to_destination(kb_repo) -> None:
+    kb_repo.stage("knowledge-base/old.md", "l1\nl2\nl3\nl4\n")
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/old.md", "knowledge-base/new.md")
+    (kb_repo.root / "knowledge-base/new.md").write_text("l1\nL2\nl3\nl4\n", encoding="utf-8")
+    kb_repo.git("add", "--", "knowledge-base/new.md")
+    assert changed_lines(kb_repo.root, "knowledge-base/new.md", "knowledge-base/old.md") == ([(2, "L2")], ["l2"])
+
+
+def test_head_daily_baseline_and_text(kb_repo) -> None:
+    kb_repo.stage("action-items/action-items-2026-09-25.md", "a\n")
+    kb_repo.stage("action-items/action-items-2026-09-27.md", "b\n")
+    kb_repo.stage("action-items/action-items-2026-09-30.md", "later\n")
+    kb_repo.stage("action-items/archive/action-items-2026-09-20.md", "old\n")
+    kb_repo.commit()
+    assert head_files(kb_repo.root, "action-items") == [
+        "action-items/action-items-2026-09-25.md",
+        "action-items/action-items-2026-09-27.md",
+        "action-items/action-items-2026-09-30.md",
+        "action-items/archive/action-items-2026-09-20.md",
+    ]
+    assert head_text(kb_repo.root, "action-items/action-items-2026-09-27.md") == "b\n"
+    assert head_text(kb_repo.root, "action-items/nope.md") is None
 
 
 def test_added_lines_rename_plus_one_line_path_with_space(kb_repo) -> None:
