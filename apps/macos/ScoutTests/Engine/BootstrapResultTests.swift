@@ -25,13 +25,16 @@ struct BootstrapResultTests {
 
     /// The engine contract grows additively (e.g. `mutated`, `vault_edits`
     /// landed after this decoder shipped); unknown keys must never break
-    /// decoding of the fields the app actually reads.
+    /// decoding of the fields the app actually reads. `vault_edits` is an
+    /// array of objects in the real contract, not bare strings — exercise
+    /// that actual shape so a future object-vs-scalar decode quirk can't
+    /// hide behind an oversimplified fixture.
     @Test func ignoresAdditiveContractKeys() {
         let json = """
         {"schema_version": 1, "action": "upgrade", "reason": "", "dry_run": false,
          "vault": "/Users/alex/Scout", "plugin_version": "0.12.0", "error": null,
          "doctor": null, "conflicts": [], "backups": [], "snapshots_recorded": [], "pointer": null,
-         "mutated": true, "vault_edits": ["notes/2026-10-04.md"]}
+         "mutated": true, "vault_edits": [{"path": "notes/2026-10-04.md", "action": "created"}]}
         """
         let r = BootstrapResult.parse(Data(json.utf8))
         #expect(r?.action == "upgrade")

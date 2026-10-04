@@ -94,6 +94,18 @@ actor EngineInstaller {
     private nonisolated struct Skipped: Error { let reason: String }
     private nonisolated struct Failure: Error, CustomStringConvertible { let description: String }
 
+    /// Single-line preview of process output for error messages. A pure,
+    /// `nonisolated` copy of `ScheduleService.previewBytes` (that one is
+    /// `@MainActor`-isolated, so calling it from this actor just to format a
+    /// string would mean an actor hop for every failure path — Ruling 54
+    /// minor 6).
+    private nonisolated static func preview(_ data: Data, max: Int) -> String {
+        guard !data.isEmpty else { return "" }
+        let raw = String(data: data.prefix(max), encoding: .utf8) ?? "<binary>"
+        let oneLine = raw.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").trimmingCharacters(in: .whitespaces)
+        return data.count > max ? oneLine + "…" : oneLine
+    }
+
     private func perform(_ step: InstallStep, mode: InstallMode) async throws -> String {
         switch step {
         case .ensureUv:
@@ -129,7 +141,10 @@ actor EngineInstaller {
         try fileManager.createDirectory(at: partial, withIntermediateDirectories: true)
         let tar = try await runner.run(executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-xzf", tarballURL.path, "-C", partial.path],
                                        environment: [:], workingDirectory: nil)
-        guard tar.exitCode == 0 else { throw Failure(description: "tar failed: \(String(data: tar.stderr, encoding: .utf8) ?? "")") }
+        guard tar.exitCode == 0 else {
+            try? fileManager.removeItem(at: partial)
+            throw Failure(description: "tar failed: \(String(data: tar.stderr, encoding: .utf8) ?? "")")
+        }
         guard EngineLocator.version(atRoot: partial) == version else {
             try? fileManager.removeItem(at: partial)
             throw Failure(description: "bundled engine manifest does not match pinned version \(version)")
@@ -140,17 +155,30 @@ actor EngineInstaller {
         return engineRoot.path
     }
 
-    /// Atomic symlink swap: create `current.tmp`, then rename over `current`.
+    /// Atomic symlink swap: create `current.tmp` pointing at the ABSOLUTE
+    /// engine root, then POSIX `rename(2)` it over `current`.
+    ///
+    /// Two bugs lived here (Ruling 54): (1) `URL(fileURLWithPath:relativeTo:)`
+    /// treats a base with no trailing slash as a *file*, so the relative
+    /// target `version` replaced `engine`'s last path component instead of
+    /// being appended under it — `current` pointed at a nonexistent sibling
+    /// of `engineDir`. Fixed by writing `engineRoot.path`, an absolute
+    /// target, so there's nothing to resolve relative to. (2)
+    /// `FileManager.replaceItemAt` refuses a symlink as the item being
+    /// replaced ("doesn't exist", NSCocoaError 4 — it expects a regular
+    /// file/directory, not a link), so repointing an *existing* `current`
+    /// always failed. `rename(2)` replaces the link itself atomically
+    /// without following it, on a fresh `current` or an existing one alike.
     private func repointCurrent() throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: layout.engineDir, withIntermediateDirectories: true)
         let tmp = layout.engineDir.appendingPathComponent("current.tmp")
         try? fileManager.removeItem(at: tmp)
-        try fileManager.createSymbolicLink(at: tmp, withDestinationURL: URL(fileURLWithPath: version, relativeTo: layout.engineDir))
-        if (try? fileManager.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path)) != nil || fileManager.fileExists(atPath: layout.currentEngineLink.path) {
-            _ = try fileManager.replaceItemAt(layout.currentEngineLink, withItemAt: tmp)
-        } else {
-            try fileManager.moveItem(at: tmp, to: layout.currentEngineLink)
+        try fileManager.createSymbolicLink(atPath: tmp.path, withDestinationPath: engineRoot.path)
+        guard rename(tmp.path, layout.currentEngineLink.path) == 0 else {
+            let reason = String(cString: strerror(errno))
+            try? fileManager.removeItem(at: tmp)
+            throw Failure(description: "could not repoint the current engine symlink: \(reason)")
         }
     }
 
@@ -171,7 +199,7 @@ actor EngineInstaller {
         let build = try await runner.run(executable: URL(fileURLWithPath: "/bin/bash"), arguments: [script.path],
                                          environment: Self.venvEnvironment(layout: layout, version: version, uv: uvURL), workingDirectory: engineRoot)
         if build.exitCode != 0 {
-            let preview = await ScheduleService.previewBytes(build.stderr.isEmpty ? build.stdout : build.stderr, max: 400)
+            let preview = Self.preview(build.stderr.isEmpty ? build.stdout : build.stderr, max: 400)
             throw Failure(description: "install-venv.sh failed: \(preview)")
         }
         let check = try await runner.run(executable: scoutctl, arguments: ["version"], environment: [:], workingDirectory: nil)
@@ -184,17 +212,40 @@ actor EngineInstaller {
     /// its recorded path is `currentEngineLink` itself (standardized), when
     /// resolving symlinks on both sides lands on the same place (Claude Code
     /// may record the symlink's realpath instead of the link), or when it
-    /// resolves to any directory directly under `engineDir` — a versioned
-    /// engine root only this installer ever creates (Ruling 53). Anything
-    /// else — a different directory, or a non-directory source — is a
-    /// foreign marketplace we must never silently replace (spec §10).
+    /// resolves to the canonical versioned root for whatever version its own
+    /// manifest claims (Ruling 53/54). Anything else — a different
+    /// directory, a non-directory source, or a directory under `engineDir`
+    /// that ISN'T a real versioned root (`<v>.partial`, `current.tmp`) — is a
+    /// foreign/bogus marketplace we must never silently replace (spec §10).
+    ///
+    /// The original check instead compared the candidate's *parent* directory
+    /// to `engineDir`, which was too broad in two ways (Ruling 54 minor 4):
+    /// it accepted `engine/0.10.0.partial` and `engine/current.tmp` (same
+    /// parent, not real engine roots), and it compared a symlink-*resolved*
+    /// candidate against an *unresolved* `engineDir`, which falsely refuses a
+    /// symlinked home. Recomputing the canonical path from the candidate's
+    /// own manifest version (`layout.engineRoot(version:)`) and comparing
+    /// resolved-to-resolved sidesteps both: a `.partial` dir's canonical root
+    /// never has the `.partial` suffix, so it never matches even when its
+    /// manifest is fully written.
     private func isManagedMarketplace(path: String) -> Bool {
+        // Compare `.path` strings, not `URL` equality: `URL(fileURLWithPath:)`
+        // (legacy init, used for the untrusted `path`) decides the directory
+        // hint via `lstat` — a symlink is never "a directory" to it — while
+        // `.appending(path:)` (used throughout `EngineLayout`) infers it via
+        // `stat`, which follows the link. The *same* `current` symlink can
+        // therefore come back with or without a trailing slash depending on
+        // which API built the URL, and `URL.==` treats that as a different
+        // path even though `.path` does not.
         let raw = URL(fileURLWithPath: path).standardizedFileURL
-        if raw == layout.currentEngineLink.standardizedFileURL { return true }
+        let current = layout.currentEngineLink.standardizedFileURL
+        if raw.path == current.path { return true }
         let resolvedRaw = raw.resolvingSymlinksInPath().standardizedFileURL
-        let resolvedCurrent = layout.currentEngineLink.resolvingSymlinksInPath().standardizedFileURL
-        if resolvedRaw == resolvedCurrent { return true }
-        return resolvedRaw.deletingLastPathComponent().standardizedFileURL == layout.engineDir.standardizedFileURL
+        let resolvedCurrent = current.resolvingSymlinksInPath().standardizedFileURL
+        if resolvedRaw.path == resolvedCurrent.path { return true }
+        guard let manifestVersion = EngineLocator.version(atRoot: resolvedRaw) else { return false }
+        let resolvedCanonicalRoot = layout.engineRoot(version: manifestVersion).resolvingSymlinksInPath().standardizedFileURL
+        return resolvedRaw.path == resolvedCanonicalRoot.path
     }
 
     private func registerWithClaudeCode() async throws -> String {
@@ -204,7 +255,7 @@ actor EngineInstaller {
         case nil:
             let add = try await runner.run(executable: claude, arguments: ClaudeCodeCLI.marketplaceAdd(path: layout.currentEngineLink), environment: [:], workingDirectory: nil)
             if add.exitCode != 0 {
-                let preview = await ScheduleService.previewBytes(add.stderr, max: 300)
+                let preview = Self.preview(add.stderr, max: 300)
                 throw Failure(description: "claude plugin marketplace add failed: \(preview)")
             }
             notes.append("marketplace added")
@@ -217,7 +268,7 @@ actor EngineInstaller {
         let args = installed ? ClaudeCodeCLI.pluginUpdate : ClaudeCodeCLI.pluginInstall
         let result = try await runner.run(executable: claude, arguments: args, environment: [:], workingDirectory: nil)
         if result.exitCode != 0 {
-            let preview = await ScheduleService.previewBytes(result.stderr, max: 300)
+            let preview = Self.preview(result.stderr, max: 300)
             throw Failure(description: "claude \(args.joined(separator: " ")) failed: \(preview)")
         }
         notes.append(installed ? "plugin updated (restart Claude Code to load it)" : "plugin installed (restart Claude Code to load it)")
@@ -238,7 +289,7 @@ actor EngineInstaller {
         let result = try await runner.run(executable: scoutctl, arguments: Self.bootstrapAutoArguments(mode: mode, claude: claude),
                                           environment: ["SCOUT_DATA_DIR": mode.vault.path], workingDirectory: nil)
         guard let decoded = BootstrapResult.parse(result.stdout) else {
-            let preview = await ScheduleService.previewBytes(result.stderr.isEmpty ? result.stdout : result.stderr, max: 400)
+            let preview = Self.preview(result.stderr.isEmpty ? result.stdout : result.stderr, max: 400)
             throw Failure(description: "bootstrap output not understood (exit \(result.exitCode)): \(preview)")
         }
         if decoded.action == "refused" { throw Failure(description: decoded.error ?? "bootstrap refused") }

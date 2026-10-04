@@ -84,6 +84,22 @@ struct EngineLocatorTests {
         #expect(install.version == "0.10.0")
     }
 
+    /// Ruling 54: `current`'s target is normally absolute, but a relative one
+    /// (as a hand-rolled symlink, or a future engine version, might write)
+    /// must resolve against `engineDir` rather than replacing its last path
+    /// component — the same bug `EngineInstaller.repointCurrent` had.
+    @Test func conventionalLayoutWithARelativeCurrentLinkIsManaged() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pluginTree(layout.engineRoot(version: "0.10.0"), version: "0.10.0")
+        try fm.createDirectory(at: layout.engineDir, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: layout.currentEngineLink.path, withDestinationPath: "0.10.0")
+        try executable(layout.scoutctl(version: "0.10.0"))
+        guard case .managed(let install, let bootstrapped) = EngineLocator(layout: layout).locate() else { Issue.record("expected .managed"); return }
+        #expect(!bootstrapped)
+        #expect(install.version == "0.10.0")
+    }
+
     @Test func shimPointingAtALiveVenvIsExternal() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }

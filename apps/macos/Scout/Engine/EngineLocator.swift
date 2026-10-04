@@ -74,7 +74,14 @@ nonisolated struct EngineLocator: Sendable {
     /// before `bootstrap` (which writes the pointer), or a user deleted state.
     private func conventionalLayout() -> EngineInstall? {
         guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path) else { return nil }
-        let root = URL(fileURLWithPath: dest, relativeTo: layout.engineDir).standardizedFileURL
+        // `URL(fileURLWithPath:relativeTo:)` treats a non-directory base (no
+        // trailing slash) as a FILE, so the relative component REPLACES its
+        // last path segment instead of being appended under it — the same
+        // bug `EngineInstaller.repointCurrent` had (Ruling 54). `current`'s
+        // target is normally absolute (the installer always writes one), but
+        // tolerate a relative one by resolving it against the engine
+        // directory the way `appending(path:)` does everywhere else.
+        let root = (dest.hasPrefix("/") ? URL(fileURLWithPath: dest) : layout.engineDir.appending(path: dest)).standardizedFileURL
         let version = root.lastPathComponent
         let scoutctl = layout.scoutctl(version: version)
         guard FileManager.default.isExecutableFile(atPath: scoutctl.path) else { return nil }
