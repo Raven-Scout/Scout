@@ -58,15 +58,9 @@ struct FakeScoutRunIntegrationTests {
         let logCreated = logFiles.contains { $0.pathExtension == "log" }
         #expect(logCreated, "synthetic log file should exist at \(logURL.path)")
 
-        // Wait up to 10s for reconciliation (FSEvents latency can be variable)
-        let start = Date()
-        var detected: [Run] = []
-        while Date().timeIntervalSince(start) < 10 {
-            detected = await svc.runs
-            if !detected.isEmpty { break }
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
-        #expect(!detected.isEmpty, "service should detect the synthetic run within 10 seconds")
+        // Wait for FSEvents + reconciliation. A liveness budget, not a latency
+        // one: a fixed 10 s here flaked under full-suite load (see `waitUntil`).
+        await waitUntil("service should detect the synthetic run") { !svc.runs.isEmpty }
     }
 
     private static func timestampForFilename() -> String {

@@ -49,18 +49,13 @@ struct ActionItemsIntegrationTests {
             displayedDate: date
         )
 
-        // 5. Wait for FSEvents + reparse.
-        var tries = 0
-        while tries < 40 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            if case .loaded(let doc) = service.state,
-               let t = doc.sections.first?.tasks.first,
-               t.comments.contains(where: { $0.text.contains("hello from integration") }) {
-                return
-            }
-            tries += 1
+        // 5. Wait for FSEvents + reparse. A liveness budget, not a latency
+        // one: a fixed ~2 s here flaked under full-suite load (see `waitUntil`).
+        await waitUntil("Comment never appeared in reparsed document; final state: \(service.state)") {
+            guard case .loaded(let doc) = service.state,
+                  let t = doc.sections.first?.tasks.first else { return false }
+            return t.comments.contains(where: { $0.text.contains("hello from integration") })
         }
-        Issue.record("Comment never appeared in reparsed document; final state: \(service.state)")
     }
 
     /// Probe common install paths (mirroring AppState.resolveScoutctlPath)
