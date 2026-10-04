@@ -188,6 +188,26 @@ struct ComponentSmokeTests {
         ViewHost.render(TaskContextNoteSection(tag: nil, scoutDirectory: vault), size: cardSize)
     }
 
+    @Test("a task card renders compact and with every field flipped")
+    func taskCardRendersDisplayOptions() {
+        let task = SmokeFixtures.task(
+            comments: SmokeFixtures.comments, deepLinks: SmokeFixtures.deepLinks,
+            snoozedUntil: SmokeFixtures.day.addingTimeInterval(86_400))
+        let flipped = ActionItemsDisplay.Fields(refs: false, snooze: false, comments: true)
+        for (density, fields) in [(ActionItemsDisplay.Density.compact, ActionItemsDisplay.Fields()),
+                                  (.comfortable, flipped), (.compact, flipped)] {
+            for kind in [ActionSection.Kind.urgent, .todo] {
+                ViewHost.render(
+                    TaskCardView(
+                        task: task, kind: kind, displayedDate: SmokeFixtures.day,
+                        scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
+                        density: density, fields: fields,
+                        onOp: { _, _ in }),
+                    size: cardSize)
+            }
+        }
+    }
+
     @Test("a section renders for every kind")
     func sectionRendersEveryKind() {
         for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal,

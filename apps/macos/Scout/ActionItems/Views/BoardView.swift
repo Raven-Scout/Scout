@@ -6,8 +6,10 @@ import SwiftUI
 /// collapsed by default. No drag-and-drop — acting on a task happens in the
 /// List view, which sidesteps the markdown-as-source mutation concerns in #10.
 struct BoardView: View {
-    let sections: [ActionSection]
+    let columns: [ActionBoardColumn]
     let scoutDirectory: URL
+    let density: ActionItemsDisplay.Density
+    let fields: ActionItemsDisplay.Fields
 
     /// Done starts collapsed; toggled per session.
     @State private var doneCollapsed = true
@@ -15,8 +17,29 @@ struct BoardView: View {
     /// column holding the whole backlog froze it the same way (see `TaskWindow`).
     @State private var windows: [ActionSection.Kind: TaskWindow] = [:]
 
-    private var columns: [ActionBoardColumn] {
-        ActionBoardColumn.columns(from: sections)
+    /// Columns already arranged by the caller. `ActionItemsView` sorts and
+    /// caches them, so the board does no per-body work.
+    init(
+        columns: [ActionBoardColumn],
+        scoutDirectory: URL,
+        density: ActionItemsDisplay.Density = .comfortable,
+        fields: ActionItemsDisplay.Fields = .init()
+    ) {
+        self.columns = columns
+        self.scoutDirectory = scoutDirectory
+        self.density = density
+        self.fields = fields
+    }
+
+    /// Columns built from the sections in file order.
+    init(
+        sections: [ActionSection],
+        scoutDirectory: URL,
+        density: ActionItemsDisplay.Density = .comfortable,
+        fields: ActionItemsDisplay.Fields = .init()
+    ) {
+        self.init(columns: ActionBoardColumn.columns(from: sections), scoutDirectory: scoutDirectory,
+                  density: density, fields: fields)
     }
 
     var body: some View {
@@ -51,7 +74,8 @@ struct BoardView: View {
                 let showAll = { windows[column.kind, default: TaskWindow()].showAll(in: column.tasks) }
                 WindowSummaryRow(window: window, tasks: column.tasks, action: showMore, showAll: showAll)
                 ForEach(window.visible(column.tasks)) { task in
-                    BoardCardView(task: task, kind: column.kind, scoutDirectory: scoutDirectory)
+                    BoardCardView(task: task, kind: column.kind, scoutDirectory: scoutDirectory,
+                                  density: density, fields: fields)
                 }
                 ShowMoreRow(window: window, tasks: column.tasks, action: showMore, showAll: showAll)
             }

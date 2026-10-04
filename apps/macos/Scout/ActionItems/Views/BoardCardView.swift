@@ -8,6 +8,9 @@ struct BoardCardView: View {
     let task: ActionTask
     let kind: ActionSection.Kind
     let scoutDirectory: URL
+    /// Display options from the profile (#52). Defaults draw today's card.
+    var density: ActionItemsDisplay.Density = .comfortable
+    var fields = ActionItemsDisplay.Fields()
 
     @State private var launchError: String?
 
@@ -23,7 +26,7 @@ struct BoardCardView: View {
                 .font(DS.serif(13.5, weight: .medium))
                 .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
                 .strikethrough(task.done, color: DS.Ink.p4)
-                .lineLimit(3)
+                .lineLimit(density == .compact ? 2 : 3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             footer
@@ -34,7 +37,7 @@ struct BoardCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(12)
+        .padding(density == .compact ? 8 : 12)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(DS.Paper.raised)
@@ -64,7 +67,7 @@ struct BoardCardView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .imageScale(.small)
                     .foregroundStyle(DS.Status.ok)
-            } else if task.snoozedUntil != nil {
+            } else if fields.snooze, task.snoozedUntil != nil {
                 Image(systemName: "moon.zzz.fill")
                     .imageScale(.small)
                     .foregroundStyle(DS.Ink.p4)
@@ -74,19 +77,29 @@ struct BoardCardView: View {
 
     @ViewBuilder
     private var footer: some View {
-        if !task.deepLinks.isEmpty {
+        let links = fields.refs ? task.deepLinks : []
+        let commentCount = fields.comments ? task.comments.count : 0
+        if !links.isEmpty || commentCount > 0 {
             HStack(spacing: 8) {
-                ForEach(task.deepLinks) { link in
+                ForEach(links) { link in
                     HStack(spacing: 3) {
                         Image(systemName: linkGlyph(link))
                             .imageScale(.small)
                         Text(link.displayLabel)
                             .lineLimit(1)
                     }
-                    .font(DS.mono(10))
-                    .foregroundStyle(DS.Ink.p3)
+                }
+                if commentCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "text.bubble")
+                            .imageScale(.small)
+                        Text("\(commentCount)")
+                    }
+                    .accessibilityLabel("\(commentCount) comments")
                 }
             }
+            .font(DS.mono(10))
+            .foregroundStyle(DS.Ink.p3)
         }
     }
 
