@@ -409,9 +409,13 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   .venv/bin/python -m scout.scripts.schedule_snapshot  --check --no-also-write-app-fixture
   cd "$W"
   # No run-contract.py harness ships in this repo. Extract every `run:` block
-  # of contract.yml's `verify` job and execute it in order, from the repo
-  # root, under `bash -e -o pipefail`, with `SNAPSHOT_COPIES` exported from
-  # the job's `env:` — that's the actual verification, not a stand-in script.
+  # of contract.yml's `verify` job and execute it in order under
+  # `bash -e -o pipefail`, in each step's `working-directory:` (default: the
+  # repo root), with the job's `env:` exported and plugin/engine/.venv/bin first
+  # on PATH — that's the actual verification, not a stand-in script. Skip the
+  # three setup steps locally (`uv python install`, `uv venv`, `uv pip install`):
+  # the venv already exists, `uv venv` would replace it, and `uv python install`
+  # leaves a ~/.local/bin/python3.12 shim that shadows Homebrew's.
   shellcheck plugin/engine/bin/scoutctl
   shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
   for f in .github/workflows/*.yml; do plugin/engine/.venv/bin/python -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]))' "$f" || echo "BAD $f"; done
