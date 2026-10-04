@@ -40,6 +40,7 @@ struct UvInstallerTests {
     // test's temp home is still checked first by `existing()`.
     @Test func existingUvShortCircuits() async throws {
         let l = try layout()
+        defer { try? FileManager.default.removeItem(at: l.home) }
         try "#!/bin/sh\n".write(to: l.uvURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: l.uvURL.path)
         let installer = UvInstaller(release: .init(version: "0.12.1", sha256: [:]), layout: l, downloader: StubDownloader(file: URL(fileURLWithPath: "/nonexistent")), runner: SystemProcessRunner(), arch: .arm64, systemCandidates: [])
@@ -48,6 +49,7 @@ struct UvInstallerTests {
 
     @Test func downloadsVerifiesAndInstalls() async throws {
         let l = try layout()
+        defer { try? FileManager.default.removeItem(at: l.home) }
         let (tar, sha) = try fakeTarball(arch: .arm64, in: l.home)
         let logs = LogRecorder()
         let installer = UvInstaller(release: .init(version: "0.12.1", sha256: ["aarch64-apple-darwin": sha]), layout: l,
@@ -60,6 +62,7 @@ struct UvInstallerTests {
 
     @Test func checksumMismatchInstallsNothing() async throws {
         let l = try layout()
+        defer { try? FileManager.default.removeItem(at: l.home) }
         let (tar, _) = try fakeTarball(arch: .arm64, in: l.home)
         let installer = UvInstaller(release: .init(version: "0.12.1", sha256: ["aarch64-apple-darwin": String(repeating: "0", count: 64)]), layout: l,
                                     downloader: StubDownloader(file: tar), runner: SystemProcessRunner(), arch: .arm64, systemCandidates: [])
@@ -69,6 +72,7 @@ struct UvInstallerTests {
 
     @Test func missingChecksumForArchIsAnError() async throws {
         let l = try layout()
+        defer { try? FileManager.default.removeItem(at: l.home) }
         let installer = UvInstaller(release: .init(version: "0.12.1", sha256: [:]), layout: l, downloader: StubDownloader(file: URL(fileURLWithPath: "/x")), runner: SystemProcessRunner(), arch: .x86_64, systemCandidates: [])
         await #expect(throws: UvInstallerError.missingChecksum("x86_64-apple-darwin")) { try await installer.ensure(log: { _ in }) }
     }
