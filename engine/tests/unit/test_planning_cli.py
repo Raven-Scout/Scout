@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -209,8 +210,15 @@ def test_clear_plan_via_cli(vault: Path) -> None:
     assert "- estimate:" not in target.read_text(encoding="utf-8")
 
 
+def _plain(text: str) -> str:
+    """Typer's rich error panel adds colour codes and a box in CI; compare the words only."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    text = re.sub(r"[│╭╮╰╯─]", " ", text)
+    return " ".join(text.split())
+
+
 def test_with_plan_needs_json(vault: Path) -> None:
     target = _seed(vault)
     result = runner.invoke(action_items_app, ["list", str(target), "--with-plan"])
-    assert result.exit_code != 0
-    assert "--with-plan needs --json" in result.output
+    assert result.exit_code == 2
+    assert "--with-plan needs --json" in _plain(result.output)
