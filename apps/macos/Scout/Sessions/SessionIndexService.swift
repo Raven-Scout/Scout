@@ -35,6 +35,9 @@ final class SessionIndexService: ObservableObject {
         var watchRoots: [URL]
         var intervals: SessionsRefresh.Intervals = .production
         var clock: any ClockSource = SystemClock()
+        /// What `scoutctl` runs with; puts the user's tool directories (and
+        /// so `gh`) on PATH even when Scout was launched from the Dock.
+        var environment: [String: String] = SessionsRefresh.engineEnvironment()
 
         var cacheDirectory: URL { indexFile.deletingLastPathComponent() }
     }
@@ -162,7 +165,7 @@ final class SessionIndexService: ObservableObject {
             result = try await config.runner.run(
                 executable: config.scoutctl,
                 arguments: SessionsRefresh.fastArguments(prefix: config.argumentsPrefix),
-                environment: [:],
+                environment: config.environment,
                 workingDirectory: nil
             )
         } catch {
@@ -199,7 +202,7 @@ final class SessionIndexService: ObservableObject {
             result = try await config.runner.run(
                 executable: config.scoutctl,
                 arguments: SessionsRefresh.prArguments(prefix: config.argumentsPrefix),
-                environment: [:],
+                environment: config.environment,
                 workingDirectory: nil
             )
         } catch {

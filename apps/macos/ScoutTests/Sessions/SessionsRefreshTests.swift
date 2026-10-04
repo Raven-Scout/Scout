@@ -65,4 +65,21 @@ struct SessionsRefreshTests {
             "/Users/alex/.claude/projects",
         ])
     }
+
+    /// Launched from the Dock, Finder or as a login item, Scout inherits only
+    /// `/usr/bin:/bin:/usr/sbin:/sbin`, where the engine's `shutil.which("gh")`
+    /// finds nothing and every PR build reads "gh not found".
+    @Test func theEngineSeesTheUsersToolDirectoriesFirst() {
+        let home = URL(fileURLWithPath: "/Users/alex", isDirectory: true)
+        let gui = SessionsRefresh.engineEnvironment(home: home, inherited: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        #expect(gui["PATH"] == "/Users/alex/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+
+        let shell = SessionsRefresh.engineEnvironment(
+            home: home, inherited: ["PATH": "/opt/homebrew/bin:/Users/alex/bin:/usr/bin"])
+        #expect(shell["PATH"] == "/Users/alex/.local/bin:/opt/homebrew/bin:/usr/local/bin:/Users/alex/bin:/usr/bin")
+
+        let none = SessionsRefresh.engineEnvironment(home: home, inherited: [:])
+        #expect(none["PATH"] == "/Users/alex/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        #expect(none.keys.sorted() == ["PATH"])
+    }
 }

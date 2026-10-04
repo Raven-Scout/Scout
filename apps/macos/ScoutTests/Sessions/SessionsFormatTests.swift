@@ -25,6 +25,22 @@ struct SessionsFormatTests {
         #expect(chip("local_M") == "#60 · merged · ✓")
     }
 
+    @Test func freshnessNamesALonePRProblemAndCountsSeveral() {
+        let refreshed = now.addingTimeInterval(-10)
+        let checked = now.addingTimeInterval(-120)
+        #expect(SessionsFormat.freshness(lastRefreshAt: refreshed, prFinishedAt: checked, prErrors: [], now: now)
+                == "updated 10s ago · PRs checked 2m ago")
+        #expect(SessionsFormat.freshness(lastRefreshAt: refreshed, prFinishedAt: checked,
+                                         prErrors: ["gh not found on PATH — PR states unknown"], now: now)
+                == "updated 10s ago · PR check failed: gh not found on PATH — PR states unknown")
+        #expect(SessionsFormat.freshness(lastRefreshAt: nil, prFinishedAt: checked,
+                                         prErrors: ["pr view failed: example-org/example-repo#98", "pr view failed: example-org/example-repo#102"],
+                                         now: now)
+                == "PR check: 2 problems")
+        #expect(SessionsFormat.freshness(lastRefreshAt: nil, prFinishedAt: nil, prErrors: [], now: now)
+                == "Reading your Claude Code sessions…")
+    }
+
     @Test func modelsLoseTheirClaudePrefix() {
         #expect(SessionsFormat.shortModel("claude-opus-5") == "opus-5")
         #expect(SessionsFormat.shortModel("gpt-x") == "gpt-x")

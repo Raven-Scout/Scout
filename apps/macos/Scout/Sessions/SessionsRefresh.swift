@@ -61,6 +61,23 @@ nonisolated enum SessionsRefresh {
         )
     }
 
+    /// The environment both lanes run `scoutctl` with. Launched from the Dock,
+    /// Finder or as a login item, Scout inherits only
+    /// `/usr/bin:/bin:/usr/sbin:/sbin`, where the engine's `shutil.which("gh")`
+    /// finds nothing. The user's tool directories go first, as scout-plugin's
+    /// own `probe_env` does; the rest of the inherited PATH follows, deduplicated.
+    static func engineEnvironment(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        inherited: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        let toolDirectories = [home.appendingPathComponent(".local/bin").path, "/opt/homebrew/bin", "/usr/local/bin"]
+        let inheritedPath = inherited["PATH"].flatMap { $0.isEmpty ? nil : $0 } ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        var seen = Set<String>()
+        let path = (toolDirectories + inheritedPath.split(separator: ":").map(String.init))
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        return ["PATH": path.joined(separator: ":")]
+    }
+
     /// True for a write the engine itself makes under the vault's
     /// `.scout-cache/` (1b spec §3.6): `sessions-index.json`, every
     /// `sessions-*.cache.json`, and the `.<name>.<random>.tmp` files its atomic

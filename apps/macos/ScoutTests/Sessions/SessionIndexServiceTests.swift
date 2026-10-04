@@ -8,6 +8,7 @@ import Testing
 /// not wait for it.
 actor ScriptedSessionsRunner: ProcessRunner {
     private(set) var calls: [[String]] = []
+    private(set) var environments: [[String: String]] = []
     private var fast: ProcessResult
     private var pr: ProcessResult
     private var holdingFast = false
@@ -34,11 +35,12 @@ actor ScriptedSessionsRunner: ProcessRunner {
     nonisolated func run(
         executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?
     ) async throws -> ProcessResult {
-        await answer(arguments)
+        await answer(arguments, environment: environment)
     }
 
-    private func answer(_ arguments: [String]) async -> ProcessResult {
+    private func answer(_ arguments: [String], environment: [String: String]) async -> ProcessResult {
         calls.append(arguments)
+        environments.append(environment)
         if arguments.contains("--no-gh") {
             if holdingFast { await withCheckedContinuation { fastWaiters.append($0) } }
             return fast
@@ -193,6 +195,20 @@ struct SessionIndexServiceTests {
         #expect(await eventually { await runner.fastCalls == 2 })
         await h.service.refreshFast()
         #expect(h.service.index?.sessions.first?.title == "Fix the parser")
+    }
+
+    @Test func bothLanesRunWithTheUsersToolDirectoriesOnPath() async throws {
+        let runner = ScriptedSessionsRunner(fast: .ok(try SessionsFixture.data()))
+        let h = try harness(runner: runner)
+        defer { h.tearDown() }
+        await h.service.refreshFast()
+        await h.service.refreshPRs()
+        let environments = await runner.environments
+        #expect(environments.count >= 2)
+        for environment in environments {
+            let path = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+            #expect(path.contains("/opt/homebrew/bin") && path.contains("/usr/local/bin"), "PATH was \(path)")
+        }
     }
 
     // MARK: Failures

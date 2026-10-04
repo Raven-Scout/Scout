@@ -33,9 +33,14 @@ struct SessionsHeader: View {
                         .font(DS.serif(28, weight: .medium))
                         .foregroundStyle(DS.Ink.p1)
                     TimelineView(.periodic(from: .now, by: 10)) { context in
-                        Text(freshness(now: context.date))
+                        Text(SessionsFormat.freshness(
+                            lastRefreshAt: service.lastRefreshAt,
+                            prFinishedAt: service.prStatus?.finishedAt,
+                            prErrors: service.prStatus?.errors.map(\.message) ?? [],
+                            now: context.date))
                             .font(DS.sans(12))
                             .foregroundStyle(DS.Ink.p3)
+                            .help(service.prStatus?.errors.map(\.message).joined(separator: "\n") ?? "")
                     }
                 }
                 Spacer()
@@ -53,19 +58,6 @@ struct SessionsHeader: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
-    }
-
-    private func freshness(now: Date) -> String {
-        var parts: [String] = []
-        if let refreshed = service.lastRefreshAt {
-            parts.append("updated \(SessionsFormat.ago(refreshed, now: now))")
-        }
-        if let pr = service.prStatus {
-            parts.append(pr.errors.isEmpty
-                ? "PRs checked \(SessionsFormat.ago(pr.finishedAt, now: now))"
-                : "PR check: \(pr.errors.count) problem\(pr.errors.count == 1 ? "" : "s")")
-        }
-        return parts.isEmpty ? "Reading your Claude Code sessions…" : parts.joined(separator: " · ")
     }
 
     private var projectMenu: some View {

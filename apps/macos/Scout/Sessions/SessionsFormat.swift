@@ -19,6 +19,22 @@ nonisolated enum SessionsFormat {
         ["#\(pr.number)", pr.reviewLabel, pr.checksSymbol].compactMap { $0 }.joined(separator: " · ")
     }
 
+    /// The header's freshness line: when the index was last rebuilt and how the
+    /// last PR check went. A single PR problem is named — it is usually the one
+    /// thing to fix, such as `gh` missing from PATH; several are counted.
+    static func freshness(lastRefreshAt: Date?, prFinishedAt: Date?, prErrors: [String], now: Date) -> String {
+        var parts: [String] = []
+        if let lastRefreshAt { parts.append("updated \(ago(lastRefreshAt, now: now))") }
+        if let prFinishedAt {
+            switch prErrors.count {
+            case 0:  parts.append("PRs checked \(ago(prFinishedAt, now: now))")
+            case 1:  parts.append("PR check failed: \(prErrors[0])")
+            default: parts.append("PR check: \(prErrors.count) problems")
+            }
+        }
+        return parts.isEmpty ? "Reading your Claude Code sessions…" : parts.joined(separator: " · ")
+    }
+
     /// `claude-opus-5` → `opus-5`
     static func shortModel(_ model: String) -> String {
         model.hasPrefix("claude-") ? String(model.dropFirst("claude-".count)) : model
