@@ -87,7 +87,7 @@ EOF
   claude plugin install scout@scout-plugin
   ```
   Stop here. Do **not** run these commands yourself: the remove uninstalls the very plugin this command is running from.
-- `LEGACY_CHECKOUT:<path>`: tell the user, once, "Your `scout-plugin` marketplace is a local checkout at `<path>` with the pre-monorepo layout. The repo is now `Raven-Scout/Scout` (its old URL redirects), with the plugin under `plugin/`; `git -C <path> pull --ff-only` brings the checkout to that layout, and the marketplace keeps working from the checkout's root." Then continue — a local checkout is the user's own choice.
+- `LEGACY_CHECKOUT:<path>`: tell the user, once, "Your `scout-plugin` marketplace is a local checkout at `<path>` with the pre-monorepo layout. The repo is now `Raven-Scout/Scout` (its old URL redirects), with the plugin under `plugin/`; to move to it, run `git -C <path> pull --ff-only`, then `claude plugin marketplace update scout-plugin` and `claude plugin update scout@scout-plugin` (this command only refreshes a checkout at `~/scout-plugin` itself)." Then continue — a local checkout is the user's own choice.
 
 ---
 

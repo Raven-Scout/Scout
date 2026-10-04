@@ -52,6 +52,20 @@ Each command below names the repo as it is called *when that step runs*.
   - never push a bare `v*` tag anywhere;
   - the app's bare `v0.5.0`–`v0.13.0` share names with 10 of the plugin's
     bare tags, which live in the survivor.
+- **From Phase 3.5 until Phase 9 is done, nothing pulls `~/scout-plugin` on
+  Jordan's Mac.**
+  - That means no `/scout-update` (its Step 0.5 runs
+    `git -C ~/scout-plugin pull --ff-only`) and no manual pull.
+  - Once scout-plugin's `main` is the monorepo, that pull moves `engine/` to
+    `plugin/engine/`.
+  - That breaks every editable install of `~/scout-plugin/engine` until 9.3
+    re-points them: `~/.local/bin/scoutctl`, `engine.json`, the launchd runs,
+    and the running command's own `SCOUTCTL`.
+  - Nothing scheduled pulls it (checked 2026-10-04). Phase 9 runs right after
+    Phase 4.
+- **From Phase 4.1 on, always pass `--repo` to `gh`.** `gh` infers the repo
+  from `origin`, and the same number means different items in the two repos.
+  4.1a re-points `~/scout-app`'s `origin`; the coordinator tells every session.
 - **Phases 3 and 4 run back to back.** Between Phase 3.5 (the landing merge)
   and Phase 4.2 (the second rename), new users' `curl …/Raven-Scout/Scout/main/install.sh`
   hits the app repo, which has no `install.sh`. Existing plugin users are fine
@@ -78,6 +92,21 @@ Each command below names the repo as it is called *when that step runs*.
     switches branches.
   - It needs the engine venv:
     `cd "$R/plugin/engine" && uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+- **`legacyize`**: use it on any text copied from the app repo into the
+  survivor (release notes, PR and issue bodies). There, a bare `#N` would
+  autolink to a scout-plugin item and leave a "mentioned this" backlink on it.
+  Define it in each shell that needs it:
+
+  ```bash
+  legacyize() {   # stdin → stdout
+    perl -pe 's{(^|[^A-Za-z0-9/._-])#(\d+)}{$1Raven-Scout/scout-app-legacy#$2}g;
+              s{Raven-Scout/Scout#(\d+)}{Raven-Scout/scout-app-legacy#$1}g;
+              s{github\.com/Raven-Scout/Scout/(pull|issues|compare|releases/tag)/}{github.com/Raven-Scout/scout-app-legacy/$1/}g'
+  }
+  ```
+
+  It also rewrites a hex colour like `#123456`, so read the diff before
+  posting.
 - **No literal version numbers.** Every version is derived when you run the
   step. If a step tells you to type a version, it first shows the command that
   produces it.
@@ -116,20 +145,18 @@ Each command below names the repo as it is called *when that step runs*.
     for what it was last synced to.
 - [ ] The swap's branch changes (Phase 2.1) are committed. Find the commit with
   `git log --oneline --grep='swap' -- install.sh`.
-- [ ] Verified locally at the commit that added this runbook (find it with
-  `git log --oneline -- docs/superpowers/plans/2026-10-04-monorepo-cutover-runbook.md | tail -1`):
-  - the engine suite: 2883 passed, 14 skipped (the one known-flaky FS-watcher
+- [ ] Last full local verification, at 4caf4d6 (re-run 1.4 after every
+  re-sync):
+  - the engine suite: 3162 passed, 14 skipped (the one known-flaky FS-watcher
     test passes when re-run alone)
   - ruff, ruff format, mypy
-  - `versioning check` → `0.12.0`
+  - `versioning check` → `0.13.0`
   - every `run:` step of `contract.yml`'s verify job under `bash -e -o pipefail`,
     plus the canonical `--check` steps
   - shellcheck on every script that plugin-lint checks
   - all workflows parse
   - `bash install.sh --check`
-  - the macOS `ScoutTests`: 928 tests in 141 suites, TEST SUCCEEDED
-
-  Later re-syncs re-ran this list; their counts are in the PR description.
+  - the macOS `ScoutTests`: 973 tests in 151 suites, TEST SUCCEEDED
 - [ ] Verified in GitHub Actions: #132's first runs, 29/29 green on the app
   repo. **Not yet verified:**
   - Actions on the survivor;
@@ -521,7 +548,24 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   UP=$(git ls-remote https://github.com/Raven-Scout/scout-plugin.git refs/heads/main | cut -f1)
   git merge-base --is-ancestor "$UP" HEAD && echo "scout-plugin main fully merged"            # if UP is unknown locally, Phase 1 is stale
   gh repo view Raven-Scout/scout-app-legacy >/dev/null 2>&1 && echo "STOP: the legacy name is taken" || echo "legacy name free"
+  # Closing keywords in app commits act on scout-plugin's numbers once they reach its default branch:
+  git log --format='%B' migrate/monorepo ^"$UP" | grep -ioE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]+#[0-9]+' \
+    | grep -oE '[0-9]+$' | sort -un | while read -r n; do
+        gh api "repos/Raven-Scout/scout-plugin/issues/$n" --jq '"#\(.number) \(.state) \(.title[:60])"'
+      done                                                                   # every line must say "closed"
   ```
+
+  - **Closing keywords.** On 2026-10-04 they targeted #9, #10, #13, #14, #16,
+    #17, #41 and #83, all already closed. An open one would be **closed by
+    the merge**, so stop and decide with Jordan.
+  - **Accepted cost (tell Jordan at 3.1).** Pushing the app's history makes
+    its "(#N)" commit subjects reference scout-plugin's #1–#130. GitHub may
+    add "referenced this in commit" entries to those timelines, including 10
+    items by external authors (all closed).
+    - Reference entries don't send notifications as far as we know, but it is
+      irreversible.
+    - To be sure first, push an old-dated commit saying "(#1)" to a throwaway
+      repo that has an issue #1.
 
 - [ ] **3.1 [J] Push the branch to scout-plugin and open the landing PR
   there.** Push the branch only, with no tags.
@@ -531,13 +575,17 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git push https://github.com/Raven-Scout/scout-plugin.git migrate/monorepo:migrate/monorepo
   gh pr create --repo Raven-Scout/scout-plugin --base main --head migrate/monorepo --draft \
     --title "refactor: the Scout monorepo — the app moves in (apps/macos/), the plugin moves to plugin/" \
-    --body-file "$W/.superpowers/pr-body.md"
-  NEW_PR="<number it printed>"
+    --body-file "$W/.superpowers/landing-pr-body.md"     # app items written as scout-app-legacy#N, plugin items as bare #N
+  NEW_PR="<number it printed>"; echo "$NEW_PR" > ~/.scout-worktrees/landing-pr.txt
   gh pr comment 132 --repo Raven-Scout/Scout --body "Moved to Raven-Scout/scout-plugin#$NEW_PR: the monorepo lands in scout-plugin, which is then renamed Raven-Scout/Scout (this repo becomes Raven-Scout/scout-app-legacy). This PR's review history stays here."
   gh pr close 132 --repo Raven-Scout/Scout
   gh pr close 99 --repo Raven-Scout/Scout --comment "Its spec and plan are part of Raven-Scout/scout-plugin#$NEW_PR."
   ```
 
+  - **Write every app item in that body as `Raven-Scout/scout-app-legacy#N`.**
+    It is created on scout-plugin, so a bare `#125` links a scout-plugin item
+    immediately, and a `Raven-Scout/Scout#N` goes wrong at 4.2.
+    `.superpowers/landing-pr-body.md` already follows this rule.
   - The PR's diff is computed against the last subtree-merged scout-plugin
     commit, so it reads as "everything moves into `plugin/`, the app arrives
     in `apps/macos/`". Review it commit by commit.
@@ -592,12 +640,20 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   LAST=$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -1)   # v0.14.0 on 2026-10-04
   D=$(mktemp -d)
   gh release download "$LAST" --repo Raven-Scout/Scout --pattern 'Scout-*.dmg' --dir "$D"
-  gh release view "$LAST" --repo Raven-Scout/Scout --json body --jq .body > "$D/notes.md"
+  gh release view "$LAST" --repo Raven-Scout/Scout --json body --jq .body | legacyize > "$D/notes.md"   # define legacyize first (Conventions)
+  less "$D/notes.md"                                                                                   # its (#N)s and compare links now name scout-app-legacy
   printf '\n\n---\nRe-published at the monorepo cutover from the app repo'\''s %s release (now Raven-Scout/scout-app-legacy). Same DMG, not a new build.\n' "$LAST" >> "$D/notes.md"
   gh release create "app/$LAST" --repo Raven-Scout/scout-plugin --verify-tag --latest \
     --title "Scout.app ${LAST#v}" --notes-file "$D/notes.md" "$D"/Scout-*.dmg
   gh api "repos/Raven-Scout/Scout/releases/tags/$LAST" --jq '[.assets[] | {name, size}]'
   gh api "repos/Raven-Scout/scout-plugin/releases/tags/app/$LAST" --jq '[.assets[] | {name, size}]'   # same name and size
+  ```
+
+  **Undo for 3.3–3.4,** if the landing is abandoned before 3.5 [J]:
+
+  ```bash
+  gh release delete "app/$LAST" --repo Raven-Scout/scout-plugin --yes      # scout-plugin's Latest falls back to its own newest release
+  git push https://github.com/Raven-Scout/scout-plugin.git --delete $(git tag --list 'app/v*' | sed 's#^#refs/tags/#')
   ```
 
 - [ ] **3.5 [J] Merge the landing PR, then go straight to Phase 4.**
@@ -626,6 +682,9 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 ## Phase 4 — The swap [J] (two renames, back to back)
 
 - [ ] **4.0 Preflight** (run before 3.5).
+  - Pick a quiet window for 3.5 → Phase 4 → Phase 9: no scheduled slot due
+    for about two hours (`~/.local/bin/scoutctl schedule list-upcoming --json | head`).
+    Phase 9 runs right after Phase 4 (see Hard rules).
   - Ask the coordinator to pause every session that pushes to either repo.
   - Snapshot the app repo's open work:
 
@@ -639,6 +698,18 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
   ```bash
   gh repo rename scout-app-legacy --repo Raven-Scout/Scout --yes
+  ```
+
+- [ ] **4.1a Re-point the old app clone, still between the renames.**
+  - `~/scout-app` is the only clone whose `origin` is the app repo (checked
+    2026-10-04). Its 20 worktrees share its config, including `W` and the
+    Part B/C worktrees.
+  - Re-pointed now, its `fetch`, `push` and `gh` keep meaning the app repo,
+    and its bare `v*` tags never meet the survivor's.
+
+  ```bash
+  git -C ~/scout-app remote set-url origin https://github.com/Raven-Scout/scout-app-legacy.git
+  git -C ~/scout-app ls-remote --exit-code origin refs/heads/main >/dev/null && echo "old clone → scout-app-legacy"
   ```
 
 - [ ] **4.2 [J] Immediately, rename scout-plugin.**
@@ -697,24 +768,42 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   gh issue pin "$N" --repo Raven-Scout/Scout
   ```
 
-- [ ] **4.5 Old app clones now point at the survivor.** `~/scout-app` and
-  every worktree of it have `origin = https://github.com/Raven-Scout/Scout.git`.
-  That includes `W` and the Part B/C worktrees. Since 4.2, that URL is the
-  survivor.
-  - Main fast-forwards: the survivor's `main` descends from the app's old
-    `main`.
-  - The app's local bare `v*` tags collide with the survivor's. A plain
-    `git fetch` reports "would clobber existing tag" and exits non-zero.
-  - Run this once per clone (worktrees share the clone's config). It changes
-    only local git config:
+- [ ] **4.5 Tell the sessions.** Through the coordinator, tell every session
+  working in a `~/scout-app` worktree:
+  - its `origin` is now `Raven-Scout/scout-app-legacy` (4.1a);
+  - new work starts from a survivor clone;
+  - from now on, pass `--repo` to every `gh` call.
+
+  Any other clone of the app repo, on another machine or a fresh one, needs
+  the same `set-url`. Its `origin` now silently names the survivor.
+
+- [ ] **4.6 [J] Fix the Phase 0 closing comments** on #216, #194, #180, #176
+  and #175 (all external contributors' PRs).
+  - They say three things that are now wrong:
+    - "Raven-Scout/Scout#132", which now opens scout-plugin's own #132;
+    - "Once #132 merges", where the bare number already meant scout-plugin's;
+    - "this repo gets archived once that lands".
+  - Correct them in place, then post a short follow-up so the authors hear
+    it:
 
   ```bash
-  git -C ~/scout-app config remote.origin.tagOpt --no-tags
-  git -C ~/scout-app remote add legacy https://github.com/Raven-Scout/scout-app-legacy.git
+  LANDED=$(cat ~/.scout-worktrees/landing-pr.txt)
+  for n in 216 194 180 176 175; do
+    gh api "repos/Raven-Scout/Scout/issues/$n/comments" \
+      --jq '.[] | select(.user.login=="jordanrburger" and (.body|contains("#132"))) | .id' |
+    while read -r id; do
+      gh api "repos/Raven-Scout/Scout/issues/comments/$id" --jq .body \
+        | sed -e "s#Raven-Scout/Scout\#132#Raven-Scout/Scout\#$LANDED#g" -e "s#Once \#132 merges#Now that \#$LANDED has merged#" \
+              -e 's#and this repo gets archived once that lands#and this repo was renamed Raven-Scout/Scout when it landed#' > /tmp/c-$id.md
+      grep -c '#132\|archived' /tmp/c-$id.md                        # 0
+      gh api --method PATCH "repos/Raven-Scout/Scout/issues/comments/$id" -F body=@/tmp/c-$id.md --jq .html_url
+    done
+    gh pr comment "$n" --repo Raven-Scout/Scout --body "Update: the move landed in #$LANDED. Instead of being archived, this repo was renamed **Raven-Scout/Scout**, so you can re-open your change right here, with its files under \`plugin/\`."
+  done
   ```
 
-  Tell every session working in such a clone (the coordinator routes this).
-  New work should start from a fresh survivor clone.
+- [ ] **4.7 Now run Phase 9** (Jordan's machine), before anything else. Then
+  continue with Phase 5.
 
 ---
 
@@ -727,6 +816,17 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
   ```bash
   gh label clone Raven-Scout/scout-app-legacy --repo Raven-Scout/Scout
+  # First, on the legacy repo (a no-op in meaning there), qualify every #N in the bodies and comments,
+  # so nothing transferred autolinks to a scout-plugin item. Define legacyize first (Conventions).
+  for n in $(jq -r '.[].number' ~/.scout-worktrees/swap-legacy-open-issues.json); do
+    gh issue view "$n" --repo Raven-Scout/scout-app-legacy --json body --jq .body | legacyize > /tmp/i-$n.md
+    gh issue edit "$n" --repo Raven-Scout/scout-app-legacy --body-file /tmp/i-$n.md
+    gh api "repos/Raven-Scout/scout-app-legacy/issues/$n/comments" --paginate --jq '.[] | select(.body|test("#[0-9]")) | .id' |
+    while read -r id; do
+      gh api "repos/Raven-Scout/scout-app-legacy/issues/comments/$id" --jq .body | legacyize > /tmp/ic-$id.md
+      gh api --method PATCH "repos/Raven-Scout/scout-app-legacy/issues/comments/$id" -F body=@/tmp/ic-$id.md --jq .html_url
+    done
+  done
   for n in $(jq -r '.[].number' ~/.scout-worktrees/swap-legacy-open-issues.json); do
     new=$(gh issue transfer "$n" Raven-Scout/Scout --repo Raven-Scout/scout-app-legacy)
     echo "scout-app-legacy#$n -> $new" | tee -a ~/.scout-worktrees/swap-issue-map.txt
@@ -751,8 +851,9 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git fetch https://github.com/Raven-Scout/scout-app-legacy.git "$B" && git switch -c "$B" FETCH_HEAD
   git -c merge.directoryRenames=true rebase origin/main
   git ls-files -- Scout ScoutTests Scout.xcodeproj scripts | head      # must print nothing
-  git push -u origin "$B"
-  gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json title,body --jq '"Re-opened from Raven-Scout/scout-app-legacy#'"$N"' (review history there; `#N` references in the text below are that repo'"'"'s).\n\n" + .body' > /tmp/pr-$N-body.md
+  if git ls-remote --exit-code origin "refs/heads/$B" >/dev/null; then echo "STOP: $B already exists on the survivor — push under another name"; else git push -u origin "$B"; fi
+  { printf 'Re-opened from Raven-Scout/scout-app-legacy#%s (review history there).\n\n' "$N"
+    gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json body --jq .body | legacyize; } > /tmp/pr-$N-body.md   # define legacyize first
   gh pr create --repo Raven-Scout/Scout --base main --head "$B" $([ "$DRAFT" = true ] && echo --draft) \
     --title "$(gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json title --jq .title)" --body-file /tmp/pr-$N-body.md
   NEWN="<number it printed>"; echo "scout-app-legacy#$N -> Raven-Scout/Scout#$NEWN" | tee -a ~/.scout-worktrees/swap-pr-map.txt
@@ -859,7 +960,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 Jordan runs both release scripts. **No agent runs them, not even "to check
 something".**
 
-- [ ] **7.1 Plugin first.** Releasing it first means the app's version floor
+- [ ] **7.1 [J] Plugin first.** Releasing it first means the app's version floor
   names a published plugin.
   1. Fill `plugin/CHANGELOG.md`'s `## [Unreleased]` before preparing.
      `release-plugin.yml` refuses an empty section. Cover:
@@ -899,7 +1000,7 @@ something".**
   - `versioning bump` is not a query; it WRITES all four manifests (the
     release script relies on that).
   - Never push a bare `v*` tag.
-- [ ] **7.2 App.**
+- [ ] **7.2 [J] App.**
   - Needs the Developer ID Application cert in the keychain and the
     `scout-notary` notarytool profile.
   - The script picks the version from `apps/macos` commits since the newest
@@ -1009,6 +1110,7 @@ config, so no agent runs it.
 
   ```bash
   git -C ~/scout-plugin status --porcelain; git -C ~/scout-plugin rev-parse --abbrev-ref HEAD   # clean, on main
+  git -C ~/scout-plugin fetch origin && [ "$(git -C ~/scout-plugin rev-list --count origin/main..main)" = 0 ] && echo "no unpushed commits"   # else push or park them first
   git -C ~/scout-plugin rev-parse HEAD > ~/.scout-worktrees/scout-plugin-pre-monorepo.sha        # the rollback point
   git -C ~/scout-plugin remote set-url origin https://github.com/Raven-Scout/Scout.git
   git -C ~/scout-plugin pull --ff-only
@@ -1047,9 +1149,15 @@ config, so no agent runs it.
   ```bash
   git -C ~/scout-plugin reset --keep "$(cat ~/.scout-worktrees/scout-plugin-pre-monorepo.sha)"
   claude plugin marketplace update scout-plugin
+  bash ~/scout-plugin/scripts/install-venv.sh                                   # 9.3 pointed everything at plugin/.venv, which is gone now
+  ~/scout-plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev
+  ~/miniconda3/bin/pip install -e ~/scout-plugin/engine
   ```
 
-  Delete the `.sha` file after a few days of green runs.
+  After a few days of green runs:
+  - delete the `.sha` file;
+  - remove the leftover pre-monorepo venvs, which are ignored and no longer
+    used: `rm -rf ~/scout-plugin/.venv ~/scout-plugin/engine/.venv`.
 
 ---
 
@@ -1082,8 +1190,9 @@ Run this only after Phase 8 passes and Phase 5 is complete.
   re-point commands are no longer needed.
 
   ```bash
+  LANDED=$(cat ~/.scout-worktrees/landing-pr.txt 2>/dev/null || gh pr list --repo Raven-Scout/Scout --state merged --head migrate/monorepo --json number --jq '.[0].number')
   cat > /tmp/notice-277.md <<EOF
-  **Done.** scout-plugin was renamed **Raven-Scout/Scout** and is now the Scout monorepo: the plugin lives at \`plugin/\`, the macOS app at \`apps/macos/\`. Landed in #$NEW_PR. Design: [scout-app-legacy#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99); the earlier draft was [scout-app-legacy#132](https://github.com/Raven-Scout/scout-app-legacy/pull/132).
+  **Done.** scout-plugin was renamed **Raven-Scout/Scout** and is now the Scout monorepo: the plugin lives at \`plugin/\`, the macOS app at \`apps/macos/\`. Landed in #$LANDED. Design: [scout-app-legacy#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99); the earlier draft was [scout-app-legacy#132](https://github.com/Raven-Scout/scout-app-legacy/pull/132).
 
   **Nothing to do.** Old \`Raven-Scout/scout-plugin\` URLs, clones and Claude Code marketplaces keep working through GitHub's redirect, and the plugin id stays \`scout@scout-plugin\`. The re-point commands this notice used to list still work but aren't needed.
 
@@ -1097,19 +1206,7 @@ Run this only after Phase 8 passes and Phase 5 is complete.
   If 4.3 found that the raw `scout-plugin` URL doesn't redirect, add one line
   to the notice: v0.13.0 installs won't see update notices until their next
   `/scout-update`.
-- [ ] **10.5 [J] Fix the Phase 0 closing comments' design link** on #216,
-  #194, #180, #176 and #175:
-
-  ```bash
-  for n in 216 194 180 176 175; do
-    gh api "repos/Raven-Scout/Scout/issues/$n/comments" \
-      --jq '.[] | select(.user.login=="jordanrburger" and (.body|contains("Raven-Scout/Scout#99"))) | .id' |
-    while read -r id; do
-      body=$(gh api "repos/Raven-Scout/Scout/issues/comments/$id" --jq .body | sed 's#Raven-Scout/Scout\#99#Raven-Scout/scout-app-legacy\#99#g')
-      gh api --method PATCH "repos/Raven-Scout/Scout/issues/comments/$id" -f body="$body" --jq .html_url
-    done
-  done
-  ```
+- [x] **10.5** Done in 4.6, where the Phase 0 closing comments were fixed.
 - [ ] **10.6 Pages.** The site moved with the repo.
 
   ```bash
