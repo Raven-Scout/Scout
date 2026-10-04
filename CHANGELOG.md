@@ -28,7 +28,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Like every plugin-owned file, they are managed by the drift policy below: an upgrade keeps a vault's edit to its copy, merging it with the plugin's update when both changed. A vault that already carries its own hand copies of these helpers gets the plugin's version on its first upgrade to this version, with its copy parked under `.scout-state/drift/` and named in a doctor note (`scoutctl bootstrap drift` shows it).
 - `scoutctl kb lint` — pre-commit ratchet for vault structure: over-budget files may not grow, run-diary headings and mega-lines are blocked (report mode by default; `kb_lint.mode: block` to enforce), plus `--report` and a `--lossless-*` split check.
 - `scoutctl kb install-hook` and a bootstrap stage that installs the fail-open pre-commit hook.
-- KB WRITE PROTOCOL phase: source notes → topic notes → project pages.
+- KB WRITE PROTOCOL phase: source notes → topic notes → project pages. A new install creates `knowledge-base/topics/`, `knowledge-base/sources/` and `knowledge-base/session-log/`, seeded with `topics.md`, `sources.md` and a `session-log.md` index (install-only; never overwritten).
+
+  **Upgrade note:** enable `kb_lint.mode: block` only after sharding a legacy `session-log.md`. The legacy file has no size budget, so an un-migrated vault is not blocked on every run, but new rows belong in the monthly shards.
 
 ### Changed
 - **The connector-health roll-up no longer needs a vault helper** (`templates/run-*.sh.tmpl`, `engine/scout/scripts/connector_health_report.py`) — each runner calls `scoutctl connector-health-report` itself, and the report now says when `connector-health.md` was **not** rewritten (no scheduled-run records in the window) and may be showing stale alerts. A vault's own `scripts/connector-health-rollup.sh` is no longer called and can be deleted.

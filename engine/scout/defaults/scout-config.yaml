@@ -87,6 +87,10 @@ kb_lint:
   budgets:
     - {glob: "action-items/action-items-*.md", bytes: 61440}
     - {glob: "action-items/**", bytes: 15360}
+    # The legacy session-log index has no budget: an un-migrated vault's
+    # multi-MB log would otherwise block every run. Rows go to the monthly
+    # shards; a one-time sharding step shrinks the legacy file.
+    - {glob: "knowledge-base/session-log.md", bytes: null}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
     - {glob: "knowledge-base/people/**", bytes: 10240}

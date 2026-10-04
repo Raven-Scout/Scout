@@ -30,6 +30,13 @@ def test_defaults_budgets(tmp_path: Path) -> None:
     assert cfg.budget_for("action-items/digests/2026-09-28.md") == 15360
 
 
+def test_legacy_session_log_has_no_budget_and_stays_a_log(tmp_path: Path) -> None:
+    """An un-migrated vault's multi-MB session-log.md must not block every run."""
+    cfg = load_lint_config(tmp_path)
+    assert cfg.budget_for("knowledge-base/session-log.md") is None
+    assert cfg.is_log("knowledge-base/session-log.md")
+
+
 def test_scope_and_exclusions(tmp_path: Path) -> None:
     cfg = load_lint_config(tmp_path)
     assert cfg.in_scope("knowledge-base/projects/widget/widget.md")

@@ -105,6 +105,10 @@ _CAT1_DIR_LAYOUT = (
     "knowledge-base/people",
     "knowledge-base/personal",
     "knowledge-base/recurring-tasks",
+    # Layered KB (write protocol): topic notes, source notes, session-log shards.
+    "knowledge-base/topics",
+    "knowledge-base/sources",
+    "knowledge-base/session-log",
     "action-items/archive",
     "action-items/meeting-prep",
     "meetings",
@@ -170,6 +174,10 @@ _INSTALL_ONLY_TEMPLATES = (
     ("knowledge-base/review-queue.md", "templates/review-queue.md.tmpl"),
     ("inbox.md", "templates/inbox.md.tmpl"),
     ("meetings/meetings.md", "templates/meetings/meetings.md.tmpl"),
+    # Layered-KB indexes the write protocol links to.
+    ("knowledge-base/topics/topics.md", "templates/knowledge-base/topics/topics.md.tmpl"),
+    ("knowledge-base/sources/sources.md", "templates/knowledge-base/sources/sources.md.tmpl"),
+    ("knowledge-base/session-log.md", "templates/knowledge-base/session-log.md.tmpl"),
 )
 
 _CAT1B_RUNNERS = (
