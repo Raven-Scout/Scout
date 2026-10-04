@@ -314,6 +314,22 @@ nonisolated extension ActionItemsParser {
         /// UUID, and SwiftUI sees two rows claiming one identity.
         var idScope = "0"
 
+        // --- detail window ---
+        // Open from a task line until the next non-indented, non-blank line.
+        // While open, indented lines the sub-line branches don't claim are the
+        // task's context (`ActionTask.details`), not section prose.
+        var detailWindowOpen = false
+        var inDetailFence = false
+        /// Leading-whitespace width to strip from a continuation line: the
+        /// last detail bullet's indent + 2 (`- `).
+        var detailContentIndent = 0
+
+        func closeDetailWindow() {
+            detailWindowOpen = false
+            inDetailFence = false
+            detailContentIndent = 0
+        }
+
         func flushTable() {
             if let headers = pendingTableHeaders {
                 currentTables.append(.init(headers: headers, rows: pendingTableRows))
@@ -328,6 +344,7 @@ nonisolated extension ActionItemsParser {
         /// which is how the file's unbalanced tags are kept from swallowing
         /// everything after the orphan.
         func closeCollapsedGroup() {
+            closeDetailWindow()
             detailsDepth = 0
             guard inCollapsed else { return }
             inCollapsed = false
@@ -350,6 +367,7 @@ nonisolated extension ActionItemsParser {
         }
 
         func flushSection() {
+            closeDetailWindow()
             closeCollapsedGroup()
             flushTable()
             if inSection {
@@ -419,6 +437,8 @@ nonisolated extension ActionItemsParser {
         /// recognized alongside the plain indented form.
         let inlineCommentRe = try NSRegularExpression(pattern: #"^(\s+)(?:[-*+]\s+)?//==<<\s*(.+?)\s*>>==//\s*$"#)
         let bulletRe = try NSRegularExpression(pattern: #"^\s*-\s+(.+?)\s*$"#)
+        /// An indented `-`/`*`/`+` bullet under a task — one detail.
+        let detailBulletRe = try NSRegularExpression(pattern: #"^(\s+)[-*+]\s+(.+?)\s*$"#)
         let sectionRe = try NSRegularExpression(pattern: #"^## (\S+?)\s+(.+?)\s*$"#)
         let snoozeSuffixRe = try NSRegularExpression(pattern: #"\s*(?:—|–|-)\s*🛌 Snoozed until (\d{4}-\d{2}-\d{2})$"#)
         let carryInRe = try NSRegularExpression(pattern: #"_\(carried in from (\d{4}-\d{2}-\d{2})\)_"#)
@@ -441,6 +461,25 @@ nonisolated extension ActionItemsParser {
 
             let line = lines[i]
             let stripped = line.trimmingCharacters(in: .whitespaces)
+            let isIndented = line.first == " " || line.first == "\t"
+
+            // A non-blank line at column 0 ends the task's sub-list: a new
+            // task, a top-level bullet, a paragraph, an HTML comment, `---`,
+            // a table, a `<details>` tag or a heading.
+            if detailWindowOpen, !stripped.isEmpty, !isIndented {
+                closeDetailWindow()
+            }
+
+            // Inside a fence that opened in a detail, every line is verbatim
+            // continuation — even ones shaped like bullets, comments or table
+            // rows. Must run before every other branch for that reason.
+            if detailWindowOpen, inDetailFence, let owner = currentTasks.last {
+                if isFenceLine(stripped) { inDetailFence = false }
+                currentTasks[currentTasks.count - 1] = owner.replacingDetails(
+                    appendingContinuation(line, to: owner.details, contentIndent: detailContentIndent)
+                )
+                i += 1; continue
+            }
 
             if stripped == "---" || stripped == "***" {
                 flushTable()
@@ -595,6 +634,9 @@ nonisolated extension ActionItemsParser {
                     shortPrefix: shortPrefix,
                     snoozedFromKind: carryInKind
                 ))
+                detailWindowOpen = true
+                inDetailFence = false
+                detailContentIndent = 0
                 i += 1; continue
             }
 
@@ -758,6 +800,34 @@ nonisolated extension ActionItemsParser {
                 i += 1; continue
             }
 
+            // Task context: an indented line under the open task that none of
+            // the sub-line branches above claimed (Refs, snooze, comments).
+            // Before this, these lines fell through to section prose, which no
+            // card renders — so an item written as a title plus sub-bullets
+            // showed as a bare title. Mirrors the engine parser's `details`.
+            if inSection, detailWindowOpen, isIndented, !stripped.isEmpty,
+               let owner = currentTasks.last {
+                let ns = line as NSString
+                let range = NSRange(location: 0, length: ns.length)
+                var details = owner.details
+                if isFenceLine(stripped) {
+                    inDetailFence = true
+                    details = appendingContinuation(line, to: details, contentIndent: detailContentIndent)
+                } else if let bm = detailBulletRe.firstMatch(in: line, range: range) {
+                    let indent = ns.substring(with: bm.range(at: 1))
+                    let depth = max(0, indentLevelFor(indent) - owner.indentLevel - 1)
+                    details.append(TaskDetail(depth: depth, text: ns.substring(with: bm.range(at: 2))))
+                    detailContentIndent = indent.count + 2
+                } else {
+                    details = appendingContinuation(line, to: details, contentIndent: detailContentIndent)
+                    if owner.details.isEmpty {
+                        detailContentIndent = line.prefix { $0 == " " || $0 == "\t" }.count
+                    }
+                }
+                currentTasks[currentTasks.count - 1] = owner.replacingDetails(details)
+                i += 1; continue
+            }
+
             // Bullet (section-level)
             if inSection,
                let bm = bulletRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
@@ -785,6 +855,38 @@ nonisolated extension ActionItemsParser {
     }
 
     // --- helpers ---
+
+    /// A markdown fence marker line (already whitespace-trimmed).
+    private static func isFenceLine(_ stripped: String) -> Bool {
+        stripped.hasPrefix("```") || stripped.hasPrefix("~~~")
+    }
+
+    /// Drop at most `n` leading spaces/tabs, so a continuation keeps any
+    /// indentation beyond its bullet's content column.
+    private static func dropLeadingWhitespace(_ s: String, upTo n: Int) -> String {
+        var idx = s.startIndex
+        var dropped = 0
+        while idx < s.endIndex, dropped < n, s[idx] == " " || s[idx] == "\t" {
+            idx = s.index(after: idx)
+            dropped += 1
+        }
+        return String(s[idx...])
+    }
+
+    /// Append `line` to the last detail as a continuation, or start a depth-0
+    /// detail when the task has none yet.
+    private static func appendingContinuation(
+        _ line: String, to details: [TaskDetail], contentIndent: Int
+    ) -> [TaskDetail] {
+        var out = details
+        if let last = out.popLast() {
+            let piece = dropLeadingWhitespace(line, upTo: contentIndent)
+            out.append(TaskDetail(depth: last.depth, text: last.text + "\n" + piece))
+        } else {
+            out.append(TaskDetail(depth: 0, text: line.trimmingCharacters(in: .whitespaces)))
+        }
+        return out
+    }
 
     private static let recognizedEmojiPrefixes: Set<String> = ["🔴", "🟡", "🟢", "💡", "📅", "✅", "📋"]
 
