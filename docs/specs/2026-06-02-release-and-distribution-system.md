@@ -115,6 +115,7 @@ auto_update:
 ```
 - **Build now:** `scoutctl self-update --check` — read-only; compares installed vs the marketplace's published version; powers `/scout-status` and the nudge. Unit-tested against a mocked remote version.
 - **Deferred (gated):** when `enabled`, a scheduled/heartbeat run runs the coordinated upgrade **only if sidecar-clean**; on any conflict it does not touch the vault and notifies the user (Slack/Telegram) to run `/scout-update`. Reuses the existing scheduler — no new daemon. Auto-update can never leave a broken state (same contract as the manual path).
+- **Vault edits to plugin-owned files never gate it** (2026-09-30): scripts, hooks, runners, `render.py` and `parser.py` are kept, merged, or — on a conflict — left running with the plugin's update parked under `.scout-state/drift/`, which no upgrade refuses on. The notifier relays `UpgradeResult.vault_edits` (or `scoutctl bootstrap drift --json`) and the doctor's warnings; a pending conflict turns the doctor yellow. Only the assembled brain-file sidecars still gate it. See `docs/superpowers/specs/2026-09-30-upgrade-keeps-vault-edits-design.md`.
 
 ## Testing
 

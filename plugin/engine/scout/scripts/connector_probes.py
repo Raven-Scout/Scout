@@ -89,8 +89,8 @@ def load_registry(path: Path) -> dict[str, Probe]:
 def _default_plugin_root() -> Path:
     """Plugin root = the dir that contains the engine venv and templates/.
 
-    Derived from the running package location, mirroring
-    install_schedule_plist.resolve_scoutctl_bin().
+    See ``install_schedule_plist.resolve_scoutctl_bin()`` for details on how
+    the scoutctl is resolved from the running interpreter.
     """
     import scout
 

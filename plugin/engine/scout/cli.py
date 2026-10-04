@@ -11,11 +11,15 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
+
+if TYPE_CHECKING:
+    from scout.scripts.bootstrap import BootstrapConfig
 
 # Reserved for non-ScoutError exceptions escaping app(). Kept distinct
 # from ScoutError.exit_code == 1 so scout-app can decode "the CLI
@@ -408,6 +412,28 @@ def _register_connectors() -> None:
                 primary = p.bash_command if p.kind is ProbeKind.BASH else (p.tool_chain[0] if p.tool_chain else "")
                 typer.echo(f"{name}\t{p.kind.value}\t{primary}")
 
+    @connectors_app.command("detect")
+    def cli_connectors_detect(
+        json_out: bool = typer.Option(
+            False, "--json", help="Emit detections as JSON (consumed by Scout.app onboarding)."
+        ),
+        claude_bin: str = typer.Option("claude", "--claude-bin", help="Claude Code binary used for `claude mcp list`."),
+        timeout: float = typer.Option(60.0, "--timeout", help="Seconds to wait for `claude mcp list`."),
+    ) -> None:
+        """Detect which connectors are reachable right now, without an LLM (spec E4)."""
+        import json as _json
+
+        from scout.scripts.connector_detect import detect, run_bash_probe, run_claude_mcp_list, to_json_dict
+        from scout.scripts.connector_probes import resolve_registry
+
+        reg = resolve_registry()
+        dets = detect(reg, mcp_list_output=run_claude_mcp_list(claude_bin, timeout=timeout), run_bash=run_bash_probe)
+        if json_out:
+            typer.echo(_json.dumps(to_json_dict(dets), indent=2, sort_keys=True))
+        else:
+            for name, d in dets.items():
+                typer.echo(f"{name}\t{d.status.value}\t{d.evidence}")
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(
@@ -676,14 +702,14 @@ def _register_schedule() -> None:
     ) -> None:
         """Install or remove com.scout.schedule-tick.plist in ~/Library/LaunchAgents/.
 
-        The scoutctl path written into the plist is always
-        ``<plugin_root>/.venv/bin/scoutctl`` for the plugin checkout that
-        is running this command (see ``resolve_scoutctl_bin``). No override
-        knob is exposed by design — the scheduler should always point at
-        the venv that matches the currently-loaded engine.
+        The scoutctl path written into the plist is the console script beside
+        the interpreter running this command (see ``resolve_scoutctl_bin``).
+        No override knob is exposed by design — the scheduler should always
+        point at the venv that matches the currently-loaded engine.
         """
         from pathlib import Path as _Path
 
+        from scout import paths as _paths
         from scout.scripts.install_schedule_plist import install_plist as _i
         from scout.scripts.install_schedule_plist import uninstall_plist as _u
 
@@ -692,7 +718,7 @@ def _register_schedule() -> None:
             typer.echo("uninstalled com.scout.schedule-tick.plist")
             return
         try:
-            target = _i(home=_Path.home(), force=force, bootstrap=bootstrap)
+            target = _i(home=_Path.home(), force=force, bootstrap=bootstrap, vault=_paths.data_dir())
             typer.echo(f"installed: {target}")
         except FileExistsError as e:
             typer.echo(f"plist already exists at {e}; use --force to overwrite", err=True)
@@ -870,6 +896,7 @@ def _register_schedule() -> None:
         uninstall: bool = typer.Option(False, "--uninstall"),
     ) -> None:
         """Install or remove com.scout.heartbeat.plist."""
+        from scout import paths as _paths
         from scout.scripts.install_heartbeat_plist import (
             install_plist as _i,
         )
@@ -882,7 +909,7 @@ def _register_schedule() -> None:
             typer.echo("uninstalled com.scout.heartbeat.plist")
             return
         try:
-            target = _i(home=Path.home(), force=force, bootstrap=bootstrap)
+            target = _i(home=Path.home(), force=force, bootstrap=bootstrap, vault=_paths.data_dir())
             typer.echo(f"installed: {target}")
         except FileExistsError as e:
             typer.echo(f"plist exists at {e}; use --force to overwrite", err=True)
@@ -928,6 +955,7 @@ def _register_schedule() -> None:
 
         system = _platform.system()
         if system == "Darwin":
+            from scout import paths as _paths
             from scout.scripts.install_heartbeat_plist import (
                 install_plist as install_hb,
             )
@@ -946,8 +974,8 @@ def _register_schedule() -> None:
                 uninstall_hb(bootout=True)
                 typer.echo("uninstalled launchd plists")
                 return
-            install_st(home=Path.home(), force=force, bootstrap=True)
-            install_hb(home=Path.home(), force=force, bootstrap=True)
+            install_st(home=Path.home(), force=force, bootstrap=True, vault=_paths.data_dir())
+            install_hb(home=Path.home(), force=force, bootstrap=True, vault=_paths.data_dir())
             typer.echo("installed launchd plists")
         elif system == "Linux":
             from scout.scripts.install_cron import install_cron, uninstall_cron
@@ -1313,6 +1341,107 @@ def _register_bootstrap() -> None:
     bootstrap_app = typer.Typer(help="Bootstrap pipeline (install/upgrade/doctor).")
     app.add_typer(bootstrap_app, name="bootstrap")
 
+    _TEXT_VERB = {"install": "installed", "upgrade": "upgraded", "migrate-legacy": "migrated"}
+
+    _MANAGED_BY_HELP = (
+        "Who owns this engine install: scout-app | install.sh | claude-code | dev | unknown "
+        "(recorded in the engine pointer). Default `preserve`: keep the existing pointer's value "
+        "when it describes this engine's interpreter, else unknown."
+    )
+
+    def _resolve_managed_by(value: str) -> str:
+        """`preserve` → the concrete manager (engine_pointer.resolve_managed_by);
+        an explicit value outside MANAGED_BY_VALUES is a usage error (exit 2)."""
+        from scout.scripts.engine_pointer import resolve_managed_by
+
+        try:
+            return resolve_managed_by(value, home=Path.home())
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="'--managed-by'") from e
+
+    def _emit(payload: dict, *, json_out: bool) -> None:
+        """One printer for every bootstrap subcommand: JSON on stdout, or the
+        human lines. Warnings/errors go to stderr in text mode so a caller that
+        captures stdout still gets a clean report.
+
+        Text-mode first line keeps the pre-E3 verbs (installed/upgraded/
+        migrated) so commands/scout-setup.md, commands/scout-update.md, and
+        tests/unit/test_cli_surface.py keep parsing/asserting the same lines.
+        migrate-legacy also keeps its pre-E3 quirks — a "snapshots recorded"
+        line, and backups on stdout rather than stderr — for the same reason.
+        A dry run says what it *would* do and why; a refusal names the vault,
+        the error and (when it adds something) the detected reason.
+        """
+        import json as _json
+
+        if json_out:
+            typer.echo(_json.dumps(payload, indent=2, sort_keys=True))
+            return
+        reason = payload.get("reason") or ""
+        if payload.get("error"):
+            typer.echo(f"{payload['action']}: {payload['vault']} — {payload['error']}", err=True)
+            if reason and reason != payload["error"]:
+                typer.echo(f"  reason: {reason}", err=True)
+            return
+        action = payload["action"]
+        if payload.get("dry_run"):
+            verb = "refuse" if action == "refused" else action
+            typer.echo(f"would {verb}: {payload['vault']} ({reason})")
+            return
+        typer.echo(f"{_TEXT_VERB.get(action, action)}: {payload['vault']}")
+        if action == "migrate-legacy":
+            typer.echo(f"snapshots recorded: {', '.join(payload.get('snapshots_recorded') or []) or 'none'}")
+        for c in payload.get("conflicts", []):
+            typer.echo(f"  conflict (sidecar): {c}", err=True)
+        # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
+        to_err = action != "migrate-legacy"
+        edits = payload.get("vault_edits") or []
+        named = {p for e in edits for p in e["parked"]}
+        for e in edits:
+            typer.echo(f"  vault edit {e['outcome']}: {e['path']} — {e['message']}", err=to_err)
+        for b in payload.get("backups", []):
+            if b not in named:
+                typer.echo(f"  backup: {b}", err=to_err)
+        doctor = payload.get("doctor")
+        if doctor:
+            typer.echo(f"doctor: {doctor['severity']}")
+            for w in doctor["warnings"]:
+                typer.echo(f"  warning: {w}", err=True)
+            for e in doctor["errors"]:
+                typer.echo(f"  error: {e}", err=True)
+
+    def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, skip_claude: bool, managed_by: str):
+        """BootstrapConfig for an existing vault, read back from scout-config.yaml
+        (extracted from the upgrade command so `auto` shares it)."""
+        import yaml as _yaml
+
+        from scout import __version__
+        from scout.scripts.bootstrap import BootstrapConfig
+
+        cfg_path = vault / "scout-config.yaml"
+        try:
+            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except (_yaml.YAMLError, UnicodeDecodeError) as e:
+            raise ConfigError(f"scout-config.yaml is malformed: {e}") from e
+        instance = existing.get("instance", {})
+        user = existing.get("user", {})
+        return BootstrapConfig(
+            vault=vault,
+            plugin_root=Path(__file__).parent.parent.parent,
+            instance_name=instance.get("name", "Scout"),
+            instance_name_lower=instance.get("name_lower", "scout"),
+            user_name=user.get("name", ""),
+            user_email=user.get("email", ""),
+            timezone=existing.get("timezone", "America/New_York"),
+            platform=existing.get("platform", "macos"),
+            plugin_version=__version__,
+            enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
+            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
+            skip_jobs=skip_jobs,
+            skip_claude=skip_claude,
+            managed_by=managed_by,
+        )
+
     @bootstrap_app.command("install")
     def cli_bootstrap_install(
         instance_name: str = typer.Option("Scout", "--instance-name"),
@@ -1341,12 +1470,16 @@ def _register_bootstrap() -> None:
             "--auto-update/--no-auto-update",
             help="Record the auto-update preference (auto_update.enabled) in scout-config.yaml.",
         ),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
+        json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Install Scout into the user's vault directory."""
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import BootstrapConfig, install, resolve_claude_bin
+        from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
@@ -1370,77 +1503,75 @@ def _register_bootstrap() -> None:
             skip_jobs=skip_jobs,
             skip_claude=skip_claude,
             auto_update=auto_update,
+            managed_by=managed_by,
         )
         result = install(cfg)
-        typer.echo(f"installed: {result.vault}")
-        typer.echo(f"doctor: {result.doctor.severity.value}")
-        for w in result.doctor.warnings:
-            typer.echo(f"  warning: {w}", err=True)
-        for e in result.doctor.errors:
-            typer.echo(f"  error: {e}", err=True)
+        _emit(
+            result_dict(action=AutoAction.INSTALL, vault=vault, plugin_version=__version__, result=result),
+            json_out=json_out,
+        )
         raise typer.Exit(code=result.doctor.exit_code)
 
     @bootstrap_app.command("upgrade")
     def cli_bootstrap_upgrade(
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
+        json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Upgrade an existing vault against the current plugin templates."""
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, upgrade
+        from scout.scripts.bootstrap import upgrade
+        from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         cfg_path = vault / "scout-config.yaml"
         if not cfg_path.exists():
-            typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
+            msg = f"no vault at {vault} — run /scout-setup"
+            _emit(
+                result_dict(action=AutoAction.REFUSED, vault=vault, plugin_version=__version__, result=None, error=msg),
+                json_out=json_out,
+            )
             raise typer.Exit(code=2)
-        import yaml as _yaml
-
         try:
-            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except (_yaml.YAMLError, UnicodeDecodeError) as e:
-            typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
+            cfg = _config_from_existing_vault(
+                vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
+            )
+        except ConfigError as e:
+            # Preserve the pre-E3 exit code (10) for a malformed scout-config.yaml —
+            # distinct from the "no vault"/"refused" (2) case above.
+            typer.echo(str(e), err=True)
             raise typer.Exit(code=ConfigError.exit_code) from e
-        connectors = set(existing.get("connectors", {}).get("enabled") or [])
-        instance = existing.get("instance", {})
-        user = existing.get("user", {})
-        cfg = BootstrapConfig(
-            vault=vault,
-            plugin_root=Path(__file__).parent.parent.parent,
-            instance_name=instance.get("name", "Scout"),
-            instance_name_lower=instance.get("name_lower", "scout"),
-            user_name=user.get("name", ""),
-            user_email=user.get("email", ""),
-            timezone=existing.get("timezone", "America/New_York"),
-            platform=existing.get("platform", "macos"),
-            plugin_version=__version__,
-            enabled_connectors=connectors,
-            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-            skip_jobs=skip_jobs,
-            skip_claude=skip_claude,
-        )
         result = upgrade(cfg)
-        typer.echo(f"upgraded: {result.vault}")
-        for c in result.conflicts:
-            typer.echo(f"  conflict (sidecar): {c}", err=True)
-        for b in result.backups:
-            typer.echo(f"  backup: {b}", err=True)
-        typer.echo(f"doctor: {result.doctor.severity.value}")
+        _emit(
+            result_dict(action=AutoAction.UPGRADE, vault=vault, plugin_version=__version__, result=result),
+            json_out=json_out,
+        )
         raise typer.Exit(code=result.doctor.exit_code)
 
     @bootstrap_app.command("doctor")
     def cli_bootstrap_doctor(
         no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip launchd registration check"),
+        json_out: bool = typer.Option(False, "--json", help="Emit {severity, errors, warnings} JSON."),
     ) -> None:
         """Run the read-only health check on the current vault."""
         from scout import paths as _paths
+        from scout.scripts.bootstrap_auto import doctor_dict
         from scout.scripts.bootstrap_doctor import run_doctor
 
         report = run_doctor(vault=_paths.data_dir(), check_jobs=not no_jobs)
+        if json_out:
+            import json as _json
+
+            typer.echo(_json.dumps(doctor_dict(report)))
+            raise typer.Exit(code=report.exit_code)
         typer.echo(f"severity: {report.severity.value}")
         for w in report.warnings:
             typer.echo(f"warning: {w}")
+        for n in report.notes:
+            typer.echo(f"note: {n}")
         for e in report.errors:
             typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=report.exit_code)
@@ -1465,19 +1596,24 @@ def _register_bootstrap() -> None:
             "--no-jobs/--rebootstrap-jobs",
             help="Default --no-jobs: leave launchd/cron untouched; use --rebootstrap-jobs to reinstall them.",
         ),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
+        json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """One-time migration of a Plan-5-era vault to Plan 8 format.
 
         Required: vault must exist with .scout-state/ but no scout-config.yaml.
         Establishes the Plan 8 baseline (snapshots + scout-config.yaml + cat-1
         regen) without touching live SKILL/DREAMING/RESEARCH content. Legacy
-        runners with hand-edits are backed up to .bak.YYYY-MM-DD before
-        regeneration from the current plugin templates.
+        runners (or any plugin-owned file) that match no release are parked
+        under .scout-state/drift/ before the current templates are installed
+        (see `scoutctl bootstrap drift`).
         """
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import BootstrapConfig, migrate_legacy, resolve_claude_bin
+        from scout.scripts.bootstrap_auto import AutoAction, result_dict
 
+        managed_by = _resolve_managed_by(managed_by)
         vault = _paths.data_dir()
         claude_bin = _resolve_claude_bin_or_warn(claude_bin, resolve_claude_bin)
         cfg = BootstrapConfig(
@@ -1500,18 +1636,349 @@ def _register_bootstrap() -> None:
             },
             skip_jobs=skip_jobs,
             skip_claude=True,
+            managed_by=managed_by,
         )
         result = migrate_legacy(cfg)
-        typer.echo(f"migrated: {result.vault}")
-        typer.echo(f"snapshots recorded: {', '.join(result.snapshots_recorded) or 'none'}")
-        for b in result.backups:
-            typer.echo(f"  backup: {b}")
-        typer.echo(f"doctor: {result.doctor.severity.value}")
-        for w in result.doctor.warnings:
-            typer.echo(f"  warning: {w}", err=True)
-        for e in result.doctor.errors:
-            typer.echo(f"  error: {e}", err=True)
+        _emit(
+            result_dict(action=AutoAction.MIGRATE_LEGACY, vault=vault, plugin_version=__version__, result=result),
+            json_out=json_out,
+        )
         raise typer.Exit(code=result.doctor.exit_code)
+
+    # `auto` flags that an UPGRADE reads from scout-config.yaml instead (named
+    # in a stderr note when passed). --claude-bin is not here: an explicit
+    # path is applied on upgrade, since Scout.app passes a fresh one each time.
+    _AUTO_UPGRADE_IGNORED = frozenset(
+        {
+            "user_name",
+            "user_email",
+            "instance_name",
+            "timezone",
+            "platform_",
+            "connectors",
+            "user_slack_id",
+            "github_username",
+            "github_repos",
+            "max_budget",
+        }
+    )
+
+    @bootstrap_app.command("auto")
+    def cli_bootstrap_auto(
+        ctx: typer.Context,
+        user_name: str = typer.Option("", "--user-name", help="Required for install / migrate-legacy."),
+        user_email: str = typer.Option("", "--user-email", help="Required for install / migrate-legacy."),
+        instance_name: str = typer.Option("Scout", "--instance-name"),
+        timezone: str = typer.Option("America/New_York", "--timezone"),
+        platform_: str = typer.Option("auto", "--platform", help="macos | linux | auto (from uname)"),
+        connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
+        user_slack_id: str = typer.Option("", "--user-slack-id"),
+        github_username: str = typer.Option("", "--github-username"),
+        github_repos: str = typer.Option("", "--github-repos"),
+        claude_bin: str = typer.Option("auto", "--claude-bin", help="Absolute path, or auto (`command -v claude`)"),
+        max_budget: str = typer.Option("5.00", "--max-budget"),
+        skip_jobs: bool = typer.Option(False, "--no-jobs"),
+        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
+        interactive: bool | None = typer.Option(
+            None,
+            "--interactive/--no-interactive",
+            help="Prompt for missing identity fields. Default: interactive when stdin is a TTY.",
+        ),
+        yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print the detected action and exit 0."),
+        json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
+    ) -> None:
+        """Detect the vault's state and run install, upgrade or migrate-legacy accordingly (#26)."""
+        import platform as _platform
+
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.scripts.bootstrap import BootstrapConfig, resolve_claude_bin
+        from scout.scripts.bootstrap_auto import AutoAction, detect, result_dict, run
+
+        managed_by = _resolve_managed_by(managed_by)
+        vault = _paths.data_dir()
+        if interactive is None:
+            interactive = sys.stdin.isatty()
+        if platform_ == "auto":
+            platform_ = {"Darwin": "macos", "Linux": "linux"}.get(_platform.system(), "")
+            if not platform_:
+                _emit(
+                    result_dict(
+                        action=AutoAction.REFUSED,
+                        vault=vault,
+                        plugin_version=__version__,
+                        result=None,
+                        error=f"unsupported platform {_platform.system()!r}; pass --platform",
+                    ),
+                    json_out=json_out,
+                )
+                raise typer.Exit(code=2)
+        explicit_claude_bin = claude_bin != "auto"
+        if not explicit_claude_bin:
+            # Same discovery order as install / migrate-legacy (#254): PATH,
+            # ~/.local/bin (native installer), Homebrew, /usr/local/bin.
+            claude_bin = resolve_claude_bin("")
+
+        try:
+            plan = detect(vault)
+        except OSError as e:
+            # An unreadable vault (e.g. TCC-denied ~/Documents/Scout) still
+            # answers with the refused payload, never a bare exit 70.
+            _emit(
+                result_dict(
+                    action=AutoAction.REFUSED,
+                    vault=vault,
+                    plugin_version=__version__,
+                    result=None,
+                    error=f"cannot inspect {vault}: {e}",
+                ),
+                json_out=json_out,
+            )
+            raise typer.Exit(code=2) from e
+        needs_identity = plan.action in (AutoAction.INSTALL, AutoAction.MIGRATE_LEGACY)
+        if needs_identity and not dry_run:
+            if interactive:
+                user_name = user_name or typer.prompt("Your name")
+                user_email = user_email or typer.prompt("Your email")
+            missing = [f for f, v in (("--user-name", user_name), ("--user-email", user_email)) if not v]
+            if missing:
+                _emit(
+                    result_dict(
+                        action=AutoAction.REFUSED,
+                        vault=vault,
+                        plugin_version=__version__,
+                        result=None,
+                        error=f"{plan.action.value} needs {' and '.join(missing)} (or run interactively)",
+                        reason=plan.reason,
+                    ),
+                    json_out=json_out,
+                )
+                raise typer.Exit(code=2)
+
+        if plan.action is AutoAction.UPGRADE and (vault / "scout-config.yaml").exists():
+            # By the enum member's name: Typer vendors its own Click, so
+            # ParameterSource is not importable from a public module.
+            ignored = [
+                p.opts[0]
+                for p in ctx.command.params
+                if p.name in _AUTO_UPGRADE_IGNORED
+                and getattr(ctx.get_parameter_source(p.name), "name", None) == "COMMANDLINE"
+            ]
+            if ignored:
+                typer.echo(f"note: ignored on upgrade (read from scout-config.yaml): {', '.join(ignored)}", err=True)
+            try:
+                cfg = _config_from_existing_vault(
+                    vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
+                )
+            except (ConfigError, OSError) as e:
+                _emit(
+                    result_dict(
+                        action=AutoAction.REFUSED,
+                        vault=vault,
+                        plugin_version=__version__,
+                        result=None,
+                        error=str(e),
+                        reason=plan.reason,
+                    ),
+                    json_out=json_out,
+                )
+                raise typer.Exit(code=2) from e
+            if explicit_claude_bin:
+                # A moved `claude` must reach the runners (and be persisted by
+                # the version stamp); `auto` keeps the vault's recorded path.
+                cfg.connector_inputs = {**cfg.connector_inputs, "claude_bin": claude_bin}
+        else:
+            cfg = BootstrapConfig(
+                vault=vault,
+                plugin_root=Path(__file__).parent.parent.parent,
+                instance_name=instance_name,
+                instance_name_lower=instance_name.lower().replace(" ", "-"),
+                user_name=user_name,
+                user_email=user_email,
+                timezone=timezone,
+                platform=platform_,
+                plugin_version=__version__,
+                enabled_connectors=set(c.strip() for c in connectors.split(",") if c.strip()),
+                connector_inputs={
+                    "user_slack_id": user_slack_id,
+                    "github_username": github_username,
+                    "github_repos": github_repos,
+                    "claude_bin": claude_bin,
+                    "max_budget": max_budget,
+                },
+                skip_jobs=skip_jobs,
+                skip_claude=skip_claude,
+                managed_by=managed_by,
+            )
+
+        if not dry_run and not yes and interactive and plan.action is not AutoAction.REFUSED:
+            if not typer.confirm(f"About to run bootstrap {plan.action.value} on {vault} ({plan.reason}). Proceed?"):
+                raise typer.Exit(code=1)
+
+        payload, code = run(cfg, plan=plan, dry_run=dry_run)
+        _emit(payload, json_out=json_out)
+        raise typer.Exit(code=code)
+
+    @bootstrap_app.command("drift")
+    def cli_bootstrap_drift(
+        diff: bool = typer.Option(False, "--diff", help="Show each file's diff against the plugin's version."),
+        patch: bool = typer.Option(
+            False, "--patch", help="Print a git-apply-able patch against the plugin's templates/ for the edited files."
+        ),
+        json_out: bool = typer.Option(False, "--json", help="Machine-readable report (for notifiers and sessions)."),
+        resolve: list[str] = typer.Option(  # noqa: B008
+            [], "--resolve", metavar="FILE", help="Settle what an upgrade parked for FILE (vault-relative; repeatable)."
+        ),
+        drop_update: bool = typer.Option(
+            False, "--drop-update", help="With --resolve: keep your version and drop the parked plugin update."
+        ),
+        vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+    ) -> None:
+        """Vault edits to plugin-owned files, and a way to upstream them.
+
+        Lists every managed file (scripts, hooks, runners, render.py, parser.py)
+        that differs from what the plugin last wrote: edited (upgrades keep it),
+        conflict (an update is parked; merge by hand, then --resolve), replaced
+        (your previous copy is parked). --patch turns the edits into a patch for
+        a plugin PR; the plugin repo is public, so review it before you open one.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.scripts import vault_drift
+        from scout.scripts.bootstrap import _template_vars, managed_renders
+        from scout.scripts.template_backport import backport_patch
+
+        vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
+        if drop_update and not resolve:
+            typer.echo("scoutctl bootstrap drift: --drop-update only applies with --resolve FILE", err=True)
+            raise typer.Exit(code=2)
+        if resolve:
+            failed = False
+            for rel in resolve:
+                try:
+                    done = vault_drift.resolve(vault, rel, drop_update=drop_update)
+                except ValueError as e:
+                    typer.echo(f"scoutctl bootstrap drift: {e}", err=True)
+                    failed = True
+                    continue
+                for line in done:
+                    typer.echo(line)
+            if failed:
+                raise typer.Exit(code=2)
+            return
+
+        cfg = _vault_bootstrap_config(vault)
+        renders = {r.file.vault_rel: r for r in managed_renders(cfg)}
+        rows = vault_drift.report(vault, {rel: r.text for rel, r in renders.items()})
+
+        if json_out:
+            files = [row.to_json() for row in rows]
+            typer.echo(_json.dumps({"schema_version": 1, "vault": str(vault), "files": files}, indent=2))
+            return
+
+        if patch:
+            vars_ = _template_vars(cfg)
+            produced = 0
+            for row in rows:
+                path, render = row.path, renders.get(row.path)
+                if row.status != "edited" or render is None:
+                    if row.status == "conflict":
+                        typer.echo(f"skipped {path}: a conflict — merge it and --resolve it first", err=True)
+                    elif row.status == "replaced":
+                        typer.echo(
+                            f"skipped {path}: your copy is parked at {row.parked[-1]} — copy it back over "
+                            f"{path} first if it holds a fix to upstream",
+                            err=True,
+                        )
+                    continue
+                if render.file.vault_developed:
+                    typer.echo(
+                        f"skipped {path}: the vault grows this file on purpose — its edits are vault content, "
+                        "not a plugin fix",
+                        err=True,
+                    )
+                    continue
+                if row.stale:
+                    typer.echo(
+                        f"skipped {path}: the plugin changed it since the last upgrade — upgrade first", err=True
+                    )
+                    continue
+                fp = backport_patch(
+                    vault_rel=path,
+                    plugin_rel=render.file.plugin_rel,
+                    template=render.template,
+                    rendered=render.file.rendered,
+                    live=row.live,
+                    vars_=vars_,
+                )
+                for w in fp.warnings:
+                    typer.echo(f"warning: {w}", err=True)
+                if fp.patch:
+                    typer.echo(vault_drift.printable(fp.patch), nl=False)
+                    produced += 1
+            typer.echo(
+                f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "
+                "then open a PR"
+                if produced
+                else "nothing to back-port",
+                err=True,
+            )
+            # Only template-variable values are detected above; a name, company,
+            # ID or path typed into an added line is not.
+            typer.echo(
+                "warning: review every added line for private vault content (names, companies, issue IDs, "
+                "channels, paths) before opening a PR — the plugin repo is public, and only template-variable "
+                "values are flagged automatically",
+                err=True,
+            )
+            return
+
+        if not rows:
+            typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
+            return
+        typer.echo(f"vault drift — {len(rows)} plugin-owned file(s) differ from what the plugin last wrote:")
+        for row in rows:
+            typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
+            if diff and row.diff:
+                typer.echo(row.diff, nl=False)
+        if any(row.status == "edited" and row.path not in vault_drift.VAULT_DEVELOPED_FILES for row in rows):
+            typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
+
+
+def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent)."""
+    import yaml as _yaml
+
+    from scout import __version__
+    from scout.scripts.bootstrap import BootstrapConfig
+
+    cfg_path = vault / "scout-config.yaml"
+    if not cfg_path.exists():
+        typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
+        raise typer.Exit(code=2)
+    try:
+        existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except (_yaml.YAMLError, UnicodeDecodeError) as e:
+        typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
+        raise typer.Exit(code=ConfigError.exit_code) from e
+    instance = existing.get("instance", {})
+    user = existing.get("user", {})
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=Path(__file__).parent.parent.parent,
+        instance_name=instance.get("name", "Scout"),
+        instance_name_lower=instance.get("name_lower", "scout"),
+        user_name=user.get("name", ""),
+        user_email=user.get("email", ""),
+        timezone=existing.get("timezone", "America/New_York"),
+        platform=existing.get("platform", "macos"),
+        plugin_version=__version__,
+        enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
+        connector_inputs=existing.get("connectors", {}).get("inputs", {}),
+    )
 
 
 _register_bootstrap()
