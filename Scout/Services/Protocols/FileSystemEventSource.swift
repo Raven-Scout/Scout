@@ -8,6 +8,7 @@ struct FileSystemEvent: Equatable, Sendable {
 
 protocol FileSystemEventSource: Sendable {
     /// Emits events for the given URL and its descendants.
-    /// The stream ends only when the source is deallocated.
+    /// The stream runs until the consumer stops iterating; it finishes right
+    /// away if the source cannot watch `url` at all.
     func events(for url: URL) -> AsyncStream<FileSystemEvent>
 }

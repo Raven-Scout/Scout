@@ -63,4 +63,30 @@ struct FileWatcherTests {
             return await group.next() ?? nil
         }
     }
+
+    @Test("a stream that fails to start finishes instead of hanging")
+    @MainActor func failedStartFinishesStream() async throws {
+        let tmp = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: FileManager.default.temporaryDirectory,
+            create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // `FSEventStreamStart` returning false used to be ignored: the stream
+        // never yielded and never finished, so every `for await` over it hung.
+        let watcher = FileWatcher(startStream: { _ in false })
+        let stream = watcher.events(for: tmp)
+
+        final class Flag { var finished = false }
+        let flag = Flag()
+        let consumer = Task { @MainActor in
+            for await _ in stream {}
+            flag.finished = true
+        }
+        defer { consumer.cancel() }
+
+        await waitUntil("the consumer's for-await loop never ended") { flag.finished }
+    }
 }

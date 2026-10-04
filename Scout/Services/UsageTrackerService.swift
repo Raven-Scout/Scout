@@ -34,9 +34,12 @@ final class UsageTrackerService: ObservableObject {
     private func startWatching() {
         watchTask?.cancel()
         let url = trackerURL
+        // Subscribe synchronously — calling events(for:) inside the task left
+        // a window where events emitted before the task ran were dropped.
+        let events = fileEvents.events(for: url)
         watchTask = Task { [weak self] in
             guard let self else { return }
-            for await _ in self.fileEvents.events(for: url) {
+            for await _ in events {
                 let refreshed = self.parseFile(url)
                 let filtered = refreshed.filter { ($0.source ?? "session") == "session" }
                 self.entries = filtered

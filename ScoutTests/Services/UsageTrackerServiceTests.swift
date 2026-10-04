@@ -87,6 +87,32 @@ struct UsageTrackerServiceTests {
                 == fractional.date(from: "2026-04-19T13:03:00.123Z"))
     }
 
+    // MARK: - watching
+
+    @Test("an event emitted right after loadInitial() returns refreshes entries")
+    @MainActor func eventRightAfterLoadInitialRefreshes() async throws {
+        let tmp = try Self.writeTemp("""
+        {"ts":"2026-04-19T12:03:00Z","ts_et":"2026-04-19 08:03 EDT","type":"briefing","budget_cap":10,"budget_spent":1,"exit_code":0,"source":"session"}
+        """)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let fakeFS = InjectableFS()
+        let service = UsageTrackerService(trackerURL: tmp, fileEvents: fakeFS)
+        let initial = try await service.loadInitial()
+        #expect(initial.count == 1)
+
+        // No suspension between loadInitial() returning and the emit: on the
+        // main actor the watch task has not run yet, so the event lands only
+        // if startWatching() subscribed synchronously.
+        try """
+        {"ts":"2026-04-19T12:03:00Z","ts_et":"2026-04-19 08:03 EDT","type":"briefing","budget_cap":10,"budget_spent":1,"exit_code":0,"source":"session"}
+        {"ts":"2026-04-19T13:03:00Z","ts_et":"2026-04-19 09:03 EDT","type":"dreaming","budget_cap":10,"budget_spent":2,"exit_code":0,"source":"session"}
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        fakeFS.emit(FileSystemEvent(url: tmp, kind: .modified))
+
+        await waitUntil("entries never refreshed after the event") { service.entries.count == 2 }
+    }
+
     // MARK: - helpers
 
     static var fixtureURL: URL {

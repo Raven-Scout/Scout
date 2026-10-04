@@ -1,9 +1,20 @@
 import Foundation
 import CoreServices
+import OSLog
 
 /// FSEvents-based implementation of `FileSystemEventSource`.
 /// Watches a directory (and its descendants) and emits events for file changes.
 final class FileWatcher: FileSystemEventSource, @unchecked Sendable {
+    private static let log = Logger(subsystem: "com.scout.Scout", category: "FileWatcher")
+
+    private let startStream: @Sendable (FSEventStreamRef) -> Bool
+
+    /// `startStream` is a test seam: `FSEventStreamStart` only fails in
+    /// conditions a test cannot set up through this type.
+    nonisolated init(startStream: @escaping @Sendable (FSEventStreamRef) -> Bool = { FSEventStreamStart($0) }) {
+        self.startStream = startStream
+    }
+
     func events(for url: URL) -> AsyncStream<FileSystemEvent> {
         AsyncStream { continuation in
             // Pass the box through context.info BEFORE FSEventStreamCreate copies it.
@@ -56,14 +67,25 @@ final class FileWatcher: FileSystemEventSource, @unchecked Sendable {
             }
 
             FSEventStreamSetDispatchQueue(stream, DispatchQueue(label: "scout.filewatcher"))
-            FSEventStreamStart(stream)
 
-            continuation.onTermination = { _ in
+            let tearDown: @Sendable () -> Void = {
                 FSEventStreamStop(stream)
                 FSEventStreamInvalidate(stream)
                 FSEventStreamRelease(stream)
                 Unmanaged<ContinuationBox>.fromOpaque(boxPtr).release()
             }
+
+            // A stream that never starts never yields; finish it so consumers'
+            // `for await` loops end instead of hanging. `onTermination` is not
+            // installed yet, so `finish()` here cannot release the box twice.
+            guard startStream(stream) else {
+                Self.log.error("FSEventStreamStart failed for \(url.path, privacy: .public)")
+                tearDown()
+                continuation.finish()
+                return
+            }
+
+            continuation.onTermination = { _ in tearDown() }
         }
     }
 }
