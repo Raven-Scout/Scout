@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`/scout-update` and a re-run of `install.sh` switch the registered plugin version** (`commands/scout-update.md`, `install.sh`): on an existing install, `claude plugin install` only unpacks the new cache and leaves the registry on the old version, so the plugin-root resolver handed back the old plugin and the vault was upgraded against its templates. `/scout-update` now runs `claude plugin update scout@scout-plugin` for every scope Scout is installed in, and stops with `PLUGIN_UPDATE_FAILED` (and the command to run) when an update fails, instead of upgrading against the old version. `install.sh` updates its user-scope install and warns when that fails. This is the stale-registry half of #234; the resolver half shipped in #258.
+
 ## [0.13.0] - 2026-10-04
 
 
