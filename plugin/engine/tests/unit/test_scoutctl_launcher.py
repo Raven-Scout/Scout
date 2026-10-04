@@ -92,6 +92,19 @@ def test_cache_path_falls_back_to_marketplace(tmp_path):
     assert "VENV=marketplace" in result.stdout, result
 
 
+@pytest.mark.parametrize("venv_rel", ["plugin/.venv", "plugin/engine/.venv"])
+def test_cache_path_falls_back_to_a_monorepo_marketplace_clone(tmp_path, venv_rel):
+    """A Raven-Scout/Scout marketplace clone keeps the plugin under plugin/
+    (marketplace source "./plugin"), so its venv is there, not at the root."""
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.12.0"
+    marketplace_root = plugins_dir / "marketplaces" / "scout-plugin"
+    launcher = _stage_launcher(cache_root)
+    _make_fake_venv(marketplace_root / venv_rel, "monorepo-marketplace")
+    result = _run(launcher)
+    assert "VENV=monorepo-marketplace" in result.stdout, result
+
+
 def test_cache_path_prefers_local_venv_when_present(tmp_path):
     """If cache/ has its own venv, don't cross-jump."""
     plugins_dir = tmp_path / ".claude" / "plugins"

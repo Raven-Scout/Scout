@@ -11,7 +11,10 @@
 #                                     (matches engine_pointer.state_dir)
 #   3. Sibling marketplaces/ tree   — recover when we're loaded from
 #                                     Claude Code's cache/ copy but the
-#                                     venv lives in marketplaces/
+#                                     venv lives in marketplaces/ (at the
+#                                     clone root for a legacy scout-plugin
+#                                     clone, under plugin/ for a
+#                                     Raven-Scout/Scout monorepo clone)
 #   4. system python3               — last resort; expects scout-engine on
 #                                     the global site-packages
 #
@@ -61,14 +64,19 @@ fi
 # Claude Code installs a marketplace plugin twice: a frozen copy under
 # plugins/cache/<marketplace>/<plugin>/<version>/ (used at runtime) and a
 # clone under plugins/marketplaces/<marketplace>/ (where install-venv.sh
-# typically lands). Cross-jump when the launcher fires from cache/.
+# typically lands). Cross-jump when the launcher fires from cache/. A legacy
+# scout-plugin clone has the plugin at the clone root; a Raven-Scout/Scout
+# monorepo clone has it under plugin/ (the marketplace's "source": "./plugin").
 if [[ "$PLUGIN_ROOT" == */plugins/cache/* ]]; then
     PLUGINS_DIR="${PLUGIN_ROOT%%/cache/*}"
     REST="${PLUGIN_ROOT#*/cache/}"
     MARKETPLACE_NAME="${REST%%/*}"
+    MARKETPLACE_CLONE="${PLUGINS_DIR}/marketplaces/${MARKETPLACE_NAME}"
     candidates+=(
-        "${PLUGINS_DIR}/marketplaces/${MARKETPLACE_NAME}/.venv/bin/python"
-        "${PLUGINS_DIR}/marketplaces/${MARKETPLACE_NAME}/engine/.venv/bin/python"
+        "${MARKETPLACE_CLONE}/.venv/bin/python"
+        "${MARKETPLACE_CLONE}/engine/.venv/bin/python"
+        "${MARKETPLACE_CLONE}/plugin/.venv/bin/python"
+        "${MARKETPLACE_CLONE}/plugin/engine/.venv/bin/python"
     )
 fi
 

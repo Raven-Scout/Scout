@@ -31,11 +31,19 @@ pytest tests/
 The engine works at any path on disk, not just `~/scout-plugin/`. Three
 install methods are all supported:
 
-- **Claude Code marketplace** — plugin lands under
-  `~/.claude/plugins/marketplaces/<marketplace>/scout-plugin/`.
+- **Claude Code marketplace** — Claude Code clones the marketplace repo to
+  `~/.claude/plugins/marketplaces/<marketplace>/` and runs the plugin from a
+  versioned copy under `~/.claude/plugins/cache/<marketplace>/scout/<version>/`.
+  In a `Raven-Scout/Scout` clone the plugin is the `plugin/` subdirectory (the
+  marketplace's `"source": "./plugin"`), so the clone-side venv is
+  `marketplaces/<marketplace>/plugin/.venv`; a legacy `scout-plugin` clone has
+  it at the clone root. `engine/bin/scoutctl` probes both when it runs from
+  `cache/`.
 - **Local-plugins / dev tree** — plugin lives in your own directory tree
   (e.g. `~/LOCAL_PLUGINS/scout-plugin/`).
-- **Canonical git clone** — plugin at `~/scout-plugin/` directly.
+- **Canonical git clone** — a legacy `scout-plugin` clone at `~/scout-plugin/`
+  (plugin at its root), or a `Raven-Scout/Scout` clone (plugin at
+  `<clone>/plugin/`).
 
 How each layer adapts:
 
