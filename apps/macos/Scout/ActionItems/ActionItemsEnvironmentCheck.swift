@@ -19,7 +19,7 @@ struct ActionItemsEnvironmentResult: Equatable, Sendable {
 
 /// Probes scoutctl to verify Action Items writes will work. Runs
 /// `scoutctl action-items --help` and checks for a clean exit. Failure modes:
-///   - scoutctl not on the resolved path (ENOENT / non-zero from /usr/bin/env)
+///   - no scoutctl at the located path (ENOENT — no engine was found)
 ///   - scoutctl present but doesn't expose `action-items` (very old plugin)
 final class ActionItemsEnvironmentCheck: @unchecked Sendable {
     private let scoutctl: URL

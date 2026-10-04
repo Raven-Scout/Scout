@@ -555,8 +555,8 @@ final class AppState: ObservableObject {
     }
 
     /// Build the argv for `scoutctl schedule fire-now`. argv[0] must be the
-    /// resolved `argumentsPrefix` (empty for an absolute scoutctl path,
-    /// `["scoutctl"]` for the `/usr/bin/env` fallback) — never a hardcoded
+    /// resolved `argumentsPrefix` (always empty now: scoutctl is an absolute
+    /// path, with no `/usr/bin/env` fallback) — never a hardcoded
     /// "scoutctl", which an absolute-path executable would receive as a bogus
     /// subcommand (issue #45).
     nonisolated static func fireNowArguments(

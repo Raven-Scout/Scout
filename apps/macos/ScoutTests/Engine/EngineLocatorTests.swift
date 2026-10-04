@@ -119,6 +119,22 @@ struct EngineLocatorTests {
         #expect(state.install?.scoutctl.path == real.path)
     }
 
+    /// Maintainer decision (2026-10-04): no pip/pipx/Homebrew/conda/`$PATH`
+    /// fallbacks. A stray `scoutctl` — an editable install in a conda env, a
+    /// pipx venv, or a plain executable at the shim path without the shim
+    /// marker — is not an engine: the locator says `.notInstalled`, so the
+    /// gate and the copyable next step show instead of a silent wrong engine.
+    @Test func strayScoutctlInstallsAreNotAnEngine() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        for stray in ["miniconda3/bin/scoutctl", "anaconda3/bin/scoutctl", ".local/pipx/venvs/scout/bin/scoutctl",
+                      "Library/Python/3.12/bin/scoutctl", "scout-plugin/bin/scoutctl"] {
+            try executable(layout.home.appending(path: stray))
+        }
+        try executable(layout.shimURL)  // `#!/bin/sh` only: no shim marker
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
+    }
+
     /// The maintainer's own layout: a scout-plugin checkout at the dev path
     /// with its venv at `<root>/.venv` or `<root>/engine/.venv`, found either
     /// through the shim or (no shim) as the dev checkout. Every route must
