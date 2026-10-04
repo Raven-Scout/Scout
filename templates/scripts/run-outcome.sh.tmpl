@@ -32,7 +32,11 @@ fi
 # Log patterns per failure class, matched case-insensitively against the tail of
 # the run's log. Kept narrow on purpose: the log also holds the pre-session
 # steps' output, and the budget check's preamble names the budget on every run.
-AUTH_RE='OAuth session expired|OAuth token (has )?expired|Failed to authenticate|Invalid authentication credentials|API Error: 40[13]|40[13] (Unauthorized|Forbidden)'
+# AUTH_RE is the Claude CLI's own phrasing at the start of a line, matched
+# case-sensitively; it is the same string as the retry wrapper's AUTH_PATTERNS and
+# bootstrap_doctor.CLI_AUTH_FAILURE_ERE (a test keeps them equal), so the Telegram
+# class, the desktop alert and the doctor agree on what a rejected login is.
+AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
 RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit'
@@ -46,7 +50,7 @@ classify_failure() {
     [ "$code" -eq 0 ] && { echo "ok"; return; }
     [ -f "$log" ] || { echo "unknown"; return; }
     tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
-    if grep -qiE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
+    if grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
     elif grep -qiE "$NETWORK_RE" <<<"$tail_txt"; then echo "network"
     elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"
     elif grep -qiE "$RATE_LIMIT_RE" <<<"$tail_txt"; then echo "rate_limited"
@@ -115,7 +119,7 @@ PY
     esac
 
     case "$klass" in
-        oauth_expired) hint="Re-authenticate the claude binary this runner uses." ;;
+        oauth_expired) hint="Re-authenticate the claude binary this runner uses — run: claude auth login" ;;
         git_lock)      hint="A stale .git lock blocked the commit; run scripts/run-outcome.sh clear-stale-locks." ;;
         network)       hint="Transient network failure; usually clears on its own." ;;
         rate_limited)  hint="Rate limited; the next slot backs off." ;;

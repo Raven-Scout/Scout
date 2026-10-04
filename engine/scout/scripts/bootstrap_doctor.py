@@ -11,6 +11,7 @@ import platform
 import plistlib
 import re
 import subprocess
+import xml.parsers.expat
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -57,15 +58,22 @@ _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
 _RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log")
 
-# Rejected-Claude-credential signatures. Anchored on infra-emitted strings (the
-# retry wrapper's own marker + the Claude CLI's exact auth-error phrasing) rather
-# than a bare "401", so a session that merely *writes about* HTTP 401 in its
-# output can't trip the detector.
-_AUTH_FAILURE_RE = re.compile(
-    r"=== Authentication failure \(HTTP 401/403\)"
-    r"|Failed to authenticate\. API Error: 40[13]"
-    r"|Invalid authentication credentials"
+# The Claude CLI's own auth-error phrasing, anchored at the start of a line, so a
+# session that merely *writes about* a 401 or quotes one of these errors can't
+# trip a detector. One definition shared verbatim, as a POSIX ERE, by
+# templates/scripts/claude-with-retry.sh.tmpl (AUTH_PATTERNS) and
+# templates/scripts/run-outcome.sh.tmpl (AUTH_RE); a test keeps the three equal.
+# Written so Python's re (with MULTILINE) reads it the same way grep -E does.
+CLI_AUTH_FAILURE_ERE = (
+    "^(Failed to authenticate([.:]|$)"
+    "|Invalid authentication credentials"
+    "|API Error: 40[13]"
+    "|OAuth (session|token)( has)? expired)"
 )
+
+# Rejected-Claude-credential signatures: the retry wrapper's own banner, or the
+# CLI's raw error (pre-0.8.0 runners never wrote the banner).
+_AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
 
 
 def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
@@ -115,7 +123,7 @@ def _check_recent_auth_failure(*, vault: Path) -> tuple[list[str], list[str]]:
             "Claude Code's API credentials were rejected — every scheduled run will fail "
             "until this is fixed. Re-authenticate the claude binary the runner uses: "
             "`claude setup-token` (headless, then expose CLAUDE_CODE_OAUTH_TOKEN to the "
-            "runner's environment) or `claude` (interactive login). Verify with "
+            "runner's environment) or run: claude auth login (interactive). Verify with "
             f"`<claude-bin> -p 'hello'`. Full log: .scout-logs/{latest.name}."
         ],
         [],
@@ -139,7 +147,7 @@ def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]
     try:
         with plist_path.open("rb") as f:
             data = plistlib.load(f)
-    except (plistlib.InvalidFileException, OSError) as e:
+    except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError) as e:
         warnings.append(f"could not parse {plist_path.name}: {e}")
         return errors, warnings
     args = data.get("ProgramArguments") or []
@@ -259,6 +267,40 @@ def _check_scoutctl_shim(*, home: Path) -> tuple[list[str], list[str]]:
             warnings.append(
                 f"scoutctl shim at {shim} points at a missing target ({m.group(1)}) — "
                 f"re-run `scoutctl bootstrap upgrade`."
+            )
+    return [], warnings
+
+
+def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
+    """Warn (never error) when the engine pointer disagrees with reality.
+
+    Both the pointer and the schedule-tick plist are rewritten by every
+    bootstrap run that installs jobs (a ``--no-jobs`` run writes neither),
+    so disagreement means they were produced by different
+    engines — exactly the drift the pointer exists to make visible. A missing
+    pointer is not flagged (pre-pointer engines; the next bootstrap writes it).
+    """
+    from scout.scripts.engine_pointer import read_pointer
+
+    pointer = read_pointer(home=home)
+    if pointer is None:
+        return [], []
+    warnings: list[str] = []
+    if not Path(pointer.scoutctl).exists():
+        warnings.append(
+            f"engine pointer names a missing scoutctl ({pointer.scoutctl}) — re-run `scoutctl bootstrap upgrade`."
+        )
+    plist_path = home / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist"
+    if plist_path.exists():
+        try:
+            with plist_path.open("rb") as f:
+                args = plistlib.load(f).get("ProgramArguments") or []
+        except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError):
+            args = []
+        if args and args[0] != pointer.scoutctl:
+            warnings.append(
+                f"engine pointer ({pointer.scoutctl}) and {plist_path.name} ({args[0]}) name different "
+                f"scoutctl binaries — re-run `scoutctl bootstrap upgrade` so both track one engine."
             )
     return [], warnings
 
@@ -442,6 +484,9 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         # Interactive/session scoutctl reachability (separate from the plist).
         _, shim_warnings = _check_scoutctl_shim(home=home)
         warnings.extend(shim_warnings)
+        # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
+        _, pointer_warnings = _check_engine_pointer(home=home)
+        warnings.extend(pointer_warnings)
         # The claude CLI the runners launch. Gated with the other host-runtime
         # checks: it inspects this machine's binaries, not the vault's content.
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)

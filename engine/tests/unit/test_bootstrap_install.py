@@ -163,6 +163,70 @@ def test_install_persists_connector_inputs(tmp_path):
     assert "/opt/homebrew/bin/claude" in runner_text
 
 
+def test_install_without_jobs_writes_no_engine_pointer(tmp_path):
+    """The pointer is gated by skip_jobs like the plists and the shim
+    (spec §4.2): a --no-jobs install leaves plists, shim
+    AND pointer alone, so a scratch run can never repoint Scout.app. HOME is
+    the hermetic per-test home from conftest, so Path.home() is safe to read."""
+    from scout.scripts.engine_pointer import read_pointer
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    cfg = _config(tmp_path / "Scout", plugin_root=plugin)
+    cfg.managed_by = "scout-app"
+    result = install(cfg)
+    assert result.pointer is None
+    assert read_pointer(home=Path.home()) is None
+
+
+def test_pointer_stage_writes_this_vault_and_defaults_to_unknown_manager(tmp_path):
+    """With jobs enabled the stage records this vault; BootstrapConfig's own
+    managed_by default is the concrete "unknown"."""
+    from scout.scripts.bootstrap import _stage_write_engine_pointer
+    from scout.scripts.engine_pointer import read_pointer
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.skip_jobs = False
+    written = _stage_write_engine_pointer(cfg)
+    assert written == Path.home() / ".local" / "state" / "scout" / "engine.json"
+    pointer = read_pointer(home=Path.home())
+    assert pointer is not None
+    assert pointer.vault == str(vault)
+    assert pointer.managed_by == "unknown"
+
+
+def test_stage_jobs_install_passes_vault_through(tmp_path, monkeypatch):
+    """A vault anywhere other than ~/Scout must still get scheduled runs
+    pointed at it — _stage_jobs_install forwards cfg.vault to both plist
+    installers (E6)."""
+    from scout.scripts.bootstrap import _stage_jobs_install
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Vaults" / "Work"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.platform = "macos"
+    cfg.skip_jobs = False
+
+    calls: dict[str, dict] = {}
+
+    def fake_install_st(**kwargs):
+        calls["st"] = kwargs
+        return tmp_path / "com.scout.schedule-tick.plist"
+
+    def fake_install_hb(**kwargs):
+        calls["hb"] = kwargs
+        return tmp_path / "com.scout.heartbeat.plist"
+
+    monkeypatch.setattr("scout.scripts.install_schedule_plist.install_plist", fake_install_st)
+    monkeypatch.setattr("scout.scripts.install_heartbeat_plist.install_plist", fake_install_hb)
+
+    _stage_jobs_install(cfg)
+
+    assert calls["st"]["vault"] == cfg.vault
+    assert calls["hb"]["vault"] == cfg.vault
+
+
 # ---------- #254: CLAUDE_BIN detection ----------
 
 
