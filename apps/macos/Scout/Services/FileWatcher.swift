@@ -68,8 +68,11 @@ final class FileWatcher: FileSystemEventSource, @unchecked Sendable {
 
             FSEventStreamSetDispatchQueue(stream, DispatchQueue(label: "scout.filewatcher"))
 
-            let tearDown: @Sendable () -> Void = {
-                FSEventStreamStop(stream)
+            // `FSEventStreamStop` may only be called on a started stream, so
+            // the failed-start path skips it; Invalidate and Release are valid
+            // either way.
+            let tearDown: @Sendable (_ started: Bool) -> Void = { started in
+                if started { FSEventStreamStop(stream) }
                 FSEventStreamInvalidate(stream)
                 FSEventStreamRelease(stream)
                 Unmanaged<ContinuationBox>.fromOpaque(boxPtr).release()
@@ -80,12 +83,12 @@ final class FileWatcher: FileSystemEventSource, @unchecked Sendable {
             // installed yet, so `finish()` here cannot release the box twice.
             guard startStream(stream) else {
                 Self.log.error("FSEventStreamStart failed for \(url.path, privacy: .public)")
-                tearDown()
+                tearDown(false)
                 continuation.finish()
                 return
             }
 
-            continuation.onTermination = { _ in tearDown() }
+            continuation.onTermination = { _ in tearDown(true) }
         }
     }
 }
