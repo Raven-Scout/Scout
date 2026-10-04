@@ -34,6 +34,12 @@ enum SmokeFixtures {
                     text: "Probably the queue drain we shipped — see [[projects/the-demo]]."),
     ]
 
+    static let details: [TaskDetail] = [
+        TaskDetail(depth: 0, text: "🗓️ Due Tuesday; **never** left Todo — see [[projects/the-demo]]."),
+        TaskDetail(depth: 1, text: "Priya opens this tracker on Tuesday."),
+        TaskDetail(depth: 0, text: "Run this\n```\nscoutctl digest --batch\n```"),
+    ]
+
     static let deepLinks: [TaskDeepLink] = [
         .linear(id: "PROJ-1234"),
         .githubPR(repo: "example-org/app", number: 42,
@@ -148,6 +154,8 @@ struct ComponentSmokeTests {
             SmokeFixtures.task(snoozedUntil: SmokeFixtures.day.addingTimeInterval(86_400)),
             SmokeFixtures.task(carriedInFrom: SmokeFixtures.day.addingTimeInterval(-86_400)),
             SmokeFixtures.task(body: ""),
+            SmokeFixtures.task(body: "", details: SmokeFixtures.details),
+            SmokeFixtures.task(details: SmokeFixtures.details),
         ]
         for task in variants {
             for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal, .done] {
@@ -159,6 +167,12 @@ struct ComponentSmokeTests {
                     size: cardSize)
             }
         }
+    }
+
+    @Test("task details render at every depth")
+    func taskDetailsRender() {
+        ViewHost.render(TaskDetailsView(details: SmokeFixtures.details), size: cardSize)
+        ViewHost.render(TaskDetailsView(details: []), size: cardSize)
     }
 
     @Test("a section renders for every kind")
