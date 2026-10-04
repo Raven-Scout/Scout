@@ -48,16 +48,14 @@ nonisolated struct PrerequisiteChecker: Sendable {
     static let defaultGitCandidates = ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/opt/local/bin/git"]
     static let defaultUvCandidates = ["/opt/homebrew/bin/uv", "/usr/local/bin/uv"]
 
-    /// `ClaudeLauncher.resolveClaudePath` is MainActor-isolated (the app
-    /// target defaults to MainActor isolation; `ClaudeLauncher` carries no
-    /// `nonisolated` override and none is added here). `check()` always
-    /// invokes `resolveClaude` from inside `await MainActor.run`, so
-    /// `assumeIsolated` below is a sound bridge, not a guess — this closure
-    /// must never be called from anywhere else.
+    /// `ClaudeLauncher.resolveClaudePath` is `nonisolated` (verified: it only
+    /// touches `FileManager`/`ProcessInfo`/`Process`/`Pipe`, never main-actor
+    /// state), so this can call it directly without any actor bridge.
+    /// `check()` runs it inside `Task.detached` — the login-shell spawn it
+    /// falls back to can block for the length of a full shell startup, and
+    /// must never do that on the main thread.
     static let defaultResolveClaude: @Sendable (String) -> String? = { override in
-        MainActor.assumeIsolated {
-            ClaudeLauncher.resolveClaudePath(override: override)
-        }
+        ClaudeLauncher.resolveClaudePath(override: override)
     }
 
     init(
@@ -77,7 +75,13 @@ nonisolated struct PrerequisiteChecker: Sendable {
     }
 
     func check() async -> Prerequisites {
-        let claudePath = await MainActor.run { resolveClaude(claudePathOverride) }
+        // Never on the main thread: the default resolver's login-shell
+        // fallback (`$SHELL -lc "command -v claude"`) blocks synchronously
+        // for the length of a full shell startup, and the prerequisites
+        // screen polls this repeatedly while Claude Code isn't installed.
+        let override = claudePathOverride
+        let resolve = resolveClaude
+        let claudePath = await Task.detached { resolve(override) }.value
         var claude: ClaudeStatus = .missing
         var auth: AuthState = .unknown
         if let claudePath {

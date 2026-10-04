@@ -71,4 +71,48 @@ struct PrerequisiteCheckerTests {
         #expect(p.auth == .signedOut)
         #expect(p.canInstallEngine)
     }
+
+    /// The default resolver's login-shell fallback
+    /// (`$SHELL -lc "command -v claude"`) blocks synchronously for the
+    /// length of a full shell startup — `check()` must never run it on the
+    /// main thread, since C7's prerequisites screen polls this every few
+    /// seconds while Claude Code isn't yet installed.
+    @Test func resolvesClaudeOffTheMainThread() async throws {
+        let l = try layout()
+        let runner = RuleBasedRunner()
+        runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/Library/Developer/CommandLineTools\n")
+        let recorder = MainThreadRecorder()
+        let checker = PrerequisiteChecker(
+            runner: runner,
+            layout: l,
+            resolveClaude: { _ in
+                recorder.record()
+                return nil
+            },
+            gitCandidates: [],
+            uvCandidates: []
+        )
+        _ = await checker.check()
+        #expect(recorder.recorded)
+        #expect(!recorder.wasMainThread)
+    }
+}
+
+/// Thread-safe one-shot recorder of `Thread.isMainThread` at the point a
+/// closure ran — `@Sendable (String) -> String?` closures passed into
+/// `PrerequisiteChecker` can't capture a plain `var` safely.
+private final class MainThreadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _wasMainThread = true
+    private var _recorded = false
+
+    func record() {
+        lock.withLock {
+            _wasMainThread = Thread.isMainThread
+            _recorded = true
+        }
+    }
+
+    var wasMainThread: Bool { lock.withLock { _wasMainThread } }
+    var recorded: Bool { lock.withLock { _recorded } }
 }
