@@ -66,6 +66,10 @@ Each command below names the repo as it is called *when that step runs*.
 - **From Phase 4.1 on, always pass `--repo` to `gh`.** `gh` infers the repo
   from `origin`, and the same number means different items in the two repos.
   4.1a re-points `~/scout-app`'s `origin`; the coordinator tells every session.
+- **Phase 9 must include 9.3a.** The vault's hooks, `SKILL.md`'s Telegram
+  commands and the back-port scripts hard-code `~/scout-plugin/engine` and
+  similar paths. Without the re-point they fail silently on the first
+  scheduled run after the pull.
 - **Phases 3 and 4 run back to back.** Between Phase 3.5 (the landing merge)
   and Phase 4.2 (the second rename), new users' `curl …/Raven-Scout/Scout/main/install.sh`
   hits the app repo, which has no `install.sh`. Existing plugin users are fine
@@ -1142,6 +1146,43 @@ config, so no agent runs it.
   ~/scout-plugin/plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev   # re-points plists, shim and ~/.local/state/scout/engine.json
   ~/miniconda3/bin/pip install -e ~/scout-plugin/plugin/engine                  # or uninstall that editable copy
   ```
+- [ ] **9.3a Re-point the vault.** `bootstrap upgrade` re-renders only the
+  files it manages: the runners, the templated scripts,
+  `hooks/kb-pre-filter.sh`, the plists, the shim and `engine.json`. The vault
+  also hard-codes `~/scout-plugin/{engine,.venv,templates,phases}` in files it
+  doesn't manage. The 2026-10-04 inventory found 20 files:
+  - **`.claude/settings.json`'s two PostToolUse hooks** (`scoutctl hook
+    connector-log`, `hook session-tokens`). Without them, connector-health
+    logging goes dark.
+  - **`SKILL.md`'s Telegram commands** (`scoutctl notify telegram`). Without
+    them, scheduled runs' phone pushes fail silently.
+  - **The engine back-port diff:** `DREAMING.md`,
+    `scripts/script-backport-{stage,status}.sh` and
+    `scripts/script-divergence-check.sh`.
+  - **`scripts/connector-health-rollup.sh`** and
+    **`scripts/check-schema-parity.sh`**.
+  - **`CLAUDE.md`**, the interactive instructions.
+  - **Any managed file bootstrap left alone** because the vault had edited it.
+
+  `plugin/scripts/vault-repoint-monorepo.py` rewrites them all to
+  `~/scout-plugin/plugin/…`. It leaves the history alone: `knowledge-base/`,
+  `action-items/`, `docs/`, `dreaming-proposals*` and `.scout-state/`. It only
+  lists `.claude/settings.local.json`, the permission rules (14 stale on
+  2026-10-04), for Jordan to update by hand. Scheduled runs use
+  `--permission-mode auto`, so stale rules there don't block them.
+
+  ```bash
+  python3 ~/scout-plugin/plugin/scripts/vault-repoint-monorepo.py --vault ~/Scout              # dry run: review the diff
+  python3 ~/scout-plugin/plugin/scripts/vault-repoint-monorepo.py --vault ~/Scout --apply
+  python3 ~/scout-plugin/plugin/scripts/vault-repoint-monorepo.py --vault ~/Scout 2>&1 | tail -1  # "would re-point 0 file(s)"
+  grep -n scout-plugin ~/Library/LaunchAgents/com.scout.*.plist                                  # only …/scout-plugin/plugin/… paths
+  ~/scout-plugin/plugin/engine/bin/scoutctl version                                              # the path the hooks and SKILL.md now call
+  git -C ~/Scout status --short                                                                  # only the re-pointed files
+  git -C ~/Scout add -u -- .claude/settings.json SKILL.md DREAMING.md RESEARCH.md CLAUDE.md run-*.sh scripts hooks
+  git -C ~/Scout commit -m "scout: re-point the vault at the monorepo layout (~/scout-plugin/plugin/…)"
+  git -C ~/Scout rev-parse HEAD > ~/.scout-worktrees/vault-repoint.sha
+  ```
+
 - [ ] **9.4 Verify.**
 
   ```bash
@@ -1160,6 +1201,7 @@ config, so no agent runs it.
   bash ~/scout-plugin/scripts/install-venv.sh                                   # 9.3 pointed everything at plugin/.venv, which is gone now
   ~/scout-plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev
   ~/miniconda3/bin/pip install -e ~/scout-plugin/engine
+  git -C ~/Scout revert --no-edit "$(cat ~/.scout-worktrees/vault-repoint.sha)"   # undo 9.3a's vault re-point
   ```
 
   After a few days of green runs:
