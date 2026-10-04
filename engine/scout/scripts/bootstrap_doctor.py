@@ -58,15 +58,22 @@ _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
 _RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log")
 
-# Rejected-Claude-credential signatures. Anchored on infra-emitted strings (the
-# retry wrapper's own marker + the Claude CLI's exact auth-error phrasing) rather
-# than a bare "401", so a session that merely *writes about* HTTP 401 in its
-# output can't trip the detector.
-_AUTH_FAILURE_RE = re.compile(
-    r"=== Authentication failure \(HTTP 401/403\)"
-    r"|Failed to authenticate\. API Error: 40[13]"
-    r"|Invalid authentication credentials"
+# The Claude CLI's own auth-error phrasing, anchored at the start of a line, so a
+# session that merely *writes about* a 401 or quotes one of these errors can't
+# trip a detector. One definition shared verbatim, as a POSIX ERE, by
+# templates/scripts/claude-with-retry.sh.tmpl (AUTH_PATTERNS) and
+# templates/scripts/run-outcome.sh.tmpl (AUTH_RE); a test keeps the three equal.
+# Written so Python's re (with MULTILINE) reads it the same way grep -E does.
+CLI_AUTH_FAILURE_ERE = (
+    "^(Failed to authenticate([.:]|$)"
+    "|Invalid authentication credentials"
+    "|API Error: 40[13]"
+    "|OAuth (session|token)( has)? expired)"
 )
+
+# Rejected-Claude-credential signatures: the retry wrapper's own banner, or the
+# CLI's raw error (pre-0.8.0 runners never wrote the banner).
+_AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
 
 
 def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
@@ -116,7 +123,7 @@ def _check_recent_auth_failure(*, vault: Path) -> tuple[list[str], list[str]]:
             "Claude Code's API credentials were rejected — every scheduled run will fail "
             "until this is fixed. Re-authenticate the claude binary the runner uses: "
             "`claude setup-token` (headless, then expose CLAUDE_CODE_OAUTH_TOKEN to the "
-            "runner's environment) or `claude` (interactive login). Verify with "
+            "runner's environment) or run: claude auth login (interactive). Verify with "
             f"`<claude-bin> -p 'hello'`. Full log: .scout-logs/{latest.name}."
         ],
         [],

@@ -144,6 +144,19 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         pytest.param("Error: Exceeded USD budget (20)\n", "budget", id="budget-cap"),
         pytest.param("Failed to authenticate. API Error: 401\n", "oauth_expired", id="auth-401"),
         pytest.param("OAuth session expired, please log in again\n", "oauth_expired", id="oauth"),
+        pytest.param(
+            "Failed to authenticate: OAuth session expired and could not be refreshed\n",
+            "oauth_expired",
+            id="oauth-cli-string",
+        ),
+        # Text that only quotes an auth error, or another service's 403, is not
+        # a rejected Claude login: the phrases are the CLI's, at line start.
+        pytest.param(
+            "Summary: last week's runs failed to authenticate (OAuth session expired)\n",
+            "unknown",
+            id="quoted-auth-text-is-not-auth",
+        ),
+        pytest.param("tracker fetch: HTTP/1.1 403 Forbidden\n", "unknown", id="other-service-403-is-not-auth"),
         pytest.param("Unable to connect to API (ECONNRESET)\n", "network", id="econnreset"),
         pytest.param("getaddrinfo ENOTFOUND api.example.com\n", "network", id="dns"),
         pytest.param("fatal: Unable to create '/v/.git/index.lock': File exists.\n", "git_lock", id="git-lock"),
@@ -209,6 +222,7 @@ def test_the_notice_names_the_run_the_class_and_the_log(vault: Path, outcome: Pa
     assert "exit 1" in body
     assert "oauth_expired" in body
     assert "Re-authenticate" in body
+    assert "run: claude auth login" in body, "the Telegram notice names the same fix as the desktop alert"
     assert str(log) in body
 
 
