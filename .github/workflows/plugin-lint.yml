@@ -10,6 +10,7 @@ on:
       - "apps/macos/scripts/**"
       - ".claude-plugin/**"
       - ".github/workflows/plugin-lint.yml"
+      - ".github/scripts/changed-paths.sh"
 
 jobs:
   # Path-scoped `paths:` filters were removed from `on.pull_request` above so
@@ -63,8 +64,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           # engine launcher — full severity (existing guard)
           shellcheck plugin/engine/bin/scoutctl
-          # installer (repo root) + both release scripts — error severity
-          shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh
+          # installer (repo root), both release scripts, and the PR-gating
+          # script every workflow's `changes` job runs — error severity
+          shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
           # all shell templates seeded into user vaults (placeholders don't
           # break shellcheck parsing) — error severity
           find plugin/templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error
