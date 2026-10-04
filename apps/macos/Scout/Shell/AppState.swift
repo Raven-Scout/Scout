@@ -484,31 +484,18 @@ final class AppState: ObservableObject {
         let argsPrefix: [String]
     }
 
-    /// Try known install paths in priority order. The scout-plugin repo's
-    /// own `bin/` is preferred because it's the canonical source of truth;
-    /// after that we walk the locations the user is likely to have
-    /// installed scoutctl via (miniconda, pipx, homebrew, /usr/local). If
-    /// none exist, fall back to `/usr/bin/env scoutctl` so a user with
-    /// scoutctl on PATH (e.g. running from Xcode-inherited env) still
-    /// works.
+    /// Resolve scoutctl's location. See `ScoutctlLocator` for the priority
+    /// order and the tests that pin it.
     static func resolveScoutctlPath() -> ScoutctlInvocation {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates: [URL] = [
-            home.appendingPathComponent("scout-plugin/bin/scoutctl"),
-            home.appendingPathComponent("miniconda3/bin/scoutctl"),
-            home.appendingPathComponent(".local/bin/scoutctl"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/scoutctl"),
-            URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
-        ]
-        let fm = FileManager.default
-        for url in candidates {
-            if fm.isExecutableFile(atPath: url.path) {
-                return ScoutctlInvocation(executable: url, argsPrefix: [])
-            }
-        }
-        return ScoutctlInvocation(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            argsPrefix: ["scoutctl"]
+        let manifest = try? String(
+            contentsOf: ScoutctlLocator.installedPluginsJSONURL(home: home),
+            encoding: .utf8
+        )
+        return ScoutctlLocator.resolve(
+            home: home,
+            installedPluginsJSON: manifest,
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0.path) }
         )
     }
 
