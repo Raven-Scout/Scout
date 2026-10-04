@@ -105,6 +105,45 @@ def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple
     return _parse_added_lines(out, None)
 
 
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _unquote_c(s: str) -> str:
+    """Undo git's C-style path quoting (``"b/a\\"b.md"`` → ``b/a"b.md``).
+    Octal escapes are raw UTF-8 bytes, so decode the byte string at the end."""
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            octal = s[i + 1 : i + 4]
+            if len(octal) == 3 and all(c in "01234567" for c in octal):
+                out.append(int(octal, 8))
+                i += 4
+                continue
+            if nxt in _C_ESCAPES:
+                out.append(_C_ESCAPES[nxt])
+                i += 2
+                continue
+        out += ch.encode("utf-8")
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _header_path(line: str) -> str:
+    """The path in a ``+++ `` / ``--- `` diff header. git appends a tab when the
+    path contains a space, and C-quotes a path with special characters (a
+    double quote, a backslash, control characters) even with core.quotepath
+    off."""
+    s = line[4:]
+    if s.endswith("\t"):
+        s = s[:-1]
+    if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
+        s = _unquote_c(s[1:-1])
+    return s
+
+
 def _parse_added_lines(diff_text: str, want_rel: str | None) -> list[tuple[int, str]]:
     result: list[tuple[int, str]] = []
     lineno = 0
@@ -121,7 +160,7 @@ def _parse_added_lines(diff_text: str, want_rel: str | None) -> list[tuple[int, 
             continue
         if not in_hunk and ln.startswith("+++ "):
             if want_rel is not None:
-                in_wanted_file = ln == f"+++ b/{want_rel}"
+                in_wanted_file = _header_path(ln) == f"b/{want_rel}"
             continue
         m = _HUNK.match(ln)
         if m:

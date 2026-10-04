@@ -85,6 +85,30 @@ def test_added_lines_rename_plus_one_line(kb_repo) -> None:
     assert added_lines(kb_repo.root, "knowledge-base/new.md", head_rel="knowledge-base/old.md") == [(4, "l4")]
 
 
+def test_added_lines_rename_plus_one_line_path_with_space(kb_repo) -> None:
+    """git appends a tab to `+++ b/<path>` when the path has a space."""
+    kb_repo.stage("knowledge-base/topics/old notes.md", "l1\nl2\nl3\n")
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/topics/old notes.md", "knowledge-base/topics/café notes.md")
+    (kb_repo.root / "knowledge-base/topics/café notes.md").write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
+    kb_repo.git("add", "--", "knowledge-base/topics/café notes.md")
+    got = added_lines(
+        kb_repo.root, "knowledge-base/topics/café notes.md", head_rel="knowledge-base/topics/old notes.md"
+    )
+    assert got == [(4, "l4")]
+
+
+def test_added_lines_rename_plus_one_line_quoted_path(kb_repo) -> None:
+    """A path git must C-quote even with core.quotepath off (a double quote)."""
+    kb_repo.stage('knowledge-base/topics/old "q".md', "l1\nl2\nl3\n")
+    kb_repo.commit()
+    kb_repo.git("mv", 'knowledge-base/topics/old "q".md', 'knowledge-base/topics/new "q".md')
+    (kb_repo.root / 'knowledge-base/topics/new "q".md').write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
+    kb_repo.git("add", "--", 'knowledge-base/topics/new "q".md')
+    got = added_lines(kb_repo.root, 'knowledge-base/topics/new "q".md', head_rel='knowledge-base/topics/old "q".md')
+    assert got == [(4, "l4")]
+
+
 def test_repo_root_and_tracked_files(kb_repo) -> None:
     sub = kb_repo.root / "knowledge-base"
     assert repo_root(sub) == kb_repo.root.resolve()
