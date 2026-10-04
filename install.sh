@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Scout one-command installer.
-#   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 # Sets up the PLUGIN + ENGINE. The interactive vault is then created with /scout-setup.
 #
 # Flags: --check  (verify preconditions only; make no changes)
 set -euo pipefail
 
-MARKETPLACE="Raven-Scout/scout-plugin"
+MARKETPLACE="Raven-Scout/Scout"
 PLUGIN_ID="scout@scout-plugin"
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
