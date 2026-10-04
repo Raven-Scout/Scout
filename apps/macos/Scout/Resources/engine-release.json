@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "engine": {
+    "repo": "Raven-Scout/scout-plugin",
+    "version": "0.12.0",
+    "tag": "v0.12.0",
+    "commit": "ca8b21a9aeac2452a7330d974dd750108ced5fc7"
+  },
+  "uv": {
+    "version": "0.12.1",
+    "sha256": {
+      "aarch64-apple-darwin": "77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42",
+      "x86_64-apple-darwin": "69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467"
+    }
+  }
+}
