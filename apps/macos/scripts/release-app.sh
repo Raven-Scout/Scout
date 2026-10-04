@@ -70,7 +70,12 @@ recommend_version() {
   local min="${rest%%.*}"
   local pat="${rest#*.}"
   local subjects
-  subjects="$(git -C "$REPO_ROOT" log "${latest}..HEAD" --no-merges --format='%s' -- apps/macos 2>/dev/null || true)"
+  # Pre-move app commits live at Scout/ScoutTests/Scout.xcodeproj, not
+  # apps/macos, and --full-history is needed because the re-sync merges'
+  # main-side parent is otherwise pruned by history simplification (neither
+  # old nor new path exists on both sides of those merges) — without it,
+  # pre-move commits like #130 silently drop out of this range.
+  subjects="$(git -C "$REPO_ROOT" log "${latest}..HEAD" --no-merges --full-history --format='%s' -- apps/macos Scout ScoutTests Scout.xcodeproj 2>/dev/null || true)"
   if printf '%s\n' "$subjects" | grep -qE '^feat(\(.*\))?!?:'; then
     echo "${maj}.$((min + 1)).0"
   else
@@ -263,7 +268,12 @@ NOTES="$BUILD_DIR/release-notes.md"
     # that touches the app, so plugin-only commits elsewhere in the monorepo
     # don't flood the app's release notes. %s = subject only (skips body /
     # Co-Authored-By trailers); %h = short hash.
-    COMMITS="$(git -C "$REPO_ROOT" log "$PREV_TAG"..HEAD --no-merges --format='%s|%h' -- apps/macos)"
+    # Pre-move app commits live at Scout/ScoutTests/Scout.xcodeproj, not
+    # apps/macos, and --full-history is needed because the re-sync merges'
+    # main-side parent is otherwise pruned by history simplification (neither
+    # old nor new path exists on both sides of those merges) — without it,
+    # pre-move commits like #130 silently drop out of the release notes.
+    COMMITS="$(git -C "$REPO_ROOT" log "$PREV_TAG"..HEAD --no-merges --full-history --format='%s|%h' -- apps/macos Scout ScoutTests Scout.xcodeproj)"
     if [[ -z "$COMMITS" ]]; then
       echo "## What's changed"
       echo
