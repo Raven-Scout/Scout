@@ -89,6 +89,8 @@ class UpgradeResult:
     backups: list[str] = field(default_factory=list)
     # Brain-file sidecars already pending: the upgrade left that file alone.
     skipped: list[str] = field(default_factory=list)
+    # Brain files whose live copy still holds conflict markers: left alone.
+    conflict_markers: list[str] = field(default_factory=list)
     # Every vault edit to a managed file the upgrade kept, merged, or parked.
     vault_edits: list[VaultEdit] = field(default_factory=list)
     pointer: Path | None = None
@@ -491,6 +493,7 @@ def _proposed_path(snapshot_dir: Path, name: str) -> Path:
 class _Cat4Outcome:
     conflicts: list[str] = field(default_factory=list)  # sidecars written this run
     skipped: list[str] = field(default_factory=list)  # already-pending sidecars
+    held: list[str] = field(default_factory=list)  # live files that still hold conflict markers
     backups: list[str] = field(default_factory=list)  # parked copies of live files replaced on the fingerprint alone
 
 
@@ -499,7 +502,8 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
 
     ``brain_merge.decide`` picks the action per file; see its module docstring
     and docs/superpowers/specs/2026-10-02-brain-sidecars-never-block-upgrade-design.md.
-    In short: a pending sidecar skips only that file; live is fast-forwarded
+    In short: a pending sidecar skips only that file, and so does a live file
+    that still holds conflict markers (reported as held); live is fast-forwarded
     or merged only over a snapshot the plugin is known to have written;
     anything else gets the plugin's version as a ``<KIND>.md.proposed-merge``
     sidecar with live and snapshot untouched (the M3-incident guard). The
@@ -512,6 +516,11 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     records = brain_merge.load_provenance(snapshot_dir)
+    if records and not (snapshot_dir / brain_merge.PROVENANCE_FILE).exists():
+        # An unreadable file was just set aside and every record reads as
+        # invalid. Persist that now, so the next upgrade still fails closed
+        # even if this one advances no snapshot.
+        _write_provenance(snapshot_dir, records)
     out = _Cat4Outcome()
     for kind in brain_merge.BRAIN_KINDS:
         name = f"{kind}.md"
@@ -530,6 +539,9 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
         )
         if action is brain_merge.Action.SKIP:
             out.skipped.append(sidecar.name)
+            continue
+        if action is brain_merge.Action.HOLD:
+            out.held.append(name)
             continue
         new_live = theirs
         proposal: str | None = None  # what goes to the sidecar, if anything
@@ -990,6 +1002,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         conflicts=conflicts,
         backups=_parked_copies(vault_edits) + cat4.backups,
         skipped=cat4.skipped,
+        conflict_markers=cat4.held,
         vault_edits=vault_edits,
         pointer=pointer,
     )

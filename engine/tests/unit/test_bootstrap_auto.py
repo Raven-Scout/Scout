@@ -131,6 +131,7 @@ def test_result_dict_has_the_contract_keys(tmp_path):
         "backups",
         "snapshots_recorded",
         "skipped",
+        "conflict_markers",
         "pointer",
         "vault_edits",
         "mutated",

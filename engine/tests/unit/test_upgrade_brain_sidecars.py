@@ -183,25 +183,68 @@ def test_a_routine_phase_change_on_an_unedited_vault_is_applied(tmp_path: Path) 
         assert _snapshot(vault, "SKILL").read_text() == live
 
 
-def test_a_vault_from_before_provenance_takes_a_routine_change(tmp_path: Path) -> None:
-    """The first upgrade after this ships: no provenance.json yet, so the
-    assembly fingerprint vouches for the snapshot."""
+def test_an_unedited_vault_from_before_provenance_is_proposed_a_change_once(tmp_path: Path) -> None:
+    """The first upgrade after this ships: no provenance.json yet. The header
+    alone can't tell an unedited assembly from a migrated brain that happens to
+    start with it (base == live is the M3 signature), so the change is
+    proposed, once. Adopting it converges, and the next change lands."""
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
     (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
+    live = vault / "SKILL.md"
+    before = live.read_bytes()
 
     _write_phase(plugin, "SKILL", "Added by the plugin.")
+    first = upgrade(_config(vault, plugin, "0.4.1"))
+
+    assert live.read_bytes() == before
+    assert first.conflicts == ["SKILL.md.proposed-merge"] and first.backups == []
+    sidecar = vault / "SKILL.md.proposed-merge"
+    assert "Added by the plugin." in sidecar.read_text() and "<<<<<<<" not in sidecar.read_text()
+    # Files the release didn't change still start recording provenance.
+    assert '"DREAMING.md"' in (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).read_text()
+
+    sidecar.rename(live)  # Alex adopts the plugin's version
+    _write_phase(plugin, "SKILL", "Added by the plugin.\nAdded later.")
+    second = upgrade(_config(vault, plugin, "0.4.2"))
+
+    assert "Added later." in live.read_text()
+    assert second.conflicts == [] and second.backups == []
+
+
+@pytest.mark.parametrize("with_record", [True, False], ids=["seeded-record", "migrated-before-provenance"])
+def test_a_migrated_brain_that_starts_with_the_assembly_header_keeps_its_live_brain(
+    tmp_path: Path, with_record: bool
+) -> None:
+    """A hand-grown brain can start with the bootstrap header too, so the
+    header must never be what lets an upgrade replace it."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    _legacy_vault(vault)
+    for kind in _PHASES:
+        (vault / f"{kind}.md").write_text(
+            f"# {kind}\n\n**BASE_DIR:** `{vault}`\n\nGrown in the vault.\nA fix from months of dreaming.\n",
+            encoding="utf-8",
+        )
+    before = _brains(vault)
+    migrate_legacy(_config(vault, plugin))
+    if not with_record:
+        (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
+
+    for kind in _PHASES:
+        _write_phase(plugin, kind, "Added by the plugin.")
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
-    assert "Added by the plugin." in (vault / "SKILL.md").read_text()
-    assert result.conflicts == []
+    assert _brains(vault) == before
+    assert sorted(result.conflicts) == sorted(f"{k}.md.proposed-merge" for k in _PHASES)
+    assert result.backups == []
+    assert not (vault / ".scout-state" / "drift").exists()
 
 
-def test_a_write_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Path) -> None:
-    """Without a record, a snapshot copied over by hand looks like an
-    assembly. The one-time fallback may then replace live, so it keeps the
-    replaced file and says so."""
+def test_a_snapshot_copied_over_by_hand_before_provenance_is_proposed(tmp_path: Path) -> None:
+    """Without a record, a snapshot copied over live looks like an assembly
+    that live still matches. That is the M3 signature: propose, don't replace."""
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
@@ -209,19 +252,95 @@ def test_a_write_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Pa
     live = vault / "SKILL.md"
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     _snapshot(vault, "SKILL").write_text(live.read_text(), encoding="utf-8")
-    edited = live.read_text()
+    edited = live.read_bytes()
 
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
+    assert live.read_bytes() == edited
+    assert result.conflicts == ["SKILL.md.proposed-merge"] and result.backups == []
+
+
+def test_a_merge_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Path) -> None:
+    """Without a record the one-time fallback may still merge into live (the
+    vault edited it since the snapshot), so it keeps the replaced file and says so."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
+    edited = live.read_text()
+
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    result = upgrade(_config(vault, plugin, "0.4.1"))
+
+    merged = live.read_text()
+    assert "triage the inbox." in merged and "A vault-local step." in merged
     # Parked like any replaced vault copy: the doctor notes it and
     # `drift --resolve` dismisses it.
     parked = vault / ".scout-state" / "drift" / "SKILL.md.vault"
     assert parked.read_text() == edited
     assert ".scout-state/drift/SKILL.md.vault" in result.backups
-    assert any("SKILL.md.vault" in n for n in result.doctor.notes)
+    (note,) = [n for n in result.doctor.notes if "SKILL.md.vault" in n]
+    assert "no release shipped" not in note, "the note must fit a merged brain file too"
     vault_drift.resolve(vault, "SKILL.md")
     assert not parked.exists()
+
+
+def test_an_unreadable_provenance_file_fails_closed(tmp_path: Path) -> None:
+    """A corrupt record must not drop the vault back to the header fallback:
+    every changed brain file is proposed, on this upgrade and the next."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    snapshot_dir = vault / ".scout-state" / "last-assembled"
+    (snapshot_dir / PROVENANCE_FILE).write_text("{not json", encoding="utf-8")
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
+    before = _brains(vault)
+
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    for kind in ("DREAMING", "RESEARCH"):
+        _write_phase(plugin, kind, "Added by the plugin.")
+    first = upgrade(_config(vault, plugin, "0.4.1"))
+
+    assert _brains(vault) == before
+    assert sorted(first.conflicts) == sorted(f"{k}.md.proposed-merge" for k in _PHASES)
+    assert first.backups == []
+    assert (snapshot_dir / f"{PROVENANCE_FILE}.corrupt").read_text(encoding="utf-8") == "{not json"
+
+    for kind in _PHASES:  # "decide later": the next upgrade must still fail closed
+        (vault / f"{kind}.md.proposed-merge").unlink()
+    second = upgrade(_config(vault, plugin, "0.4.2"))
+
+    assert _brains(vault) == before
+    assert sorted(second.conflicts) == sorted(f"{k}.md.proposed-merge" for k in _PHASES)
+
+
+def test_a_live_brain_with_conflict_markers_is_left_alone(tmp_path: Path) -> None:
+    """A conflict sidecar moved into place without finishing the merge: the
+    upgrade must neither merge into it nor advance the snapshot over it."""
+    plugin = _plugin(tmp_path)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    live = vault / "SKILL.md"
+    live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
+    _change_line(plugin, "read the inbox.", "triage the inbox.")
+    upgrade(_config(vault, plugin, "0.4.1"))
+    (vault / "SKILL.md.proposed-merge").rename(live)
+    marked = live.read_bytes()
+    snapshot = _snapshot(vault, "SKILL").read_bytes()
+
+    _change_line(plugin, "check the calendar.", "check the calendar and the tasks.")
+    for version in ("0.4.2", "0.4.3"):
+        result = upgrade(_config(vault, plugin, version))
+
+        assert live.read_bytes() == marked
+        assert _snapshot(vault, "SKILL").read_bytes() == snapshot
+        assert result.conflict_markers == ["SKILL.md"]
+        assert result.conflicts == [] and result.skipped == []
+        assert any("SKILL.md" in w and "conflict markers" in w for w in result.doctor.warnings)
 
 
 def test_a_merge_that_changes_nothing_writes_no_backup(tmp_path: Path) -> None:

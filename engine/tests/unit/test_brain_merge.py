@@ -27,6 +27,8 @@ ASSEMBLY_V2 = ASSEMBLY_V1 + "Step two: added by the plugin.\n"
 VAULT_EDITED = ASSEMBLY_V1 + "A vault-local step.\n"
 # A Plan-5-era brain: YAML frontmatter first, never the bootstrap header.
 LEGACY = "---\nname: scout\ndescription: grown in the vault\n---\n\n# MORNING BRIEFING MODE\n\nMB Step 1.\n"
+# A hand-grown brain that starts with the bootstrap header anyway.
+HEADER_LED_LEGACY = "# SKILL\n\n**BASE_DIR:** `/vault`\n\nGrown in the vault.\nMB Step 1.\n"
 
 
 def _decide(
@@ -115,8 +117,36 @@ def test_an_unedited_plugin_assembly_fast_forwards() -> None:
     assert _decide(ours=ASSEMBLY_V2, theirs=ASSEMBLY_V1, base=ASSEMBLY_V1, prov=prov) is Action.FAST_FORWARD
 
 
-def test_an_unedited_assembly_from_before_provenance_fast_forwards() -> None:
-    assert _decide(ours=ASSEMBLY_V2, theirs=ASSEMBLY_V1, base=ASSEMBLY_V1, prov=Provenance()) is Action.FAST_FORWARD
+def test_an_unedited_assembly_from_before_provenance_is_proposed() -> None:
+    """Only the header vouches for the base, and base == live is the M3
+    signature: a migrated brain that starts with the header looks the same."""
+    assert _decide(ours=ASSEMBLY_V2, theirs=ASSEMBLY_V1, base=ASSEMBLY_V1, prov=Provenance()) is Action.PROPOSE
+
+
+def test_a_header_led_legacy_seed_from_before_provenance_is_proposed() -> None:
+    seed = HEADER_LED_LEGACY
+    assert _decide(ours=ASSEMBLY_V2, theirs=seed, base=seed, prov=Provenance()) is Action.PROPOSE
+
+
+def test_an_edited_assembly_from_before_provenance_still_merges() -> None:
+    """The fallback still merges when live moved past the snapshot (the
+    upgrade parks the replaced file)."""
+    assert _decide(ours=ASSEMBLY_V2, theirs=VAULT_EDITED, base=ASSEMBLY_V1, prov=Provenance()) is Action.MERGE
+
+
+def test_a_live_file_with_conflict_markers_is_held() -> None:
+    marked = ASSEMBLY_V1 + "<<<<<<< ours\nA\n=======\nB\n>>>>>>> theirs\n"
+    prov = Provenance.assembled(ASSEMBLY_V1)
+    assert _decide(ours=ASSEMBLY_V2, theirs=marked, base=ASSEMBLY_V1, prov=prov) is Action.HOLD
+    assert _decide(ours=ASSEMBLY_V1, theirs=marked, base=ASSEMBLY_V1, prov=prov) is Action.HOLD
+    assert _decide(ours=ASSEMBLY_V2, theirs=marked, base=ASSEMBLY_V1, prov=prov, pending=True) is Action.SKIP
+
+
+def test_markers_the_assembly_itself_carries_do_not_hold_the_file() -> None:
+    """A phase that documents conflict markers must not freeze every vault."""
+    documented = ASSEMBLY_V1 + "<<<<<<< ours\n"
+    prov = Provenance.assembled(documented)
+    assert _decide(ours=documented + "More.\n", theirs=documented, base=documented, prov=prov) is Action.FAST_FORWARD
 
 
 def test_a_seeded_legacy_brain_is_proposed_not_overwritten() -> None:
@@ -185,6 +215,9 @@ def test_unset_fields_are_left_out_of_the_file() -> None:
     assert '"snapshot"' not in dumps_provenance({"SKILL.md": Provenance(sha256="ab" * 32)})
 
 
+_ALL_INVALID = {f"{k}.md": Provenance(snapshot="invalid") for k in ("SKILL", "DREAMING", "RESEARCH")}
+
+
 def test_a_missing_provenance_file_reads_as_no_records(tmp_path: Path) -> None:
     assert load_provenance(tmp_path) == {}
 
@@ -194,12 +227,13 @@ def test_a_missing_provenance_file_reads_as_no_records(tmp_path: Path) -> None:
     ["{not json", '["a list"]', '{"version": 1, "files": ["a list"]}'],
     ids=["corrupt", "not-an-object", "files-not-an-object"],
 )
-def test_an_unreadable_provenance_file_reads_as_no_records_and_is_set_aside(
+def test_an_unreadable_provenance_file_fails_closed_and_is_set_aside(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str
 ) -> None:
-    """Set aside, not overwritten by the next write, so nothing it held is lost."""
+    """Every brain file reads as an unrecognised record (never the header
+    fallback), and the file is set aside, not overwritten by the next write."""
     (tmp_path / PROVENANCE_FILE).write_text(text, encoding="utf-8")
-    assert load_provenance(tmp_path) == {}
+    assert load_provenance(tmp_path) == _ALL_INVALID
     assert PROVENANCE_FILE in capsys.readouterr().err
     assert not (tmp_path / PROVENANCE_FILE).exists()
     assert (tmp_path / f"{PROVENANCE_FILE}.corrupt").read_text(encoding="utf-8") == text
@@ -237,11 +271,11 @@ def test_pending_brain_sidecars_lists_only_the_ones_present(tmp_path: Path) -> N
     assert pending_brain_sidecars(tmp_path) == ["SKILL.md.proposed-merge", "DREAMING.md.proposed-merge"]
 
 
-def test_a_corrupt_provenance_file_that_cannot_be_moved_is_still_ignored(tmp_path: Path) -> None:
+def test_a_corrupt_provenance_file_that_cannot_be_moved_still_fails_closed(tmp_path: Path) -> None:
     (tmp_path / PROVENANCE_FILE).write_text("{not json", encoding="utf-8")
     tmp_path.chmod(0o500)  # readable, but the rename fails
     try:
-        assert load_provenance(tmp_path) == {}
+        assert load_provenance(tmp_path) == _ALL_INVALID
     finally:
         tmp_path.chmod(0o700)
     assert (tmp_path / PROVENANCE_FILE).exists()

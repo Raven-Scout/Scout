@@ -1396,6 +1396,12 @@ def _register_bootstrap() -> None:
         for sk in payload.get("skipped", []):
             live_name = sk.removesuffix(".proposed-merge")
             typer.echo(f"  skipped (sidecar pending): {sk} — {live_name} left as is until it is resolved", err=True)
+        for held in payload.get("conflict_markers", []):
+            typer.echo(
+                f"  held (conflict markers): {held} — left as is; it still has <<<<<<< / >>>>>>> lines from an "
+                f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
+                err=True,
+            )
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []

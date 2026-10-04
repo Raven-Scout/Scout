@@ -11,7 +11,11 @@ Two rules keep an upgrade from stalling without risking vault content:
 - The live file is replaced or merged only over a snapshot the plugin is known
   to have written. ``migrate-legacy`` seeds snapshots by copying the live file
   (the M3 incident), so for those ``base == theirs`` proves nothing, and the
-  plugin's version is proposed in a sidecar instead.
+  plugin's version is proposed in a sidecar instead. Where only the assembly
+  header vouches for a snapshot (a vault from before provenance), it never
+  licenses a fast-forward: a hand-grown brain can start with that header too.
+- A live file that still holds conflict markers (an unfinished merge) is held:
+  nothing is merged into it and its snapshot doesn't advance.
 
 ``provenance.json`` next to the snapshots records which ones the engine wrote;
 ``proposed/<KIND>.md`` keeps the assembly behind a pending sidecar, which
@@ -57,8 +61,8 @@ def assembly_header(kind: str, vault: Path) -> str:
 
 def assembly_fingerprint(kind: str) -> str:
     """The vault-independent prefix of ``assembly_header``. Every bootstrap
-    assembly has started with it; Plan-5-era brain files start with YAML
-    frontmatter instead."""
+    assembly has started with it. Most Plan-5-era brain files start with YAML
+    frontmatter instead, but not all, so it is only a weak signal."""
     return f"# {kind}\n\n**BASE_DIR:** `"
 
 
@@ -117,6 +121,7 @@ def is_plugin_assembly(kind: str, base: str | None, prov: Provenance) -> bool:
 
 class Action(Enum):
     SKIP = "skip"  # a sidecar is pending: touch nothing
+    HOLD = "hold"  # live still holds conflict markers: touch nothing
     ADVANCE = "advance"  # live already equals the new assembly: advance the snapshot
     FAST_FORWARD = "fast-forward"  # live is an unedited plugin assembly: replace it
     MERGE = "merge"  # both changed since a plugin-written base: 3-way merge
@@ -141,6 +146,10 @@ def decide(
     """
     if sidecar_pending:
         return Action.SKIP
+    if has_conflict_markers(theirs) and not has_conflict_markers(ours):
+        # An unfinished merge (e.g. a conflict sidecar moved into place with its
+        # markers). Merging into it or advancing over it would bury them.
+        return Action.HOLD
     if ours == theirs:
         return Action.ADVANCE
     if proposed is not None and proposed == theirs:
@@ -150,6 +159,11 @@ def decide(
     if not is_plugin_assembly(kind, base, prov):
         return Action.PROPOSE
     if base == theirs:
+        if prov.snapshot is None:
+            # Only the header vouches for the base, and base == live is also the
+            # M3 signature (a seed copied from a hand-grown brain that starts
+            # with the header). Propose; adopting it converges next time.
+            return Action.PROPOSE
         return Action.FAST_FORWARD
     return Action.MERGE
 
@@ -161,10 +175,12 @@ def _str_or_none(value: object) -> str | None:
 def load_provenance(snapshot_dir: Path) -> dict[str, Provenance]:
     """Read ``provenance.json`` from ``snapshot_dir``, keyed by ``<KIND>.md``.
 
-    A missing file means no records. A file that can't be parsed is treated
-    the same way: it is renamed to ``provenance.json.corrupt`` (so the next
-    write can't destroy what it held) with a warning, which leaves each brain
-    file on the fingerprint check of a vault from before provenance existed.
+    A missing file means no records (a vault from before provenance existed).
+    A file that can't be parsed fails closed: every brain file reads as
+    ``invalid``, never as unrecorded, because the records it held may have
+    been the ``seeded`` ones that keep a migrated brain from being replaced.
+    The file is renamed to ``provenance.json.corrupt`` (so the next write
+    can't destroy what it held) with a warning.
     A ``snapshot`` value other than ``assembled``/``seeded`` becomes
     ``invalid`` and fails closed; a non-string ``sha256`` is dropped.
     """
@@ -183,7 +199,7 @@ def load_provenance(snapshot_dir: Path) -> dict[str, Provenance]:
             path.replace(aside)
         except OSError:
             pass  # best-effort: the warning above already names the file
-        return {}
+        return {f"{k}.md": Provenance(snapshot=INVALID) for k in BRAIN_KINDS}
     out: dict[str, Provenance] = {}
     for name, entry in files.items():
         if not isinstance(entry, dict):

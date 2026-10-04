@@ -154,10 +154,12 @@ the engine wrote (hash-checked) and which `migrate-legacy` seeded from live;
 | Situation | Result |
 |---|---|
 | `<file>.md.proposed-merge` pending | Skip this file; the rest of the upgrade runs |
+| Live still has conflict markers (an unfinished merge) | Hold this file: touch nothing, report `conflict_markers` |
 | `ours == theirs` | Advance the snapshot only |
 | `theirs` is a proposal adopted verbatim | Write `ours` to live; advance the snapshot |
-| `base` not known to be the plugin's (seeded, edited by hand, missing) | `ours` to the sidecar; live and snapshot untouched. A fast-forward over a seeded snapshot once wiped a customized vault |
-| `base == theirs` | Write `ours` to live; advance the snapshot |
+| `base` not known to be the plugin's (seeded, edited by hand, missing, or `provenance.json` unreadable) | `ours` to the sidecar; live and snapshot untouched. A fast-forward over a seeded snapshot once wiped a customized vault |
+| `base == theirs`, but only the assembly header vouches for `base` (no provenance yet) | `ours` to the sidecar, as above: a hand-grown brain can start with the header too |
+| `base == theirs`, provenance vouches for `base` | Write `ours` to live; advance the snapshot |
 | Both diverged, `git merge-file` clean | Write the merge to the live file; advance the snapshot |
 | Both diverged, conflicts | Conflict-marked text to the sidecar; live and snapshot untouched |
 

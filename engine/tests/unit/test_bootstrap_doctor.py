@@ -60,13 +60,34 @@ def test_sidecar_proposed_merge_is_yellow(tmp_path):
 
 def test_a_pending_brain_sidecar_says_upgrades_skip_the_file(tmp_path):
     _populate_minimal_vault(tmp_path)
-    (tmp_path / "DREAMING.md.proposed-merge").write_text("conflict markers here")
+    (tmp_path / "DREAMING.md.proposed-merge").write_text("<<<<<<< ours\nA\n=======\nB\n>>>>>>> theirs\n")
     report = run_doctor(vault=tmp_path, check_jobs=False)
     (warning,) = [w for w in report.warnings if "DREAMING.md.proposed-merge" in w]
     assert "upgrades leave DREAMING.md as is" in warning
     assert "mv DREAMING.md.proposed-merge DREAMING.md" in warning
     assert "before re-running" not in warning, "a pending sidecar no longer blocks /scout-update"
     assert "scoutctl bootstrap resolve DREAMING.md" in warning
+
+
+def test_a_marker_free_proposal_is_not_offered_as_an_mv(tmp_path):
+    """A sidecar without markers is the plugin's whole version: moving it into
+    place would replace the vault's brain, so the hint is review + resolve."""
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / "SKILL.md.proposed-merge").write_text("# SKILL\nthe plugin's whole version\n")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    (warning,) = [w for w in report.warnings if "SKILL.md.proposed-merge" in w]
+    assert "scoutctl bootstrap resolve SKILL.md" in warning
+    assert "`mv SKILL.md.proposed-merge SKILL.md` and remove" not in warning
+    assert "replace" in warning and "plugin's version" in warning
+
+
+def test_a_live_brain_with_conflict_markers_is_yellow(tmp_path):
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / "RESEARCH.md").write_text("# RESEARCH\n<<<<<<< ours\nA\n=======\nB\n>>>>>>> theirs\n")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.YELLOW
+    (warning,) = [w for w in report.warnings if w.startswith("RESEARCH.md")]
+    assert "conflict markers" in warning and "upgrades leave RESEARCH.md as is" in warning
 
 
 def test_a_sidecar_removed_without_resolve_is_flagged(tmp_path):

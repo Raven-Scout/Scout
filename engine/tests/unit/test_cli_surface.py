@@ -860,6 +860,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
             vault = cfg.vault
             conflicts = ["SKILL.md"]
             skipped = ["DREAMING.md.proposed-merge"]
+            conflict_markers = ["RESEARCH.md"]
             backups = ["SKILL.md.bak.2026-04-15"]
             vault_edits: list = []
 
@@ -881,6 +882,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
         "skipped (sidecar pending): DREAMING.md.proposed-merge — DREAMING.md left as is until it is resolved"
         in result.output
     )
+    assert "held (conflict markers): RESEARCH.md — left as is" in result.output
     assert "backup: SKILL.md.bak.2026-04-15" in result.output
     assert "doctor: warn" in result.stdout
     assert seen["timezone"] == "Europe/Prague"

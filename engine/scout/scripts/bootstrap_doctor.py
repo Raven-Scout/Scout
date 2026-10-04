@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, pending_brain_sidecars
+from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
 
 
@@ -327,6 +327,15 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _has_markers(path: Path) -> bool:
+    """True if ``path`` holds a conflict-marker line. Missing or unreadable
+    files don't (other checks report those)."""
+    try:
+        return has_conflict_markers(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
 def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     """Vault edits to plugin-owned files, as (warnings, notes).
 
@@ -363,8 +372,8 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
         )
     if parked:
         notes.append(
-            f"an upgrade installed the plugin's version over {len(parked)} vault cop(ies) no release shipped "
-            f"and parked them: {', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
+            f"an upgrade replaced {len(parked)} vault file(s) and parked the previous cop(ies): "
+            f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
     return warnings, notes
@@ -429,11 +438,29 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
     pending = pending_brain_sidecars(vault)
     for sidecar_name in pending:
         live_name = sidecar_name.removesuffix(".proposed-merge")
+        if _has_markers(vault / sidecar_name):
+            # A merge with conflicts: it already holds the vault's version.
+            how = f"(e.g. `mv {sidecar_name} {live_name}` and remove any conflict markers)"
+        else:
+            # The plugin's whole version, proposed because live wasn't the
+            # plugin's: moving it into place drops the vault's brain.
+            how = (
+                f"(review `diff {live_name} {sidecar_name}` and copy in what you want; "
+                f"`mv` would replace the vault's {live_name} with the plugin's version)"
+            )
         warnings.append(
             f"{sidecar_name} pending — upgrades leave {live_name} as is until it is resolved: "
-            f"make {live_name} the version you want (e.g. `mv {sidecar_name} {live_name}` and remove "
-            f"any conflict markers), then `scoutctl bootstrap resolve {live_name}`"
+            f"make {live_name} the version you want {how}, then `scoutctl bootstrap resolve {live_name}`"
         )
+    # A live brain file with conflict markers: an unfinished merge is running,
+    # and upgrades hold the file until the markers are gone.
+    for kind in BRAIN_KINDS:
+        live_name = f"{kind}.md"
+        if _has_markers(vault / live_name):
+            warnings.append(
+                f"{live_name} has conflict markers (<<<<<<< / >>>>>>>) from an unfinished merge — "
+                f"upgrades leave {live_name} as is until they are removed"
+            )
     # A sidecar removed without `bootstrap resolve`: the proposal behind it is
     # still on record, so the next upgrade merges or proposes from the old base.
     for kind in BRAIN_KINDS:
