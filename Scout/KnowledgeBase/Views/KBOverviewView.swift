@@ -22,7 +22,7 @@ struct KBOverviewView: View {
     ]
 
     var body: some View {
-        let stats = service.graphStats()
+        let net = service.networkStats()
         let present = Set(service.tree.flatMap(\.allFiles).map(\.relativePath))
         let links: [(path: String, label: String, icon: String)] = Self.quickLinks.compactMap { ql in
             if let resolved = service.resolveWikilink(ql.stem), present.contains(resolved) {
@@ -38,9 +38,11 @@ struct KBOverviewView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Knowledge Base")
                         .font(DS.serif(24, weight: .semibold)).foregroundStyle(DS.Ink.p1)
-                    Text("\(stats.notes) notes · \(stats.links) connections")
+                    Text("\(net.noteCount) notes · \(net.linkCount) connections")
                         .font(DS.sans(13)).foregroundStyle(DS.Ink.p3)
                 }
+
+                KBStatsView(stats: net, onOpen: onNavigate)
 
                 if !links.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {

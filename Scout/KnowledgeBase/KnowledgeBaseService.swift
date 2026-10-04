@@ -17,11 +17,15 @@ final class KnowledgeBaseService: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var tree: [KBNode] = []
+    @Published private(set) var tree: [KBNode] = [] { didSet { generation &+= 1 } }
     @Published private(set) var state: State = .idle
     /// Wikilink graph index, rebuilt on every reparse. Powers backlinks,
     /// in-app wikilink navigation and the local graph.
-    @Published private(set) var index: KBIndex = .empty
+    @Published private(set) var index: KBIndex = .empty { didSet { generation &+= 1 } }
+
+    /// Bumped whenever `tree` or `index` is replaced; keys per-reparse caches.
+    private var generation = 0
+    private var networkStatsCache: (generation: Int, hubCap: Int, stats: KBNetworkStats)?
 
     /// The scout directory; the KB lives in its `knowledge-base/` subfolder.
     let scoutDirectory: URL
@@ -82,7 +86,7 @@ final class KnowledgeBaseService: ObservableObject {
     private nonisolated enum ReparseOutcome {
         case missing
         case failed(String)
-        case loaded([KBNode], KBIndex)
+        case loaded([KBNode], KBIndex, KBNetworkStats)
     }
 
     /// Rebuild tree + index. The directory walk and the per-note reads run off
@@ -104,13 +108,18 @@ final class KnowledgeBaseService: ObservableObject {
                 catch { return .failed(error.localizedDescription) }
                 let tree = KnowledgeBaseService.buildChildren(of: kbDir, scoutDirectory: scoutDir)
                 let index = KnowledgeBaseService.buildIndex(tree: tree, scoutDirectory: scoutDir)
-                return .loaded(tree, index)
+                let stats = KnowledgeBaseService.computeNetworkStats(
+                    tree: tree, index: index, hubCap: KnowledgeBaseService.defaultHubCap)
+                return .loaded(tree, index, stats)
             }.value
             guard let self, !Task.isCancelled else { return }
             switch result {
-            case .loaded(let tree, let index):
+            case .loaded(let tree, let index, let stats):
                 self.tree = tree
                 self.index = index
+                // Seed the cache after both bumps, so the overview's first
+                // read after a reparse is a lookup, not a main-actor pass.
+                self.networkStatsCache = (self.generation, Self.defaultHubCap, stats)
                 self.state = .loaded
             case .missing:
                 self.tree = []
@@ -172,6 +181,30 @@ final class KnowledgeBaseService: ObservableObject {
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : url.lastPathComponent
     }
 
+    /// Lowercased names of every non-hidden file under `scoutDirectory`
+    /// (`.md` by stem, others by full name), skipping `ignoredNames` and the
+    /// KB's own markdown notes — those are the resolver's job, and listing
+    /// them would hide every resolver miss whose stem exists in the KB.
+    /// Filenames only — no file is read. Refreshed on KB reparses only, so a
+    /// vault file added outside the KB shows up after the next KB change.
+    nonisolated static func vaultFileNames(under scoutDirectory: URL,
+                                           skippingMarkdownIn kbDirectory: URL) -> Set<String> {
+        guard let walker = FileManager.default.enumerator(
+            at: scoutDirectory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        let kbPrefix = kbDirectory.standardizedFileURL.path + "/"
+        var names = Set<String>()
+        while let url = walker.nextObject() as? URL {
+            if ignoredNames.contains(url.lastPathComponent) { walker.skipDescendants(); continue }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            let isMarkdown = url.pathExtension.lowercased() == "md"
+            if isMarkdown && url.standardizedFileURL.path.hasPrefix(kbPrefix) { continue }
+            let name = url.lastPathComponent.lowercased()
+            names.insert(isMarkdown ? (name as NSString).deletingPathExtension : name)
+        }
+        return names
+    }
+
     // MARK: - Graph index
 
     /// Build the wikilink index from the current tree: a stem→path map, each
@@ -180,11 +213,11 @@ final class KnowledgeBaseService: ObservableObject {
     /// backlink excerpts and full-text search without further disk I/O.
     nonisolated static func buildIndex(tree: [KBNode], scoutDirectory: URL) -> KBIndex {
         let files = tree.flatMap(\.allFiles).filter { $0.ext == "md" }
-        var stemToPath: [String: String] = [:]
+        var stemPaths: [String: [String]] = [:]
         var outByFile: [String: [String]] = [:]
         var textByFile: [String: String] = [:]
         for file in files {
-            stemToPath[file.displayName.lowercased()] = file.relativePath
+            stemPaths[file.displayName.lowercased(), default: []].append(file.relativePath)
         }
         var typeByFile: [String: String] = [:]
         for file in files {
@@ -193,8 +226,10 @@ final class KnowledgeBaseService: ObservableObject {
             outByFile[file.relativePath] = extractWikilinks(text)
             typeByFile[file.relativePath] = frontmatterType(text)
         }
-        return KBIndex(stemToPath: stemToPath, outByFile: outByFile,
-                       textByFile: textByFile, typeByFile: typeByFile)
+        return KBIndex(stemPaths: stemPaths, outByFile: outByFile,
+                       textByFile: textByFile, typeByFile: typeByFile,
+                       vaultNames: vaultFileNames(under: scoutDirectory,
+                                                  skippingMarkdownIn: scoutDirectory.appendingPathComponent("knowledge-base")))
     }
 
     /// The `type:` value from a note's leading YAML frontmatter (lowercased),
@@ -230,28 +265,27 @@ final class KnowledgeBaseService: ObservableObject {
         return result
     }
 
-    /// Resolve a wikilink target (e.g. `atlas`, possibly with spaces) to a
-    /// repo-relative path, or nil if no matching note exists.
+    /// Resolve a wikilink target (e.g. `atlas`, `people/atlas`, `atlas#Notes`,
+    /// possibly with spaces) to a repo-relative path, or nil if no matching
+    /// note exists. See `KBIndex.resolve(_:from:)`.
     func resolveWikilink(_ target: String) -> String? {
-        index.stemToPath[target.lowercased()]
+        index.resolve(target)
     }
 
-    /// Outgoing links of a note, each with its resolved target (nil = dangling).
+    /// Outgoing links of a note, each with its resolved target (nil = no note;
+    /// see `networkStats()` for which of those count as dangling).
     func outgoingLinks(for relPath: String) -> [KBLink] {
-        (index.outByFile[relPath] ?? []).map {
-            KBLink(target: $0, resolved: index.stemToPath[$0.lowercased()])
-        }
+        let targets = index.outByFile[relPath] ?? []
+        let resolved = index.resolvedOut[relPath] ?? []
+        return zip(targets, resolved).map { KBLink(target: $0, resolved: $1) }
     }
 
     /// Notes that link to `relPath`, with a one-line excerpt around the link.
     /// Serves everything from the index — no disk reads.
     func backlinks(for relPath: String) -> [KBBacklink] {
-        let targetStem = (KBNode.displayName(forPath: relPath)).lowercased()
         var results: [KBBacklink] = []
-        for (from, targets) in index.outByFile {
-            guard from != relPath else { continue }
-            guard targets.contains(where: { index.stemToPath[$0.lowercased()] == relPath }) else { continue }
-            let excerpt = Self.excerpt(in: index.textByFile[from] ?? "", mentioning: targetStem)
+        for (from, resolved) in index.resolvedOut where from != relPath && resolved.contains(relPath) {
+            let excerpt = excerpt(in: index.textByFile[from] ?? "", from: from, linkingTo: relPath)
             results.append(KBBacklink(path: from,
                                       name: KBNode.displayName(forPath: from),
                                       excerpt: excerpt))
@@ -259,37 +293,38 @@ final class KnowledgeBaseService: ObservableObject {
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private static func excerpt(in text: String, mentioning stem: String) -> String {
-        let needle = "[[" + stem
-        let line = text.components(separatedBy: "\n")
-            .first { $0.lowercased().contains(needle) }
+    /// The first line of `text` holding a wikilink that resolves to `target`,
+    /// trimmed to 140 characters — exact, so a URL or a same-named note's
+    /// link elsewhere in the note can't be picked instead.
+    private func excerpt(in text: String, from source: String, linkingTo target: String) -> String {
+        let line = text.components(separatedBy: "\n").first { line in
+            line.contains("[[") && Self.extractWikilinks(line).contains { index.resolve($0, from: source) == target }
+        }
         return (line ?? "").trimmingCharacters(in: .whitespaces).prefix(140).description
     }
 
-    /// Unique undirected wikilink edges across the whole KB (direction
-    /// normalized so `A→B` and `B→A` collapse into one edge).
+    /// Unique undirected wikilink edges across the whole KB, precomputed off
+    /// the main actor when the index is built.
     private func undirectedEdges() -> Set<KBGraphEdge> {
-        var edgeSet = Set<KBGraphEdge>()
-        for (from, targets) in index.outByFile {
-            for t in targets {
-                guard let to = index.stemToPath[t.lowercased()], to != from else { continue }
-                let (a, b) = from < to ? (from, to) : (to, from)
-                edgeSet.insert(KBGraphEdge(from: a, to: b))
-            }
+        index.edges
+    }
+
+    /// Undirected adjacency over `edges`. Shared by `localGraph(around:)` and
+    /// `networkStats()` so "degree" means the same thing in both.
+    nonisolated static func adjacency(of edges: Set<KBGraphEdge>) -> [String: Set<String>] {
+        var adj: [String: Set<String>] = [:]
+        for e in edges {
+            adj[e.from, default: []].insert(e.to)
+            adj[e.to, default: []].insert(e.from)
         }
-        return edgeSet
+        return adj
     }
 
     /// Build the local subgraph centred on `relPath`: BFS over undirected
     /// wikilink edges out to `depth` hops, capped at `maxNodes` by degree.
     func localGraph(around relPath: String, depth: Int = 2, maxNodes: Int = 26) -> KBGraph {
         let edgeSet = undirectedEdges()
-        // Adjacency.
-        var adj: [String: Set<String>] = [:]
-        for e in edgeSet {
-            adj[e.from, default: []].insert(e.to)
-            adj[e.to, default: []].insert(e.from)
-        }
+        let adj = Self.adjacency(of: edgeSet)
         // BFS from center.
         var visited: Set<String> = [relPath]
         var frontier: [String] = [relPath]
@@ -350,6 +385,92 @@ final class KnowledgeBaseService: ObservableObject {
     /// hairball. Degree/grouping come from `fullGraph()`.
     func hubGraph(maxNodes: Int = 40) -> KBGraph {
         fullGraph().topHubs(maxNodes: maxNodes)
+    }
+
+    /// The overview's default hub cap; `reparse` precomputes stats for it.
+    nonisolated static let defaultHubCap = 20
+
+    /// One-pass network analysis for the overview, cached until the next
+    /// reparse (the overview evaluates it on every body pass). The default
+    /// cap is computed off the main actor during the reparse itself.
+    func networkStats(hubCap: Int = KnowledgeBaseService.defaultHubCap) -> KBNetworkStats {
+        if let c = networkStatsCache, c.generation == generation, c.hubCap == hubCap { return c.stats }
+        let stats = Self.computeNetworkStats(tree: tree, index: index, hubCap: hubCap)
+        networkStatsCache = (generation, hubCap, stats)
+        return stats
+    }
+
+    /// Totals, orphans / weakly-linked / dangling / islands (health) and
+    /// hubs / degree / per-type / components (insight), in one pass over the
+    /// index's precomputed resolution and edges — pure, so `reparse` runs it
+    /// off the main actor.
+    nonisolated static func computeNetworkStats(tree: [KBNode], index: KBIndex, hubCap: Int) -> KBNetworkStats {
+        let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
+        guard !notes.isEmpty else { return .empty }
+        let edgeSet = index.edges
+        let adj = adjacency(of: edgeSet)
+        let degree: (String) -> Int = { adj[$0]?.count ?? 0 }
+
+        // Health: orphans / weakly-linked.
+        let orphans = notes.filter { degree($0) == 0 }.sorted()
+        let weaklyLinked = notes.filter { degree($0) == 1 }.sorted()
+
+        // Health: dangling links — targets that are truly missing. Ticket ids
+        // and files elsewhere in the vault (which Obsidian resolves) don't
+        // count. `extractWikilinks` already de-dups targets per note, so each
+        // (source, target) appears once.
+        var dangling: [KBDanglingLink] = []
+        for (source, targets) in index.outByFile {
+            let resolved = index.resolvedOut[source] ?? []
+            for (t, to) in zip(targets, resolved) where to == nil
+                && !KBIndex.isTicketID(t) && !index.existsInVault(t) {
+                dangling.append(KBDanglingLink(source: source, target: t))
+            }
+        }
+        dangling.sort { $0.source != $1.source ? $0.source < $1.source : $0.target < $1.target }
+
+        // Connected components (iterative DFS). Each is sorted, then ranked by
+        // size desc and first path asc so the mainland is stable on ties.
+        var seen = Set<String>()
+        var components: [[String]] = []
+        for start in notes where !seen.contains(start) {
+            var comp: [String] = []
+            var stack = [start]
+            seen.insert(start)
+            while let node = stack.popLast() {
+                comp.append(node)
+                for nb in adj[node] ?? [] where !seen.contains(nb) {
+                    seen.insert(nb)
+                    stack.append(nb)
+                }
+            }
+            components.append(comp.sorted())
+        }
+        components.sort { $0.count != $1.count ? $0.count > $1.count : $0[0] < $1[0] }
+        let clusters = components.filter { $0.count >= 2 }
+
+        // Insight: degree summary, hubs, per-type.
+        let topHubs = notes
+            .filter { degree($0) > 0 }
+            .sorted { degree($0) != degree($1) ? degree($0) > degree($1) : $0 < $1 }
+            .prefix(hubCap)
+            .map { KBHub(path: $0, degree: degree($0)) }
+        var counts: [KBEntityGroup: Int] = [:]
+        for n in notes { counts[KBEntityGroup.of(n, type: index.typeByFile[n]), default: 0] += 1 }
+
+        return KBNetworkStats(
+            noteCount: notes.count,
+            linkCount: edgeSet.count,
+            orphans: orphans,
+            weaklyLinked: weaklyLinked,
+            dangling: dangling,
+            islands: Array(clusters.dropFirst()),
+            topHubs: Array(topHubs),
+            avgDegree: Double(2 * edgeSet.count) / Double(notes.count),
+            maxDegree: notes.map(degree).max() ?? 0,
+            byType: KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: counts[$0] ?? 0) },
+            clusterCount: clusters.count,
+            largestComponentSize: components.first?.count ?? 0)
     }
 
     /// Full-text search across note names and contents (from the index's cached
