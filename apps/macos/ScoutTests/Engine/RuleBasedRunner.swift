@@ -9,7 +9,7 @@ import Foundation
 /// sequential, `init(scripted:)` double of the same brief-suggested name
 /// already defined in `ScoutTests/Services/GitServiceCommitPathsTests.swift`.
 final class RuleBasedRunner: ProcessRunner, @unchecked Sendable {
-    typealias Responder = (URL, [String], [String: String]) throws -> ProcessResult
+    typealias Responder = (URL, [String], [String: String]) async throws -> ProcessResult
     private var rules: [((URL, [String]) -> Bool, Responder)] = []
     private let lock = NSLock()
     private(set) var calls: [(executable: URL, arguments: [String], environment: [String: String])] = []
@@ -31,7 +31,7 @@ final class RuleBasedRunner: ProcessRunner, @unchecked Sendable {
             return rules.first { $0.0(executable, arguments) }?.1
         }
         guard let rule else { throw NSError(domain: NSPOSIXErrorDomain, code: 2, userInfo: [NSLocalizedDescriptionKey: "ENOENT \(executable.path)"]) }
-        return try rule(executable, arguments, environment)
+        return try await rule(executable, arguments, environment)
     }
 
     func calls(to tool: String) -> [[String]] { calls.filter { $0.executable.lastPathComponent == tool }.map(\.arguments) }
