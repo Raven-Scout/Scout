@@ -294,19 +294,23 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
         if cli_uuid is not None and cli_uuid in live:
             sess.is_open = True
 
-    # 4. PR state. refresh_pr_states fetches oldest-`fetched_at` first and never-fetched refs
-    # tie (stable sort), so on a cold cache this order decides who gets the capped fetches:
-    # live sessions before archived ones, most recently active first.
+    # 4. PR state. Only PRs linked to a session that is not archived are fetched: an archived
+    # session is `done` whatever its PR says (rule 1), so its PRs keep their cached state (or
+    # read `unknown`) and never spend the per-build fetch cap. refresh_pr_states fetches
+    # oldest-`fetched_at` first and never-fetched refs tie (stable sort), so on a cold cache
+    # this order decides who gets the capped fetches: most recently active first.
     by_priority = sorted(sessions, key=lambda x: (x.is_archived, -_recency(x)))
     all_refs = [ref for sess in by_priority for ref in refs_by_session.get(sess.id, [])]
+    live_keys = {ref.key for sess in sessions if not sess.is_archived for ref in refs_by_session.get(sess.id, [])}
     pr_cache = github.load_pr_cache(cache_dir / github.PR_CACHE_FILENAME)
     pr_loaded = dict(pr_cache)  # refresh_pr_states inserts new PRInfo objects, never mutates old ones
     fetched = 0
     resolved: dict[str, PRInfo] = {}
     if all_refs:
-        if opts.use_gh and opts.gh_available():
+        fetching = opts.use_gh and opts.gh_available()
+        if fetching:
             resolved, e5, fetched = github.refresh_pr_states(
-                all_refs,
+                [ref for ref in all_refs if ref.key in live_keys],
                 cache=pr_cache,
                 now=opts.now,
                 ttl=timedelta(minutes=s.pr_refresh_minutes),
@@ -314,13 +318,18 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
                 runner=opts.gh_runner,
             )
             errors.extend(e5)
-        else:
-            if opts.use_gh:
-                errors.append(SourceError(source="gh", message="gh not found on PATH — PR states unknown"))
-            # cap=0: serve cached / legacy-terminal / unknown without calling anything.
-            resolved, _, fetched = github.refresh_pr_states(
-                all_refs, cache=pr_cache, now=opts.now, ttl=timedelta(days=36500), cap=0, runner=lambda argv: None
-            )
+        elif opts.use_gh:
+            errors.append(SourceError(source="gh", message="gh not found on PATH — PR states unknown"))
+        # cap=0: serve cached / legacy-terminal / unknown without calling anything.
+        served, _, _ = github.refresh_pr_states(
+            [ref for ref in all_refs if not fetching or ref.key not in live_keys],
+            cache=pr_cache,
+            now=opts.now,
+            ttl=timedelta(days=36500),
+            cap=0,
+            runner=lambda argv: None,
+        )
+        resolved.update(served)
     for sess in sessions:
         sess.prs = [
             resolved[f"{r.repo}#{r.number}"]
