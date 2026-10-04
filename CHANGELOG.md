@@ -33,7 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **The connector-health roll-up no longer needs a vault helper** (`templates/run-*.sh.tmpl`, `engine/scout/scripts/connector_health_report.py`) — each runner calls `scoutctl connector-health-report` itself, and the report now says when `connector-health.md` was **not** rewritten (no scheduled-run records in the window) and may be showing stale alerts. A vault's own `scripts/connector-health-rollup.sh` is no longer called and can be deleted.
 - `action-items materialize` carries items only; run narration is dropped (verbatim fallback whenever any item's status or priority would change).
-- Scout Digest moves to `action-items/digests/YYYY-MM-DD.md`; session-log rows go to monthly shards.
+- Session-log rows go to monthly shards.
 
 ### Fixed
 - **An upgrade never silently loses a vault's edit to a plugin-owned file** (`engine/scout/scripts/bootstrap.py`, `engine/scout/scripts/vault_drift.py`). Before this, an upgrade handled a vault's own edits like this:

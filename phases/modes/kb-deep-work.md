@@ -256,12 +256,14 @@ The detail — which feedback was processed, which KB files were worked on and h
 
 ### Step 2g: Scout Digest
 
-At the end of the dreaming run, create or update **today's digest file, `action-items/digests/YYYY-MM-DD.md`**, and make sure today's action-items file has exactly one link line to it at the bottom: `📋 Scout Digest: [[digests/YYYY-MM-DD]]`. There is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The digest never goes inside the action-items file.
+If today's action items file exists (`action-items/action-items-YYYY-MM-DD.md`), create or update the **`## 📋 Scout Digest — <date> (<time>)` section at the bottom of today's action-items file**, just above `## 🪵 Run notes & connector availability`. There is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The companion apps build their Digest view from this `📋` section, so it must stay an H2 in the daily file.
+
+**Cap: ~6 KB.** Scannable bullets only; link to notes for detail. Every line ≤ 500 chars (the daily file's strict line limit). `<time>` is a real `HH:MM` clock time — never a masked run stamp like `8:0x`, which the pre-commit lint reads as a run-diary heading.
 
 **Format:**
 
 ```markdown
-## Scout Digest — [Date] ([Time])
+## 📋 Scout Digest — [Date] ([Time])
 
 **{{INSTANCE_NAME}} ran N sessions today** (breakdown by type). Here's what needs your attention:
 
@@ -281,7 +283,7 @@ At the end of the dreaming run, create or update **today's digest file, `action-
 - Only include files that changed **substantively** (not just timestamp updates)
 - "Your Input Needed" should list ONLY items where {{USER_NAME}}'s action unblocks {{INSTANCE_NAME}} or a project
 - Keep it scannable — no walls of text. Link to KB files for details.
-- If a digest already exists from an earlier session today, **update it** (don't duplicate)
+- If a digest already exists from an earlier session today, **update it in place** (don't duplicate), trimming older detail so the section stays under ~6 KB
 
 ***
 

@@ -60,8 +60,14 @@ def test_no_stale_recent_sessions_references(kind: str, tmp_path: Path) -> None:
     assert "`knowledge-base.md` Recent Sessions" not in text
 
 
-def test_digest_moves_to_digests_file(tmp_path: Path) -> None:
+def test_digest_stays_a_capped_section_in_the_daily_file(tmp_path: Path) -> None:
+    """The apps build their Digest view from a `📋` H2 in the daily file (spec goal 4)."""
     for kind in ("SKILL", "DREAMING"):
         text = _assemble(_cfg(tmp_path), kind)
-        assert "action-items/digests/" in text
-        assert "append or update a **Scout Digest** section at the bottom of today's action-items file" not in text
+        assert "action-items/digests/" not in text
+        assert "## 📋 Scout Digest — " in text
+        assert "bottom of today's action-items file" in text
+        assert "6 KB" in text
+    skill = _assemble(_cfg(tmp_path), "SKILL")
+    fixed = skill[skill.index("**Fixed sections, in order:**") :].split("\n", 1)[0]
+    assert fixed.index("`## 📋 Scout Digest`") < fixed.index("`## 🪵 Run notes")

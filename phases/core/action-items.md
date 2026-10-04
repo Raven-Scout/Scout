@@ -383,18 +383,20 @@ Each item is **one line of up to 300 characters**, plus **at most one sub-bullet
 
 Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it.
 
-**Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 🪵 Run notes & connector availability` (bottom).
+**Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 
 **A tier change moves the line.** Never write "Demoted by…", "Re-tiered by…", "Relocated from…" or "From this run…" sections. Git records why.
 
 ## Scout Digest
 
-At the end of every briefing and consolidation run, create or update **today's digest file, `action-items/digests/YYYY-MM-DD.md`**, and make sure today's action-items file has exactly one link line to it at the bottom: `📋 Scout Digest: [[digests/YYYY-MM-DD]]`. There is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The digest never goes inside the action-items file.
+At the end of every briefing and consolidation run, create or update the **`## 📋 Scout Digest — <date> (<time>)` section at the bottom of today's action-items file** (`action-items/action-items-YYYY-MM-DD.md`), just above `## 🪵 Run notes & connector availability`. This is the same digest the dreaming phase maintains — there is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The companion apps build their Digest view from this `📋` section, so it must stay an H2 in the daily file.
+
+**Cap: ~6 KB.** Scannable bullets only; link to notes for detail. Every line ≤ 500 chars (the daily file's strict line limit). `<time>` is a real `HH:MM` clock time — never a masked run stamp like `8:0x`, which the pre-commit lint reads as a run-diary heading.
 
 **Format:**
 
 ```markdown
-## Scout Digest — [Date] ([Time])
+## 📋 Scout Digest — [Date] ([Time])
 
 **{{INSTANCE_NAME}} ran N sessions today** (breakdown by type). Here's what needs your attention:
 
@@ -411,7 +413,7 @@ At the end of every briefing and consolidation run, create or update **today's d
 ```
 
 **Rules:**
-- If a digest already exists from an earlier session today, **update it in place** (don't duplicate) — bump the time, fold in this run's changes.
+- If a digest already exists from an earlier session today, **update it in place** (don't duplicate) — bump the time, fold in this run's changes, and trim older detail so the section stays under ~6 KB.
 - Only include files that changed **substantively** (not just timestamp updates).
 - "Your Input Needed" lists ONLY items where {{USER_NAME}}'s action unblocks {{INSTANCE_NAME}} or a project.
 - Keep it scannable — no walls of text. Link to KB files for details.

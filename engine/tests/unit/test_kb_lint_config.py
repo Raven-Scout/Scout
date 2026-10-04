@@ -26,7 +26,8 @@ def test_defaults_budgets(tmp_path: Path) -> None:
     assert cfg.budget_for("knowledge-base/projects/acme-pilot/acme-pilot.md") == 15360
     assert cfg.budget_for("knowledge-base/session-log/2026-09.md") == 98304
     assert cfg.budget_for("knowledge-base/people/zoe.md") == 10240
-    assert cfg.budget_for("action-items/digests/2026-09-28.md") == 30720
+    # The digest is a section of the daily file again (R2): no digests/ budget.
+    assert cfg.budget_for("action-items/digests/2026-09-28.md") == 15360
 
 
 def test_scope_and_exclusions(tmp_path: Path) -> None:
@@ -44,7 +45,7 @@ def test_logs_topics_and_line_limits(tmp_path: Path) -> None:
     cfg = load_lint_config(tmp_path)
     assert cfg.is_log("knowledge-base/session-log.md")
     assert cfg.is_log("knowledge-base/scout-mistake-audit/pattern-217-referent.md")
-    assert cfg.is_log("action-items/digests/2026-09-28.md")
+    assert not cfg.is_log("action-items/digests/2026-09-28.md")
     assert not cfg.is_log("knowledge-base/projects/acme-pilot/acme-pilot.md")
     assert not cfg.is_log("action-items/action-items-2026-09-28.md")
     assert cfg.is_topic("knowledge-base/topics/widget/retrieval.md")

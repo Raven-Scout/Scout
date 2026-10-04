@@ -84,10 +84,8 @@ kb_lint:
     - "knowledge-base/projects/*/decision-log/**"
     - "knowledge-base/projects/*/nav-history.md"
     - "knowledge-base/projects/*/nav-history/**"
-    - "action-items/digests/**"
   budgets:
     - {glob: "action-items/action-items-*.md", bytes: 61440}
-    - {glob: "action-items/digests/**", bytes: 30720}
     - {glob: "action-items/**", bytes: 15360}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
