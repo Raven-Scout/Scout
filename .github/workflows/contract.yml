@@ -163,7 +163,7 @@ jobs:
   contract:
     name: contract
     needs: [changes, verify]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

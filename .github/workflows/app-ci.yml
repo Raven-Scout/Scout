@@ -110,7 +110,7 @@ jobs:
   app-ci:
     name: app-ci
     needs: [changes, test]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
