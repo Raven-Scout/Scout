@@ -38,13 +38,21 @@
 
 set -euo pipefail
 
+# Repo roots, computed first since they depend only on $0 — every git
+# invocation below runs with `-C "$REPO_ROOT"` so this script behaves
+# identically regardless of the cwd it's invoked from (the header's own
+# `scripts/release-app.sh` usage example is run from apps/macos, but nothing
+# stops it being invoked from the repo root or elsewhere).
+APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # apps/macos
+REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"             # monorepo root
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Version selection (feat → minor, else → patch; explicit arg overrides)
 # ─────────────────────────────────────────────────────────────────────────────
 # Prefer app/v* tags (the monorepo era); fall back to the bare v* tags left
 # over from the app's pre-monorepo history when no app/v* tag exists yet.
-LATEST_TAG="$(git tag --list 'app/v*' --sort=-v:refname | head -1 || true)"
-[[ -n "$LATEST_TAG" ]] || LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+LATEST_TAG="$(git -C "$REPO_ROOT" tag --list 'app/v*' --sort=-v:refname | head -1 || true)"
+[[ -n "$LATEST_TAG" ]] || LATEST_TAG="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | head -1 || true)"
 
 # Print the rule-recommended next version given the latest app/v*.*.* (or
 # pre-monorepo bare v*.*.*) tag. Reads the commit subjects since that tag,
@@ -62,7 +70,7 @@ recommend_version() {
   local min="${rest%%.*}"
   local pat="${rest#*.}"
   local subjects
-  subjects="$(git log "${latest}..HEAD" --no-merges --format='%s' -- apps/macos 2>/dev/null || true)"
+  subjects="$(git -C "$REPO_ROOT" log "${latest}..HEAD" --no-merges --format='%s' -- apps/macos 2>/dev/null || true)"
   if printf '%s\n' "$subjects" | grep -qE '^feat(\(.*\))?!?:'; then
     echo "${maj}.$((min + 1)).0"
   else
@@ -84,8 +92,6 @@ else
 fi
 TAG="app/v$VERSION"
 
-APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # apps/macos
-REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"             # monorepo root
 BUILD_DIR="$APP_ROOT/build"
 RELEASE_DIR="$BUILD_DIR/release"
 DMG="$RELEASE_DIR/Scout-$VERSION.dmg"
@@ -94,8 +100,15 @@ DMG="$RELEASE_DIR/Scout-$VERSION.dmg"
 # work with, stamped into Info.plist (SCScoutPluginFloor) so the app can warn
 # if the vault's installed plugin is older. Canonical value lives in the
 # plugin's own manifest, at the repo root.
+#
+# Pipe-free on purpose: `sed ... | head -1` is SIGPIPE-exposed under
+# `pipefail` if plugin.json ever had more than one "version" key (head
+# closing early kills sed with 141, and pipefail promotes that to the
+# pipeline's status, so `set -e` would abort here even though the value we
+# wanted was read fine) — same class of bug release-plugin.sh's CHANGELOG
+# check already works around with a herestring instead of a pipe.
 PLUGIN_JSON="$REPO_ROOT/plugin/.claude-plugin/plugin.json"
-PLUGIN_FLOOR="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_JSON" | head -1)"
+PLUGIN_FLOOR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_JSON" 2>/dev/null || true)"
 [[ -n "$PLUGIN_FLOOR" ]] || { echo "✗ Could not read plugin version floor from $PLUGIN_JSON" >&2; exit 1; }
 echo "→ Plugin version floor: $PLUGIN_FLOOR"
 
@@ -225,11 +238,11 @@ fi
 # to create) by sorting tags by semver and taking the highest; fall back to
 # the bare v*.*.* tags from the app's pre-monorepo history when no app/v* tag
 # exists yet. `sort:-v:refname` orders descending so head -1 is the latest.
-PREV_TAG="$(git tag --list 'app/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
-[[ -n "$PREV_TAG" ]] || PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+PREV_TAG="$(git -C "$REPO_ROOT" tag --list 'app/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+[[ -n "$PREV_TAG" ]] || PREV_TAG="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
 
 # Derive `owner/repo` from origin so we can build a github.com/.../compare/ link.
-ORIGIN_URL="$(git config --get remote.origin.url || true)"
+ORIGIN_URL="$(git -C "$REPO_ROOT" config --get remote.origin.url || true)"
 REPO_SLUG=""
 case "$ORIGIN_URL" in
   https://github.com/*)
@@ -250,7 +263,7 @@ NOTES="$BUILD_DIR/release-notes.md"
     # that touches the app, so plugin-only commits elsewhere in the monorepo
     # don't flood the app's release notes. %s = subject only (skips body /
     # Co-Authored-By trailers); %h = short hash.
-    COMMITS="$(git log "$PREV_TAG"..HEAD --no-merges --format='%s|%h' -- apps/macos)"
+    COMMITS="$(git -C "$REPO_ROOT" log "$PREV_TAG"..HEAD --no-merges --format='%s|%h' -- apps/macos)"
     if [[ -z "$COMMITS" ]]; then
       echo "## What's changed"
       echo
@@ -315,11 +328,11 @@ NOTES="$BUILD_DIR/release-notes.md"
 } > "$NOTES"
 
 echo "→ Tagging $TAG and creating GitHub release"
-if git rev-parse "$TAG" >/dev/null 2>&1; then
+if git -C "$REPO_ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
   echo "  tag $TAG already exists locally — skipping tag/push"
 else
-  git tag -a "$TAG" -m "Release $VERSION"
-  git push origin "$TAG"
+  git -C "$REPO_ROOT" tag -a "$TAG" -m "Release $VERSION"
+  git -C "$REPO_ROOT" push origin "$TAG"
 fi
 
 gh release create "$TAG" "$DMG" \
