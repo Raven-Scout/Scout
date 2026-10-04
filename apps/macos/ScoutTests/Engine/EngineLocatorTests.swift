@@ -119,6 +119,30 @@ struct EngineLocatorTests {
         #expect(state.install?.scoutctl.path == real.path)
     }
 
+    /// The maintainer's own layout: a scout-plugin checkout at the dev path
+    /// with its venv at `<root>/.venv` or `<root>/engine/.venv`, found either
+    /// through the shim or (no shim) as the dev checkout. Every route must
+    /// land on the checkout root and read a real version, never "—".
+    @Test("dev checkout resolves root and version", arguments: [".venv", "engine/.venv"], [true, false])
+    func devCheckoutLayoutsReadTheRealVersion(venv: String, viaShim: Bool) throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let real = layout.devCheckout.appending(path: "\(venv)/bin/scoutctl")
+        try executable(real)
+        try pluginTree(layout.devCheckout, version: "0.11.1")
+        if viaShim {
+            try fm.createDirectory(at: layout.localBin, withIntermediateDirectories: true)
+            try "#!/bin/sh\n# scout-plugin scoutctl shim\nexec \"\(real.path)\" \"$@\"\n"
+                .write(to: layout.shimURL, atomically: true, encoding: .utf8)
+        }
+        let state = EngineLocator(layout: layout).locate()
+        #expect(state.externalSource == (viaShim ? .shim : .devCheckout))
+        #expect(state.install?.root.standardizedFileURL.path == layout.devCheckout.standardizedFileURL.path)
+        #expect(state.install?.scoutctl.path == real.path)
+        #expect(state.install?.version == "0.11.1")
+        #expect(EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil).installedVersionLabel == "0.11.1")
+    }
+
     @Test func marketplaceCacheInstallIsExternal() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }

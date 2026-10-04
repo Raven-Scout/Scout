@@ -52,6 +52,10 @@ struct EngineHealthServiceTests {
         #expect(svc.doctor?.errors == ["vault directory missing: /x"])
         #expect(svc.lastError == nil)
         #expect(svc.needsAttention)
+        // …and the stderr reason reaches Settings ▸ Engine, not just the service.
+        let model = EngineSettingsModel(state: svc.state, doctor: svc.doctor, lastError: svc.lastError, bundledVersion: nil)
+        #expect(model.healthLabel == "Needs attention")
+        #expect(model.messages.first == "vault directory missing: /x")
     }
 
     @Test func notInstalledSkipsDoctorAndNeedsAttention() async throws {
@@ -121,6 +125,10 @@ struct EngineHealthServiceTests {
         #expect(svc.doctor == nil)
         #expect(svc.lastError?.hasPrefix("could not run scoutctl") == true)
         #expect(svc.needsAttention)
+        // …and Settings ▸ Engine shows it instead of a silent "Unknown".
+        let model = EngineSettingsModel(state: svc.state, doctor: svc.doctor, lastError: svc.lastError, bundledVersion: nil)
+        #expect(model.healthLabel == "Could not run doctor")
+        #expect(model.messages == [svc.lastError ?? "<nil>"])
     }
 
     /// The doctor runs but prints a traceback instead of a report, on both
