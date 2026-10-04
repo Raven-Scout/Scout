@@ -8,10 +8,12 @@ import AppKit
 /// Opt-in performance harness. Skipped unless `SCOUT_PERF_FILE` points at a
 /// real action-items markdown file, so CI never runs it.
 ///
-/// Usage:
-///   SCOUT_PERF_FILE=/path/to/action-items-YYYY-MM-DD.md \
+/// Usage (the `TEST_RUNNER_` prefix is what forwards the variable into the
+/// test process, and the selector must be the type name — a suite name or a
+/// bare variable both run zero tests and still report success):
+///   TEST_RUNNER_SCOUT_PERF_FILE=/path/to/action-items-YYYY-MM-DD.md \
 ///     xcodebuild test -project Scout.xcodeproj -scheme Scout \
-///       -destination 'platform=macOS' -only-testing:ScoutTests/PerfHarness
+///       -destination 'platform=macOS' -only-testing:ScoutTests/PerfHarnessTests
 @Suite("PerfHarness")
 @MainActor
 struct PerfHarnessTests {
@@ -67,9 +69,39 @@ struct PerfHarnessTests {
         """)
 
         // View construction + layout: host the real SectionViews the way
-        // ActionItemsView does (eager VStack, #83) and force a layout pass.
+        // ActionItemsView does (eager VStack, #83, behind a TaskWindow) and
+        // force a layout pass. Then the same with every row built — what the
+        // tab cost before windowing, and what it would cost now with every
+        // section fully expanded via "Show more".
+        let windowed = Self.layout(doc, url: url, window: { _ in TaskWindow() })
+        let everyRow = Self.layout(doc, url: url, window: { section in
+            var w = TaskWindow()
+            while w.hiddenCount(in: section.tasks) > 0 { w.showMore() }
+            return w
+        })
+
+        print("""
+        PERF ── view (windowed, what the tab builds on open)
+          construct       \(String(format: "%.1f", windowed.constructMS)) ms
+          layout          \(String(format: "%.1f", windowed.layoutMS)) ms
+          fittingSize     \(windowed.height) pt
+        PERF ── view (every row built)
+          construct       \(String(format: "%.1f", everyRow.constructMS)) ms
+          layout          \(String(format: "%.1f", everyRow.layoutMS)) ms
+          fittingSize     \(everyRow.height) pt
+        PERF ── total first paint (windowed)
+          \(String(format: "%.1f", readMS + decodeMS + parseRuns[0] + windowed.constructMS + windowed.layoutMS)) ms
+        """)
+    }
+
+    static func layout(
+        _ doc: ActionItemsDocument,
+        url: URL,
+        window: (ActionSection) -> TaskWindow
+    ) -> (constructMS: Double, layoutMS: Double, height: CGFloat) {
         let noop: @MainActor (WriteOp, Int?) async throws -> Void = { _, _ in }
         let scoutDir = url.deletingLastPathComponent().deletingLastPathComponent()
+        let windows = Dictionary(uniqueKeysWithValues: doc.sections.map { ($0.id, window($0)) })
 
         let root = VStack(alignment: .leading, spacing: 0) {
             ForEach(doc.sections) { section in
@@ -78,6 +110,8 @@ struct PerfHarnessTests {
                     displayedDate: Date(),
                     scoutDirectory: scoutDir,
                     selection: nil,
+                    window: windows[section.id] ?? TaskWindow(),
+                    onShowMore: {},
                     onOp: noop
                 )
             }
@@ -85,24 +119,15 @@ struct PerfHarnessTests {
         .frame(width: 900)
 
         var host: NSHostingView<AnyView>!
-        let constructMS = Self.ms {
+        let constructMS = ms {
             host = NSHostingView(rootView: AnyView(root))
         }
-
-        let layoutMS = Self.ms {
+        let layoutMS = ms {
             host.frame = NSRect(x: 0, y: 0, width: 900, height: 100_000)
             host.layoutSubtreeIfNeeded()
             _ = host.fittingSize
         }
-
-        print("""
-        PERF ── view
-          construct       \(String(format: "%.1f", constructMS)) ms
-          layout          \(String(format: "%.1f", layoutMS)) ms
-          fittingSize     \(host.fittingSize.height) pt
-        PERF ── total first paint
-          \(String(format: "%.1f", readMS + decodeMS + parseRuns[0] + constructMS + layoutMS)) ms
-        """)
+        return (constructMS, layoutMS, host.fittingSize.height)
     }
 
     /// One write op on main: how many parses and rebuilds does it cost?

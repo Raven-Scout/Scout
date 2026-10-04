@@ -170,9 +170,35 @@ struct ComponentSmokeTests {
                     displayedDate: SmokeFixtures.day,
                     scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
                     selection: nil,
+                    window: TaskWindow(), onShowMore: {},
                     onOp: { _, _ in }),
                 size: cardSize)
         }
+    }
+
+    @Test("a section longer than a page renders its window and the show-more row")
+    func sectionRendersWindowedLongList() {
+        let tasks = (0..<(TaskWindow.pageSize * 2 + 3)).map {
+            SmokeFixtures.task(subject: "[#IOTA] Follow up with Sam \($0)")
+        }
+        var revealed = TaskWindow()
+        revealed.showMore()
+        for window in [TaskWindow(), revealed] {
+            ViewHost.render(
+                SectionView(
+                    section: SmokeFixtures.section(kind: .todo, tasks: tasks,
+                                                   collapsed: [SmokeFixtures.collapsedGroup()]),
+                    displayedDate: SmokeFixtures.day,
+                    scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
+                    selection: nil,
+                    window: window, onShowMore: {},
+                    onOp: { _, _ in }),
+                size: cardSize)
+        }
+        ViewHost.render(
+            BoardView(sections: [SmokeFixtures.section(kind: .todo, tasks: tasks)],
+                      scoutDirectory: URL(fileURLWithPath: "/tmp/scout")),
+            size: cardSize)
     }
 
     @Test("a section renders bullets and tables")
@@ -186,6 +212,7 @@ struct ComponentSmokeTests {
                 displayedDate: SmokeFixtures.day,
                 scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
                 selection: nil,
+                window: TaskWindow(), onShowMore: {},
                 onOp: { _, _ in }),
             size: cardSize)
 
@@ -196,6 +223,7 @@ struct ComponentSmokeTests {
                 displayedDate: SmokeFixtures.day,
                 scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
                 selection: nil,
+                window: TaskWindow(), onShowMore: {},
                 onOp: { _, _ in }),
             size: cardSize)
     }
@@ -223,6 +251,26 @@ struct ComponentSmokeTests {
                             onEdit: { _, _ in }, onDelete: { _ in }),
             size: CGSize(width: 700, height: 300))
         ViewHost.render(CommentListView(comments: []), size: CGSize(width: 700, height: 80))
+    }
+
+    @Test("the comment composer renders")
+    func commentComposerRenders() {
+        ViewHost.render(
+            CommentComposerView(task: SmokeFixtures.task(), displayedDate: SmokeFixtures.day) { _ in },
+            size: CGSize(width: 700, height: 80))
+    }
+
+    @Test("an editorial action button renders in every style")
+    func editorialActionButtonRenders() {
+        ViewHost.render(
+            HStack {
+                EditorialActionButton("Send", style: .primary, shortcut: "⌘↵") {}
+                EditorialActionButton("Cancel") {}
+                EditorialActionButton("Add comment", systemImage: "text.bubble") {}
+                EditorialActionButton("Send", style: .primary) {}
+                    .disabled(true)
+            },
+            size: CGSize(width: 600, height: 60))
     }
 
     @Test("the snooze popover renders")
