@@ -138,15 +138,22 @@ jobs:
       # 3. The parser corpus must be byte-identical across every client that
       #    vendors it. Same-tree now, so a plain cmp replaces the two
       #    hand-maintained SHA-256 constants (those come out in Stage 2).
+      #
+      # 3b. ...and the glob above must be complete, same gap as 2b: a corpus
+      #     copy that doesn't match apps/*/[Ss]cout*Tests/Fixtures/ would be
+      #     silently never compared, so discover every tracked copy via
+      #     `git ls-files` and fail if one wasn't in the set this step checked.
       - name: Parser corpus is byte-identical across clients
         run: |
           set -uo pipefail
           canonical=plugin/engine/tests/fixtures/contract/parser-corpus.json
           status=0
           checked=0
+          checked_list=" "
           for copy in apps/*/[Ss]cout*Tests/Fixtures/parser-corpus.json; do
             [ -f "$copy" ] || continue
             checked=$((checked + 1))
+            checked_list="$checked_list$copy "
             if cmp -s "$canonical" "$copy"; then
               echo "OK  $copy"
             else
@@ -158,6 +165,20 @@ jobs:
             echo "::error::no client copy of parser-corpus.json found — the glob may be stale"
             status=1
           fi
+
+          tracked="$(git ls-files -- '*parser-corpus.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked parser-corpus.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+
           exit $status
 
   contract:
