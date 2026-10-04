@@ -184,12 +184,6 @@ def test_correcting_an_actual_keeps_one_log_row(daily: Path, fake_data_dir: Path
     assert [r["actual_minutes"] for r in load_entries(fake_data_dir)] == [45]
 
 
-def test_actuals_on_different_days_are_separate_samples(daily: Path, fake_data_dir: Path) -> None:
-    set_actual(minutes=30, on="2026-09-29", by_id="PROJ1", data_dir=fake_data_dir)
-    set_actual(minutes=45, on="2026-09-30", by_id="PROJ1", data_dir=fake_data_dir)
-    assert [r["date"] for r in load_entries(fake_data_dir)] == ["2026-09-29", "2026-09-30"]
-
-
 def test_read_plan_marks(daily: Path, fake_data_dir: Path) -> None:
     set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
     set_block(day=_DAY, start="10:00", end="10:45", event_id="abc123", by_id="PROJ1", data_dir=fake_data_dir)
@@ -347,3 +341,9 @@ def test_a_kind_without_raw_stores_no_raw(daily: Path, fake_data_dir: Path) -> N
     assert "  - estimate: 45m (kind: deep)" in _lines(daily)
     marks = read_plan_marks(daily, task_line_number=_task_line(daily, "PROJ1"))
     assert (marks.estimate_minutes, marks.raw_minutes, marks.kind) == (45, None, "deep")
+
+
+def test_re_dating_a_correction_moves_the_log_row(daily: Path, fake_data_dir: Path) -> None:
+    set_actual(minutes=30, on="2026-09-29", by_id="PROJ1", data_dir=fake_data_dir)
+    set_actual(minutes=30, on="2026-09-30", by_id="PROJ1", data_dir=fake_data_dir)
+    assert [r["date"] for r in load_entries(fake_data_dir)] == ["2026-09-30"]

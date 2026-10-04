@@ -141,3 +141,16 @@ def test_record_entry_without_a_tag_appends(fake_data_dir: Path) -> None:
     record_entry(row, data_dir=fake_data_dir)
     record_entry(row, data_dir=fake_data_dir)
     assert len(load_entries(fake_data_dir)) == 2
+
+
+def test_record_entry_keys_an_untagged_task_by_its_title(fake_data_dir: Path) -> None:
+    row = {"date": "2026-09-30", "title": "Draft the rollout note", "kind": "deep", "raw_minutes": 30}
+    record_entry({**row, "actual_minutes": 45}, data_dir=fake_data_dir)
+    record_entry({**row, "actual_minutes": 60}, data_dir=fake_data_dir)
+    assert [r["actual_minutes"] for r in load_entries(fake_data_dir)] == [60]
+
+
+def test_record_entry_replaces_the_date_it_moves_from(fake_data_dir: Path) -> None:
+    record_entry(_entry("deep", 60, 90, day="2026-09-29"), data_dir=fake_data_dir)
+    record_entry(_entry("deep", 60, 90, day="2026-09-30"), data_dir=fake_data_dir, replaces_date="2026-09-29")
+    assert [r["date"] for r in load_entries(fake_data_dir)] == ["2026-09-30"]

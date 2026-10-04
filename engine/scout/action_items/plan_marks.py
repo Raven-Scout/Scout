@@ -363,6 +363,7 @@ def set_actual(
             "block": None if marks.block is None else f"{marks.block.day} {marks.block.start}-{marks.block.end}",
         },
         data_dir=data_dir,
+        replaces_date=marks.actual_date if marks.actual_date != worked_on.isoformat() else None,
     )
     return _event(
         "action_item.actual_recorded",

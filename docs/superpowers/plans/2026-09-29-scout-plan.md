@@ -25,12 +25,12 @@
 
 ### Task 3: Calibration log
 - [x] Tests: `tests/unit/test_planning_calibration.py`.
-- [x] `scout/planning/calibration.py` (`append_entry`, `load_entries`, `calibration`).
+- [x] `scout/planning/calibration.py` (`append_entry`, `record_entry`, `load_entries`, `calibration`).
 
 ### Task 4: Plan markers
 - [x] Tests: `tests/unit/test_action_items_plan_marks.py` (insert, replace, order, clear, actual plus log row, grid and kind validation, CRLF, explicit date, still counted as comments until the apps skip them, unparsable user lines left alone, the scan stopping at a child task, one log row per task per day).
 - [x] `scout/action_items/plan_marks.py`.
-- [x] `estimate`, `block`, `actual` added to `_common._SNOOZE_MARKER_AUTHORS` and `render.COMMENT_METADATA_KEYS`.
+- [x] `_common._SNOOZE_MARKER_AUTHORS` and `render.COMMENT_METADATA_KEYS` left unchanged: the markers count as comments until the engine, the Mac app and iOS skip them in one release (follow-up).
 
 ### Task 5: CLI and manifest
 - [x] Tests: `tests/unit/test_planning_cli.py` (verbs, selector exclusivity, filename pinning, bad durations, `list --with-plan`, `planning show` and `planning calibration`, `planning_v1`, `materialize` keeps the markers).

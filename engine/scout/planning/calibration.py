@@ -38,16 +38,29 @@ def append_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None
         fh.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
 
 
-def record_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None:
-    """Write one sample per task per day: an earlier row with the same tag and
+def _row_key(row: dict[str, Any]) -> tuple[str, str] | None:
+    """A task is its tag, or its title when it has no tag."""
+    tag, title = row.get("tag"), row.get("title")
+    if isinstance(tag, str) and tag:
+        return ("tag", tag)
+    if isinstance(title, str) and title:
+        return ("title", title)
+    return None
+
+
+def record_entry(entry: dict[str, Any], *, data_dir: Path | None = None, replaces_date: str | None = None) -> None:
+    """Write one sample per task per day: an earlier row for the same task and
     date is replaced, so correcting an actual time does not count it twice.
-    Rows without a tag or date, and lines that do not parse, are kept as they are.
+    ``replaces_date`` also drops the task's row for that day, for a correction
+    that moves the actual to another date. A task is its tag, or its title when
+    it has no tag. Rows that name neither, and lines that do not parse, are kept.
     """
-    tag, day = entry.get("tag"), entry.get("date")
+    key, day = _row_key(entry), entry.get("date")
     path = log_path(data_dir)
-    if not (tag and day) or not path.exists():
+    if key is None or not day or not path.exists():
         append_entry(entry, data_dir=data_dir)
         return
+    drop_days = {day} if replaces_date is None else {day, replaces_date}
     kept: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -57,7 +70,7 @@ def record_entry(entry: dict[str, Any], *, data_dir: Path | None = None) -> None
         except json.JSONDecodeError:
             kept.append(line)
             continue
-        if isinstance(row, dict) and row.get("tag") == tag and row.get("date") == day:
+        if isinstance(row, dict) and _row_key(row) == key and row.get("date") in drop_days:
             continue
         kept.append(line)
     kept.append(json.dumps(entry, sort_keys=True, ensure_ascii=False))
