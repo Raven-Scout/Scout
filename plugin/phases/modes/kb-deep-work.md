@@ -153,6 +153,20 @@ Record the scoring table for the session log.
 
 ***
 
+### Step 2a-shrink: Clear overrides, then shrink the largest over-budget file (mandatory while any exist)
+
+1. **Overrides first.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
+2. **Pick the target.** Run `scoutctl kb lint --report --top 10`. Take the **largest file you can finish this session**. This replaces the staleness-only pick in Step 2b whenever the report is non-empty, except that an open coverage mandate (e.g. a project `surface_rule` window) still takes precedence. **Never shrink a daily action-items file (`action-items/action-items-YYYY-MM-DD.md`) or the legacy `knowledge-base/session-log.md`**, even if one shows up: past daily files are dated records and today's is rewritten by the briefings; the legacy session log is migrated by a one-time sharding step, not by this pass.
+3. **Shrink it:**
+   - durable facts → topic notes under `knowledge-base/topics/<domain>/`, each paragraph cited;
+   - meetings, docs, PRs and decision threads → source notes under `knowledge-base/sources/YYYY-MM/`;
+   - rewrite the file itself to **current state + links** (project page) or **index + shard links** (log);
+   - drop run narration (git retains it).
+4. **Verify nothing was lost** before committing: `scoutctl kb lint --lossless-rev HEAD --lossless-path <file>`. Every token it reports missing must be restored somewhere or named in the commit message as deliberately dropped.
+5. Report: *file, before → after size, notes created, lossless result.* That is this step's deliverable and passes the Step 2d depth gate.
+
+***
+
 ### Step 2b: Pick Work Mode
 
 Based on the scoring distribution, select a work mode:
@@ -222,8 +236,10 @@ This gate exists because the easiest failure mode of an automated KB system is b
 
 ### Step 2e: Commit
 
+Explicit paths, never `-A` (see Step 1f):
+
 ```bash
-git -C {{SCOUT_DIR}} add -A && git -C {{SCOUT_DIR}} commit -m "dreaming [HH:MM]: KB deep work — <summary>"
+{{SCOUT_DIR}}/scripts/git-safe-commit.sh "dreaming [HH:MM]: KB deep work — <summary>" <only the paths THIS run touched>
 ```
 
 The summary should describe what was improved: e.g., "deep dive on project-alpha (verified 12 claims, updated status, added 3 decisions)" or "gap hunt: added 4 missing people, created channel entries for 2 new channels."
@@ -232,28 +248,24 @@ The summary should describe what was improved: e.g., "deep dive on project-alpha
 
 ### Step 2f: Track Work
 
-Add a session entry to the Recent Sessions table in `knowledge-base.md`:
+Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`:
 
-| Date | Time | Mode | Summary |
-|---|---|---|---|
-| [today] | [HH:MM] | Dreaming | [Brief description of Phase 1 + Phase 2 + Phase 3 work] |
+`| YYYY-MM-DD | HH:MM | Dreaming | <one sentence: the headline result, with [[links]] to the notes changed> | <commit> |`
 
-Include:
-- What feedback was processed (or "no feedback signals")
-- Which KB files were worked on and what was improved
-- Any wishlist items completed
-- The scoring table or at least the top-3 scored files and their totals
+The detail — which feedback was processed, which KB files were worked on and how, wishlist items completed, and the top-3 scored files with totals — goes in the **commit message**, not the row. The row is a pointer; the commit is the record.
 
 ***
 
 ### Step 2g: Scout Digest
 
-If today's action items file exists (`action-items/action-items-YYYY-MM-DD.md`), append or update a **Scout Digest** section at the bottom (before the Sources line). This helps {{USER_NAME}} quickly catch up on what {{INSTANCE_NAME}} has been doing across all sessions.
+If today's action items file exists (`action-items/action-items-YYYY-MM-DD.md`), create or update the **`## 📋 Scout Digest — <date> (<time>)` section at the bottom of today's action-items file**, just above `## 🪵 Run notes & connector availability`. There is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The companion apps build their Digest view from this `📋` section, so it must stay an H2 in the daily file.
+
+**Cap: ~6 KB.** Scannable bullets only; link to notes for detail. Every line ≤ 500 chars (the daily file's strict line limit). `<time>` is a real `HH:MM` clock time — never a masked run stamp like `8:0x`, which the pre-commit lint reads as a run-diary heading.
 
 **Format:**
 
 ```markdown
-## Scout Digest — [Date] ([Time])
+## 📋 Scout Digest — [Date] ([Time])
 
 **{{INSTANCE_NAME}} ran N sessions today** (breakdown by type). Here's what needs your attention:
 
@@ -273,7 +285,7 @@ If today's action items file exists (`action-items/action-items-YYYY-MM-DD.md`),
 - Only include files that changed **substantively** (not just timestamp updates)
 - "Your Input Needed" should list ONLY items where {{USER_NAME}}'s action unblocks {{INSTANCE_NAME}} or a project
 - Keep it scannable — no walls of text. Link to KB files for details.
-- If a digest already exists from an earlier session today, **update it** (don't duplicate)
+- If a digest already exists from an earlier session today, **update it in place** (don't duplicate), trimming older detail so the section stays under ~6 KB
 
 ***
 

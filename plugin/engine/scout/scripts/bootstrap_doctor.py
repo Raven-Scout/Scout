@@ -18,6 +18,9 @@ from pathlib import Path
 
 import yaml
 
+from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
+from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
+
 
 class Severity(Enum):
     GREEN = "green"
@@ -58,15 +61,22 @@ _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
 _RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log")
 
-# Rejected-Claude-credential signatures. Anchored on infra-emitted strings (the
-# retry wrapper's own marker + the Claude CLI's exact auth-error phrasing) rather
-# than a bare "401", so a session that merely *writes about* HTTP 401 in its
-# output can't trip the detector.
-_AUTH_FAILURE_RE = re.compile(
-    r"=== Authentication failure \(HTTP 401/403\)"
-    r"|Failed to authenticate\. API Error: 40[13]"
-    r"|Invalid authentication credentials"
+# The Claude CLI's own auth-error phrasing, anchored at the start of a line, so a
+# session that merely *writes about* a 401 or quotes one of these errors can't
+# trip a detector. One definition shared verbatim, as a POSIX ERE, by
+# templates/scripts/claude-with-retry.sh.tmpl (AUTH_PATTERNS) and
+# templates/scripts/run-outcome.sh.tmpl (AUTH_RE); a test keeps the three equal.
+# Written so Python's re (with MULTILINE) reads it the same way grep -E does.
+CLI_AUTH_FAILURE_ERE = (
+    "^(Failed to authenticate([.:]|$)"
+    "|Invalid authentication credentials"
+    "|API Error: 40[13]"
+    "|OAuth (session|token)( has)? expired)"
 )
+
+# Rejected-Claude-credential signatures: the retry wrapper's own banner, or the
+# CLI's raw error (pre-0.8.0 runners never wrote the banner).
+_AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
 
 
 def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
@@ -116,7 +126,7 @@ def _check_recent_auth_failure(*, vault: Path) -> tuple[list[str], list[str]]:
             "Claude Code's API credentials were rejected — every scheduled run will fail "
             "until this is fixed. Re-authenticate the claude binary the runner uses: "
             "`claude setup-token` (headless, then expose CLAUDE_CODE_OAUTH_TOKEN to the "
-            "runner's environment) or `claude` (interactive login). Verify with "
+            "runner's environment) or run: claude auth login (interactive). Verify with "
             f"`<claude-bin> -p 'hello'`. Full log: .scout-logs/{latest.name}."
         ],
         [],
@@ -324,6 +334,15 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _has_markers(path: Path) -> bool:
+    """True if ``path`` holds a conflict-marker line. Missing or unreadable
+    files don't (other checks report those)."""
+    try:
+        return has_conflict_markers(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
 def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     """Vault edits to plugin-owned files, as (warnings, notes).
 
@@ -360,8 +379,8 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
         )
     if parked:
         notes.append(
-            f"an upgrade installed the plugin's version over {len(parked)} vault cop(ies) no release shipped "
-            f"and parked them: {', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
+            f"an upgrade replaced {len(parked)} vault file(s) and parked the previous cop(ies): "
+            f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
     return warnings, notes
@@ -421,8 +440,49 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")
 
-    # Sidecar conflict files (yellow). Each blocks the next upgrade.
-    for rel in (*(f"{name}.md" for name in ("SKILL", "DREAMING", "RESEARCH")), *_LEGACY_SIDECAR_FILES):
+    # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
+    # not receiving plugin changes until the sidecar is resolved.
+    pending = pending_brain_sidecars(vault)
+    for sidecar_name in pending:
+        live_name = sidecar_name.removesuffix(".proposed-merge")
+        if _has_markers(vault / sidecar_name):
+            # A merge with conflicts: it already holds the vault's version.
+            how = f"(e.g. `mv {sidecar_name} {live_name}` and remove any conflict markers)"
+        else:
+            # The plugin's whole version, proposed because live wasn't the
+            # plugin's: moving it into place drops the vault's brain.
+            how = (
+                f"(review `diff {live_name} {sidecar_name}` and copy in what you want; "
+                f"`mv` would replace the vault's {live_name} with the plugin's version)"
+            )
+        warnings.append(
+            f"{sidecar_name} pending — upgrades leave {live_name} as is until it is resolved: "
+            f"make {live_name} the version you want {how}, then `scoutctl bootstrap resolve {live_name}`"
+        )
+    # A live brain file with conflict markers: an unfinished merge is running,
+    # and upgrades hold the file until the markers are gone.
+    for kind in BRAIN_KINDS:
+        live_name = f"{kind}.md"
+        if _has_markers(vault / live_name):
+            warnings.append(
+                f"{live_name} has conflict markers (<<<<<<< / >>>>>>>) from an unfinished merge — "
+                f"upgrades leave {live_name} as is until they are removed"
+            )
+    # A sidecar removed without `bootstrap resolve`: the proposal behind it is
+    # still on record, so the next upgrade merges or proposes from the old base.
+    for kind in BRAIN_KINDS:
+        live_name = f"{kind}.md"
+        proposed = snapshot_dir / PROPOSED_DIR / live_name
+        live = vault / live_name
+        if sidecar_name_for(kind) in pending or not proposed.exists() or not live.exists():
+            continue
+        if proposed.read_bytes() != live.read_bytes():
+            warnings.append(
+                f"{sidecar_name_for(kind)} was removed without `scoutctl bootstrap resolve {live_name}` — "
+                f"if {live_name} is your resolution, run it; otherwise the next upgrade proposes the change again"
+            )
+    # A parser.py sidecar an older engine left (yellow) still blocks the next upgrade.
+    for rel in _LEGACY_SIDECAR_FILES:
         sidecar = vault / f"{rel}.proposed-merge"
         if sidecar.exists():
             warnings.append(
