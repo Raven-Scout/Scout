@@ -1842,7 +1842,7 @@ git commit -m "feat(engine): launchd plists carry SCOUT_DATA_DIR for non-default
 
 - [ ] **Step 4: Full suite + PR**
 
-Run: `../.venv/bin/pytest -q -m "not slow"` then `git push -u origin feat/app-managed-engine` and open the PR on `Raven-Scout/scout-plugin` titled `feat(engine): app-managed engine support — pointer, bootstrap auto, connectors detect, uv venv, SCOUT_DATA_DIR (E1–E6)` linking Scout#104.
+Run: `../.venv/bin/pytest -q -m "not slow"` then `git push -u origin feat/app-managed-engine` and open the PR on `Raven-Scout/scout-plugin` titled `feat(engine): app-managed engine support — pointer, bootstrap auto, connectors detect, uv venv, SCOUT_DATA_DIR (E1–E6)` linking scout-app-legacy#104.
 
 - [ ] **Step 5: Release (maintainer)** — after merge: `scripts/release.sh minor` (prepare PR → merge) then `scripts/release.sh --finalize v0.10.0`. Record the tag's commit: `git ls-remote https://github.com/Raven-Scout/scout-plugin.git 'refs/tags/v0.10.0^{}'` — Part C's Task C1 pins it.
 

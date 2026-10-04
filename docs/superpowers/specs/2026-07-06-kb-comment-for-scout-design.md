@@ -4,7 +4,7 @@
 - **Status:** Approved (design); ready for implementation plan
 - **Feature family:** Post-v0.9.0 Knowledge Base follow-ups (feature 1 of 3)
 - **Related:**
-  - Ships on top of the Knowledge Base tab (PR Raven-Scout/Scout#69, released in v0.9.0)
+  - Ships on top of the Knowledge Base tab (PR Raven-Scout/scout-app-legacy#69, released in v0.9.0)
   - Action Items counterpart is **out of scope here** and tracked by **Raven-Scout/scout-plugin#186** (needs a `scoutctl` marker command)
   - Sibling specs to follow: graph navigability (feature 2), network-analysis stats (feature 3)
 

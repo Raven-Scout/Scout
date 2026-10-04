@@ -4,8 +4,8 @@
 **Status:** Design drafted, awaiting review
 **Author:** Jordan Burger (brainstormed with Claude)
 **Repos affected:** `Raven-Scout/Scout` (this repo — the installer, onboarding, settings), `Raven-Scout/scout-plugin` (six small engine changes, §7)
-**Tracks:** [Scout#51](https://github.com/Raven-Scout/Scout/issues/51) (Mac-app-first onboarding, Hermes-style), [scout-plugin#26](https://github.com/Raven-Scout/scout-plugin/issues/26) (`scoutctl bootstrap auto`)
-**Relates to:** [Scout#74](https://github.com/Raven-Scout/Scout/pull/74) (in-app updates — amends its plugin track, §9), [Scout#99](https://github.com/Raven-Scout/Scout/pull/99) (monorepo — answers its open question 2, §9), `2026-04-24-scout-unification-design.md` §8 (the first-run wizard and `EngineClient` it specified but never built)
+**Tracks:** [scout-app-legacy#51](https://github.com/Raven-Scout/scout-app-legacy/issues/51) (Mac-app-first onboarding, Hermes-style), [scout-plugin#26](https://github.com/Raven-Scout/scout-plugin/issues/26) (`scoutctl bootstrap auto`)
+**Relates to:** [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) (in-app updates — amends its plugin track, §9), [scout-app-legacy#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99) (monorepo — answers its open question 2, §9), `2026-04-24-scout-unification-design.md` §8 (the first-run wizard and `EngineClient` it specified but never built)
 
 ## 1. Problem statement
 
@@ -29,14 +29,14 @@ copy). The `engine/bin/scoutctl` launcher probes four locations and
 cross-jumps between them; `/scout-update` re-resolves the root in every shell
 block with a three-way fallback; the app's first-priority candidate
 `~/scout-plugin/bin/scoutctl` ([`AppState.swift:383`](../../../Scout/Shell/AppState.swift))
-does not exist and the app works via `$PATH` luck ([#99](https://github.com/Raven-Scout/Scout/pull/99) §1.6).
+does not exist and the app works via `$PATH` luck ([#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99) §1.6).
 Verified on this machine: Claude Code's cache copy of a *directory* marketplace
 duplicates the **entire** source directory — including the 100 MB `.venv`,
 `.mypy_cache` and `.scoutctl-py-cache`, whose contents point back at the
 source tree. It works only because the source tree still exists.
 
 **Updates are asymmetric because the plugin is assumed unreachable from the
-app.** [#74](https://github.com/Raven-Scout/Scout/pull/74) designs the plugin
+app.** [#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) designs the plugin
 track as "detect + notify + hand off" on the premise that *"there is no
 app→Claude-Code interface to drive a slash command."* That premise is true of
 slash commands and false of everything they wrap. Verified against Claude Code
@@ -83,7 +83,7 @@ where things are.
    adopted read-only and never overwritten.
 6. **Existing installs keep working.** Marketplace and `install.sh` installs
    are adopted as-is; migration to app-managed is explicit and later (§10).
-7. **Configurable vault root** ([#51](https://github.com/Raven-Scout/Scout/issues/51) scope item; roadmap Phase 2).
+7. **Configurable vault root** ([#51](https://github.com/Raven-Scout/scout-app-legacy/issues/51) scope item; roadmap Phase 2).
 
 ### Non-goals
 
@@ -93,9 +93,9 @@ where things are.
   out. It never pipes a remote script silently and never touches credentials.
 - **Bundling a Python interpreter.** `uv` manages Python (§4.3); the DMG stays
   small.
-- **Sparkle mechanics** — owned by [#74](https://github.com/Raven-Scout/Scout/pull/74). This design consumes its
+- **Sparkle mechanics** — owned by [#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74). This design consumes its
   `UpdateService`; it does not change how the app binary updates.
-- **Repository layout** — owned by [#99](https://github.com/Raven-Scout/Scout/pull/99). This design is
+- **Repository layout** — owned by [#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99). This design is
   layout-agnostic; §9 states what changes under a monorepo (one script's
   source path).
 - **Linux / Windows GUI, iOS, Android.** Engine-side changes stay
@@ -512,7 +512,7 @@ isolation lesson in project memory).
 
 ## 9. Relationship to open designs
 
-**[#74 — in-app updates](https://github.com/Raven-Scout/Scout/pull/74).**
+**[#74 — in-app updates](https://github.com/Raven-Scout/scout-app-legacy/pull/74).**
 Unchanged: the Sparkle app track, `UpdateService`, `SemVer`,
 `PluginManifests`, the badge, Settings ▸ Updates. Amended: the **plugin row's
 source of truth and action**. For `.managed` engines, *installed* is the
@@ -526,7 +526,7 @@ two PRs do not conflict in code: this design's types live in `Scout/Engine/`,
 on whichever lands second. Sequencing recommendation: land #74 first — its
 Sparkle track is what makes "engine fixes ride app releases" cheap.
 
-**[#99 — monorepo](https://github.com/Raven-Scout/Scout/pull/99).**
+**[#99 — monorepo](https://github.com/Raven-Scout/scout-app-legacy/pull/99).**
 Layout-agnostic here: the only path-dependent piece is
 `bundle-engine.sh`'s source, which becomes `plugin/` in-tree (no network, no
 clone) and `engine-release.json` becomes a derived file. This answers #99's
@@ -633,9 +633,9 @@ marketplace restores today's world. The vault is never moved.
 
 ## 13. References
 
-- [Scout#51](https://github.com/Raven-Scout/Scout/issues/51) — the tracking issue; `docs/ROADMAP.md` Phase 5.
-- [Scout#74](https://github.com/Raven-Scout/Scout/pull/74) — in-app updates; `docs/superpowers/specs/2026-07-07-in-app-updates-design.md` on `feat/in-app-updates`.
-- [Scout#99](https://github.com/Raven-Scout/Scout/pull/99) — monorepo; `docs/superpowers/specs/2026-09-03-monorepo-consolidation-design.md` on `docs/monorepo-consolidation`.
+- [scout-app-legacy#51](https://github.com/Raven-Scout/scout-app-legacy/issues/51) — the tracking issue; `docs/ROADMAP.md` Phase 5.
+- [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) — in-app updates; `docs/superpowers/specs/2026-07-07-in-app-updates-design.md` on `feat/in-app-updates`.
+- [scout-app-legacy#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99) — monorepo; `docs/superpowers/specs/2026-09-03-monorepo-consolidation-design.md` on `docs/monorepo-consolidation`.
 - [scout-plugin#26](https://github.com/Raven-Scout/scout-plugin/issues/26) + `docs/specs/scoutctl-bootstrap-auto.md` — the `auto` dispatcher this design makes E3.
 - [scout-plugin#195](https://github.com/Raven-Scout/scout-plugin/issues/195), [#229](https://github.com/Raven-Scout/scout-plugin/issues/229) — adjacent config bugs.
 - `docs/superpowers/specs/2026-04-24-scout-unification-design.md` §8; `2026-05-09-plan-8-scout-setup-repair-design.md` (the bootstrap pipeline this drives); scout-plugin `docs/specs/2026-06-02-release-and-distribution-system.md` §7 (`install.sh`).

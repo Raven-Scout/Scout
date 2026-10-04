@@ -50,9 +50,9 @@ grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/de
 
 ---
 
-## Step 0.2: Stop if the marketplace still points at the archived repo
+## Step 0.2: Stop if the marketplace points at a repo other than Scout's
 
-Scout's plugin moved from `Raven-Scout/scout-plugin` into `Raven-Scout/Scout` (under `plugin/`), and the old repo is archived. A `scout-plugin` marketplace that still points there makes Step 0.5's refresh "succeed" while pulling nothing new, so the vault would be upgraded against frozen templates. Check before refreshing:
+Scout's plugin lives in `Raven-Scout/Scout` under `plugin/`. That repo is the former `Raven-Scout/scout-plugin`, renamed when the app moved in; GitHub redirects the old name, so a marketplace that still says `Raven-Scout/scout-plugin` is fine. A `scout-plugin` marketplace pointing at any other repo makes Step 0.5's refresh "succeed" while pulling nothing of Scout's, so the vault would be upgraded against the wrong templates. Check before refreshing:
 
 ```bash
 python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
@@ -70,8 +70,8 @@ elif kind == "git":
     m = re.match(r"(?:https://|git@)github\.com[/:]([^/]+/[^/]+?)(?:\.git)?/?$", str(src.get("url", "")))
     repo = m.group(1) if m else None
 path = str(src.get("path", "")) if kind == "directory" else ""
-if repo is not None and repo.lower() != "raven-scout/scout":
-    print("MARKETPLACE_ARCHIVED:" + repo)
+if repo is not None and repo.lower() not in ("raven-scout/scout", "raven-scout/scout-plugin"):
+    print("MARKETPLACE_ARCHIVED:" + repo)  # raven-scout/scout-plugin is this repo's former, redirected name
 elif path and os.path.isfile(os.path.join(path, ".claude-plugin", "plugin.json")):
     print("LEGACY_CHECKOUT:" + path)  # pre-monorepo layout: plugin.json at the checkout root
 else:
@@ -80,14 +80,14 @@ EOF
 ```
 
 - `MARKETPLACE_OK`: continue.
-- `MARKETPLACE_ARCHIVED:<repo>`: tell the user "Your `scout-plugin` marketplace still points at `<repo>`. Scout has moved to `Raven-Scout/Scout`, so updating from there would leave you on a version that no longer changes. Re-point it in a terminal (removing the marketplace uninstalls the plugin until the install line puts it back; your vault in `~/Scout` is not touched), then re-run `/scout-update`:" then show:
+- `MARKETPLACE_ARCHIVED:<repo>`: tell the user "Your `scout-plugin` marketplace points at `<repo>`. Scout lives in `Raven-Scout/Scout`, so updating from there would leave you on a version that doesn't get Scout's updates. Re-point it in a terminal (removing the marketplace uninstalls the plugin until the install line puts it back; your vault in `~/Scout` is not touched), then re-run `/scout-update`:" then show:
   ```
   claude plugin marketplace remove scout-plugin
   claude plugin marketplace add Raven-Scout/Scout
   claude plugin install scout@scout-plugin
   ```
   Stop here. Do **not** run these commands yourself: the remove uninstalls the very plugin this command is running from.
-- `LEGACY_CHECKOUT:<path>`: tell the user, once, "Your `scout-plugin` marketplace is a local checkout at `<path>` with the pre-monorepo layout. Scout now lives in `Raven-Scout/Scout`; once that checkout stops receiving updates, clone `Raven-Scout/Scout` and re-point the marketplace at the clone's root (`claude plugin marketplace remove scout-plugin`, `claude plugin marketplace add <your-Scout-clone>`, `claude plugin install scout@scout-plugin`)." Then continue — a local checkout is the user's own choice.
+- `LEGACY_CHECKOUT:<path>`: tell the user, once, "Your `scout-plugin` marketplace is a local checkout at `<path>` with the pre-monorepo layout. The repo is now `Raven-Scout/Scout` (its old URL redirects), with the plugin under `plugin/`; `git -C <path> pull --ff-only` brings the checkout to that layout, and the marketplace keeps working from the checkout's root." Then continue — a local checkout is the user's own choice.
 
 ---
 

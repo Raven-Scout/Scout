@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Branch: `feat/in-app-updates` (PR Raven-Scout/Scout#74; spec + this plan already committed). Base `main`.
+- Branch: `feat/in-app-updates` (PR Raven-Scout/scout-app-legacy#74; spec + this plan already committed). Base `main`.
 - Sparkle package `https://github.com/sparkle-project/Sparkle`, product `Sparkle`, **exact** version `2.9.6`.
 - Feed URL (verbatim; Info.plist, tests, README): `https://raw.githubusercontent.com/Raven-Scout/Scout/main/appcast.xml`. The feed file is `appcast.xml` at the repo root, regenerated per release with **one** item (the newest release).
 - Info.plist Sparkle keys: `SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks = true`, `SUScheduledCheckInterval = 86400` — typed (boolean/number), not strings. No `SUAutomaticallyUpdate` (Sparkle shows its update dialog; the user clicks Install).
@@ -2913,7 +2913,7 @@ scripts/release.sh 0.2.0                    # explicit version
 PRERELEASE=1 scripts/release.sh 0.12.0-rc.1 # GitHub pre-release; main's appcast untouched
 ```
 
-Set `SKIP_RELEASE=1` to build the DMG + appcast locally without tagging, uploading, or committing. Sparkle only compares build numbers (`CFBundleVersion` = commit count), so a release must be cut from a commit ahead of the previous tag; the script enforces this. Sparkle never downgrades: fix a bad release forward with a patch release. Rehearse the update path on pre-releases (design doc, Amendments → rollout): install rc.1, publish rc.2, launch rc.1 with `--env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.12.0-rc.2/appcast.xml` and confirm it updates.
+Set `SKIP_RELEASE=1` to build the DMG + appcast locally without tagging, uploading, or committing. Sparkle only compares build numbers (`CFBundleVersion` = commit count), so a release must be cut from a commit ahead of the previous tag; the script enforces this. Sparkle never downgrades: fix a bad release forward with a patch release. Rehearse the update path on pre-releases (design doc, Amendments → rollout): install rc.1, publish rc.2, launch rc.1 with `--env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/scout-app-legacy/releases/download/v0.12.0-rc.2/appcast.xml` and confirm it updates.
 ```
 
 - [ ] **Step 4: Commit**
@@ -2951,7 +2951,7 @@ Any commit on `main` (a `chore:` bump is fine), then `PRERELEASE=1 scripts/relea
 - [ ] **Step 3: Drive rc.1 → rc.2 through Sparkle**
 
 ```bash
-open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.12.0-rc.2/appcast.xml
+open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/scout-app-legacy/releases/download/v0.12.0-rc.2/appcast.xml
 ```
 
 **Scout → Check for Updates…** → Sparkle's "A new version of Scout is available!" sheet shows **Scout 0.12.0-rc.2** with the rendered notes; Settings ▸ Updates shows `0.12.0-rc.1 → 0.12.0-rc.2 available` with **Install…**, the Settings row badge reads **1**, the menu-bar icon has a dot. **Install and Relaunch** → relaunch → Settings → About reads `0.12.0-rc.2 (<build>)`; `codesign -dv ~/scout-e2e/Scout.app 2>&1 | grep TeamIdentifier` → `74SD45TPC5`.

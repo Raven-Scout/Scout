@@ -13,7 +13,7 @@
 
 **Tech Stack:** Python ≥ 3.11 standard library only (`json`, `hashlib`, `pathlib`, `concurrent.futures`). Tests use pytest, lint uses ruff, and type checks use mypy.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-agent-sessions-index-speed-design.md` (this repo). It builds on the Agent Sessions design in [Raven-Scout/Scout#112](https://github.com/Raven-Scout/Scout/pull/112).
+**Spec:** `docs/superpowers/specs/2026-09-28-agent-sessions-index-speed-design.md` (this repo). It builds on the Agent Sessions design in [Raven-Scout/scout-app-legacy#112](https://github.com/Raven-Scout/scout-app-legacy/pull/112).
 
 The code lives in **scout-plugin**, under `engine/scout/sessions/`, on branch `feat/agent-sessions-index-speed`. That branch is stacked on plan 1's `feat/agent-sessions-index` ([Raven-Scout/scout-plugin#243](https://github.com/Raven-Scout/scout-plugin/pull/243)).
 

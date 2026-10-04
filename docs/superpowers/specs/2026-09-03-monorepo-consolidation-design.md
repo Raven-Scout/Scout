@@ -6,6 +6,14 @@
 **Repos affected:** `Raven-Scout/Scout` (absorbing), `Raven-Scout/scout-plugin` (absorbed), `Raven-Scout/scout-iOS-app` + `Raven-Scout/scout-android` (future phases)
 **Supersedes nothing.** Extends [`2026-04-24-scout-unification-design.md`](./2026-04-24-scout-unification-design.md) §8 (Distribution and update flows) and §11 (plugin/vault content boundary).
 
+> **Revised 2026-10-04: repo identity (Jordan's decision).** The tree described here is
+> unchanged, but it lands in `Raven-Scout/scout-plugin`, which keeps its stars and forks.
+> The app repo is renamed `Raven-Scout/scout-app-legacy` and archived, and `scout-plugin`
+> is renamed `Raven-Scout/Scout`. Where this document says Scout *absorbs* scout-plugin, read it
+> the other way round. Issue and PR numbers before the swap that are written as
+> `Raven-Scout/Scout#N` mean `Raven-Scout/scout-app-legacy#N`. The cutover steps are in
+> [`2026-10-04-monorepo-cutover-runbook.md`](../plans/2026-10-04-monorepo-cutover-runbook.md).
+
 ## 1. Problem statement
 
 The v0.4 unification spec drew the right boundary — engine is canonical, vault is
@@ -91,7 +99,7 @@ convenience does not.
    ships `manifest.py`; the app contains **zero** references to a manifest. Skew
    is instead detected by shelling out `scoutctl action-items --help` and grepping
    the output — which catches "feature absent" but never "feature changed shape."
-   [Scout#74](https://github.com/Raven-Scout/Scout/pull/74) records a live
+   [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) records a live
    instance: installed plugin `0.7.2` against repo `0.7.3`.
 
 ### Root cause
@@ -158,7 +166,7 @@ Verified mechanically, not assumed:
 - **The two halves are owned by two package managers.** The plugin arrives via
   `claude plugin install` (Claude Code owns detection *and* application); the app
   arrives as a notarized DMG (Gatekeeper owns it). As
-  [Scout#74](https://github.com/Raven-Scout/Scout/pull/74) states: *"The app
+  [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) states: *"The app
   track can self-install… The plugin track can only surface the gap and hand you
   the command — there is no app→Claude-Code interface to drive a slash command."*
   Merging repositories does not merge channels.
@@ -176,8 +184,8 @@ already designed elsewhere:
   same release — **one command**, two artifacts, provably matched.
 - The app's plugin floor becomes a build-time constant read from
   `plugin/.claude-plugin/plugin.json` in the same tree, rather than a hand-bumped
-  Swift literal — which is what [Scout#74](https://github.com/Raven-Scout/Scout/pull/74)
-  (in-app updates) and [Scout#51](https://github.com/Raven-Scout/Scout/issues/51)
+  Swift literal — which is what [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74)
+  (in-app updates) and [scout-app-legacy#51](https://github.com/Raven-Scout/scout-app-legacy/issues/51)
   (Mac-app-first onboarding with assisted engine install) both need.
 
 The honest framing: **from "two downloads, two versions, hope they match" to "one
@@ -325,7 +333,7 @@ The payoff of coherent tags. `release-app.sh` reads
 app as `requiredPluginVersion`. The app compares it against the installed plugin
 version — authoritative in `~/.claude/plugins/installed_plugins.json` at
 `plugins["scout@scout-plugin"][0].version`, per
-[Scout#74](https://github.com/Raven-Scout/Scout/pull/74) — and surfaces a real
+[scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) — and surfaces a real
 "your engine is behind" state instead of an empty view.
 
 This finally lands v0.4 spec §8's `CapabilityChecker`, and it lands it *without*
@@ -336,7 +344,7 @@ binary was built from. The `scoutctl --help` probe in
 ### `CURRENT_PROJECT_VERSION` after the merge
 
 `release-app.sh` derives the build number from `git rev-list --count HEAD`, which
-[Scout#74](https://github.com/Raven-Scout/Scout/pull/74) relies on as Sparkle's
+[scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) relies on as Sparkle's
 monotonic comparison key. Absorbing 338 commits causes a **one-time jump**, and
 thereafter plugin-only commits also increment it. Monotonicity — the only property
 Sparkle requires — is preserved in both cases. No mitigation needed; documented so
@@ -494,12 +502,12 @@ marketplace, which is why Phase 4 is the gate.
    §8) because notarization needs a Developer ID keychain identity; a CI path
    would mean holding the cert and an app-specific password as repository
    secrets. Recommendation: stay local through the migration, then revisit
-   alongside Scout#74's Sparkle work, which rewrites the signing procedure anyway
+   alongside scout-app-legacy#74's Sparkle work, which rewrites the signing procedure anyway
    (inside-out signing of nested Sparkle code).
 
 2. **Should `install.sh` fetch the DMG in the same command?** §3 says the
    monorepo makes this honest. It is follow-on work — but it interacts with
-   Scout#51 (Mac-app-first onboarding), which inverts the order: app first, then
+   scout-app-legacy#51 (Mac-app-first onboarding), which inverts the order: app first, then
    assisted engine install. These two want opposite entrypoints and should be
    reconciled in one design rather than built independently.
 
@@ -517,8 +525,8 @@ marketplace, which is why Phase 4 is the gate.
 
 - [`2026-04-24-scout-unification-design.md`](./2026-04-24-scout-unification-design.md) — §8 distribution and update flows, §11 plugin/vault content boundary. This spec revises the repository-topology half of §8.
 - [`2026-04-25-scout-event-architecture-design.md`](./2026-04-25-scout-event-architecture-design.md) — v0.5+ trajectory; unaffected by repository layout.
-- [Scout#74](https://github.com/Raven-Scout/Scout/pull/74) — in-app updates (Sparkle + plugin detect/hand-off). Source of the installed-plugin-version lookup and the app/plugin channel asymmetry.
-- [Scout#51](https://github.com/Raven-Scout/Scout/issues/51) — Mac-app-first onboarding with assisted engine install.
+- [scout-app-legacy#74](https://github.com/Raven-Scout/scout-app-legacy/pull/74) — in-app updates (Sparkle + plugin detect/hand-off). Source of the installed-plugin-version lookup and the app/plugin channel asymmetry.
+- [scout-app-legacy#51](https://github.com/Raven-Scout/scout-app-legacy/issues/51) — Mac-app-first onboarding with assisted engine install.
 - [scout-plugin#26](https://github.com/Raven-Scout/scout-plugin/issues/26) — `scoutctl bootstrap auto`, a unified install/upgrade entrypoint.
 - [scout-plugin#195](https://github.com/Raven-Scout/scout-plugin/issues/195) — `auto_update.enabled` is inert.
 - `plugin/engine/scout/scripts/versioning.py` — canonical version in `plugin.json`, three derived files.

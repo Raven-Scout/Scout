@@ -27,12 +27,11 @@ The macOS app is a separate download — grab the latest `.dmg` from
 `app/v*` tag). It is optional: the engine is fully usable from Claude Code and
 the CLI without it.
 
-> **Moved from `Raven-Scout/scout-plugin`?** Re-point your marketplace:
-> ```
-> claude plugin marketplace remove scout-plugin
-> claude plugin marketplace add Raven-Scout/Scout
-> claude plugin install scout@scout-plugin
-> ```
+> **Installed from `Raven-Scout/scout-plugin`?** Nothing to do. This repo *is*
+> scout-plugin, renamed to `Raven-Scout/Scout` when the macOS app moved in, and
+> GitHub redirects the old name, so `/scout-update` keeps working. The app's
+> pre-move repo, issues and releases are archived at
+> [`Raven-Scout/scout-app-legacy`](https://github.com/Raven-Scout/scout-app-legacy).
 
 ## Releases
 

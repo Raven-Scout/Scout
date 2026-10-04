@@ -2,6 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Revised 2026-10-04: repo identity (Jordan's decision).** The tree described here is
+> unchanged, but it lands in `Raven-Scout/scout-plugin`, which keeps its stars and forks.
+> The app repo is renamed `Raven-Scout/scout-app-legacy` and archived, and `scout-plugin`
+> is renamed `Raven-Scout/Scout`. Where this document says Scout *absorbs* scout-plugin, read it
+> the other way round. Issue and PR numbers before the swap that are written as
+> `Raven-Scout/Scout#N` mean `Raven-Scout/scout-app-legacy#N`. The cutover steps are in
+> [`2026-10-04-monorepo-cutover-runbook.md`](2026-10-04-monorepo-cutover-runbook.md).
+
 **Goal:** Absorb `Raven-Scout/scout-plugin` into `Raven-Scout/Scout` as a monorepo (`plugin/` + `apps/macos/`), so every engine↔client contract artifact is verifiable by one CI job on one commit.
 
 **Architecture:** The plugin becomes a subdirectory-sourced marketplace entry — repo-root `.claude-plugin/marketplace.json` with `"source": "./plugin"` — so `CLAUDE_PLUGIN_ROOT` resolves to `plugin/` and every existing `${CLAUDE_PLUGIN_ROOT}/engine/...` path keeps working unchanged. Both histories are preserved via `git subtree`. Release cadences stay independent behind prefixed tags (`plugin/vX.Y.Z`, `app/vX.Y.Z`). The payoff is `contract.yml`: one cheap ubuntu job that regenerates the snapshots from their YAML sources and diffs them against every committed copy — test fixtures *and* shipped bundle resources.
@@ -85,7 +93,7 @@ Expected at time of writing: 6 rows, including `205 PavelDo` (governance contrib
 For each PR number `N` from Step 1, either merge it or close it with a pointer. Do not leave it open.
 
 ```bash
-gh pr comment N --repo Raven-Scout/scout-plugin --body "Heads-up: scout-plugin is being merged into Raven-Scout/Scout as a monorepo (the plugin will live at plugin/ in that repo). Resolving this PR before the move so your branch doesn't get invalidated mid-review. See Raven-Scout/Scout#99 for the design."
+gh pr comment N --repo Raven-Scout/scout-plugin --body "Heads-up: scout-plugin is being merged into Raven-Scout/Scout as a monorepo (the plugin will live at plugin/ in that repo). Resolving this PR before the move so your branch doesn't get invalidated mid-review. See Raven-Scout/scout-app-legacy#99 for the design."
 ```
 
 - [ ] **Step 3: Post the freeze notice as a pinned issue**
@@ -102,7 +110,7 @@ gh issue create --repo Raven-Scout/scout-plugin \
     claude plugin marketplace add Raven-Scout/Scout
     claude plugin install scout@Scout
 
-**Why:** contract artifacts (the connector roster, the schedule snapshot, the parser corpus) are single logical files that physically live in two or three repos, and no CI job can see across a repo edge. Two of them are currently stale in the shipped Mac app. Design: Raven-Scout/Scout#99.
+**Why:** contract artifacts (the connector roster, the schedule snapshot, the parser corpus) are single logical files that physically live in two or three repos, and no CI job can see across a repo edge. Two of them are currently stale in the shipped Mac app. Design: Raven-Scout/scout-app-legacy#99.
 
 **Until the move completes, this repo stays authoritative.** New PRs are welcome but may need re-targeting — comment here first and I'll tell you where to aim.
 EOF
@@ -2329,7 +2337,7 @@ This repo is now archived and will publish no further releases. Its history,
 tags, and releases stay browsable here; development continues at
 Raven-Scout/Scout.
 
-Why: Raven-Scout/Scout#99.
+Why: Raven-Scout/scout-app-legacy#99.
 EOF
 )"
 gh repo archive Raven-Scout/scout-plugin --yes

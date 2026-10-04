@@ -15,7 +15,7 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 ## Install
 
-Scout.app sits on top of the Scout engine, so set up the engine first. (Making the app install the engine for you is on the roadmap: [#115](https://github.com/Raven-Scout/Scout/issues/115).)
+Scout.app sits on top of the Scout engine, so set up the engine first. (Making the app install the engine for you is on the roadmap: [#115](https://github.com/Raven-Scout/scout-app-legacy/issues/115).)
 
 **You need:** a Mac on macOS 13+, a paid Claude plan (Max recommended), and [Claude Code](https://docs.claude.com/claude-code) installed and signed in (run `claude` once in Terminal). Turn on the tools you want Scout to read at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — Slack is strongly recommended, since Scout's daily summary arrives as a Slack DM. No Homebrew or Python needed.
 
@@ -148,8 +148,8 @@ This app is open-source under the [MIT License](LICENSE).
 
 Scout is local-first and collects no data of its own — the macOS app only reads and writes files in your local `~/Scout/` folder. See the project's shared legal documents:
 
-- **Privacy Policy** — https://raven-scout.github.io/scout-plugin/privacy.html
-- **Terms of Use** — https://raven-scout.github.io/scout-plugin/terms.html
+- **Privacy Policy** — https://raven-scout.github.io/Scout/privacy.html
+- **Terms of Use** — https://raven-scout.github.io/Scout/terms.html
 - **[Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md)** · **[Code of Conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md)**
 
 Scout is an independent project, not affiliated with Anthropic, Microsoft, or any other company.

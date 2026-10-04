@@ -20,11 +20,11 @@ def test_compare_no_update_when_installed_ahead():
 
 
 def test_marketplace_url_is_the_monorepo_root_manifest():
-    """The plugin moved into Raven-Scout/Scout and scout-plugin is archived: a
-    check against the archived repo's manifest would report "up to date"
-    forever. The URL must name the monorepo's main branch AND the repo-root
-    path where the marketplace manifest actually lives (versioning keeps it
-    in sync with plugin.json)."""
+    """The repo is Raven-Scout/Scout (renamed from scout-plugin when the app
+    moved in). Name it directly rather than lean on GitHub's rename redirect,
+    and point at the repo-root path where the marketplace manifest actually
+    lives now that the plugin sits under plugin/ (versioning keeps it in sync
+    with plugin.json)."""
     import json
 
     from scout.scripts import versioning

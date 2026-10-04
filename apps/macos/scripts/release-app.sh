@@ -49,13 +49,19 @@ REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"             # monorepo root
 # ─────────────────────────────────────────────────────────────────────────────
 # Version selection (feat → minor, else → patch; explicit arg overrides)
 # ─────────────────────────────────────────────────────────────────────────────
-# Prefer app/v* tags (the monorepo era); fall back to the bare v* tags left
-# over from the app's pre-monorepo history when no app/v* tag exists yet.
+# app/v* tags only. In Raven-Scout/Scout (the former scout-plugin repo) the bare
+# v* tags are the PLUGIN's pre-monorepo releases, so a bare-v* fallback would
+# read plugin history as the app's and pick a wrong version. The app's own
+# pre-monorepo releases were re-tagged app/vX.Y.Z at cutover.
 LATEST_TAG="$(git -C "$REPO_ROOT" tag --list 'app/v*' --sort=-v:refname | head -1 || true)"
-[[ -n "$LATEST_TAG" ]] || LATEST_TAG="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | head -1 || true)"
+if [[ -z "$LATEST_TAG" ]]; then
+  echo "error: no app/v* tag in this clone. Run \`git fetch --tags origin\`; the app's releases are" >&2
+  echo "       tagged app/vX.Y.Z (bare v* tags belong to the plugin and are never used here)." >&2
+  exit 1
+fi
 
-# Print the rule-recommended next version given the latest app/v*.*.* (or
-# pre-monorepo bare v*.*.*) tag. Reads the commit subjects since that tag,
+# Print the rule-recommended next version given the latest app/v*.*.* tag.
+# Reads the commit subjects since that tag,
 # scoped to apps/macos so plugin-only commits elsewhere in the monorepo never
 # bump the app's version: a `feat:` (optionally scoped / breaking, e.g.
 # `feat(kb):` or `feat!:`) bumps the minor and zeroes the patch; anything else
@@ -240,11 +246,10 @@ fi
 # Release notes
 # ─────────────────────────────────────────────────────────────────────────────
 # Find the most recent existing app/v*.*.* tag (excluding the one we're about
-# to create) by sorting tags by semver and taking the highest; fall back to
-# the bare v*.*.* tags from the app's pre-monorepo history when no app/v* tag
-# exists yet. `sort:-v:refname` orders descending so head -1 is the latest.
+# to create) by sorting tags by semver and taking the highest. Never bare v*:
+# those are the plugin's (see Version selection). `sort:-v:refname` orders
+# descending so head -1 is the latest.
 PREV_TAG="$(git -C "$REPO_ROOT" tag --list 'app/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
-[[ -n "$PREV_TAG" ]] || PREV_TAG="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
 
 # Derive `owner/repo` from origin so we can build a github.com/.../compare/ link.
 ORIGIN_URL="$(git -C "$REPO_ROOT" config --get remote.origin.url || true)"

@@ -1,6 +1,19 @@
 # Monorepo cutover runbook
 
-> **This supersedes the commands in Task 1 and Task 14 of
+> **Revised 2026-10-04 for the swap (Jordan's decision).** The monorepo now
+> lands in **`Raven-Scout/scout-plugin`**, which keeps its stars and forks
+> (17 and 9, against the app repo's 7 and 2). Then:
+> 1. the app repo `Raven-Scout/Scout` is renamed **`Raven-Scout/scout-app-legacy`**
+>    and later archived;
+> 2. `scout-plugin` is renamed **`Raven-Scout/Scout`**.
+>
+> Jordan chose this knowing its cost. Reusing the name `Scout` ends GitHub's
+> redirect for the app repo, so every pre-swap `Raven-Scout/Scout#N`,
+> `…/pull/N` or `…/issues/N` link silently opens a *different* item (see
+> **Numbering**). Phases 0–1 are unchanged. Phases 2–11 replace the
+> absorb-into-Scout plan's Phases 2–8.
+>
+> **This also supersedes the commands in Task 1 and Task 14 of
 > [`2026-09-03-monorepo-consolidation.md`](2026-09-03-monorepo-consolidation.md).**
 > That plan stays as the historical record. Do not run its Task 1 / Task 14
 > commands: they install `scout@Scout` (the `@` suffix is the marketplace
@@ -10,9 +23,39 @@
 > scout-plugin` against the real config with no isolation (that uninstalls the
 > plugin Jordan's scheduled runs use).
 
-Everything below is a checklist. Steps marked **[outward]** post, push, publish,
-or change GitHub state on Jordan's behalf. They are Jordan's to run (rulings R1
-and R2). Everything else is local.
+Everything below is a checklist. Steps marked **[J]** push, post, publish,
+rename, transfer or archive on GitHub. Each one needs **Jordan's direct
+confirmation in the migration session, at the time it runs**. An earlier
+approval, or one relayed by another session, doesn't count. Agents never run
+`apps/macos/scripts/release-app.sh` or `plugin/scripts/release-plugin.sh`:
+both are live on Jordan's Mac (Developer ID identity + `scout-notary`
+profile). Everything not marked [J] is local.
+
+**Names.** One repo name changes meaning partway through:
+
+| | Before Phase 4 | After Phase 4 |
+|---|---|---|
+| the macOS app's repo | `Raven-Scout/Scout` | `Raven-Scout/scout-app-legacy` (archived in Phase 10) |
+| the monorepo (the survivor) | `Raven-Scout/scout-plugin` | `Raven-Scout/Scout` |
+
+Each command below names the repo as it is called *when that step runs*.
+
+**Hard rules**
+
+- **Never create a repository named `scout-plugin` in `Raven-Scout`** after
+  Phase 4.2. Equally, never "restore" the old name. GitHub keeps
+  `Raven-Scout/scout-plugin` redirecting to the survivor only while that name
+  is unused. Every existing plugin install's marketplace, `/scout-update` and
+  self-update check depends on that redirect.
+- **Never `git push --tags` from a clone of the old app repo**:
+  - this means W, `~/scout-app`, and the Part B/C worktrees;
+  - never push a bare `v*` tag anywhere;
+  - the app's bare `v0.5.0`–`v0.13.0` share names with 10 of the plugin's
+    bare tags, which live in the survivor.
+- **Phases 3 and 4 run back to back.** Between Phase 3.5 (the landing merge)
+  and Phase 4.2 (the second rename), new users' `curl …/Raven-Scout/Scout/main/install.sh`
+  hits the app repo, which has no `install.sh`. Existing plugin users are fine
+  throughout.
 
 **Conventions**
 
@@ -20,32 +63,59 @@ and R2). Everything else is local.
   `$var` doesn't word-split).
 - `W` is a checkout of branch `migrate/monorepo`. Today that is
   `W=/Users/jordanburger/.scout-worktrees/scout-app-monorepo`.
-- `R` is a clean checkout of `main` for Phases 4 and 8. It must not be `W`:
-  `W` is a worktree, and git refuses to check `main` out there while
-  `~/scout-app` has it. It must also not be the live engine checkout that
-  Phase 6 creates at `~/scout-plugin`, because the release script switches
-  branches. Use `~/scout-app` when it's clean on `main`; otherwise use a
-  throwaway clone (`git clone https://github.com/Raven-Scout/Scout.git
-  ~/.scout-worktrees/scout-release`). Either way it needs the engine venv:
-  `cd "$R/plugin/engine" && uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+  - It is a worktree of `~/scout-app`, a clone of the app repo, so `origin`
+    is `Raven-Scout/Scout`.
+  - After Phase 4.1 that URL names the survivor. Phase 4.5 handles this.
+- `R` is a clean clone of the survivor, made after Phase 4, for Phases 5–7
+  and 11:
+
+  ```bash
+  git clone https://github.com/Raven-Scout/Scout.git ~/.scout-worktrees/scout-release
+  ```
+
+  - It must not be `W`, `~/scout-app`, or `~/scout-plugin`. `~/scout-plugin`
+    is Jordan's live engine checkout (Phase 9), and the release script
+    switches branches.
+  - It needs the engine venv:
+    `cd "$R/plugin/engine" && uv venv --python 3.12 && uv pip install -e ".[dev]"`.
 - **No literal version numbers.** Every version is derived when you run the
   step. If a step tells you to type a version, it first shows the command that
   produces it.
-- Never `git fetch --tags` from `scout-plugin`. Its bare `v*` tags collide with
-  the app's `v0.5.0`–`v0.13.x`, and the monorepo deliberately doesn't import
-  them. `git subtree pull` fetches no tags.
+- **Tags in the survivor:**
+  - bare `v*` tags are the **plugin's** pre-monorepo releases, `v0.4.0`–`v0.13.0`;
+  - the app's releases are re-tagged `app/vX.Y.Z` in Phase 3.3;
+  - new releases are `plugin/vX.Y.Z` and `app/vX.Y.Z`.
+  - `git subtree pull` fetches no tags.
+
+## Numbering (read before writing any link)
+
+- The survivor keeps **scout-plugin's** numbering: its #1 to #277 and up are
+  scout-plugin items. The app repo had its own #1–#132, and every one of
+  those numbers also exists in the survivor.
+- An app item from before the swap (`Raven-Scout/Scout#N`, `…/pull/N`,
+  `…/issues/N`, or a bare `#N` in an `apps/macos/` file or a pre-move app
+  commit) means **`Raven-Scout/scout-app-legacy#N`**. For transferred issues,
+  that legacy URL redirects to the issue's new home.
+- `Raven-Scout/scout-plugin#N` links stay correct: they redirect to the same
+  item at `Raven-Scout/Scout#N`.
+- Phase 2.1 rewrote this repo's links. The root `CLAUDE.md` states the rule.
+  Phase 4.4 pins a notice. Links in agent memory and the vault are the
+  coordinator's to rewrite; the migration session sent it the list.
 
 ---
 
 ## 0. Where things stand
 
-- [ ] Branch `migrate/monorepo`: local only, no upstream, not on `origin`.
-  Both upstreams keep moving, so don't trust a SHA written here — it's
-  already stale by the time you read it. Check the branch's actual sync
-  state instead: `git log -1 --format='%H %s' migrate/monorepo` for the
-  current HEAD, and `gh pr view 132 --repo Raven-Scout/Scout --json
-  mergeStateStatus,baseRefOid,headRefOid` (or the PR page itself) for what
-  it was last synced to and whether `main` has moved further.
+- [ ] Branch `migrate/monorepo` is pushed as draft PR `Raven-Scout/Scout#132`
+  (after Phase 4, `Raven-Scout/scout-app-legacy#132`). Phase 3.1 closes it and
+  re-opens it on `scout-plugin`.
+  - Don't trust a SHA written here: both upstreams keep moving.
+  - Check the branch's actual sync state with
+    `git log -1 --format='%H %s' migrate/monorepo`.
+  - Check `gh pr view 132 --repo Raven-Scout/Scout --json mergeStateStatus,baseRefOid,headRefOid`
+    for what it was last synced to.
+- [ ] The swap's branch changes (Phase 2.1) are committed. Find the commit with
+  `git log --oneline --grep='swap' -- install.sh`.
 - [ ] Verified locally at the commit that added this runbook (find it with
   `git log --oneline -- docs/superpowers/plans/2026-10-04-monorepo-cutover-runbook.md | tail -1`):
   - the engine suite: 2883 passed, 14 skipped (the one known-flaky FS-watcher
@@ -59,118 +129,55 @@ and R2). Everything else is local.
   - `bash install.sh --check`
   - the macOS `ScoutTests`: 928 tests in 141 suites, TEST SUCCEEDED
 
-  The raw output is in the local fix-wave report.
-- [ ] **Not yet verified anywhere:** behaviour in real GitHub Actions (gate jobs,
-  skipped-job semantics), rulesets, an install from the *pushed* repo, and
-  both release scripts end to end.
+  Later re-syncs re-ran this list; their counts are in the PR description.
+- [ ] Verified in GitHub Actions: #132's first runs, 29/29 green on the app
+  repo. **Not yet verified:**
+  - Actions on the survivor;
+  - rulesets;
+  - an install from the pushed repo;
+  - GitHub's rename redirects;
+  - both release scripts end to end.
 - [ ] Local-only records (gitignored), under
   `.superpowers/sdd/2026-09-03-monorepo-consolidation/` in `W`:
   - `progress.md`: the controller ledger, rulings R1–R39
   - `final-review.md`
   - `fix-wave-report.md`
-  - `fix-wave-harness/`: the install.sh / Step 0.2 / contract harnesses used
-    below
 
 Both repos will keep moving until cutover, so **Phase 1 runs again right
-before the PR is opened**.
+before Phase 3**.
 
 ---
 
-## Phase 0 — Clear the runway (scout-plugin) [outward]
+## Phase 0 — Clear the runway (scout-plugin) [J] — DONE 2026-10-04
 
-- [ ] **0.1 List open scout-plugin PRs.**
-
-  ```bash
-  gh pr list --repo Raven-Scout/scout-plugin --state open --limit 100 \
-    --json number,author,isDraft,title \
-    --jq '.[] | "\(.number)\t\(.author.login)\t\(if .isDraft then "draft" else "" end)\t\(.title)"'
-  ```
-
-  Snapshot 2026-10-04: 16 open.
-  - **External authors (7):**
-    - #264, #247 ottomansky
-    - #216, #194 davidesner
-    - #180 cvrysanek
-    - #176, #175 yustme
-  - **Jordan's own (9):** #274, #269, #268, #266, #265, #261, #242 (draft),
-    #179, #177.
-
-  Every one must be merged or closed before the archive, because archived
-  repos have read-only PRs. Anything merged into scout-plugin before cutover
-  comes in through Phase 1's subtree pull.
-- [ ] **0.2 Resolve each one.** Merge it, or close it with a pointer, using this
-  comment:
-
-  ```bash
-  N="<pr-number>"   # one at a time
-  gh pr comment "$N" --repo Raven-Scout/scout-plugin --body "Heads-up: scout-plugin is being merged into Raven-Scout/Scout as a monorepo — the plugin will live at plugin/ in that repo. Resolving this PR before the move so your branch doesn't get invalidated mid-review. To continue it, re-open it against Raven-Scout/Scout with your changes under plugin/. Design: Raven-Scout/Scout#99."
-  ```
-- [ ] **0.3 Post the freeze notice** as an issue, then pin it from the issue page.
-
-  ```bash
-  cat > /tmp/freeze-notice.md <<'EOF'
-  `scout-plugin` is being absorbed into [Raven-Scout/Scout](https://github.com/Raven-Scout/Scout) as a monorepo. The plugin will live at `plugin/` and stays a first-class Claude Code marketplace entry — the marketplace keeps its name, `scout-plugin`, so the plugin id stays `scout@scout-plugin`.
-
-  **What you need to do once the move lands** (announced here and in this repo's final release):
-
-      claude plugin marketplace remove scout-plugin
-      claude plugin marketplace add Raven-Scout/Scout
-      claude plugin install scout@scout-plugin
-
-  Removing the marketplace uninstalls the plugin until the install line puts it back; your vault in `~/Scout` is not touched. New installs use `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash`; an existing install that still points here is detected by that installer — and by `/scout-update` from this repo's final release on — which print the three commands above.
-
-  **Why:** contract artifacts (the connector roster, the schedule snapshot, the parser corpus) are single logical files that physically lived in two or three repos, and no CI job could see across a repo edge. Design: Raven-Scout/Scout#99.
-
-  **Until the move completes, this repo stays authoritative.** New PRs are welcome but may need re-targeting — comment here first.
-  EOF
-  gh issue create --repo Raven-Scout/scout-plugin \
-    --title "Notice: scout-plugin is moving into Raven-Scout/Scout (monorepo)" \
-    --body-file /tmp/freeze-notice.md
-  ```
-- [ ] **0.4 Gate:** no external open PRs left.
+- [x] **0.1–0.2 External scout-plugin PRs.** #247 and #264 were merged. #216,
+  #194, #180, #176 and #175 were closed with a pointer to re-open under
+  `plugin/` in `Raven-Scout/Scout`.
+  - That pointer stays true after the swap.
+  - Each comment's "Design: Raven-Scout/Scout#99" link does not; Phase 10.5
+    fixes it.
+- [x] **0.3 Notice.** Posted and pinned as scout-plugin #277. That number
+  survives the swap. Phase 10.4 rewrites it for the swap and closes it.
+- [ ] **0.4 Gate, re-run right before Phase 3.5:** no external open PRs on
+  scout-plugin.
 
   ```bash
   gh pr list --repo Raven-Scout/scout-plugin --state open --limit 100 \
     --json author --jq '[.[] | select(.author.login != "jordanrburger")] | length'   # expect 0
   ```
-- [ ] **0.5 Scout PRs that must cross the move.** List them:
 
-  ```bash
-  gh pr list --repo Raven-Scout/Scout --state open --limit 100 \
-    --json number,headRefName,isDraft,title \
-    --jq '.[] | "\(.number)\t\(.headRefName)\t\(if .isDraft then "draft" else "" end)\t\(.title)"'
-  ```
-
-  Snapshot 2026-10-04, classified by whether a PR touches the app's old
-  top-level paths (`Scout/`, `ScoutTests/`, `Scout.xcodeproj/`, `scripts/`,
-  `CLAUDE.md`, `README.md`, `BACKLOG.md`, `.github/workflows/ci.yml`). Those
-  paths now live under `apps/macos/`, and `ci.yml` is now `app-ci.yml`.
-
-  | PR | Crosses the move? | Note |
-  |---|---|---|
-  | **#125** Part B (draft, "waits on monorepo migration") | yes, 45 files | Rebases AFTER the migration merges — see Phase 2. |
-  | **#128** Part C (draft, stacked on #125) | yes | Rebases after #125. |
-  | **#120** pin one-line item format in the parser contract | yes, corpus + Swift SHA | **Hold until after the migration.** It edits only the app's corpus and `canonicalSHA256`. In the monorepo, a corpus change must edit the canonical `plugin/engine/tests/fixtures/contract/parser-corpus.json`, update `EXPECTED_SHA256` and `canonicalSHA256`, and `cp` the canonical file to the app's copy (root `CLAUDE.md`). If #120 lands on main first, the next Phase 1 merge routes its corpus edit onto the plugin's canonical copy (trap A), and the plugin checksum test fails. |
-  | #126, #122, #75 | yes | Rebase after the migration merges. |
-  | #70 | yes, and edits `.github/workflows/ci.yml` | Port its `ci.yml` change into `app-ci.yml` by hand. |
-  | #127, #119, #118, #68 | no, `docs/` only | `docs/` stayed at the root. |
-  | **#99** monorepo design | — | Its two docs are already on the branch (R25); merge or close it before the migration PR. |
-
-  Rebase recipe for a PR that crosses the move (after the migration is on
-  main). `merge.directoryRenames=true` places that PR's NEW files under
-  `apps/macos/` instead of stopping on each one:
-
-  ```bash
-  git fetch origin
-  PR_BRANCH="<the PR head branch>"
-  git switch "$PR_BRANCH"
-  git -c merge.directoryRenames=true rebase origin/main
-  git ls-files -- Scout ScoutTests Scout.xcodeproj scripts | head   # must print nothing
-  ```
+  Jordan's own open scout-plugin PRs don't block. Snapshot 2026-10-04: #275
+  and #261. They stay in the survivor and are rebased into `plugin/` in
+  Phase 5.3.
+- **Merge freeze** on both repos until Phase 4 completes, except Phase 0 PRs
+  and this migration (Jordan, 2026-10-04).
 
 ---
 
-## Phase 1 — Re-sync the branch (repeat right before opening the PR)
+## Phase 1 — Re-sync the branch (repeat right before Phase 3)
+
+Only needed until Phase 3.5's landing merge. After that the two trees are one
+repo, and the app repo is frozen until it is archived.
 
 This is the fix wave's C1 procedure, generalized. Each sub-step is one commit.
 If a merge goes wrong, run `git merge --abort` and start the sub-step again.
@@ -394,75 +401,394 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ---
 
-## Phase 2 — Merge order with Part B (#125)
+## Phase 2 — Swap prerequisites (before landing)
 
-- [ ] The migration merges **first**. #125 ("[waits on monorepo migration]")
-  then rebases onto `main` (Phase 0.5 recipe), and #128 rebases onto #125. On
-  that rebase, Part B moves `ScoutctlLocator`'s priority and never-probe-bin
-  tests into `EngineLocatorTests`, deletes `ScoutctlLocator`, re-points
-  `findScoutctl()`, and adds the monorepo `plugin/` as a dev-checkout
-  candidate. The migration branch does not touch any of that (R37).
-- [ ] As soon as the migration PR is merged, notify the Part B session
-  (**"Build and test Scout.app Part B, then open its PR"**). Use `ListAgents`
-  to find it, then `SendMessage`. Send the merge commit SHA and these facts:
-  - the app now lives in `apps/macos/`
-  - `ci.yml` is now `app-ci.yml`
-  - required checks are about to be `app-ci`, `plugin-test`, `plugin-lint`
-    and `contract`
-  - #125's new `Scout/Engine/*` files land under `apps/macos/Scout/Engine/`
-    with `merge.directoryRenames=true`
+- [x] **2.1 Branch changes for the swap** (one commit; find it with
+  `git log --oneline --grep='swap' -- install.sh`):
+  - **Former-name acceptance.** `install.sh`'s `check_marketplace_source` and
+    `/scout-update` Step 0.2 accept `Raven-Scout/scout-plugin`, which GitHub
+    redirects to the survivor, as well as `Raven-Scout/Scout`. Any other repo
+    still stops with the re-point commands. Checked against fixture
+    `known_marketplaces.json` files:
 
----
+    | Marketplace source | `install.sh --check` | Step 0.2 |
+    |---|---|---|
+    | new name | exit 0 | `MARKETPLACE_OK` |
+    | old name, `github` | exit 0 | `MARKETPLACE_OK` |
+    | old name, `git` URL, mixed case | exit 0 | `MARKETPLACE_OK` |
+    | a fork | exit 1 + re-point | `MARKETPLACE_ARCHIVED` |
+    | legacy-layout directory | exit 0 + note | `LEGACY_CHECKOUT` |
+    | absent | exit 0 | `MARKETPLACE_OK` |
 
-## Phase 3 — Push, open the PR, prove the gates, then add rulesets
+    Both messages now tell a legacy checkout to `git pull`, since the old URL
+    redirects.
+  - **`release-app.sh` reads `app/v*` tags only** and stops if there are none.
+    The bare-`v*` fallback would have read the plugin's `v0.13.0` as the app's
+    last release.
+  - **Comments.** The ones in `gen-render-history.py` and `test_vault_drift.py`
+    now say bare `v*` = plugin, the opposite of the absorb plan. In a full
+    survivor clone the render-history parity test runs again: its tag guard
+    passes on scout-plugin's own `v0.11.0`. In an app clone it still skips.
+    `test_self_update.py`'s docstring is updated too.
+  - **Links.** Every `Raven-Scout/Scout#N`, `…/pull/N`, `…/issues/N` and
+    `…/releases/(tag|download)/…`, and every bare `Scout#N`, now names
+    `Raven-Scout/scout-app-legacy`: 75 links in 13 files, outside this
+    runbook. One historical command, `gh pr view 123`, also gets
+    `--repo Raven-Scout/scout-app-legacy`. The root `CLAUDE.md` gains the
+    numbering rule.
+  - **Root `README.md`:** "Installed from scout-plugin? Nothing to do."
+  - **Pages URLs** are re-pointed to the post-rename site,
+    `raven-scout.github.io/Scout/`:
+    - `og:url` and `og:image` in `docs/index.html`;
+    - the privacy and terms links in `apps/macos/README.md` and
+      `plugin/README.md`.
 
-- [ ] **3.1 Push and open the PR** [outward]. Push only after Phase 1 is
-  committed and 1.4 is green.
+  Re-run this after every Phase 1, since new docs can bring new links. It must
+  print nothing:
 
   ```bash
   cd "$W"
-  git push -u origin migrate/monorepo
-  gh pr create --repo Raven-Scout/Scout --base main --head migrate/monorepo \
-    --title "refactor: absorb scout-plugin into the Scout monorepo" \
-    --body-file /tmp/migration-pr-body.md
+  git grep -nE 'Scout#[0-9]|github\.com/Raven-Scout/Scout/(pull|issues|releases/(tag|download))/' \
+    -- ':!docs/superpowers/plans/2026-10-04-monorepo-cutover-runbook.md' ':!*.jsonl' | grep -v scout-app-legacy
   ```
 
-  Write `/tmp/migration-pr-body.md` from the Phase 1.4 output. Include:
-  - the two upstream heads it was synced to
-  - the oracle result
-  - test counts
-  - "contract green"
-  - the `apps/macos` / `plugin/` layout
-  - "merge with a merge commit, not squash"
-  - the required-check plan
-  - the attribution footer
-
-  Pushing to `migrate/**` also starts push-triggered runs of `contract`,
-  `plugin-test` and `plugin-lint`, which run their jobs unconditionally.
-  That's expected. `app-ci` runs only on the PR, because its push trigger is
-  limited to `main`.
-- [ ] **3.2 Read the PR's checks.**
+- [ ] **2.2 Make the existing-user sandbox now, before anything lands.** It
+  holds a plugin installed from today's `scout-plugin`, so Phases 4.3 and 7.1
+  can test the real upgrade path through the rename redirect.
+  - **Never run `claude plugin marketplace add/remove/update` or
+    `claude plugin install/uninstall` against the real config.** Jordan's
+    live marketplace is also named `scout-plugin`, and removing it
+    uninstalls the plugin his scheduled runs use (R16).
+  - Every command carries `CLAUDE_CONFIG_DIR=<sandbox>`.
+  - The R27 guard brackets every sandbox phase. Whole-file hashes are not a
+    valid guard, because Claude Code rewrites other entries in the background.
 
   ```bash
-  gh pr checks migrate/monorepo --repo Raven-Scout/Scout --watch
+  cat > ~/.scout-worktrees/r27-guard.py <<'PY'
+  import json, os, sys
+  base = os.path.expanduser("~/.claude/plugins")
+  km = json.load(open(f"{base}/known_marketplaces.json"))
+  ip = json.load(open(f"{base}/installed_plugins.json"))
+  print("marketplace:", json.dumps(km.get("scout-plugin"), sort_keys=True))
+  print("install:", json.dumps(ip.get("plugins", {}).get("scout@scout-plugin"), sort_keys=True))
+  blob = json.dumps(km) + json.dumps(ip)
+  for needle in sys.argv[1:]:
+      print("references", needle, ":", needle in blob)
+  PY
+  SB_OLD="$(mktemp -d "$HOME/.scout-worktrees/claude-sandbox-old.XXXXXX")"; echo "$SB_OLD" > ~/.scout-worktrees/sb-old.path
+  python3 ~/.scout-worktrees/r27-guard.py "$SB_OLD" > ~/.scout-worktrees/r27-before.txt; cat ~/.scout-worktrees/r27-before.txt   # "references … : False"
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin marketplace list            # must NOT list scout-plugin; if it does, STOP
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin marketplace add Raven-Scout/scout-plugin
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin install scout@scout-plugin
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin list --json | grep -A4 '"scout@scout-plugin"'   # note version + installPath (inside $SB_OLD)
+  python3 ~/.scout-worktrees/r27-guard.py "$SB_OLD" | diff ~/.scout-worktrees/r27-before.txt - && echo "real config untouched"
   ```
 
-  Expect four gate checks, `app-ci`, `plugin-test`, `plugin-lint` and
-  `contract`, all passing. Under each, the gated jobs (`ScoutTests`,
-  `test (…)` + `coverage`, `lint`, `verify`) must have actually **run**,
-  because this PR touches every area. If `plugin-test` fails only on the
-  FS-watcher test, re-run the job; see Open decisions.
-- [ ] **3.3 Merge** [outward] with **"Create a merge commit"**. **Never squash
-  or rebase:** the plugin history arrived by SHA-preserving subtree merges
-  (R23), which a squash flattens and a rebase cannot replay. Then do Phase 2's
-  notification.
+- [ ] **2.3 Merge order with Part B (#125) and Part C (#128).**
+  - The migration lands first.
+  - Part B and Part C are open on the app repo, so after Phase 4 they are
+    `scout-app-legacy#125` and `#128`. Their session re-opens them on the
+    survivor in Phase 5.2.
+  - In that rebase, Part B moves `ScoutctlLocator`'s priority and
+    never-probe-bin tests into `EngineLocatorTests`, deletes
+    `ScoutctlLocator`, re-points `findScoutctl()`, and adds the monorepo
+    `plugin/` as a dev-checkout candidate. The migration branch does not touch
+    any of that (R37).
+  - Part C stacks on Part B. In its rebase it switches `bundle-engine.sh` to
+    `git archive HEAD:plugin`.
+  - Notify that session ("Build and test Scout.app Part B, then open its PR";
+    find it with `ListAgents`) as soon as Phase 4 completes. Send:
+    - the landing merge SHA;
+    - that the repo is now `Raven-Scout/Scout`, formerly scout-plugin, and its
+      PR numbers are scout-plugin's;
+    - that the app lives in `apps/macos/`, and `ci.yml` is now `app-ci.yml`;
+    - that the required checks are about to be `app-ci`, `plugin-test`,
+      `plugin-lint` and `contract`;
+    - that new `Scout/Engine/*` files land under `apps/macos/Scout/Engine/`
+      with `merge.directoryRenames=true`;
+    - the Phase 5.2 recipe.
+
+---
+
+## Phase 3 — Land the monorepo in scout-plugin [J]
+
+- [ ] **3.0 Gate (local).** Phase 1 just ran and is committed, and 1.4 is
+  green. Nothing moved since:
 
   ```bash
-  gh pr merge migrate/monorepo --repo Raven-Scout/Scout --merge
+  cd "$W" && git status --porcelain                                          # nothing
+  git fetch origin && git merge-base --is-ancestor origin/main HEAD && echo "app main fully merged"
+  UP=$(git ls-remote https://github.com/Raven-Scout/scout-plugin.git refs/heads/main | cut -f1)
+  git merge-base --is-ancestor "$UP" HEAD && echo "scout-plugin main fully merged"            # if UP is unknown locally, Phase 1 is stale
+  gh repo view Raven-Scout/scout-app-legacy >/dev/null 2>&1 && echo "STOP: the legacy name is taken" || echo "legacy name free"
   ```
-- [ ] **3.4 Prove the skip path on a docs-only PR** [outward]. Do this BEFORE
-  adding any ruleset. It must target `main`, because `app-ci` only triggers on
-  PRs into `main`.
+
+- [ ] **3.1 [J] Push the branch to scout-plugin and open the landing PR
+  there.** Push the branch only, with no tags.
+
+  ```bash
+  cd "$W"
+  git push https://github.com/Raven-Scout/scout-plugin.git migrate/monorepo:migrate/monorepo
+  gh pr create --repo Raven-Scout/scout-plugin --base main --head migrate/monorepo --draft \
+    --title "refactor: the Scout monorepo — the app moves in (apps/macos/), the plugin moves to plugin/" \
+    --body-file "$W/.superpowers/pr-body.md"
+  NEW_PR="<number it printed>"
+  gh pr comment 132 --repo Raven-Scout/Scout --body "Moved to Raven-Scout/scout-plugin#$NEW_PR: the monorepo lands in scout-plugin, which is then renamed Raven-Scout/Scout (this repo becomes Raven-Scout/scout-app-legacy). This PR's review history stays here."
+  gh pr close 132 --repo Raven-Scout/Scout
+  gh pr close 99 --repo Raven-Scout/Scout --comment "Its spec and plan are part of Raven-Scout/scout-plugin#$NEW_PR."
+  ```
+
+  - The PR's diff is computed against the last subtree-merged scout-plugin
+    commit, so it reads as "everything moves into `plugin/`, the app arrives
+    in `apps/macos/`". Review it commit by commit.
+  - Pushing to `migrate/**` also starts push runs of `contract`, `plugin-test`
+    and `plugin-lint`. That's expected.
+
+- [ ] **3.2 Read the checks.**
+
+  ```bash
+  gh pr checks "$NEW_PR" --repo Raven-Scout/scout-plugin --watch
+  ```
+
+  - Expect four gate checks, `app-ci`, `plugin-test`, `plugin-lint` and
+    `contract`, all passing.
+  - Under each gate, the gated jobs must have actually **run**, because this
+    PR touches every area: `ScoutTests`, `test (…)` + `coverage`, `lint`,
+    `verify`.
+  - The PR's merge ref carries only the monorepo's workflows, so
+    scout-plugin's old ones don't run.
+  - If `plugin-test` fails only on the FS-watcher test, re-run the job.
+
+- [ ] **3.3 [J] Seed the app's release tags in scout-plugin.**
+  - Every app release tag is re-created as `app/<tag>` on the same commit and
+    pushed by explicit refspec. Its commits arrived with 3.1.
+  - The old app repo's `v0.14.0` → `app/v0.14.0`, which `release-app.sh` now
+    needs.
+
+  ```bash
+  cd "$W"
+  for t in $(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V); do
+    c=$(git rev-parse "$t^{commit}")
+    if git merge-base --is-ancestor "$c" migrate/monorepo; then
+      git tag -a "app/$t" "$c" -m "Scout.app $t (re-tagged at the monorepo cutover from the app repo's $t)"
+    else
+      echo "SKIP $t: $c is not in the branch history"
+    fi
+  done
+  git tag --list 'app/v*' | wc -l            # 43 app tags existed on 2026-10-04
+  git push https://github.com/Raven-Scout/scout-plugin.git $(git tag --list 'app/v*' | sed 's#^#refs/tags/#')
+  ```
+
+- [ ] **3.4 [J] Re-publish the newest app DMG as the survivor's Latest
+  release.** After Phase 4, `/releases/latest` (the website's and both
+  READMEs' "download the app" link) then still serves a DMG.
+  - This is **not** a new build: it re-hosts the DMG that already shipped. So
+    the "no app release before #125" rule (7.2) doesn't apply.
+  - scout-plugin's own `/releases/latest` switches to the app until the
+    rename. Nothing reads it.
+
+  ```bash
+  cd "$W"
+  LAST=$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -1)   # v0.14.0 on 2026-10-04
+  D=$(mktemp -d)
+  gh release download "$LAST" --repo Raven-Scout/Scout --pattern 'Scout-*.dmg' --dir "$D"
+  gh release view "$LAST" --repo Raven-Scout/Scout --json body --jq .body > "$D/notes.md"
+  printf '\n\n---\nRe-published at the monorepo cutover from the app repo'\''s %s release (now Raven-Scout/scout-app-legacy). Same DMG, not a new build.\n' "$LAST" >> "$D/notes.md"
+  gh release create "app/$LAST" --repo Raven-Scout/scout-plugin --verify-tag --latest \
+    --title "Scout.app ${LAST#v}" --notes-file "$D/notes.md" "$D"/Scout-*.dmg
+  gh api "repos/Raven-Scout/Scout/releases/tags/$LAST" --jq '[.assets[] | {name, size}]'
+  gh api "repos/Raven-Scout/scout-plugin/releases/tags/app/$LAST" --jq '[.assets[] | {name, size}]'   # same name and size
+  ```
+
+- [ ] **3.5 [J] Merge the landing PR, then go straight to Phase 4.**
+  - Re-run the 0.4 gate first.
+  - scout-plugin's ruleset `main` allows merge commits and needs 0 approvals.
+    There is no CODEOWNERS file (checked 2026-10-04), so Jordan can merge his
+    own PR. If GitHub still asks for an approval (the ruleset's
+    "unattributed changes" option), stop: changing the ruleset is its own [J]
+    step.
+  - Use **"Create a merge commit"**. **Never squash or rebase.** The plugin
+    history arrived by SHA-preserving subtree merges (R23), and the app's whole
+    history rides in with this merge; a squash flattens both and a rebase
+    rewrites every SHA.
+
+  ```bash
+  gh pr ready "$NEW_PR" --repo Raven-Scout/scout-plugin
+  gh pr merge "$NEW_PR" --repo Raven-Scout/scout-plugin --merge
+  ```
+
+  From this moment, existing plugin users who update pull the monorepo. Their
+  marketplace clone fast-forwards, and the root `marketplace.json` points at
+  `./plugin`. New-user installs are broken until 4.2.
+
+---
+
+## Phase 4 — The swap [J] (two renames, back to back)
+
+- [ ] **4.0 Preflight** (run before 3.5).
+  - Ask the coordinator to pause every session that pushes to either repo.
+  - Snapshot the app repo's open work:
+
+  ```bash
+  gh pr list --repo Raven-Scout/Scout --state open --limit 100 --json number,headRefName,isDraft,title > ~/.scout-worktrees/swap-legacy-open-prs.json
+  gh issue list --repo Raven-Scout/Scout --state open --limit 500 --json number,title,labels > ~/.scout-worktrees/swap-legacy-open-issues.json
+  jq length ~/.scout-worktrees/swap-legacy-open-prs.json ~/.scout-worktrees/swap-legacy-open-issues.json   # 8 PRs once 3.1 has closed #132 and #99; 15 issues (2026-10-04)
+  ```
+
+- [ ] **4.1 [J] Rename the app repo.**
+
+  ```bash
+  gh repo rename scout-app-legacy --repo Raven-Scout/Scout --yes
+  ```
+
+- [ ] **4.2 [J] Immediately, rename scout-plugin.**
+
+  ```bash
+  gh repo rename Scout --repo Raven-Scout/scout-plugin --yes
+  ```
+
+- [ ] **4.3 Verify the swap and the redirects.**
+
+  ```bash
+  gh repo view Raven-Scout/Scout --json nameWithOwner,stargazerCount,forkCount --jq '"\(.nameWithOwner) stars=\(.stargazerCount) forks=\(.forkCount)"'   # ≥17 / ≥9
+  gh repo view Raven-Scout/scout-app-legacy --json nameWithOwner,stargazerCount --jq '"\(.nameWithOwner) stars=\(.stargazerCount)"'
+  [ "$(git ls-remote https://github.com/Raven-Scout/scout-plugin.git refs/heads/main)" = "$(git ls-remote https://github.com/Raven-Scout/Scout.git refs/heads/main)" ] && echo "git redirect OK"
+  curl -sIL -o /dev/null -w '%{http_code} %{url_effective}\n' https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/.claude-plugin/marketplace.json
+  curl -fsSIL -o /dev/null -w '%{http_code}\n' https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh   # 200
+  gh api repos/Raven-Scout/Scout/releases/latest --jq '.tag_name, [.assets[].name]'                                 # app/v…, Scout-….dmg
+  ```
+
+  The raw `scout-plugin` URL is what v0.13.0 installs' self-update check
+  reads. If it doesn't redirect (no 200), those installs stop *seeing* update
+  notices. Their marketplace still updates them through the git redirect. Say
+  so in #277 (Phase 10.4); it doesn't block.
+
+  Then the existing-user path, in the 2.2 sandbox:
+
+  ```bash
+  SB_OLD=$(cat ~/.scout-worktrees/sb-old.path)
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin marketplace update scout-plugin      # through the redirect
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin update scout@scout-plugin
+  CLAUDE_CONFIG_DIR="$SB_OLD" claude plugin list --json | grep -A4 '"scout@scout-plugin"'
+  curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | CLAUDE_CONFIG_DIR="$SB_OLD" bash -s -- --check   # "preconditions OK", no re-point error
+  python3 ~/.scout-worktrees/r27-guard.py "$SB_OLD" | diff ~/.scout-worktrees/r27-before.txt - && echo "real config untouched"
+  ```
+
+  - The update must succeed.
+  - The version stays at today's until the first `plugin/v*` release (Phase
+    7.1), which moves it onto the `plugin/` tree.
+  - If the update fails here, stop: every existing user is in the same state.
+    Fix forward (for example, a re-point note in #277) before anything else.
+
+- [ ] **4.4 [J] Pin the numbering notice on the survivor.**
+
+  ```bash
+  cat > /tmp/numbering-notice.md <<'EOF'
+  **This repo was renamed on DATE.** It was `Raven-Scout/scout-plugin` and took the name `Raven-Scout/Scout` when the macOS app moved in. The app now lives in `apps/macos/` and the plugin in `plugin/`. The app's own pre-move repo is archived as [`Raven-Scout/scout-app-legacy`](https://github.com/Raven-Scout/scout-app-legacy).
+
+  **Issue and PR numbers below #THIS were opened as scout-plugin items.** The old app repo had its own #1–#132. Any `Raven-Scout/Scout#N` link written before DATE, and any bare `#N` in an app commit or an `apps/macos/` file, means `Raven-Scout/scout-app-legacy#N`. Open app issues were transferred here with new numbers, and their old URLs redirect to them.
+
+  Old `Raven-Scout/scout-plugin` URLs, clones and Claude Code marketplaces keep working through GitHub's redirect. Nothing to do.
+  EOF
+  URL=$(gh issue create --repo Raven-Scout/Scout --title "Read me: this repo was scout-plugin; old app issue numbers live in scout-app-legacy" --body-file /tmp/numbering-notice.md)
+  N=${URL##*/}
+  sed -e "s/#THIS/#$N/" -e "s/DATE/$(TZ=America/New_York date +%F)/g" /tmp/numbering-notice.md > /tmp/numbering-notice.final.md
+  gh issue edit "$N" --repo Raven-Scout/Scout --body-file /tmp/numbering-notice.final.md
+  gh issue pin "$N" --repo Raven-Scout/Scout
+  ```
+
+- [ ] **4.5 Old app clones now point at the survivor.** `~/scout-app` and
+  every worktree of it have `origin = https://github.com/Raven-Scout/Scout.git`.
+  That includes `W` and the Part B/C worktrees. Since 4.2, that URL is the
+  survivor.
+  - Main fast-forwards: the survivor's `main` descends from the app's old
+    `main`.
+  - The app's local bare `v*` tags collide with the survivor's. A plain
+    `git fetch` reports "would clobber existing tag" and exits non-zero.
+  - Run this once per clone (worktrees share the clone's config). It changes
+    only local git config:
+
+  ```bash
+  git -C ~/scout-app config remote.origin.tagOpt --no-tags
+  git -C ~/scout-app remote add legacy https://github.com/Raven-Scout/scout-app-legacy.git
+  ```
+
+  Tell every session working in such a clone (the coordinator routes this).
+  New work should start from a fresh survivor clone.
+
+---
+
+## Phase 5 — Carry open work across [J]
+
+- [ ] **5.1 [J] Transfer the app repo's open issues** (15 on 2026-10-04).
+  - Copy the labels first, so they survive the transfer.
+  - Each transferred issue gets a new number. Its legacy URL redirects to
+    the new one.
+
+  ```bash
+  gh label clone Raven-Scout/scout-app-legacy --repo Raven-Scout/Scout
+  for n in $(jq -r '.[].number' ~/.scout-worktrees/swap-legacy-open-issues.json); do
+    new=$(gh issue transfer "$n" Raven-Scout/Scout --repo Raven-Scout/scout-app-legacy)
+    echo "scout-app-legacy#$n -> $new" | tee -a ~/.scout-worktrees/swap-issue-map.txt
+  done
+  gh issue list --repo Raven-Scout/scout-app-legacy --state open --json number --jq length   # 0
+  ```
+
+  After the first transfer, check that its labels and milestone came along.
+  Fix the rest by hand if not.
+
+- [ ] **5.2 [J] Re-open the app repo's open PRs on the survivor.**
+  - On 2026-10-04, after 3.1 closes #132 and #99, these are #131, #129,
+    #128, #127, #125, #118, #70 and #68.
+  - **#125 and #128 belong to the Part B/C session.** Send it this recipe
+    (2.3) rather than doing them for it.
+  - For each of the rest, in `R`:
+
+  ```bash
+  cd "$R" && git fetch origin
+  N="<legacy PR number>"
+  read -r B DRAFT < <(gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json headRefName,isDraft --jq '"\(.headRefName) \(.isDraft)"')
+  git fetch https://github.com/Raven-Scout/scout-app-legacy.git "$B" && git switch -c "$B" FETCH_HEAD
+  git -c merge.directoryRenames=true rebase origin/main
+  git ls-files -- Scout ScoutTests Scout.xcodeproj scripts | head      # must print nothing
+  git push -u origin "$B"
+  gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json title,body --jq '"Re-opened from Raven-Scout/scout-app-legacy#'"$N"' (review history there; `#N` references in the text below are that repo'"'"'s).\n\n" + .body' > /tmp/pr-$N-body.md
+  gh pr create --repo Raven-Scout/Scout --base main --head "$B" $([ "$DRAFT" = true ] && echo --draft) \
+    --title "$(gh pr view "$N" --repo Raven-Scout/scout-app-legacy --json title --jq .title)" --body-file /tmp/pr-$N-body.md
+  NEWN="<number it printed>"; echo "scout-app-legacy#$N -> Raven-Scout/Scout#$NEWN" | tee -a ~/.scout-worktrees/swap-pr-map.txt
+  gh pr close "$N" --repo Raven-Scout/scout-app-legacy --comment "Re-opened as Raven-Scout/Scout#$NEWN after the monorepo move."
+  ```
+
+  - Rebase conflicts are likely only around `AppState.swift`,
+    `ConnectorHealthServiceTests`, `CLAUDE.md`/`README.md`, or CI.
+  - The docs-only PRs (#127, #118, #68) rebase cleanly, because `docs/`
+    stayed at the root.
+  - #70 edits `.github/workflows/ci.yml`. Port that change into `app-ci.yml`
+    by hand.
+
+- [ ] **5.3 [J] Rebase the survivor's own open PRs into `plugin/`.** These are
+  Jordan's: #275 and #261 on 2026-10-04. Each one:
+
+  ```bash
+  cd "$R" && git fetch origin && git switch "<its branch>"
+  git -c merge.directoryRenames=true rebase origin/main
+  git diff --name-only origin/main... | grep -v '^plugin/\|^docs/'     # anything outside plugin/ or docs/ needs a look
+  git push --force-with-lease
+  ```
+
+- [ ] **5.4 Notify.**
+  - **Part B/C:** the 2.3 list.
+  - **Coordinator:** `swap-issue-map.txt` and `swap-pr-map.txt`, for the agent
+    memory and vault rewrite.
+  - **Review session:** the landing merge SHA.
+
+---
+
+## Phase 6 — Prove the gates, then require them [J]
+
+- [ ] **6.1 [J] Prove the skip path on a docs-only PR.** Do this BEFORE adding
+  the status-check rule. It must target `main`, because `app-ci` only
+  triggers on PRs into `main`.
 
   ```bash
   cd "$R" && git fetch origin && git switch -c ci/gate-proof-docs origin/main
@@ -476,7 +802,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   Expect `app-ci`, `plugin-test`, `plugin-lint` and `contract` all
   **success**, with every gated job **skipped** and each `changes` job logging
   `run=false`.
-- [ ] **3.5 Prove the fail path on a contract-drift PR** [outward], recommended.
+- [ ] **6.2 [J] Prove the fail path on a contract-drift PR** (recommended).
 
   ```bash
   cd "$R" && git switch -c ci/gate-proof-drift origin/main
@@ -493,8 +819,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   ```
 
   Expect `contract` to **fail**, with an `::error` on that file naming the
-  `cp` fix.
-- [ ] Close both throwaway PRs and delete their branches:
+  `cp` fix. Then close both throwaway PRs and delete their branches:
 
   ```bash
   for b in ci/gate-proof-docs ci/gate-proof-drift; do
@@ -502,8 +827,11 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   done
   cd "$R" && git switch main && git branch -D ci/gate-proof-docs ci/gate-proof-drift
   ```
-- [ ] **3.6 Require the four gates** [outward]. Scout's ruleset `main` (id
-  17316108 on 2026-10-04) has no status-check rule today. Add one:
+- [ ] **6.3 [J] Require the four gates** on the survivor's ruleset `main`.
+  - It came from scout-plugin: deletion, non-fast-forward, and a
+    pull-request rule with 0 approvals. It has no status-check rule.
+  - Quarantine the flaky FS-watcher test first (see Open decisions), or it
+    will randomly block merges.
 
   ```bash
   RS=$(gh api repos/Raven-Scout/Scout/rulesets --jq '.[] | select(.name=="main") | .id')
@@ -518,65 +846,83 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   gh api "repos/Raven-Scout/Scout/rulesets/$RS" --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
   ```
 
-  Expect `app-ci`, `plugin-test`, `plugin-lint` and `contract`. If the PUT
-  rejects a field it returned itself, add the rule in Settings → Rules → `main`
-  → "Require status checks to pass", using those four names. Keep the
-  `pull_request` rule's `allowed_merge_methods` including `merge`.
+  - Expect `app-ci`, `plugin-test`, `plugin-lint` and `contract`.
+  - If the PUT rejects a field it returned itself, add the rule by hand:
+    Settings → Rules → `main` → "Require status checks to pass", with those
+    four names.
+  - Keep `merge` in the `pull_request` rule's `allowed_merge_methods`.
 
 ---
 
-## Phase 4 — Releases (both from `main`, after Phase 3)
+## Phase 7 — Releases (from the survivor's `main`) [J]
 
-- [ ] **4.1 Plugin first.** Releasing it first means the app's version floor
+Jordan runs both release scripts. **No agent runs them, not even "to check
+something".**
+
+- [ ] **7.1 Plugin first.** Releasing it first means the app's version floor
   names a published plugin.
   1. Fill `plugin/CHANGELOG.md`'s `## [Unreleased]` before preparing.
      `release-plugin.yml` refuses an empty section. Cover:
-     - the move to `Raven-Scout/Scout` and the re-point commands
-     - `self-update check` now reads the monorepo manifest
-     - `/scout-update`'s Step 0.2 archived-marketplace stop and its
-       two-layout `~/scout-plugin` resolver
-     - the installer's stale-marketplace check
+     - the repo is now `Raven-Scout/Scout`, renamed from scout-plugin. Old
+       URLs and marketplaces redirect, so users have nothing to do.
+     - the plugin lives under `plugin/`, with `marketplace.json` at the repo
+       root
+     - `self-update check` reads the root manifest
+     - `/scout-update` Step 0.2 now stops only for a marketplace pointing at
+       another repo, and gains a two-layout `~/scout-plugin` resolver
+     - the installer's marketplace-source check
      - `scoutctl`'s `marketplaces/<name>/plugin/` venv candidates
-     - anything Phase 1 pulled in
-  2. Prepare. Use **`minor`**: it leaves the next patch of scout-plugin's own
-     line free for its final release (Phase 7).
+     - anything Phase 1 pulled in (#247's version switch on update, #264's
+       `/scout-plan`, …)
+  2. Prepare with **`minor`**, because the layout changed:
 
      ```bash
      cd "$R" && git switch main && git pull --ff-only && git status --porcelain   # must print nothing
-     bash plugin/scripts/release-plugin.sh minor        # bumps on release/vX.Y.Z, commits, pushes, opens the release PR [outward]
+     bash plugin/scripts/release-plugin.sh minor        # bumps on release/vX.Y.Z, commits, pushes, opens the release PR
      ```
   3. Merge the release PR once its four gates are green. Then:
 
      ```bash
      cd "$R" && git switch main && git pull --ff-only
      NEW=$(cd plugin/engine && .venv/bin/python -m scout.scripts.versioning check)
-     bash plugin/scripts/release-plugin.sh --finalize "plugin/v$NEW"     # tags origin/main, pushes the tag [outward]
+     bash plugin/scripts/release-plugin.sh --finalize "plugin/v$NEW"     # tags origin/main, pushes the tag
      gh run watch --repo Raven-Scout/Scout "$(gh run list --repo Raven-Scout/Scout --workflow release-plugin.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
      gh release view "plugin/v$NEW" --repo Raven-Scout/Scout
-     gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name        # must NOT be plugin/v… (--latest=false)
+     gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name        # still app/v… (--latest=false)
      ```
+  4. Re-run Phase 4.3's sandbox block. `claude plugin update` must now land
+     `plugin/v$NEW`, with an installPath inside `$SB_OLD` and a plugin-only
+     tree. Set `IP` to the installPath the block prints, then check the tree
+     with `test ! -e "$IP/apps" && ! ls "$IP"/*.xcodeproj 2>/dev/null`.
   - Never run `versioning set` with a lower version: nothing enforces
-    monotonicity. `versioning bump` is not a query; it WRITES all four
-    manifests (the release script relies on that). Never push a bare `v*` tag.
-- [ ] **4.2 App.** Needs the Developer ID Application cert in the keychain and
-  the `scout-notary` notarytool profile. The script auto-picks the version from
-  `apps/macos` commits since the newest `app/v*` tag, falling back to the
-  newest bare `v*` tag. It stamps `SCScoutPluginFloor` from `plugin.json`,
-  tags `app/vX.Y.Z`, pushes the tag, and publishes the DMG release with
-  `--latest --repo <origin slug>`.
+    monotonicity.
+  - `versioning bump` is not a query; it WRITES all four manifests (the
+    release script relies on that).
+  - Never push a bare `v*` tag.
+- [ ] **7.2 App.**
+  - Needs the Developer ID Application cert in the keychain and the
+    `scout-notary` notarytool profile.
+  - The script picks the version from `apps/macos` commits since the newest
+    `app/v*` tag. That is the `app/v0.14.0` seeded in 3.3, so `git fetch --tags`
+    in `R` first. With no `app/v*` tag it stops; it never falls back to bare
+    `v*`.
+  - It stamps `SCScoutPluginFloor` from `plugin.json`, tags `app/vX.Y.Z`,
+    pushes the tag, and publishes the DMG release with
+    `--latest --repo <origin slug>`.
 
-  **Do not release the app until #125 has merged** — until then the interim
-  `ScoutctlLocator` still has the pip/conda/`$PATH` fallbacks Jordan ruled out
-  (R37; Part B deletes it). Check first:
+  **Do not release the app until Part B has merged.** Until then the interim
+  `ScoutctlLocator` still has the pip/conda/`$PATH` fallbacks Jordan ruled
+  out (R37; Part B deletes it). Part B is re-opened on the survivor in 5.2;
+  check it there:
 
   ```bash
-  gh pr view 125 --repo Raven-Scout/Scout --json state --jq .state   # must print MERGED
+  gh pr list --repo Raven-Scout/Scout --state merged --head feat/app-managed-engine --json number,mergedAt   # must list it
   ```
 
   ```bash
-  cd "$R" && git switch main && git pull --ff-only
+  cd "$R" && git switch main && git pull --ff-only && git fetch --tags origin
   SKIP_NOTARIZE=1 SKIP_RELEASE=1 bash apps/macos/scripts/release-app.sh   # dry run: prints the version it would release
-  bash apps/macos/scripts/release-app.sh                                    # [outward] or pass an explicit X.Y.Z
+  bash apps/macos/scripts/release-app.sh                                    # or pass an explicit X.Y.Z
   gh api repos/Raven-Scout/Scout/releases/latest --jq '.tag_name, [.assets[].name]'   # app/v…, with Scout-<ver>.dmg
   ```
 
@@ -584,34 +930,19 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ---
 
-## Phase 5 — Clean-machine verification (sandboxed ONLY)
+## Phase 8 — Clean-machine verification (sandboxed ONLY)
 
-**Never run `claude plugin marketplace add/remove/update` or
-`claude plugin install/uninstall` against the real config.** Jordan's live
-marketplace is also named `scout-plugin`, and removing it uninstalls the
-plugin his scheduled runs use (R16). Every command below carries
-`CLAUDE_CONFIG_DIR=<sandbox>`. The R27 semantic guard brackets the phase.
-Whole-file hashes are not a valid guard, because Claude Code rewrites other
-entries in the background.
+Use the same rules and guard as 2.2: never touch the real config, and every
+command carries `CLAUDE_CONFIG_DIR=<sandbox>`.
 
-- [ ] **5.1 Guard: before.**
+- [ ] **8.1 Guard: before.**
 
   ```bash
-  cat > /tmp/r27-guard.py <<'PY'
-  import json, os, sys
-  base = os.path.expanduser("~/.claude/plugins")
-  km = json.load(open(f"{base}/known_marketplaces.json"))
-  ip = json.load(open(f"{base}/installed_plugins.json"))
-  print("marketplace:", json.dumps(km.get("scout-plugin"), sort_keys=True))
-  print("install:", json.dumps(ip.get("plugins", {}).get("scout@scout-plugin"), sort_keys=True))
-  blob = json.dumps(km) + json.dumps(ip)
-  for needle in sys.argv[1:]:
-      print("references", needle, ":", needle in blob)
-  PY
   SB="$(mktemp -d "$HOME/.scout-worktrees/claude-sandbox.XXXXXX")"
-  python3 /tmp/r27-guard.py "$SB" "$W" > /tmp/r27-before.txt; cat /tmp/r27-before.txt   # both "references … : False"
+  SB2="$(mktemp -d "$HOME/.scout-worktrees/claude-sandbox.XXXXXX")"
+  python3 ~/.scout-worktrees/r27-guard.py "$SB" "$SB2" > /tmp/r27-before.txt; cat /tmp/r27-before.txt   # "references … : False"
   ```
-- [ ] **5.2 Prove isolation, then install from GitHub.**
+- [ ] **8.2 A new user, installing from GitHub.**
 
   ```bash
   CLAUDE_CONFIG_DIR="$SB" claude plugin marketplace list    # must NOT list scout-plugin; if it does, STOP
@@ -622,79 +953,67 @@ entries in the background.
   e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps]
   print(next(("%s %s" % (p["version"], p["installPath"]) for p in e if p.get("id")=="scout@scout-plugin"), ""))')
   echo "installed $VER at $IP"
-  ```
-
-  The version must equal `plugin/v$NEW` from 4.1, and the installPath must be
-  inside `$SB`. Then:
-
-  ```bash
   case "$IP" in "$SB"/*) echo "installPath is inside the sandbox" ;; *) echo "installPath is NOT inside the sandbox — STOP HERE" ;; esac
   test -x "$IP/engine/bin/scoutctl" && test ! -e "$IP/apps" && ! ls "$IP"/*.xcodeproj 2>/dev/null && echo "plugin-only tree OK"
   bash "$IP/scripts/install-venv.sh" && "$IP/.venv/bin/scoutctl" version     # the venv lands inside $IP (sandbox)
   ```
-- [ ] **5.3 Rehearse an existing user's migration** in a second sandbox, with
-  the installer in check mode only:
+
+  The version must equal `plugin/v$NEW` from 7.1.
+- [ ] **8.3 A new install that uses the OLD name** (old docs and blog posts):
 
   ```bash
-  SB2="$(mktemp -d "$HOME/.scout-worktrees/claude-sandbox.XXXXXX")"
-  CLAUDE_CONFIG_DIR="$SB2" claude plugin marketplace add Raven-Scout/scout-plugin      # the OLD repo
-  curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | CLAUDE_CONFIG_DIR="$SB2" bash -s -- --check
-  ```
-
-  Expect exit 1 and the remove/add/install instructions. Then run them:
-
-  ```bash
-  CLAUDE_CONFIG_DIR="$SB2" claude plugin marketplace remove scout-plugin
-  CLAUDE_CONFIG_DIR="$SB2" claude plugin marketplace add Raven-Scout/Scout
+  CLAUDE_CONFIG_DIR="$SB2" claude plugin marketplace add Raven-Scout/scout-plugin      # redirects to Raven-Scout/Scout
   CLAUDE_CONFIG_DIR="$SB2" claude plugin install scout@scout-plugin
-  curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | CLAUDE_CONFIG_DIR="$SB2" bash -s -- --check
+  curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | CLAUDE_CONFIG_DIR="$SB2" bash -s -- --check   # old one-liner: "preconditions OK"
   ```
-
-  The second check must say `preconditions OK`.
-- [ ] **5.4 Guard: after.** Then clean up.
+- [ ] **8.4 Guard: after.** Then clean up.
 
   ```bash
-  python3 /tmp/r27-guard.py "$SB" "$W" > /tmp/r27-after.txt; diff /tmp/r27-before.txt /tmp/r27-after.txt && echo "R27 guard: real config untouched"
-  python3 /tmp/r27-guard.py "$SB2" | tail -1                                    # "references … : False"
-  rm -rf "$SB" "$SB2"
+  python3 ~/.scout-worktrees/r27-guard.py "$SB" "$SB2" > /tmp/r27-after.txt; diff /tmp/r27-before.txt /tmp/r27-after.txt && echo "R27 guard: real config untouched"
+  rm -rf "$SB" "$SB2" "$(cat ~/.scout-worktrees/sb-old.path)"
   ```
 
-  If 5.2 or 5.3 fails, **do not archive scout-plugin.** Fix forward first.
+  If 8.2 or 8.3 fails, **do not archive the legacy repo** (Phase 10). Fix
+  forward first.
 
 ---
 
-## Phase 6 — Jordan's own machine
+## Phase 9 — Jordan's own machine
 
 Jordan runs this phase by hand. It deliberately changes his real Claude Code
 config, so no agent runs it.
 
-His live install is a **directory** marketplace named `scout-plugin` at
-`~/scout-plugin`, his pre-monorepo dev checkout. `scout@scout-plugin`
-installs from it, and the engine pointer (`managed_by: dev`), the launchd
-jobs, and `~/miniconda3/bin/scoutctl` (an editable install of
-`~/scout-plugin/engine`) all hang off it. `/scout-update`'s resolver prefers a
-git checkout at `~/scout-plugin` over the installed plugin. So whatever sits
-at `~/scout-plugin` is what upgrades his vault.
+- His live install is a **directory** marketplace named `scout-plugin` at
+  `~/scout-plugin`, a clone of scout-plugin. `scout@scout-plugin` installs
+  from it.
+- The engine pointer (`managed_by: dev`), the launchd jobs, and
+  `~/miniconda3/bin/scoutctl` (an editable install of `~/scout-plugin/engine`)
+  all hang off that clone.
+- `/scout-update`'s resolver prefers a git checkout at `~/scout-plugin`.
+- After the swap, that clone's `origin` redirects to the survivor, whose
+  `main` fast-forwards from scout-plugin's old `main`. So the same clone
+  simply pulls into the monorepo layout. No second clone is needed.
 
-- [ ] **6.1 Pick a quiet window.** Choose a time with no scheduled slot due:
+- [ ] **9.1 Pick a quiet window.** Choose a time with no scheduled slot due:
 
   ```bash
   ~/.local/bin/scoutctl schedule list-upcoming --json | head
   ```
-- [ ] **6.2 Recommended: put a monorepo clone at the same path.** Move the
-  legacy checkout aside (don't delete it yet) and clone in its place:
+- [ ] **9.2 Pull the clone into the monorepo layout.** Rehearse first in a
+  sandbox:
+  - copy `~/scout-plugin` to a temp directory;
+  - point a sandbox directory marketplace at it;
+  - pull, then run `marketplace update` and `plugin update`.
+
+  Then for real:
 
   ```bash
-  mv ~/scout-plugin ~/scout-plugin.legacy-$(date +%Y%m%d)
-  git clone https://github.com/Raven-Scout/Scout.git ~/scout-plugin
-  ```
-
-  Rehearse the next two commands in a sandbox first: a directory marketplace
-  pointing at a legacy-layout dir, swapped for the monorepo layout, then
-  `marketplace update` plus `plugin update`. Then for real:
-
-  ```bash
-  claude plugin marketplace update scout-plugin       # re-reads ~/scout-plugin/.claude-plugin/marketplace.json ("source": "./plugin")
+  git -C ~/scout-plugin status --porcelain; git -C ~/scout-plugin rev-parse --abbrev-ref HEAD   # clean, on main
+  git -C ~/scout-plugin rev-parse HEAD > ~/.scout-worktrees/scout-plugin-pre-monorepo.sha        # the rollback point
+  git -C ~/scout-plugin remote set-url origin https://github.com/Raven-Scout/Scout.git
+  git -C ~/scout-plugin pull --ff-only
+  test -f ~/scout-plugin/.claude-plugin/marketplace.json && test -f ~/scout-plugin/plugin/.claude-plugin/plugin.json && echo "monorepo layout"
+  claude plugin marketplace update scout-plugin       # re-reads the root marketplace.json ("source": "./plugin")
   claude plugin update scout@scout-plugin
   ```
 
@@ -706,17 +1025,14 @@ at `~/scout-plugin` is what upgrades his vault.
   claude plugin marketplace add ~/scout-plugin
   claude plugin install scout@scout-plugin
   ```
-
-  The alternative, pointing the marketplace at `~/scout-app`, makes his live
-  plugin follow whatever branch `~/scout-app` has checked out. Not recommended.
-- [ ] **6.3 Rebuild and re-point the engine.**
+- [ ] **9.3 Rebuild and re-point the engine.**
 
   ```bash
   bash ~/scout-plugin/plugin/scripts/install-venv.sh
   ~/scout-plugin/plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev   # re-points plists, shim and ~/.local/state/scout/engine.json
   ~/miniconda3/bin/pip install -e ~/scout-plugin/plugin/engine                  # or uninstall that editable copy
   ```
-- [ ] **6.4 Verify.**
+- [ ] **9.4 Verify.**
 
   ```bash
   claude plugin list --json | grep -A3 '"scout@scout-plugin"'
@@ -726,124 +1042,148 @@ at `~/scout-plugin` is what upgrades his vault.
   ```
 
   Then watch the next scheduled run go green.
-- [ ] **6.5 Retire the legacy checkout.** After a few days of green runs,
-  delete `~/scout-plugin.legacy-*`. Until then it is the rollback: move it
-  back and run `claude plugin marketplace update scout-plugin`.
+- [ ] **9.5 Rollback, if needed**:
+
+  ```bash
+  git -C ~/scout-plugin reset --keep "$(cat ~/.scout-worktrees/scout-plugin-pre-monorepo.sha)"
+  claude plugin marketplace update scout-plugin
+  ```
+
+  Delete the `.sha` file after a few days of green runs.
 
 ---
 
-## Phase 7 — Final scout-plugin release, archive, org README, close the notice [outward]
+## Phase 10 — Archive the app repo; fix notices, Pages, org README [J]
 
-Only after Phase 5 passes.
+Run this only after Phase 8 passes and Phase 5 is complete.
 
-**7.1 MUST ship before 7.2 archives the repo.** v0.13.0 users' only upgrade
-path is `self-update check` / `/scout-status` pointing them at a newer
-release through the marketplace manifest 7.1 repoints — and the installer
-redirect 7.1 adds to `install.sh`. An archived repo is read-only: if 7.2 runs
-first, there is no way to ship 7.1's re-point messaging at all, and v0.13.0
-users are stranded permanently on the dead repo.
-
-- [ ] **7.1 Ship scout-plugin's last release**, so users still on the old
-  marketplace get the migration messages through their normal update path.
-  Open one PR on `Raven-Scout/scout-plugin` with:
-  - **README:** a top banner saying "Moved to Raven-Scout/Scout", with the
-    three re-point commands.
-  - **`engine/scout/scripts/self_update.py`:** `RAW_MARKETPLACE_URL` →
-    `https://raw.githubusercontent.com/Raven-Scout/Scout/main/.claude-plugin/marketplace.json`.
-    `/scout-status` on old installs then reports the monorepo's newer version
-    as available.
-  - **`commands/scout-update.md`:** add "Step 0.2: Stop if the marketplace
-    still points at the archived repo", copied verbatim from the monorepo's
-    `plugin/commands/scout-update.md`.
-  - **`install.sh`:** make it a redirect, so old `curl` one-liners keep
-    working:
-
-    ```bash
-    #!/usr/bin/env bash
-    echo "Scout has moved to Raven-Scout/Scout — running the current installer…" >&2
-    curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash -s -- "$@"
-    ```
-
-  **Version:** the next PATCH of scout-plugin's latest tag, which must stay
-  below the monorepo's `plugin/v$NEW`. Check:
+- [ ] **10.1 Gate:** the legacy repo has nothing open.
 
   ```bash
-  OLD=$(git ls-remote --tags --refs https://github.com/Raven-Scout/scout-plugin.git 'v*' | sed 's#.*refs/tags/v##' | sort -V | tail -1)
-  python3 - "$OLD" "$NEW" <<'PY'
-  import sys
-  o=[int(x) for x in sys.argv[1].split(".")]; n=[int(x) for x in sys.argv[2].split(".")]
-  f=o[:2]+[o[2]+1]; print("final scout-plugin:", ".".join(map(str,f))); assert f < n, "final would not be below the monorepo release"
-  PY
+  gh issue list --repo Raven-Scout/scout-app-legacy --state open --json number --jq length   # 0
+  gh pr list    --repo Raven-Scout/scout-app-legacy --state open --json number --jq length   # 0
   ```
-
-  Release it with scout-plugin's own flow: `scripts/release.sh patch`, then
-  `--finalize v<that>`, in a scout-plugin clone.
-- [ ] **7.2 Archive** after 0.4 still reads 0:
+- [ ] **10.2 [J] Describe the legacy repo before freezing it.**
 
   ```bash
-  gh repo archive Raven-Scout/scout-plugin --yes
-  gh repo view Raven-Scout/scout-plugin --json isArchived --jq .isArchived   # true
+  gh repo edit Raven-Scout/scout-app-legacy --homepage https://github.com/Raven-Scout/Scout \
+    --description "Archived: Scout.app's pre-monorepo repo. The app now lives in Raven-Scout/Scout under apps/macos/. Issue/PR numbers here are this repo's own."
   ```
-- [ ] **7.3 Org profile README.** `Raven-Scout/.github`, `profile/README.md`, has
-  `scout-plugin` links on lines 2, 30, 39, 56, 67 and 68 (2026-10-04):
+- [ ] **10.3 [J] Archive it.**
+
+  ```bash
+  gh repo archive Raven-Scout/scout-app-legacy --yes
+  gh repo view Raven-Scout/scout-app-legacy --json isArchived --jq .isArchived   # true
+  ```
+
+  Its releases and DMGs, `v0.1.0`–`v0.14.0`, stay downloadable there.
+- [ ] **10.4 [J] Rewrite and close the move notice, #277.** Its links to
+  `Raven-Scout/Scout#132` and `#99` now open scout-plugin items, and its
+  re-point commands are no longer needed.
+
+  ```bash
+  cat > /tmp/notice-277.md <<EOF
+  **Done.** scout-plugin was renamed **Raven-Scout/Scout** and is now the Scout monorepo: the plugin lives at \`plugin/\`, the macOS app at \`apps/macos/\`. Landed in #$NEW_PR. Design: [scout-app-legacy#99](https://github.com/Raven-Scout/scout-app-legacy/pull/99); the earlier draft was [scout-app-legacy#132](https://github.com/Raven-Scout/scout-app-legacy/pull/132).
+
+  **Nothing to do.** Old \`Raven-Scout/scout-plugin\` URLs, clones and Claude Code marketplaces keep working through GitHub's redirect, and the plugin id stays \`scout@scout-plugin\`. The re-point commands this notice used to list still work but aren't needed.
+
+  The app's old repo, with its own issue/PR numbers and every pre-move release, is archived as [Raven-Scout/scout-app-legacy](https://github.com/Raven-Scout/scout-app-legacy). See the pinned numbering notice.
+  EOF
+  gh issue edit 277 --repo Raven-Scout/Scout --body-file /tmp/notice-277.md
+  gh issue unpin 277 --repo Raven-Scout/Scout
+  gh issue close 277 --repo Raven-Scout/Scout --comment "The move is complete. See the updated description above."
+  ```
+
+  If 4.3 found that the raw `scout-plugin` URL doesn't redirect, add one line
+  to the notice: v0.13.0 installs won't see update notices until their next
+  `/scout-update`.
+- [ ] **10.5 [J] Fix the Phase 0 closing comments' design link** on #216,
+  #194, #180, #176 and #175:
+
+  ```bash
+  for n in 216 194 180 176 175; do
+    gh api "repos/Raven-Scout/Scout/issues/$n/comments" \
+      --jq '.[] | select(.user.login=="jordanrburger" and (.body|contains("Raven-Scout/Scout#99"))) | .id' |
+    while read -r id; do
+      body=$(gh api "repos/Raven-Scout/Scout/issues/comments/$id" --jq .body | sed 's#Raven-Scout/Scout\#99#Raven-Scout/scout-app-legacy\#99#g')
+      gh api --method PATCH "repos/Raven-Scout/Scout/issues/comments/$id" -f body="$body" --jq .html_url
+    done
+  done
+  ```
+- [ ] **10.6 Pages.** The site moved with the repo.
+
+  ```bash
+  gh api repos/Raven-Scout/Scout/pages --jq '.html_url, .source'                  # https://raven-scout.github.io/Scout/, main /docs
+  curl -s -o /dev/null -w '%{http_code}\n' https://raven-scout.github.io/Scout/    # 200
+  curl -s -o /dev/null -w '%{http_code}\n' https://raven-scout.github.io/scout-plugin/   # expect 404: project Pages don't follow renames
+  ```
+
+  - The branch already points `og:url`, `og:image`, and the READMEs' privacy
+    and terms links at `/Scout/`.
+  - What's left is Open decision M7: the old-URL stubs, the `og.png` text,
+    and excluding internal docs.
+- [ ] **10.7 [J] Org profile README.** `Raven-Scout/.github`,
+  `profile/README.md`, had `scout-plugin` links on lines 2, 30, 39, 56, 67 and
+  68 (2026-10-04).
   - Re-point the repo link and the `curl` installer URL to `Raven-Scout/Scout`.
-  - Describe the engine as `Raven-Scout/Scout` → `plugin/`.
-  - The `og.png` and Pages privacy/terms URLs depend on Open decision M7.
-- [ ] **7.4 Close the freeze notice:**
-
-  ```bash
-  NOTICE="<freeze-notice issue number from 0.3>"
-  gh issue close "$NOTICE" --repo Raven-Scout/scout-plugin --comment "Done — the monorepo is live. Re-point with: claude plugin marketplace remove scout-plugin && claude plugin marketplace add Raven-Scout/Scout && claude plugin install scout@scout-plugin"
-  ```
+  - Describe the engine as `Raven-Scout/Scout` → `plugin/` and the app as
+    `apps/macos/`.
+  - Change the Pages URLs to `/Scout/`.
 
 ---
 
-## Phase 8 — Close-out checks
+## Phase 11 — Close-out checks
 
 ```bash
-gh repo view Raven-Scout/scout-plugin --json isArchived --jq .isArchived          # true
-gh release list --repo Raven-Scout/Scout --limit 5                                 # plugin/v$NEW and the app/v… release
-gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name                      # app/v…
+gh repo view Raven-Scout/scout-app-legacy --json isArchived --jq .isArchived          # true
+gh repo view Raven-Scout/Scout --json stargazerCount,forkCount                        # ≥17 / ≥9
+gh repo view Raven-Scout/scout-plugin --json nameWithOwner --jq .nameWithOwner        # Raven-Scout/Scout — the redirect is alive; nothing took the name
+gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name                         # app/v…
+gh release list --repo Raven-Scout/Scout --limit 5                                    # plugin/v$NEW and app/v…
 cd "$R" && git switch main && git pull --ff-only
-grep -rn 'Raven-Scout/scout-plugin' README.md install.sh plugin/README.md apps/macos/README.md docs/index.html PRIVACY.md TERMS.md .claude-plugin/ plugin/.claude-plugin/ plugin/engine/scout/scripts/self_update.py
+git grep -nE 'Scout#[0-9]|github\.com/Raven-Scout/Scout/(pull|issues)/[0-9]' -- ':!*.jsonl' | grep -v scout-app-legacy   # only links written after the swap
+git grep -n 'Raven-Scout/scout-plugin' -- README.md install.sh plugin/README.md apps/macos/README.md docs/index.html PRIVACY.md TERMS.md .claude-plugin plugin/.claude-plugin plugin/engine/scout/scripts/self_update.py
 ```
 
 The only `scout-plugin` strings left should be:
 - the marketplace `name`, and with it `scout@scout-plugin` and the
-  `cache/scout-plugin/` paths
-- the deliberate migration instructions and old-repo detection
-- the GitHub Pages URLs (M7)
+  `cache/scout-plugin/` paths;
+- the former-name acceptance in `install.sh` and `/scout-update` Step 0.2;
+- the root README's "Installed from `Raven-Scout/scout-plugin`?" note.
 
 ---
 
 ## Open decisions for Jordan
 
-- **M7: where the website lives.** Pages is served from scout-plugin `main`
-  `/docs` today (`raven-scout.github.io/scout-plugin`). The site's source now
-  lives in this repo's `docs/`, alongside internal specs and plans. Options:
-  - keep the archived repo's Pages as a frozen site (confirm GitHub keeps
-    serving an archived repo's Pages)
-  - publish Pages from this repo, which exposes `docs/superpowers/**` as site
-    pages unless excluded
-  - move the site to its own folder or repo
-
-  Until this is decided, these keep pointing at `scout-plugin`:
-  - `og:url` and `og:image` in `docs/index.html`
-  - the Pages privacy/terms links in the READMEs
-  - the org README image
+- **M7: the website's leftovers.**
+  - Pages moved with the repo to `raven-scout.github.io/Scout/`, still built
+    from `main` `/docs`.
+  - Old `/scout-plugin/` URLs 404. To keep them, a
+    `Raven-Scout/raven-scout.github.io` org-site repo with
+    `scout-plugin/{index,privacy,terms}.html` meta-refresh stubs works: a path
+    no project site claims falls through to the org site. That repo
+    doesn't exist yet. **Never name it, or anything else, `scout-plugin`.**
+  - `docs/assets/og.svg` and `og.png` still print the old URL; the PNG needs
+    regenerating.
+  - The Jekyll build now also publishes the app's docs, alongside
+    scout-plugin's own internal `docs/superpowers/**`, which it already
+    published. Exclude these in a `docs/_config.yml` if they shouldn't be
+    pages.
 - **M6: `apps/macos/CHANGELOG.md`.** Wire it into `release-app.sh`, which
   today writes notes from `git log` only, or drop the file.
 - **The flaky FS-watcher test**
   (`plugin/engine/tests/integration/test_action_items_watch.py::test_watch_emits_completed_line_on_checkbox_flip`).
-  Quarantine it (retry or skip-on-CI) before `plugin-test` becomes required,
-  or it will randomly block merges.
+  Quarantine it (retry or skip-on-CI) before 6.3 makes `plugin-test`
+  required, or it will randomly block merges.
 - **#125's open question: pip / Homebrew / `$PATH` engines.** Part B's
   `EngineLocator` has no fallback for an engine installed with pip, Homebrew,
   or found only on `$PATH`; such an engine reads as `notInstalled` and gates
   the tabs.
-- **App release before #125?** If an app release ships from `main` before
+- **App release before Part B?** If an app release ships from `main` before
   Part B lands, it still resolves `scoutctl` through `ScoutctlLocator`. That
   targets the bash launcher, which writes `.scoutctl-py-cache` into the plugin
-  cache dir. Harmless, but Part B replaces it.
+  cache dir. Harmless, but Part B replaces it. Re-publishing the shipped
+  v0.14.0 DMG in 3.4 is not such a release.
 - **Marketplace name.** It stays `scout-plugin` (R17), because renaming
-  strands every install. Revisit only with a migration path.
+  strands every install. Under the swap it also matches the repo's former
+  name, which is part of why old marketplaces keep working.

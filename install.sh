@@ -22,15 +22,17 @@ fail() { echo "error: $*" >&2; exit 1; }
 # be exercised against fixture files without touching a real Claude Code config.
 KNOWN_MARKETPLACES="${SCOUT_KNOWN_MARKETPLACES:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json}"
 
-# Scout moved from Raven-Scout/scout-plugin into Raven-Scout/Scout. A user whose
-# `scout-plugin` marketplace still points at the old repo would get a failing
-# `marketplace add` (the name is taken) and an `update` that keeps pulling the
-# archived repo — so detect that and print the re-point commands instead of
-# reporting a success that isn't one. Never remove the marketplace from here:
-# removing it uninstalls the plugin a user's scheduled runs depend on.
+# Raven-Scout/Scout is the former Raven-Scout/scout-plugin repo, renamed when the
+# app moved in; GitHub redirects the old name, so a `scout-plugin` marketplace
+# that still says Raven-Scout/scout-plugin keeps updating and needs nothing. A
+# marketplace pointing at any OTHER repo would get a failing `marketplace add`
+# (the name is taken) and an `update` that never sees this repo — so detect that
+# and print the re-point commands instead of reporting a success that isn't one.
+# Never remove the marketplace from here: removing it uninstalls the plugin a
+# user's scheduled runs depend on.
 # Usage: check_marketplace_source <known_marketplaces.json>
-# Returns 0 to continue (no entry, the right repo, a local directory, or an
-# unreadable file), 1 when the user has to re-point first.
+# Returns 0 to continue (no entry, this repo under either name, a local
+# directory, or an unreadable file), 1 when the user has to re-point first.
 check_marketplace_source() {
   local file="$1" src repo
   local -a py
@@ -70,13 +72,16 @@ else:
     absent) return 0 ;;
     "github "*)
       repo="${src#github }"
-      # GitHub owner/repo names are case-insensitive.
-      [ "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" = "raven-scout/scout" ] && return 0
+      # GitHub owner/repo names are case-insensitive. raven-scout/scout-plugin is
+      # this repo's former name, which GitHub redirects here.
+      case "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" in
+        raven-scout/scout | raven-scout/scout-plugin) return 0 ;;
+      esac
       cat >&2 <<EOF
-error: your Claude Code marketplace "scout-plugin" still points at $repo.
-       Scout has moved to Raven-Scout/Scout, and installing from the old repo
-       would leave you on a version that no longer updates. Re-point it, then
-       re-run this installer:
+error: your Claude Code marketplace "scout-plugin" points at $repo.
+       Scout lives in Raven-Scout/Scout, and installing from another repo
+       would leave you on a version that doesn't get Scout's updates.
+       Re-point it, then re-run this installer:
 
            claude plugin marketplace remove scout-plugin
            claude plugin marketplace add Raven-Scout/Scout
@@ -88,7 +93,8 @@ EOF
       return 1 ;;
     "directory "*)
       echo "note: your \"scout-plugin\" marketplace is a local directory (${src#directory }) — using it as is."
-      echo "      If that is a pre-monorepo scout-plugin checkout, point it at a clone of Raven-Scout/Scout instead."
+      echo "      If that is a pre-monorepo scout-plugin checkout, \`git pull\` it: the repo is now Raven-Scout/Scout"
+      echo "      (the old URL redirects), and the pull brings it to the current layout."
       return 0 ;;
     unreadable)
       echo "note: could not read $file; skipping the marketplace-source check." >&2

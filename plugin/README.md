@@ -525,8 +525,8 @@ See *Manual Reset* at the bottom of [`commands/scout-setup.md`](commands/scout-s
 
 Scout is open-source under the [MIT License](../LICENSE).
 
-- **[Privacy Policy](../PRIVACY.md)** — Scout is local-first and collects nothing; your data stays on your machine. ([web version](https://raven-scout.github.io/scout-plugin/privacy.html))
-- **[Terms of Use](../TERMS.md)** — free, open-source, provided as-is. ([web version](https://raven-scout.github.io/scout-plugin/terms.html))
+- **[Privacy Policy](../PRIVACY.md)** — Scout is local-first and collects nothing; your data stays on your machine. ([web version](https://raven-scout.github.io/Scout/privacy.html))
+- **[Terms of Use](../TERMS.md)** — free, open-source, provided as-is. ([web version](https://raven-scout.github.io/Scout/terms.html))
 - **[Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md)** · **[Code of Conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md)**
 
 Scout is an independent project and is not affiliated with, endorsed by, or sponsored by Anthropic, Microsoft, or any other company.

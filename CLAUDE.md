@@ -22,7 +22,16 @@ first.** The two have different languages, test runners, and release flows.
   plugin file that reaches outside it is broken for every installed user, and
   nothing in this repo will tell you.
 - **Tags are prefixed:** `plugin/vX.Y.Z`, `app/vX.Y.Z`. Never push a bare
-  `vX.Y.Z` — the two artifacts collided on `v0.5.0`–`v0.9.0` before the merge.
+  `vX.Y.Z` — the two artifacts collided on `v0.5.0`–`v0.13.0` before the merge.
+  The bare `v*` tags in this repo are the plugin's pre-monorepo releases; the
+  app's were re-tagged `app/vX.Y.Z`.
+- **Issue and PR numbers come from two repos.** This repo is the former
+  `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
+  so its own `#N` numbering is scout-plugin's. The old app repo is
+  `Raven-Scout/scout-app-legacy` (archived). A bare `#N` in `apps/macos/` files
+  or in a pre-move app commit subject, and any `Raven-Scout/Scout#N` written
+  before the move, means `Raven-Scout/scout-app-legacy#N`. Link old app items
+  there; never rewrite them to a bare `#N` here.
 - **Contract artifacts are generated, never hand-edited.** The connector roster
   and schedule snapshot each have ONE canonical file under
   `plugin/engine/scout/`, generated from its `.yaml`, and every client copy

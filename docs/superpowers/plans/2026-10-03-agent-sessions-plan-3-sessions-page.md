@@ -77,8 +77,8 @@ Before review, this plan's code was applied to scratch worktrees and run there. 
     These tests flake on unmodified `main` too: it failed `watcherCoalescesAppendBursts` in one of five runs. They fail more often with this plan's suites added, which bring more main-actor rendering and process launches into the run.
 
     Both are being fixed outside this plan:
-    - [#117](https://github.com/Raven-Scout/Scout/pull/117), merged 2026-10-03, bounds `watcherCoalescesAppendBursts` relative to the burst (at most `burst / 5`, which is 10) instead of at most 3. In 25 more full runs of this dry run, the test counted 3 or 4 refreshes, so the new bound has margin.
-    - [#123](https://github.com/Raven-Scout/Scout/pull/123), open, gives `FileWatcherTests` and the two FSEvents integration suites a 30-second liveness budget.
+    - [#117](https://github.com/Raven-Scout/scout-app-legacy/pull/117), merged 2026-10-03, bounds `watcherCoalescesAppendBursts` relative to the burst (at most `burst / 5`, which is 10) instead of at most 3. In 25 more full runs of this dry run, the test counted 3 or 4 refreshes, so the new bound has margin.
+    - [#123](https://github.com/Raven-Scout/scout-app-legacy/pull/123), open, gives `FileWatcherTests` and the two FSEvents integration suites a 30-second liveness budget.
 
     Task 10 says how to treat a failure in these tests.
   - Line coverage was 74.8% locally, against a floor of 70%. Local runs read higher than CI.
@@ -4669,7 +4669,7 @@ Expected:
 - Both runs print `Test run with` about 980 tests and pass.
 - Coverage is at or above `scripts/coverage-floor.txt`.
 
-First check whether #123 has merged (`gh pr view 123 --repo Raven-Scout/Scout --json state`), and rebase onto `main` if it has.
+First check whether #123 has merged (`gh pr view 123 --repo Raven-Scout/scout-app-legacy --json state`), and rebase onto `main` if it has.
 - **With #117 and #123 both on `main`,** no failure is expected in `FileWatcherTests`, `ActionItemsIntegrationTests`, `FakeScoutRunIntegrationTests` or `ConnectorHealthHotPathTests`. Investigate any failure there before going on.
 - **Until #123 merges,** a failure counts as a known timing flake only if all of the following hold. Record any flake in the PR description.
   - It is confined to `FileWatcherTests`, `ActionItemsIntegrationTests` or `FakeScoutRunIntegrationTests`.

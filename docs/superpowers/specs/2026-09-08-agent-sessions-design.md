@@ -562,7 +562,7 @@ returning canned JSON, plus a timeout case).
 |---|---|---|---|
 | 1 · Engine index | scout-plugin | `scout/sessions/`, CLI, render, config defaults, tests; `cc-cache` alias; release | — |
 | 2 · Phases + docs | scout-plugin, vault | phase edits (§5), README row, wishlist tick; `/scout-update` regenerates vault SKILL.md | 1 |
-| 1b · Index performance | scout-plugin | mtime-keyed cache of desktop records with a last-good fallback for mid-write reads; pure-Python git toplevel; realistic (~700 KB/record) perf fixture; skip rewriting unchanged caches — plan 1 measured cold 5.5 s / warm 1.4 s on a 369-session machine vs the §4.12 budget. Design and plan: `docs/superpowers/specs/2026-09-28-agent-sessions-index-speed-design.md` ([#114](https://github.com/Raven-Scout/Scout/pull/114)) | 1; must land before 3's 2 s debounce |
+| 1b · Index performance | scout-plugin | mtime-keyed cache of desktop records with a last-good fallback for mid-write reads; pure-Python git toplevel; realistic (~700 KB/record) perf fixture; skip rewriting unchanged caches — plan 1 measured cold 5.5 s / warm 1.4 s on a 369-session machine vs the §4.12 budget. Design and plan: `docs/superpowers/specs/2026-09-28-agent-sessions-index-speed-design.md` ([#114](https://github.com/Raven-Scout/scout-app-legacy/pull/114)) | 1; must land before 3's 2 s debounce |
 | 3 · App Sessions page | scout-app | §6.1–6.5, fixture, tests, roadmap pointer; ignore the engine's own writes under `.scout-cache/` so the watch does not refresh itself | 1, 1b (schema); UI can start on the fixture in parallel |
 | 4 · World view (optional) | scout-app | §6.6 | 3, and Jordan still wants it |
 

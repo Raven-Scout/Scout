@@ -3,7 +3,7 @@
 **Date:** 2026-09-28
 **Status:** Proposed (for review)
 **Surfaces:** scout-plugin engine, `engine/scout/sessions/` (loaders, orchestrator, tests)
-**Builds on:** the Agent Sessions design (`docs/superpowers/specs/2026-09-08-agent-sessions-design.md`, in [Raven-Scout/Scout#112](https://github.com/Raven-Scout/Scout/pull/112)) — §4.12's budget and §8's row "1b · Index performance"; plan 1 is [Raven-Scout/scout-plugin#243](https://github.com/Raven-Scout/scout-plugin/pull/243).
+**Builds on:** the Agent Sessions design (`docs/superpowers/specs/2026-09-08-agent-sessions-design.md`, in [Raven-Scout/scout-app-legacy#112](https://github.com/Raven-Scout/scout-app-legacy/pull/112)) — §4.12's budget and §8's row "1b · Index performance"; plan 1 is [Raven-Scout/scout-plugin#243](https://github.com/Raven-Scout/scout-plugin/pull/243).
 
 ## 1. Context
 
