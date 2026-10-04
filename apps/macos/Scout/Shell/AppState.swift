@@ -43,6 +43,8 @@ final class AppState: ObservableObject {
     let scheduleEditService: ScheduleEditService
     let budgetSettingsService: BudgetSettingsService
     let modelSettingsService: ModelSettingsService
+    /// Action Items display options from `scout-profile.json` in the vault root (#52).
+    let displayProfileService: DisplayProfileService
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
@@ -233,6 +235,7 @@ final class AppState: ObservableObject {
         let docService = ActionItemsDocumentService(
             directory: actionItemsDir, fileEvents: events, defaults: defaults
         )
+        let displayProfile = DisplayProfileService(scoutDirectory: scoutDir, fileEvents: events)
         let writerActor = ActionItemsWriter(
             scoutctl: scoutctlExe,
             argumentsPrefix: scoutctlArgsPrefix,
@@ -309,6 +312,7 @@ final class AppState: ObservableObject {
         self.scheduleEditService = scheduleEditService
         self.budgetSettingsService = budgetSettings
         self.modelSettingsService = modelSettings
+        self.displayProfileService = displayProfile
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.sessionIndexService = sessionIndex
@@ -399,6 +403,7 @@ final class AppState: ObservableObject {
         // Loads the last index from disk, then keeps it current: the sidebar
         // badge needs it before the Sessions page is ever opened.
         sessionIndex.start()
+        displayProfile.startWatching()
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
