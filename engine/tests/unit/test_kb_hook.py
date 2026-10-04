@@ -127,6 +127,49 @@ def test_bootstrap_stage_installs_into_git_vault(kb_repo, tmp_path) -> None:
     assert MARKER in (hooks_dir(kb_repo.root) / "pre-commit").read_text()
 
 
+def _stage_cfg(vault, plugin_root):
+    from scout.scripts.bootstrap import BootstrapConfig
+
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=plugin_root,
+        instance_name="T",
+        instance_name_lower="t",
+        user_name="T",
+        user_email="t@example.com",
+        timezone="America/New_York",
+        platform="macos",
+        plugin_version="0.0.0",
+        enabled_connectors=set(),
+        connector_inputs={},
+        skip_jobs=True,
+        skip_claude=True,
+    )
+
+
+def test_bootstrap_stage_prefers_the_engine_launcher(kb_repo, tmp_path) -> None:
+    """App-managed engines live outside plugin_root/.venv; the launcher resolves them."""
+    from scout.scripts.bootstrap import _stage_install_git_hook
+
+    plugin = tmp_path / "plugin"
+    launcher = plugin / "engine" / "bin" / "scoutctl"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    _stage_install_git_hook(_stage_cfg(kb_repo.root, plugin))
+    text = (hooks_dir(kb_repo.root) / "pre-commit").read_text()
+    assert f"SCOUTCTL={launcher}" in text
+
+
+def test_bootstrap_stage_falls_back_to_the_venv_scoutctl(kb_repo, tmp_path) -> None:
+    from scout.scripts.bootstrap import _stage_install_git_hook
+
+    plugin = tmp_path / "plugin"
+    _stage_install_git_hook(_stage_cfg(kb_repo.root, plugin))
+    text = (hooks_dir(kb_repo.root) / "pre-commit").read_text()
+    assert f"SCOUTCTL={plugin / '.venv' / 'bin' / 'scoutctl'}" in text
+
+
 def test_bootstrap_stage_skips_non_git_vault(tmp_path) -> None:
     from scout.scripts.bootstrap import BootstrapConfig, _stage_install_git_hook
 

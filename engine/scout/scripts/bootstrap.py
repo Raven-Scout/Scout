@@ -571,8 +571,12 @@ def _stage_install_git_hook(cfg: BootstrapConfig) -> None:
         return
     from scout.kb.hook import HookConflict, install_hook
 
+    # Prefer the engine launcher: it follows the engine pointer, so it also
+    # finds an app-managed engine that has no plugin_root/.venv.
+    launcher = cfg.plugin_root / "engine" / "bin" / "scoutctl"
+    scoutctl = launcher if launcher.exists() else cfg.plugin_root / ".venv" / "bin" / "scoutctl"
     try:
-        install_hook(cfg.vault, scoutctl=str(cfg.plugin_root / ".venv" / "bin" / "scoutctl"))
+        install_hook(cfg.vault, scoutctl=str(scoutctl))
     except HookConflict as e:
         print(f"warning: {e}", file=sys.stderr)
 
@@ -868,7 +872,8 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       4. Merge ``.gitignore`` (append-only).
       5. Skip cat-4 merge entirely — snapshots just established, nothing to
          merge.
-      6. Job lifecycle (subject to cfg.skip_jobs).
+      6. Job lifecycle (subject to cfg.skip_jobs), then the kb-lint
+         pre-commit hook when the vault is a git repo.
       7. Write version stamps to a fresh scout-config.yaml.
       8. Doctor.
 
@@ -911,6 +916,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         # 5. SKIP cat-4 merge: snapshots just established equal current live.
         # 6. Jobs.
         _stage_jobs_install(cfg)
+        _stage_install_git_hook(cfg)
         # 7. Version stamps (is_upgrade=False so both version_at_last_setup and
         #    version_at_last_update are written; setup marks "migrated at this
         #    plugin version", matching how a freshly-installed vault records it).
