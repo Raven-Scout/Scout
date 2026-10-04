@@ -327,6 +327,14 @@ NOTES="$BUILD_DIR/release-notes.md"
   echo "Then run \`/scout-setup\`."
 } > "$NOTES"
 
+# gh otherwise infers the repo from the caller's cwd; pin it to origin's repo so
+# the release lands in the right place from any cwd. Checked before tagging so a
+# failure here leaves no half-published tag behind.
+if [[ -z "$REPO_SLUG" ]]; then
+  echo "✗ Could not derive owner/repo from remote.origin.url (${ORIGIN_URL:-unset}) — not tagging or publishing" >&2
+  exit 1
+fi
+
 echo "→ Tagging $TAG and creating GitHub release"
 if git -C "$REPO_ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
   echo "  tag $TAG already exists locally — skipping tag/push"
@@ -335,8 +343,12 @@ else
   git -C "$REPO_ROOT" push origin "$TAG"
 fi
 
+# --latest: /releases/latest is where the website and READMEs send people for
+# the DMG; plugin/v* releases are published with --latest=false.
 gh release create "$TAG" "$DMG" \
+  --repo "$REPO_SLUG" \
   --title "Scout $VERSION" \
-  --notes-file "$NOTES"
+  --notes-file "$NOTES" \
+  --latest
 
 echo "✓ Released $TAG"
