@@ -90,9 +90,12 @@ enum WriteOp: Sendable {
     /// lines (carryovers from before the v0.5.5 prefix mandate landed).
     ///
     /// Notes vs the pre-v0.5.2 legacy-script invocation:
-    /// - We embed the author inline in the comment body (`<author>: <text>`)
-    ///   because scoutctl's `add-comment` doesn't accept an `--author` flag.
-    ///   ActionItemsParser already tolerates this format.
+    /// - The author goes through `--author` (scoutctl 0.6.0+), which writes
+    ///   `  - <author>: <text>`. It used to be embedded in the comment text,
+    ///   which scoutctl then prefixed with its own default author, so every
+    ///   comment from the app read `scout: <author>: <text>` and parsed as a
+    ///   comment from Scout. The name is folded by `CommentAuthor.handle`
+    ///   into the shape both parsers accept.
     /// - Reopen routes through `mark-done --undo`. scoutctl doesn't currently
     ///   expose `--undo` (BACKLOG: add scoutctl mark-done --undo); the call
     ///   will fail with a clear "no such option" error until the plugin
@@ -106,7 +109,7 @@ enum WriteOp: Sendable {
         }
         switch self {
         case .addComment(_, _, let text, let author):
-            args += ["--comment", "\(author): \(text)"]
+            args += ["--comment", text, "--author", CommentAuthor.handle(author)]
         case .deleteComment(_, _, let selector):
             args += Self.selectorArguments(selector)
         case .editComment(_, _, let selector, let newText):

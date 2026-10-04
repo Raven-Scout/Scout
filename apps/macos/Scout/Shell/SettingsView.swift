@@ -164,7 +164,7 @@ struct SettingsView: View {
                     SettingsCard {
                         SettingsField(
                             label: "Your name",
-                            help: "Shown next to comments you add to action items. Default is `user`."
+                            help: "Shown next to comments you add to action items, as one word in plain letters: spaces become dashes and other characters are spelled out (Zoë → Zoe, Łaz → Laz). Default is `user`."
                         ) {
                             SettingsInput(text: $authorName, placeholder: "user")
                         }
