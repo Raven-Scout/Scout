@@ -88,12 +88,13 @@ struct ConnectorHealthServiceTests {
         let result = ConnectorHealthService.loadRoster(from: snapshotURL)
         switch result {
         case .success(let keys):
-            // Sanity: 10 connectors; canonical claude.ai keys, not the legacy
-            // mcp:plugin_* keys.
-            #expect(keys.count == 10)
+            // Sanity: 11 connectors (10 + mcp:fathom); canonical claude.ai
+            // keys, not the legacy mcp:plugin_* keys.
+            #expect(keys.count == 11)
             #expect(keys.contains("mcp:claude_ai_Slack"))
             #expect(keys.contains("mcp:claude_ai_Linear"))
             #expect(keys.contains("mcp:claude_ai_Gmail"))
+            #expect(keys.contains("mcp:fathom"))
             #expect(keys.contains("notify:telegram"))
             #expect(!keys.contains("mcp:plugin_slack_slack"))
             // Order matches YAML insertion order — Slack first, Telegram last.
@@ -134,8 +135,9 @@ struct ConnectorHealthServiceTests {
 
         // Matrix is keyed on the snapshot connectors.
         let matrix = await service.matrix
-        #expect(matrix.connectors.count == 10)
+        #expect(matrix.connectors.count == 11)
         #expect(matrix.connectors.contains("mcp:claude_ai_Slack"))
+        #expect(matrix.connectors.contains("mcp:fathom"))
     }
 
     /// Snapshot missing → service uses fallback list AND surfaces a reason.
