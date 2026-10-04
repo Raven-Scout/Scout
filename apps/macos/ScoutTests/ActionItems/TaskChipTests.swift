@@ -7,7 +7,7 @@ struct TaskChipTests {
     private func task(links: [TaskDeepLink]) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 1, done: false, subject: "s", plainSubject: "s",
-            body: "", comments: [], deepLinks: links, snoozedUntil: nil, carriedInFrom: nil
+            body: "", comments: [], deepLinks: links, details: [], snoozedUntil: nil, carriedInFrom: nil
         )
     }
 

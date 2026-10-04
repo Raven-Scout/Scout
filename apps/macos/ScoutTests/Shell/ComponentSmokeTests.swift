@@ -16,13 +16,14 @@ enum SmokeFixtures {
         body: String = "She needs the RFC by Friday — **blocked** on `scoutctl`.",
         comments: [TaskComment] = [],
         deepLinks: [TaskDeepLink] = [],
+        details: [TaskDetail] = [],
         snoozedUntil: Date? = nil,
         carriedInFrom: Date? = nil
     ) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 4, done: done,
             subject: subject, plainSubject: subject, body: body,
-            comments: comments, deepLinks: deepLinks,
+            comments: comments, deepLinks: deepLinks, details: details,
             snoozedUntil: snoozedUntil, carriedInFrom: carriedInFrom)
     }
 

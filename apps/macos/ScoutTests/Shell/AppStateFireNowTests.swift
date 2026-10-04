@@ -60,7 +60,7 @@ struct AppStateUrgentActionCountTests {
     ) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 1, done: done, subject: subject, plainSubject: subject,
-            body: "", comments: [], deepLinks: [], snoozedUntil: snoozed,
+            body: "", comments: [], deepLinks: [], details: [], snoozedUntil: snoozed,
             carriedInFrom: nil, snoozedFromKind: snoozedFrom
         )
     }

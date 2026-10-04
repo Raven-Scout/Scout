@@ -110,7 +110,8 @@ struct ClaudeLauncherPromptTests {
         plainSubject: String,
         body: String = "",
         comments: [TaskComment] = [],
-        deepLinks: [TaskDeepLink] = []
+        deepLinks: [TaskDeepLink] = [],
+        details: [TaskDetail] = []
     ) -> ActionTask {
         ActionTask(
             id: UUID(),
@@ -121,6 +122,7 @@ struct ClaudeLauncherPromptTests {
             body: body,
             comments: comments,
             deepLinks: deepLinks,
+            details: details,
             snoozedUntil: nil,
             carriedInFrom: nil
         )
