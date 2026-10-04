@@ -282,9 +282,12 @@ def test_auth_failure_raises_desktop_notification(tmp_path: Path) -> None:
     assert result.returncode == 1
     sent = _notifications(record)
     assert len(sent) == 1, sent
-    # The user-facing fix must be in the notification itself, not only the log.
-    assert "run claude" in sent[0].lower() or "run `claude`" in sent[0].lower(), sent[0]
-    assert "Desktop notification sent" in log_file.read_text()
+    # The user-facing fix must be in the notification itself, not only the log:
+    # the exact command, since a bare `claude` opens a session that still needs /login.
+    assert "run: claude auth login" in sent[0], sent[0]
+    log = log_file.read_text()
+    assert "Desktop notification sent" in log
+    assert "run: claude auth login" in log, "the banner must name the same fix"
 
 
 def test_auth_notification_is_rate_limited(tmp_path: Path) -> None:
@@ -361,3 +364,156 @@ def test_failing_notifier_keeps_claude_exit_code(tmp_path: Path) -> None:
     result = _run_with_notifier(script, claude, logs / "scout-1.log", fake_bin)
 
     assert result.returncode == 3
+
+
+# --- Classify only the current attempt's output --------------------------------
+#
+# The run log also holds the pre-session hooks' output and every earlier
+# attempt. Matching the whole tail let a transient error from attempt 1 hide an
+# auth failure on the retry, and let pre-session text that mentions an HTTP
+# status pass for a rejected Claude login.
+
+
+def _transient_then(scout_dir: Path, second_output: str) -> Path:
+    """A `claude` that drops the socket on attempt 1 and prints ``second_output`` on attempt 2."""
+    counter = scout_dir / "attempts.count"
+    bin_path = scout_dir / "flaky-claude.sh"
+    bin_path.write_text(
+        "#!/bin/bash\n"
+        f'COUNTER="{counter}"\n'
+        'n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$COUNTER"\n'
+        'if [ "$n" -eq 1 ]; then echo "API Error: socket connection was closed unexpectedly"; exit 1; fi\n'
+        f"echo {second_output!r}\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    bin_path.chmod(0o755)
+    return bin_path
+
+
+def test_retry_that_dies_on_auth_gets_banner_and_notification(tmp_path: Path) -> None:
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _transient_then(scout_dir, AUTH_ERROR)
+    log_file = logs / "scout-1.log"
+
+    result = _run_with_notifier(script, claude, log_file, fake_bin)
+
+    assert result.returncode == 1
+    assert _attempts(scout_dir) == 2, "the transient first attempt must still be retried"
+    log = log_file.read_text()
+    assert "=== Authentication failure" in log, log
+    assert "Retry exhausted" not in log, log
+    assert len(_notifications(record)) == 1
+
+
+def test_pre_session_403_then_api_500_is_not_an_auth_failure(tmp_path: Path) -> None:
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _scripted_claude(scout_dir, output="API Error: 500 Internal server error", exit_code=1)
+    log_file = logs / "scout-1.log"
+    # What the runner writes before the session: hook output that happens to
+    # quote an HTTP status from some other service.
+    log_file.write_text(
+        "=== Scout run starting ===\n403 Forbidden\npre-session: tracker fetch failed: HTTP/1.1 403 Forbidden\n",
+        encoding="utf-8",
+    )
+
+    result = _run_with_notifier(script, claude, log_file, fake_bin)
+
+    assert result.returncode == 1
+    log = log_file.read_text()
+    assert "Authentication failure" not in log, log
+    assert "not classified as transient" in log
+    assert _notifications(record) == []
+
+
+def test_auth_text_mid_line_is_not_an_auth_failure(tmp_path: Path) -> None:
+    """The auth phrases are the CLI's own, at the start of a line; output that
+    merely quotes one is not a rejected login."""
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _scripted_claude(
+        scout_dir, output="Note: last week's runs said 'Failed to authenticate: OAuth session expired'", exit_code=1
+    )
+    log_file = logs / "scout-1.log"
+
+    _run_with_notifier(script, claude, log_file, fake_bin)
+
+    assert "Authentication failure" not in log_file.read_text()
+    assert _notifications(record) == []
+
+
+def _shell_assignment(path: Path, name: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{name}='"):
+            return line[len(name) + 2 : -1]
+    raise AssertionError(f"{name}= not found in {path}")
+
+
+def test_auth_patterns_agree_across_wrapper_run_outcome_and_doctor() -> None:
+    """One definition of "Claude rejected the login", so the banner, the
+    desktop alert, the Telegram class and the doctor never disagree."""
+    from scout.scripts.bootstrap_doctor import CLI_AUTH_FAILURE_ERE
+
+    assert _shell_assignment(TEMPLATE, "AUTH_PATTERNS") == CLI_AUTH_FAILURE_ERE
+    run_outcome = REPO_ROOT / "templates" / "scripts" / "run-outcome.sh.tmpl"
+    assert _shell_assignment(run_outcome, "AUTH_RE") == CLI_AUTH_FAILURE_ERE
+
+
+# --- Rate-limiter hardening -----------------------------------------------------
+
+
+def test_non_numeric_alert_interval_falls_back_to_the_default(tmp_path: Path) -> None:
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _scripted_claude(scout_dir, output=AUTH_ERROR, exit_code=1)
+
+    first = _run_with_notifier(script, claude, logs / "scout-1.log", fake_bin, SCOUT_AUTH_ALERT_INTERVAL_S="1d")
+    second = _run_with_notifier(script, claude, logs / "scout-2.log", fake_bin, SCOUT_AUTH_ALERT_INTERVAL_S="1d")
+
+    assert len(_notifications(record)) == 1, "a bad interval must not disable the rate limit"
+    assert "integer expression" not in first.stderr + second.stderr
+
+
+def test_marker_with_leading_zero_is_read_as_decimal(tmp_path: Path) -> None:
+    """`089` is not valid octal; bash arithmetic must not choke on it and go silent."""
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _scripted_claude(scout_dir, output=AUTH_ERROR, exit_code=1)
+    (logs / ".auth-alert-sent").write_text("089\n", encoding="utf-8")
+
+    result = _run_with_notifier(script, claude, logs / "scout-1.log", fake_bin)
+
+    assert "value too great for base" not in result.stderr
+    assert len(_notifications(record)) == 1, "an ancient marker must not suppress the alert"
+
+
+def test_unwritable_marker_does_not_notify_every_run(tmp_path: Path) -> None:
+    """Without a marker there is no rate limit, so the wrapper must not fall back
+    to alerting on every scheduler tick."""
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path)
+    claude = _scripted_claude(scout_dir, output=AUTH_ERROR, exit_code=1)
+    (logs / ".auth-alert-sent").mkdir()  # can't be written as a file, even by root
+
+    for i in range(3):
+        result = _run_with_notifier(script, claude, logs / f"scout-{i}.log", fake_bin)
+        assert result.returncode == 1
+
+    assert len(_notifications(record)) <= 1
+    assert "marker" in (logs / "scout-2.log").read_text()
+
+
+def test_failed_notification_is_retried_next_run(tmp_path: Path) -> None:
+    """A notifier that fails (Linux cron without a D-Bus session) must not
+    leave a marker behind that silences the next attempt for a day."""
+    scout_dir, logs, script = _vault(tmp_path)
+    fake_bin, record = _notifier_bin(tmp_path, exit_code=1)
+    claude = _scripted_claude(scout_dir, output=AUTH_ERROR, exit_code=1)
+
+    _run_with_notifier(script, claude, logs / "scout-1.log", fake_bin)
+    _run_with_notifier(script, claude, logs / "scout-2.log", fake_bin)
+
+    assert len(_notifications(record)) == 2
+    assert not (logs / ".auth-alert-sent").exists()
