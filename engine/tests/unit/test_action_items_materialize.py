@@ -162,6 +162,28 @@ def test_compact_falls_back_to_verbatim_when_status_would_change(tmp_path: Path)
 
 
 def test_compact_drops_diary_h2_headings_but_keeps_their_items(tmp_path: Path) -> None:
+    """The items sit under a non-diary H3, so dropping the diary H2 does not
+    change any item's parsed section and the compacted view is kept."""
+    vault = _vault(tmp_path)
+    body = (
+        "# Action Items — Sunday, Jul 5, 2026\n"
+        "## 🔴 Urgent\n"
+        "- [ ] [#AAAA] 🔴 **call the bank**\n"
+        "## 🆕 From this run (Thu Aug 27, 1:0x PM `midday-consolidation`)\n"
+        "Narration about the run.\n"
+        "### 🟡 Follow-ups\n"
+        "- [ ] [#CCCC] 🟡 **new thing**\n"
+    )
+    _write_daily(vault, "2026-07-05", body)
+    text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
+    assert "From this run" not in text and "Narration about the run" not in text
+    assert "[#AAAA]" in text and "[#CCCC]" in text
+    assert "## 🔴 Urgent" in text and "### 🟡 Follow-ups" in text
+
+
+def test_compaction_that_would_rehome_an_item_falls_back_to_verbatim(tmp_path: Path) -> None:
+    """Dropping the diary H2 would move the 🟡 item under `## 🔴 Urgent`: the
+    signature includes each item's section, so the verbatim body is kept."""
     vault = _vault(tmp_path)
     body = (
         "# Action Items — Sunday, Jul 5, 2026\n"
@@ -172,9 +194,8 @@ def test_compact_drops_diary_h2_headings_but_keeps_their_items(tmp_path: Path) -
     )
     _write_daily(vault, "2026-07-05", body)
     text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
-    assert "From this run" not in text
+    assert "## 🆕 From this run (Thu Aug 27, 1:0x PM `midday-consolidation`)" in text
     assert "[#AAAA]" in text and "[#CCCC]" in text
-    assert "## 🔴 Urgent" in text
 
 
 def test_compact_function_is_idempotent() -> None:

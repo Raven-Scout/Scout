@@ -111,8 +111,12 @@ def compact(body: str) -> str:
     return "\n".join(out) + ("\n" if out else "")
 
 
-def _signature(body: str) -> list[tuple[str, str, str, tuple[str, ...]]]:
-    return sorted((i.raw_line.strip(), i.status, i.priority, tuple(i.details)) for i in parse_lines(body.splitlines()))
+def _signature(body: str) -> list[tuple[str, str, str, str, tuple[str, ...]]]:
+    # The parsed section is part of an item's identity: a compaction that
+    # re-homes an item under a different heading falls back to verbatim.
+    return sorted(
+        (i.raw_line.strip(), i.status, i.priority, i.section, tuple(i.details)) for i in parse_lines(body.splitlines())
+    )
 
 
 def materialize(
