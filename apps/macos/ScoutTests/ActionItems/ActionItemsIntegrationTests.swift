@@ -63,22 +63,29 @@ struct ActionItemsIntegrationTests {
         Issue.record("Comment never appeared in reparsed document; final state: \(service.state)")
     }
 
-    /// Probe common install paths (mirroring AppState.resolveScoutctlPath)
-    /// and fall back to PATH via `/usr/bin/env which scoutctl`.
+    /// Resolve scoutctl exactly as `AppState.resolveScoutctlPath()` does —
+    /// via `ScoutctlLocator`, primarily from the installed plugin cache
+    /// recorded in `~/.claude/plugins/installed_plugins.json` — instead of
+    /// this test's own stale candidate list (previously first-tried the
+    /// nonexistent `scout-plugin/bin/scoutctl` and had no knowledge of the
+    /// plugin cache, so it silently skipped on machines where scoutctl only
+    /// resolves via the cache).
+    ///
+    /// Returns nil when resolution falls back to `/usr/bin/env scoutctl`
+    /// (nothing found on disk) — detected via a non-empty `argsPrefix` — so
+    /// bare CI runners with no plugin installed still skip.
     private static func findScoutctl() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates: [URL] = [
-            home.appendingPathComponent("scout-plugin/bin/scoutctl"),
-            home.appendingPathComponent("miniconda3/bin/scoutctl"),
-            home.appendingPathComponent(".local/bin/scoutctl"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/scoutctl"),
-            URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
-        ]
-        for url in candidates {
-            if FileManager.default.isExecutableFile(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
+        let manifest = try? String(
+            contentsOf: ScoutctlLocator.installedPluginsJSONURL(home: home),
+            encoding: .utf8
+        )
+        let result = ScoutctlLocator.resolve(
+            home: home,
+            installedPluginsJSON: manifest,
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0.path) }
+        )
+        guard result.argsPrefix.isEmpty else { return nil }
+        return result.executable
     }
 }

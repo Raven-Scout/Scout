@@ -12,12 +12,18 @@ struct ScoutctlLocatorTests {
     """
 
     @Test func prefersTheInstalledPluginCache() {
+        // Both the installed-cache path AND the dev-checkout path report as
+        // executable here — the only way this test can tell them apart is
+        // priority order. If the dev checkout were ever checked first (or
+        // the cache candidate dropped), this must fail even though a
+        // "some path exists" version of this test would still pass.
         let home = URL(fileURLWithPath: "/Users/x")
         let expected = "/Users/x/.claude/plugins/cache/scout-plugin/scout/0.8.0/engine/bin/scoutctl"
+        let devCheckout = "/Users/x/scout-plugin/engine/bin/scoutctl"
         let result = ScoutctlLocator.resolve(
             home: home,
             installedPluginsJSON: Self.installedJSON,
-            isExecutable: { $0.path == expected }
+            isExecutable: { $0.path == expected || $0.path == devCheckout }
         )
         #expect(result.executable.path == expected)
         #expect(result.argsPrefix.isEmpty)
