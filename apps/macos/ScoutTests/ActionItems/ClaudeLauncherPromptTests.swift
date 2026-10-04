@@ -106,6 +106,67 @@ struct ClaudeLauncherPromptTests {
         #expect(ClaudeLauncher.prompt(for: [], format: .fullContext).isEmpty)
     }
 
+    @Test func fullContextIncludesDetailsBeforeCommentsAndLinks() throws {
+        let task = makeTask(
+            plainSubject: "Order the roadmap items",
+            comments: [TaskComment(author: "alex", timestamp: "", text: "Agreed.")],
+            deepLinks: [.linear(id: "PROJ-1234")],
+            details: [
+                TaskDetail(depth: 0, text: "Due Tuesday; never left Todo."),
+                TaskDetail(depth: 1, text: "The customer opens this tracker on Tuesday."),
+                TaskDetail(depth: 0, text: "Run this\n```\nmake test\n```"),
+            ]
+        )
+        let out = ClaudeLauncher.prompt(for: task)
+        #expect(out.contains("""
+        Order the roadmap items
+
+        Context:
+        - Due Tuesday; never left Todo.
+          - The customer opens this tracker on Tuesday.
+        - Run this
+          ```
+          make test
+          ```
+        """))
+        let context = try #require(out.range(of: "Context:"))
+        let comments = try #require(out.range(of: "Prior comments:"))
+        let links = try #require(out.range(of: "Links:"))
+        #expect(context.lowerBound < comments.lowerBound)
+        #expect(comments.lowerBound < links.lowerBound)
+    }
+
+    @Test func fullContextUnchangedWithoutDetails() {
+        let task = makeTask(plainSubject: "Cut release", body: "Tag by EOD.")
+        #expect(ClaudeLauncher.prompt(for: task) == """
+        Help me make progress on this action item:
+
+        Cut release
+
+        Tag by EOD.
+        """)
+    }
+
+    @Test func conciseFallsBackToFirstDetail() {
+        let task = makeTask(
+            plainSubject: "Order the roadmap items",
+            details: [TaskDetail(depth: 0, text: "Due Tuesday."), TaskDetail(depth: 0, text: "More.")]
+        )
+        #expect(ClaudeLauncher.prompt(for: task, format: .concise) == "Order the roadmap items\nDue Tuesday.")
+    }
+
+    @Test func checklistNestsDetailsUnderTheItem() {
+        let task = makeTask(
+            plainSubject: "Order the roadmap items",
+            details: [TaskDetail(depth: 0, text: "Due Tuesday."), TaskDetail(depth: 1, text: "Customer review.")]
+        )
+        #expect(ClaudeLauncher.prompt(for: task, format: .markdownChecklist) == """
+        - [ ] Order the roadmap items
+          - Due Tuesday.
+            - Customer review.
+        """)
+    }
+
     private func makeTask(
         plainSubject: String,
         body: String = "",

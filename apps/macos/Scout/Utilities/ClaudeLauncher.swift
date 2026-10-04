@@ -156,6 +156,9 @@ enum ClaudeLauncher {
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
+        if !task.details.isEmpty {
+            out += "\n\nContext:\n" + detailLines(task.details).joined(separator: "\n")
+        }
         if !task.comments.isEmpty {
             let block = task.comments
                 .map { c in
@@ -175,8 +178,20 @@ enum ClaudeLauncher {
     }
 
     private static func conciseBody(for task: ActionTask) -> String {
-        guard !task.body.isEmpty else { return subjectLine(for: task) }
-        return "\(subjectLine(for: task))\n\(task.body)"
+        let summary = task.summary
+        guard !summary.isEmpty else { return subjectLine(for: task) }
+        return "\(subjectLine(for: task))\n\(summary)"
+    }
+
+    /// A task's details as a markdown list: two spaces per depth level, and
+    /// continuation lines (wrapped text, fenced code) indented under their
+    /// bullet.
+    static func detailLines(_ details: [TaskDetail], baseIndent: String = "") -> [String] {
+        details.flatMap { detail -> [String] in
+            let pad = baseIndent + String(repeating: "  ", count: detail.depth)
+            let parts = detail.text.components(separatedBy: "\n")
+            return ["\(pad)- \(parts[0])"] + parts.dropFirst().map { "\(pad)  \($0)" }
+        }
     }
 
     private static func checklistBody(for task: ActionTask) -> String {
@@ -184,6 +199,7 @@ enum ClaudeLauncher {
         if !task.body.isEmpty {
             lines.append(contentsOf: task.body.split(separator: "\n").map { "  \($0)" })
         }
+        lines.append(contentsOf: detailLines(task.details, baseIndent: "  "))
         // Non-URL refs (crossRef/plainRef) are omitted, matching the expanded
         // Links list and fullContext: a checklist link without a target would
         // render as a broken `[label]()`.
