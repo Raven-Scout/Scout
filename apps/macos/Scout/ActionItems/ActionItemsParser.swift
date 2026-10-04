@@ -472,13 +472,26 @@ nonisolated extension ActionItemsParser {
 
             // Inside a fence that opened in a detail, every line is verbatim
             // continuation — even ones shaped like bullets, comments or table
-            // rows. Must run before every other branch for that reason.
+            // rows. Must run before every other branch for that reason. The
+            // fence also ends with its list item: a task line, or a non-blank
+            // line indented less than the detail's content, closes it and is
+            // parsed normally — so an unclosed fence can't swallow the child
+            // tasks and comments after it.
             if detailWindowOpen, inDetailFence, let owner = currentTasks.last {
-                if isFenceLine(stripped) { inDetailFence = false }
-                currentTasks[currentTasks.count - 1] = owner.replacingDetails(
-                    appendingContinuation(line, to: owner.details, contentIndent: detailContentIndent)
+                let leading = line.prefix { $0 == " " || $0 == "\t" }.count
+                let endsItem = !stripped.isEmpty && (
+                    leading < detailContentIndent
+                    || taskRe.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil
                 )
-                i += 1; continue
+                if endsItem {
+                    inDetailFence = false
+                } else {
+                    if isFenceLine(stripped) { inDetailFence = false }
+                    currentTasks[currentTasks.count - 1] = owner.replacingDetails(
+                        appendingContinuation(line, to: owner.details, contentIndent: detailContentIndent)
+                    )
+                    i += 1; continue
+                }
             }
 
             if stripped == "---" || stripped == "***" {
@@ -810,14 +823,17 @@ nonisolated extension ActionItemsParser {
                 let ns = line as NSString
                 let range = NSRange(location: 0, length: ns.length)
                 var details = owner.details
-                if isFenceLine(stripped) {
+                if isFenceOpener(stripped) {
                     inDetailFence = true
                     details = appendingContinuation(line, to: details, contentIndent: detailContentIndent)
                 } else if let bm = detailBulletRe.firstMatch(in: line, range: range) {
                     let indent = ns.substring(with: bm.range(at: 1))
                     let depth = max(0, indentLevelFor(indent) - owner.indentLevel - 1)
-                    details.append(TaskDetail(depth: depth, text: ns.substring(with: bm.range(at: 2))))
+                    let text = ns.substring(with: bm.range(at: 2))
+                    details.append(TaskDetail(depth: depth, text: text))
                     detailContentIndent = indent.count + 2
+                    // `- ```bash` opens a fence on the bullet line itself.
+                    if isFenceOpener(text) { inDetailFence = true }
                 } else {
                     details = appendingContinuation(line, to: details, contentIndent: detailContentIndent)
                     if owner.details.isEmpty {
@@ -856,9 +872,21 @@ nonisolated extension ActionItemsParser {
 
     // --- helpers ---
 
-    /// A markdown fence marker line (already whitespace-trimmed).
+    /// A markdown fence marker line (already whitespace-trimmed). Inside an
+    /// open fence any such line closes it.
     private static func isFenceLine(_ stripped: String) -> Bool {
         stripped.hasPrefix("```") || stripped.hasPrefix("~~~")
+    }
+
+    /// A line that opens a fence: a marker plus an optional info string, with
+    /// no second marker on the line — `` ```npm i``` then restart `` is inline
+    /// code, not a fence.
+    private static func isFenceOpener(_ stripped: String) -> Bool {
+        for marker in ["```", "~~~"] where stripped.hasPrefix(marker) {
+            let rest = stripped.drop { $0 == marker.first }
+            return !rest.contains(marker)
+        }
+        return false
     }
 
     /// Drop at most `n` leading spaces/tabs, so a continuation keeps any

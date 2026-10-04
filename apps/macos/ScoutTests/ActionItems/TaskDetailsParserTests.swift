@@ -169,6 +169,49 @@ struct TaskDetailsParserTests {
         ])
     }
 
+    @Test func fenceOpenedOnTheBulletLine() throws {
+        let section = try urgent([
+            "- [ ] [#DETX] **Task**",
+            "  - ```bash",
+            "    make test",
+            "    ```",
+            "  - second point",
+            "  - [ ] [#LBL] **Child**",
+            "    - alex: please check",
+            "- [ ] [#PLN] **Next**",
+        ])
+        #expect(section.tasks.count == 3)
+        #expect(section.tasks[0].details == [d(0, "```bash\nmake test\n```"), d(0, "second point")])
+        #expect(section.tasks[1].shortPrefix == "LBL")
+        #expect(section.tasks[1].comments.map(\.author) == ["alex"])
+    }
+
+    @Test func unclosedFenceEndsWithItsListItem() throws {
+        let section = try urgent([
+            "- [ ] [#DETX] **Task**",
+            "  - Run this",
+            "    ```",
+            "    make test",
+            "  - next point",
+            "  - [ ] [#LBL] **Child**",
+            "    - alex: please check",
+        ])
+        #expect(section.tasks.count == 2)
+        #expect(section.tasks[0].details == [d(0, "Run this\n```\nmake test"), d(0, "next point")])
+        #expect(section.tasks[1].comments.map(\.author) == ["alex"])
+    }
+
+    @Test func inlineCodeIsNotAFenceOpener() throws {
+        let task = try onlyTask([
+            "- [ ] [#DETX] **Task**",
+            "  - Install it",
+            "    ```npm i``` then restart",
+            "    - alex: done on my side",
+        ])
+        #expect(task.details == [d(0, "Install it\n```npm i``` then restart")])
+        #expect(task.comments.map(\.author) == ["alex"])
+    }
+
     @Test func parkedTaskKeepsItsOwnDetails() throws {
         let section = try urgent([
             "<details><summary>Superseded — yesterday</summary>",
