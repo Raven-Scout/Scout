@@ -87,8 +87,14 @@ nonisolated struct EngineLocator: Sendable {
               let target = Self.parseShimTarget(text),
               FileManager.default.isExecutableFile(atPath: target) else { return nil }
         let scoutctl = URL(fileURLWithPath: target)
-        // <root>/.venv/bin/scoutctl → root is three levels up.
-        let root = scoutctl.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        // <root>/.venv/bin/scoutctl → root is three levels up. The other
+        // layout `installIfVenv` accepts, <root>/engine/.venv/bin/scoutctl,
+        // lands on <root>/engine — which has no plugin manifest — so step up
+        // once more to the plugin root.
+        var root = scoutctl.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        if Self.version(atRoot: root) == nil && root.lastPathComponent == "engine" {
+            root = root.deletingLastPathComponent()
+        }
         return EngineInstall(root: root, scoutctl: scoutctl, python: scoutctl.deletingLastPathComponent().appending(path: "python"),
                              version: Self.version(atRoot: root), vault: nil)
     }

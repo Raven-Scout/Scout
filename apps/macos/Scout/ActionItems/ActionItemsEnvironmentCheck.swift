@@ -48,7 +48,7 @@ final class ActionItemsEnvironmentCheck: @unchecked Sendable {
         } catch {
             return ActionItemsEnvironmentResult(
                 ok: false,
-                message: "Scout engine not found — open Settings ▸ Engine to install or repair it."
+                message: "Scout engine not found — see Settings ▸ Engine."
             )
         }
         if probe.exitCode != 0 {

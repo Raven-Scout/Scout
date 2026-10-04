@@ -15,6 +15,10 @@ struct SidebarView: View {
     /// True when the engine needs the user's attention (spec §5) — draws a
     /// small warning dot on the Settings row.
     var settingsAttention: Bool = false
+    /// True while the engine gates the tabs (spec §5): every row but Settings
+    /// has nothing to show, so it renders dimmed — still clickable (it lands
+    /// on the engine gate). Settings stays live and undimmed.
+    var tabsGated: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -44,6 +48,11 @@ struct SidebarView: View {
         .overlay(alignment: .trailing) {
             Rectangle().fill(DS.Rule.soft).frame(width: 0.5)
         }
+    }
+
+    /// Pure dimming rule: only while gated, and never the Settings row.
+    nonisolated static func isDimmed(_ item: SidebarItem, tabsGated: Bool) -> Bool {
+        tabsGated && item != .settings
     }
 
     private func groupLabel(_ text: String) -> some View {
@@ -83,6 +92,9 @@ struct SidebarView: View {
                         .background(Capsule().fill(DS.Accent.fill))
                 }
             }
+            // Same 0.5 dimming the app uses for unavailable controls
+            // (SlotEditForm's disabled runtime picker, done task cards).
+            .opacity(Self.isDimmed(item, tabsGated: tabsGated) ? 0.5 : 1)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)

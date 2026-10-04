@@ -63,6 +63,18 @@ struct AppStateVaultResolutionTests {
         #expect(AppState.resolveScoutDirectory(defaults: defaults(nil), pointer: blankVaultPointer, home: home).path == "/Users/alex/Scout")
     }
 
+    @Test func userDefaultAbsolutePathIsUsedAsIs() {
+        #expect(AppState.resolveScoutDirectory(defaults: defaults("/Users/alex/Vaults/Home"), pointer: pointer, home: home).path == "/Users/alex/Vaults/Home")
+    }
+
+    /// A user-typed relative path would resolve against the process's cwd —
+    /// treated as unset, so the pointer vault (then `~/Scout`) wins.
+    @Test(arguments: ["Vaults/Work", "Scout", "./Scout", "~alex/Scout"])
+    func userDefaultRelativePathIsTreatedAsUnset(raw: String) {
+        #expect(AppState.resolveScoutDirectory(defaults: defaults(raw), pointer: pointer, home: home).path == "/Users/alex/Vaults/Work")
+        #expect(AppState.resolveScoutDirectory(defaults: defaults(raw), pointer: nil, home: home).path == "/Users/alex/Scout")
+    }
+
     @Test func pointerVaultRelativePathIsTreatedAsUnset() {
         let relativeVaultPointer = EnginePointer(schemaVersion: 1, version: "0.10.0", engineRoot: "/e", python: "/p", scoutctl: "/s",
                                                   vault: "Vaults/Work", managedBy: "scout-app", writtenAt: "")

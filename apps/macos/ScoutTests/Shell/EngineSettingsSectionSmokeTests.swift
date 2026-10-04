@@ -5,7 +5,8 @@ import Testing
 /// Smoke coverage for Settings ▸ Engine (spec §5). Renders `EngineSettingsSection`
 /// across the states that change which rows appear — `.managed` behind a
 /// bundled version (Update + Repair wired), `.external(_, .devCheckout)` behind
-/// a bundled version (hand-off row), `.notInstalled`, and `.broken` — plus the
+/// a bundled version (hand-off row), and the three next-step states —
+/// `.notInstalled`, `.managed` with a vault not set up, and `.broken` — plus the
 /// whole `SettingsView` wired to a populated vault, the same way
 /// `ShellViewSmokeTests.settingsRenders` in `ViewSmokeTests.swift` does.
 ///
@@ -55,6 +56,19 @@ struct EngineSettingsSectionSmokeTests {
     func notInstalled() {
         ViewHost.render(
             EngineSettingsSection(health: health(.notInstalled), bundledVersion: nil)
+                .frame(width: 640),
+            size: CGSize(width: 640, height: 420))
+    }
+
+    /// `.notInstalled` (above) and `.broken` (below) also render a next-step
+    /// row — the Terminal one-liner on its own line, and "Copy /scout-update";
+    /// this is the third next-step state.
+    @Test("managed but the vault is not set up — renders the Copy /scout-setup next-step row")
+    func managedVaultNotSetUpShowsNextStep() {
+        let state = EngineState.managed(install, vaultBootstrapped: false)
+        #expect(EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil).nextStep?.copyValue == "/scout-setup")
+        ViewHost.render(
+            EngineSettingsSection(health: health(state), bundledVersion: nil)
                 .frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }

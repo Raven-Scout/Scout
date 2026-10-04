@@ -122,6 +122,31 @@ struct AppStateEngineWiringTests {
         #expect(sawDoctorCall)
     }
 
+    /// The 10-minute engine re-check must start once the first engine refresh
+    /// is done — not wait on the Action Items environment check, whose
+    /// `scoutctl action-items --help` probe is wedged here until the test ends.
+    /// `.testing(...)`'s engine layout is an empty temp home, so the first
+    /// refresh is a fast `.notInstalled` with no doctor call.
+    @Test func periodicEngineRefreshStartsWhileTheActionItemsCheckIsWedged() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppStateEngineWiringTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let wedged = WedgedActionItemsRunner()
+        defer { wedged.release() }
+        var configuration = AppState.Configuration.testing(scoutDirectory: tmp, runner: wedged)
+        configuration.startsBackgroundWork = true
+        let appState = AppState(configuration: configuration)
+
+        var scheduled = false
+        for _ in 0..<40 {
+            if appState.engineHealth.isPeriodicRefreshScheduled { scheduled = true; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(scheduled)
+        #expect(wedged.probeIsInFlight)
+        #expect(appState.engineHealth.state == .notInstalled)
+    }
+
     /// `engineHealth` is a nested `ObservableObject` (spec §5, Ruling 32 item
     /// 4): a change it publishes must also fire `AppState.objectWillChange`
     /// — the same forwarding `wishlistDoc`/`researchDoc` already get — so the
@@ -143,5 +168,43 @@ struct AppStateEngineWiringTests {
         try await Task.sleep(for: .milliseconds(100))
 
         #expect(fired)
+    }
+}
+
+/// A `ProcessRunner` whose `action-items --help` probe hangs until `release()`
+/// — a wedged `scoutctl`. Every other call answers an empty success at once.
+/// Nothing shells out.
+private final class WedgedActionItemsRunner: ProcessRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private var inFlight = 0
+
+    func run(executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?) async throws -> ProcessResult {
+        if arguments.starts(with: ["action-items", "--help"]) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock { () -> Bool in
+                    if released { return true }
+                    inFlight += 1
+                    waiters.append(continuation)
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        }
+        return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+    }
+
+    /// True while a probe is parked — i.e. the Action Items check has not finished.
+    var probeIsInFlight: Bool { lock.withLock { inFlight > 0 } }
+
+    func release() {
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            released = true
+            inFlight = 0
+            defer { waiters = [] }
+            return waiters
+        }
+        pending.forEach { $0.resume() }
     }
 }

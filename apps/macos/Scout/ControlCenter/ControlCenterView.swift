@@ -222,14 +222,26 @@ struct RailCardHeader: View {
 }
 
 struct RepoStateRailCard: View {
+    @EnvironmentObject var state: AppState
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             RailCardHeader(title: "Repo state")
-            row("path",     "~/Scout",  DS.Ink.p1)
+            row("path",     Self.displayPath(state.scoutDirectory, home: FileManager.default.homeDirectoryForCurrentUser), DS.Ink.p1)
             row("branch",   "main",     DS.Ink.p1)
             row("obsidian", "mirrored", DS.Status.ok)
         }
         .editorialCard(padding: 16)
+    }
+
+    /// The vault path as the card shows it: `~`-abbreviated when it lives
+    /// under `home`, absolute otherwise.
+    nonisolated static func displayPath(_ url: URL, home: URL) -> String {
+        let path = url.standardizedFileURL.path
+        let homePath = home.standardizedFileURL.path
+        if path == homePath { return "~" }
+        let homePrefix = homePath.hasSuffix("/") ? homePath : homePath + "/"
+        return path.hasPrefix(homePrefix) ? "~/" + String(path.dropFirst(homePrefix.count)) : path
     }
 
     private func row(_ key: String, _ value: String, _ color: Color) -> some View {
@@ -241,6 +253,9 @@ struct RepoStateRailCard: View {
             Text(value)
                 .font(DS.mono(12))
                 .foregroundStyle(color)
+                // A real vault path can be long; keep the rail one line per row.
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }

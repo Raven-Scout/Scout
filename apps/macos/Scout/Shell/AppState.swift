@@ -307,9 +307,10 @@ final class AppState: ObservableObject {
             // Locate + doctor-check the engine concurrently with the Action
             // Items environment check below — a slow doctor (a real
             // subprocess round-trip) must not delay the Action Items banner.
-            // Re-checking every 10 minutes (spec §4.4) still starts only
-            // after this first refresh completes, below.
-            async let engineRefresh: Void = engineHealth.refresh()
+            // The 10-minute re-check (spec §4.4) starts as soon as this first
+            // refresh completes, inside the same child task — so a wedged
+            // `scoutctl action-items --help` below can't hold it back.
+            async let engineRefresh: Void = Self.refreshEngineThenStartPeriodicRefresh(engineHealth)
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
@@ -323,10 +324,16 @@ final class AppState: ObservableObject {
 
             // Drives the window gate, Settings ▸ Engine, and the sidebar badge.
             await engineRefresh
-            await MainActor.run { engineHealth.startPeriodicRefresh() }
         }
 
         startNotificationWatch()
+    }
+
+    /// First engine refresh, then the 10-minute re-check — chained on their
+    /// own so nothing else in the launch task can delay the periodic refresh.
+    private static func refreshEngineThenStartPeriodicRefresh(_ engineHealth: EngineHealthService) async {
+        await engineHealth.refresh()
+        engineHealth.startPeriodicRefresh()
     }
 
     // MARK: - Configuration
@@ -587,7 +594,10 @@ final class AppState: ObservableObject {
         if let raw = defaults.string(forKey: "scoutDataDir")?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
             if raw == "~" { return home }
             if raw.hasPrefix("~/") { return home.appendingPathComponent(String(raw.dropFirst(2))) }
-            return URL(fileURLWithPath: raw)
+            if raw.hasPrefix("/") { return URL(fileURLWithPath: raw) }
+            // Anything else (`Scout`, `Vaults/Work`, `~alex/Scout`) would
+            // resolve against the process's cwd — treat it as unset and fall
+            // through, the same way a relative pointer `vault` is rejected below.
         }
         // A blank or relative `vault` in the pointer (hand-edited, truncated
         // write, or a schema we don't fully trust) is not a usable root —

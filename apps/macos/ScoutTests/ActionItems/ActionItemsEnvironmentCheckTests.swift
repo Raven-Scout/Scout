@@ -3,6 +3,7 @@ import Foundation
 @testable import Scout
 
 @Suite("ActionItemsEnvironmentCheck")
+@MainActor
 struct ActionItemsEnvironmentCheckTests {
     @Test func passesWhenScoutctlActionItemsHelpExitsZero() async throws {
         let runner = StubRunner(result: ProcessResult(
@@ -63,7 +64,7 @@ struct ActionItemsEnvironmentCheckTests {
         )
         let result = try await check.run()
         #expect(!result.ok)
-        #expect(result.message?.contains("Settings ▸ Engine") == true)
+        #expect(result.message == "Scout engine not found — see Settings ▸ Engine.")
     }
 }
 

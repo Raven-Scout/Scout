@@ -32,10 +32,17 @@ final class EngineHealthService: ObservableObject {
         self.state = initialState
     }
 
+    /// Gated tabs, a red doctor, or a doctor that could not run at all (it
+    /// threw, or printed something that isn't a report) — the last one would
+    /// otherwise leave the sidebar dot off with health stuck at "Unknown".
     var needsAttention: Bool {
         if state.gatesTabs { return true }
-        return doctor?.severity == .red
+        if let doctor { return doctor.severity == .red }
+        return lastError != nil
     }
+
+    /// True once `startPeriodicRefresh()` has scheduled the 10-minute re-check.
+    var isPeriodicRefreshScheduled: Bool { timer != nil }
 
     /// Locate off the main actor, run the doctor, publish on the main actor.
     ///
@@ -58,14 +65,17 @@ final class EngineHealthService: ObservableObject {
         state = located
         lastChecked = Date()
         guard let scoutctl = located.scoutctl, !located.gatesTabs || located.isManaged else {
+            // No doctor runs for this state, so an earlier doctor failure no
+            // longer describes anything — don't leave it on screen.
             doctor = nil
+            lastError = nil
             return
         }
         do {
             let jsonResult = try await runner.run(executable: scoutctl, arguments: ["bootstrap", "doctor", "--json"],
                                                   environment: environment, workingDirectory: nil)
             guard myGeneration == generation else { return }
-            if let report = DoctorReport.parse(stdout: jsonResult.stdout) {
+            if let report = DoctorReport.parse(stdout: jsonResult.stdout, stderr: jsonResult.stderr) {
                 doctor = report
                 lastError = nil
                 return
@@ -73,7 +83,8 @@ final class EngineHealthService: ObservableObject {
             let textResult = try await runner.run(executable: scoutctl, arguments: ["bootstrap", "doctor"],
                                                    environment: environment, workingDirectory: nil)
             guard myGeneration == generation else { return }
-            if let report = DoctorReport.parse(stdout: textResult.stdout) {
+            // Legacy text: `error:` lines arrive on stderr, the rest on stdout.
+            if let report = DoctorReport.parse(stdout: textResult.stdout, stderr: textResult.stderr) {
                 doctor = report
                 lastError = nil
             } else {

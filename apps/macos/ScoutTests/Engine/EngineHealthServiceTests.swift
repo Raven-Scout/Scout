@@ -5,6 +5,8 @@ import Foundation
 @Suite("EngineHealthService")
 @MainActor
 struct EngineHealthServiceTests {
+    /// A temp home holding an app-managed engine. Every caller removes it with
+    /// `defer { try? FileManager.default.removeItem(at: layout.home) }`.
     func managedHome() throws -> EngineLayout {
         let fm = FileManager.default
         let layout = EngineLayout(home: fm.temporaryDirectory.appendingPathComponent("health-\(UUID().uuidString)"))
@@ -22,6 +24,7 @@ struct EngineHealthServiceTests {
 
     @Test func refreshLocatesAndRunsDoctorWithVaultEnv() async throws {
         let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
         let runner = RuleBasedRunner()
         runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: #"{"severity": "green", "errors": [], "warnings": []}"#)
         let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner, environment: ["SCOUT_DATA_DIR": "/v"])
@@ -33,13 +36,21 @@ struct EngineHealthServiceTests {
         #expect(runner.calls.first?.environment["SCOUT_DATA_DIR"] == "/v")
     }
 
+    /// A red doctor from an engine ≤ v0.11.x, emitted the way the real engine
+    /// does: `--json` is rejected, then the text form prints `severity:` on
+    /// stdout and every `error:` line on **stderr**.
     @Test func redDoctorNeedsAttention() async throws {
         let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
         let runner = RuleBasedRunner()
-        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: "severity: red\nerror: vault directory missing: /x\n", exit: 2)
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor", "--json"], stderr: "Error: No such option: --json", exit: 2)
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: "severity: red\n",
+                  stderr: "error: vault directory missing: /x\n", exit: 2)
         let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
         await svc.refresh()
         #expect(svc.doctor?.severity == .red)
+        #expect(svc.doctor?.errors == ["vault directory missing: /x"])
+        #expect(svc.lastError == nil)
         #expect(svc.needsAttention)
     }
 
@@ -58,6 +69,7 @@ struct EngineHealthServiceTests {
     /// without `--json` and falls back to legacy `severity: …` text parsing.
     @Test func fallsBackToLegacyTextWhenJsonFlagIsRejected() async throws {
         let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
         let runner = RuleBasedRunner()
         // Register the more specific (--json) rule before the plain-prefix rule,
         // since `on(tool:prefix:)` matches by prefix and "bootstrap doctor" is a
@@ -77,6 +89,7 @@ struct EngineHealthServiceTests {
     /// faster second call's result (finding #1 — generation guard).
     @Test func latestStartedRefreshWins() async throws {
         let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
         let runner = RuleBasedRunner()
         let callCount = Locked(0)
         runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.starts(with: ["bootstrap", "doctor"]) }) { _, _, _ in
@@ -93,6 +106,54 @@ struct EngineHealthServiceTests {
         await svc.refresh()
         await a
         #expect(svc.doctor?.severity == .green)
+    }
+
+    /// `scoutctl` is on disk but the doctor can't be run at all (the runner
+    /// throws): no report, an error to show, and the sidebar dot on.
+    @Test func doctorThatCannotRunNeedsAttention() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let runner = RuleBasedRunner()  // no rules: every call throws ENOENT
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.state.isManaged)
+        #expect(!svc.state.gatesTabs)
+        #expect(svc.doctor == nil)
+        #expect(svc.lastError?.hasPrefix("could not run scoutctl") == true)
+        #expect(svc.needsAttention)
+    }
+
+    /// The doctor runs but prints a traceback instead of a report, on both
+    /// the `--json` and the legacy attempt.
+    @Test func doctorPrintingATracebackNeedsAttention() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"],
+                  stderr: "Traceback (most recent call last):\n  File \"cli.py\", line 1\nImportError: x\n", exit: 1)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.doctor == nil)
+        #expect(svc.lastError?.contains("doctor output not understood") == true)
+        #expect(svc.lastError?.contains("Traceback") == true)
+        #expect(svc.needsAttention)
+    }
+
+    /// A doctor failure must not outlive the state it described: once the
+    /// engine is gone, `refresh()` takes the no-doctor early return and that
+    /// path clears `lastError` too.
+    @Test func earlyReturnClearsAStaleDoctorError() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: RuleBasedRunner())
+        await svc.refresh()
+        #expect(svc.lastError != nil)
+
+        try FileManager.default.removeItem(at: layout.home)
+        await svc.refresh()
+        #expect(svc.state == .notInstalled)
+        #expect(svc.doctor == nil)
+        #expect(svc.lastError == nil)
     }
 }
 

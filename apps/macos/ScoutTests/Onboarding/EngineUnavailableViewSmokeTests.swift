@@ -26,4 +26,17 @@ struct EngineUnavailableViewSmokeTests {
                 .frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }
+
+    /// Part B ships no Install/Repair buttons: the gate's copy points at the
+    /// copyable next step Settings ▸ Engine shows, and promises nothing more.
+    @Test func explanationPointsAtSettingsWithoutPromisingButtons() {
+        #expect(EngineUnavailableView.explanation(for: .notInstalled)
+                == "No Scout engine was found on this Mac. Settings ▸ Engine shows how to install it.")
+        #expect(EngineUnavailableView.explanation(for: .broken(engineUnavailableInstall, reason: "engine pointer names a missing scoutctl: /s"))
+                == "The engine that was here is broken: engine pointer names a missing scoutctl: /s. Settings ▸ Engine shows how to repair it.")
+        #expect(EngineUnavailableView.explanation(for: .managed(engineUnavailableInstall, vaultBootstrapped: false))
+                == "The engine is installed but your vault has not been set up yet. Settings ▸ Engine shows how.")
+        #expect(EngineUnavailableView.explanation(for: .managed(engineUnavailableInstall, vaultBootstrapped: true)) == "The engine is present.")
+        #expect(EngineUnavailableView.explanation(for: .external(engineUnavailableInstall, .devCheckout)) == "The engine is present.")
+    }
 }
