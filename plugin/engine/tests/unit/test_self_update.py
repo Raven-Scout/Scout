@@ -19,6 +19,23 @@ def test_compare_no_update_when_installed_ahead():
     assert self_update.compare(installed="0.6.0", available="0.5.0").update_available is False
 
 
+def test_marketplace_url_is_the_monorepo_root_manifest():
+    """The plugin moved into Raven-Scout/Scout and scout-plugin is archived: a
+    check against the archived repo's manifest would report "up to date"
+    forever. The URL must name the monorepo's main branch AND the repo-root
+    path where the marketplace manifest actually lives (versioning keeps it
+    in sync with plugin.json)."""
+    import json
+
+    from scout.scripts import versioning
+
+    prefix = "https://raw.githubusercontent.com/Raven-Scout/Scout/main/"
+    assert self_update.RAW_MARKETPLACE_URL.startswith(prefix)
+    manifest = versioning.PLUGIN_ROOT.parent / self_update.RAW_MARKETPLACE_URL.removeprefix(prefix)
+    assert manifest.is_file(), f"{manifest} is not the repo-root marketplace manifest"
+    assert json.loads(manifest.read_text())["plugins"][0]["version"] == versioning.assert_in_sync()
+
+
 def test_check_uses_injected_fetchers():
     r = self_update.check(
         installed_fetcher=lambda: "0.4.0",
