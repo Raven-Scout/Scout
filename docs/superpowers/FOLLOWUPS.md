@@ -291,7 +291,7 @@ _(Move entries here as PRs close them. Format:
 - **Legacy Plan-5-era vault migration (uncovered during live test)** — `scoutctl bootstrap migrate-legacy` subcommand added. Establishes Plan 8 baseline (snapshots + scout-config.yaml + cat-1 regen) without touching cat-4 live files. Required pre-upgrade for vaults lacking `scout-config.yaml`.
 - **Cat-4 merge degenerate-overwrite bug (M3 incident)** — fixed in M4. `_stage_cat4_upgrade` now writes to `<name>.md.proposed-merge` sidecar when `base==theirs` but `ours` diverges, instead of fast-forwarding. Spec §4.5 amended.
 - **`scout-config.yaml` didn't persist `connector_inputs`** — fixed in M5. `_stage_version_stamp` now writes `connectors.enabled`, `connectors.inputs`, `timezone`, `platform`; upgrade CLI reads them back.
-- **Smoke test path hardcoded to worktree** — fix(test) PR #17 repointed default to `plugin/.venv/bin/scoutctl`.
+- **Smoke test path hardcoded to worktree** — fix(test) PR #17 repointed default to `~/scout-plugin/.venv/bin/scoutctl`.
 
 Plan: `docs/superpowers/plans/2026-05-10-plan-8-scout-setup-repair-plan.md` (20 tasks + 6 M-tasks).
 Spec: `docs/superpowers/specs/2026-05-09-plan-8-scout-setup-repair-design.md` with §4.5 amendment.
