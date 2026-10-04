@@ -54,29 +54,33 @@ Scout repos — this one, `scout-iOS-app`, and `scout-plugin` — are public.
   `pyproject`/`marketplace.json` owner, `LICENSE`, and the project's own
   `github.com/<org>/…` URLs.
 
-### `parser-corpus.json` is ONE byte-identical file living in three repos
+### `parser-corpus.json` is ONE byte-identical file across the plugin and every client
 
-`ScoutTests/Fixtures/parser-corpus.json` is byte-identical to the **canonical**
-copy in `scout-plugin` and the copy in `scout-iOS-app`, and is checksum-guarded on
-both the Swift and Python sides — so you cannot edit just one copy. On any change
-(anonymizing counts):
+`ScoutTests/Fixtures/parser-corpus.json` is a byte copy of the **canonical**
+`plugin/engine/tests/fixtures/contract/parser-corpus.json` in this monorepo, and
+`scout-iOS-app` vendors another copy in its own repo. It is checksum-guarded on
+both the Swift and Python sides, and `contract.yml` fails the build if this copy
+differs from the canonical one — so you cannot edit just one copy. On any change
+(anonymizing counts), from the repo root:
 
-1. Edit the corpus; keep every `expected` field consistent with the parser rules
+1. Edit the **canonical** corpus, `plugin/engine/tests/fixtures/contract/parser-corpus.json`;
+   keep every `expected` field consistent with the parser rules
    (`ParserContractTests` is the judge).
-2. Copy it byte-for-byte into the sibling checkouts:
-   - `../scout-plugin/engine/tests/fixtures/contract/parser-corpus.json` (canonical)
-   - `ScoutMobileTests/Fixtures/parser-corpus.json` in `Raven-Scout/scout-iOS-app`,
-     which is usually **not** checked out alongside this repo — clone it when you
-     need to touch the corpus. It has no checksum guard of its own, so nothing
-     fails locally if you forget it; the copy just silently drifts.
-3. Update BOTH checksum guards to the new `shasum -a 256` of the file:
-   - `canonicalSHA256` in `ScoutTests/ActionItems/ParserContractTests.swift`
-   - `EXPECTED_SHA256` in `../scout-plugin/engine/tests/unit/test_parser_corpus_checksum.py`
-4. Verify all three: this repo's `ParserContractTests` (on `platform=macOS`),
-   scout-iOS `ParserContractTests`, and plugin
-   `pytest tests/unit/test_parser_contract.py tests/unit/test_parser_corpus_checksum.py`.
+2. Update BOTH checksum guards to the new `shasum -a 256` of the file:
+   - `canonicalSHA256` in `apps/macos/ScoutTests/ActionItems/ParserContractTests.swift`
+   - `EXPECTED_SHA256` in `plugin/engine/tests/unit/test_parser_corpus_checksum.py`
+3. Copy it over this app's copy:
+   `cp plugin/engine/tests/fixtures/contract/parser-corpus.json apps/macos/ScoutTests/Fixtures/parser-corpus.json`
+   — and into `ScoutMobileTests/Fixtures/parser-corpus.json` in `Raven-Scout/scout-iOS-app`,
+   which is usually **not** checked out alongside this repo — clone it when you
+   need to touch the corpus. It has no checksum guard of its own, so nothing
+   fails locally if you forget it; the copy just silently drifts.
+4. Verify all three: this app's `ParserContractTests` (on `platform=macOS`),
+   the plugin's `pytest tests/unit/test_parser_contract.py tests/unit/test_parser_corpus_checksum.py`
+   (from `plugin/engine`), and scout-iOS `ParserContractTests`.
    scout-iOS-app builds via **XcodeGen**, so `xcodegen generate` has to run before
    its tests will build at all — if that tool is not installed, say so rather than
    reporting the corpus as fully verified.
-5. Open all three PRs and **merge them together.** The two checksum guards fail on
-   either side the moment one lands alone.
+5. Land the plugin and app changes as **one commit** in this repo (the two checksum
+   guards fail the moment the corpus changes without them), and merge the
+   scout-iOS-app PR alongside it.

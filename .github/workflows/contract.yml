@@ -83,7 +83,7 @@ jobs:
                  <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("generated_from", None); print(json.dumps(d, indent=2, sort_keys=True))' "$copy"); then
               echo "OK  $copy"
             else
-              echo "::error file=$copy::drifted from $canonical — regenerate, do not hand-edit"
+              echo "::error file=$copy::drifted from $canonical — fix with: cp $canonical $copy (never hand-edit a copy; to change the contract, edit the YAML and regenerate the canonical file — see CLAUDE.md)"
               status=1
             fi
           }
@@ -109,7 +109,7 @@ jobs:
             if cmp -s "$canonical" "$copy"; then
               echo "OK  $copy"
             else
-              echo "::error file=$copy::parser-corpus.json is not byte-identical to $canonical"
+              echo "::error file=$copy::parser-corpus.json is not byte-identical to $canonical — edit the canonical file, update EXPECTED_SHA256 and canonicalSHA256, then cp it over $copy (see CLAUDE.md)"
               status=1
             fi
           done

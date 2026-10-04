@@ -24,10 +24,26 @@ first.** The two have different languages, test runners, and release flows.
 - **Tags are prefixed:** `plugin/vX.Y.Z`, `app/vX.Y.Z`. Never push a bare
   `vX.Y.Z` — the two artifacts collided on `v0.5.0`–`v0.9.0` before the merge.
 - **Contract artifacts are generated, never hand-edited.** The connector roster
-  and schedule snapshot have one canonical source under
-  `plugin/engine/scout/` and are copied into `apps/*/`. Edit the `.yaml`, then
-  regenerate — `contract.yml` fails the build if a copy drifts. See
+  and schedule snapshot each have ONE canonical file under
+  `plugin/engine/scout/`, generated from its `.yaml`, and every client copy
+  under `apps/*/` is a byte copy of it. To change one, from `plugin/engine`:
+  edit `scout/connectors.yaml` (or `scout/defaults/schedule.yaml`), regenerate
+  the canonical file with
+  `.venv/bin/python -m scout.scripts.connectors_snapshot --no-also-write-app-fixture`
+  (or `schedule_snapshot`), then from the repo root `cp` it over every client
+  copy `contract.yml` checks. **Always pass
+  `--no-also-write-app-fixture`** — the default also writes into a sibling
+  `~/scout-app` checkout outside this repo, and never into `apps/`.
+  `contract.yml` fails the build if a copy drifts. See
   `docs/superpowers/specs/2026-09-03-monorepo-consolidation-design.md` §7.
+- **The parser corpus has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/parser-corpus.json`. Edit it, set
+  `EXPECTED_SHA256` (`plugin/engine/tests/unit/test_parser_corpus_checksum.py`)
+  and `canonicalSHA256`
+  (`apps/macos/ScoutTests/ActionItems/ParserContractTests.swift`) to its new
+  `shasum -a 256`, then `cp` it to
+  `apps/macos/ScoutTests/Fixtures/parser-corpus.json` — all in one commit.
+  (scout-iOS-app vendors a copy in its own repo; see `apps/macos/CLAUDE.md`.)
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame
