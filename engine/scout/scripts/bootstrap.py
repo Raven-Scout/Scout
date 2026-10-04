@@ -158,6 +158,9 @@ _CAT1_TEMPLATES = (
     ("scripts/materialize-daily-file.sh", "templates/scripts/materialize-daily-file.sh.tmpl"),
     # The runners' out-of-band record of how each run ended (run-outcomes.jsonl).
     ("scripts/run-outcome.sh", "templates/scripts/run-outcome.sh.tmpl"),
+    # The dreaming brain's commit steps: explicit paths only, behind a
+    # cross-session mutex, so overlapping runs never commit each other's work.
+    ("scripts/git-safe-commit.sh", "templates/scripts/git-safe-commit.sh.tmpl"),
     ("hooks/kb-pre-filter.sh", "templates/hooks/kb-pre-filter.sh.tmpl"),
     (".gitignore", "templates/.gitignore.tmpl"),
 )

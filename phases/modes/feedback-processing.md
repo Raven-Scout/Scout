@@ -144,6 +144,8 @@ If Phase 1 made any changes (mistake audit updates, KB fixes, dreaming improveme
 {{SCOUT_DIR}}/scripts/git-safe-commit.sh "dreaming [HH:MM]: feedback processing — <summary of changes>" <only the paths THIS run touched>
 ```
 
+Paths are vault-relative; one that is gitignored or doesn't exist is skipped with a warning. Exit 4 means none of the named paths changed — nothing to do. Exit 3 (another session held the mutex too long) or 5 (git failed): report it in the wrap notification, and never fall back to `-A`.
+
 The summary should mention what was processed: e.g., "3 feedback signals, 1 new mistake pattern, 2 KB fixes" or "applied 1 approved proposal, added 2 new proposals."
 
 If Phase 1 found no actionable feedback (no reactions, no thread replies in the time window), skip the commit and proceed to Phase 2. Log "No feedback signals found in time window" in the session entry.
