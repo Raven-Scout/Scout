@@ -65,6 +65,9 @@ jobs:
           echo "--- macOS SDKs ---"
           xcodebuild -showsdks | grep -i macos || true
 
+      - name: Bundle-engine script tests
+        run: bash scripts/tests/bundle-engine.test.sh
+
       # Coverage comes from the shared scheme's Test action, which gathers it
       # for Scout.app only — `-enableCodeCoverage YES` here would also
       # instrument ScoutTests.xctest, whose numbers the floor check discards.
