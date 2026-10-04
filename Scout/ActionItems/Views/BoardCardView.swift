@@ -2,10 +2,17 @@ import SwiftUI
 
 /// A compact, read-only card on the Action Items board (issue #15). Shows the
 /// task's short prefix, subject, and a footer of status/source affordances.
-/// No mutation surfaces — the List view remains the place to act on a task.
+/// It writes nothing: the List view remains the place to act on a task. The one
+/// action here is Launch Claude (#52), which only reads the task.
 struct BoardCardView: View {
     let task: ActionTask
     let kind: ActionSection.Kind
+    let scoutDirectory: URL
+
+    @State private var launchError: String?
+
+    /// Same rule as the list card's action row: Launch Claude on open tasks only.
+    static func showsLaunchMenu(for task: ActionTask) -> Bool { !task.done }
 
     private var effectiveKind: ActionSection.Kind { task.snoozedFromKind ?? kind }
 
@@ -20,6 +27,12 @@ struct BoardCardView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             footer
+            if let launchError {
+                Text(launchError)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.err)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .background(
@@ -44,6 +57,9 @@ struct BoardCardView: View {
                     .foregroundStyle(DS.Ink.p4)
             }
             Spacer(minLength: 0)
+            if Self.showsLaunchMenu(for: task) {
+                LaunchClaudeMenu(task: task, scoutDirectory: scoutDirectory, style: .icon, launchError: $launchError)
+            }
             if task.done {
                 Image(systemName: "checkmark.circle.fill")
                     .imageScale(.small)

@@ -108,8 +108,8 @@ private struct CommentRow: View {
                     Image(systemName: "pencil")
                         .font(.system(size: 10))
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.plainHit)
+                .foregroundStyle(DS.Ink.p3)
                 .help("Edit comment")
             }
             if onDelete != nil {
@@ -119,43 +119,31 @@ private struct CommentRow: View {
                     Image(systemName: "trash")
                         .font(.system(size: 10))
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.plainHit)
+                .foregroundStyle(DS.Ink.p3)
                 .help("Delete comment")
             }
         }
     }
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextEditor(text: $draft)
-                .font(.system(size: 12))
-                .focused($editorFocused)
-                .scrollContentBackground(.hidden)
-                .padding(4)
-                .frame(minHeight: 28, maxHeight: 120)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color.secondary.opacity(0.3))
-                )
-            HStack {
-                Text("⌘+Return to save")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 6) {
+            CommentTextEditor(text: $draft, focus: $editorFocused, minHeight: 28)
+            HStack(spacing: 4) {
                 Spacer()
-                Button("Cancel") {
+                EditorialActionButton("Cancel") {
                     draft = ""
                     editing = false
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                Button("Save") { performSave() }
+                EditorialActionButton(
+                    "Save", style: .primary, shortcut: "⌘↵",
+                    keyboardShortcut: KeyboardShortcut(.return, modifiers: .command)
+                ) { performSave() }
                     .disabled(
                         submitting ||
                         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         draft == comment.text
                     )
-                    .keyboardShortcut(.return, modifiers: .command)
             }
         }
     }
