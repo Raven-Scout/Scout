@@ -777,7 +777,7 @@ gh repo view Raven-Scout/scout-plugin --json isArchived --jq .isArchived        
 gh release list --repo Raven-Scout/Scout --limit 5                                 # plugin/v$NEW and the app/v… release
 gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name                      # app/v…
 cd "$R" && git switch main && git pull --ff-only
-grep -rn 'Raven-Scout/scout-plugin' README.md install.sh plugin/README.md apps/macos/README.md docs/index.html .claude-plugin/ plugin/.claude-plugin/ plugin/engine/scout/scripts/self_update.py
+grep -rn 'Raven-Scout/scout-plugin' README.md install.sh plugin/README.md apps/macos/README.md docs/index.html PRIVACY.md TERMS.md .claude-plugin/ plugin/.claude-plugin/ plugin/engine/scout/scripts/self_update.py
 ```
 
 The only `scout-plugin` strings left should be:

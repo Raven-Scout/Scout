@@ -139,7 +139,7 @@ the full history of this document in the repository.
 ## Contact
 
 Scout has no hosted support desk. For privacy questions or requests, open an issue at
-[github.com/Raven-Scout/scout-plugin/issues](https://github.com/Raven-Scout/scout-plugin/issues),
+[github.com/Raven-Scout/Scout/issues](https://github.com/Raven-Scout/Scout/issues),
 or, for sensitive or security-related matters, use
-[GitHub Security Advisories](https://github.com/Raven-Scout/scout-plugin/security/advisories) as
+[GitHub Security Advisories](https://github.com/Raven-Scout/Scout/security/advisories) as
 described in our [Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md).
