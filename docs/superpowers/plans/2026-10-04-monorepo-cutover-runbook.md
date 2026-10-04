@@ -40,11 +40,14 @@ and R2). Everything else is local.
 ## 0. Where things stand
 
 - [ ] Branch `migrate/monorepo`: local only, no upstream, not on `origin`.
-  Synced on 2026-10-04 with Scout `origin/main` **d6e1462** (v0.13.4) and
-  scout-plugin `main` **ca8b21a** (v0.12.0) by the fix wave that added this
-  runbook. Its last code commit is `04a766e`. The commit that adds this file
-  is HEAD.
-- [ ] Verified locally at that HEAD:
+  Both upstreams keep moving, so don't trust a SHA written here — it's
+  already stale by the time you read it. Check the branch's actual sync
+  state instead: `git log -1 --format='%H %s' migrate/monorepo` for the
+  current HEAD, and `gh pr view 132 --repo Raven-Scout/Scout --json
+  mergeStateStatus,baseRefOid,headRefOid` (or the PR page itself) for what
+  it was last synced to and whether `main` has moved further.
+- [ ] Verified locally at the commit that added this runbook (find it with
+  `git log --oneline -- docs/superpowers/plans/2026-10-04-monorepo-cutover-runbook.md | tail -1`):
   - the engine suite: 2883 passed, 14 skipped (the one known-flaky FS-watcher
     test passes when re-run alone)
   - ruff, ruff format, mypy
@@ -224,15 +227,21 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     ```bash
     for f in CLAUDE.md README.md; do
       git show "$MAIN_PREV:$f" > /tmp/base-$f; git show "origin/main:$f" > /tmp/theirs-$f
-      git merge-file -p "apps/macos/$f" /tmp/base-$f /tmp/theirs-$f > /tmp/out-$f && cp /tmp/out-$f "apps/macos/$f"
-      git checkout HEAD -- "$f"                    # root stays as the branch has it
-      git add "$f" "apps/macos/$f"
+      if git merge-file -p "apps/macos/$f" /tmp/base-$f /tmp/theirs-$f > /tmp/out-$f; then
+        cp /tmp/out-$f "apps/macos/$f"
+        git checkout HEAD -- "$f"                  # root stays as the branch has it
+        git add "$f" "apps/macos/$f"
+      else
+        echo "CONFLICT in $f — resolve the markers in /tmp/out-$f, cp it over apps/macos/$f, then git add both by hand" >&2
+      fi
     done
     git diff --cached --quiet HEAD -- CLAUDE.md README.md && echo "root docs unchanged"
     ```
 
-    If `merge-file` exits non-zero, resolve the markers in `/tmp/out-$f` before
-    copying.
+    If `merge-file` exits non-zero, the loop deliberately skips `git add` for
+    that file — resolve the markers in `/tmp/out-$f` before copying and
+    staging it yourself. Never let the loop add a file it didn't actually
+    merge cleanly.
   - **New files main added under the old roots** come up as "file location"
     conflicts. Git already places each at the `apps/macos/…` path it suggests.
     Check each against main, then `git add` it:
@@ -364,7 +373,10 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   .venv/bin/python -m scout.scripts.connectors_snapshot --check --no-also-write-app-fixture
   .venv/bin/python -m scout.scripts.schedule_snapshot  --check --no-also-write-app-fixture
   cd "$W"
-  plugin/engine/.venv/bin/python .superpowers/sdd/2026-09-03-monorepo-consolidation/fix-wave-harness/run-contract.py   # every contract.yml verify step, bash -e -o pipefail
+  # No run-contract.py harness ships in this repo. Extract every `run:` block
+  # of contract.yml's `verify` job and execute it in order, from the repo
+  # root, under `bash -e -o pipefail`, with `SNAPSHOT_COPIES` exported from
+  # the job's `env:` — that's the actual verification, not a stand-in script.
   shellcheck plugin/engine/bin/scoutctl
   shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
   for f in .github/workflows/*.yml; do plugin/engine/.venv/bin/python -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]))' "$f" || echo "BAD $f"; done
@@ -375,9 +387,10 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | grep -E '\*\* TEST (SUCCEEDED|FAILED)|Executed|tests? in'
   ```
 
-  The harness is gitignored. Without it, run each `run:` block of
-  `contract.yml`'s `verify` job yourself from the repo root, under
-  `bash -e -o pipefail`, with `SNAPSHOT_COPIES` exported from the job's `env:`.
+  See the extraction note above the `shellcheck` line: there is no packaged
+  contract harness to fall back to, so this manual extraction (every `run:`
+  block of `contract.yml`'s `verify` job, from the repo root, under
+  `bash -e -o pipefail`) is the only way to run it locally.
 
 ---
 
@@ -552,6 +565,14 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   tags `app/vX.Y.Z`, pushes the tag, and publishes the DMG release with
   `--latest --repo <origin slug>`.
 
+  **Do not release the app until #125 has merged** — until then the interim
+  `ScoutctlLocator` still has the pip/conda/`$PATH` fallbacks Jordan ruled out
+  (R37; Part B deletes it). Check first:
+
+  ```bash
+  gh pr view 125 --repo Raven-Scout/Scout --json state --jq .state   # must print MERGED
+  ```
+
   ```bash
   cd "$R" && git switch main && git pull --ff-only
   SKIP_NOTARIZE=1 SKIP_RELEASE=1 bash apps/macos/scripts/release-app.sh   # dry run: prints the version it would release
@@ -714,6 +735,13 @@ at `~/scout-plugin` is what upgrades his vault.
 ## Phase 7 — Final scout-plugin release, archive, org README, close the notice [outward]
 
 Only after Phase 5 passes.
+
+**7.1 MUST ship before 7.2 archives the repo.** v0.13.0 users' only upgrade
+path is `self-update check` / `/scout-status` pointing them at a newer
+release through the marketplace manifest 7.1 repoints — and the installer
+redirect 7.1 adds to `install.sh`. An archived repo is read-only: if 7.2 runs
+first, there is no way to ship 7.1's re-point messaging at all, and v0.13.0
+users are stranded permanently on the dead repo.
 
 - [ ] **7.1 Ship scout-plugin's last release**, so users still on the old
   marketplace get the migration messages through their normal update path.
