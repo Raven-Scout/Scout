@@ -72,7 +72,7 @@ You do **not** need Homebrew or Python — the installer gets everything else (i
 In Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 ```
 
 It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin, and builds the engine. It ends with `✅ Scout plugin + engine installed.` — if anything fails it stops with the exact command to retry instead.
@@ -98,7 +98,7 @@ Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://gith
 The one-line installer above is the recommended path. Under the hood, Scout is distributed as a Claude Code plugin via a built-in marketplace catalog (`.claude-plugin/marketplace.json`); to install it by hand instead:
 
 ```
-/plugin marketplace add Raven-Scout/scout-plugin
+/plugin marketplace add Raven-Scout/Scout
 /plugin install scout@scout-plugin
 ```
 
@@ -106,8 +106,8 @@ The first command registers this repo as a plugin marketplace; the second instal
 
 > **Other ways to install**
 >
-> - **One-off (no install):** `claude --plugin-dir /path/to/scout-plugin` loads the plugin for a single session without persisting it.
-> - **From a local clone via marketplace:** `/plugin marketplace add /path/to/scout-plugin` (give it the directory containing `.claude-plugin/marketplace.json`).
+> - **One-off (no install):** `claude --plugin-dir /path/to/Scout/plugin` (the `plugin/` folder of a Raven-Scout/Scout clone) loads the plugin for a single session without persisting it.
+> - **From a local clone via marketplace:** `/plugin marketplace add /path/to/Scout` (the clone's root — the directory containing `.claude-plugin/marketplace.json`).
 >
 > See [Discover and install plugins](https://code.claude.com/docs/en/discover-plugins) for the full Claude Code plugin documentation.
 
@@ -522,10 +522,10 @@ See *Manual Reset* at the bottom of [`commands/scout-setup.md`](commands/scout-s
 
 ## License & legal
 
-Scout is open-source under the [MIT License](LICENSE).
+Scout is open-source under the [MIT License](../LICENSE).
 
-- **[Privacy Policy](PRIVACY.md)** — Scout is local-first and collects nothing; your data stays on your machine. ([web version](https://raven-scout.github.io/scout-plugin/privacy.html))
-- **[Terms of Use](TERMS.md)** — free, open-source, provided as-is. ([web version](https://raven-scout.github.io/scout-plugin/terms.html))
+- **[Privacy Policy](../PRIVACY.md)** — Scout is local-first and collects nothing; your data stays on your machine. ([web version](https://raven-scout.github.io/scout-plugin/privacy.html))
+- **[Terms of Use](../TERMS.md)** — free, open-source, provided as-is. ([web version](https://raven-scout.github.io/scout-plugin/terms.html))
 - **[Security Policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md)** · **[Code of Conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md)**
 
 Scout is an independent project and is not affiliated with, endorsed by, or sponsored by Anthropic, Microsoft, or any other company.

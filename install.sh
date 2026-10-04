@@ -18,6 +18,87 @@ export PATH="$HOME/.local/bin:$PATH"
 have() { command -v "$1" >/dev/null 2>&1; }
 fail() { echo "error: $*" >&2; exit 1; }
 
+# Where Claude Code records added marketplaces. Overridable so the check below can
+# be exercised against fixture files without touching a real Claude Code config.
+KNOWN_MARKETPLACES="${SCOUT_KNOWN_MARKETPLACES:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json}"
+
+# Scout moved from Raven-Scout/scout-plugin into Raven-Scout/Scout. A user whose
+# `scout-plugin` marketplace still points at the old repo would get a failing
+# `marketplace add` (the name is taken) and an `update` that keeps pulling the
+# archived repo — so detect that and print the re-point commands instead of
+# reporting a success that isn't one. Never remove the marketplace from here:
+# removing it uninstalls the plugin a user's scheduled runs depend on.
+# Usage: check_marketplace_source <known_marketplaces.json>
+# Returns 0 to continue (no entry, the right repo, a local directory, or an
+# unreadable file), 1 when the user has to re-point first.
+check_marketplace_source() {
+  local file="$1" src repo
+  local -a py
+  [ -f "$file" ] || return 0
+  if command -v uv >/dev/null 2>&1; then
+    py=(uv run --no-project --quiet python)
+  elif command -v python3 >/dev/null 2>&1; then
+    py=(python3)
+  else
+    echo "note: no Python available to read $file; skipping the marketplace-source check." >&2
+    return 0
+  fi
+  # Prints one line: absent | unreadable | github <owner/repo> | directory <path> | other <kind>
+  src="$("${py[@]}" -c '
+import json, re, sys
+try:
+    entry = json.load(open(sys.argv[1], encoding="utf-8")).get("scout-plugin")
+except Exception:
+    print("unreadable")
+    sys.exit(0)
+if not isinstance(entry, dict):
+    print("absent")
+    sys.exit(0)
+src = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+kind = src.get("source")
+if kind == "github":
+    print("github " + str(src.get("repo", "")))
+elif kind == "git":
+    m = re.match(r"(?:https://|git@)github\.com[/:]([^/]+/[^/]+?)(?:\.git)?/?$", str(src.get("url", "")))
+    print("github " + m.group(1) if m else "other git")
+elif kind == "directory":
+    print("directory " + str(src.get("path", "")))
+else:
+    print("other " + str(kind))
+' "$file" 2>/dev/null || echo unreadable)"
+  case "$src" in
+    absent) return 0 ;;
+    "github "*)
+      repo="${src#github }"
+      # GitHub owner/repo names are case-insensitive.
+      [ "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" = "raven-scout/scout" ] && return 0
+      cat >&2 <<EOF
+error: your Claude Code marketplace "scout-plugin" still points at $repo.
+       Scout has moved to Raven-Scout/Scout, and installing from the old repo
+       would leave you on a version that no longer updates. Re-point it, then
+       re-run this installer:
+
+           claude plugin marketplace remove scout-plugin
+           claude plugin marketplace add Raven-Scout/Scout
+           claude plugin install scout@scout-plugin
+
+       (The remove uninstalls the plugin until the install line puts it back;
+       your vault in ~/Scout is not touched.)
+EOF
+      return 1 ;;
+    "directory "*)
+      echo "note: your \"scout-plugin\" marketplace is a local directory (${src#directory }) — using it as is."
+      echo "      If that is a pre-monorepo scout-plugin checkout, point it at a clone of Raven-Scout/Scout instead."
+      return 0 ;;
+    unreadable)
+      echo "note: could not read $file; skipping the marketplace-source check." >&2
+      return 0 ;;
+    *)
+      echo "note: your \"scout-plugin\" marketplace has an unrecognised source ($src) — leaving it as is." >&2
+      return 0 ;;
+  esac
+}
+
 # --- preconditions ---
 # On a fresh Mac, /usr/bin/git and /usr/bin/python3 exist but are stubs that pop
 # the Command Line Tools installer when first run — so `command -v git` passes and
@@ -35,6 +116,8 @@ if ! have uv; then
   echo "uv not found — installing (https://docs.astral.sh/uv)…"
   [ "$CHECK_ONLY" = 1 ] || curl -fsSL https://astral.sh/uv/install.sh | sh
 fi
+
+check_marketplace_source "$KNOWN_MARKETPLACES" || exit 1
 
 if [ "$CHECK_ONLY" = 1 ]; then
   echo "preconditions OK (claude, git present; uv $(have uv && echo present || echo 'will-install'))"

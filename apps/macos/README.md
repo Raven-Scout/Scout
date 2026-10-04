@@ -1,6 +1,6 @@
 # Scout.app
 
-A macOS companion app for the [Scout](https://github.com/Raven-Scout/scout-plugin) Claude Code plugin.
+A macOS companion app for the [Scout](../../plugin) Claude Code plugin.
 
 Scout is an autonomous knowledge-management and daily-briefing system that runs as scheduled Claude Code sessions. The plugin does the work; this app gives you a native interface on top of whatever Scout produces in `~/Scout/`:
 
@@ -21,14 +21,14 @@ Scout.app sits on top of the Scout engine, so set up the engine first. (Making t
 
 1. **Install the engine.** In Terminal:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
    ```
    It ends with `✅ Scout plugin + engine installed.` (On a brand-new Mac it first asks you to install Apple's Command Line Tools — accept, wait, re-run.)
 2. **Create your vault.** Open Claude Code and run `/scout-setup`. It asks a few questions, detects your connected tools, creates `~/Scout/`, and installs the schedule.
 3. **Install the app.** Download the latest `Scout-*.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and drag **Scout.app** into **Applications**. It's signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
 4. **Configure.** Press ⌘, for Settings — see [First-run configuration](#first-run-configuration). Turning on **Launch Scout at login** is recommended.
 
-The full install guide, troubleshooting and FAQ live in the [scout-plugin README](https://github.com/Raven-Scout/scout-plugin#install).
+The full install guide, troubleshooting and FAQ live in the [plugin README](../../plugin/README.md#install).
 
 ## Requirements (for building from source)
 
@@ -113,10 +113,11 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: `scripts/release.sh <version>` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples **both the app and the DMG** via Apple, tags `v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached. Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release.sh`). Example:
+Maintainers: `scripts/release-app.sh [<version>]` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples **both the app and the DMG** via Apple, tags `app/v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached, marked Latest. With no version it picks the next one from the `apps/macos` commits since the last `app/v*` tag (falling back to the pre-monorepo bare `v*` tags). Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release-app.sh`). Example:
 
 ```bash
-scripts/release.sh 0.2.0
+scripts/release-app.sh        # auto-pick the version
+scripts/release-app.sh 0.2.0  # or pass one explicitly
 ```
 
 Set `SKIP_RELEASE=1` to build the DMG locally without tagging or uploading.

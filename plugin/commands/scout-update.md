@@ -45,6 +45,47 @@ grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/de
 
 ---
 
+## Step 0.2: Stop if the marketplace still points at the archived repo
+
+Scout's plugin moved from `Raven-Scout/scout-plugin` into `Raven-Scout/Scout` (under `plugin/`), and the old repo is archived. A `scout-plugin` marketplace that still points there makes Step 0.5's refresh "succeed" while pulling nothing new, so the vault would be upgraded against frozen templates. Check before refreshing:
+
+```bash
+python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
+import json, os, re, sys
+try:
+    entry = json.load(open(sys.argv[1], encoding="utf-8")).get("scout-plugin")
+except Exception:
+    entry = None
+src = entry.get("source") if isinstance(entry, dict) else None
+src = src if isinstance(src, dict) else {}
+kind, repo = src.get("source"), None
+if kind == "github":
+    repo = str(src.get("repo", ""))
+elif kind == "git":
+    m = re.match(r"(?:https://|git@)github\.com[/:]([^/]+/[^/]+?)(?:\.git)?/?$", str(src.get("url", "")))
+    repo = m.group(1) if m else None
+path = str(src.get("path", "")) if kind == "directory" else ""
+if repo is not None and repo.lower() != "raven-scout/scout":
+    print("MARKETPLACE_ARCHIVED:" + repo)
+elif path and os.path.isfile(os.path.join(path, ".claude-plugin", "plugin.json")):
+    print("LEGACY_CHECKOUT:" + path)  # pre-monorepo layout: plugin.json at the checkout root
+else:
+    print("MARKETPLACE_OK")
+EOF
+```
+
+- `MARKETPLACE_OK`: continue.
+- `MARKETPLACE_ARCHIVED:<repo>`: tell the user "Your `scout-plugin` marketplace still points at `<repo>`. Scout has moved to `Raven-Scout/Scout`, so updating from there would leave you on a version that no longer changes. Re-point it in a terminal (removing the marketplace uninstalls the plugin until the install line puts it back; your vault in `~/Scout` is not touched), then re-run `/scout-update`:" then show:
+  ```
+  claude plugin marketplace remove scout-plugin
+  claude plugin marketplace add Raven-Scout/Scout
+  claude plugin install scout@scout-plugin
+  ```
+  Stop here. Do **not** run these commands yourself: the remove uninstalls the very plugin this command is running from.
+- `LEGACY_CHECKOUT:<path>`: tell the user, once, "Your `scout-plugin` marketplace is a local checkout at `<path>` with the pre-monorepo layout. Scout now lives in `Raven-Scout/Scout`; once that checkout stops receiving updates, clone `Raven-Scout/Scout` and re-point the marketplace at the clone's root (`claude plugin marketplace remove scout-plugin`, `claude plugin marketplace add <your-Scout-clone>`, `claude plugin install scout@scout-plugin`)." Then continue — a local checkout is the user's own choice.
+
+---
+
 ## Step 0.5: Refresh the plugin (Surface A) before upgrading the vault (Surface B)
 
 This command updates **both** surfaces — the plugin first, then the vault against the freshly-refreshed plugin. That order matters: upgrading the vault against a stale plugin would apply old templates and miss engine fixes that landed since the last `claude plugin install`.
