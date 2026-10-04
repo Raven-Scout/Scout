@@ -10,12 +10,12 @@
 # standard install + configure boilerplate.
 #
 # Usage:
-#   scripts/release.sh            # auto-pick version from commits (see below)
-#   scripts/release.sh 0.1.0      # explicit version (overrides the rule)
+#   scripts/release-app.sh            # auto-pick version from commits (see below)
+#   scripts/release-app.sh 0.1.0      # explicit version (overrides the rule)
 #
 # Version rule: the next version is derived from the conventional-commit
-# prefixes already used across the repo (and grouped in the changelog below).
-# Any `feat:` commit since the latest v* tag ⇒ minor bump; otherwise
+# prefixes used in apps/macos commits (and grouped in the changelog below).
+# Any `feat:` commit since the latest app/v* tag ⇒ minor bump; otherwise
 # (fix / perf / refactor / docs / chore / …) ⇒ patch bump. Pass an explicit
 # version to override — e.g. a major/pre-1.0 bump; the script warns if the
 # override disagrees with the rule but proceeds with what you passed.
@@ -41,22 +41,28 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # Version selection (feat → minor, else → patch; explicit arg overrides)
 # ─────────────────────────────────────────────────────────────────────────────
-LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+# Prefer app/v* tags (the monorepo era); fall back to the bare v* tags left
+# over from the app's pre-monorepo history when no app/v* tag exists yet.
+LATEST_TAG="$(git tag --list 'app/v*' --sort=-v:refname | head -1 || true)"
+[[ -n "$LATEST_TAG" ]] || LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
 
-# Print the rule-recommended next version given the latest v*.*.* tag. Reads the
-# commit subjects since that tag: a `feat:` (optionally scoped / breaking, e.g.
+# Print the rule-recommended next version given the latest app/v*.*.* (or
+# pre-monorepo bare v*.*.*) tag. Reads the commit subjects since that tag,
+# scoped to apps/macos so plugin-only commits elsewhere in the monorepo never
+# bump the app's version: a `feat:` (optionally scoped / breaking, e.g.
 # `feat(kb):` or `feat!:`) bumps the minor and zeroes the patch; anything else
 # bumps the patch. First-ever release (no tag) starts at 0.1.0.
 recommend_version() {
   local latest="${1:-}"
   if [[ -z "$latest" ]]; then echo "0.1.0"; return; fi
-  local base="${latest#v}"
+  local base="${latest#app/}"
+  base="${base#v}"
   local maj="${base%%.*}"
   local rest="${base#*.}"
   local min="${rest%%.*}"
   local pat="${rest#*.}"
   local subjects
-  subjects="$(git log "${latest}..HEAD" --no-merges --format='%s' 2>/dev/null || true)"
+  subjects="$(git log "${latest}..HEAD" --no-merges --format='%s' -- apps/macos 2>/dev/null || true)"
   if printf '%s\n' "$subjects" | grep -qE '^feat(\(.*\))?!?:'; then
     echo "${maj}.$((min + 1)).0"
   else
@@ -76,12 +82,22 @@ else
   VERSION="$RECOMMENDED"
   echo "→ Auto-selected v$VERSION (feat→minor, else→patch) from commits since ${LATEST_TAG:-<none>}"
 fi
-TAG="v$VERSION"
+TAG="app/v$VERSION"
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build"
+APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # apps/macos
+REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"             # monorepo root
+BUILD_DIR="$APP_ROOT/build"
 RELEASE_DIR="$BUILD_DIR/release"
 DMG="$RELEASE_DIR/Scout-$VERSION.dmg"
+
+# Task 12's version floor: the oldest plugin version this build is known to
+# work with, stamped into Info.plist (SCScoutPluginFloor) so the app can warn
+# if the vault's installed plugin is older. Canonical value lives in the
+# plugin's own manifest, at the repo root.
+PLUGIN_JSON="$REPO_ROOT/plugin/.claude-plugin/plugin.json"
+PLUGIN_FLOOR="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_JSON" | head -1)"
+[[ -n "$PLUGIN_FLOOR" ]] || { echo "✗ Could not read plugin version floor from $PLUGIN_JSON" >&2; exit 1; }
+echo "→ Plugin version floor: $PLUGIN_FLOOR"
 
 SIGN_IDENTITY="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${SCOUT_NOTARY_PROFILE:-scout-notary}"
@@ -117,15 +133,20 @@ echo "→ Building Release configuration (universal, unsigned) at v$VERSION"
 # Build with signing disabled and sign explicitly below: the build step never
 # reaches for a provisioning profile, and we control the exact Developer ID
 # identity + hardened-runtime flags applied to the shipped artifact.
+#
+# BUILD_NUMBER counts commits repo-wide (not just apps/macos) so Sparkle's
+# monotonic comparison key stays monotonic across the monorepo merge — it
+# jumps once, by the plugin's absorbed history, which is expected (spec §6).
 BUILD_NUMBER="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
 xcodebuild \
-  -project "$REPO_ROOT/Scout.xcodeproj" \
+  -project "$APP_ROOT/Scout.xcodeproj" \
   -scheme Scout \
   -configuration Release \
   -destination 'generic/platform=macOS' \
   -derivedDataPath "$BUILD_DIR" \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  SCOUT_PLUGIN_FLOOR="$PLUGIN_FLOOR" \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGNING_ALLOWED=NO \
   ONLY_ACTIVE_ARCH=NO \
@@ -200,10 +221,12 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # Release notes
 # ─────────────────────────────────────────────────────────────────────────────
-# Find the most recent existing v*.*.* tag (excluding the one we're about to
-# create) by sorting tags by semver and taking the highest. `sort:-v:refname`
-# orders descending so head -1 is the latest.
-PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+# Find the most recent existing app/v*.*.* tag (excluding the one we're about
+# to create) by sorting tags by semver and taking the highest; fall back to
+# the bare v*.*.* tags from the app's pre-monorepo history when no app/v* tag
+# exists yet. `sort:-v:refname` orders descending so head -1 is the latest.
+PREV_TAG="$(git tag --list 'app/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+[[ -n "$PREV_TAG" ]] || PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
 
 # Derive `owner/repo` from origin so we can build a github.com/.../compare/ link.
 ORIGIN_URL="$(git config --get remote.origin.url || true)"
@@ -223,9 +246,11 @@ esac
 NOTES="$BUILD_DIR/release-notes.md"
 {
   if [[ -n "$PREV_TAG" ]]; then
-    # Grab subject + short hash for every commit between PREV_TAG and HEAD.
-    # %s = subject only (skips body / Co-Authored-By trailers); %h = short hash.
-    COMMITS="$(git log "$PREV_TAG"..HEAD --no-merges --format='%s|%h')"
+    # Grab subject + short hash for every commit between PREV_TAG and HEAD
+    # that touches the app, so plugin-only commits elsewhere in the monorepo
+    # don't flood the app's release notes. %s = subject only (skips body /
+    # Co-Authored-By trailers); %h = short hash.
+    COMMITS="$(git log "$PREV_TAG"..HEAD --no-merges --format='%s|%h' -- apps/macos)"
     if [[ -z "$COMMITS" ]]; then
       echo "## What's changed"
       echo
@@ -279,7 +304,14 @@ NOTES="$BUILD_DIR/release-notes.md"
   echo
   echo "Open the app, press ⌘, to open Settings. Fill in your Linear workspace and author name so deep-links and comment authorship work correctly."
   echo
-  echo "The app expects a Scout instance at \`~/Scout\`. Install the [scout-plugin](https://github.com/jordanrburger/scout-plugin) into Claude Code and run \`/scout-setup\` first if you don't have one yet."
+  echo "The app expects a Scout instance at \`~/Scout\`. If you don't have one yet, install the plugin into Claude Code first:"
+  echo
+  echo '```'
+  echo "claude plugin marketplace add Raven-Scout/Scout"
+  echo "claude plugin install scout@scout-plugin"
+  echo '```'
+  echo
+  echo "Then run \`/scout-setup\`."
 } > "$NOTES"
 
 echo "→ Tagging $TAG and creating GitHub release"
