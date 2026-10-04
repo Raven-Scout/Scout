@@ -64,6 +64,12 @@ def test_normalize_line_ignores_checkbox_prefix_strikethrough_and_trailing_space
     assert normalize_line("- [ ] 🔴 see [#AB12]") != normalize_line("- [ ] 🔴 see")
 
 
+def test_wikilink_targets_escaped_pipe_in_tables() -> None:
+    """Inside a markdown table the alias pipe is escaped: [[x\\|y]]."""
+    row = r"| [[people/sam\|Sam]] | [[projects/acme-pilot/acme-pilot#Status\|status]] |"
+    assert wikilink_targets(row) == ["people/sam", "projects/acme-pilot/acme-pilot"]
+
+
 def test_wikilink_targets_strip_alias_and_anchor() -> None:
     text = "[[people|Alex Rivera]] and [[projects/acme-pilot/acme-pilot#Status]] and [[ topics/widget/retrieval ]]"
     assert wikilink_targets(text) == ["people", "projects/acme-pilot/acme-pilot", "topics/widget/retrieval"]

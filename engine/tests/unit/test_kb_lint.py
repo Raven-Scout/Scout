@@ -193,6 +193,13 @@ def test_topic_citation_and_dangling_link_are_warnings(kb_repo) -> None:
     assert sorted((f.check, f.line) for f in result.warnings) == [("citation", 3), ("dangling-link", 7)]
 
 
+def test_escaped_pipe_wikilink_in_table_is_not_dangling(kb_repo) -> None:
+    kb_repo.stage("knowledge-base/people/sam.md", "# Sam\n")
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "| Owner |\n|---|\n| [[people/sam\\|Sam]] |\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
+
+
 def test_lint_staged_no_head(tmp_path) -> None:
     repo = tmp_path / "fresh"
     (repo / "knowledge-base").mkdir(parents=True)

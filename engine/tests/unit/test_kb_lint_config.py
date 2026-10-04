@@ -37,6 +37,12 @@ def test_legacy_session_log_has_no_budget_and_stays_a_log(tmp_path: Path) -> Non
     assert cfg.is_log("knowledge-base/session-log.md")
 
 
+def test_kg_audit_snapshots_are_logs_without_a_budget(tmp_path: Path) -> None:
+    cfg = load_lint_config(tmp_path)
+    assert cfg.is_log("knowledge-base/kg-audits/2026-09-28.md")
+    assert cfg.budget_for("knowledge-base/kg-audits/2026-09-28.md") is None
+
+
 def test_scope_and_exclusions(tmp_path: Path) -> None:
     cfg = load_lint_config(tmp_path)
     assert cfg.in_scope("knowledge-base/projects/widget/widget.md")

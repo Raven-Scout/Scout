@@ -161,6 +161,22 @@ def test_compact_falls_back_to_verbatim_when_status_would_change(tmp_path: Path)
     assert "### ✅ Done today" in text
 
 
+def test_compact_drops_diary_h2_headings_but_keeps_their_items(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    body = (
+        "# Action Items — Sunday, Jul 5, 2026\n"
+        "## 🔴 Urgent\n"
+        "- [ ] [#AAAA] 🔴 **call the bank**\n"
+        "## 🆕 From this run (Thu Aug 27, 1:0x PM `midday-consolidation`)\n"
+        "- [ ] [#CCCC] 🟡 **new thing**\n"
+    )
+    _write_daily(vault, "2026-07-05", body)
+    text = materialize(data_dir=vault, date=TODAY).read_text(encoding="utf-8")
+    assert "From this run" not in text
+    assert "[#AAAA]" in text and "[#CCCC]" in text
+    assert "## 🔴 Urgent" in text
+
+
 def test_compact_function_is_idempotent() -> None:
     from scout.action_items.materialize import compact
 

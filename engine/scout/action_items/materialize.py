@@ -90,7 +90,9 @@ def compact(body: str) -> str:
             continue
         if _H2.match(line):
             in_item = False
-            pending = [line]
+            # A run-diary H2 is narration: drop the heading (its items follow
+            # the previous section; the signature check guards their status).
+            pending = [] if is_diary_heading(line) else [line]
             continue
         if _TOP_BULLET.match(line):
             for h in pending:

@@ -65,4 +65,12 @@ def has_citation(text: str) -> bool:
 
 
 def wikilink_targets(text: str) -> list[str]:
-    return [m.group(1).strip() for m in _WIKILINK.finditer(text)]
+    # In a markdown table the alias pipe is escaped (``[[x\|y]]``): the
+    # backslash belongs to the separator, not the target.
+    out: list[str] = []
+    for m in _WIKILINK.finditer(text):
+        target = m.group(1).strip()
+        if target.endswith("\\"):
+            target = target[:-1].rstrip()
+        out.append(target)
+    return out

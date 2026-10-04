@@ -84,6 +84,7 @@ kb_lint:
     - "knowledge-base/projects/*/decision-log/**"
     - "knowledge-base/projects/*/nav-history.md"
     - "knowledge-base/projects/*/nav-history/**"
+    - "knowledge-base/kg-audits/**"
   budgets:
     - {glob: "action-items/action-items-*.md", bytes: 61440}
     - {glob: "action-items/**", bytes: 15360}
@@ -91,6 +92,8 @@ kb_lint:
     # multi-MB log would otherwise block every run. Rows go to the monthly
     # shards; a one-time sharding step shrinks the legacy file.
     - {glob: "knowledge-base/session-log.md", bytes: null}
+    # Knowledge-graph audit snapshots: dated records, unbudgeted.
+    - {glob: "knowledge-base/kg-audits/**", bytes: null}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
     - {glob: "knowledge-base/people/**", bytes: 10240}
