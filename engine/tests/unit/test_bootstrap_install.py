@@ -45,6 +45,39 @@ def test_install_creates_directory_tree(tmp_path):
     assert (vault / "hooks").is_dir()
 
 
+def test_install_creates_layered_kb_dirs_and_seeds(tmp_path):
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    for rel in ("knowledge-base/topics", "knowledge-base/sources", "knowledge-base/session-log"):
+        assert (vault / rel).is_dir(), rel
+    assert "[[" in (vault / "knowledge-base/topics/topics.md").read_text()
+    assert "[[" in (vault / "knowledge-base/sources/sources.md").read_text()
+    log_index = (vault / "knowledge-base/session-log.md").read_text()
+    assert "## Shards" in log_index
+    assert "{{" not in log_index
+
+
+def test_install_never_overwrites_layered_kb_seeds(tmp_path, monkeypatch):
+    from scout.scripts import bootstrap
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    (vault / "knowledge-base").mkdir(parents=True)
+    (vault / "knowledge-base/session-log.md").write_text("# my log\n")
+    monkeypatch.setattr(bootstrap, "_vault_exists", lambda _v: False)
+    install(_config(vault, plugin_root=plugin))
+    assert (vault / "knowledge-base/session-log.md").read_text() == "# my log\n"
+
+
+def test_kb_index_template_points_at_session_log_not_a_table():
+    plugin = Path(__file__).parent.parent.parent.parent
+    text = (plugin / "templates/knowledge-base/knowledge-base.md.tmpl").read_text()
+    assert "## Recent Sessions" not in text
+    assert "[[session-log]]" in text
+    assert "## Key Decisions Log" in text and "## Navigation" in text
+
+
 def test_install_writes_scout_config(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"

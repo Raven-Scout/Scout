@@ -114,6 +114,10 @@ _CAT1_DIR_LAYOUT = (
     "knowledge-base/people",
     "knowledge-base/personal",
     "knowledge-base/recurring-tasks",
+    # Layered KB (write protocol): topic notes, source notes, session-log shards.
+    "knowledge-base/topics",
+    "knowledge-base/sources",
+    "knowledge-base/session-log",
     "action-items/archive",
     "action-items/meeting-prep",
     "meetings",
@@ -182,6 +186,10 @@ _INSTALL_ONLY_TEMPLATES = (
     ("knowledge-base/review-queue.md", "templates/review-queue.md.tmpl"),
     ("inbox.md", "templates/inbox.md.tmpl"),
     ("meetings/meetings.md", "templates/meetings/meetings.md.tmpl"),
+    # Layered-KB indexes the write protocol links to.
+    ("knowledge-base/topics/topics.md", "templates/knowledge-base/topics/topics.md.tmpl"),
+    ("knowledge-base/sources/sources.md", "templates/knowledge-base/sources/sources.md.tmpl"),
+    ("knowledge-base/session-log.md", "templates/knowledge-base/session-log.md.tmpl"),
 )
 
 _CAT1B_RUNNERS = (
@@ -665,6 +673,27 @@ def _stage_install_scoutctl_shim(cfg: BootstrapConfig) -> None:
     install_scoutctl_shim(home=Path.home())
 
 
+def _stage_install_git_hook(cfg: BootstrapConfig) -> None:
+    """Install the kb-lint pre-commit hook when the vault is a git repo.
+
+    Never fatal: a foreign pre-commit hook is left alone with a warning, and a
+    vault that is not (yet) a git repo is skipped — the git-setup phase inits
+    it on the first session and the next /scout-update installs the hook.
+    """
+    if not (cfg.vault / ".git").exists():
+        return
+    from scout.kb.hook import HookConflict, install_hook
+
+    # Prefer the engine launcher: it follows the engine pointer, so it also
+    # finds an app-managed engine that has no plugin_root/.venv.
+    launcher = cfg.plugin_root / "engine" / "bin" / "scoutctl"
+    scoutctl = launcher if launcher.exists() else cfg.plugin_root / ".venv" / "bin" / "scoutctl"
+    try:
+        install_hook(cfg.vault, scoutctl=str(scoutctl))
+    except HookConflict as e:
+        print(f"warning: {e}", file=sys.stderr)
+
+
 def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
     """Seed .scout-state/schedule.yaml from plugin defaults (install only)."""
     src = cfg.plugin_root / "engine" / "scout" / "defaults" / "schedule.yaml"
@@ -930,6 +959,7 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_cat4_install(cfg)
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
+        _stage_install_git_hook(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
         marker.unlink(missing_ok=True)
         pointer = _stage_write_engine_pointer(cfg)
@@ -994,6 +1024,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         conflicts = cat4.conflicts
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
+        _stage_install_git_hook(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
         pointer = _stage_write_engine_pointer(cfg)
     finally:
@@ -1028,7 +1059,8 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       4. Merge ``.gitignore`` (append-only).
       5. Skip cat-4 merge entirely — snapshots just established, nothing to
          merge.
-      6. Job lifecycle (subject to cfg.skip_jobs).
+      6. Job lifecycle (subject to cfg.skip_jobs), then the kb-lint
+         pre-commit hook when the vault is a git repo.
       7. Write version stamps to a fresh scout-config.yaml.
       8. Doctor.
 
@@ -1076,6 +1108,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         # 5. SKIP cat-4 merge: snapshots just established equal current live.
         # 6. Jobs.
         _stage_jobs_install(cfg)
+        _stage_install_git_hook(cfg)
         # 7. Version stamps (is_upgrade=False so both version_at_last_setup and
         #    version_at_last_update are written; setup marks "migrated at this
         #    plugin version", matching how a freshly-installed vault records it).
