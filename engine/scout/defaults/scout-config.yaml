@@ -64,6 +64,12 @@ kb_lint:
     - "knowledge-base/session-log/**"
   topic_globs:
     - "knowledge-base/topics/**"
+  # Dated records `kb lint --report` never ranks as dreaming shrink targets:
+  # the daily file is rewritten by the briefings, and the legacy session log
+  # is migrated by a one-time sharding step.
+  report_exclude_globs:
+    - "action-items/action-items-*.md"
+    - "knowledge-base/session-log.md"
   log_globs:
     - "knowledge-base/session-log.md"
     - "knowledge-base/session-log/**"

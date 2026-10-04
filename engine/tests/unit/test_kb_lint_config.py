@@ -69,6 +69,14 @@ def test_invalid_mode_falls_back_to_report(tmp_path: Path) -> None:
     assert load_lint_config(tmp_path).mode == "report"
 
 
+def test_default_report_excludes(tmp_path: Path) -> None:
+    cfg = load_lint_config(tmp_path)
+    assert cfg.report_excluded("action-items/action-items-2026-09-28.md")
+    assert cfg.report_excluded("knowledge-base/session-log.md")
+    assert not cfg.report_excluded("knowledge-base/session-log/2026-09.md")
+    assert not cfg.report_excluded("knowledge-base/projects/acme-pilot/acme-pilot.md")
+
+
 def test_null_budget_means_unlimited(tmp_path: Path) -> None:
     (tmp_path / "scout-config.yaml").write_text("kb_budgets:\n  'knowledge-base/big/**': null\n", encoding="utf-8")
     assert load_lint_config(tmp_path).budget_for("knowledge-base/big/x.md") is None

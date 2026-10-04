@@ -216,7 +216,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
 def over_budget(repo: Path, cfg: LintConfig) -> list[tuple[str, int, int]]:
     rows: list[tuple[str, int, int]] = []
     for rel in tracked_files(repo):
-        if not cfg.in_scope(rel):
+        if not cfg.in_scope(rel) or cfg.report_excluded(rel):
             continue
         budget = cfg.budget_for(rel)
         path = repo / rel

@@ -70,6 +70,9 @@ class LintConfig:
     strict_line_globs: tuple[str, ...]
     exclude_globs: tuple[str, ...]
     topic_globs: tuple[str, ...]
+    # Dated records `--report` never ranks as shrink targets (past daily
+    # action-items files; the legacy session log, migrated by one-time sharding).
+    report_exclude_globs: tuple[str, ...] = ()
 
     def in_scope(self, rel: str) -> bool:
         return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _any(self.exclude_globs, rel)
@@ -79,6 +82,9 @@ class LintConfig:
             if glob_match(b.glob, rel):
                 return b.bytes
         return None
+
+    def report_excluded(self, rel: str) -> bool:
+        return _any(self.report_exclude_globs, rel)
 
     def is_log(self, rel: str) -> bool:
         return _any(self.log_globs, rel)
@@ -116,4 +122,5 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
         strict_line_globs=_globs(raw, "strict_line_globs"),
         exclude_globs=_globs(raw, "exclude_globs"),
         topic_globs=_globs(raw, "topic_globs"),
+        report_exclude_globs=_globs(raw, "report_exclude_globs"),
     )

@@ -41,6 +41,13 @@ def test_dreaming_has_shrink_pass(tmp_path: Path) -> None:
     assert "Step 2a-shrink" in text and "scoutctl kb lint --report" in text
 
 
+def test_shrink_pass_never_targets_daily_files_or_legacy_session_log(tmp_path: Path) -> None:
+    text = _assemble(_cfg(tmp_path), "DREAMING")
+    shrink = text[text.index("Step 2a-shrink") : text.index("### Step 2b")]
+    assert "Never shrink a daily action-items file" in shrink
+    assert "`knowledge-base/session-log.md`" in shrink
+
+
 def test_dreaming_session_log_row_is_one_line(tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path), "DREAMING")
     assert "| Date | Time | Mode | Summary |" not in text

@@ -212,3 +212,15 @@ def test_over_budget_ranks_by_excess(kb_repo) -> None:
     kb_repo.write("SKILL.md", "x" * 9000)
     rows = over_budget(kb_repo.root, load_lint_config(kb_repo.root))
     assert rows == [("knowledge-base/b.md", 900, 100), ("knowledge-base/a.md", 150, 100)]
+
+
+def test_over_budget_skips_report_excluded_dated_records(kb_repo) -> None:
+    """Past daily files and the legacy session log are dated records, never shrink targets."""
+    from scout.kb.lint import over_budget
+
+    kb_repo.write("scout-config.yaml", "kb_budgets:\n  'knowledge-base/**': 100\n  'action-items/**': 100\n")
+    kb_repo.write("action-items/action-items-2026-09-01.md", "x" * 5000)
+    kb_repo.write("knowledge-base/session-log.md", "x" * 9000)
+    kb_repo.write("knowledge-base/a.md", "x" * 150)
+    rows = over_budget(kb_repo.root, load_lint_config(kb_repo.root))
+    assert rows == [("knowledge-base/a.md", 150, 100)]

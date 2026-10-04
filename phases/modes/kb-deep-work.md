@@ -156,7 +156,7 @@ Record the scoring table for the session log.
 ### Step 2a-shrink: Clear overrides, then shrink the largest over-budget file (mandatory while any exist)
 
 1. **Overrides first.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
-2. **Pick the target.** Run `scoutctl kb lint --report --top 10`. Take the **largest file you can finish this session**. This replaces the staleness-only pick in Step 2b whenever the report is non-empty, except that an open coverage mandate (e.g. a project `surface_rule` window) still takes precedence.
+2. **Pick the target.** Run `scoutctl kb lint --report --top 10`. Take the **largest file you can finish this session**. This replaces the staleness-only pick in Step 2b whenever the report is non-empty, except that an open coverage mandate (e.g. a project `surface_rule` window) still takes precedence. **Never shrink a daily action-items file (`action-items/action-items-YYYY-MM-DD.md`) or the legacy `knowledge-base/session-log.md`**, even if one shows up: past daily files are dated records and today's is rewritten by the briefings; the legacy session log is migrated by a one-time sharding step, not by this pass.
 3. **Shrink it:**
    - durable facts → topic notes under `knowledge-base/topics/<domain>/`, each paragraph cited;
    - meetings, docs, PRs and decision threads → source notes under `knowledge-base/sources/YYYY-MM/`;
