@@ -29,7 +29,8 @@ struct ActionItemsWriterTests {
             "action-items", "add-comment",
             "/tmp/Scout/action-items/action-items-2026-04-20.md",
             "--subject", "Engage on PROJ-123",
-            "--comment", "alex: Paging reviewer."
+            "--comment", "Paging reviewer.",
+            "--author", "alex"
         ])
     }
 
