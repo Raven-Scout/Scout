@@ -102,9 +102,9 @@ struct RefsBlockTests {
     @Test func digitLeadingTagIsACrossRef() throws {
         let task = try parseTask([
             "- [ ] [#DIG] **Digit-leading tag** — a body.",
-            "  - Refs: #5864M",
+            "  - Refs: #7391K",
         ])
-        #expect(task.deepLinks == [.crossRef(tag: "5864M")])
+        #expect(task.deepLinks == [.crossRef(tag: "7391K")])
     }
 
     /// A purely numeric `#123` has no letter, so it is a GitHub ref rather than

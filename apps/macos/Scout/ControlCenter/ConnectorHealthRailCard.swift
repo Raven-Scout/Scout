@@ -159,6 +159,7 @@ struct ConnectorHealthRailCard: View {
         "mcp:claude_ai_Gmail":           "Gmail",
         "mcp:claude_ai_Google_Calendar": "Calendar",
         "mcp:claude_ai_Granola":         "Granola",
+        "mcp:fathom":                    "Fathom",
         "mcp:claude_ai_Google_Drive":    "Drive",
         "github":                        "GitHub",
         "mcp:claude-in-chrome":          "Chrome",

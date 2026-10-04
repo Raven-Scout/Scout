@@ -360,8 +360,8 @@ final class KnowledgeBaseService: ObservableObject {
         guard q.count >= 2 else { return [] }
 
         // A query that is exactly a tag (typed, or arrived from a chip click)
-        // matches tag occurrences, not substrings — otherwise `#KAIREL` also
-        // reports every `#KAIRELX` note, and tags are short enough that the
+        // matches tag occurrences, not substrings — otherwise `#RELONE` also
+        // reports every `#RELONEX` note, and tags are short enough that the
         // collisions are common.
         let tag = KBTag.normalized(query.trimmingCharacters(in: .whitespaces))
         let matches: (String) -> Bool = if let tag {

@@ -146,7 +146,7 @@ struct TaskChipTests {
                 .entity(path: "team/alex", label: nil),
                 .linear(id: "PROJ-3026"),
                 pr("example-org/repo", 7056),
-                .crossRef(tag: "5864M"),
+                .crossRef(tag: "7391K"),
                 .plainRef(text: "??garbage"),
             ]),
             carriedLabel: "Jun 2"

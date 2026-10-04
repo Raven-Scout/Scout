@@ -37,8 +37,8 @@ struct ExtractShortPrefixTests {
         for (input, expected) in [
             ("[#ILOU] subj", "ILOU"),   // non-Crockford letters
             ("[#A3F] subj", "A3F"),     // 3 chars
-            ("[#AI3026] subj", "AI3026"), // 6 chars, contains I
-            ("[#5864M] subj", "5864M"), // digit-led, has a letter
+            ("[#XI7391] subj", "XI7391"), // 6 chars, contains I
+            ("[#7391K] subj", "7391K"), // digit-led, has a letter
         ] {
             let (prefix, _) = ActionItemsParser.extractShortPrefix(input)
             #expect(prefix == expected, "expected \(expected) for \(input); got \(prefix ?? "nil")")
@@ -78,7 +78,7 @@ struct ActionItemsParseWithPrefixTests {
 
         ## 🔴 Urgent
 
-        - [ ] [#G808] **🔥 Confirm or drop Andrea/Procházka call — WINDOW STAYED CLOSED Thu** _(carries from 5/21)_
+        - [ ] [#G808] **🔥 Confirm or drop Alex/Priya café sync — WINDOW STAYED CLOSED Thu** _(carries from 5/21)_
           - user: Test
         """
         let doc = try ActionItemsParser.parse(
@@ -137,7 +137,7 @@ struct ActionItemsParseWithPrefixTests {
 
         ## 🔴 Urgent
 
-        - [ ] [#A3F7] **Reply to Procházka thread** _(carries from 5/19)_
+        - [ ] [#A3F7] **Reply to Priya's café thread** _(carries from 5/19)_
         - [ ] **Legacy task without prefix** — should still parse with shortPrefix=nil
         """
         let doc = try ActionItemsParser.parse(
@@ -151,7 +151,7 @@ struct ActionItemsParseWithPrefixTests {
         let prefixed = urgent.tasks[0]
         #expect(prefixed.shortPrefix == "A3F7")
         // Subject reflects the post-prefix body (no `[#A3F7]` pollution).
-        #expect(prefixed.subject.contains("Reply to Procházka thread"))
+        #expect(prefixed.subject.contains("Reply to Priya's café thread"))
         #expect(!prefixed.subject.contains("[#A3F7]"))
 
         let legacy = urgent.tasks[1]

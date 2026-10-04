@@ -181,7 +181,7 @@ struct ConnectorHealthServiceTests {
         #expect(fb.contains("mcp:claude_ai_Linear"))
         #expect(!fb.contains("mcp:plugin_slack_slack"))
         #expect(!fb.contains("mcp:plugin_linear_linear"))
-        #expect(fb.count == 10)
+        #expect(fb.count == 11)
     }
 
     /// Malformed snapshot → loadRoster returns failure, not a crash.

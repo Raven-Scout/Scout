@@ -174,21 +174,21 @@ struct KnowledgeBaseServiceLifecycleTests {
     @Test("a tag-shaped query matches tags, not substrings")
     func searchContent_tagQueryMatchesTagsOnly() async throws {
         // An all-caps token 2–8 chars long normalizes to a tag, so the search
-        // switches from substring to tag matching — otherwise `#MIRO` would
+        // switches from substring to tag matching — otherwise `#IOTA` would
         // also report every note merely containing those letters.
         let root = try makeKB([
-            "tagged.md": "# Tagged\nWork tracked under [#MIRO] this week.\n",
-            "prose.md": "# Prose\nThe word MIRO appears here as plain text.\n",
+            "tagged.md": "# Tagged\nWork tracked under [#IOTA] this week.\n",
+            "prose.md": "# Prose\nThe word IOTA appears here as plain text.\n",
         ])
         defer { try? FileManager.default.removeItem(at: root) }
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
         await svc.reparseAndWait()
 
-        let hits = svc.searchContent("MIRO")
+        let hits = svc.searchContent("IOTA")
         #expect(hits.map(\.name) == ["tagged"])
 
         // The same letters as free text still match both notes.
-        #expect(svc.searchContent("Miro").count == 2)
+        #expect(svc.searchContent("Iota").count == 2)
     }
 
     @Test("a long matching line is truncated to 120 characters")

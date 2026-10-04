@@ -47,6 +47,10 @@ final class AppState: ObservableObject {
     let actionItemsEnvState: ActionItemsEnvironmentState
     let scoutDirectory: URL
     let actionItemsDirectory: URL
+    /// Backing store for the user's settings. Held so main-actor reads (the
+    /// inline-comment byline `refreshUrgentActionCount` hands the parser) use
+    /// the same store the rest of the app does, and tests can substitute one.
+    private let defaults: UserDefaults
 
     // Proposals (dreaming-proposals.md review)
     let proposalsDocumentService: ProposalsDocumentService
@@ -150,7 +154,9 @@ final class AppState: ObservableObject {
             projectsDirectory: configuration.claudeSessionsDirectory
         )
 
-        let docService = ActionItemsDocumentService(directory: actionItemsDir, fileEvents: events)
+        let docService = ActionItemsDocumentService(
+            directory: actionItemsDir, fileEvents: events, defaults: defaults
+        )
         let writerActor = ActionItemsWriter(
             scoutctl: scoutctlExe,
             argumentsPrefix: scoutctlArgsPrefix,
@@ -226,6 +232,7 @@ final class AppState: ObservableObject {
         self.knowledgeBaseWriterBox = kbWriterBox
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
+        self.defaults = defaults
         self.runner = runner
         self.scoutctlExecutable = scoutctlExe
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
@@ -278,7 +285,7 @@ final class AppState: ObservableObject {
                 researchDoc.load()
             }
             await self?.recomputeMenuStatus()
-            self?.refreshUrgentActionCount()
+            await self?.refreshUrgentActionCount()
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
@@ -431,20 +438,40 @@ final class AppState: ObservableObject {
         await scheduleService.refresh()
     }
 
-    func refreshUrgentActionCount() {
-        let url = actionItemsDirectory
-            .appendingPathComponent("action-items-\(ActionItemsDay.stem(for: ActionItemsDay.today())).md")
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8),
-              let document = try? ActionItemsParser.parse(
-                text: text,
-                sourceURL: url,
-                sourceBytes: data.count
-              ) else {
-            urgentActionCount = 0
+    /// Recompute the menu-bar urgent badge for today.
+    ///
+    /// Runs at launch and on every menu-bar open, and used to read and parse
+    /// the whole day synchronously here — the one main-actor parse #103 left
+    /// behind, on a file that is routinely 1.8 MB.
+    ///
+    /// Two paths now. When the document service already holds today's
+    /// document, that *is* the answer: it watches the file and republishes on
+    /// every change, and reusing it keeps the badge and the Action Items list
+    /// from disagreeing inside the watcher's debounce window. Otherwise the
+    /// read and parse happen off the main actor, with the same byline the
+    /// service would have used rather than the parser's `"user"` default.
+    func refreshUrgentActionCount() async {
+        let today = ActionItemsDay.today()
+        if case .loaded(let document) = actionItemsDocumentService.state,
+           ActionItemsDay.stem(for: document.date) == ActionItemsDay.stem(for: today) {
+            urgentActionCount = Self.urgentOpenCount(in: document)
             return
         }
-        urgentActionCount = Self.urgentOpenCount(in: document)
+
+        let url = actionItemsDocumentService.url(for: today)
+        let byline = ActionItemsDocumentService.inlineCommentAuthor(from: defaults)
+        let document = await Task.detached(priority: .utility) { () -> ActionItemsDocument? in
+            guard let data = try? Data(contentsOf: url),
+                  let text = String(data: data, encoding: .utf8) else { return nil }
+            return try? ActionItemsParser.parse(
+                text: text,
+                sourceURL: url,
+                sourceBytes: data.count,
+                inlineCommentAuthor: byline
+            )
+        }.value
+
+        urgentActionCount = document.map(Self.urgentOpenCount(in:)) ?? 0
     }
 
     nonisolated static func urgentOpenCount(in document: ActionItemsDocument) -> Int {

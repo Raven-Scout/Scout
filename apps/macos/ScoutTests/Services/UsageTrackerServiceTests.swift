@@ -30,6 +30,63 @@ struct UsageTrackerServiceTests {
         #expect(match?.source == "session")
     }
 
+    // MARK: - tolerance of real log files
+
+    @Test("one invalid UTF-8 byte does not discard every entry in the file")
+    func corruptByteDoesNotDiscardWholeFile() async throws {
+        // `usage-tracker.jsonl` is appended by a shell script while runs are
+        // in flight; a torn write can leave a byte that is not valid UTF-8.
+        // Decoding the whole file as a String first turned that into total
+        // data loss — every entry vanished from the Usage card, silently.
+        var bytes = Data("""
+        {"ts":"2026-04-19T12:03:00Z","ts_et":"2026-04-19 08:03 EDT","type":"briefing","budget_cap":10,"budget_spent":4.12,"exit_code":0,"source":"session"}
+
+        """.utf8)
+        bytes.append(0xFF)                      // never valid in UTF-8
+        bytes.append(contentsOf: Data("\n".utf8))
+        bytes.append(contentsOf: Data("""
+        {"ts":"2026-04-19T13:03:00Z","ts_et":"2026-04-19 09:03 EDT","type":"dreaming","budget_cap":10,"budget_spent":1.50,"exit_code":0,"source":"session"}
+
+        """.utf8))
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jsonl")
+        try bytes.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let service = await UsageTrackerService(trackerURL: url, fileEvents: NoopFS())
+        let entries = try await service.loadInitial()
+
+        #expect(entries.count == 2, "both intact lines must survive one corrupt byte")
+        #expect(entries.map(\.type).sorted() == ["briefing", "dreaming"])
+    }
+
+    @Test("timestamps parse with and without fractional seconds")
+    func parsesBothTimestampShapes() async throws {
+        // Pins the behaviour a shared, hoisted formatter must preserve: the
+        // two shapes need two differently-configured formatters, and neither
+        // may be mutated in place once shared.
+        let json = """
+        {"ts":"2026-04-19T12:03:00Z","ts_et":"2026-04-19 08:03 EDT","type":"briefing","budget_cap":10,"budget_spent":1,"exit_code":0,"source":"session"}
+        {"ts":"2026-04-19T13:03:00.123Z","ts_et":"2026-04-19 09:03 EDT","type":"dreaming","budget_cap":10,"budget_spent":2,"exit_code":0,"source":"session"}
+        """
+        let tmp = try Self.writeTemp(json)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let service = await UsageTrackerService(trackerURL: tmp, fileEvents: NoopFS())
+        let entries = try await service.loadInitial()
+
+        #expect(entries.count == 2, "both timestamp shapes must decode")
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        #expect(entries.first { $0.type == "briefing" }?.ts
+                == plain.date(from: "2026-04-19T12:03:00Z"))
+        #expect(entries.first { $0.type == "dreaming" }?.ts
+                == fractional.date(from: "2026-04-19T13:03:00.123Z"))
+    }
+
     // MARK: - helpers
 
     static var fixtureURL: URL {

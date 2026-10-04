@@ -115,11 +115,11 @@ struct SmokeVault {
     A short preamble paragraph before the first section.
 
     ## 🔴 Urgent
-    - [ ] [#MIRO] Reply to Priya — she needs the RFC by Friday
-    - [x] [#RSM] Land PROJ-1234 — merged this morning
+    - [ ] [#IOTA] Reply to Priya — she needs the RFC by Friday
+    - [x] [#NTX] Land PROJ-1234 — merged this morning
 
     ## 🟡 To do
-    - [ ] [#AI3026] Review the tracing job — `--shortstat` output looks off
+    - [ ] [#XI7391] Review the tracing job — `--shortstat` output looks off
     - [ ] Check [[projects/the-demo]] — **blocked** on Sam
 
     ## 📅 Meetings

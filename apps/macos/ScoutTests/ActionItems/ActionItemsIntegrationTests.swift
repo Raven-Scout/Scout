@@ -32,7 +32,7 @@ struct ActionItemsIntegrationTests {
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
             timeZone: TimeZone.current, year: 2026, month: 4, day: 20
         ))!
-        try await service.load(date: date)
+        await service.load(date: date)
 
         // 4. Invoke the writer via real scoutctl. The PATH positional arg
         // tells scoutctl which daily file to mutate; its grandparent is the

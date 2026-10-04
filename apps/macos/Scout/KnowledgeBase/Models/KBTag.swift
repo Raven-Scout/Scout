@@ -6,8 +6,8 @@ import Foundation
 /// Two forms are recognized, and both render identically (the brackets are
 /// presentation, not meaning):
 ///
-/// - **Bracketed** `[#SLBETA]` — the form the plugin writes on action items.
-/// - **Bare** `#SLBETA` — the form that dominates prose in research notes.
+/// - **Bracketed** `[#PROJB1]` — the form the plugin writes on action items.
+/// - **Bare** `#PROJB1` — the form that dominates prose in research notes.
 ///
 /// A tag is 2–8 `[A-Z0-9]` characters containing **at least one letter**. The
 /// letter requirement is what keeps tags and GitHub refs disjoint: a numeric
@@ -33,7 +33,7 @@ enum KBTag {
     ///
     /// The bare branch is fenced on both sides: `(?<![\w/#])` keeps it out of
     /// `word#TAG`, `##TAG` and `…/page#TAG` URL fragments; `(?![A-Za-z0-9_])`
-    /// stops `#KAIRELx` from matching the `#KAIREL` prefix. A trailing `'s` or
+    /// stops `#RELONEx` from matching the `#RELONE` prefix. A trailing `'s` or
     /// `,` is fine — those aren't word characters.
     private static let tagRe = try! NSRegularExpression(
         pattern: #"\[#([A-Z0-9]{2,8})\]|(?<![\w/#])#([A-Z0-9]{2,8})(?![A-Za-z0-9_])"#

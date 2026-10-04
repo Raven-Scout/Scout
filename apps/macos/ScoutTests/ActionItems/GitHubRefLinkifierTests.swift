@@ -110,7 +110,7 @@ struct GitHubRefLinkifierFastPathTests {
         // vaults are full of these, and none is a GitHub ref.
         "[#DEMOTAG] the demo launch is still open",
         "Discussed in #tmp-demo-sync with [[people/priya]]",
-        "[#AI3026] and [#RSM] in one line",
+        "[#XI7391] and [#NTX] in one line",
         "A trailing hash # and a lone #",
         "no hash at all",
     ]
@@ -131,11 +131,11 @@ struct GitHubRefLinkifierFastPathTests {
 
     @Test("A digit-leading tag clears the guard but is still not a ref")
     func digitLeadingTagIsNotARef() {
-        // `#5` is a hash followed by a digit, so `[#5864M]` pays for the regex
-        // scan. It comes back untouched only because the trailing `M` defeats
+        // `#7` is a hash followed by a digit, so `[#7391K]` pays for the regex
+        // scan. It comes back untouched only because the trailing `K` defeats
         // refRe's `\b` — not because of any bracket protection (the protected
         // ranges cover `[[…]]`, `[…](…)` and code spans, not a bare `[…]`).
-        let s = "[#5864M] the demo coupon"
+        let s = "[#7391K] the demo coupon"
         #expect(GitHubRefLinkifier.containsHashDigit(s))
         #expect(GitHubRefLinkifier.linkify(s) == s)
     }

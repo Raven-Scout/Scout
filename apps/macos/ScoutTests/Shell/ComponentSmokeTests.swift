@@ -12,7 +12,7 @@ enum SmokeFixtures {
 
     static func task(
         done: Bool = false,
-        subject: String = "[#MIRO] Reply to Priya",
+        subject: String = "[#IOTA] Reply to Priya",
         body: String = "She needs the RFC by Friday — **blocked** on `scoutctl`.",
         comments: [TaskComment] = [],
         deepLinks: [TaskDeepLink] = [],
@@ -49,7 +49,7 @@ enum SmokeFixtures {
         ActionSection(
             id: UUID(), emoji: "", title: kind.rawValue.capitalized,
             kind: kind,
-            tasks: tasks ?? [task(), task(done: true, subject: "[#RSM] Land PROJ-1234")],
+            tasks: tasks ?? [task(), task(done: true, subject: "[#NTX] Land PROJ-1234")],
             bullets: bullets, tables: tables, subheads: [], collapsed: collapsed)
     }
 
@@ -58,7 +58,7 @@ enum SmokeFixtures {
     static func collapsedGroup() -> ActionSection.CollapsedGroup {
         ActionSection.CollapsedGroup(
             id: UUID(), summary: "Expand to work them",
-            tasks: [task(subject: "[#5864M] An archived row")],
+            tasks: [task(subject: "[#7391K] An archived row")],
             bullets: ["An archived bullet."], tables: [])
     }
 

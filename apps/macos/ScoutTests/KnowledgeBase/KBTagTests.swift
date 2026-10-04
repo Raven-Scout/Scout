@@ -5,7 +5,7 @@ import Testing
 
 @Suite("KBTag recognition")
 struct KBTagRecognitionTests {
-    @Test(arguments: ["SLBETA", "KAIREL", "QPD1", "INC1551", "AB", "Q2REVIEW", "A1"])
+    @Test(arguments: ["PROJB1", "RELONE", "XYZ1", "ABC1234", "AB", "Q9SAMPLE", "A1"])
     func acceptsWellFormedTags(_ body: String) {
         #expect(KBTag.normalized(body) == body)
         #expect(KBTag.normalized("#" + body) == body)
@@ -15,7 +15,7 @@ struct KBTagRecognitionTests {
         "A",            // 1 char — too short
         "TOOLONGTAG",   // 9 chars — too long
         "555",          // all digits: a GitHub ref, not a tag
-        "1551",
+        "1234",
         "lower",        // lowercase
         "MiXeD",
         "WITH_UND",     // underscore not allowed
@@ -27,7 +27,7 @@ struct KBTagRecognitionTests {
     }
 
     @Test func findsBothBracketedAndBareForms() {
-        #expect(KBTag.tags(in: "see [#SLBETA] and #KAIREL today") == ["SLBETA", "KAIREL"])
+        #expect(KBTag.tags(in: "see [#PROJB1] and #RELONE today") == ["PROJB1", "RELONE"])
     }
 
     @Test func dedupesKeepingFirstAppearanceOrder() {
@@ -41,41 +41,41 @@ struct KBTagRecognitionTests {
     }
 
     @Test(arguments: [
-        "word#SLBETA",                        // mid-word
-        "##SLBETA",                           // doubled hash
-        "https://example.com/page#SLBETA",    // URL fragment
-        "#SLBETAX",                           // longer tag, not a prefix match
-        "#SLBETAx",                           // trailing lowercase
-        "#slbeta",                            // lowercase
+        "word#PROJB1",                        // mid-word
+        "##PROJB1",                           // doubled hash
+        "https://example.com/page#PROJB1",    // URL fragment
+        "#PROJB1X",                           // longer tag, not a prefix match
+        "#PROJB1x",                           // trailing lowercase
+        "#projb1",                            // lowercase
     ])
     func doesNotMatchNonTagContexts(_ text: String) {
-        #expect(!KBTag.tags(in: text).contains("SLBETA"))
+        #expect(!KBTag.tags(in: text).contains("PROJB1"))
     }
 
-    @Test(arguments: ["#SLBETA's owner", "#SLBETA, next", "#SLBETA.", "(#SLBETA)", "#SLBETA\nnext"])
+    @Test(arguments: ["#PROJB1's owner", "#PROJB1, next", "#PROJB1.", "(#PROJB1)", "#PROJB1\nnext"])
     func matchesUpToNonWordPunctuation(_ text: String) {
-        #expect(KBTag.tags(in: text) == ["SLBETA"])
+        #expect(KBTag.tags(in: text) == ["PROJB1"])
     }
 
     @Test func ignoresTagsInsideProtectedSpans() {
-        #expect(KBTag.tags(in: "`#SLBETA`").isEmpty)                    // inline code
-        #expect(KBTag.tags(in: "[[#SLBETA]]").isEmpty)                  // wikilink
-        #expect(KBTag.tags(in: "[label](https://x.com/#SLBETA)").isEmpty) // markdown link
+        #expect(KBTag.tags(in: "`#PROJB1`").isEmpty)                    // inline code
+        #expect(KBTag.tags(in: "[[#PROJB1]]").isEmpty)                  // wikilink
+        #expect(KBTag.tags(in: "[label](https://x.com/#PROJB1)").isEmpty) // markdown link
     }
 }
 
 @Suite("KBTag linkify")
 struct KBTagLinkifyTests {
     @Test func bareTagBecomesASchemeLink() {
-        let out = KBTag.linkify("ship #SLBETA now")
-        #expect(out.contains("](scout-tag://SLBETA)"))
+        let out = KBTag.linkify("ship #PROJB1 now")
+        #expect(out.contains("](scout-tag://PROJB1)"))
         #expect(out.hasPrefix("ship ["))
         #expect(out.hasSuffix(" now"))
     }
 
     @Test func bracketedTagLosesItsBracketsAndRendersLikeTheBareForm() {
-        let bare = KBTag.linkify("#SLBETA")
-        let bracketed = KBTag.linkify("[#SLBETA]")
+        let bare = KBTag.linkify("#PROJB1")
+        let bracketed = KBTag.linkify("[#PROJB1]")
         #expect(bare == bracketed)
     }
 
@@ -95,9 +95,9 @@ struct KBTagLinkifyTests {
     /// The chip label must still read as the tag once the padding is stripped —
     /// the hair spaces are inset, not content.
     @Test func labelIsTheTagPlusInsetOnly() {
-        let out = KBTag.linkify("#SLBETA")
+        let out = KBTag.linkify("#PROJB1")
         let label = out.drop(while: { $0 != "[" }).dropFirst().prefix(while: { $0 != "]" })
-        #expect(label.replacingOccurrences(of: "\u{2009}", with: "") == "#SLBETA")
+        #expect(label.replacingOccurrences(of: "\u{2009}", with: "") == "#PROJB1")
     }
 }
 
@@ -114,11 +114,11 @@ struct KBTagSearchTests {
         func write(_ name: String, _ body: String) throws {
             try body.write(to: kb.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
-        try write("alpha.md",   "# Alpha\nTracking #KAIREL this week.")
-        try write("bravo.md",   "# Bravo\nBracketed [#KAIREL] form.")
-        try write("charlie.md", "# Charlie\nDifferent tag #KAIRELX here.")
-        try write("delta.md",   "# Delta\nNo tags, but mentions kairel in prose.")
-        try write("KAIREL.md",  "# Filename only\nBody has no tag at all.")
+        try write("alpha.md",   "# Alpha\nTracking #RELONE this week.")
+        try write("bravo.md",   "# Bravo\nBracketed [#RELONE] form.")
+        try write("charlie.md", "# Charlie\nDifferent tag #RELONEX here.")
+        try write("delta.md",   "# Delta\nNo tags, but mentions relone in prose.")
+        try write("RELONE.md",  "# Filename only\nBody has no tag at all.")
         return root
     }
 
@@ -132,12 +132,12 @@ struct KBTagSearchTests {
         let svc = KnowledgeBaseService(scoutDirectory: root, fileEvents: NoopFS())
         await svc.reparseAndWait()
 
-        let hits = paths(svc.searchContent("#KAIREL"))
+        let hits = paths(svc.searchContent("#RELONE"))
         #expect(hits.contains("alpha.md"))          // bare form
         #expect(hits.contains("bravo.md"))          // bracketed form
-        #expect(!hits.contains("charlie.md"))       // #KAIRELX is a different tag
+        #expect(!hits.contains("charlie.md"))       // #RELONEX is a different tag
         #expect(!hits.contains("delta.md"))         // prose word, not a tag
-        #expect(!hits.contains("KAIREL.md"))        // filename, not content
+        #expect(!hits.contains("RELONE.md"))        // filename, not content
     }
 
     @Test func nonTagQueryKeepsSubstringSemantics() async throws {
@@ -148,9 +148,9 @@ struct KBTagSearchTests {
 
         // No leading '#' → the ordinary case-insensitive substring search,
         // which should still find the prose mention and the filename.
-        let hits = paths(svc.searchContent("kairel"))
+        let hits = paths(svc.searchContent("relone"))
         #expect(hits.contains("delta.md"))
-        #expect(hits.contains("KAIREL.md"))
+        #expect(hits.contains("RELONE.md"))
         #expect(hits.contains("charlie.md"))
     }
 }
@@ -162,14 +162,14 @@ struct KBTagChipRenderingTests {
     /// carrying the custom scheme — that link is both the click target and the
     /// selector the chip styling keys off.
     @Test func tagRunKeepsItsSchemeLink() {
-        let s = InlineMarkdownText.attributedString(for: "ship #SLBETA now")
+        let s = InlineMarkdownText.attributedString(for: "ship #PROJB1 now")
         let tagRuns = s.runs.filter { $0.link?.scheme == KBTag.scheme }
         #expect(tagRuns.count == 1)
-        #expect(tagRuns.first?.link?.host == "SLBETA")
+        #expect(tagRuns.first?.link?.host == "PROJB1")
     }
 
     @Test func tagRunCarriesTheChipAttributes() {
-        let s = InlineMarkdownText.attributedString(for: "#SLBETA")
+        let s = InlineMarkdownText.attributedString(for: "#PROJB1")
         let run = s.runs.first { $0.link?.scheme == KBTag.scheme }
         #expect(run != nil)
         #expect(run?.foregroundColor == DS.Accent.ink)
@@ -179,16 +179,16 @@ struct KBTagChipRenderingTests {
 
     /// The chip is styled; the prose around it must not be.
     @Test func surroundingProseIsUnstyled() {
-        let s = InlineMarkdownText.attributedString(for: "before #SLBETA after")
+        let s = InlineMarkdownText.attributedString(for: "before #PROJB1 after")
         let plain = s.runs.filter { $0.link == nil }
         #expect(!plain.isEmpty)
         #expect(plain.allSatisfy { $0.backgroundColor == nil })
     }
 
     @Test func visibleTextStillReadsAsTheTag() {
-        let s = InlineMarkdownText.attributedString(for: "ship #SLBETA now")
+        let s = InlineMarkdownText.attributedString(for: "ship #PROJB1 now")
         let text = String(s.characters).replacingOccurrences(of: "\u{2009}", with: "")
-        #expect(text == "ship #SLBETA now")
+        #expect(text == "ship #PROJB1 now")
     }
 
     /// A numeric ref must render as a GitHub link, not a tag chip — the two
@@ -200,7 +200,7 @@ struct KBTagChipRenderingTests {
     }
 
     @Test func wikilinkAndTagCoexist() {
-        let s = InlineMarkdownText.attributedString(for: "[[people|Alex]] owns #SLBETA")
+        let s = InlineMarkdownText.attributedString(for: "[[people|Alex]] owns #PROJB1")
         #expect(s.runs.contains { $0.link?.scheme == "scout-wiki" })
         #expect(s.runs.contains { $0.link?.scheme == KBTag.scheme })
     }
@@ -215,23 +215,23 @@ struct KBTagCompositionTests {
     }
 
     @Test func tagAndGitHubRefInOneLineBothSurvive() {
-        let out = pipeline("example-org/scout#647 closes #SLBETA")
-        #expect(out.contains("scout-tag://SLBETA"))
+        let out = pipeline("example-org/scout#647 closes #PROJB1")
+        #expect(out.contains("scout-tag://PROJB1"))
         #expect(out.contains("github.com/example-org/scout/issues/647"))
     }
 
     @Test func githubLinkifierDoesNotReenterAnEmittedTagLink() {
         // A tag link's URL must come out intact — not re-linkified or nested.
-        let out = pipeline("#SLBETA")
-        #expect(out.contains("](scout-tag://SLBETA)"))
+        let out = pipeline("#PROJB1")
+        #expect(out.contains("](scout-tag://PROJB1)"))
         #expect(!out.contains("github.com"))
     }
 
     @Test func bareRefStillResolvesWhenATagIsAlsoPresent() {
         // The tag rewrite must not inject anything that looks like a second
         // repo slug, which would make the bare #647 ambiguous and unlinked.
-        let out = pipeline("in example-org/scout, #647 fixes #SLBETA")
+        let out = pipeline("in example-org/scout, #647 fixes #PROJB1")
         #expect(out.contains("github.com/example-org/scout/issues/647"))
-        #expect(out.contains("scout-tag://SLBETA"))
+        #expect(out.contains("scout-tag://PROJB1"))
     }
 }

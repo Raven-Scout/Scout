@@ -26,7 +26,7 @@ These are deep-work / async tasks that don't need synchronous collaboration.
 
 - [ ] **Bench v2 for new backend** — Committed in team chat Apr 16: "I'll add support for the new backend to the existing client/bench repo." Solo code work — good weekend task. Unblocks [[PROJ-2869]] side-by-side eval. [[backend]] [[evals]]
 - [ ] **Send plugin link to Alex** — Carryover from Apr 17 1:1. Just needs a DM / link to the repo. 5-min task.
-- [ ] **Semantic-layer migration skill** — Design spec work. MCP reachability + tool surface confirmed Apr 17. Can sketch the skill architecture async. Demo target: P3 ([[PROJ-2952]]). [[semantic-layer]]
+- [ ] **Semantic-layer migration skill** — Design spec work. MCP reachability + tool surface confirmed Apr 17. Can sketch the skill architecture async. Demo target: pilot cohort ([[PROJ-2952]]). [[semantic-layer]]
 - [ ] **Post Linear project update** — Linear reminder outstanding from Apr 15. Async task. [[linear-issues]]
 - [ ] **Convert semantic-layer milestone → proper Linear project** — Q2 commitment. Can do async. [[semantic-layer]] [[linear-issues]]
 
