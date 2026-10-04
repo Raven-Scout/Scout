@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **PR state is fetched only for sessions that are not archived** (`engine/scout/sessions/index.py`) — an archived session is `done` whatever its PR says, so its PRs no longer spend the 25-fetch budget; they keep their cached state or read `unknown`. Never-fetched refs are fetched first, so on a machine where 96 PRs on archived sessions had never been fetched, those took about four builds' worth of fetches ahead of the open PRs on live sessions. A PR linked to a live session and an archived one is still fetched. Spec: scout-app `docs/superpowers/specs/2026-09-08-agent-sessions-design.md` §10.7.
+
 ## [0.12.0] - 2026-10-04
 
 
