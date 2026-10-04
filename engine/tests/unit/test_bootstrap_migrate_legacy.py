@@ -111,6 +111,20 @@ def test_migrate_legacy_seeds_schedule_yaml(tmp_path):
     assert "schema_version" in schedule.read_text()
 
 
+def test_migrate_legacy_installs_the_kb_lint_hook(tmp_path):
+    import subprocess
+
+    from scout.kb.hook import MARKER
+
+    _populate_legacy_vault(tmp_path)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    plugin = Path(__file__).parent.parent.parent.parent
+    migrate_legacy(_config(tmp_path, plugin_root=plugin))
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    assert MARKER in hook.read_text()
+    assert str(plugin / "engine" / "bin" / "scoutctl") in hook.read_text()
+
+
 def test_migrate_legacy_records_snapshots(tmp_path):
     """Snapshots in .scout-state/last-assembled/ should match current live files."""
     _populate_legacy_vault(tmp_path)

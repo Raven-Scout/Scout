@@ -126,6 +126,75 @@ def hook_kb_pre_filter(
     raise typer.Exit(kb_pre_filter_main([session_type]))
 
 
+kb_app = typer.Typer(help="Knowledge-base structure checks (size budgets, run-diary headings).")
+app.add_typer(kb_app, name="kb")
+
+
+def _kb_repo(repo: Path | None) -> Path:
+    from scout import paths
+    from scout.kb.git_io import repo_root
+
+    try:
+        return repo_root(repo or Path.cwd())
+    except Exception:
+        return repo or paths.data_dir()
+
+
+@kb_app.command("lint")
+def kb_lint(
+    staged: bool = typer.Option(
+        False, "--staged", help="Check the staged diff (what the pre-commit hook runs). Default."
+    ),
+    report: bool = typer.Option(False, "--report", help="Rank tracked KB files that are over budget."),
+    top: int = typer.Option(20, "--top", help="Rows to show with --report."),
+    lossless_rev: str | None = typer.Option(None, "--lossless-rev", help="Old revision for the lossless check."),
+    lossless_path: str | None = typer.Option(
+        None, "--lossless-path", help="Vault-relative file for the lossless check."
+    ),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Lint the vault's KB structure. Exit 1 = blocked (block mode) or lossless tokens missing."""
+    root = _kb_repo(repo)
+    if lossless_rev or lossless_path:
+        from scout.kb.lossless import lossless_check
+
+        if not (lossless_rev and lossless_path):
+            print("--lossless-rev and --lossless-path go together", file=sys.stderr)
+            raise typer.Exit(2)
+        missing = lossless_check(root, lossless_rev, lossless_path)
+        for tok in missing:
+            print(f"missing: {tok}")
+        print(f"lossless: {len(missing)} token(s) missing")
+        raise typer.Exit(1 if missing else 0)
+    if report:
+        from scout.kb.lint import over_budget
+        from scout.kb.lint_config import load_lint_config
+
+        rows = over_budget(root, load_lint_config(root))
+        print(f"{len(rows)} file(s) over budget")
+        for rel, size, budget in rows[:top]:
+            print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
+        raise typer.Exit(0)
+    from scout.kb.lint import run_hook
+
+    raise typer.Exit(run_hook(root))
+
+
+@kb_app.command("install-hook")
+def kb_install_hook(
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Install (or refresh) the Scout-managed git pre-commit hook in the vault."""
+    from scout.kb.hook import HookConflict, install_hook
+
+    try:
+        path = install_hook(_kb_repo(repo))
+    except HookConflict as e:
+        print(str(e), file=sys.stderr)
+        raise typer.Exit(1) from e
+    print(f"Installed: {path}")
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -1402,6 +1471,15 @@ def _register_bootstrap() -> None:
             typer.echo(f"snapshots recorded: {', '.join(payload.get('snapshots_recorded') or []) or 'none'}")
         for c in payload.get("conflicts", []):
             typer.echo(f"  conflict (sidecar): {c}", err=True)
+        for sk in payload.get("skipped", []):
+            live_name = sk.removesuffix(".proposed-merge")
+            typer.echo(f"  skipped (sidecar pending): {sk} — {live_name} left as is until it is resolved", err=True)
+        for held in payload.get("conflict_markers", []):
+            typer.echo(
+                f"  held (conflict markers): {held} — left as is; it still has <<<<<<< / >>>>>>> lines from an "
+                f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
+                err=True,
+            )
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []
@@ -1559,6 +1637,42 @@ def _register_bootstrap() -> None:
             json_out=json_out,
         )
         raise typer.Exit(code=result.doctor.exit_code)
+
+    @bootstrap_app.command("resolve")
+    def cli_bootstrap_resolve(
+        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md and/or RESEARCH.md"),
+    ) -> None:
+        """Record a brain file's sidecar as resolved.
+
+        Make the live file the version you want first (e.g. move the sidecar into
+        place and remove any conflict markers). The plugin assembly behind the
+        sidecar becomes the merge base, so the next upgrade merges only later
+        plugin changes into your resolution; the sidecar is removed.
+        """
+        from scout import paths as _paths
+        from scout.scripts.bootstrap import resolve_brain_file
+        from scout.scripts.brain_merge import BRAIN_KINDS
+
+        kinds = [f.upper().removesuffix(".MD") for f in files]
+        unknown = [f for f, k in zip(files, kinds, strict=True) if k not in BRAIN_KINDS]
+        if unknown:
+            expected = "expected SKILL.md, DREAMING.md or RESEARCH.md"
+            typer.echo(f"not a brain file: {', '.join(unknown)} ({expected})", err=True)
+            raise typer.Exit(code=2)
+        vault = _paths.data_dir()
+        failed = False
+        for kind in kinds:
+            try:
+                r = resolve_brain_file(vault, kind)
+            except (ValueError, FileNotFoundError) as e:
+                typer.echo(f"refused: {e}", err=True)
+                failed = True
+                continue
+            if r.recorded_base:
+                typer.echo(f"resolved: {r.name} — the next upgrade merges plugin changes into it")
+            else:
+                typer.echo(f"resolved: {r.name} — sidecar removed; the next upgrade merges it again")
+        raise typer.Exit(code=1 if failed else 0)
 
     @bootstrap_app.command("doctor")
     def cli_bootstrap_doctor(

@@ -392,16 +392,30 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 - If not started: include the full context from all sources, not just the one that surfaced it
 - Always include source citations showing which connectors confirmed the item
 
-After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file — prepend this run's entry (timestamp, mode, counts, connector availability) as the newest line and trim the block to the last 3 runs. Do not write run metadata at the top of the file.
+After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
+
+## Item line format (enforced: 60 KB file, 500-char lines)
+
+Each item is **one line of up to 300 characters**, plus **at most one sub-bullet** of up to 300 characters (the blocker, or {{USER_NAME}}'s comment thread):
+
+`- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
+
+Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it.
+
+**Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
+
+**A tier change moves the line.** Never write "Demoted by…", "Re-tiered by…", "Relocated from…" or "From this run…" sections. Git records why.
 
 ## Scout Digest
 
-At the end of every briefing and consolidation run, append or update a **Scout Digest** section at the bottom of today's action-items file (`action-items/action-items-YYYY-MM-DD.md`), before the Sources line. This is the same digest the dreaming phase maintains — there is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one.
+At the end of every briefing and consolidation run, create or update the **`## 📋 Scout Digest — <date> (<time>)` section at the bottom of today's action-items file** (`action-items/action-items-YYYY-MM-DD.md`), just above `## 🪵 Run notes & connector availability`. This is the same digest the dreaming phase maintains — there is **one** digest per day, shared across all of today's sessions, so {{USER_NAME}} can catch up on what {{INSTANCE_NAME}} has been doing across runs without reading each one. The companion apps build their Digest view from this `📋` section, so it must stay an H2 in the daily file.
+
+**Cap: ~6 KB.** Scannable bullets only; link to notes for detail. Every line ≤ 500 chars (the daily file's strict line limit). `<time>` is a real `HH:MM` clock time — never a masked run stamp like `8:0x`, which the pre-commit lint reads as a run-diary heading.
 
 **Format:**
 
 ```markdown
-## Scout Digest — [Date] ([Time])
+## 📋 Scout Digest — [Date] ([Time])
 
 **{{INSTANCE_NAME}} ran N sessions today** (breakdown by type). Here's what needs your attention:
 
@@ -418,7 +432,7 @@ At the end of every briefing and consolidation run, append or update a **Scout D
 ```
 
 **Rules:**
-- If a digest already exists from an earlier session today, **update it in place** (don't duplicate) — bump the time, fold in this run's changes.
+- If a digest already exists from an earlier session today, **update it in place** (don't duplicate) — bump the time, fold in this run's changes, and trim older detail so the section stays under ~6 KB.
 - Only include files that changed **substantively** (not just timestamp updates).
 - "Your Input Needed" lists ONLY items where {{USER_NAME}}'s action unblocks {{INSTANCE_NAME}} or a project.
 - Keep it scannable — no walls of text. Link to KB files for details.
