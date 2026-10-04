@@ -37,6 +37,8 @@ Locate the venv that belongs to THIS plugin checkout. Use `$CLAUDE_PLUGIN_ROOT/.
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+# Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
 SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"
 test -x "$SCOUTCTL" && echo "VENV_OK" || echo "VENV_MISSING"
 ```

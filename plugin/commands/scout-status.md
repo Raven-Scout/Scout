@@ -168,6 +168,8 @@ Check the installed plugin version against the latest available, and read the au
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+# Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
 "$PLUGIN_ROOT/.venv/bin/scoutctl" self-update check || echo "SELF_UPDATE_UNAVAILABLE"
 ```
 
@@ -192,6 +194,8 @@ Then list vault edits to plugin-owned files (scripts, hooks, runners, `render.py
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+# Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
 "$PLUGIN_ROOT/.venv/bin/scoutctl" bootstrap drift --json || echo "DRIFT_UNAVAILABLE"
 ```
 

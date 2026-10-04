@@ -25,9 +25,12 @@ def _step0_block(runbook: str) -> str:
 
 
 def _run(runbook: str, home: Path) -> str:
-    # The /scout-update resolver short-circuits on ~/scout-plugin/.git, so the
-    # block never shells out to a real `claude`.
+    # The /scout-update resolver short-circuits on a maintainer checkout at
+    # ~/scout-plugin (a .git plus the legacy layout's .claude-plugin/plugin.json),
+    # so the block never shells out to a real `claude`.
     (home / "scout-plugin" / ".git").mkdir(parents=True, exist_ok=True)
+    (home / "scout-plugin" / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (home / "scout-plugin" / ".claude-plugin" / "plugin.json").write_text("{}\n")
     proc = subprocess.run(
         ["bash", "-c", _step0_block(runbook)],
         env={"HOME": str(home), "PATH": "/usr/bin:/bin"},

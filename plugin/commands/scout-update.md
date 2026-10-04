@@ -18,8 +18,13 @@ Every shell block in this command runs in a **fresh process**, so variables set 
 **Canonical resolver** (copy verbatim into every block that needs `$NEW_ROOT` / `$SCOUTCTL`):
 
 ```bash
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
@@ -27,7 +32,7 @@ NEW_ROOT="${NEW_ROOT%/}"
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 ```
 
-This prefers the maintainer git checkout (`~/scout-plugin` when a `.git` dir is present), then the `scout@scout-plugin` entry of `claude plugin list --json` (which has emitted both a flat list and a `{"plugins": {...}}` map — the snippet accepts either), then the newest version directory in the marketplace cache. It never yields an empty root: if all three miss it prints `PLUGIN_ROOT_NOT_FOUND` and stops — tell the user the plugin isn't installed and to re-run the installer. **Do NOT use `${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}` in any block** — after Step 0.5 refreshes the plugin, `$CLAUDE_PLUGIN_ROOT` may still point at the pre-refresh path.
+This prefers a maintainer git checkout at `~/scout-plugin` — a legacy single-repo `scout-plugin` clone (`.claude-plugin/plugin.json` at its root) is the plugin root itself; a `Raven-Scout/Scout` monorepo clone (`plugin/.claude-plugin/plugin.json`) has its plugin root at `~/scout-plugin/plugin`; a `.git` alone is not enough — then the `scout@scout-plugin` entry of `claude plugin list --json` (which has emitted both a flat list and a `{"plugins": {...}}` map — the snippet accepts either), then the newest version directory in the marketplace cache. It never yields an empty root: if all three miss it prints `PLUGIN_ROOT_NOT_FOUND` and stops — tell the user the plugin isn't installed and to re-run the installer. **Do NOT use `${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}` in any block** — after Step 0.5 refreshes the plugin, `$CLAUDE_PLUGIN_ROOT` may still point at the pre-refresh path.
 
 Use `"$SCOUTCTL"` in every subsequent invocation.
 
@@ -95,7 +100,10 @@ Pull the latest plugin code:
 ```bash
 bash <<'EOF'
 set -e
-if [ -d "$HOME/scout-plugin/.git" ]; then
+# Same rule as the resolver: a legacy scout-plugin clone or a Raven-Scout/Scout
+# monorepo clone at ~/scout-plugin (both pulled at the clone root).
+if [ -e "$HOME/scout-plugin/.git" ] && { [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ] \
+     || [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; }; then
   git -C "$HOME/scout-plugin" pull --ff-only && echo "PULLED_DIRECTORY:$HOME/scout-plugin"
 else
   claude plugin marketplace update scout-plugin || true
@@ -108,8 +116,13 @@ EOF
 Resolve the plugin root that the rest of this upgrade runs from. **Use this resolved `$NEW_ROOT` as the plugin root for every step below.** Because each shell block runs in a fresh process, re-resolve it at the top of each block that needs it using the canonical resolver (do NOT fall back to `$CLAUDE_PLUGIN_ROOT`, which may point at the pre-refresh plugin):
 
 ```bash
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
@@ -128,8 +141,13 @@ Run:
 ```bash
 bash <<'EOF'
 set -e
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
@@ -182,8 +200,13 @@ EOF
 Read the current and target plugin versions:
 
 ```bash
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
@@ -205,18 +228,22 @@ If user declines, stop.
 A maintainer git checkout records itself as `dev`; the marketplace install as `claude-code`:
 
 ```bash
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
-if [ -d "$HOME/scout-plugin/.git" ]; then
-  "$SCOUTCTL" bootstrap upgrade --managed-by dev
-else
-  "$SCOUTCTL" bootstrap upgrade --managed-by claude-code
-fi
+case "$NEW_ROOT" in
+  "$HOME/scout-plugin" | "$HOME/scout-plugin/plugin") "$SCOUTCTL" bootstrap upgrade --managed-by dev ;;
+  *) "$SCOUTCTL" bootstrap upgrade --managed-by claude-code ;;
+esac
 ```
 
 Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
@@ -268,8 +295,13 @@ EOF
 If the user agrees, turn it on with `scoutctl config set-auto-update`. It rewrites only the `auto_update` block of `~/Scout/scout-config.yaml` (adding it if absent, keeping an existing channel) and leaves every other line and comment as it was. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
 
 ```bash
-NEW_ROOT="$HOME/scout-plugin"
-[ -d "$NEW_ROOT/.git" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
