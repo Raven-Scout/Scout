@@ -99,13 +99,14 @@ Each command below names the repo as it is called *when that step runs*.
 
   ```bash
   legacyize() {   # stdin → stdout
-    perl -pe 's{(^|[^A-Za-z0-9/._-])#(\d+)}{$1Raven-Scout/scout-app-legacy#$2}g;
+    perl -pe 's{(^|[^A-Za-z0-9/._&-])#(\d+)}{$1Raven-Scout/scout-app-legacy#$2}g;
               s{Raven-Scout/Scout#(\d+)}{Raven-Scout/scout-app-legacy#$1}g;
               s{github\.com/Raven-Scout/Scout/(pull|issues|compare|releases/tag)/}{github.com/Raven-Scout/scout-app-legacy/$1/}g'
   }
   ```
 
-  It also rewrites a hex colour like `#123456`, so read the diff before
+  It leaves HTML entities (`&#39;`) alone. It still rewrites a hex colour like
+  `#123456`, a `step #2`, or a line-start `#1 Heading`, so read the diff before
   posting.
 - **No literal version numbers.** Every version is derived when you run the
   step. If a step tells you to type a version, it first shows the command that
@@ -549,10 +550,13 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git merge-base --is-ancestor "$UP" HEAD && echo "scout-plugin main fully merged"            # if UP is unknown locally, Phase 1 is stale
   gh repo view Raven-Scout/scout-app-legacy >/dev/null 2>&1 && echo "STOP: the legacy name is taken" || echo "legacy name free"
   # Closing keywords in app commits act on scout-plugin's numbers once they reach its default branch:
-  git log --format='%B' migrate/monorepo ^"$UP" | grep -ioE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]+#[0-9]+' \
-    | grep -oE '[0-9]+$' | sort -un | while read -r n; do
-        gh api "repos/Raven-Scout/scout-plugin/issues/$n" --jq '"#\(.number) \(.state) \(.title[:60])"'
-      done                                                                   # every line must say "closed"
+  git log --format='%B' migrate/monorepo ^"$UP" \
+    | grep -ioE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?):? +(([A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[0-9]+|https://github\.com/[^ )]+/(issues|pull)/[0-9]+)' \
+    | sort -u > /tmp/closing-refs.txt
+  grep -vE '/|https' /tmp/closing-refs.txt | grep -oE '[0-9]+$' | sort -un | while read -r n; do
+      gh api "repos/Raven-Scout/scout-plugin/issues/$n" --jq '"#\(.number) \(.state) \(.title[:60])"'
+    done                                                                     # bare #N = scout-plugin's numbers: every line must say "closed"
+  grep -E '/|https' /tmp/closing-refs.txt                                    # qualified forms: check each target by hand (2026-10-04: none)
   ```
 
   - **Closing keywords.** On 2026-10-04 they targeted #9, #10, #13, #14, #16,
