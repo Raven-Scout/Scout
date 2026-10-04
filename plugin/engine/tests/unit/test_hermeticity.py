@@ -24,8 +24,18 @@ def test_home_is_isolated() -> None:
 
 
 def test_no_scout_env_leaks() -> None:
-    leaked = sorted(k for k in os.environ if k.startswith("SCOUT_"))
+    # SCOUT_LOCALTIME is the fixture's own: it hides the host's timezone.
+    leaked = sorted(k for k in os.environ if k.startswith("SCOUT_") and k != "SCOUT_LOCALTIME")
     assert leaked == [], f"SCOUT_* env vars leaked into the test env: {leaked}"
+
+
+def test_host_timezone_is_isolated() -> None:
+    """An unconfigured vault follows the host's zone, so the developer's own
+    /etc/localtime must not reach the suite (CEST on one laptop, UTC on CI)."""
+    from scout import config
+
+    assert "pytest-" in os.environ["SCOUT_LOCALTIME"]
+    assert config.host_timezone_name() is None
 
 
 def test_real_gh_is_blocked(fake_data_dir: Path) -> None:

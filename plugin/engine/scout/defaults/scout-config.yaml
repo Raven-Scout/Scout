@@ -4,7 +4,9 @@ user:
   email: ""
   github_username: ""
   slack_user_id: ""
-  timezone: America/New_York
+  # Empty = follow the computer's own timezone, the clock the scheduler fires
+  # on. Set an IANA name (Europe/Prague) only to override it.
+  timezone: ""
   company: ""
   display_name: ""
 

@@ -52,7 +52,7 @@ class BootstrapConfig:
     instance_name_lower: str
     user_name: str
     user_email: str
-    timezone: str
+    timezone: str  # IANA override; "" = follow the host's zone (the default)
     platform: str  # "macos" | "linux"
     plugin_version: str
     enabled_connectors: set[str]
@@ -255,9 +255,10 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         "PLATFORM": cfg.platform,
         "MAX_BUDGET": cfg.connector_inputs.get("max_budget", "5.00"),
         "CLAUDE_BIN": resolve_claude_bin(cfg.connector_inputs.get("claude_bin", "")),
-        # Today in the timezone being installed (NOT the host clock, and not
-        # config.today(): during a fresh install the vault's scout-config.yaml
-        # does not exist yet, so the merged config cannot answer). #207.
+        # Today in the timezone being installed: the override if one was
+        # given, else the host's zone. Not config.today(): during a fresh
+        # install the vault's scout-config.yaml does not exist yet, so the
+        # merged config cannot answer. #207.
         "TODAY_DATE": _dt.datetime.now(scout_config.timezone_or_default(cfg.timezone)).date().isoformat(),
         "AUTO_UPDATE_ENABLED": cfg.connector_inputs.get("auto_update_enabled", "false"),
     }
@@ -819,7 +820,12 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
         "name": cfg.instance_name,
         "name_lower": cfg.instance_name_lower,
     }
-    existing["timezone"] = cfg.timezone
+    # An empty zone means "follow the host's": never stamp one the user did not
+    # choose. Writing America/New_York here whenever the key was missing used
+    # to undo, on the next upgrade, every vault that deleted it to follow the
+    # computer's zone.
+    if cfg.timezone:
+        existing["timezone"] = cfg.timezone
     existing["platform"] = cfg.platform
     # Persist connectors: enabled list + inputs so upgrade can rebuild
     # BootstrapConfig faithfully without losing claude_bin/max_budget/etc.

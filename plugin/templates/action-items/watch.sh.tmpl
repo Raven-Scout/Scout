@@ -4,7 +4,7 @@
 # items file and want a live-updating browser view.
 #
 # Usage:
-#   ./action-items/watch.sh                 # today's file (in configured timezone)
+#   ./action-items/watch.sh                 # today's file (in the display timezone)
 #   ./action-items/watch.sh 2026-04-17      # specific date
 #   ./action-items/watch.sh path/to/file.md # explicit path
 #   ./action-items/watch.sh --poll [...]    # force a 2s polling fallback
@@ -17,6 +17,8 @@ set -euo pipefail
 
 SCOUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCOUT_DIR"
+# The display zone: the config's override, else this computer's own zone.
+SCOUT_TZ="$("$SCOUT_DIR/scripts/scout-tz.sh" 2>/dev/null || echo America/New_York)"
 
 USE_POLLING="no"
 if [[ "${1:-}" == "--poll" ]]; then
@@ -26,7 +28,7 @@ fi
 
 ARG="${1:-}"
 if [[ -z "$ARG" ]]; then
-  DATE="$(TZ={{TIMEZONE}} date '+%Y-%m-%d')"
+  DATE="$(TZ="$SCOUT_TZ" date '+%Y-%m-%d')"
   MD="action-items/action-items-${DATE}.md"
 elif [[ -f "$ARG" ]]; then
   MD="$ARG"
@@ -50,9 +52,9 @@ HTML="${SCOUT_DIR}/${BASENAME}.html"
 
 render() {
   if python3 action-items/render.py "$MD" "$HTML" >/dev/null; then
-    echo "[$(TZ={{TIMEZONE}} date '+%H:%M:%S')] rendered $(basename "$HTML")"
+    echo "[$(TZ="$SCOUT_TZ" date '+%H:%M:%S')] rendered $(basename "$HTML")"
   else
-    echo "[$(TZ={{TIMEZONE}} date '+%H:%M:%S')] render failed for $MD" >&2
+    echo "[$(TZ="$SCOUT_TZ" date '+%H:%M:%S')] render failed for $MD" >&2
   fi
 }
 

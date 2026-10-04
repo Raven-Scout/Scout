@@ -13,8 +13,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
-from scout.scripts.bootstrap import BootstrapConfig, install
+from scout.scripts.bootstrap import BootstrapConfig, install, managed_renders
 
 _PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent  # repo root
 
@@ -89,11 +90,117 @@ def test_scout_tz_falls_back_on_invalid_zone(installed_vault, tmp_path):
 def test_scout_tz_self_test_passes_in_installed_vault(installed_vault):
     # The install renders scout-config.yaml with timezone America/New_York, so
     # the script-relative config fallback resolves inside the tmp vault and the
-    # shipped self-test's five assertions all hold.
+    # shipped self-test's assertions all hold.
     script = installed_vault / "scripts" / "scout-tz.sh"
     result = _run(script, "--self-test")
     assert result.returncode == 0, f"self-test failed:\n{result.stdout}\n{result.stderr}"
-    assert "5/5 pass" in result.stdout
+    assert "FAIL" not in result.stdout
+    assert "pass ---" in result.stdout
+
+
+def test_scout_tz_follows_the_host_when_unconfigured(installed_vault, tmp_path):
+    script = installed_vault / "scripts" / "scout-tz.sh"
+    cfg = tmp_path / "no-zone-config.yaml"
+    cfg.write_text("platform: macos\n", encoding="utf-8")
+    target = tmp_path / "tzdb" / "zoneinfo" / "Asia" / "Tokyo"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"")
+    link = tmp_path / "localtime"
+    link.symlink_to(target)
+    result = _run(script, env_overrides={"SCOUT_CONFIG": str(cfg), "SCOUT_LOCALTIME": str(link)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Asia/Tokyo"
+
+
+# ----- bootstrap never pins a zone the user did not ask for ------------------
+
+
+def test_install_without_a_timezone_writes_no_timezone_key(tmp_path):
+    vault = tmp_path / "Scout"
+    cfg = _config(vault)
+    cfg.timezone = ""
+    install(cfg)
+    data = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    assert "timezone" not in data, "an unset zone must follow the host, not be stamped"
+
+
+def test_install_with_a_timezone_records_the_override(tmp_path):
+    vault = tmp_path / "Scout"
+    cfg = _config(vault)
+    cfg.timezone = "Europe/Prague"
+    install(cfg)
+    data = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    assert data["timezone"] == "Europe/Prague"
+
+
+def _cli_install(target: Path, monkeypatch, *extra: str):
+    from typer.testing import CliRunner
+
+    from scout import cli
+
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(target))
+    argv = ["bootstrap", "install", "--user-name", "Alex", "--user-email", "alex@example.com"]
+    result = CliRunner().invoke(cli.app, [*argv, "--no-jobs", "--skip-claude", *extra])
+    assert result.exit_code in (0, 1), result.output  # the doctor's verdict
+    return result
+
+
+def _cli_upgrade():
+    from typer.testing import CliRunner
+
+    from scout import cli
+
+    result = CliRunner().invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
+    assert result.exit_code in (0, 1), result.output
+    return result
+
+
+def test_cli_install_follows_the_host_and_upgrade_keeps_it_so(tmp_path, monkeypatch):
+    """The regression this guards: upgrade read a missing ``timezone`` as
+    America/New_York and stamped it back, so deleting the key to follow the
+    host lasted only until the next upgrade."""
+    vault = tmp_path / "FreshScout"
+    _cli_install(vault, monkeypatch)
+    config_path = vault / "scout-config.yaml"
+    assert "timezone" not in yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    _cli_upgrade()
+    assert "timezone" not in yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+
+def test_cli_upgrade_keeps_an_explicit_override(tmp_path, monkeypatch):
+    vault = tmp_path / "FreshScout"
+    _cli_install(vault, monkeypatch, "--timezone", "Europe/Prague")
+    _cli_upgrade()
+    data = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    assert data["timezone"] == "Europe/Prague"
+
+
+def test_no_rendered_file_bakes_in_the_zone(tmp_path):
+    """Every managed script, runner and brain file resolves the zone at run
+    time through scout-tz.sh. A zone rendered in at install time is a
+    hand-maintained copy that goes stale when the user travels."""
+    zone = "Pacific/Chatham"  # appears in no template or phase text
+    vault = tmp_path / "Scout"
+    cfg = _config(vault)
+    cfg.timezone = zone
+    install(cfg)
+    rendered = {r.file.vault_rel: r.text for r in managed_renders(cfg)}
+    for brain in ("SKILL.md", "DREAMING.md", "RESEARCH.md"):
+        if (vault / brain).exists():
+            rendered[brain] = (vault / brain).read_text(encoding="utf-8")
+    baked = sorted(rel for rel, text in rendered.items() if zone in text)
+    assert baked == [], f"rendered with a literal zone: {baked}"
+
+
+@pytest.mark.parametrize("runner", ["run-scout.sh", "run-dreaming.sh", "run-research.sh"])
+def test_runners_pin_the_run_zone_for_every_child(installed_vault, runner):
+    """A run spans many processes (the shell scripts, the engine's Python
+    hooks, the session itself). The runner resolves the zone once and exports
+    it, so all of them agree even if the host's zone changes mid-run."""
+    text = (installed_vault / runner).read_text(encoding="utf-8")
+    assert 'RUN_TZ="$("$SCOUT_DIR/scripts/scout-tz.sh"' in text
+    assert 'export SCOUT_USER_TIMEZONE="$RUN_TZ"' in text
 
 
 def test_dependent_scripts_call_resolver_not_literal(installed_vault):

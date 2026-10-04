@@ -31,7 +31,6 @@ import datetime as _dt
 import fcntl
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -43,6 +42,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from scout import config as scout_config
 from scout import paths
 from scout.errors import ConfigError
 from scout.events import Event, now_iso
@@ -160,13 +160,10 @@ def _local_tz_name(localtime: Path | None = None) -> str:
     localtime = localtime or Path("/etc/localtime")
     if localtime.is_symlink():
         target = str(localtime.resolve())
-        # The zone name is whatever follows the deepest zoneinfo* directory.
-        # macOS resolves through layouts like /var/db/timezone/tz/<ver>/zoneinfo/
-        # or /usr/share/zoneinfo.default/ depending on whether tzd has run, so
-        # a literal "zoneinfo/" match is not enough.
-        matches = list(re.finditer(r"/zoneinfo[^/]*/", target))
-        if matches:
-            name = target[matches[-1].end() :]
+        # Parsed the way the day-boundary resolver reads the host's zone, so the
+        # scheduler and the dates it stamps agree on what "local" means.
+        name = scout_config.zone_from_tzdb_path(target)
+        if name:
             try:
                 ZoneInfo(name)
                 return name
