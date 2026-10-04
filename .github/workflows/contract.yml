@@ -40,6 +40,14 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Every committed client copy of a contract snapshot, one
+      # "<canonical> <copy>" pair per line. Step 2 diffs each pair; step 2b
+      # fails the build if git tracks a snapshot copy that is not listed here.
+      SNAPSHOT_COPIES: |
+        plugin/engine/scout/connectors.snapshot.json apps/macos/ScoutTests/Fixtures/connectors.snapshot.json
+        plugin/engine/scout/connectors.snapshot.json apps/macos/Scout/Resources/connectors.snapshot.json
+        plugin/engine/scout/schedule.snapshot.json apps/macos/ScoutTests/Fixtures/schedule.snapshot.json
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -88,10 +96,43 @@ jobs:
             fi
           }
 
-          check plugin/engine/scout/connectors.snapshot.json apps/macos/ScoutTests/Fixtures/connectors.snapshot.json
-          check plugin/engine/scout/connectors.snapshot.json apps/macos/Scout/Resources/connectors.snapshot.json
-          check plugin/engine/scout/schedule.snapshot.json   apps/macos/ScoutTests/Fixtures/schedule.snapshot.json
+          while read -r canonical copy; do
+            [ -n "${copy:-}" ] || continue
+            check "$canonical" "$copy"
+          done <<< "$SNAPSHOT_COPIES"
 
+          exit $status
+
+      # 2b. ...and the list above must be complete: a new client (or a new
+      #     copy in an existing one) that vendors a snapshot without a line in
+      #     SNAPSHOT_COPIES would otherwise never be compared — the exact gap
+      #     this workflow exists to close.
+      - name: Every tracked snapshot copy is checked
+        run: |
+          set -uo pipefail
+          listed=" "
+          while read -r canonical copy; do
+            [ -n "${copy:-}" ] || continue
+            listed="$listed$canonical $copy "
+          done <<< "$SNAPSHOT_COPIES"
+          tracked="$(git ls-files -- '*connectors.snapshot.json' '*schedule.snapshot.json')"
+          status=0
+          found=0
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            found=$((found + 1))
+            case "$listed" in
+              *" $path "*) echo "OK  $path" ;;
+              *)
+                echo "::error file=$path::tracked snapshot copy is not in contract.yml's SNAPSHOT_COPIES, so nothing compares it to the canonical file — add a line for it"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          if [ "$found" -eq 0 ]; then
+            echo "::error::git ls-files found no snapshot files — the patterns may be stale"
+            status=1
+          fi
           exit $status
 
       # 3. The parser corpus must be byte-identical across every client that
