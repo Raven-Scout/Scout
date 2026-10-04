@@ -115,12 +115,12 @@
     },
     {
       "name": "one-line-item-with-prefix-and-link",
-      "line": "- [ ] [#K7QX] 🔴 **Send Acme readout deck to Alex** — due 2026-10-07 · waiting on Zoë · → [[topics/acme/readout-2026-10-09]] #ACMEREAD",
+      "line": "- [ ] [#K7QX] 🔴 **Send Acme readout deck to Alex** — due 2026-10-07 · waiting on Sam · → [[topics/acme/readout-2026-10-09]] #ACMEREAD",
       "expected": {
         "short_prefix": "K7QX",
         "subject": "🔴 **Send Acme readout deck to Alex**",
         "plain_subject": "🔴 Send Acme readout deck to Alex",
-        "body": "due 2026-10-07 · waiting on Zoë · → [[topics/acme/readout-2026-10-09]] #ACMEREAD"
+        "body": "due 2026-10-07 · waiting on Sam · → [[topics/acme/readout-2026-10-09]] #ACMEREAD"
       }
     },
     {

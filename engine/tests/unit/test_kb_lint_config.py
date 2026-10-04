@@ -25,7 +25,7 @@ def test_defaults_budgets(tmp_path: Path) -> None:
     assert cfg.budget_for("knowledge-base/topics/widget/retrieval.md") == 10240
     assert cfg.budget_for("knowledge-base/projects/acme-pilot/acme-pilot.md") == 15360
     assert cfg.budget_for("knowledge-base/session-log/2026-09.md") == 98304
-    assert cfg.budget_for("knowledge-base/people/zoe.md") == 10240
+    assert cfg.budget_for("knowledge-base/people/sam.md") == 10240
     # The digest is a section of the daily file again (R2): no digests/ budget.
     assert cfg.budget_for("action-items/digests/2026-09-28.md") == 15360
 

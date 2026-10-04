@@ -28,7 +28,7 @@ LEGIT_HEADINGS = [
     "### Q3 plan: Sep 30 deadline",
     "## Sources",
     "## 🪵 Run notes & connector availability",
-    "### Meeting at 8:05 AM with Zoë",
+    "### Meeting at 8:05 AM with Sam",
     "### Release 1/2 notes",
 ]
 
@@ -49,7 +49,7 @@ def test_non_heading_lines_never_flagged() -> None:
 
 def test_has_citation() -> None:
     assert has_citation("Widget retrieves by BM25 ([[sources/2026-09/2026-09-07-acme-daily]]).")
-    assert has_citation("See https://github.com/example/widget/pull/12.")
+    assert has_citation("See https://github.com/example-org/widget/pull/12.")
     assert not has_citation("Widget retrieves by BM25 over chunked PDFs.")
 
 
@@ -71,5 +71,5 @@ def test_wikilink_targets_escaped_pipe_in_tables() -> None:
 
 
 def test_wikilink_targets_strip_alias_and_anchor() -> None:
-    text = "[[people|Alex Rivera]] and [[projects/acme-pilot/acme-pilot#Status]] and [[ topics/widget/retrieval ]]"
+    text = "[[people|Alex]] and [[projects/acme-pilot/acme-pilot#Status]] and [[ topics/widget/retrieval ]]"
     assert wikilink_targets(text) == ["people", "projects/acme-pilot/acme-pilot", "topics/widget/retrieval"]
