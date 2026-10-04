@@ -585,3 +585,117 @@ Plans live at `docs/superpowers/plans/2026-09-08-agent-sessions-plan-<n>-….md`
   `stale_after_days`); after that the question is listed as a stale signal
   (decided after plan 1's real-machine run, where 13 of 16 question-driven
   needs-you sessions were a week old).
+
+## 10. Addendum — the Sessions page as planned (2026-10-03)
+
+Decisions made while writing plan 3
+(`docs/superpowers/plans/2026-10-03-agent-sessions-plan-3-sessions-page.md`).
+They amend §3's refresh table, §6.2, §6.4 and §6.5; the rest of the design
+stands. Numbers were measured on the author's machine on 2026-09-29 and
+2026-10-03.
+
+### 10.1 PR state refreshes in its own lane
+
+A build with `gh` takes up to ~30 s (25 sequential fetches at ~1.1 s each), so
+it cannot run inside the 2 s loop. `--no-gh` does not mark PRs unknown: it
+serves them from `sessions-pr.cache.json` (`index.py` calls
+`refresh_pr_states` with a cap of 0). A fast loop therefore still shows the
+last fetched PR state. The app runs two independent, single-flight lanes, which
+replace the two "App:" rows of §3's refresh table and the timer bullets of §6.5:
+
+| Lane | Command | When |
+|---|---|---|
+| Fast | `session index --json --no-gh` | file events (at most one build per 2 s while events keep arriving); a heartbeat every 30 s while the page is visible and every 5 min while it is hidden; after every PR build |
+| PR | `session index --json` | every 2 min while the app runs, and when the page appears |
+
+- The PR lane never blocks the fast lane. Its index is not published, because
+  by the time it is written its liveness data is up to 30 s old. It only
+  refreshes the PR cache, and the fast build that follows it publishes. Its
+  `gh` source errors and `prs_refreshed` feed one line in the page header.
+- The engine's 10-minute TTL decides what is fetched. Asking every 2 min keeps
+  the TTL, not the app's timer, as the freshness bound. A PR build with nothing
+  due costs what a fast build costs (0.18 s end to end through the `scoutctl`
+  shim).
+- The PR lane also runs while the page is hidden. The sidebar badge counts
+  needs-you sessions, and most needs-you reasons (changes requested, CI
+  failing, merge conflict, ready to merge) come from PR state.
+
+### 10.2 A heartbeat as well as file events
+
+`running` is derived when the index is built and lapses 120 s after the last
+activity. Nothing writes a file at that moment, so without a heartbeat a session
+that stopped would show *running* until something else changed.
+
+### 10.3 Throttle, not debounce
+
+A running session appends to its transcript every second or two. A debounce
+that restarts on each event would never fire. The app uses the existing
+`DebouncedFileEvents`, whose fixed 2 s window yields one batch per window under
+steady writes.
+
+### 10.4 What is watched, and the engine's own writes
+
+The watch roots are `~/Library/Application Support/Claude/claude-code-sessions/`,
+`~/.claude/sessions/` and `~/.claude/projects/`.
+
+- Not the Application Support root: the desktop app writes caches and logs
+  there constantly. Group and worktree-lease changes arrive with the next
+  heartbeat or record rewrite.
+- Not the vault's `.scout-cache/`: it holds only the engine's output, and the
+  PR lane and the heartbeat cover PR cache updates.
+- As a guard, an event for `sessions-index.json`, any `sessions-*.cache.json`,
+  or their `.<name>.<random>.tmp` atomic-write temp files is ignored whichever
+  root reports it (index-speed spec §2 and §3.6).
+
+### 10.5 Stale collapses like Done
+
+On 2026-10-03, 84 of the 111 visible sessions that were not done were stale.
+Each swimlane shows its needs-you, running, waiting and parked cards, then ends
+with collapsed *Stale (n)* and *Done (n)* pills that expand inline. This is
+§6.2's *Done (n)* pattern applied to stale sessions too. On that data the board
+shows 27 cards across 25 lanes instead of 111.
+
+### 10.6 One scrolling detail pane
+
+The detail pane is one column instead of §6.4's four tabs: header and facts,
+actions, reasons, PRs, first prompt, files touched and related sessions.
+
+- The index carries at most ten files and a tool-call count, which do not fill
+  tabs.
+- `FilesTab` and `ToolsTab` take a `Run` and load per-call data by parsing the
+  transcript themselves. The app only reads the index.
+
+### 10.7 Engine follow-up: fetch PRs for live sessions only (scout-plugin)
+
+On 2026-09-29 the machine had 194 linked PRs. 96 of them belonged to archived
+sessions and had never been fetched. `refresh_pr_states` fetches never-fetched
+refs first, so those 96 took about four builds' worth of the 25-fetch budget
+ahead of the 23 open PRs on live sessions. An archived session is `done`
+whatever its PR says (§4.7 rule 1).
+
+The change: `gh` fetches only PRs linked to a session that is not archived.
+Archived sessions keep their cached PR state or read `unknown`.
+
+- It is a small scout-plugin PR, independent of plan 3. The app works either
+  way.
+- Concurrent fetches are not needed. The PR lane runs in the background, and
+  the TTL, not build length, bounds freshness. Revisit if live sessions
+  regularly have more than 25 open PRs.
+
+### 10.8 Smaller calls
+
+- *Resume in terminal* on a session that is still open asks first, because it
+  would run a second copy on the same conversation.
+- If `schema_version` is not 1, the last good index stays on screen behind a
+  banner.
+- A `scoutctl` without `session index` (scout-plugin older than 0.11.0) gets
+  its own banner and no PR builds.
+- A session record that does not decode is skipped and counted in a banner,
+  rather than blanking the page.
+- The service publishes no `isRefreshing` flag (§6.5). It would flip twice per
+  build and re-render the page. The header's "updated Ns ago" line shows
+  freshness instead.
+- The app's test fixture is written by hand, not generated by
+  `scoutctl session index` (§7). The engine's own fixtures are built per test
+  in a temp home, so their paths and clock change on every run. A test checks
+  the fixture's key sets against the engine's contract instead.
