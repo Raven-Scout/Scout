@@ -368,6 +368,7 @@ scout-plugin/
     rate-limit-detect.sh    -- Rate limit signal detection
     heartbeat.sh            -- Opportunistic session triggering (+ daily lane-liveness check)
     run-outcome.sh          -- Post-run: record how each run ended; notify on repeated failures
+    git-safe-commit.sh      -- Commit explicit paths behind a cross-session mutex (never `git add -A`)
     vault-freshness.py      -- Pre-session: rank KB files by last git commit vs. freshness budget
     session-lane-liveness.py -- Daily: flag a session type that has stopped producing commits
     pre-session-data.sh     -- Pre-session: gather git log, PRs, KB dates, tasks
