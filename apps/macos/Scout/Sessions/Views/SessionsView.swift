@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Sessions page (spec §6): every local Claude Code session by project and
@@ -20,8 +21,16 @@ struct SessionsView: View {
                 .frame(width: 380)
         }
         .background(DS.Paper.base)
-        .onAppear { service.setVisible(true) }
+        .onAppear {
+            service.setAppVisible(NSApp?.occlusionState.contains(.visible) ?? true)
+            service.setVisible(true)
+        }
         .onDisappear { service.setVisible(false) }
+        // Minimised, hidden (Cmd-H), fully covered or on another Space: not
+        // being looked at, so stop the 2 s cadence until it is back on screen.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeOcclusionStateNotification)) { _ in
+            service.setAppVisible(NSApp?.occlusionState.contains(.visible) ?? true)
+        }
     }
 
     private var selected: AgentSession? {

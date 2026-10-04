@@ -332,6 +332,42 @@ struct SessionIndexServiceTests {
         #expect(await runner.fastCalls == settled)
     }
 
+    /// A page left on screen in a minimised, hidden or fully covered window is
+    /// not being looked at: watching stops, and showing it again refreshes and
+    /// resumes watching.
+    @Test func anOccludedAppStopsWatchingUntilItIsShownAgain() async throws {
+        let runner = ScriptedSessionsRunner(fast: .ok(try SessionsFixture.data()))
+        let h = try harness(runner: runner)
+        defer { h.tearDown() }
+        let transcript = h.roots[2].appendingPathComponent("-Users-alex-code-example-repo/x.jsonl")
+        h.service.setVisible(true)
+        #expect(await eventually { await runner.settledAfterAppearing })
+
+        h.service.setAppVisible(false)
+        await h.service.refreshFast()
+        let hidden = await runner.fastCalls
+        h.events.emit(FileSystemEvent(url: transcript, kind: .modified))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await runner.fastCalls == hidden)
+
+        h.service.setAppVisible(true)
+        #expect(await eventually { await runner.fastCalls > hidden })
+        await h.service.refreshFast()
+        let shown = await runner.fastCalls
+        h.events.emit(FileSystemEvent(url: transcript, kind: .modified))
+        #expect(await eventually { await runner.fastCalls > shown })
+    }
+
+    @Test func appVisibilityAloneStartsNothing() async throws {
+        let runner = ScriptedSessionsRunner(fast: .ok(try SessionsFixture.data()))
+        let h = try harness(runner: runner)
+        defer { h.tearDown() }
+        h.service.setAppVisible(false)
+        h.service.setAppVisible(true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await runner.calls.isEmpty)
+    }
+
     @Test func theHeartbeatRebuildsWithoutAnyFileEvent() async throws {
         var intervals = Self.quick
         intervals.visibleHeartbeat = .milliseconds(30)

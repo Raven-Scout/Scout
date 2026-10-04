@@ -56,7 +56,10 @@ final class SessionIndexService: ObservableObject {
 
     private let config: Configuration
     private var started = false
+    /// Page shown and app on screen: the sources are watched.
     private var isVisible = false
+    private var pageShown = false
+    private var appVisible = true
     private var fastTask: Task<Void, Never>?
     private var fastPending = false
     private var prTask: Task<Void, Never>?
@@ -87,12 +90,27 @@ final class SessionIndexService: ObservableObject {
         }
     }
 
-    /// The page appeared or disappeared. Visible: watch the sources, refresh
-    /// now, heartbeat every 30 s. Hidden: no watches, heartbeat every 5 min.
+    /// The page appeared or disappeared.
     func setVisible(_ visible: Bool) {
-        guard visible != isVisible else { return }
-        isVisible = visible
-        if visible {
+        pageShown = visible
+        updateWatching()
+    }
+
+    /// Whether any of the app is on screen (`NSApplication.occlusionState`).
+    /// A page left showing in a minimised, hidden or fully covered window is
+    /// not being looked at, so it gets the hidden cadence.
+    func setAppVisible(_ visible: Bool) {
+        appVisible = visible
+        updateWatching()
+    }
+
+    /// Watched (page shown and app on screen): watch the sources, refresh now,
+    /// heartbeat every 30 s. Otherwise: no watches, heartbeat every 5 min.
+    private func updateWatching() {
+        let watching = pageShown && appVisible
+        guard watching != isVisible else { return }
+        isVisible = watching
+        if watching {
             subscribeToWatchRoots()
             requestFast()
             requestPRs()
@@ -106,6 +124,7 @@ final class SessionIndexService: ObservableObject {
     func stop() {
         started = false
         isVisible = false
+        pageShown = false
         heartbeatTask?.cancel()
         prLoopTask?.cancel()
         watchTasks.forEach { $0.cancel() }
