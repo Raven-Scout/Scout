@@ -48,6 +48,13 @@ def build(through: str) -> dict:
     )
     if not tags:
         raise SystemExit("no release tags found — run in a full clone (git fetch --tags)")
+    if _git("cat-file", "-e", f"{tags[-1]}:engine/scout/__init__.py").returncode != 0:
+        # In the Raven-Scout/Scout monorepo the bare v* tags are the macOS app's;
+        # the plugin's pre-monorepo release tags stay on the archived repo.
+        raise SystemExit(
+            f"tag {tags[-1]} is not a scout-plugin release in this repository — run this from a "
+            "Raven-Scout/scout-plugin clone, which carries the plugin's own v* release tags"
+        )
     files: dict[str, list[dict]] = {}
     for m in _MANAGED_FILES:
         by_hash: dict[str, dict] = {}

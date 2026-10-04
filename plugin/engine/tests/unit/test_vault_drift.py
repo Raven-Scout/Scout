@@ -228,13 +228,21 @@ def test_the_shipped_history_recognises_a_real_older_release_render() -> None:
 
 
 def _has_release_tags() -> bool:
+    # The generator reads the plugin's own pre-monorepo v* release tags. Those
+    # were not imported into the Raven-Scout/Scout monorepo, whose bare v* tags
+    # (v0.11.0 included) belong to the macOS app — so require that the tag
+    # carries the plugin tree, not merely that a tag of that name exists.
     import subprocess
 
-    out = subprocess.run(["git", "-C", str(REPO), "tag", "--list", "v0.11.0"], capture_output=True, text=True)
-    return out.stdout.strip() == "v0.11.0"
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "cat-file", "-e", "v0.11.0:engine/scout/__init__.py"],
+        capture_output=True,
+        text=True,
+    )
+    return out.returncode == 0
 
 
-@pytest.mark.skipif(not _has_release_tags(), reason="needs the release tags (a full clone)")
+@pytest.mark.skipif(not _has_release_tags(), reason="needs scout-plugin's own release tags (a full scout-plugin clone)")
 def test_the_shipped_history_is_what_the_generator_builds() -> None:
     import subprocess
     import sys
