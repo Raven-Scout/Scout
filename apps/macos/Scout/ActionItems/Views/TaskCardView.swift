@@ -27,6 +27,9 @@ struct TaskCardView: View {
     /// Display options from the profile (#52). Defaults draw today's card.
     let density: ActionItemsDisplay.Density
     let fields: ActionItemsDisplay.Fields
+    /// Set when the caller decides the starting state (an opened done row);
+    /// a density change then leaves the card alone.
+    private let startsExpandedOverride: Bool?
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -56,6 +59,7 @@ struct TaskCardView: View {
         self.onCollapse = onCollapse
         self.density = density
         self.fields = fields
+        self.startsExpandedOverride = startsExpanded
         _expanded = State(initialValue: startsExpanded
             ?? Self.startsExpanded(kind: task.snoozedFromKind ?? kind, density: density))
     }
@@ -117,6 +121,12 @@ struct TaskCardView: View {
         }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+        // Picking a density applies to the cards already on screen too, not
+        // only to cards created after the change.
+        .onChange(of: density) { _, newDensity in
+            guard startsExpandedOverride == nil else { return }
+            expanded = Self.startsExpanded(kind: effectiveKind, density: newDensity)
+        }
     }
 
     // MARK: - Header (always visible, scannable)
