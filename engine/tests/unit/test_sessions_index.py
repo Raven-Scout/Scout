@@ -14,6 +14,7 @@ import pytest
 import scout.sessions.github as gh
 import scout.sessions.index as index_mod
 from scout.sessions import cli_home
+from scout.sessions.desktop import PRRef
 from scout.sessions.index import INDEX_FILENAME, BuildOptions, build_index, index_path, run, write_index
 from scout.sessions.model import Index, dt_to_iso
 from scout.sessions.settings import AgentSessionsSettings
@@ -550,14 +551,14 @@ def test_run_with_render_writes_digest(fake_data_dir: Path) -> None:
     assert "scout-morning-briefing" not in digest  # Scout's own run excluded from the digest
 
 
-@pytest.mark.parametrize(("cap", "expected"), [(1, ["2"]), (2, ["2", "1"]), (3, ["2", "1", "3"])])
+@pytest.mark.parametrize(("cap", "expected"), [(1, ["2"]), (2, ["2", "1"]), (3, ["2", "1"])])
 def test_cold_cache_fetches_recent_live_sessions_prs_first(fake_data_dir: Path, cap: int, expected: list[str]) -> None:
     s = support_dir()
     repo = "example-org/example-repo"
     # The desktop store lists local_A first, but A is the older of the two live sessions.
     write_desktop_record(s, "local_A", lastActivityAt=MS - 5 * 3_600_000, prs=[{"prNumber": 1, "repo": repo}])
     write_desktop_record(s, "local_B", lastActivityAt=MS - 3_600_000, prs=[{"prNumber": 2, "repo": repo}])
-    # C is the most recently active but archived: its PR is fetched last.
+    # C is the most recently active but archived: its PR is never fetched, even with budget left.
     write_desktop_record(s, "local_C", isArchived=True, lastActivityAt=MS - 60_000, prs=[{"prNumber": 3, "repo": repo}])
     calls: list[str] = []
 
@@ -698,3 +699,85 @@ def test_a_grown_transcript_rewrites_only_the_transcript_cache(fake_data_dir: Pa
     assert stats.caches_written == ["transcripts"] and stats.transcripts_tail_parsed == 1
     a = next(s for s in idx.sessions if s.id == "local_A")
     assert a.transcript is not None and a.transcript.last_turn.kind == "end_turn"
+
+
+def _gh_options(fake_data_dir: Path, runner: gh.Runner, *, cap: int = 25) -> BuildOptions:
+    return BuildOptions(
+        data_dir=fake_data_dir,
+        settings=AgentSessionsSettings(pr_fetch_cap=cap),
+        claude_home=claude_home(),
+        support_dir=support_dir(),
+        now=NOW,
+        gh_runner=runner,
+        gh_available=lambda: True,
+        toplevel=lambda p: None,
+        pid_alive=lambda pid: False,
+    )
+
+
+def _seed_pr_cache(fake_data_dir: Path, number: int, payload: dict, *, fetched_ago: timedelta) -> None:
+    ref = PRRef(number=number, repo="example-org/example-repo", url=None, legacy_state=None)
+    info = gh.pr_info_from_payload(ref, payload, fetched_at=dt_to_iso(NOW - fetched_ago))
+    gh.write_pr_cache(fake_data_dir / ".scout-cache" / gh.PR_CACHE_FILENAME, {ref.key: info})
+
+
+def test_archived_sessions_prs_never_take_the_fetch_budget_from_a_live_one(fake_data_dir: Path) -> None:
+    s = support_dir()
+    repo = "example-org/example-repo"
+    # B is live and its PR was fetched 20 minutes ago, past the 10-minute TTL. Thirty archived
+    # sessions link PRs that were never fetched; those used to sort first and take the whole cap.
+    write_desktop_record(s, "local_B", lastActivityAt=MS - 3_600_000, prs=[{"prNumber": 2, "repo": repo}])
+    for n in range(30):
+        write_desktop_record(
+            s, f"local_C{n:02d}", isArchived=True, lastActivityAt=MS - 60_000, prs=[{"prNumber": 100 + n, "repo": repo}]
+        )
+    _seed_pr_cache(
+        fake_data_dir, 2, {"state": "OPEN", "mergeStateStatus": "BLOCKED"}, fetched_ago=timedelta(minutes=20)
+    )
+    calls: list[str] = []
+
+    def runner(argv: list[str]) -> str | None:
+        calls.append(argv[2])
+        return json.dumps({"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED", "mergeStateStatus": "CLEAN"})
+
+    idx = build_index(_gh_options(fake_data_dir, runner, cap=1))
+    assert calls == ["2"]
+    b = next(x for x in idx.sessions if x.id == "local_B")
+    assert b.state == "needs_you" and b.pr is not None and b.pr.review_decision == "CHANGES_REQUESTED"
+    archived = [x for x in idx.sessions if x.is_archived]
+    assert len(archived) == 30
+    assert all(x.pr is not None and x.pr.state == "unknown" and not x.pr.stale for x in archived)
+
+
+def test_an_archived_sessions_cached_pr_state_is_served_and_kept_without_a_fetch(fake_data_dir: Path) -> None:
+    repo = "example-org/example-repo"
+    write_desktop_record(support_dir(), "local_C", isArchived=True, prs=[{"prNumber": 3, "repo": repo}])
+    _seed_pr_cache(
+        fake_data_dir,
+        3,
+        {"state": "OPEN", "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"},
+        fetched_ago=timedelta(days=2),
+    )
+    calls: list[str] = []
+    idx, _ = run(opts=_gh_options(fake_data_dir, lambda argv: calls.append(argv[2])))
+    c = next(x for x in idx.sessions if x.id == "local_C")
+    assert calls == []
+    assert c.state == "done" and c.pr is not None and c.pr.review_decision == "APPROVED"
+    pr_file = fake_data_dir / ".scout-cache" / gh.PR_CACHE_FILENAME
+    assert set(json.loads(pr_file.read_text(encoding="utf-8"))) == {f"{repo}#3"}
+
+
+def test_a_pr_linked_to_a_live_and_an_archived_session_is_fetched(fake_data_dir: Path) -> None:
+    s = support_dir()
+    repo = "example-org/example-repo"
+    write_desktop_record(s, "local_A", isArchived=True, lastActivityAt=MS - 60_000, prs=[{"prNumber": 4, "repo": repo}])
+    write_desktop_record(s, "local_B", lastActivityAt=MS - 3_600_000, prs=[{"prNumber": 4, "repo": repo}])
+    calls: list[str] = []
+
+    def runner(argv: list[str]) -> str | None:
+        calls.append(argv[2])
+        return json.dumps({"state": "OPEN", "mergeStateStatus": "BLOCKED"})
+
+    idx = build_index(_gh_options(fake_data_dir, runner))
+    assert calls == ["4"]
+    assert all(x.pr is not None and x.pr.state == "OPEN" for x in idx.sessions)
