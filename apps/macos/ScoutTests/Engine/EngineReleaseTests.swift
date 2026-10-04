@@ -23,6 +23,13 @@ struct EngineReleaseTests {
     /// The real pin in the app bundle must be internally consistent, and when
     /// the build phase bundled a tarball its manifest must match the pin. In CI
     /// the tarball is required; a Debug build without network may lack it.
+    ///
+    /// CI detection reads `ProcessInfo.processInfo.environment["CI"]`, but
+    /// `xcodebuild test` only forwards `TEST_RUNNER_`-prefixed variables into
+    /// the xctest host process — a plain `CI=true` set on the `xcodebuild`
+    /// invocation (or ambiently by the runner) never reaches here. CI must
+    /// set `TEST_RUNNER_CI=true` (see .github/workflows/ci.yml's "Run
+    /// ScoutTests" step) for this guard to actually fire.
     @Test func bundledPinIsSelfConsistent() throws {
         let release = try EngineRelease.load(bundle: .main)
         #expect(release.engine.tag == "v\(release.engine.version)")

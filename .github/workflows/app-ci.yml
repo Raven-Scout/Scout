@@ -74,6 +74,12 @@ jobs:
       - name: Run ScoutTests
         id: tests
         working-directory: apps/macos
+        # xcodebuild forwards only TEST_RUNNER_-prefixed vars into the xctest
+        # host process, so plain CI (set ambiently by the runner) never
+        # reaches ProcessInfo.processInfo.environment there — TEST_RUNNER_CI
+        # makes it visible to EngineReleaseTests.bundledPinIsSelfConsistent.
+        env:
+          TEST_RUNNER_CI: "true"
         run: |
           set -o pipefail
           xcodebuild test \
