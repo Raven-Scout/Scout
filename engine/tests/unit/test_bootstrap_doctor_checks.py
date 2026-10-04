@@ -88,6 +88,9 @@ def test_a_clean_latest_run_log_yields_no_auth_findings(vault: Path) -> None:
         "Failed to authenticate. API Error: 401",
         "Failed to authenticate. API Error: 403",
         "Invalid authentication credentials",
+        # The CLI's raw string for an expired login (#233, #267): pre-0.8.0
+        # runners never wrote the banner, so the doctor must know it too.
+        "Failed to authenticate: OAuth session expired and could not be refreshed",
     ],
 )
 def test_an_auth_failure_in_the_latest_run_log_is_an_error(vault: Path, marker: str) -> None:
@@ -106,6 +109,16 @@ def test_a_bare_401_in_a_run_log_is_not_an_auth_failure(vault: Path) -> None:
     about* HTTP 401 can't trip the detector."""
     (vault / ".scout-logs" / "scout-2026-05-28.log").write_text(
         "The vendor API returned 401 for the old token; noted in the KB.\n", encoding="utf-8"
+    )
+    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
+
+
+def test_an_auth_phrase_quoted_mid_line_is_not_an_auth_failure(vault: Path) -> None:
+    """The CLI prints its auth errors at the start of a line; a session summary
+    that quotes one is not a rejected login."""
+    (vault / ".scout-logs" / "scout-2026-05-28.log").write_text(
+        "**Recap:** six runs said 'Failed to authenticate: OAuth session expired' last week.\n",
+        encoding="utf-8",
     )
     assert doc._check_recent_auth_failure(vault=vault) == ([], [])
 
