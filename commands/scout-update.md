@@ -60,12 +60,20 @@ else
   claude plugin marketplace update scout-plugin || true
   claude plugin install scout@scout-plugin || true
   # On an existing install, install only unpacks the new cache and keeps the old version
-  # registered, so the resolver below would hand back the old plugin. update switches it.
-  claude plugin update scout@scout-plugin || true
+  # registered, so the resolver below would hand back the old plugin. update switches it,
+  # once for every scope Scout is installed in (update alone only touches user scope).
+  SCOPES="$(claude plugin list --json 2>/dev/null \
+    | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
+    || echo user)"
+  for scope in $SCOPES; do
+    claude plugin update scout@scout-plugin --scope "$scope" || echo "PLUGIN_UPDATE_FAILED:$scope"
+  done
   echo "REFRESHED_MARKETPLACE"
 fi
 EOF
 ```
+
+If the output contains `PLUGIN_UPDATE_FAILED:<scope>`, **stop here**. Tell the user: "The Scout plugin could not be switched to the refreshed version in `<scope>` scope, so this upgrade would run against the old templates. Run `claude plugin update scout@scout-plugin --scope <scope>`, restart Claude Code, then run `/scout-update` again." Do not continue to the steps below.
 
 Resolve the plugin root that the rest of this upgrade runs from. **Use this resolved `$NEW_ROOT` as the plugin root for every step below.** Because each shell block runs in a fresh process, re-resolve it at the top of each block that needs it using the canonical resolver (do NOT fall back to `$CLAUDE_PLUGIN_ROOT`, which may point at the pre-refresh plugin):
 

@@ -47,8 +47,12 @@ echo "Adding the Scout marketplace…"
 claude plugin marketplace add "$MARKETPLACE" 2>/dev/null || claude plugin marketplace update scout-plugin
 echo "Installing the Scout plugin…"
 claude plugin install "$PLUGIN_ID"
-# On a re-run, install leaves the old version registered; update switches it.
-claude plugin update "$PLUGIN_ID" >/dev/null 2>&1 || true
+# On a re-run, install leaves the old version registered; update switches it. The
+# installer installs at user scope, so that is the scope to update.
+if ! claude plugin update "$PLUGIN_ID" --scope user >/dev/null 2>&1; then
+  echo "warning: could not switch the registered Scout plugin to the new version." >&2
+  echo "         Run: claude plugin update $PLUGIN_ID --scope user, then restart Claude Code." >&2
+fi
 
 # Resolve the installed plugin root. `claude plugin list --json` has emitted both a
 # top-level list and a {"plugins": {...}} map across versions — accept either.
