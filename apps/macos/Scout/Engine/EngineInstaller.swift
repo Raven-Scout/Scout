@@ -250,9 +250,21 @@ actor EngineInstaller {
         // honours `..` path components; an unvalidated version string like
         // `"../../evil"` lets a crafted manifest walk the computed canonical
         // root back onto the foreign directory itself, making it compare
-        // equal to `resolvedRaw` and falsely pass as "ours".
+        // equal to `resolvedRaw` and falsely pass as "ours". `EngineVersion`
+        // parsing alone was NOT sufficient (Ruling 58b): its pre-release
+        // grammar originally had no charset check, so `"1.0.0-../../evil"`
+        // still parsed and still escaped. Layer 1 is the parse-time charset
+        // fix in `EngineVersion.validatedPreRelease`; layer 2 here is a
+        // structural containment check that holds even if a future change to
+        // `EngineVersion` reopens a charset gap: the canonical root computed
+        // from the manifest version must be an actual direct child of the
+        // RESOLVED `engineDir` named exactly `manifestVersion` — not merely
+        // "resolves to the same path after standardization".
         guard let manifestVersion = EngineLocator.version(atRoot: resolvedRaw), EngineVersion(manifestVersion) != nil else { return false }
+        let resolvedEngineDir = layout.engineDir.resolvingSymlinksInPath().standardizedFileURL
         let resolvedCanonicalRoot = layout.engineRoot(version: manifestVersion).resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedCanonicalRoot.deletingLastPathComponent().path == resolvedEngineDir.path,
+              resolvedCanonicalRoot.lastPathComponent == manifestVersion else { return false }
         return resolvedRaw.path == resolvedCanonicalRoot.path
     }
 

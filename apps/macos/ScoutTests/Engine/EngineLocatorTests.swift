@@ -100,6 +100,25 @@ struct EngineLocatorTests {
         #expect(install.version == "0.10.0")
     }
 
+    /// Ruling 58b audit: `conventionalLayout`'s `version` is `root.lastPathComponent`,
+    /// where `root` is resolved from `current`'s symlink destination — an
+    /// untrusted value if an attacker (or corrupted state) can write that
+    /// symlink. Unlike `isManagedMarketplace`'s manifest-version string,
+    /// there's no separate validation step here, but none is needed:
+    /// `URL.lastPathComponent` is, by construction, a single path segment
+    /// that can never itself contain `/`, so no matter how many `..`
+    /// components the destination string carries, `version` can only ever
+    /// name one more path component under `engineDir`/`venvDir` — never
+    /// escape them. The worst case is a nonsense version whose `scoutctl`
+    /// doesn't exist, which safely falls through to `.notInstalled`.
+    @Test func conventionalLayoutWithATraversalCurrentLinkNeverEscapesEngineDir() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try fm.createDirectory(at: layout.engineDir, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: layout.currentEngineLink.path, withDestinationPath: "../../../../etc")
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
+    }
+
     @Test func shimPointingAtALiveVenvIsExternal() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }

@@ -381,6 +381,30 @@ struct EngineInstallerTests {
         #expect(f.runner.calls(to: "claude").isEmpty)
     }
 
+    /// Ruling 58b: the first Ruling 58 fix only checked `EngineVersion(...) !=
+    /// nil`, but `EngineVersion`'s pre-release grammar had no charset
+    /// validation at the time, so `"1.0.0-../../evil"` still parsed
+    /// successfully (unlike the bare `"../../evil"` above, which never looked
+    /// like a version at all) and still reached `engineRoot(version:)`. Any
+    /// ordinary foreign location works here — `EngineVersion` now rejects the
+    /// string outright, so the path math is never even attempted.
+    @Test func registerRejectsAForeignDirectoryWhoseManifestVersionHidesAPathTraversalInAPreRelease() async throws {
+        let f = try fixture()
+        defer { try? fm.removeItem(at: f.layout.home) }
+        try fm.createDirectory(at: f.layout.claudePluginsDir, withIntermediateDirectories: true)
+        let foreign = f.layout.home.appendingPathComponent("elsewhere/scout-plugin")
+        try fm.createDirectory(at: foreign.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
+        try #"{"name": "scout", "version": "1.0.0-../../evil"}"#.write(to: foreign.appendingPathComponent(".claude-plugin/plugin.json"), atomically: true, encoding: .utf8)
+        try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(foreign.path)"}}}"#
+            .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
+        let seen = ProgressRecorder()
+        let ok = await installer(f) { seen.append($0) }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status else { Issue.record("expected failure"); return }
+        #expect(why.contains("scout-plugin") && why.contains("directory") && why.contains(foreign.path))
+        #expect(f.runner.calls(to: "claude").isEmpty)
+    }
+
     @Test func manifestMismatchLeavesNoEngineBehind() async throws {
         var f = try fixture(version: "0.10.0")
         defer { try? fm.removeItem(at: f.layout.home) }
