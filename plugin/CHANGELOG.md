@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The launcher skips a monorepo marketplace clone's root `.venv`** (`engine/bin/scoutctl`). Fired from Claude Code's `cache/` copy, the launcher cross-jumps to the `marketplaces/` clone and probed that clone's root `.venv` before `plugin/.venv`. In a Raven-Scout/Scout clone (`.claude-plugin/marketplace.json` at the root, the plugin at `plugin/`), a root venv is a stale editable install from before the pull, so when it still imported `scout.cli` it shadowed the real engine. When the clone has that shape, the launcher now probes only `plugin/.venv` and then `plugin/engine/.venv`, the same rule Scout.app's `EngineLocator` follows. A legacy scout-plugin clone keeps the old order, and the `.scoutctl-py-cache` handling is unchanged.
+
 ## [0.14.0] - 2026-10-05
 
 
