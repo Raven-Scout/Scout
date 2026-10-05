@@ -266,7 +266,8 @@ enum ClaudeLauncher {
     /// macOS, even though they aren't in the AppleScript Language Guide. To
     /// embed a literal newline/tab, use AppleScript string concatenation
     /// instead — those escapes are not defined for AppleScript strings.
-    static func appleScriptEscape(_ s: String) -> String {
+    /// `nonisolated`: pure string work, also called by `TerminalHandoff`.
+    nonisolated static func appleScriptEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
     }
@@ -608,7 +609,8 @@ enum ClaudeLauncher {
 
     /// Run an AppleScript source string. Surfaces compile and execution errors
     /// (including Automation-permission denial) as `terminalLaunchFailed`.
-    private static func runAppleScript(_ source: String) throws {
+    /// Internal (not private) so `TerminalHandoff.run` reuses it.
+    static func runAppleScript(_ source: String) throws {
         guard let script = NSAppleScript(source: source) else {
             throw LaunchError.terminalLaunchFailed("Could not compile the launch AppleScript.")
         }
