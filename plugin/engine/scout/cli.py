@@ -1631,7 +1631,9 @@ def _register_bootstrap() -> None:
         instance_name: str = typer.Option("Scout", "--instance-name"),
         user_name: str = typer.Option(..., "--user-name"),
         user_email: str = typer.Option(..., "--user-email"),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         platform: str = typer.Option("macos", "--platform"),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
@@ -1807,7 +1809,9 @@ def _register_bootstrap() -> None:
         claude_bin: str = typer.Option(
             "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
         ),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         max_budget: str = typer.Option("5.00", "--max-budget"),
         platform: str = typer.Option("macos", "--platform"),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
@@ -1889,7 +1893,9 @@ def _register_bootstrap() -> None:
         user_name: str = typer.Option("", "--user-name", help="Required for install / migrate-legacy."),
         user_email: str = typer.Option("", "--user-email", help="Required for install / migrate-legacy."),
         instance_name: str = typer.Option("Scout", "--instance-name"),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         platform_: str = typer.Option("auto", "--platform", help="macos | linux | auto (from uname)"),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
         user_slack_id: str = typer.Option("", "--user-slack-id"),
@@ -2193,7 +2199,7 @@ def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
         instance_name_lower=instance.get("name_lower", "scout"),
         user_name=user.get("name", ""),
         user_email=user.get("email", ""),
-        timezone=existing.get("timezone", "America/New_York"),
+        timezone=existing.get("timezone") or "",  # "" = follow the host
         platform=existing.get("platform", "macos"),
         plugin_version=__version__,
         enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
@@ -2257,7 +2263,7 @@ def _register_phases() -> None:
             instance_name_lower=instance.get("name_lower", "scout"),
             user_name=user.get("name", ""),
             user_email=user.get("email", ""),
-            timezone=existing.get("timezone", "America/New_York"),
+            timezone=existing.get("timezone") or "",  # "" = follow the host
             platform=existing.get("platform", "macos"),
             plugin_version=__version__,
             enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),

@@ -44,7 +44,7 @@ fi
 # but silent), and `|| true` keeps a red lane from killing the heartbeat. A
 # date-stamped marker makes it fire once a day, not on every tick.
 if [[ ${#DRY_RUN_FLAG[@]} -eq 0 ]]; then
-    _lane_tz="$("$SCOUT_DATA_DIR/scripts/scout-tz.sh" 2>/dev/null || echo "{{TIMEZONE}}")"
+    _lane_tz="$("$SCOUT_DATA_DIR/scripts/scout-tz.sh" 2>/dev/null || echo America/New_York)"
     _lane_day="$(TZ="$_lane_tz" date '+%Y-%m-%d')"
     _lane_marker="$SCOUT_DATA_DIR/.scout-cache/lane-liveness-${_lane_day}.done"
     if [[ ! -f "$_lane_marker" ]] \

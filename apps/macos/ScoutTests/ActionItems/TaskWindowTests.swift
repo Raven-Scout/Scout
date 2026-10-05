@@ -8,7 +8,7 @@ struct TaskWindowTests {
         ActionTask(
             id: UUID(), lineNumber: n, done: false,
             subject: "[#IOTA] Task \(n)", plainSubject: "Task \(n)", body: "",
-            comments: [], deepLinks: [], snoozedUntil: nil, carriedInFrom: nil,
+            comments: [], deepLinks: [], details: [], snoozedUntil: nil, carriedInFrom: nil,
             indentLevel: indent)
     }
 

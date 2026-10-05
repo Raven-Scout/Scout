@@ -18,6 +18,16 @@ LOCK_FILE="$LOG_DIR/.scout-session.lock"
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
+# Pin this run's timezone for every child — the shell helpers, the engine's
+# Python hooks, the session itself — so they all date the run alike, even if
+# the computer's zone changes mid-run. scripts/scout-tz.sh resolves it once,
+# here on the host: scout-config.yaml's optional override, else the host's own
+# zone. A warning (an override that names no real zone) goes to this run's log.
+RUN_TZ="$("$SCOUT_DIR/scripts/scout-tz.sh" 2>>"$LOG_FILE" || true)"
+if [ -n "$RUN_TZ" ]; then
+    export SCOUT_USER_TIMEZONE="$RUN_TZ"
+fi
+
 # Ensure .scout-logs is gitignored
 if ! grep -q '.scout-logs' "$SCOUT_DIR/.gitignore" 2>/dev/null; then
     echo '.scout-logs/' >> "$SCOUT_DIR/.gitignore"
