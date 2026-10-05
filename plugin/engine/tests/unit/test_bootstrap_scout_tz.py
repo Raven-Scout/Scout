@@ -168,6 +168,41 @@ def test_cli_install_follows_the_host_and_upgrade_keeps_it_so(tmp_path, monkeypa
     assert "timezone" not in yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
 
+_FOLLOW_THE_HOST_NOTE = "# timezone: unset on purpose — follow this computer's own timezone\n"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"],
+        ["bootstrap", "auto", "--yes", "--no-jobs", "--skip-claude"],  # what the desktop app runs
+    ],
+    ids=["upgrade", "auto"],
+)
+def test_an_upgrade_does_not_restore_a_deleted_timezone(tmp_path, monkeypatch, command):
+    """The regression as it happened: a vault installed with the old
+    America/New_York default deleted the key to follow the computer's zone,
+    and the next upgrade read the missing key as America/New_York and wrote
+    it back, so every run rendered EDT again on a machine set to CEST."""
+    from typer.testing import CliRunner
+
+    from scout import cli
+
+    vault = tmp_path / "FreshScout"
+    _cli_install(vault, monkeypatch, "--timezone", "America/New_York")
+    config_path = vault / "scout-config.yaml"
+    text = config_path.read_text(encoding="utf-8")
+    assert "timezone: America/New_York\n" in text
+    config_path.write_text(text.replace("timezone: America/New_York\n", _FOLLOW_THE_HOST_NOTE), encoding="utf-8")
+
+    result = CliRunner().invoke(cli.app, command)
+    assert result.exit_code in (0, 1), result.output  # the doctor's verdict
+    assert "upgrade" in result.output
+    text = config_path.read_text(encoding="utf-8")
+    assert "timezone" not in yaml.safe_load(text), "upgrade re-stamped a zone the user deleted"
+    assert _FOLLOW_THE_HOST_NOTE in text
+
+
 def test_cli_upgrade_keeps_an_explicit_override(tmp_path, monkeypatch):
     vault = tmp_path / "FreshScout"
     _cli_install(vault, monkeypatch, "--timezone", "Europe/Prague")
