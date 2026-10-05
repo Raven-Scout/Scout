@@ -102,6 +102,14 @@ nonisolated struct EngineLocator: Sendable {
         if Self.version(atRoot: root) == nil && root.lastPathComponent == "engine" {
             root = root.deletingLastPathComponent()
         }
+        // A shim into a Raven-Scout/Scout monorepo's own root (`.venv` or
+        // `engine/.venv`) names the stale pre-monorepo venv that
+        // `installIfCheckout` refuses to adopt; the plugin and its venv live
+        // under `plugin/`. Don't adopt it here either: fall through, so the
+        // dev-checkout candidate picks up `plugin/` when it has a venv.
+        if FileManager.default.fileExists(atPath: EngineLayout.monorepoPlugin(in: root).appending(path: ".claude-plugin/plugin.json").path) {
+            return nil
+        }
         return EngineInstall(root: root, scoutctl: scoutctl, python: scoutctl.deletingLastPathComponent().appending(path: "python"),
                              version: Self.version(atRoot: root), vault: nil)
     }
