@@ -98,7 +98,11 @@ def render_custom_sections(
             if template.mode and not set(template.mode) & modes:
                 continue
             values = _connector_values(c, activity)
-            raw = _CONNECTOR_VAR_RE.sub(lambda m: values.get(m.group(1), m.group(0)), template.body)
+
+            def _fill(m: re.Match[str], v: dict[str, str] = values) -> str:
+                return v.get(m.group(1), m.group(0))
+
+            raw = _CONNECTOR_VAR_RE.sub(_fill, template.body)
             rendered = render_template(raw, {**vars_, **_input_vars(c, inputs)})
             out.append(CustomSection(key, activity, path, raw, rendered))
     return out
