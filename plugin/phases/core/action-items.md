@@ -102,9 +102,9 @@ All action items files must include `[[wikilinks]]` to any KB files referenced b
   ```bash
   scoutctl action-items materialize
   ```
-  It copies the most recent prior daily file (up to 7 days back) verbatim under a fresh date header and a provisional banner. Idempotent — a no-op when today's file exists. The runner preambles already call it before every session; this in-session call covers sessions launched outside the runners.
+  It copies the most recent prior daily file (up to 7 days back) verbatim under a fresh date header and a provisional banner — minus any items it auto-archived as stale (see *Stale Items Auto-Archive* below), which the banner names. Idempotent — a no-op when today's file exists. The runner preambles already call it before every session; this in-session call covers sessions launched outside the runners.
 - **NEVER write a section that points at a previous day's file in lieu of the items.** "Carry forward in full from yesterday — see that file" is FORBIDDEN, no matter how lightweight your session is. This binds every session type — briefing, consolidation, research, dreaming, and any auxiliary session that happens to be the day's first writer.
-- When you find the mechanical carry-forward banner at the top of today's file, you are the enriching pass: rewrite the header/focus sections for today, reconcile items normally, and remove the banner. Do not treat the banner as a reason to start a fresh file.
+- When you find the mechanical carry-forward banner at the top of today's file, you are the enriching pass: rewrite the header/focus sections for today, reconcile items normally, and remove the banner. Do not treat the banner as a reason to start a fresh file. If the banner reports auto-archived items, carry that count into this run's `🪵 Run notes` entry before removing it.
 - This rule complements the continuity rules below: the count-guard and dropoff audit protect the ledger *across* days; this invariant protects the rendered surface *within* the day.
 
 ### Hard Rule — Every Task Line Has a Stable `[#TAG]`
@@ -187,18 +187,34 @@ When the list grows long, achieve focus by **reprioritizing**, never by hiding i
 2. Demote lower-priority open items down the tiers (🔴→🟡→🟢) and reorder — {{USER_NAME}} can scan a long, ordered list and ignore the bottom; he cannot recover items that aren't rendered at all.
 3. Mark an item `[unverified]` or drop it **only** when {{USER_NAME}} has explicitly said so (reply, reaction, or an inline `//==<<` directive).
 
+The one exception is the deterministic stale-item archive below — it is not an omission, and you must not undo it.
+
+### Hard Rule — Stale Items Auto-Archive
+
+An open item whose block (the task line plus its indented sub-bullets) has not changed for **60 days** is moved, verbatim, out of the daily file into `action-items/archive/stale-items-YYYY-MM.md`, under a dated heading and with an `_auto-archived YYYY-MM-DD · unchanged since YYYY-MM-DD_` note. `scoutctl action-items materialize` does this when it creates the day's file; nothing is deleted. Moving an item between sections does not count as touching it — only a change to its text does (a comment, a snooze, a status note, a rewrite). Items snoozed past today are never archived.
+
+- **Do not re-add an auto-archived item** to keep the list "complete". It left on purpose, and the count-guard and dropoff audit below account for it.
+- **Restore it when it comes back to life.** If this run finds new activity on an archived item (a reply, a PR update, a meeting mention), or {{USER_NAME}} names it, copy its block back from the stale-items file into the right section of today's file, update it with what's new, and remove the `_auto-archived …_` note. The edit restarts its 60-day clock.
+- **Don't refresh text to keep an item alive.** Rewording an item you have no news about defeats the archive. Edit an item only when something about it actually changed.
+
+To apply the rule to a file that already exists (e.g. after a manual cleanup), run `scoutctl action-items archive-stale` (`--dry-run` lists what would move).
+
 **Every open carried item MUST be rendered as its own `- [ ]` checkbox row in exactly one section.** Summary lines like "…plus the standing backlog (#A, #B, … etc.) — carried unchanged" are **FORBIDDEN** as a substitute for rendering individual items. An `etc.` that hides open items reads as a drop from {{USER_NAME}}'s perspective even when the IDs technically persist inside the prose string.
 
-**Compose-time count-guard (run before commit):** count the rendered open rows (`- [ ]` lines plus 🟢 Watching bullets) in today's file. That count MUST be ≥ the prior day's open-item count minus any items closed this run (`- [x]`) or dropped on an explicit {{USER_NAME}} directive. If today's count is lower, items were collapsed/omitted — expand them back into individual rows before committing.
+**Compose-time count-guard (run before commit):** count the rendered open rows (`- [ ]` lines plus 🟢 Watching bullets) in today's file. That count MUST be ≥ the prior day's open-item count minus any items closed this run (`- [x]`), auto-archived as stale today, or dropped on an explicit {{USER_NAME}} directive. If today's count is lower, items were collapsed/omitted — expand them back into individual rows before committing.
 
 ```bash
 # Compose-time count-guard
 PREV=$(ls -t {{SCOUT_DIR}}/action-items/action-items-*.md | sed -n 2p)
+TODAY=$(basename "$DAILY_FILE" .md | sed 's/^action-items-//')
 prev_open=$(grep -cE '^\s*- \[ \] ' "$PREV" 2>/dev/null || echo 0)
 today_open=$(grep -cE '^\s*- \[ \] ' "$DAILY_FILE")
 closed_today=$(grep -cE '^\s*- \[x\] ' "$DAILY_FILE")
-[ "$today_open" -lt $((prev_open - closed_today)) ] && \
-    echo "ERROR: open-row count dropped ($prev_open→$today_open, only $closed_today closed) — items were collapsed; expand them before commit" >&2
+# Open rows (nested ones included) under today's heading in the stale-items archive.
+archived_today=$(cat {{SCOUT_DIR}}/action-items/archive/stale-items-*.md 2>/dev/null | \
+    awk -v d="## $TODAY " 'index($0, d) == 1 { on = 1; next } /^## / { on = 0 } on && /^[ \t]*- \[ \] / { n++ } END { print n + 0 }')
+[ "$today_open" -lt $((prev_open - closed_today - archived_today)) ] && \
+    echo "ERROR: open-row count dropped ($prev_open→$today_open, only $closed_today closed + $archived_today auto-archived) — items were collapsed; expand them before commit" >&2
 ```
 
 ### Hard Rule — Continuity-Dropoff Audit (ID-level, pre-commit)
@@ -207,7 +223,8 @@ The count-guard catches *how many* dropped; this catches *which*. Before committ
 
 1. It has a ✅ Recently Completed entry in today's file → confirmed closure, OK.
 2. It has an explicit `//==<<` drop directive since N-1 → confirmed drop, OK.
-3. **Otherwise → silent dropoff.** Re-add it to today's file with a `[carried-via-audit]` annotation, surface `🚨 N items silently dropped from yesterday — please verify` in the notification, and write a `review-queue.md` entry. Never let an open item vanish without one of (1)/(2).
+3. It appears in `action-items/archive/stale-items-*.md` with an `_auto-archived <today>` note → stale auto-archive, OK. Do not re-add it (see *Stale Items Auto-Archive*).
+4. **Otherwise → silent dropoff.** Re-add it to today's file with a `[carried-via-audit]` annotation, surface `🚨 N items silently dropped from yesterday — please verify` in the notification, and write a `review-queue.md` entry. Never let an open item vanish without one of (1)/(2).
 
 ### Hard Rule — Leave-State Compose Gate
 

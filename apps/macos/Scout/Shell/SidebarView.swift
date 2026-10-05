@@ -5,6 +5,9 @@ import SwiftUI
 /// language from Scout.html.
 struct SidebarView: View {
     @Binding var selection: SidebarItem
+    /// Count of agent sessions that need you — drives the badge on the
+    /// Sessions row. Hidden when zero.
+    var sessionsBadge: Int = 0
     /// Count of proposals awaiting a decision — drives the badge on the
     /// Proposals row. Hidden when zero.
     var proposalsBadge: Int = 0
@@ -17,6 +20,7 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 4) {
             groupLabel("Scout")
             row(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
+            row(.sessions,      label: "Sessions",       system: "rectangle.stack.badge.person.crop", badge: sessionsBadge)
             row(.actionItems,   label: "Action Items",   system: "checklist")
             row(.schedules,     label: "Schedules",      system: "calendar.badge.clock")
             row(.proposals,     label: "Proposals",      system: "lightbulb",        badge: proposalsBadge)

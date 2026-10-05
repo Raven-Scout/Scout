@@ -297,14 +297,14 @@ flowchart LR
 
   subgraph ai ["scout.action_items"]
     direction LR
-    cli["<b>cli.py</b><br/>[Typer sub-app]<br/>mark-done, snooze, add-comment,<br/>edit-comment, delete-comment, list,<br/>render, new-prefix, materialize,<br/>backfill-prefixes, watch. All imports lazy"]:::component
+    cli["<b>cli.py</b><br/>[Typer sub-app]<br/>mark-done, snooze, add-comment,<br/>edit-comment, delete-comment, list,<br/>render, new-prefix, materialize,<br/>archive-stale, backfill-prefixes, watch. All imports lazy"]:::component
     mutators["<b>mark_done, snooze, add_comment,<br/>edit_comment, delete_comment</b><br/>[modules]<br/>One mutation each. Return an Event<br/>that nothing persists yet"]:::component
     common["<b>_common.py</b><br/>[module]<br/>resolve_target by tag or subject,<br/>registering unknown prefixes in the<br/>ID map. Comment listing and selection"]:::component
     parser["<b>parser.py</b><br/>[module]<br/>Markdown to ActionItem: status, priority,<br/>section, short_prefix. Accepts checkbox,<br/>strikethrough and Done prose as complete"]:::component
     writer["<b>writer.py</b><br/>[module]<br/>The only mutating writer: flip_checkbox,<br/>insert_below, replace_line, delete_line,<br/>add_prefix_to_line. Atomic tmp, fsync,<br/>replace. Preserves CRLF and trailing newline"]:::component
     ids["<b>scout.ids, scout.id_map</b><br/>[modules]<br/>ULIDs, 4-char Crockford prefixes with at<br/>least one letter, prefix regexes,<br/>IdMap load and save"]:::component
     backfill["<b>backfill.py</b><br/>[module]<br/>Mint and write a tag for every unprefixed<br/>open task, bottom-up. ID map saved<br/>even on failure"]:::component
-    materialize["<b>materialize.py</b><br/>[module]<br/>Guarantee today's file exists: carry the<br/>newest prior file forward under a<br/>provisional banner"]:::component
+    materialize["<b>materialize.py</b><br/>[module]<br/>Guarantee today's file exists: carry the<br/>newest prior file forward under a<br/>provisional banner, minus items<br/>untouched for 60+ days (stale.py)"]:::component
     render["<b>render.py</b><br/>[module]<br/>Second, independent parser into Section,<br/>Task, Comment, Table, plus the HTML<br/>dashboard and ANSI change lines.<br/>Owns subject, plain_subject, body"]:::component
     views["<b>list.py, diff.py, watch.py</b><br/>[modules]<br/>Filtered enumeration. Pure previous-vs-<br/>current ChangeEvents. watchdog observer<br/>printing one ANSI line per change"]:::component
   end

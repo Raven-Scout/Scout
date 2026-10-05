@@ -57,6 +57,21 @@ enum ClaudeLauncher {
         case claudeDesktop(DesktopMode)
     }
 
+    /// Why a CLI session is being opened. An action item starts a fresh
+    /// `claude` with its context on the clipboard; resume reopens an existing
+    /// session (`claude --resume <id>`) and leaves the clipboard alone.
+    enum CLIPurpose: Equatable {
+        case actionItem
+        case resume(cliSessionID: String)
+
+        var arguments: [String] {
+            switch self {
+            case .actionItem:              return []
+            case .resume(let cliSessionID): return ["--resume", cliSessionID]
+            }
+        }
+    }
+
     enum LaunchError: LocalizedError {
         case ghosttyNotInstalled  // reserved for a future explicit .ghostty target; not thrown by .auto
         case claudeDesktopNotInstalled
@@ -98,9 +113,16 @@ enum ClaudeLauncher {
         NSPasteboard.general.setString(prompt, forType: .string)
 
         switch target {
-        case .cli(let cwd, let config):  try launchCLI(cwd: cwd, config: config)
+        case .cli(let cwd, let config):  try launchCLI(cwd: cwd, config: config, purpose: .actionItem)
         case .claudeDesktop(let mode):   try launchClaudeDesktop(prompt: prompt, mode: mode)
         }
+    }
+
+    /// Reopen an existing Claude Code session in the configured terminal:
+    /// `claude --resume <cliSessionID>` run from `cwd`. Unlike `launch`, this
+    /// does not touch the clipboard.
+    static func resume(cliSessionID: String, cwd: URL, config: CLIConfig) throws {
+        try launchCLI(cwd: cwd, config: config, purpose: .resume(cliSessionID: cliSessionID))
     }
 
     /// Build the prompt text for a task — subject, plus body, recent
@@ -205,9 +227,13 @@ enum ClaudeLauncher {
     /// Expand a custom launch-command template. `{claude}` and `{cwd}` are
     /// replaced with shell-quoted values, so the user writes them unquoted:
     /// e.g. `kitty -d {cwd} -e {claude}`.
-    static func expandCustomCommand(template: String, claudePath: String, cwd: String) -> String {
-        template
-            .replacingOccurrences(of: "{claude}", with: shellQuote(claudePath))
+    /// `arguments` follow the claude path inside `{claude}`, each quoted.
+    static func expandCustomCommand(
+        template: String, claudePath: String, cwd: String, arguments: [String] = []
+    ) -> String {
+        let claude = ([claudePath] + arguments).map { shellQuote($0) }.joined(separator: " ")
+        return template
+            .replacingOccurrences(of: "{claude}", with: claude)
             .replacingOccurrences(of: "{cwd}", with: shellQuote(cwd))
     }
 
@@ -232,19 +258,27 @@ enum ClaudeLauncher {
     /// The shell command run inside Terminal.app / iTerm2: cd to the working
     /// dir, print the clipboard-paste hint, then exec claude. Mirrors
     /// `makeGhosttyScript`'s double-quote escaping.
-    static func makeTerminalShellCommand(claudePath: String, cwd: String) -> String {
+    static func makeTerminalShellCommand(
+        claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
+    ) -> String {
         let cwdEsc = shellDoubleQuoteEscape(cwd)
         let claudeEsc = shellDoubleQuoteEscape(claudePath)
+        let banner = purpose == .actionItem
+            ? "Scout: action-item context copied to your clipboard. Paste with Cmd+V."
+            : "Scout: resuming a Claude Code session."
         return "cd \"\(cwdEsc)\" && clear && "
-            + "echo 'Scout: action-item context copied to your clipboard. Paste with Cmd+V.' && "
+            + "echo \(shellQuote(banner)) && "
             + "exec \"\(claudeEsc)\""
+            + purpose.arguments.map { " " + shellQuote($0) }.joined()
     }
 
     /// Build the AppleScript that opens a new Terminal.app window running the
     /// claude session. The returned string is ready to pass to
     /// `NSAppleScript(source:)` — already fully escaped, do not re-escape.
-    static func makeTerminalAppScript(claudePath: String, cwd: String) -> String {
-        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd))
+    static func makeTerminalAppScript(
+        claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
+    ) -> String {
+        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd, purpose: purpose))
         return """
         tell application "Terminal"
           activate
@@ -256,8 +290,10 @@ enum ClaudeLauncher {
     /// Build the AppleScript that opens a new iTerm2 window running the claude
     /// session. The returned string is ready to pass to `NSAppleScript(source:)`
     /// — already fully escaped, do not re-escape.
-    static func makeITermScript(claudePath: String, cwd: String) -> String {
-        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd))
+    static func makeITermScript(
+        claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
+    ) -> String {
+        let cmd = appleScriptEscape(makeTerminalShellCommand(claudePath: claudePath, cwd: cwd, purpose: purpose))
         return """
         tell application "iTerm"
           activate
@@ -282,32 +318,33 @@ enum ClaudeLauncher {
         "/usr/bin/tmux",
     ]
 
-    private static func launchCLI(cwd: URL, config: CLIConfig) throws {
+    private static func launchCLI(cwd: URL, config: CLIConfig, purpose: CLIPurpose) throws {
         guard let claudePath = resolveClaudePath(override: config.claudePathOverride) else {
             throw LaunchError.claudeCLINotFound
         }
         switch config.terminal {
-        case .auto:        try launchAuto(claudePath: claudePath, cwd: cwd)
-        case .terminalApp: try launchTerminalApp(claudePath: claudePath, cwd: cwd)
-        case .iterm2:      try launchITerm(claudePath: claudePath, cwd: cwd)
-        case .custom:      try launchCustom(claudePath: claudePath, cwd: cwd, command: config.customCommand)
+        case .auto:        try launchAuto(claudePath: claudePath, cwd: cwd, purpose: purpose)
+        case .terminalApp: try launchTerminalApp(claudePath: claudePath, cwd: cwd, purpose: purpose)
+        case .iterm2:      try launchITerm(claudePath: claudePath, cwd: cwd, purpose: purpose)
+        case .custom:
+            try launchCustom(claudePath: claudePath, cwd: cwd, command: config.customCommand, purpose: purpose)
         }
     }
 
     /// Auto: Ghostty+tmux → fresh Ghostty window → Terminal.app fallback, so
     /// it works whether or not the user runs Ghostty.
-    private static func launchAuto(claudePath: String, cwd: URL) throws {
+    private static func launchAuto(claudePath: String, cwd: URL, purpose: CLIPurpose) throws {
         if let ghosttyURL = NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: ghosttyBundleID
         ) {
-            if launchViaTmux(claudePath: claudePath, cwd: cwd) {
+            if launchViaTmux(claudePath: claudePath, cwd: cwd, purpose: purpose) {
                 activateGhostty(ghosttyURL: ghosttyURL)
                 return
             }
-            try launchFreshGhosttyWindow(ghosttyURL: ghosttyURL, claudePath: claudePath, cwd: cwd)
+            try launchFreshGhosttyWindow(ghosttyURL: ghosttyURL, claudePath: claudePath, cwd: cwd, purpose: purpose)
             return
         }
-        try launchTerminalApp(claudePath: claudePath, cwd: cwd)
+        try launchTerminalApp(claudePath: claudePath, cwd: cwd, purpose: purpose)
     }
 
     /// Common install locations for the `claude` CLI. Probed in order so
@@ -360,7 +397,7 @@ enum ClaudeLauncher {
 
     /// Returns true if a tmux session was found and a `claude` window was
     /// successfully spawned in it.
-    private static func launchViaTmux(claudePath: String, cwd: URL) -> Bool {
+    private static func launchViaTmux(claudePath: String, cwd: URL, purpose: CLIPurpose) -> Bool {
         guard let tmuxPath = tmuxPaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return false }
@@ -375,13 +412,8 @@ enum ClaudeLauncher {
         // inherit `TMPDIR=/var/folders/…`, while tmux stores its socket at
         // `/tmp/tmux-$UID/default` under the shell convention.
         task.environment = tmuxEnvironment()
-        task.arguments = [
-            "new-window",
-            "-t", "\(session):",
-            "-c", cwd.path,
-            "-n", "claude",
-            claudePath,
-        ]
+        task.arguments = makeTmuxNewWindowArguments(
+            session: session, claudePath: claudePath, cwd: cwd.path, purpose: purpose)
         task.standardOutput = Pipe()
         task.standardError = Pipe()
         do {
@@ -391,6 +423,14 @@ enum ClaudeLauncher {
             return false
         }
         return task.terminationStatus == 0
+    }
+
+    /// argv for `tmux new-window`: claude and its arguments as separate argv
+    /// entries, so no shell quoting is involved.
+    static func makeTmuxNewWindowArguments(
+        session: String, claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
+    ) -> [String] {
+        ["new-window", "-t", "\(session):", "-c", cwd, "-n", "claude", claudePath] + purpose.arguments
     }
 
     /// Lists tmux sessions and returns the first attached one (or the first
@@ -447,12 +487,13 @@ enum ClaudeLauncher {
     private static func launchFreshGhosttyWindow(
         ghosttyURL: URL,
         claudePath: String,
-        cwd: URL
+        cwd: URL,
+        purpose: CLIPurpose
     ) throws {
         let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("scout-launch-claude-\(UUID().uuidString).sh")
         do {
-            try makeGhosttyScript(claudePath: claudePath, cwd: cwd)
+            try makeGhosttyScript(claudePath: claudePath, cwd: cwd, purpose: purpose)
                 .write(to: scriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: NSNumber(value: 0o755)],
@@ -478,23 +519,29 @@ enum ClaudeLauncher {
         }
     }
 
-    private static func makeGhosttyScript(claudePath: String, cwd: URL) -> String {
+    static func makeGhosttyScript(claudePath: String, cwd: URL, purpose: CLIPurpose = .actionItem) -> String {
         let cwdEsc = cwd.path
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let claudeEsc = claudePath
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        let banner = purpose == .actionItem
+            ? """
+              echo "Scout: action-item context copied to your clipboard."
+              echo "When Claude prompts you, paste (Cmd+V) and press Enter to send."
+              """
+            : "echo \"Scout: resuming a Claude Code session.\""
+        let arguments = purpose.arguments.map { " " + shellQuote($0) }.joined()
         // Ghostty inherits Scout's minimal launchd PATH, so we exec `claude`
         // by absolute path rather than relying on PATH lookup.
         return """
         #!/bin/bash
         cd "\(cwdEsc)" || exit 1
         clear
-        echo "Scout: action-item context copied to your clipboard."
-        echo "When Claude prompts you, paste (Cmd+V) and press Enter to send."
+        \(banner)
         echo
-        exec "\(claudeEsc)"
+        exec "\(claudeEsc)"\(arguments)
         """
     }
 
@@ -502,23 +549,24 @@ enum ClaudeLauncher {
 
     private static let itermBundleID = "com.googlecode.iterm2"
 
-    private static func launchTerminalApp(claudePath: String, cwd: URL) throws {
-        try runAppleScript(makeTerminalAppScript(claudePath: claudePath, cwd: cwd.path))
+    private static func launchTerminalApp(claudePath: String, cwd: URL, purpose: CLIPurpose) throws {
+        try runAppleScript(makeTerminalAppScript(claudePath: claudePath, cwd: cwd.path, purpose: purpose))
     }
 
-    private static func launchITerm(claudePath: String, cwd: URL) throws {
+    private static func launchITerm(claudePath: String, cwd: URL, purpose: CLIPurpose) throws {
         guard NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: itermBundleID
         ) != nil else {
             throw LaunchError.iterm2NotInstalled
         }
-        try runAppleScript(makeITermScript(claudePath: claudePath, cwd: cwd.path))
+        try runAppleScript(makeITermScript(claudePath: claudePath, cwd: cwd.path, purpose: purpose))
     }
 
-    private static func launchCustom(claudePath: String, cwd: URL, command: String) throws {
+    private static func launchCustom(claudePath: String, cwd: URL, command: String, purpose: CLIPurpose) throws {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LaunchError.customCommandEmpty }
-        let expanded = expandCustomCommand(template: trimmed, claudePath: claudePath, cwd: cwd.path)
+        let expanded = expandCustomCommand(
+            template: trimmed, claudePath: claudePath, cwd: cwd.path, arguments: purpose.arguments)
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let task = Process()
         task.executableURL = URL(fileURLWithPath: shell)
