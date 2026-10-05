@@ -355,6 +355,32 @@ struct EngineInstallerTests {
         #expect(why.contains("heartbeat"))
     }
 
+    /// Ruling 58: a foreign directory can't borrow `isManagedMarketplace`'s
+    /// manifest-version rule to impersonate the managed engine by naming a
+    /// `version` that is actually a path-traversal string. `engineDir`
+    /// appended with `"../../evil"` normalizes to `<home>/.local/share/evil`
+    /// (two levels above `engine`) — put the foreign directory exactly
+    /// there, with its own manifest claiming that same string as its
+    /// version, so the unvalidated computation would land back on itself and
+    /// read as "ours". The fix must reject any manifest version that isn't a
+    /// valid `EngineVersion` before it's ever used in that comparison.
+    @Test func registerRejectsAForeignDirectoryWhoseManifestVersionIsAPathTraversal() async throws {
+        let f = try fixture()
+        defer { try? fm.removeItem(at: f.layout.home) }
+        let foreign = f.layout.engineDir.appendingPathComponent("../../evil").standardizedFileURL
+        try fm.createDirectory(at: foreign.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
+        try #"{"name": "scout", "version": "../../evil"}"#.write(to: foreign.appendingPathComponent(".claude-plugin/plugin.json"), atomically: true, encoding: .utf8)
+        try fm.createDirectory(at: f.layout.claudePluginsDir, withIntermediateDirectories: true)
+        try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(foreign.path)"}}}"#
+            .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
+        let seen = ProgressRecorder()
+        let ok = await installer(f) { seen.append($0) }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status else { Issue.record("expected failure"); return }
+        #expect(why.contains("scout-plugin") && why.contains("directory") && why.contains(foreign.path))
+        #expect(f.runner.calls(to: "claude").isEmpty)
+    }
+
     @Test func manifestMismatchLeavesNoEngineBehind() async throws {
         var f = try fixture(version: "0.10.0")
         defer { try? fm.removeItem(at: f.layout.home) }

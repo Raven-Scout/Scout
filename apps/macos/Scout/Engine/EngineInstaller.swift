@@ -243,7 +243,15 @@ actor EngineInstaller {
         let resolvedRaw = raw.resolvingSymlinksInPath().standardizedFileURL
         let resolvedCurrent = current.resolvingSymlinksInPath().standardizedFileURL
         if resolvedRaw.path == resolvedCurrent.path { return true }
-        guard let manifestVersion = EngineLocator.version(atRoot: resolvedRaw) else { return false }
+        // A manifest version is untrusted input from whatever directory is
+        // being checked — reject anything that isn't a valid `EngineVersion`
+        // (Ruling 58) before it ever reaches `engineRoot(version:)`.
+        // `engineRoot` builds its path with `.appending(path:)`, which
+        // honours `..` path components; an unvalidated version string like
+        // `"../../evil"` lets a crafted manifest walk the computed canonical
+        // root back onto the foreign directory itself, making it compare
+        // equal to `resolvedRaw` and falsely pass as "ours".
+        guard let manifestVersion = EngineLocator.version(atRoot: resolvedRaw), EngineVersion(manifestVersion) != nil else { return false }
         let resolvedCanonicalRoot = layout.engineRoot(version: manifestVersion).resolvingSymlinksInPath().standardizedFileURL
         return resolvedRaw.path == resolvedCanonicalRoot.path
     }
