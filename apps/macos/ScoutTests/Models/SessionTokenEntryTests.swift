@@ -27,4 +27,27 @@ struct SessionTokenEntryTests {
         #expect(entry.primaryModel == nil)
         #expect(entry.error == "transcript_not_found")
     }
+
+    @Test("timestamps decode with and without fractional seconds")
+    func decodesBothTimestampShapes() throws {
+        // Pins the behaviour the shared, hoisted formatters must preserve: the
+        // two shapes need two differently-configured formatters, and neither
+        // may be mutated in place once shared.
+        let plainJSON = #"""
+        {"ts":"2026-04-22T22:10:33Z","ts_et":"","session_id":"a","scout_mode":"x","cwd":"/","primary_model":null,"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0,"num_turns":0,"duration_ms":0,"error":null}
+        """#
+        let fractionalJSON = #"""
+        {"ts":"2026-04-22T22:10:33.123Z","ts_et":"","session_id":"b","scout_mode":"x","cwd":"/","primary_model":null,"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0,"num_turns":0,"duration_ms":0,"error":null}
+        """#
+        let decoder = SessionTokenEntry.makeDecoder()
+        let plainEntry = try decoder.decode(SessionTokenEntry.self, from: Data(plainJSON.utf8))
+        let fractionalEntry = try decoder.decode(SessionTokenEntry.self, from: Data(fractionalJSON.utf8))
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        #expect(plainEntry.ts == plain.date(from: "2026-04-22T22:10:33Z"))
+        #expect(fractionalEntry.ts == fractional.date(from: "2026-04-22T22:10:33.123Z"))
+    }
 }
