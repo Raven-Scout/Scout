@@ -88,6 +88,7 @@ markers = [
     "perf: performance tests (may be skipped in fast CI runs)",
     "concurrency: tests involving multiple processes/threads",
     "slow: tests taking > 1 second",
+    "flaky(reruns, issue): quarantined known flake — rerun a failed call up to `reruns` times (tests/conftest.py); `issue` is the tracking issue URL",
 ]
 
 # Coverage is opt-in per-invocation (`pytest --cov=scout`), not wired into
