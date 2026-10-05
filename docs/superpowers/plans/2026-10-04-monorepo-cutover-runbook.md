@@ -1022,6 +1022,15 @@ something".**
      - `scoutctl`'s `marketplaces/<name>/plugin/` venv candidates
      - anything Phase 1 pulled in (#247's version switch on update, #264's
        `/scout-plan`, …)
+     - **a heads-up for dev checkouts** (anyone whose engine venv sits
+       inside a git checkout that a pull moves: a directory marketplace, or
+       a venv built in `plugins/marketplaces/scout-plugin/`). The pull moves
+       `engine/` to `plugin/engine/`, so the old editable venv stops
+       importing, and a cached launcher can keep pinning it. Fix as in 9.3b.
+       Regular installs are not affected: `install.sh` and `/scout-setup`
+       build the venv inside the frozen cache copy, which a marketplace
+       update never moves. The lasting fix is engine-side: the launcher's
+       fast path should check the import, not just `-x`.
      - **a heads-up for customized vaults.** #264 adds a "Plan Markers Carry
        Verbatim" rule to `SKILL.md`. A vault that edited `SKILL.md` near it
        gets `conflict (sidecar): SKILL.md.proposed-merge` on `/scout-update`.
@@ -1197,6 +1206,33 @@ config, so no agent runs it.
   `SKILL.md` the version you want, keep 9.3a's re-pointed paths, and run
   `scoutctl bootstrap resolve SKILL.md`.
 
+- [x] **9.3b Retire the old layout's venvs and the cached launcher's fast
+  path.** Added after 2026-10-05.
+  - **What happened:** every Scout.app write failed for about 90 minutes
+    after the pull. The installed app runs the plugin cache's launcher,
+    `cache/scout-plugin/scout/<ver>/engine/bin/scoutctl`.
+  - **Why:** that launcher's fast path, `<cache root>/.scoutctl-py-cache`,
+    pinned `~/scout-plugin/.venv/bin/python`. The interpreter was still
+    executable, but its editable source `~/scout-plugin/engine` had moved, so
+    `import scout.cli` failed. The launcher checks only `-x`, never the
+    import.
+  - **The fix:** move the stale cache file and both dead venvs aside. The
+    launcher then falls through to the engine pointer, `plugin/.venv`, and
+    re-caches it.
+
+  ```bash
+  mkdir -p ~/.scout-worktrees/retired-venvs
+  for f in ~/.claude/plugins/cache/scout-plugin/scout/*/.scoutctl-py-cache; do [ -e "$f" ] && mv "$f" "$f.stale-pre-monorepo"; done
+  [ -d ~/scout-plugin/.venv ] && mv ~/scout-plugin/.venv ~/.scout-worktrees/retired-venvs/scout-plugin-root-venv
+  [ -d ~/scout-plugin/engine/.venv ] && mv ~/scout-plugin/engine/.venv ~/.scout-worktrees/retired-venvs/scout-plugin-engine-venv
+  for l in ~/.claude/plugins/cache/scout-plugin/scout/*/engine/bin/scoutctl; do echo "$l: $("$l" version 2>&1 | tail -1)"; done   # each: the version, no ModuleNotFoundError
+  ```
+
+  Then mark an item done in Scout.app. The old root `.scoutctl-py-cache` and
+  the bytecode left in `engine/`, `scripts/`, `tools/` and `templates/` are
+  untracked leftovers. They're harmless, and you can move them aside once
+  rollback is no longer needed.
+
 - [x] **9.3a Re-point the vault.** `bootstrap upgrade` re-renders only the
   files it manages: the runners, the templated scripts,
   `hooks/kb-pre-filter.sh`, the plists, the shim and `engine.json`. The vault
@@ -1257,6 +1293,7 @@ config, so no agent runs it.
   ```bash
   git -C ~/scout-plugin reset --keep "$(cat ~/.scout-worktrees/scout-plugin-pre-monorepo.sha)"
   claude plugin marketplace update scout-plugin
+  mv ~/.scout-worktrees/retired-venvs/scout-plugin-root-venv ~/scout-plugin/.venv 2>/dev/null || true   # 9.3b moved it aside
   bash ~/scout-plugin/scripts/install-venv.sh                                   # 9.3 pointed everything at plugin/.venv, which is gone now
   ~/scout-plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev
   ~/miniconda3/bin/pip install -e ~/scout-plugin/engine
