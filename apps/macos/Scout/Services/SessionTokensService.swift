@@ -37,9 +37,12 @@ final class SessionTokensService: ObservableObject {
     private func startWatching() {
         watchTask?.cancel()
         let url = trackerURL
+        // Subscribe synchronously — calling events(for:) inside the task left
+        // a window where events emitted before the task ran were dropped.
+        let events = fileEvents.events(for: url)
         watchTask = Task { [weak self] in
             guard let self else { return }
-            for await _ in self.fileEvents.events(for: url) {
+            for await _ in events {
                 let refreshed = Self.parseFile(url)
                 self.entries = refreshed
             }
@@ -47,13 +50,16 @@ final class SessionTokensService: ObservableObject {
     }
 
     nonisolated private static func parseFile(_ url: URL) -> [SessionTokenEntry] {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return [] }
+        guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = SessionTokenEntry.makeDecoder()
         var out: [SessionTokenEntry] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = line.data(using: .utf8) else { continue }
-            if let entry = try? decoder.decode(SessionTokenEntry.self, from: d) {
+        // Split the UTF-8 bytes rather than decoding the file to a String
+        // first. Decoding up front made a single torn byte — this file is
+        // appended by a Stop hook while other sessions run — discard every
+        // entry, and `String.split(separator:)` walks Characters, paying
+        // Unicode grapheme breaking per byte.
+        for lineData in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
+            if let entry = try? decoder.decode(SessionTokenEntry.self, from: lineData) {
                 out.append(entry)
             }
             // Corrupt lines silently skipped — matches UsageTrackerService.
