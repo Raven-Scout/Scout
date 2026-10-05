@@ -8,11 +8,77 @@ struct PerFileListView: View {
     let config: PerFileTabConfig
     @EnvironmentObject var docService: PerFileDocumentService
     @EnvironmentObject var writerBox: PerFileItemWriterBox
+    @EnvironmentObject var appState: AppState
 
     @State private var resolvedExpanded = false
     @State private var showingAdd = false
+    /// The item whose history pane is open. Stored by id and looked up live
+    /// from `docService.items`, so the pane never shows a stale snapshot after
+    /// Start/Done/Drop or an FSEvent reparse (#43).
+    @State private var selectedItemID: String? = nil
+    @State private var detailIsFull = false
+
+    private var selectedItem: PerFileItem? {
+        selectedItemID.flatMap { id in docService.items.first { $0.id == id } }
+    }
 
     var body: some View {
+        ZStack(alignment: .topTrailing) {
+            // The list keeps a stable slot so opening the pane doesn't reset
+            // its scroll position.
+            HStack(alignment: .top, spacing: 0) {
+                listScroll.frame(maxWidth: .infinity)
+                if !detailIsFull, let item = selectedItem {
+                    sideDetail(item)
+                        .frame(width: 460)
+                        .padding(.vertical, 16).padding(.trailing, 16)
+                }
+            }
+            if detailIsFull, let item = selectedItem {
+                fullDetail(item).transition(.opacity)
+            }
+        }
+        .background(
+            Group {
+                Button("") { closeDetail() }
+                    .keyboardShortcut(".", modifiers: .command)
+                Button("") { if selectedItemID != nil { detailIsFull.toggle() } }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+            .opacity(0)
+            .frame(width: 0, height: 0)
+        )
+        .animation(.easeInOut(duration: 0.18), value: selectedItemID)
+        .animation(.easeInOut(duration: 0.18), value: detailIsFull)
+        .onChange(of: docService.items) { _, _ in
+            // The file was deleted or renamed out from under the pane.
+            if selectedItemID != nil && selectedItem == nil { closeDetail() }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 4) {
+                    Button { showingAdd = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .help("Add a new \(config.addNoun)")
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([docService.directoryURL])
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .help("Reveal the \(config.title.lowercased()) folder in Finder")
+                }
+            }
+        }
+        .sheet(isPresented: $showingAdd) {
+            AddItemSheet(config: config, onSubmit: { title, priority, body, optional in
+                try await addItem(title: title, priority: priority, body: body, optional: optional)
+            }, onCancel: { showingAdd = false })
+        }
+        .onAppear { docService.load() }
+    }
+
+    private var listScroll: some View {
         ScrollView {
             // Deliberately VStack, not LazyVStack (#83, fourth occurrence).
             // Mirrors ProposalsView's swap: the same width-constraining frame
@@ -37,28 +103,67 @@ struct PerFileListView: View {
         .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DS.Paper.base)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 4) {
-                    Button { showingAdd = true } label: {
-                        Image(systemName: "plus")
-                    }
-                    .help("Add a new \(config.addNoun)")
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([docService.directoryURL])
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .help("Reveal the \(config.title.lowercased()) folder in Finder")
-                }
+    }
+
+    // MARK: - History pane (mirrors ControlCenterView's detail panel)
+
+    private func closeDetail() {
+        selectedItemID = nil
+        detailIsFull = false
+    }
+
+    private func historyView(_ item: PerFileItem) -> some View {
+        PerFileItemDetailView(item: item, git: appState.gitService,
+                              repoURL: appState.scoutDirectory,
+                              sessionLog: appState.sessionLogService)
+            .id(item.id)
+    }
+
+    private func sideDetail(_ item: PerFileItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            detailHeader(item, isExpanded: false)
+            EditorialRule()
+            historyView(item)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(DS.Paper.raised)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                .shadow(color: DS.Neumorphic.shadow.opacity(0.4), radius: 8, x: -2, y: 4)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func fullDetail(_ item: PerFileItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            detailHeader(item, isExpanded: true)
+            EditorialRule()
+            historyView(item)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(DS.Paper.base)
+    }
+
+    private func detailHeader(_ item: PerFileItem, isExpanded: Bool) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button { closeDetail() } label: {
+                Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
             }
+            .buttonStyle(.plainHit).foregroundStyle(DS.Ink.p3).help("Close (⌘.)")
+            Text(item.title).font(DS.serif(16, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                .lineLimit(1)
+            Spacer()
+            ItemStatusPill(status: item.status)
+            Button { detailIsFull.toggle() } label: {
+                Image(systemName: isExpanded
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12)).foregroundStyle(DS.Ink.p3)
+            }
+            .buttonStyle(.plainHit)
+            .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
         }
-        .sheet(isPresented: $showingAdd) {
-            AddItemSheet(config: config, onSubmit: { title, priority, body, optional in
-                try await addItem(title: title, priority: priority, body: body, optional: optional)
-            }, onCancel: { showingAdd = false })
-        }
-        .onAppear { docService.load() }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     // MARK: - Header
@@ -136,7 +241,9 @@ struct PerFileListView: View {
                     priorityOptions: config.priorities,
                     onChangePriority: { try await changePriority(item, $0) },
                     onChangeStatus: { try await changeStatus(item, $0) },
-                    onResolve: { try await resolve(item, $0) }
+                    onResolve: { try await resolve(item, $0) },
+                    isSelected: selectedItemID == item.id,
+                    onShowHistory: { selectedItemID = item.id }
                 )
             }
             if !resolved.isEmpty {
@@ -171,7 +278,9 @@ struct PerFileListView: View {
                         item: item,
                         optionalLabel: config.optionalField.label,
                         onChangeStatus: { try await changeStatus(item, $0) },
-                        onResolve: { _ in }
+                        onResolve: { _ in },
+                        isSelected: selectedItemID == item.id,
+                        onShowHistory: { selectedItemID = item.id }
                     )
                 }
             }
