@@ -411,11 +411,27 @@ def _register_connectors() -> None:
     app.add_typer(connectors_app, name="connectors")
 
     @connectors_app.command("list")
-    def cli_connectors_list() -> None:
-        """List the registered connector roster."""
+    def cli_connectors_list(
+        json_out: bool = typer.Option(False, "--json", help="Emit the roster as JSON (consumed by Scout.app)."),
+    ) -> None:
+        """List the registered connector roster (shipped + overlay + custom)."""
+        import json as _json
+
         from scout.connectors import load_registry
 
         reg = load_registry()
+        if json_out:
+            rows = [
+                {
+                    "key": key,
+                    "display_name": reg[key].display_name,
+                    "tier": reg[key].tier.value,
+                    "required_in_types": [t.value for t in reg[key].required_in_types],
+                }
+                for key in sorted(reg.keys())
+            ]
+            typer.echo(_json.dumps({"connectors": rows}, indent=2))
+            return
         for key in sorted(reg.keys()):
             c = reg[key]
             typer.echo(f"{key}\t{c.tier.value}\t{c.display_name}")

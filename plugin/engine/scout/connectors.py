@@ -26,6 +26,7 @@ class Tier(enum.Enum):
     OFFICIAL = "official"
     AUTO_DISCOVERED = "auto_discovered"
     COMMUNITY = "community"
+    CUSTOM = "custom"  # derived from the vault's connectors.custom.yaml
 
 
 class Capability(enum.Enum):
@@ -139,10 +140,52 @@ def load_registry(data_dir: Path | None = None) -> ConnectorRegistry:
             else:
                 merged[key] = override
 
+    for key, raw in _custom_roster_entries(overlay_data_dir).items():
+        merged.setdefault(key, raw)  # shipped and overlay rows win
+
     connectors: dict[str, Connector] = {}
     for key, raw in merged.items():
         connectors[key] = _build_connector(key, raw)
     return ConnectorRegistry(connectors)
+
+
+def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
+    """Roster rows derived from ``<data_dir>/connectors.custom.yaml`` (custom-connectors spec §5).
+
+    One row per MCP server (keyed ``mcp:<server>``, matching connector_log.classify)
+    and one per bash-only connector. Never raises: a broken custom file must not take
+    connector health down with it (bootstrap doctor reports the file instead).
+    """
+    try:
+        from scout.custom_connectors import load
+
+        connectors = load(data_dir).connectors
+    except Exception:
+        return {}
+    grouped: dict[str, list[Any]] = {}
+    for c in connectors.values():
+        grouped.setdefault(c.health_key, []).append(c)
+    rows: dict[str, dict[str, Any]] = {}
+    for health_key, members in grouped.items():
+        names = ", ".join(sorted(c.display_name for c in members))
+        keys = ", ".join(sorted(c.key for c in members))
+        if health_key.startswith("mcp:"):
+            first_fix = f"Reconnect {names} at https://claude.ai/settings/connectors (or /mcp for a local server)."
+        else:
+            binary = members[0].probe.binary or members[0].key
+            first_fix = f"Check that `{binary}` runs in a terminal, then run /scout-connect {members[0].key}."
+        rows[health_key] = {
+            "display_name": names,
+            "tier": "custom",
+            "capabilities": ["inbound"],
+            "required_in_types": sorted({t for c in members for t in c.required_in_types}),
+            "remediation": {
+                "first_fix": first_fix[:180],
+                "detail": f"Custom connector(s) {keys} in connectors.custom.yaml. "
+                f"If the tools were renamed, run /scout-connect for each to re-derive the definition.",
+            },
+        }
+    return rows
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

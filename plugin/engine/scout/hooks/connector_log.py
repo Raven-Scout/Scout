@@ -47,6 +47,16 @@ def _lock_exclusive(f: IO[str]) -> None:
 _BASH_CONNECTORS = {"gh": "github"}
 
 
+def _custom_bash_connectors() -> dict[str, str]:
+    """Binary → key for custom bash connectors. Never raises (hook path)."""
+    try:
+        from scout.custom_connectors import bash_binaries
+
+        return bash_binaries(paths.data_dir())
+    except Exception:
+        return {}
+
+
 def _bash_key(cmd: str) -> str:
     """Classify a Bash command by the connector binary it actually invokes.
 
@@ -70,6 +80,8 @@ def _bash_key(cmd: str) -> str:
     if not cmd:
         return "bash"
 
+    known = {**_custom_bash_connectors(), **_BASH_CONNECTORS}  # shipped wins
+
     segments = cmd.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
     segments = segments.replace("|", "\n")
 
@@ -83,8 +95,8 @@ def _bash_key(cmd: str) -> str:
         if idx >= len(tokens):
             continue
         head = tokens[idx].rsplit("/", 1)[-1]  # /usr/bin/gh → gh
-        if head in _BASH_CONNECTORS:
-            return _BASH_CONNECTORS[head]
+        if head in known:
+            return known[head]
         if not first:
             first = head
 
