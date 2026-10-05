@@ -124,11 +124,22 @@ struct EngineLocatorTests {
     /// pipx venv, or a plain executable at the shim path without the shim
     /// marker — is not an engine: the locator says `.notInstalled`, so the
     /// gate and the copyable next step show instead of a silent wrong engine.
+    ///
+    /// The list includes every home-relative candidate the migration's
+    /// interim `ScoutctlLocator` probed, now deleted: the dev checkout's
+    /// `engine/bin/scoutctl` bash launcher (not a venv — it writes a
+    /// `.scoutctl-py-cache` into the plugin dir), `miniconda3`, and a
+    /// marker-less `~/.local/bin/scoutctl`. Its absolute candidates
+    /// (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin/env scoutctl`) cannot
+    /// be staged in a temp home; the locator only probes paths under `home`
+    /// or named by the pointer, the shim, or Claude Code's plugin registry,
+    /// so it never reaches them on its own.
     @Test func strayScoutctlInstallsAreNotAnEngine() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }
         for stray in ["miniconda3/bin/scoutctl", "anaconda3/bin/scoutctl", ".local/pipx/venvs/scout/bin/scoutctl",
-                      "Library/Python/3.12/bin/scoutctl", "scout-plugin/bin/scoutctl"] {
+                      "Library/Python/3.12/bin/scoutctl", "scout-plugin/bin/scoutctl",
+                      "scout-plugin/engine/bin/scoutctl"] {
             try executable(layout.home.appending(path: stray))
         }
         try executable(layout.shimURL)  // `#!/bin/sh` only: no shim marker
