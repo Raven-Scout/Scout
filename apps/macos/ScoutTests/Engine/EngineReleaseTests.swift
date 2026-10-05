@@ -8,43 +8,75 @@ struct EngineReleaseTests {
     // resources, so a `Fixtures/engine` subpath does not resolve there.
     static let fixtureURL = Bundle(for: FixtureAnchor.self).url(forResource: "engine-release-fixture", withExtension: "json")!
 
-    @Test func decodesThePin() throws {
+    /// The app bundle: ScoutTests runs hosted in Scout.app.
+    static var app: Bundle { Bundle(for: AppState.self) }
+
+    @Test func decodesTheGeneratedShape() throws {
         let data = try Data(contentsOf: Self.fixtureURL)
         let r = try JSONDecoder().decode(EngineRelease.self, from: data)
-        #expect(r.schemaVersion == 1)
-        #expect(r.engine.repo == "Raven-Scout/scout-plugin")
-        #expect(r.engine.tag == "v\(r.engine.version)")
-        #expect(r.engine.commit.count == 40)
+        #expect(r.schemaVersion == 2)
+        #expect(r.version == "9.9.9")
+        #expect(r.engine.version == "9.9.9")
+        #expect(r.engine.commit?.count == 40)
         #expect(r.uv.version == "0.12.1")
         #expect(r.uv.sha256["aarch64-apple-darwin"]?.count == 64)
-        #expect(r.tarballName == "scout-engine-\(r.engine.version).tar.gz")
+        #expect(r.tarballName == "scout-engine-9.9.9.tar.gz")
     }
 
-    /// The real pin in the app bundle must be internally consistent, and when
-    /// the build phase bundled a tarball its manifest must match the pin. In CI
-    /// the tarball is required; a Debug build without network may lack it.
-    ///
-    /// CI detection reads `ProcessInfo.processInfo.environment["CI"]`, but
-    /// `xcodebuild test` only forwards `TEST_RUNNER_`-prefixed variables into
-    /// the xctest host process — a plain `CI=true` set on the `xcodebuild`
-    /// invocation (or ambiently by the runner) never reaches here. CI must
-    /// set `TEST_RUNNER_CI=true` (see .github/workflows/ci.yml's "Run
-    /// ScoutTests" step) for this guard to actually fire.
-    @Test func bundledPinIsSelfConsistent() throws {
-        let release = try EngineRelease.load(bundle: .main)
-        #expect(release.engine.tag == "v\(release.engine.version)")
-        #expect(release.engine.commit.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil)
-        guard let tarball = release.bundledTarballURL(bundle: .main) else {
-            #expect(ProcessInfo.processInfo.environment["CI"] != "true", "CI builds must bundle the engine tarball")
-            return
+    /// The build commit is diagnostics only; a release without one still decodes.
+    @Test func theCommitIsOptional() throws {
+        let json = #"{"schema_version": 2, "version": "1.2.3", "engine": {"version": "1.2.3"}, "uv": {"version": "0.12.1", "sha256": {}}}"#
+        let r = try JSONDecoder().decode(EngineRelease.self, from: Data(json.utf8))
+        #expect(r.engine == .init(version: "1.2.3", commit: nil))
+    }
+
+    /// Bundling is deterministic and needs no network (spec §5), so EVERY
+    /// build — Debug, CI, Release — carries the generated engine-release.json
+    /// and the tarball it names, and the tarball's manifest agrees with it.
+    @Test func everyBuildBundlesTheEngine() throws {
+        let release = try EngineRelease.load(bundle: Self.app)
+        #expect(release.schemaVersion == 2)
+        #expect(release.version == release.engine.version)
+        #expect(release.engine.commit?.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil)
+        let tarball = try #require(release.bundledTarballURL(bundle: Self.app), "the build must bundle \(release.tarballName)")
+        #expect(try Self.manifestVersion(inTarball: tarball) == release.engine.version)
+    }
+
+    /// One version for Scout (spec D2 / §7): the bundled plugin.json version,
+    /// the generated engine-release.json's top-level `version` (which
+    /// `release.sh finalize` checks) and the app's own
+    /// `CFBundleShortVersionString` (`MARKETING_VERSION`) are one string.
+    @Test func bundledPluginVersionEqualsTheAppVersion() throws {
+        let release = try EngineRelease.load(bundle: Self.app)
+        let tarball = try #require(release.bundledTarballURL(bundle: Self.app))
+        let appVersion = try #require(Self.app.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+        let manifestVersion = try Self.manifestVersion(inTarball: tarball)
+        #expect(manifestVersion == appVersion)
+        #expect(release.version == appVersion)
+        #expect(release.version == manifestVersion)
+    }
+
+    /// The uv pin rides through bundling unchanged: the generated file's `uv`
+    /// is the checked-in `Scout/Resources/uv-release.json`.
+    @Test func bundledUvPinIsTheCheckedInPin() throws {
+        let release = try EngineRelease.load(bundle: Self.app)
+        let pinURL = try #require(Self.app.url(forResource: "uv-release", withExtension: "json"))
+        let pin = try JSONDecoder().decode(EngineRelease.Uv.self, from: Data(contentsOf: pinURL))
+        #expect(release.uv == pin)
+        for arch in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            #expect(pin.sha256[arch]?.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil, "\(arch)")
         }
+    }
+
+    private static func manifestVersion(inTarball tarball: URL) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         p.arguments = ["-xzOf", tarball.path, ".claude-plugin/plugin.json"]
         let pipe = Pipe(); p.standardOutput = pipe
-        try p.run(); p.waitUntilExit()
+        try p.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         struct Manifest: Decodable { let version: String }
-        let manifest = try JSONDecoder().decode(Manifest.self, from: pipe.fileHandleForReading.readDataToEndOfFile())
-        #expect(manifest.version == release.engine.version)
+        return try JSONDecoder().decode(Manifest.self, from: data).version
     }
 }

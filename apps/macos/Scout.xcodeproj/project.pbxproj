@@ -192,7 +192,8 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/Scout/Resources/engine-release.json",
+				"$(SRCROOT)/../../plugin/.claude-plugin/plugin.json",
+				"$(SRCROOT)/Scout/Resources/uv-release.json",
 				"$(SRCROOT)/scripts/bundle-engine.sh",
 			);
 			name = "Bundle Engine";

@@ -31,7 +31,7 @@ struct EngineInstallerTests {
         let home = fm.temporaryDirectory.appendingPathComponent("installer-\(UUID().uuidString)")
         let layout = EngineLayout(home: home)
         let tarball = try buildTarball(version: version, in: home)
-        let release = EngineRelease(schemaVersion: 1, engine: .init(repo: "example-org/scout-plugin", version: version, tag: "v\(version)", commit: String(repeating: "a", count: 40)),
+        let release = EngineRelease(schemaVersion: 2, version: version, engine: .init(version: version, commit: String(repeating: "a", count: 40)),
                                     uv: .init(version: "0.12.1", sha256: [:]))
         // uv already present so ensureUv short-circuits without a network.
         try fm.createDirectory(at: layout.localBin, withIntermediateDirectories: true)
@@ -123,7 +123,7 @@ struct EngineInstallerTests {
         #expect(ok10)
 
         let tarball11 = try buildTarball(version: "0.11.0", in: f10.layout.home)
-        let release11 = EngineRelease(schemaVersion: 1, engine: .init(repo: "example-org/scout-plugin", version: "0.11.0", tag: "v0.11.0", commit: String(repeating: "c", count: 40)), uv: f10.release.uv)
+        let release11 = EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0", commit: String(repeating: "c", count: 40)), uv: f10.release.uv)
         let f11 = Fixture(layout: f10.layout, release: release11, tarball: tarball11, runner: f10.runner)
         let ok11 = await installer(f11) { _ in }.run(steps: [.unpackEngine], mode: .upgrade(vault: f10.layout.home))
         #expect(ok11)
@@ -408,7 +408,7 @@ struct EngineInstallerTests {
     @Test func manifestMismatchLeavesNoEngineBehind() async throws {
         var f = try fixture(version: "0.10.0")
         defer { try? fm.removeItem(at: f.layout.home) }
-        f = Fixture(layout: f.layout, release: EngineRelease(schemaVersion: 1, engine: .init(repo: "x", version: "0.11.0", tag: "v0.11.0", commit: String(repeating: "b", count: 40)), uv: f.release.uv), tarball: f.tarball, runner: f.runner)
+        f = Fixture(layout: f.layout, release: EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0", commit: String(repeating: "b", count: 40)), uv: f.release.uv), tarball: f.tarball, runner: f.runner)
         let ok = await installer(f) { _ in }.run(steps: [.unpackEngine], mode: .upgrade(vault: f.layout.home))
         #expect(!ok)
         #expect(!fm.fileExists(atPath: f.layout.engineRoot(version: "0.11.0").path))

@@ -134,7 +134,7 @@ actor EngineInstaller {
             try repointCurrent()
             throw Skipped(reason: "engine \(version) already unpacked")
         }
-        guard let tarballURL else { throw Failure(description: "this build carries no engine tarball (Debug build without a source)") }
+        guard let tarballURL else { throw Failure(description: "this build carries no engine tarball (scout-engine-\(version).tar.gz is missing from the app's Resources)") }
         let fileManager = FileManager.default
         let partial = URL(fileURLWithPath: engineRoot.path + ".partial")
         try? fileManager.removeItem(at: partial)
@@ -147,7 +147,7 @@ actor EngineInstaller {
         }
         guard EngineLocator.version(atRoot: partial) == version else {
             try? fileManager.removeItem(at: partial)
-            throw Failure(description: "bundled engine manifest does not match pinned version \(version)")
+            throw Failure(description: "bundled engine manifest does not match engine-release.json's version \(version)")
         }
         try? fileManager.removeItem(at: engineRoot)
         try fileManager.moveItem(at: partial, to: engineRoot)

@@ -1,67 +1,127 @@
 #!/usr/bin/env bash
-# Tests for scripts/bundle-engine.sh against a throwaway git repo.
+# Tests for scripts/bundle-engine.sh against a throwaway monorepo-shaped git
+# repo: plugin/ (the engine) beside apps/macos/ (SRCROOT).
+# Assertions are single-quoted on purpose: `assert` evals them later.
+# shellcheck disable=SC2016,SC2034
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/../bundle-engine.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 FAILS=0
 assert() { if ! eval "$1"; then echo "FAIL: $2"; FAILS=$((FAILS + 1)); else echo "ok: $2"; fi; }
+g() { git -C "$REPO" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false "$@"; }
+json() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d := d[k] for k in sys.argv[2:]]; print(d)' "$@"; }
+# run <out-dir> [VAR=value ...]: the script as Xcode would run it, minus the
+# product paths; stdout+stderr to <out-dir>.log, exit code in $RC.
+run() {
+  local out="$1"; shift
+  set +e; env SRCROOT="$APP" SCOUT_ENGINE_OUT="$out" "$@" bash "$SCRIPT" >"$out.log" 2>&1; RC=$?; set -e
+}
 
-# A fake scout-plugin with one tagged commit.
-SRC="$TMP/src"; mkdir -p "$SRC/.claude-plugin" "$SRC/engine"
-git -C "$SRC" init -q
-printf '{"name": "scout", "version": "9.9.9"}\n' > "$SRC/.claude-plugin/plugin.json"
-echo "print('hi')" > "$SRC/engine/x.py"
-mkdir -p "$SRC/.venv/bin" && echo junk > "$SRC/.venv/bin/python"   # untracked: must NOT be archived
-git -C "$SRC" add .claude-plugin engine && git -C "$SRC" -c user.name=t -c user.email=t@example.com commit -qm init
-git -C "$SRC" tag v9.9.9
-COMMIT="$(git -C "$SRC" rev-parse HEAD)"
+REPO="$TMP/repo"; APP="$REPO/apps/macos"
+mkdir -p "$REPO/plugin/.claude-plugin" "$REPO/plugin/engine" "$APP/Scout/Resources"
+g init -q
+printf '{"name": "scout", "version": "9.9.9"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+echo "print('hi')" > "$REPO/plugin/engine/x.py"
+UV_SHA_ARM="$(printf 'a%.0s' {1..64})"; UV_SHA_X86="$(printf 'b%.0s' {1..64})"
+printf '{"version": "0.12.1", "sha256": {"aarch64-apple-darwin": "%s", "x86_64-apple-darwin": "%s"}}\n' \
+  "$UV_SHA_ARM" "$UV_SHA_X86" > "$APP/Scout/Resources/uv-release.json"
+echo ".venv/" > "$REPO/plugin/.gitignore"
+g add plugin apps && g commit -qm init
+COMMIT="$(g rev-parse HEAD)"
+mkdir -p "$REPO/plugin/.venv/bin" && echo junk > "$REPO/plugin/.venv/bin/python"   # ignored: must NOT ship
 
-PIN="$TMP/pin.json"
-printf '{"schema_version":1,"engine":{"repo":"example-org/scout-plugin","version":"9.9.9","tag":"v9.9.9","commit":"%s"},"uv":{"version":"0","sha256":{}}}\n' "$COMMIT" > "$PIN"
+# 1. archives HEAD:plugin, manifest at the archive root, named from plugin.json
+OUT="$TMP/out1"; run "$OUT"
+TB="$OUT/scout-engine-9.9.9.tar.gz"
+assert '[ "$RC" -eq 0 ]' "bundles: exit 0"
+assert '[ -f "$TB" ]' "tarball named from plugin.json's version"
+assert 'tar -tzf "$TB" | grep -qx ".claude-plugin/plugin.json"' "plugin.json at the archive root"
+assert 'tar -tzf "$TB" | grep -qx "engine/x.py"' "tracked file archived"
+assert '! tar -tzf "$TB" | grep -q "^plugin/"' "no plugin/ prefix in the archive"
+assert '! tar -tzf "$TB" | grep -q "\.venv"' "untracked files excluded"
+assert '! tar -tzf "$TB" | grep -q "^apps/"' "only plugin/ is archived"
 
-# 1. archives the pinned commit from SCOUT_ENGINE_SOURCE
-OUT="$TMP/out1"
-SCOUT_ENGINE_PIN="$PIN" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$OUT" bash "$SCRIPT"
-assert '[ -f "$OUT/scout-engine-9.9.9.tar.gz" ]' "tarball produced"
-assert 'tar -tzf "$OUT/scout-engine-9.9.9.tar.gz" | grep -q "^engine/x.py$"' "tracked file archived"
-assert '! tar -tzf "$OUT/scout-engine-9.9.9.tar.gz" | grep -q ".venv"' "untracked .venv excluded"
+# 2. engine-release.json is generated: version + build commit + the uv pin
+RJ="$OUT/engine-release.json"
+assert '[ -f "$RJ" ]' "engine-release.json generated"
+assert '[ "$(json "$RJ" schema_version)" = 2 ]' "schema_version 2"
+assert '[ "$(json "$RJ" version)" = 9.9.9 ]' "top-level version from plugin.json (release.sh finalize reads it)"
+assert '[ "$(json "$RJ" engine version)" = 9.9.9 ]' "engine.version from plugin.json"
+assert '[ "$(json "$RJ" engine commit)" = "$COMMIT" ]' "engine.commit is the build commit"
+assert '[ "$(json "$RJ" uv version)" = 0.12.1 ]' "uv.version from the pin file"
+assert '[ "$(json "$RJ" uv sha256 aarch64-apple-darwin)" = "$UV_SHA_ARM" ]' "uv arm64 sha256 from the pin file"
+assert '[ "$(json "$RJ" uv sha256 x86_64-apple-darwin)" = "$UV_SHA_X86" ]' "uv x86_64 sha256 from the pin file"
 
-# 2. refuses when the manifest version disagrees with the pin
-sed 's/"version":"9.9.9"/"version":"1.0.0"/' "$PIN" > "$TMP/pin-bad.json"
-set +e; SCOUT_ENGINE_PIN="$TMP/pin-bad.json" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$TMP/out2" bash "$SCRIPT" 2>/dev/null; RC=$?; set -e
-assert '[ "$RC" -ne 0 ]' "version mismatch fails"
-assert '[ ! -f "$TMP/out2/scout-engine-1.0.0.tar.gz" ]' "no tarball on mismatch"
+# 3. deterministic: the same commit gives the same bytes
+H1="$(shasum -a 256 "$TB" | awk '{print $1}')"
+sleep 1   # a clock-stamped archive would now differ
+run "$OUT"
+assert '[ "$H1" = "$(shasum -a 256 "$TB" | awk "{print \$1}")" ]' "same commit, byte-identical tarball"
 
-# 3. strict mode fails when no source is reachable; lenient mode exits 0 without a tarball
-sed "s/$COMMIT/ffffffffffffffffffffffffffffffffffffffff/" "$PIN" > "$TMP/pin-missing.json"
-set +e; SCOUT_ENGINE_PIN="$TMP/pin-missing.json" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$TMP/out3" SCOUT_BUNDLE_STRICT=1 bash "$SCRIPT" 2>/dev/null; RC=$?; set -e
-assert '[ "$RC" -ne 0 ]' "strict: unknown commit fails"
-set +e; SCOUT_ENGINE_PIN="$TMP/pin-missing.json" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$TMP/out4" SCOUT_BUNDLE_STRICT=0 SCOUT_ENGINE_NO_NETWORK=1 bash "$SCRIPT" 2>/dev/null; RC=$?; set -e
-assert '[ "$RC" -eq 0 ] && [ ! -d "$TMP/out4" ]' "lenient: warns and bundles nothing"
+# 4. uncommitted plugin/ changes: the committed tree ships, with a warning
+printf '{"name": "scout", "version": "8.8.8"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+echo "new" > "$REPO/plugin/engine/untracked.py"
+OUT4="$TMP/out4"; run "$OUT4"
+assert '[ "$RC" -eq 0 ]' "dirty plugin/: still exit 0"
+assert 'grep -q "^warning: .*uncommitted changes" "$OUT4.log"' "dirty plugin/: warns"
+assert '[ -f "$OUT4/scout-engine-9.9.9.tar.gz" ] && [ ! -e "$OUT4/scout-engine-8.8.8.tar.gz" ]' "dirty plugin/: HEAD's version, not the working tree's"
+assert '[ "$H1" = "$(shasum -a 256 "$OUT4/scout-engine-9.9.9.tar.gz" | awk "{print \$1}")" ]' "dirty plugin/: committed bytes"
+assert '! tar -tzf "$OUT4/scout-engine-9.9.9.tar.gz" | grep -q "untracked.py"' "dirty plugin/: untracked file not shipped"
+git -C "$REPO" checkout -q -- plugin && rm -f "$REPO/plugin/engine/untracked.py"
+run "$TMP/out4b"
+assert '! grep -q "warning" "$TMP/out4b.log"' "clean plugin/: no warning"
 
-# 4. (Ruling 42) an existing tarball whose manifest version already matches the
-# pin is reused as-is: no fetch, no rebuild, exit 0, even when the pin's
-# commit is unreachable and networking is disabled.
-OUT5="$TMP/out5"; mkdir -p "$OUT5"
-FAKE="$TMP/fake-src"; mkdir -p "$FAKE/.claude-plugin"
-printf '{"name": "scout", "version": "9.9.9"}\n' > "$FAKE/.claude-plugin/plugin.json"
-echo "sentinel-marker-should-survive" > "$FAKE/.claude-plugin/sentinel.txt"
-tar -C "$FAKE" -czf "$OUT5/scout-engine-9.9.9.tar.gz" .claude-plugin
-BEFORE_HASH="$(shasum -a 256 "$OUT5/scout-engine-9.9.9.tar.gz" | awk '{print $1}')"
-set +e; SCOUT_ENGINE_PIN="$TMP/pin-missing.json" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$OUT5" SCOUT_ENGINE_NO_NETWORK=1 bash "$SCRIPT" 2>/dev/null; RC=$?; set -e
-AFTER_HASH="$(shasum -a 256 "$OUT5/scout-engine-9.9.9.tar.gz" | awk '{print $1}')"
-assert '[ "$RC" -eq 0 ]' "already bundled: exits 0"
-assert '[ "$BEFORE_HASH" = "$AFTER_HASH" ]' "already bundled: tarball left untouched"
+# 5. a version bump replaces the old tarball instead of leaving it beside the new one
+printf '{"name": "scout", "version": "9.10.0"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+g commit -qam bump
+run "$OUT"
+assert '[ -f "$OUT/scout-engine-9.10.0.tar.gz" ] && [ ! -e "$OUT/scout-engine-9.9.9.tar.gz" ]' "bump: stale tarball removed"
+assert '[ "$(json "$OUT/engine-release.json" engine version)" = 9.10.0 ] && [ "$(json "$OUT/engine-release.json" version)" = 9.10.0 ]' "bump: engine-release.json follows"
 
-# 5. (Ruling 42) a stale tarball whose manifest version does NOT match the pin
-# is not reused — the script rebuilds it from the real source.
-OUT6="$TMP/out6"; mkdir -p "$OUT6"
-STALE="$TMP/stale-src"; mkdir -p "$STALE/.claude-plugin"
-printf '{"name": "scout", "version": "0.0.1"}\n' > "$STALE/.claude-plugin/plugin.json"
-tar -C "$STALE" -czf "$OUT6/scout-engine-9.9.9.tar.gz" .claude-plugin
-SCOUT_ENGINE_PIN="$PIN" SCOUT_ENGINE_SOURCE="$SRC" SCOUT_ENGINE_OUT="$OUT6" bash "$SCRIPT"
-assert 'tar -xzOf "$OUT6/scout-engine-9.9.9.tar.gz" .claude-plugin/plugin.json | grep -q "9.9.9"' "stale manifest version not reused: rebuilt from real source"
-assert 'tar -tzf "$OUT6/scout-engine-9.9.9.tar.gz" | grep -q "^engine/x.py$"' "stale tarball replaced with the real archive"
+# 6. MARKETING_VERSION (Xcode) must equal plugin.json's version (spec D2):
+#    an error in Release/strict builds, a warning in Debug
+run "$TMP/out6" MARKETING_VERSION=9.10.0 CONFIGURATION=Release
+assert '[ "$RC" -eq 0 ] && ! grep -q warning "$TMP/out6.log"' "matching MARKETING_VERSION: ok"
+run "$TMP/out6b" MARKETING_VERSION=1.0.0 CONFIGURATION=Release
+assert '[ "$RC" -ne 0 ]' "Release, mismatched MARKETING_VERSION: fails"
+assert 'grep -q "MARKETING_VERSION 1.0.0" "$TMP/out6b.log"' "Release, mismatched MARKETING_VERSION: says why"
+assert '[ ! -e "$TMP/out6b/engine-release.json" ] && ! ls "$TMP/out6b"/scout-engine-* >/dev/null 2>&1' "Release, mismatched MARKETING_VERSION: writes nothing"
+run "$TMP/out6c" MARKETING_VERSION=1.0.0 SCOUT_BUNDLE_STRICT=1
+assert '[ "$RC" -ne 0 ]' "strict, mismatched MARKETING_VERSION: fails"
+run "$TMP/out6d" MARKETING_VERSION=1.0.0 CONFIGURATION=Debug
+assert '[ "$RC" -eq 0 ] && grep -q "^warning: .*MARKETING_VERSION 1.0.0" "$TMP/out6d.log"' "Debug, mismatched MARKETING_VERSION: warns"
+assert '[ "$(json "$TMP/out6d/engine-release.json" engine version)" = 9.10.0 ]' "Debug, mismatched MARKETING_VERSION: still bundles plugin.json's version"
+
+# 7. a version that isn't SemVer-shaped (it becomes a path component) fails
+printf '{"name": "scout", "version": "../evil"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+g commit -qam evil
+run "$TMP/out7"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out7/engine-release.json" ]' "non-SemVer version: fails"
+g reset -q --hard HEAD~1
+
+# 8. no plugin.json at HEAD fails (only a committed manifest counts)
+g rm -q plugin/.claude-plugin/plugin.json && g commit -qm "drop manifest"
+mkdir -p "$REPO/plugin/.claude-plugin"
+printf '{"name": "scout", "version": "9.10.0"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"   # working tree only
+run "$TMP/out8"
+assert '[ "$RC" -ne 0 ]' "missing manifest at HEAD: fails"
+assert 'grep -q "HEAD has no plugin/.claude-plugin/plugin.json" "$TMP/out8.log"' "missing manifest: says why"
+rm -f "$REPO/plugin/.claude-plugin/plugin.json"; g reset -q --hard HEAD~1
+
+# 9. a missing or malformed uv pin fails
+run "$TMP/out9" SCOUT_UV_PIN="$TMP/nope.json"
+assert '[ "$RC" -ne 0 ]' "missing uv pin: fails"
+printf '{"version": "0.12.1", "sha256": {"aarch64-apple-darwin": "xyz"}}\n' > "$TMP/bad-uv.json"
+run "$TMP/out9b" SCOUT_UV_PIN="$TMP/bad-uv.json"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out9b/engine-release.json" ]' "malformed uv sha256: fails, no JSON"
+
+# 10. outside a git repository there is nothing to archive
+NOGIT="$TMP/nogit/apps/macos"; mkdir -p "$NOGIT"
+set +e; env SRCROOT="$NOGIT" GIT_CEILING_DIRECTORIES="$TMP" SCOUT_ENGINE_OUT="$TMP/out10" bash "$SCRIPT" >/dev/null 2>&1; RC=$?; set -e
+assert '[ "$RC" -ne 0 ]' "not a git repo: fails"
+
+# 11. the script only reads the repo: HEAD and the index are untouched
+assert '[ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]' "repo left clean"
 
 [ "$FAILS" -eq 0 ] || exit 1

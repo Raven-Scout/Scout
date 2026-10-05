@@ -13,7 +13,7 @@ struct EngineUpgraderTests {
         return l
     }
 
-    func release(_ v: String) -> EngineRelease { .init(schemaVersion: 1, engine: .init(repo: "x", version: v, tag: "v\(v)", commit: ""), uv: .init(version: "0", sha256: [:])) }
+    func release(_ v: String) -> EngineRelease { .init(schemaVersion: 2, version: v, engine: .init(version: v), uv: .init(version: "0", sha256: [:])) }
     func install(_ v: String, l: EngineLayout) -> EngineInstall { .init(root: l.engineRoot(version: v), scoutctl: l.scoutctl(version: v), python: nil, version: v, vault: nil) }
 
     @Test func needsUpgradeOnlyForManagedAndBehind() throws {
