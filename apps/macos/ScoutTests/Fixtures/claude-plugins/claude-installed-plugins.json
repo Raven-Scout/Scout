@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "plugins": {
+    "scout@scout-plugin": [
+      { "scope": "user", "installPath": "/Users/alex/.claude/plugins/cache/scout-plugin/scout/0.9.0", "version": "0.9.0",
+        "installedAt": "2026-05-09T11:18:42.951Z", "lastUpdated": "2026-07-13T19:43:57.613Z", "gitCommitSha": "0000000000000000000000000000000000000000" }
+    ],
+    "other@example-marketplace": [
+      { "scope": "user", "installPath": "/Users/alex/.claude/plugins/cache/example-marketplace/other/1.0.0", "version": "1.0.0" }
+    ]
+  }
+}

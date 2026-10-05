@@ -58,7 +58,7 @@ struct DiffViewer: View {
     private func openInGhostty() {
         guard let first = commits.last, let last = commits.first else { return }
         GhosttyLauncher.openNewTab(
-            cwd: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Scout"),
+            cwd: state.scoutDirectory,
             runningCommand: "git diff \(first.id)^..\(last.id)"
         )
     }

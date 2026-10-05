@@ -107,7 +107,12 @@ struct ConnectorHealthHotPathTests {
 
         // Poll rather than sleep a fixed span: under full-suite parallelism a
         // fixed wait is a coin flip, and a flaky perf guard is worse than none.
-        let deadline = Date().addingTimeInterval(10)
+        // The deadline is liveness only (the loop exits as soon as a refresh
+        // lands). This test runs on the main actor, which the view smoke
+        // suites saturate on a 3-core CI runner: app-ci on main already
+        // needed 8.2 s of the old 10 s, and more main-actor suites push it
+        // over (same starvation as Raven-Scout/Scout#311). A real loss still fails.
+        let deadline = Date().addingTimeInterval(30)
         while service.refreshCount == before, Date() < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
