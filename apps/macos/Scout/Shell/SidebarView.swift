@@ -15,6 +15,13 @@ struct SidebarView: View {
     var wishlistBadge: Int = 0
     /// Count of active research topics — drives the badge on the Research row.
     var researchBadge: Int = 0
+    /// True when the engine needs the user's attention (spec §5) — draws a
+    /// small warning dot on the Settings row.
+    var settingsAttention: Bool = false
+    /// True while the engine gates the tabs (spec §5): every row but Settings
+    /// has nothing to show, so it renders dimmed — still clickable (it lands
+    /// on the engine gate). Settings stays live and undimmed.
+    var tabsGated: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -29,7 +36,7 @@ struct SidebarView: View {
             row(.knowledgeBase, label: "Knowledge Base", system: "books.vertical")
             Spacer().frame(height: 10)
             groupLabel("App")
-            row(.settings,      label: "Settings",       system: "gearshape")
+            row(.settings,      label: "Settings",       system: "gearshape", attention: settingsAttention)
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -47,6 +54,11 @@ struct SidebarView: View {
         }
     }
 
+    /// Pure dimming rule: only while gated, and never the Settings row.
+    nonisolated static func isDimmed(_ item: SidebarItem, tabsGated: Bool) -> Bool {
+        tabsGated && item != .settings
+    }
+
     private func groupLabel(_ text: String) -> some View {
         Text(text.uppercased())
             .font(DS.sans(10.5, weight: .medium))
@@ -58,7 +70,7 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0) -> some View {
+    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0, attention: Bool = false) -> some View {
         let isActive = selection == item
         Button {
             selection = item
@@ -71,6 +83,9 @@ struct SidebarView: View {
                 Text(label)
                     .font(DS.sans(13))
                     .foregroundStyle(isActive ? DS.Ink.p1 : DS.Ink.p2)
+                if attention {
+                    Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
+                }
                 Spacer(minLength: 0)
                 if badge > 0 {
                     Text("\(badge)")
@@ -81,6 +96,9 @@ struct SidebarView: View {
                         .background(Capsule().fill(DS.Accent.fill))
                 }
             }
+            // Same 0.5 dimming the app uses for unavailable controls
+            // (SlotEditForm's disabled runtime picker, done task cards).
+            .opacity(Self.isDimmed(item, tabsGated: tabsGated) ? 0.5 : 1)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -122,9 +122,8 @@ struct UpcomingStripView: View {
         if let err = state.scheduleService.lastError {
             // scoutctl failed — show the actual reason instead of a generic
             // "nothing to show" message. Common cause on macOS: scoutctl
-            // not on the .app bundle's PATH (now also fixed by
-            // AppState.resolveScoutctlPath, but kept as a safety net for
-            // installs we don't know about).
+            // not on the .app bundle's PATH (now also fixed by resolving
+            // the engine through EngineLocator instead of relying on PATH).
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")

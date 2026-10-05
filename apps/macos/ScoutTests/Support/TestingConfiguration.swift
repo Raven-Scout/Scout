@@ -19,7 +19,14 @@ extension AppState.Configuration {
         // nothing stores a value in it.
         defaults: UserDefaults = UserDefaults(suiteName: "scout.tests.\(UUID().uuidString)")!
     ) -> AppState.Configuration {
-        AppState.Configuration(
+        // Never the real home — a test graph must never locate (or
+        // doctor-check) the user's real engine.
+        let engineHome = scoutDirectory.appendingPathComponent("engine-home", isDirectory: true)
+        let testInstall = EngineInstall(
+            root: scoutDirectory, scoutctl: URL(fileURLWithPath: "/usr/bin/false"),
+            python: nil, version: nil, vault: scoutDirectory
+        )
+        return AppState.Configuration(
             scoutDirectory: scoutDirectory,
             runner: runner,
             fileEvents: NoopFS(),
@@ -30,6 +37,8 @@ extension AppState.Configuration {
             defaults: defaults,
             claudeSessionsDirectory: scoutDirectory.appendingPathComponent(".claude-projects"),
             parseCacheURL: sandboxParseCacheURL(in: scoutDirectory),
+            engineLayout: EngineLayout(home: engineHome),
+            initialEngineState: .external(testInstall, .unknown("test")),
             startsBackgroundWork: false
         )
     }

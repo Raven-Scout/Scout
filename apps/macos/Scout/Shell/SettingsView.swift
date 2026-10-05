@@ -54,18 +54,11 @@ struct SettingsView: View {
                         ) {
                             SettingsToggle(isOn: $launchMinimized)
                         }
-                        SettingsRow(
-                            title: "Scout directory",
-                            help: "Read-only. The plugin owns this path; the app reads from it."
-                        ) {
-                            Text(scoutDirPath)
-                                .font(DS.mono(11.5, weight: .medium))
-                                .foregroundStyle(DS.Ink.p3)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 5)
-                                .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.sunk))
-                        }
                     }
+                }
+
+                section(label: "Engine") {
+                    EngineSettingsSection(health: appState.engineHealth)
                 }
 
                 section(label: "Claude Code") {
@@ -193,8 +186,6 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             aboutKV("Version", value: appVersion)
                             aboutKV("Bundle",  value: bundleId)
-                            aboutKV("Plugin",  value: "scout-plugin")
-                            aboutKV("Daemon",  value: "healthy", valueColor: DS.Status.ok)
                         }
                     }
                 }
@@ -255,10 +246,6 @@ struct SettingsView: View {
     }
 
     // MARK: - Derived values
-
-    private var scoutDirPath: String {
-        "~/Scout"
-    }
 
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

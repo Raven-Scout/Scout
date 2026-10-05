@@ -9,6 +9,59 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from _pytest.runner import runtestprotocol
+
+# ---- quarantine: bounded reruns for known-flaky tests ------------------------
+#
+# pytest-rerunfailures isn't a dependency, so known flakes are retried here.
+# ``@pytest.mark.flaky(reruns=2, issue="https://github.com/Raven-Scout/Scout/issues/N")``
+# reruns a test whose *call* phase failed — a setup or teardown error is never
+# retried — with fresh function-scoped fixtures, up to ``reruns`` more times.
+# Only the last attempt is reported, so a test that fails every attempt still
+# fails the run. Every earlier failure is listed under "quarantined flaky
+# reruns" in the terminal summary with its issue, so a quarantined test that
+# starts failing more often stays visible. Remove the marker when the issue is
+# fixed; never add one without an issue.
+
+_FLAKY_RERUNS = pytest.StashKey[list[str]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.stash[_FLAKY_RERUNS] = []
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> bool | None:
+    marker = item.get_closest_marker("flaky")
+    if marker is None:
+        return None
+    issue = marker.kwargs.get("issue")
+    if not issue:
+        raise pytest.UsageError(f"{item.nodeid}: @pytest.mark.flaky needs issue=<tracking issue URL>")
+    reruns = max(0, int(marker.kwargs.get("reruns", 2)))
+
+    item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    reports = runtestprotocol(item, nextitem=nextitem, log=False)
+    for attempt in range(1, reruns + 1):
+        call = next((r for r in reports if r.when == "call"), None)
+        if call is None or not call.failed:
+            break
+        crash = getattr(call.longrepr, "reprcrash", None)
+        why = crash.message.splitlines()[0] if crash and crash.message else "failed"
+        item.config.stash[_FLAKY_RERUNS].append(f"{item.nodeid} attempt {attempt}/{reruns + 1}: {why} ({issue})")
+        reports = runtestprotocol(item, nextitem=nextitem, log=False)
+    for report in reports:
+        item.ihook.pytest_runtest_logreport(report=report)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    return True
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter, config: pytest.Config) -> None:
+    reruns = config.stash.get(_FLAKY_RERUNS, [])
+    if reruns:
+        terminalreporter.section("quarantined flaky reruns", yellow=True)
+        for line in reruns:
+            terminalreporter.line(f"RERUN {line}")
 
 
 @pytest.fixture(autouse=True)
