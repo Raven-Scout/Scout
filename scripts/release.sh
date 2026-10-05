@@ -115,6 +115,8 @@ check_bundled_engine() {
 build_and_publish() {
   local tag="$1" v="$2" sha="$3" slug="$4" kind="$5"
   local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev latest at hook
+  [ "${SKIP_NOTARIZE:-0}" != 1 ] || [ "${SKIP_RELEASE:-0}" = 1 ] \
+    || die "SKIP_NOTARIZE=1 would publish an app Gatekeeper blocks; add SKIP_RELEASE=1 for a dry run"
   ident="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
   profile="${SCOUT_NOTARY_PROFILE:-scout-notary}"
 
@@ -128,9 +130,12 @@ build_and_publish() {
   at="$("$PY" -m scout.scripts.versioning --repo-root "$wt" check)" || die "versions drift across the manifests at $sha"
   if [ "$kind" = release ]; then
     [ "$at" = "$v" ] || die "$sha carries version $at, not $v. Merge the release PR first."
-    grep -q "^## \[$v\]" "$wt/plugin/CHANGELOG.md" || die "plugin/CHANGELOG.md at $sha has no [$v] section"
-    grep -q "^## \[$v\]" "$wt/apps/macos/CHANGELOG.md" || die "apps/macos/CHANGELOG.md at $sha has no [$v] section"
+  else
+    [ "$at" = "$v" ] \
+      || die "$sha carries version $at, not $v. Cut release candidates from release/v$v (run scripts/release.sh prepare first)."
   fi
+  grep -q "^## \[$v\]" "$wt/plugin/CHANGELOG.md" || die "plugin/CHANGELOG.md at $sha has no [$v] section"
+  grep -q "^## \[$v\]" "$wt/apps/macos/CHANGELOG.md" || die "apps/macos/CHANGELOG.md at $sha has no [$v] section"
 
   idents="$(security find-identity -v -p codesigning)"
   case "$idents" in *"$ident"*) ;; *) die "no codesigning identity matching \"$ident\" in the keychain" ;; esac
@@ -138,11 +143,14 @@ build_and_publish() {
   build="$wt/apps/macos/build"
   count="$(git -C "$REPO_ROOT" rev-list --count "$sha")"
   echo "→ Building Scout $v (build $count) from $sha"
-  xcodebuild -project "$wt/apps/macos/Scout.xcodeproj" -scheme Scout -configuration Release \
+  if ! xcodebuild -project "$wt/apps/macos/Scout.xcodeproj" -scheme Scout -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$build" \
     MARKETING_VERSION="$v" CURRENT_PROJECT_VERSION="$count" SCOUT_PLUGIN_FLOOR="$v" \
     CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64" \
-    clean build >/dev/null
+    clean build >"$wt/xcodebuild.log" 2>&1; then
+    tail -n 40 "$wt/xcodebuild.log" >&2
+    die "xcodebuild failed (full log: $wt/xcodebuild.log)"
+  fi
   app="$build/Build/Products/Release/Scout.app"
   [ -d "$app" ] || die "Scout.app not found at $app"
   check_bundled_engine "$app" "$v" "$kind"
@@ -217,11 +225,18 @@ build_and_publish() {
   echo "✓ Published $tag"
 }
 
+# Strict, bash-3.2-safe tag-shape regexes (no glob over-acceptance: no trailing junk, no leading zeros, no "-rc.0").
+RELEASE_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+RC_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*$'
+
 cmd_finalize() {
   local tag="${1:-}" v slug sha
   slug="$(require_slug)"
-  case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "finalize needs vX.Y.Z, got '$tag'" ;; esac
-  case "$tag" in *-*) die "finalize is for releases; use 'rc' for $tag" ;; esac
+  if [[ $tag =~ $RC_TAG_RE ]]; then
+    die "finalize is for releases; use 'rc' for $tag"
+  elif [[ ! $tag =~ $RELEASE_TAG_RE ]]; then
+    die "finalize needs vX.Y.Z, got '$tag'"
+  fi
   v="${tag#v}"
   git -C "$REPO_ROOT" fetch -q --tags origin
   ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists locally"
@@ -233,15 +248,16 @@ cmd_finalize() {
 cmd_rc() {
   local tag="${1:-}" v slug sha
   slug="$(require_slug)"
-  case "$tag" in v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*) ;; *) die "rc needs vX.Y.Z-rc.N, got '$tag'" ;; esac
+  [[ $tag =~ $RC_TAG_RE ]] || die "rc needs vX.Y.Z-rc.N, got '$tag'"
   v="${tag#v}"
   v="${v%%-rc.*}"
   [ -z "$(git -C "$REPO_ROOT" status --porcelain)" ] || die "working tree not clean"
-  git -C "$REPO_ROOT" fetch -q --tags origin
+  git -C "$REPO_ROOT" fetch -q --prune --tags origin
   ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists locally"
   [ -z "$(git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/$tag")" ] || die "tag $tag already exists on origin"
   sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-  [ -n "$(git -C "$REPO_ROOT" branch -r --contains "$sha")" ] || die "HEAD $sha is not on any pushed branch; push it first"
+  [ -n "$(git -C "$REPO_ROOT" branch -r --list 'origin/*' --contains "$sha")" ] \
+    || die "HEAD $sha is not on any pushed branch; push it first"
   build_and_publish "$tag" "$v" "$sha" "$slug" rc
 }
 

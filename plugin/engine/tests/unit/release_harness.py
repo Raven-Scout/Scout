@@ -32,16 +32,23 @@ _STUB = dedent(
     case "$name" in
       security) echo '  1) ABCDEF "Developer ID Application: Test (TEAMID)"' ;;
       xcodebuild)
-        dd=""; mv_=""; prev=""
+        if [ -n "${FAKE_XCODEBUILD_EXIT:-}" ]; then
+          echo "error: fake compile failure" >&2
+          exit "$FAKE_XCODEBUILD_EXIT"
+        fi
+        dd=""; proj=""; prev=""
         for a in "$@"; do
           [ "$prev" = "-derivedDataPath" ] && dd="$a"
-          case "$a" in MARKETING_VERSION=*) mv_="${a#MARKETING_VERSION=}";; esac
+          [ "$prev" = "-project" ] && proj="$a"
           prev="$a"
         done
+        wt="${proj%/apps/macos/Scout.xcodeproj}"
         app="$dd/Build/Products/Release/Scout.app"
         mkdir -p "$app/Contents/Resources"
         if [ -z "${FAKE_NO_ENGINE:-}" ]; then
-          printf '{"version": "%s"}\\n' "${FAKE_ENGINE_VERSION:-$mv_}" > "$app/Contents/Resources/engine-release.json"
+          pin="$wt/plugin/.claude-plugin/plugin.json"
+          ev="$(grep '"version"' "$pin" | head -1 | sed -E 's/.*"version": *"([^"]+)".*/\\1/')"
+          printf '{"version": "%s"}\\n' "${FAKE_ENGINE_VERSION:-$ev}" > "$app/Contents/Resources/engine-release.json"
         fi
         [ -n "${FAKE_APPCAST:-}" ] && echo '<rss/>' > "$dd/appcast.xml"
         exit 0 ;;
@@ -50,7 +57,11 @@ _STUB = dedent(
       gh)
         case "$1 $2" in
           "pr create") echo "https://github.com/Raven-Scout/Scout/pull/999" ;;
-          "release create") [ -n "${FAKE_GH_EXIT:-}" ] && exit "$FAKE_GH_EXIT"; echo "$3" > "$FAKE_LOG.latest" ;;
+          "release create")
+            [ -n "${FAKE_GH_EXIT:-}" ] && exit "$FAKE_GH_EXIT"
+            prerelease=""
+            for a in "$@"; do [ "$a" = "--prerelease" ] && prerelease=1; done
+            [ -n "$prerelease" ] || echo "$3" > "$FAKE_LOG.latest" ;;
           "api repos/Raven-Scout/Scout/releases/latest") cat "$FAKE_LOG.latest" ;;
         esac ;;
     esac
