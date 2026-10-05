@@ -6,6 +6,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Custom connectors: Scout can read any tool you have connected** (`engine/scout/custom_connectors.py`, `engine/scout/scripts/custom_assembly.py`, `engine/scout/scripts/custom_connector_ops.py`, `phases/custom/`, `phases/presets/`) — a tool without a built-in phase (Outlook, Teams, a CRM, a data platform, a CLI) is now one entry in the vault's `connectors.custom.yaml`: its tools for any of three activities (inbound, outbound, lookup), plus a sentence on what matters or a `mail` / `chat` / `calendar` preset carrying the tuned rules from the shipped phases. Assembly renders each enabled entry into `SKILL.md` (and lookups into `RESEARCH.md`) after the shipped connector sections. `scoutctl connectors custom add|remove|validate|list` and `scoutctl connectors presets` manage the file — one JSON object per call, exit 0 / 1 error / 2 invalid / 3 saved-but-not-live — and are the contract the Mac app will call. An add or remove reaches the live brain files through the normal upgrade reconciliation (fast-forward, merge, or a `.proposed-merge` sidecar), so your own `SKILL.md` edits survive; if the plugin changed since your last update it waits for `/scout-update`. Custom connectors show up in connector health (`tier: custom`, never critical unless you opt in), in `scoutctl connectors detect` and `connectors list --json`, and in the connector-call log. They never enter `connectors.snapshot.json`.
+
+### Fixed
+- **Brain-file merges no longer conflict over a final newline** (`engine/scout/scripts/three_way_merge.py`) — `git merge-file` reported a conflict when only one side ended in a newline, e.g. after an editor saved `SKILL.md`. All three merge inputs are now newline-terminated before merging; assembled files are byte-for-byte unchanged.
+- **A `scout-config.yaml` that isn't a mapping is reported, not a traceback** (`engine/scout/scripts/bootstrap.py`) — `bootstrap upgrade` / `auto` and the new connector commands share one config reader, which rejects a non-mapping file or section with a clear error.
+
 ## [0.14.0] - 2026-10-05
 
 
