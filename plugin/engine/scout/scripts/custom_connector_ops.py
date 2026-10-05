@@ -1,0 +1,270 @@
+"""add / remove / validate / list for custom connectors — the logic behind `scoutctl connectors custom`.
+
+Kept out of cli.py so the contract the desktop app and the wizards call (one JSON
+object + stable exit codes) is unit-testable without Typer. See
+docs/superpowers/specs/2026-10-02-custom-connectors-design.md §3.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from scout import custom_connectors as cc
+from scout.scripts.bootstrap import (
+    BootstrapConfig,
+    CustomApplyResult,
+    _template_vars,
+    apply_custom_change,
+    config_from_vault,
+    write_connector_config,
+)
+from scout.scripts.bootstrap_lock import LockBusyError, acquire_lock_with_wait, release_lock
+from scout.scripts.connector_detect import run_bash_probe
+from scout.scripts.custom_assembly import render_custom_sections
+
+_EXIT_CODES = {
+    "applied": 0,
+    "unchanged": 0,
+    "valid": 0,
+    "dry-run": 0,
+    "error": 1,
+    "invalid": 2,
+    "probe-failed": 2,
+    "deferred": 3,
+    "conflict": 3,
+}
+
+ProbeRunner = Callable[[str], int]  # command -> exit code
+
+
+def _message(result: CustomApplyResult) -> str:
+    if result.status == "applied":
+        return "Live: the next scheduled run reads it."
+    if result.status == "unchanged":
+        return "Already up to date."
+    if result.status == "conflict":
+        files = ", ".join(result.sidecars)
+        return (
+            f"Saved, but {files} needs your review: merge it into the live file, then run "
+            f"`scoutctl bootstrap resolve {result.sidecars[0].removesuffix('.proposed-merge')}`."
+        )
+    if result.waiting:
+        files = ", ".join(result.waiting)
+        return (
+            f"Saved. {files} has a pending review (a .proposed-merge sidecar or unresolved conflict markers); "
+            "this change lands after you resolve it and run /scout-update."
+        )
+    return "Saved. The plugin changed since your last update, so this takes effect after /scout-update."
+
+
+@dataclass
+class Outcome:
+    status: str
+    key: str = ""
+    issues: list[cc.Issue] = field(default_factory=list)
+    message: str = ""
+    updated: list[str] = field(default_factory=list)
+    sidecars: list[str] = field(default_factory=list)
+    waiting: list[str] = field(default_factory=list)
+    sections: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def exit_code(self) -> int:
+        return _EXIT_CODES[self.status]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "key": self.key,
+            "message": self.message,
+            "issues": [{"path": i.path, "message": i.message} for i in self.issues],
+            "updated": self.updated,
+            "sidecars": self.sidecars,
+            "waiting": self.waiting,
+            "sections": self.sections,
+        }
+
+
+def _split(raw_def: Any) -> tuple[str, dict[str, Any], list[cc.Issue]]:
+    if not isinstance(raw_def, dict):
+        return "", {}, [cc.Issue("definition", "must be a mapping with a `key` field")]
+    body = dict(raw_def)
+    key = body.pop("key", None)
+    if not isinstance(key, str) or not key:
+        return "", body, [cc.Issue("key", "required: the connector key, e.g. outlook")]
+    return key, body, []
+
+
+def validate(raw_def: Any, *, plugin_root: Path) -> Outcome:
+    key, body, issues = _split(raw_def)
+    if not issues:
+        _, issues = cc.parse_connector(
+            key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
+        )
+    return Outcome("invalid" if issues else "valid", key, issues)
+
+
+def _no_vault(vault: Path) -> Outcome | None:
+    if (vault / "scout-config.yaml").exists():
+        return None
+    return Outcome("error", message=f"no vault at {vault} — run /scout-setup first")
+
+
+def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> BootstrapConfig | Outcome:
+    """config_from_vault, with a malformed scout-config.yaml surfaced as an Outcome."""
+    try:
+        return config_from_vault(vault, plugin_root=plugin_root, plugin_version=plugin_version)
+    except (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError) as e:
+        return Outcome("error", key, message=f"scout-config.yaml could not be read: {e}")
+
+
+def _commit(
+    key: str,
+    before: BootstrapConfig,
+    after: BootstrapConfig,
+    custom_before: dict[str, cc.CustomConnector],
+    custom_after: dict[str, cc.CustomConnector],
+    raw_after: dict[str, Any],
+) -> Outcome:
+    """Apply first, then write the definition and config, all under the session lock."""
+    vault = after.vault
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        acquire_lock_with_wait(lock)
+    except LockBusyError:
+        return Outcome("error", key, message="A Scout session is running; try again when it finishes.")
+    try:
+        result = apply_custom_change(before, after, custom_before=custom_before, custom_after=custom_after)
+        cc.write(vault, raw_after)
+        write_connector_config(vault, enabled=after.enabled_connectors, inputs=after.connector_inputs)
+    finally:
+        release_lock(lock)
+    return Outcome(
+        result.status,
+        key,
+        message=_message(result),
+        updated=result.updated,
+        sidecars=result.sidecars,
+        waiting=result.waiting,
+    )
+
+
+def add(
+    vault: Path,
+    raw_def: Any,
+    *,
+    plugin_root: Path,
+    plugin_version: str,
+    inputs: dict[str, str],
+    dry_run: bool = False,
+    unverified: bool = False,
+    probe_runner: ProbeRunner = run_bash_probe,
+) -> Outcome:
+    if (missing := _no_vault(vault)) is not None:
+        return missing
+    key, body, issues = _split(raw_def)
+    if issues:
+        return Outcome("invalid", key, issues)
+    connector, issues = cc.parse_connector(
+        key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
+    )
+    before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+    if isinstance(before, Outcome):
+        return before
+    new_inputs = dict(before.connector_inputs)
+    for name, value in inputs.items():
+        new_inputs[f"{key}__{name}"] = value
+    if connector is not None:
+        needs_path = f"connectors.{key}.needs_user_input"
+        for name in sorted(set(inputs) - set(connector.needs_user_input)):
+            issues.append(cc.Issue(needs_path, f"{name!r} is not an input this connector declares"))
+        for name in connector.needs_user_input:
+            if not new_inputs.get(f"{key}__{name}"):
+                issues.append(cc.Issue(needs_path, f"no value for {name!r}; pass --input {name}=<value>"))
+    if issues or connector is None:
+        return Outcome("invalid", key, issues)
+    if connector.probe.kind == "bash" and not unverified:
+        rc = probe_runner(connector.probe.value)
+        if rc != 0:
+            message = f"`{connector.probe.value}` exited {rc}"
+            return Outcome("probe-failed", key, [cc.Issue(f"connectors.{key}.probe", message)])
+
+    current = cc.load(vault, plugin_root=plugin_root)
+    after = dataclasses.replace(
+        before, enabled_connectors=before.enabled_connectors | {key}, connector_inputs=new_inputs
+    )
+    if dry_run:
+        dry_run_vars = _template_vars(after)
+        sections = [
+            {"target": f"{kind}.md", "activity": s.activity, "body": s.rendered_body}
+            for kind in ("SKILL", "RESEARCH")
+            for s in render_custom_sections(plugin_root, kind, {key: connector}, {key}, dry_run_vars, new_inputs)
+        ]
+        return Outcome("dry-run", key, sections=sections)
+    return _commit(
+        key,
+        before,
+        after,
+        current.connectors,
+        {**current.connectors, key: connector},
+        {**current.raw, key: body},
+    )
+
+
+def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+    if (missing := _no_vault(vault)) is not None:
+        return missing
+    current = cc.load(vault, plugin_root=plugin_root)
+    if key not in current.raw:
+        return Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
+    before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+    if isinstance(before, Outcome):
+        return before
+    after = dataclasses.replace(
+        before,
+        enabled_connectors=before.enabled_connectors - {key},
+        connector_inputs={k: v for k, v in before.connector_inputs.items() if not k.startswith(f"{key}__")},
+    )
+    return _commit(
+        key,
+        before,
+        after,
+        current.connectors,
+        {k: c for k, c in current.connectors.items() if k != key},
+        {k: v for k, v in current.raw.items() if k != key},
+    )
+
+
+def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
+    current = cc.load(vault, plugin_root=plugin_root)
+    issues = list(current.issues)
+    enabled: set[str] = set()
+    if (vault / "scout-config.yaml").exists():
+        try:
+            enabled = config_from_vault(vault, plugin_root=plugin_root, plugin_version="").enabled_connectors
+        except (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError) as e:
+            issues.append(cc.Issue("scout-config.yaml", f"could not be read: {e}"))
+    rows = [
+        {
+            "key": c.key,
+            "display_name": c.display_name,
+            "enabled": c.key in enabled,
+            "server": c.server,
+            "health_key": c.health_key,
+            "preset": c.preset,
+            "activities": [a for a in cc.ACTIVITIES if a in c.activities],
+        }
+        for c in sorted(current.connectors.values(), key=lambda c: c.key)
+    ]
+    return {"connectors": rows, "issues": [{"path": i.path, "message": i.message} for i in issues]}
+
+
+def presets_json(plugin_root: Path) -> dict[str, Any]:
+    return {"presets": cc.load_presets(plugin_root)}

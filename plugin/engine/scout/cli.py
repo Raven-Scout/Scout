@@ -589,6 +589,99 @@ def _register_connectors() -> None:
                     err=True,
                 )
 
+    custom_app = typer.Typer(help="Custom connectors: any tool Scout should read (connectors.custom.yaml).")
+    connectors_app.add_typer(custom_app, name="custom")
+
+    def _plugin_root() -> Path:
+        return Path(__file__).parent.parent.parent
+
+    def _emit(payload: dict, code: int = 0) -> None:
+        import json as _json
+
+        typer.echo(_json.dumps(payload, indent=2))
+        raise typer.Exit(code=code)
+
+    def _read_definition(file: str):
+        """Parse a definition file ('-' = stdin). Returns (data, None) or (None, Outcome)."""
+        import yaml as _yaml
+
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome
+
+        try:
+            text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
+            return _yaml.safe_load(text), None
+        except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
+            return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
+
+    @custom_app.command("add")
+    def cli_custom_add(
+        file: str = typer.Option(..., "--file", help="Definition (YAML or JSON) with a `key` field; '-' reads stdin."),
+        input_: list[str] = typer.Option([], "--input", help="NAME=VALUE for a needs_user_input entry (repeatable)."),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Show the sections it would render; write nothing."),
+        unverified: bool = typer.Option(False, "--unverified", help="Skip the bash probe (the app path)."),
+    ) -> None:
+        """Add or replace a custom connector and apply it to the live brain files."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome, add
+
+        data, failed = _read_definition(file)
+        if failed is not None:
+            _emit(failed.to_json(), failed.exit_code)
+        inputs: dict[str, str] = {}
+        for item in input_:
+            name, sep, value = item.partition("=")
+            if not sep or not name:
+                bad = Outcome("invalid", issues=[Issue("--input", f"{item!r} is not NAME=VALUE")])
+                _emit(bad.to_json(), bad.exit_code)
+            inputs[name] = value
+        outcome = add(
+            _paths.data_dir(),
+            data,
+            plugin_root=_plugin_root(),
+            plugin_version=__version__,
+            inputs=inputs,
+            dry_run=dry_run,
+            unverified=unverified,
+        )
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("remove")
+    def cli_custom_remove(key: str) -> None:
+        """Remove a custom connector and apply the removal."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import remove
+
+        outcome = remove(_paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__)
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("validate")
+    def cli_custom_validate(file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin.")) -> None:
+        """Validate one definition without writing anything."""
+        from scout.scripts.custom_connector_ops import validate
+
+        data, failed = _read_definition(file)
+        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root())
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("list")
+    def cli_custom_list() -> None:
+        """List custom connectors and any problems in connectors.custom.yaml."""
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import list_custom
+
+        _emit(list_custom(_paths.data_dir(), plugin_root=_plugin_root()))
+
+    @connectors_app.command("presets")
+    def cli_connectors_presets() -> None:
+        """Preset names and their default guidance per activity (JSON)."""
+        from scout.scripts.custom_connector_ops import presets_json
+
+        _emit(presets_json(_plugin_root()))
+
 
 _register_connectors()
 
