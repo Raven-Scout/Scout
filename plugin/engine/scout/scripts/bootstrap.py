@@ -495,13 +495,7 @@ def _assemble(
         cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
     ):
         bodies.append(section.rendered_body)
-    # A trailing newline matters beyond style: `git merge-file` treats a
-    # "no newline at end of file" mismatch between base/ours/theirs as a
-    # conflict even when the visible text agrees (confirmed against git
-    # merge-file directly) — without this, any live edit that a normal
-    # editor save terminates with "\n" would spuriously conflict against an
-    # assembly that doesn't.
-    return "\n\n".join(bodies) + "\n"
+    return "\n\n".join(bodies)
 
 
 def _snapshot_dir(cfg: BootstrapConfig) -> Path:

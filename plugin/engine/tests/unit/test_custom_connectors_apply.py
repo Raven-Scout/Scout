@@ -96,6 +96,27 @@ def test_add_keeps_the_users_own_edits(tmp_path: Path):
     assert "## Mail suite Inbound Scan" in text
 
 
+def test_existing_vault_trailing_newline_does_not_spuriously_conflict(tmp_path: Path):
+    """A real installed vault's SKILL.md/snapshot end without a trailing newline
+    (``_assemble`` doesn't add one). A normal editor save of a hand edit adds one
+    on the live side only — that alone must not stop the custom-connector change
+    from merging in cleanly (regression for the git merge-file final-newline
+    conflict; see three_way_merge._pad_trailing_newline)."""
+    before = _installed(tmp_path)
+    snapshot = (_snap(before) / "SKILL.md").read_text()
+    live_path = before.vault / "SKILL.md"
+    assert not snapshot.endswith("\n")
+    assert live_path.read_text() == snapshot
+    lines = snapshot.splitlines()
+    lines.insert(2, "Local rule: keep the briefing under one screen.")
+    live_path.write_text("\n".join(lines) + "\n")  # editor-style save: adds a trailing "\n"
+    result, _, _ = _add_suite(before)
+    assert result.status == "applied"
+    text = live_path.read_text()
+    assert "Local rule: keep the briefing under one screen." in text
+    assert "## Mail suite Inbound Scan" in text
+
+
 def test_plugin_drift_defers_and_writes_nothing(tmp_path: Path):
     before = _installed(tmp_path)
     snap = _snap(before) / "SKILL.md"
