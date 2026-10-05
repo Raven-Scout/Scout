@@ -179,7 +179,11 @@ def parse_connector(
         issues.append(Issue(f"{base}.probe", "required"))
 
     preset = body.get("preset")
-    if preset is not None and preset not in presets:
+    if preset is not None and not isinstance(preset, str):
+        # Checked before the `in presets` lookup: a list/mapping is unhashable.
+        issues.append(Issue(f"{base}.preset", "must be a preset name"))
+        preset = None
+    elif preset is not None and preset not in presets:
         known = ", ".join(sorted(presets)) or "none"
         issues.append(Issue(f"{base}.preset", f"unknown preset {preset!r} (known: {known})"))
         preset = None
@@ -228,17 +232,26 @@ def parse_connector(
     else:
         server = None
 
-    needs = body.get("needs_user_input") or []
+    # Absent or empty (YAML null) means "none"; any other value must have the right
+    # type — `needs_user_input: false` or `notes: 0` is an issue, not silently dropped.
+    needs = body.get("needs_user_input")
+    if needs is None:
+        needs = []
     if not isinstance(needs, list) or not all(isinstance(n, str) and _INPUT_RE.match(n) for n in needs):
         issues.append(Issue(f"{base}.needs_user_input", "must be a list of lowercase names like workspace_id"))
         needs = []
 
-    types = body.get("required_in_types") or []
-    if not isinstance(types, list) or not set(types) <= SLOT_TYPES:
+    types = body.get("required_in_types")
+    if types is None:
+        types = []
+    # Items are type-checked before set(): a nested list is unhashable.
+    if not isinstance(types, list) or not all(isinstance(t, str) and t in SLOT_TYPES for t in types):
         issues.append(Issue(f"{base}.required_in_types", f"must be a list drawn from {sorted(SLOT_TYPES)}"))
         types = []
 
-    notes = body.get("notes") or ""
+    notes = body.get("notes")
+    if notes is None:
+        notes = ""
     if not isinstance(notes, str):
         issues.append(Issue(f"{base}.notes", "must be text"))
         notes = ""
@@ -276,7 +289,10 @@ def parse_file(raw: Any, *, reserved: set[str], presets: dict[str, dict[str, str
         return CustomLoad(issues=[Issue(f"{CUSTOM_FILE}.connectors", "must be a mapping of key → definition")])
     out = CustomLoad(raw={str(k): v for k, v in conns.items()})
     for key, body in out.raw.items():
-        connector, issues = parse_connector(key, body, reserved=reserved, presets=presets)
+        try:
+            connector, issues = parse_connector(key, body, reserved=reserved, presets=presets)
+        except Exception as e:  # noqa: BLE001 — a validator bug costs this entry, never the whole file
+            connector, issues = None, [Issue(f"connectors.{key}", f"could not be validated: {e}")]
         out.issues += issues
         if connector is not None:
             out.connectors[key] = connector

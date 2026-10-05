@@ -116,6 +116,43 @@ def test_parse_file_keeps_valid_entries_when_another_is_broken():
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("preset", ["mail"]),
+        ("preset", {"a": "b"}),
+        ("required_in_types", [["briefing"]]),
+        ("required_in_types", 0),
+        ("needs_user_input", False),
+        ("notes", 0),
+    ],
+)
+def test_wrongly_typed_field_is_an_issue_and_a_valid_sibling_still_parses(field, value):
+    """F1: an unhashable `preset` / `required_in_types` item crashed the whole engine with
+    TypeError, and falsy non-text values were silently coerced. Each is an issue on that
+    entry only; the other entries keep working (spec §2)."""
+    raw = {"schema_version": 1, "connectors": {"suite_mail": MAIL, "bad_one": {**MAIL, field: value}}}
+    loaded = cc.parse_file(raw, reserved=RESERVED, presets=PRESETS)
+    assert set(loaded.connectors) == {"suite_mail"}
+    assert any(i.path == f"connectors.bad_one.{field}" for i in loaded.issues), _messages(loaded.issues)
+
+
+def test_parse_file_turns_an_unexpected_validation_error_into_an_issue(monkeypatch):
+    """F1 defense in depth: a bug in parse_connector costs that one entry, not the file."""
+    real = cc.parse_connector
+
+    def flaky(key, body, **kw):
+        if key == "bad_one":
+            raise RuntimeError("boom")
+        return real(key, body, **kw)
+
+    monkeypatch.setattr(cc, "parse_connector", flaky)
+    raw = {"schema_version": 1, "connectors": {"suite_mail": MAIL, "bad_one": MAIL}}
+    loaded = cc.parse_file(raw, reserved=RESERVED, presets=PRESETS)
+    assert set(loaded.connectors) == {"suite_mail"}
+    assert [(i.path, i.message) for i in loaded.issues] == [("connectors.bad_one", "could not be validated: boom")]
+
+
+@pytest.mark.parametrize(
     "raw", [["a list"], {"schema_version": 2, "connectors": {}}, {"schema_version": 1, "connectors": []}]
 )
 def test_parse_file_rejects_bad_top_level(raw):

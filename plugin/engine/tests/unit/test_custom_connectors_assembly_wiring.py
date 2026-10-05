@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from scout import custom_connectors as cc
+from scout.connectors import Tier, load_registry
 from scout.scripts.bootstrap import BootstrapConfig, _assemble, _template_vars, install
 from scout.scripts.bootstrap_doctor import run_doctor
+from scout.scripts.connector_probes import resolve_registry
 from scout.scripts.phase_backport import build_rendered_sections, plan_backport
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -92,6 +94,21 @@ def test_doctor_warns_on_custom_file_issues(tmp_path: Path):
     cc.write(vault, {"broken": {"display_name": "B"}})
     report = run_doctor(vault=vault, check_jobs=False)
     assert any(cc.CUSTOM_FILE in w and "connectors.broken" in w for w in report.warnings)
+
+
+def test_one_malformed_entry_leaves_the_valid_one_working_everywhere(tmp_path: Path):
+    """F1: `preset: [mail]` on one entry raised TypeError (unhashable) out of the
+    parser and took down assembly, the roster, the probe registry and doctor."""
+    vault = tmp_path / "Scout"
+    install(_cfg(vault, set()))
+    cc.write(vault, {"bad_one": {**SUITE, "preset": ["mail"]}, "suite_mail": SUITE})
+
+    assert "## Mail suite Inbound Scan" in _assemble(_cfg(vault, {"suite_mail", "bad_one"}), "SKILL")
+    assert load_registry(data_dir=vault)["mcp:example_suite"].tier is Tier.CUSTOM
+    probes = resolve_registry(plugin_root=PLUGIN, data_dir=vault)
+    assert "suite_mail" in probes and "bad_one" not in probes
+    report = run_doctor(vault=vault, check_jobs=False)
+    assert any(cc.CUSTOM_FILE in w and "connectors.bad_one.preset" in w for w in report.warnings)
 
 
 def test_custom_file_warnings_print_once_per_install(tmp_path: Path, capsys):
