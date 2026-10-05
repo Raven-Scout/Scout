@@ -1,0 +1,182 @@
+"""custom_connectors: parsing and validation of connectors.custom.yaml entries."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from scout import custom_connectors as cc
+
+PRESETS = {"mail": {"summary": "Mail", "inbound": "Inbox rules for {{USER_NAME}}.", "outbound": "Sent rules."}}
+RESERVED = {"slack", "email", "gmail", "github"}
+
+
+def _parse(key: str, body: object) -> tuple[cc.CustomConnector | None, list[cc.Issue]]:
+    return cc.parse_connector(key, body, reserved=RESERVED, presets=PRESETS)
+
+
+def _messages(issues: list[cc.Issue]) -> str:
+    return " | ".join(f"{i.path}: {i.message}" for i in issues)
+
+
+MAIL = {
+    "display_name": "Mail suite",
+    "server": "example_suite",
+    "probe": "mcp__example_suite__list_folders",
+    "preset": "mail",
+    "inbound": {"tools": ["mcp__example_suite__search_messages"]},
+    "outbound": {"tools": ["mcp__example_suite__search_messages"]},
+}
+
+
+def test_valid_mcp_connector_fills_guidance_from_preset():
+    c, issues = _parse("suite_mail", MAIL)
+    assert issues == []
+    assert c is not None
+    assert c.server == "example_suite"
+    assert c.health_key == "mcp:example_suite"
+    assert c.activities["inbound"].guidance == "Inbox rules for {{USER_NAME}}."
+    assert c.activities["inbound"].tools == (cc.ToolRef("mcp", "mcp__example_suite__search_messages"),)
+    assert "lookup" not in c.activities
+
+
+def test_explicit_focus_overrides_preset():
+    body = {**MAIL, "inbound": {"tools": MAIL["inbound"]["tools"], "focus": "Only the shared queue."}}
+    c, issues = _parse("suite_mail", body)
+    assert issues == [] and c is not None
+    assert c.activities["inbound"].guidance == "Only the shared queue."
+
+
+def test_bash_connector_without_server_keys_health_on_its_own_key():
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "inbound": {"tools": [{"bash": "tix list --assignee me"}], "focus": "Tickets that changed."},
+    }
+    c, issues = _parse("tickets", body)
+    assert issues == [] and c is not None
+    assert c.server is None
+    assert c.health_key == "tickets"
+    assert c.probe.binary == "tix"
+
+
+@pytest.mark.parametrize(
+    ("key", "body", "expected"),
+    [
+        ("Bad-Key", MAIL, "lowercase"),
+        ("slack", MAIL, "built-in"),
+        ("gmail", MAIL, "built-in"),
+        ("suite_mail", "not a mapping", "must be a mapping"),
+        ("suite_mail", {**MAIL, "colour": "blue"}, "unknown field"),
+        ("suite_mail", {k: v for k, v in MAIL.items() if k != "display_name"}, "display_name: required"),
+        ("suite_mail", {k: v for k, v in MAIL.items() if k != "probe"}, "probe: required"),
+        ("suite_mail", {**MAIL, "preset": "fax"}, "unknown preset"),
+        ("suite_mail", {**MAIL, "inbound": {"tools": []}}, "non-empty list"),
+        ("suite_mail", {**MAIL, "inbound": {"tools": ["search_messages"]}}, "not an MCP tool name"),
+        ("suite_mail", {**MAIL, "server": "other_suite"}, "belongs to server"),
+        ("suite_mail", {k: v for k, v in MAIL.items() if k != "server"}, "server: required"),
+        ("suite_mail", {"display_name": "X", "probe": MAIL["probe"], "server": "example_suite"}, "at least one"),
+        (
+            "dataplat",
+            {
+                "display_name": "D",
+                "server": "dataplat",
+                "probe": "mcp__dataplat__info",
+                "lookup": {"tools": ["mcp__dataplat__search"]},
+            },
+            "when: required",
+        ),
+        ("suite_mail", {**MAIL, "needs_user_input": ["Bad Name"]}, "needs_user_input"),
+        ("suite_mail", {**MAIL, "required_in_types": ["sometimes"]}, "required_in_types"),
+        ("suite_mail", {**MAIL, "notes": "token ghp_abcdefghijklmnop"}, "credential"),
+        ("suite_mail", {**MAIL, "inbound": {"tools": MAIL["inbound"]["tools"], "when": "x"}}, "unknown field"),
+    ],
+)
+def test_invalid_definitions_are_rejected_with_a_field_path(key, body, expected):
+    c, issues = _parse(key, body)
+    assert c is None
+    assert expected in _messages(issues)
+
+
+@pytest.mark.parametrize("text", ["Watch the task-list board.", "Use a risk-based triage.", "Ask about sk-8 sizing."])
+def test_credential_guard_ignores_ordinary_words(text):
+    c, issues = _parse("suite_mail", {**MAIL, "notes": text})
+    assert issues == [], _messages(issues)
+    assert c is not None and c.notes == text
+
+
+def test_parse_file_keeps_valid_entries_when_another_is_broken():
+    raw = {"schema_version": 1, "connectors": {"suite_mail": MAIL, "broken": {"display_name": "B"}}}
+    loaded = cc.parse_file(raw, reserved=RESERVED, presets=PRESETS)
+    assert set(loaded.connectors) == {"suite_mail"}
+    assert any(i.path.startswith("connectors.broken") for i in loaded.issues)
+    assert set(loaded.raw) == {"suite_mail", "broken"}
+
+
+@pytest.mark.parametrize(
+    "raw", [["a list"], {"schema_version": 2, "connectors": {}}, {"schema_version": 1, "connectors": []}]
+)
+def test_parse_file_rejects_bad_top_level(raw):
+    loaded = cc.parse_file(raw, reserved=RESERVED, presets=PRESETS)
+    assert loaded.connectors == {}
+    assert loaded.issues
+
+
+def test_load_missing_file_is_empty(tmp_path: Path):
+    assert cc.load(tmp_path, plugin_root=cc.default_plugin_root()).connectors == {}
+
+
+def test_load_unparseable_file_reports_one_issue(tmp_path: Path):
+    (tmp_path / cc.CUSTOM_FILE).write_text("connectors: [unclosed\n")
+    loaded = cc.load(tmp_path, plugin_root=cc.default_plugin_root())
+    assert loaded.connectors == {}
+    assert loaded.issues and loaded.issues[0].path == cc.CUSTOM_FILE
+
+
+def test_write_then_load_round_trips(tmp_path: Path):
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+    }
+    cc.write(tmp_path, {"tickets": body})
+    text = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert text.startswith("# Custom connectors")
+    assert yaml.safe_load(text) == {"schema_version": 1, "connectors": {"tickets": body}}
+    assert set(cc.load(tmp_path, plugin_root=cc.default_plugin_root()).connectors) == {"tickets"}
+
+
+def test_reserved_keys_cover_probes_aliases_and_phase_requires():
+    reserved = cc.reserved_keys(cc.default_plugin_root())
+    assert {"slack", "email", "gmail", "github", "claude_sessions"} <= reserved
+
+
+def test_first_binary_skips_env_prefix_and_path():
+    assert cc.first_binary("FOO=1 /usr/local/bin/tix list") == "tix"
+    assert cc.first_binary("") is None
+
+
+def test_bash_binaries_maps_probe_and_tools_and_skips_generic(tmp_path: Path):
+    cc.write(
+        tmp_path,
+        {
+            "tickets": {
+                "display_name": "T",
+                "probe": {"bash": "tix whoami"},
+                "inbound": {"tools": [{"bash": "tix list"}], "focus": "x"},
+            },
+            "webhook": {
+                "display_name": "W",
+                "probe": {"bash": "curl -sf https://example.com/health"},
+                "inbound": {"tools": [{"bash": "curl -s https://example.com/items"}], "focus": "x"},
+            },
+        },
+    )
+    assert cc.bash_binaries(tmp_path) == {"tix": "tickets"}
+
+
+def test_bash_binaries_tolerates_garbage(tmp_path: Path):
+    (tmp_path / cc.CUSTOM_FILE).write_text(":::\n")
+    assert cc.bash_binaries(tmp_path) == {}
