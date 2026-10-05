@@ -116,12 +116,33 @@ def _no_vault(vault: Path) -> Outcome | None:
     return Outcome("error", message=f"no vault at {vault} — run /scout-setup first")
 
 
-def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> BootstrapConfig | Outcome:
-    """config_from_vault, with a malformed scout-config.yaml surfaced as an Outcome."""
+_CONFIG_READ_ERRORS = (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError)
+
+
+def _try_config_from_vault(
+    vault: Path, *, plugin_root: Path, plugin_version: str
+) -> tuple[BootstrapConfig | None, str | None]:
+    """``config_from_vault``, returning ``(None, message)`` instead of raising.
+
+    Shared by ``_read_config`` (add/remove: a read failure is a hard "error"
+    Outcome) and ``list_custom`` (a read failure degrades to an empty enabled
+    set plus an issue — the listing still shows what connectors.custom.yaml
+    holds). Covers a missing/unreadable file, unparseable YAML, and YAML that
+    parses but isn't shaped as a mapping (config_from_vault's ValueError).
+    """
     try:
-        return config_from_vault(vault, plugin_root=plugin_root, plugin_version=plugin_version)
-    except (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError) as e:
-        return Outcome("error", key, message=f"scout-config.yaml could not be read: {e}")
+        return config_from_vault(vault, plugin_root=plugin_root, plugin_version=plugin_version), None
+    except _CONFIG_READ_ERRORS as e:
+        return None, f"scout-config.yaml could not be read: {e}"
+
+
+def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> BootstrapConfig | Outcome:
+    """``config_from_vault``, with a malformed scout-config.yaml surfaced as an Outcome."""
+    cfg, error = _try_config_from_vault(vault, plugin_root=plugin_root, plugin_version=plugin_version)
+    if error is not None:
+        return Outcome("error", key, message=error)
+    assert cfg is not None
+    return cfg
 
 
 def _commit(
@@ -247,10 +268,12 @@ def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
     issues = list(current.issues)
     enabled: set[str] = set()
     if (vault / "scout-config.yaml").exists():
-        try:
-            enabled = config_from_vault(vault, plugin_root=plugin_root, plugin_version="").enabled_connectors
-        except (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError) as e:
-            issues.append(cc.Issue("scout-config.yaml", f"could not be read: {e}"))
+        cfg, error = _try_config_from_vault(vault, plugin_root=plugin_root, plugin_version="")
+        if error is not None:
+            issues.append(cc.Issue("scout-config.yaml", error))
+        else:
+            assert cfg is not None
+            enabled = cfg.enabled_connectors
     rows = [
         {
             "key": c.key,

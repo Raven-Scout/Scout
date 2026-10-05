@@ -688,12 +688,27 @@ def config_from_vault(
     """BootstrapConfig for an existing vault, read back from its scout-config.yaml.
 
     Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
-    the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError.
+    the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError,
+    and ValueError when the file parses but isn't shaped as a mapping (top level, or
+    its instance/user/connectors blocks).
     """
-    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8")) or {}
-    instance = existing.get("instance") or {}
-    user = existing.get("user") or {}
-    connectors = existing.get("connectors") or {}
+    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    if existing is None:
+        existing = {}
+    if not isinstance(existing, dict):
+        raise ValueError("scout-config.yaml must be a mapping at the top level")
+
+    def _submapping(key: str) -> dict:
+        value = existing.get(key)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(f"scout-config.yaml: {key!r} must be a mapping")
+        return value
+
+    instance = _submapping("instance")
+    user = _submapping("user")
+    connectors = _submapping("connectors")
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scout import custom_connectors as cc
@@ -69,6 +70,16 @@ def test_config_from_vault_reads_what_install_wrote(tmp_path: Path):
     assert cfg.user_name == "Alex"
     assert cfg.enabled_connectors == {"slack"}
     assert cfg.skip_jobs is True
+
+
+def test_config_from_vault_rejects_a_non_mapping_top_level(tmp_path: Path):
+    """A scout-config.yaml that parses as valid YAML but isn't a mapping (e.g. a
+    bare list) must raise ValueError, not AttributeError from .get() on a list."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text("- a\n- b\n")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0")
 
 
 def test_add_on_clean_vault_fast_forwards_live_snapshot_and_provenance(tmp_path: Path):

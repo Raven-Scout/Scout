@@ -182,3 +182,28 @@ def test_add_reports_error_when_scout_config_is_unreadable(vault: Path):
     out = _add(vault, SUITE)
     assert out.status == "error"
     assert out.exit_code == 1
+
+
+@pytest.mark.parametrize("op", ["add", "remove"])
+def test_non_mapping_scout_config_is_an_error_for_add_and_remove(vault: Path, op: str):
+    """Fix round 1: scout-config.yaml that is valid YAML but not a mapping (e.g. a
+    bare list) must not crash config_from_vault's .get() calls with AttributeError —
+    it's an "error" Outcome like any other unreadable scout-config.yaml."""
+    if op == "remove":
+        _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    (vault / "scout-config.yaml").write_text("- a\n- b\n")
+    if op == "add":
+        out = _add(vault, SUITE)
+    else:
+        out = ops.remove(vault, "tickets", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code) == ("error", 1)
+
+
+def test_list_custom_degrades_on_non_mapping_scout_config(vault: Path):
+    """list_custom falls back to an empty enabled set and reports the config problem
+    as an issue, rather than crashing (fix round 1)."""
+    _add(vault, SUITE)
+    (vault / "scout-config.yaml").write_text("- a\n- b\n")
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    assert listing["connectors"][0]["enabled"] is False
+    assert any(i["path"] == "scout-config.yaml" for i in listing["issues"])

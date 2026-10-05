@@ -1607,7 +1607,7 @@ def _register_bootstrap() -> None:
                 skip_claude=skip_claude,
                 managed_by=managed_by,
             )
-        except (_yaml.YAMLError, UnicodeDecodeError) as e:
+        except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
             raise ConfigError(f"scout-config.yaml is malformed: {e}") from e
 
     @bootstrap_app.command("install")
