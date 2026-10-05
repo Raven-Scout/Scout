@@ -1,0 +1,9 @@
+=== SCOUT Dreaming run starting at Sun Apr 19 07:00:05 EDT 2026 ===
+KB pre-filter written to /Users/scout-dev/Scout/.scout-cache/kb-filter.md (0 stale, 20 fresh, 5 undated)
+Pre-session data written to /Users/scout-dev/Scout/.scout-cache/session-context.json (unknown at 2026-04-19T07:00:06)
+CC session cache written to /Users/scout-dev/Scout/.scout-cache/cc-sessions.md (0 sessions, 24h lookback, at 2026-04-19 07:00 ET)
+[budget-check] Window: 3h, Daily budget: $150, Window budget: $18.75, Skip at: $16.88
+[budget-check] Window cost: $5.23, Last exit: 0, Last run: 2026-04-19T10:09:48+00:00
+[budget-check] Budget OK — $5.23 spent in window (threshold: $16.88)
+Dreaming session complete. Phase 1: no new feedback. Phase 2: [[backend-service]] deep audit applied 10 edits (PROJ-2619→Done, PROJ-3026 added, PROJ-2982 re-flagged as Triage-overdue 4d, PROJ-3019 enriched, PR review state refreshed). Committed as `3c1a7ce`; notification sent; cost logged.
+=== SCOUT Dreaming run finished at Sun Apr 19 09:35:43 EDT 2026 (exit code: 0, duration: 9333s) ===

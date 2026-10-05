@@ -1,0 +1,122 @@
+name: plugin-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main, "migrate/**"]
+    paths:
+      - "plugin/**"
+      - "install.sh"
+      - "apps/macos/scripts/**"
+      - ".claude-plugin/**"
+      - ".github/workflows/plugin-lint.yml"
+      - ".github/scripts/changed-paths.sh"
+
+jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and every other job gates on its output.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|apps/macos/scripts/|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/changed-paths\.sh$)'
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin/engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Setup Python
+        run: uv python install 3.12
+      - name: Create venv
+        run: uv venv --python 3.12
+      - name: Install
+        run: uv pip install -e ".[dev]"
+      - name: Ruff check
+        run: .venv/bin/ruff check scout tests
+      - name: Ruff format check
+        run: .venv/bin/ruff format --check scout tests
+      - name: Mypy
+        run: .venv/bin/mypy scout
+      - name: Version sync guard
+        run: .venv/bin/python -m scout.scripts.versioning check
+        working-directory: plugin/engine
+      - name: Shellcheck
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          # engine launcher — full severity (existing guard)
+          shellcheck plugin/engine/bin/scoutctl
+          # installer (repo root), both release scripts, and the PR-gating
+          # script every workflow's `changes` job runs — error severity
+          shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
+          # all shell templates seeded into user vaults (placeholders don't
+          # break shellcheck parsing) — error severity
+          find plugin/templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error
+      - name: Validate plugin manifests
+        working-directory: ${{ github.workspace }}
+        run: |
+          # plugin.json lives in the plugin subtree; marketplace.json is the
+          # repo's entry point and lives at the repo root. Parse both as JSON
+          # (the version-sync guard above uses regex, so a malformed manifest
+          # that still regex-matches its version would slip past it) and assert
+          # required keys are present.
+          python3 - <<'PY'
+          import json, sys
+
+          plugin = json.load(open("plugin/.claude-plugin/plugin.json"))
+          for key in ("name", "version"):
+              if key not in plugin:
+                  sys.exit(f"plugin.json missing required key: {key!r}")
+
+          market = json.load(open(".claude-plugin/marketplace.json"))
+          if "name" not in market:
+              sys.exit("marketplace.json missing required key: 'name'")
+          plugins = market.get("plugins")
+          if not isinstance(plugins, list) or not plugins:
+              sys.exit("marketplace.json 'plugins' must be a non-empty list")
+          for i, entry in enumerate(plugins):
+              for key in ("name", "source", "version"):
+                  if key not in entry:
+                      sys.exit(f"marketplace.json plugins[{i}] missing required key: {key!r}")
+
+          if plugins[0]["source"] != "./plugin":
+              sys.exit(f"marketplace.json source must be './plugin', got {plugins[0]['source']!r}")
+
+          print("plugin manifests valid")
+          PY
+
+  plugin-lint:
+    name: plugin-lint
+    needs: [changes, lint]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

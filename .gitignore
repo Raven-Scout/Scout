@@ -1,29 +1,39 @@
+# macOS
 .DS_Store
-*.log
+.AppleDouble
+.LSOverride
+._*
 
-# Python bytecode and tool caches
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-.coverage.*
-coverage.xml
-htmlcov/
+# Xcode
+xcuserdata/
+*.xcuserstate
+project.xcworkspace/
+DerivedData/
+build/
+*.dmg
+*.profraw
 
-# Virtual envs
-.venv/
-venv/
+# Test + coverage output (see scripts/check-coverage.sh)
+*.xcresult
+xcodebuild.log
 
-# scoutctl manifest build output (per-machine artifact)
-engine/manifest.json
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.pins
+Package.resolved
 
-# Local per-checkout artifacts (not part of the plugin)
+# Editor
+.vscode/
+.idea/
+
+# Claude Code
 .claude/
-.scoutctl-py-cache
-docs/plans/archive/PLAN-8-RESUME.md
 
-# superpowers plugin scratch (SDD ledgers, briefs, review packages)
+# Brainstorming visual companion (superpowers skill)
 .superpowers/
+
+# Moved from plugin/.gitignore when plugin/docs/ merged into docs/ (Task 4,
+# ruling R24) — a per-checkout local artifact, not part of the plugin.
+docs/plans/archive/PLAN-8-RESUME.md

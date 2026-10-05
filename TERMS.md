@@ -11,7 +11,7 @@ using Scout, you agree to these Terms. If you do not agree, do not use Scout.
 
 Scout is provided free of charge as open-source software. Your rights to use, copy, modify, and
 distribute the source code are granted by the applicable open-source license in each repository
-(the [MIT License](https://github.com/Raven-Scout/scout-plugin/blob/main/LICENSE)). Where these
+(the [MIT License](https://github.com/Raven-Scout/Scout/blob/main/LICENSE)). Where these
 Terms and the license differ as to the code, the license controls for the code; these Terms
 cover your use of Scout as a running tool and service-free product.
 
@@ -88,5 +88,5 @@ continued use of Scout after a change means you accept the updated Terms.
 ## 10. Contact
 
 Scout has no hosted support desk. For questions about these Terms, open an issue at
-[github.com/Raven-Scout/scout-plugin/issues](https://github.com/Raven-Scout/scout-plugin/issues).
-See also our [Privacy Policy](https://github.com/Raven-Scout/scout-plugin/blob/main/PRIVACY.md).
+[github.com/Raven-Scout/Scout/issues](https://github.com/Raven-Scout/Scout/issues).
+See also our [Privacy Policy](https://github.com/Raven-Scout/Scout/blob/main/PRIVACY.md).

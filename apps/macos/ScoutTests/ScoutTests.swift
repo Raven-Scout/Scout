@@ -1,0 +1,69 @@
+//
+//  ScoutTests.swift
+//  ScoutTests
+//
+
+import Testing
+import Foundation
+
+struct ScoutTests {
+
+    @Test func fixturesAreAccessible() throws {
+        let bundle = Bundle(for: FixtureAnchor.self)
+        // Try finding individual fixtures — if any work, we're good.
+        let trackerURL = bundle.url(forResource: "usage-tracker", withExtension: "jsonl")
+        #expect(trackerURL != nil, "usage-tracker.jsonl should be in the test bundle")
+
+        // The Fixtures directory may or may not be preserved as a folder —
+        // depends on Xcode's resource handling. We check both.
+        let fixturesDir = bundle.url(forResource: "Fixtures", withExtension: nil)
+        let hasFolder = fixturesDir.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        if !hasFolder {
+            // Flat resource layout — still acceptable for tests that look up by name
+            let logsURL = bundle.url(forResource: "scout-2026-04-19_08-08", withExtension: "log")
+            #expect(logsURL != nil, "at minimum individual fixtures should be reachable")
+        }
+    }
+}
+
+final class FixtureAnchor {}
+
+/// Parse-cache location inside a test's own sandbox directory.
+///
+/// `SessionLogService.parseCacheURL` defaults to the per-user caches directory,
+/// so a `loadInitial()` that leaves it `nil` writes
+/// `~/Library/Caches/Scout/session-parse-cache.json` — the *running app's*
+/// cache — and replaces the user's entries with fixture ones. Every test that
+/// builds a `SessionLogService` must inject this.
+nonisolated func sandboxParseCacheURL(in directory: URL) -> URL {
+    directory.appendingPathComponent("session-parse-cache.json")
+}
+
+/// Poll `condition` on the main actor until it holds, or fail after `timeout`.
+///
+/// Used by the FSEvents watch tests. Those assert *liveness* — that a file
+/// event eventually reaches the service's debounced reparse — not latency, so
+/// the budget is deliberately generous: CI runs the whole suite in parallel on
+/// a few cores, and a 3 s budget flaked there while passing locally in ~300 ms.
+/// A genuinely broken watch still fails, just after a longer wait.
+@MainActor
+func waitUntil(
+    timeout: TimeInterval = 30,
+    pollInterval: Duration = .milliseconds(50),
+    _ description: @autoclosure () -> String = "condition never became true",
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: @MainActor () -> Bool
+) async {
+    // `ContinuousClock`, not `Date()`: the wall clock can step (NTP, a manual
+    // change, DST on a machine that keeps local time), which either cuts the
+    // budget short or stretches it.
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(timeout))
+    while clock.now < deadline {
+        if condition() { return }
+        // A cancelled task must stop polling rather than spin on the main
+        // actor until the deadline: `Task.sleep` throws at once when cancelled.
+        do { try await Task.sleep(for: pollInterval, clock: clock) } catch { break }
+    }
+    #expect(condition(), "\(description()) within \(timeout)s", sourceLocation: sourceLocation)
+}

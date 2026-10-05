@@ -1,0 +1,14 @@
+=== SCOUT run starting at Fri Apr 17 08:03:05 EDT 2026 ===
+KB pre-filter written to /Users/scout-dev/Scout/.scout-cache/kb-filter.md (1 stale, 19 fresh, 5 undated)
+Pre-session data written to /Users/scout-dev/Scout/.scout-cache/session-context.json (unknown at 2026-04-17T08:03:05)
+CC session cache written to /Users/scout-dev/Scout/.scout-cache/cc-sessions.md (16 sessions, 24h lookback, at 2026-04-17 08:03 ET)
+[budget-check] Window: 3h, Daily budget: $150, Window budget: $18.75, Skip at: $16.88
+[budget-check] Window cost: $0.00, Last exit: 0, Last run: 2026-04-17T11:42:25+00:00
+[budget-check] Budget OK — $0.00 spent in window (threshold: $16.88)
+**Summary of this run (8:03–8:14 AM ET refresh on top of the 7:36 morning briefing):**
+
+- **[[PROJ-100]] deep audit** corrected a stale verification. Added timeline rows for the Apr 16 sync + follow-ups.
+- **[[PROJ-200]] quick pass** added PROJ-3017 row + Apr 16 timeline entry; consolidated under PROJ-2952.
+- **Today's action items** refreshed — routing on the partner-email item now explicit; PROJ-linked items re-connected.
+- Committed as `2f24774` and notified user.
+=== SCOUT run finished at Fri Apr 17 08:09:42 EDT 2026 (exit code: 0, duration: 389s) ===

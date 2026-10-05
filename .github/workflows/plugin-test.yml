@@ -1,0 +1,105 @@
+name: plugin-test
+
+on:
+  push:
+    branches: [main, "migrate/**"]
+    paths:
+      - "plugin/**"
+      - ".claude-plugin/**"
+      - ".github/workflows/plugin-test.yml"
+  pull_request:
+  workflow_call:
+
+jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and every other job gates on its output. A
+  # workflow_call (release-plugin tagging a release) or workflow_dispatch is
+  # not a pull_request event, so changed-paths.sh always runs it.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/|\.claude-plugin/|\.github/workflows/plugin-test\.yml$|\.github/scripts/changed-paths\.sh$)'
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: plugin/engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Setup Python
+        run: uv python install ${{ matrix.python }}
+      - name: Create venv
+        run: uv venv --python ${{ matrix.python }}
+      - name: Install
+        run: uv pip install -e ".[dev]"
+      - name: Pytest
+        run: .venv/bin/pytest tests/ -v
+      # (removed) Verify connectors.snapshot.json drift  -> contract.yml
+      # (removed) Verify schedule.snapshot.json drift    -> contract.yml
+
+  # Coverage runs once, not across the matrix, for two reasons:
+  #   1. The `[full]` extra is required. Every scout/tui test is gated on
+  #      `pytest.importorskip("textual")`, so a `[dev]`-only install skips the
+  #      whole TUI package and the total drops ~3 points below the gate.
+  #   2. Coverage's tracer skews tests/perf/, which measures scoutctl's cold
+  #      -start latency. Keeping the matrix job coverage-free leaves those
+  #      timings honest.
+  # The threshold itself lives in [tool.coverage.report] fail_under.
+  coverage:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin/engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Setup Python
+        run: uv python install 3.12
+      - name: Create venv
+        run: uv venv --python 3.12
+      - name: Install
+        run: uv pip install -e ".[dev,full]"
+      - name: Pytest with coverage
+        run: .venv/bin/pytest tests/ --cov --cov-report=term-missing
+
+  plugin-test:
+    name: plugin-test
+    needs: [changes, test, coverage]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

@@ -1,0 +1,747 @@
+import Combine
+import SwiftUI
+
+struct ActionItemsView: View {
+    @EnvironmentObject var docService: ActionItemsDocumentService
+    @EnvironmentObject var writerBox: ActionItemsWriterBox
+    @EnvironmentObject var envCheck: ActionItemsEnvironmentState
+    let scoutDirectory: URL
+    let actionItemsDirectory: URL
+
+    @State private var displayedDate: Date = Self.today()
+    @State private var filter = ActionItemsFilter(kinds: [], status: .all, searchText: "")
+    @SceneStorage("actionItemsView") private var viewMode: ActionItemsViewMode = .list
+    @State private var toast: String?
+    @State private var toastTask: Task<Void, Never>?
+    @State private var isSelecting = false
+    @State private var selectedTaskIDs: Set<UUID> = []
+    /// Cached IDs the bulk bar's Select all / "all selected" check operate
+    /// on. Recomputed only when the document, filter, or selection mode
+    /// changes — never per body evaluation, and never per checkbox tap
+    /// (#83/#88 hot path).
+    @State private var visibleSelectableIDs: Set<UUID> = []
+    /// How many rows each section builds, keyed by section id. The id survives
+    /// the reparse after an app write, so a write keeps what "Show more"
+    /// revealed; it includes the section's position, so an engine rewrite
+    /// that adds or drops a section above resets the ones below. Reset per day.
+    @State private var windows: [UUID: TaskWindow] = [:]
+    @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !envCheck.result.ok {
+                environmentBanner
+            }
+            HStack(spacing: 10) {
+                FilterChipsView(filter: $filter)
+                EditorialSegmentedControl(
+                    selection: $viewMode,
+                    options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
+                )
+                if viewMode == .list, case .loaded = docService.state {
+                    Button {
+                        toggleSelectionMode()
+                    } label: {
+                        Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
+                            .font(DS.sans(11.5, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 8)
+            .background(DS.Paper.base.opacity(0.94))
+            .overlay(alignment: .bottom) { EditorialRule() }
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(DS.Paper.base)
+        .searchable(text: $filter.searchText, placement: .toolbar, prompt: "Search tasks, tickets, people…")
+        .searchFocused($searchFocused)
+        .background {
+            Button("Find") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                DatePickerToolbarItem(date: $displayedDate, today: Self.today())
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([docServiceExpectedURL()])
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .help("Reveal in Finder")
+            }
+        }
+        .overlay(alignment: .top) {
+            if let t = toast {
+                toastView(t)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if isSelecting {
+                bulkCopyBar
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .onAppear { load() }
+        .onChange(of: displayedDate) { _, _ in
+            endSelectionMode()
+            windows = [:]
+            load()
+        }
+        .onChange(of: viewMode) { _, newValue in
+            if newValue != .list { endSelectionMode() }
+        }
+        // Selection may only reference tasks that still exist and are still
+        // visible: parser stableIDs are index-derived, so any reparse (every
+        // write op, every watched external rewrite) can invalidate them, and
+        // a filter/search change can hide checked rows that would otherwise
+        // be silently copied.
+        .onChange(of: docService.state) { _, _ in reconcileSelection() }
+        .onChange(of: filter) { _, _ in reconcileSelection() }
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        // Board mode renders a full-bleed, horizontally scrolling status board.
+        // Every other case (List mode, plus the loading/missing/failed states)
+        // uses the editorial reading page below.
+        if case .loaded(let doc) = docService.state, viewMode == .board {
+            BoardView(sections: boardSections(doc), scoutDirectory: scoutDirectory)
+        } else {
+            listContent
+        }
+    }
+
+    @ViewBuilder
+    private var listContent: some View {
+        ScrollView {
+            // Deliberately VStack, not LazyVStack (#83). A lazy stack estimates
+            // content height from the items it has realized; that estimate sets
+            // the scroll metrics, which set the visible rect, which decides what
+            // realizes next. Through this modifier chain the estimate never
+            // settles, so scrolling pins the main thread at 100% CPU forever. A
+            // day's action items is a bounded list the parser has already fully
+            // materialized, so laziness bought nothing here anyway.
+            VStack(alignment: .leading, spacing: 0) {
+                switch docService.state {
+                case .idle, .loading:
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 60)
+                case .missing(_, let url):
+                    missingState(url: url)
+                case .failed(let err):
+                    Text("Couldn't load file: \(err.localizedDescription)")
+                        .foregroundStyle(DS.Status.err)
+                        .padding()
+                case .loaded(let doc):
+                    loadedContent(doc)
+                }
+            }
+            .frame(maxWidth: 1040, alignment: .leading)
+            .padding(.horizontal, 42)
+            .padding(.top, 28)
+            .padding(.bottom, 64)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .scrollIndicators(.visible)
+    }
+
+    /// Editorial reading page: dateline → preamble → filtered sections.
+    @ViewBuilder
+    private func loadedContent(_ doc: ActionItemsDocument) -> some View {
+        dateline
+        if !doc.preamble.isEmpty {
+            preamble(doc.preamble)
+        }
+        ForEach(filteredSections(doc)) { section in
+            SectionView(
+                section: filtered(section),
+                displayedDate: displayedDate,
+                scoutDirectory: scoutDirectory,
+                selection: isSelecting ? $selectedTaskIDs : nil,
+                window: window(for: section),
+                onShowMore: { showMore(in: section) },
+                onOp: handleOp
+            )
+        }
+    }
+
+    private func window(for section: ActionSection) -> TaskWindow {
+        windows[section.id] ?? TaskWindow()
+    }
+
+    private func showMore(in section: ActionSection) {
+        windows[section.id, default: TaskWindow()].showMore()
+        reconcileSelection()
+    }
+
+    /// Reopening moves a task out of the Done drawer and back to its own row,
+    /// which can sit past its section's window (row 400 of To Do, say). Grow
+    /// that window so the task lands somewhere visible instead of vanishing
+    /// into "N not shown".
+    private func revealReopened(subject: String, shortPrefix: String?) {
+        guard case .loaded(let doc) = docService.state else { return }
+        for section in filteredSections(doc) where section.kind != .done {
+            let tasks = filtered(section).tasks
+            guard let index = tasks.firstIndex(where: { task in
+                guard !task.done else { return false }
+                if let shortPrefix { return task.shortPrefix == shortPrefix }
+                return task.matchableSubject == subject
+            }) else { continue }
+            windows[section.id, default: TaskWindow()].reveal(index)
+            reconcileSelection()
+            return
+        }
+    }
+
+    // MARK: - Dateline (big serif header + meta on the right)
+
+    private var dateline: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(longDate(displayedDate))
+                .font(DS.serif(28, weight: .medium))
+                .foregroundStyle(DS.Ink.p1)
+            Text(weekLabel(displayedDate))
+                .font(DS.sans(14))
+                .foregroundStyle(DS.Ink.p3)
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("repo ~/Scout")
+                    .font(DS.mono(12))
+                    .foregroundStyle(DS.Ink.p4)
+                Text(displayedDate, style: .date)
+                    .font(DS.mono(12))
+                    .foregroundStyle(DS.Ink.p4)
+            }
+        }
+        .padding(.bottom, 16)
+        .overlay(alignment: .bottom) { EditorialRule() }
+        .padding(.bottom, 22)
+    }
+
+    /// Preamble — Scout writes 2–3 dense paragraphs at the top of every
+    /// daily file. Each one starts with a bolded headline and trails into a
+    /// wall of body text that, rendered flat, drowned everything below.
+    ///
+    /// Redesign: render each paragraph as a collapsible "update card" with
+    /// the headline always visible and the body hidden behind a chevron.
+    /// Reordered chronologically (earliest update at the top, latest just
+    /// before the synthesis "This run's headline" card at the bottom) —
+    /// Scout writes the file newest-at-top, which reads backwards as a
+    /// timeline. The synthesis card stays last and defaults to expanded.
+    private func preamble(_ parts: [String]) -> some View {
+        let ordered = reorderedPreamble(parts)
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(ordered.enumerated()), id: \.offset) { idx, raw in
+                let split = splitPreamble(raw)
+                PreambleCard(
+                    headline: split.headline,
+                    body: split.body,
+                    defaultExpanded: idx == ordered.count - 1
+                )
+            }
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+        .padding(.bottom, 20)
+    }
+
+    /// Sort the parser's raw paragraphs into the reading order described
+    /// above: timestamped updates earliest → latest, synthesis headline
+    /// pinned at the end. Detection of the headline is by leading
+    /// `**This run's headline` text, which is the convention Scout's plugin
+    /// uses for the final synthesis paragraph (see
+    /// `action-items-YYYY-MM-DD.md` files written by run-briefing.sh).
+    fileprivate func reorderedPreamble(_ parts: [String]) -> [String] {
+        guard !parts.isEmpty else { return [] }
+        var rest = parts
+        var headlineParagraph: String? = nil
+        if let headlineIdx = rest.lastIndex(where: { isHeadlineParagraph($0) }) {
+            headlineParagraph = rest.remove(at: headlineIdx)
+        }
+        // Scout writes newest-update-at-top; reversing yields chronological.
+        let chronological = Array(rest.reversed())
+        if let h = headlineParagraph {
+            return chronological + [h]
+        }
+        return chronological
+    }
+
+    private func isHeadlineParagraph(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        return trimmed.hasPrefix("**this run's headline")
+            || trimmed.hasPrefix("**this run’s headline")  // curly-apostrophe variant
+    }
+
+    /// Lift the leading `**…**` markdown bold span out of a preamble
+    /// paragraph and treat it as the headline; everything after becomes the
+    /// collapsible body. Falls back to "first sentence" + "rest" if no
+    /// leading bold exists.
+    fileprivate func splitPreamble(_ raw: String) -> (headline: String, body: String) {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("**") {
+            // Find the closing `**` that isn't immediately back-to-back.
+            var idx = s.index(s.startIndex, offsetBy: 2)
+            while idx < s.endIndex {
+                if let closeRange = s.range(of: "**", range: idx..<s.endIndex) {
+                    let head = String(s[s.index(s.startIndex, offsetBy: 2)..<closeRange.lowerBound])
+                    let rest = String(s[closeRange.upperBound...])
+                        .trimmingCharacters(in: .whitespaces)
+                    // Strip a leading period or em-dash separator from the body
+                    // so the headline doesn't appear to dangle.
+                    let cleaned = rest.drop(while: { ".—– ".contains($0) })
+                    return (head.trimmingCharacters(in: .whitespaces), String(cleaned))
+                }
+                idx = s.index(after: idx)
+            }
+        }
+        // No leading bold — split on the first sentence boundary.
+        if let dot = s.firstIndex(where: { $0 == "." || $0 == ":" }) {
+            let head = String(s[..<dot])
+            let body = String(s[s.index(after: dot)...]).trimmingCharacters(in: .whitespaces)
+            return (head, body)
+        }
+        return (s, "")
+    }
+
+    private var environmentBanner: some View {
+        return HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text("Action Items writes disabled — \(envCheck.result.message ?? "scoutctl unavailable")")
+        }
+        .font(DS.sans(11))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Status.err.opacity(0.85))
+    }
+
+    private func missingState(url: URL) -> some View {
+        let isFuture = displayedDate > Self.today()
+        return VStack(spacing: 14) {
+            Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
+                .font(.largeTitle)
+                .foregroundStyle(DS.Ink.p3)
+            Text(isFuture
+                 ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."
+                 : "No action items for \(shortDate(displayedDate)) — morning briefing runs at 08:03.")
+                .font(DS.serif(14))
+                .foregroundStyle(DS.Ink.p2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+            HStack(spacing: 10) {
+                if let prev = Calendar(identifier: .iso8601).date(byAdding: .day, value: -1, to: displayedDate) {
+                    Button("Previous day") { displayedDate = prev }
+                }
+                if !Calendar.current.isDate(displayedDate, inSameDayAs: Self.today()) {
+                    Button("Today") { displayedDate = Self.today() }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 80)
+    }
+
+    private func toastView(_ text: String) -> some View {
+        Text(text)
+            .font(DS.sans(12))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.ultraThinMaterial))
+            .shadow(radius: 4)
+    }
+
+    // MARK: - Date formatting
+
+    private func longDate(_ d: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "EEEE, MMMM d"
+        fmt.timeZone = .current
+        return fmt.string(from: d)
+    }
+
+    private func weekLabel(_ d: Date) -> String {
+        let cal = Calendar(identifier: .iso8601)
+        let week = cal.component(.weekOfYear, from: d)
+        let month = cal.component(.month, from: d)
+        let quarter = ((month - 1) / 3) + 1
+        return "Week \(week) · Q\(quarter)"
+    }
+
+    private func shortDate(_ d: Date) -> String {
+        let fmt = DateFormatter(); fmt.dateStyle = .medium
+        fmt.timeZone = .current
+        return fmt.string(from: d)
+    }
+
+    // MARK: - Actions
+
+    private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
+        do {
+            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate, recoveryLineNumber: lineNumber)
+            await docService.reparseCurrent()
+            if case .reopen(let subject, let shortPrefix) = op {
+                revealReopened(subject: subject, shortPrefix: shortPrefix)
+            }
+        } catch let err as ActionItemsWriterError {
+            if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {
+                await MainActor.run { setToast("Environment problem — check python3 install.") }
+            }
+            throw err
+        }
+    }
+
+    private func setToast(_ text: String) {
+        if reduceMotion {
+            toast = text
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { toast = text }
+        }
+        // Cancel the previous dismiss timer: a text-equality guard alone lets
+        // an earlier identical toast's sleeper dismiss this one early.
+        toastTask?.cancel()
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if reduceMotion {
+                    toast = nil
+                } else {
+                    withAnimation(.easeIn(duration: 0.15)) { toast = nil }
+                }
+            }
+        }
+    }
+
+    // MARK: - Bulk copy
+
+    private var bulkCopyBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(DS.Accent.ink)
+            Text("\(selectedTaskIDs.count) selected")
+                .font(DS.sans(12, weight: .semibold))
+                .foregroundStyle(DS.Ink.p1)
+            Button(allVisibleTasksSelected ? "Clear" : "Select all") {
+                toggleSelectAll()
+            }
+            .buttonStyle(.borderless)
+            .font(DS.sans(11))
+            .help("Select or clear every action item currently visible")
+            Spacer()
+            Button {
+                copySelected(format: .fullContext)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(DS.Accent.fill)
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(selectedTaskIDs.isEmpty)
+            .help("Copy selected items with full context (⌘⇧C)")
+
+            Menu {
+                ForEach([ClaudeLauncher.CopyFormat.concise, .markdownChecklist]) { format in
+                    Button {
+                        copySelected(format: format)
+                    } label: {
+                        Label(format.label, systemImage: format.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 22, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(selectedTaskIDs.isEmpty)
+            .help("Choose a concise or Markdown copy format")
+
+            Button("Done") { endSelectionMode() }
+                .buttonStyle(.borderless)
+                .help("Exit selection mode")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .frame(maxWidth: 620)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThickMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.hard, lineWidth: 0.5))
+                .shadow(color: DS.Neumorphic.shadow.opacity(0.45), radius: 12, y: 6)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Bulk copy controls, \(selectedTaskIDs.count) selected")
+    }
+
+    /// Tasks Select all operates on. Excludes the Done section: its rows sit
+    /// inside a collapsed-by-default disclosure, and "select everything you
+    /// can't see" contradicts the button's promise. Done tasks stay
+    /// individually selectable via their own checkboxes in the drawer. For the
+    /// same reason, rows past a section's window — never built, so never seen —
+    /// are left out.
+    private var visibleSelectableTasks: [ActionTask] {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return filteredSections(doc)
+            .map(filtered)
+            .filter { ![.focus, .meetings, .digest, .done].contains($0.kind) }
+            .flatMap { Array(window(for: $0).visible($0.tasks)) }
+    }
+
+    /// Every task the current filter/search leaves visible, including the
+    /// Done drawer (which shows all its rows) — the widest set a selection is
+    /// allowed to reference.
+    private var visibleTaskIDs: Set<UUID> {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return Set(filteredSections(doc).map(filtered).flatMap { section in
+            section.kind == .done ? section.tasks[...] : window(for: section).visible(section.tasks)
+        }.map(\.id))
+    }
+
+    private var selectedTasks: [ActionTask] {
+        guard case .loaded(let doc) = docService.state else { return [] }
+        return doc.sections.flatMap(\.tasks).filter { selectedTaskIDs.contains($0.id) }
+    }
+
+    private var allVisibleTasksSelected: Bool {
+        !visibleSelectableIDs.isEmpty && visibleSelectableIDs.isSubset(of: selectedTaskIDs)
+    }
+
+    /// Re-derive the visible-ID cache and drop selected IDs that no longer
+    /// resolve to a visible task (stale after a reparse, or hidden by a
+    /// filter change) — keeps the bar's count honest and the copy WYSIWYG.
+    private func reconcileSelection() {
+        guard isSelecting else { return }
+        visibleSelectableIDs = Set(visibleSelectableTasks.map(\.id))
+        selectedTaskIDs.formIntersection(visibleTaskIDs)
+    }
+
+    private func toggleSelectionMode() {
+        if isSelecting {
+            endSelectionMode()
+            return
+        }
+        visibleSelectableIDs = Set(visibleSelectableTasks.map(\.id))
+        if reduceMotion {
+            isSelecting = true
+        } else {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { isSelecting = true }
+        }
+    }
+
+    private func endSelectionMode() {
+        let changes = {
+            isSelecting = false
+            selectedTaskIDs.removeAll()
+        }
+        if reduceMotion { changes() } else { withAnimation(.easeInOut(duration: 0.16), changes) }
+    }
+
+    private func toggleSelectAll() {
+        if allVisibleTasksSelected {
+            selectedTaskIDs.removeAll()
+        } else {
+            selectedTaskIDs.formUnion(visibleSelectableIDs)
+        }
+    }
+
+    private func copySelected(format: ClaudeLauncher.CopyFormat) {
+        let tasks = selectedTasks
+        guard !tasks.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            ClaudeLauncher.prompt(for: tasks, format: format),
+            forType: .string
+        )
+        setToast("Copied \(tasks.count) action item\(tasks.count == 1 ? "" : "s") as \(format.label.lowercased()).")
+    }
+
+    private func load() {
+        Task { await docService.load(date: displayedDate) }
+    }
+
+    private func docServiceExpectedURL() -> URL {
+        docService.url(for: displayedDate)
+    }
+
+    /// Sections for the board: the same consolidated + kind/status/search
+    /// filtered task set the List shows, so the two views stay in sync. The
+    /// board buckets these by kind into columns.
+    private func boardSections(_ doc: ActionItemsDocument) -> [ActionSection] {
+        filteredSections(doc).map { filtered($0) }
+    }
+
+    private func filteredSections(_ doc: ActionItemsDocument) -> [ActionSection] {
+        // Consolidate every `[x]` task across the day into the Done section
+        // first, then apply the kind filter. The markdown file still owns
+        // canonical task placement (per scout-plugin); this is a pure
+        // display reorganization so urgent/todo/watching stay focused on
+        // open work and the user has a single bottom drawer for "finished
+        // today".
+        let consolidated = consolidateDoneTasks(doc.sections)
+        return consolidated.filter { s in
+            filter.kinds.isEmpty || filter.kinds.contains(s.kind)
+        }
+    }
+
+    /// Move every done task out of its source section and into the Done
+    /// section. Sections that lose all their tasks keep their headers and
+    /// non-task content (bullets, tables, subheads) so the page structure
+    /// stays intact. If the source markdown didn't define a Done section
+    /// (e.g. brand-new daily file), one is synthesized at the end.
+    ///
+    /// Stable: preserves source order for non-done tasks; appends collected
+    /// done tasks in the same source order they were discovered, so the
+    /// Done section reads top-down through the day's sections.
+    fileprivate func consolidateDoneTasks(_ sections: [ActionSection]) -> [ActionSection] {
+        var out: [ActionSection] = []
+        var collectedDone: [ActionTask] = []
+        var doneSectionIndex: Int? = nil
+
+        for section in sections {
+            switch section.kind {
+            case .done:
+                // Remember slot — we'll merge `collectedDone` into it
+                // after the pass.
+                doneSectionIndex = out.count
+                out.append(section)
+            case .focus, .meetings, .digest, .neutral:
+                // Non-task sections: leave alone.
+                out.append(section)
+            case .urgent, .todo, .watching, .personal:
+                let openTasks = section.tasks.filter { !$0.done }
+                let doneTasks = section.tasks.filter { $0.done }
+                collectedDone.append(contentsOf: doneTasks)
+                out.append(ActionSection(
+                    id: section.id,
+                    emoji: section.emoji,
+                    title: section.title,
+                    kind: section.kind,
+                    tasks: openTasks,
+                    bullets: section.bullets,
+                    tables: section.tables,
+                    subheads: section.subheads,
+                    collapsed: section.collapsed
+                ))
+            }
+        }
+
+        guard !collectedDone.isEmpty else { return out }
+
+        if let idx = doneSectionIndex {
+            let original = out[idx]
+            out[idx] = ActionSection(
+                id: original.id,
+                emoji: original.emoji,
+                title: original.title,
+                kind: .done,
+                tasks: original.tasks + collectedDone,
+                bullets: original.bullets,
+                tables: original.tables,
+                subheads: original.subheads,
+                collapsed: original.collapsed
+            )
+        } else {
+            // No Done section in the source — synthesize one so the
+            // collected items don't disappear. Stable id (not a fresh UUID
+            // per reparse) so it keeps its identity across writes and doesn't
+            // reset the scroll position.
+            out.append(ActionSection(
+                id: ActionItemsParser.stableID("section|synthesized-done"),
+                emoji: "",
+                title: "Recently Completed",
+                kind: .done,
+                tasks: collectedDone,
+                bullets: [],
+                tables: [],
+                subheads: [],
+                collapsed: []
+            ))
+        }
+        return out
+    }
+
+    private func filtered(_ section: ActionSection) -> ActionSection {
+        let needle = filter.searchText.lowercased()
+        func matches(_ t: ActionTask) -> Bool {
+            let statusOK: Bool = {
+                switch filter.status {
+                case .all:     return true
+                case .open:    return !t.done && t.snoozedUntil == nil
+                case .done:    return t.done && t.snoozedUntil == nil
+                case .snoozed: return t.snoozedUntil != nil
+                }
+            }()
+            guard statusOK else { return false }
+            guard !needle.isEmpty else { return true }
+            return t.plainSubject.lowercased().contains(needle)
+                || t.body.lowercased().contains(needle)
+                || t.comments.contains(where: { $0.text.lowercased().contains(needle) })
+        }
+        let tasks = section.tasks.filter(matches)
+        // Archived rows are searchable too — a parked block can hold more rows
+        // than the live list, and a search that silently skipped it would look
+        // like the item was gone. When a search is running, a group with no
+        // surviving rows drops out rather than sitting there empty.
+        let collapsedGroups: [ActionSection.CollapsedGroup] = section.collapsed.compactMap { group in
+            let kept = group.tasks.filter(matches)
+            // A search that matched nothing in an archive drops it entirely
+            // rather than leaving a block that holds only its prose.
+            if !needle.isEmpty && kept.isEmpty { return nil }
+            return ActionSection.CollapsedGroup(
+                id: group.id,
+                summary: group.summary,
+                tasks: kept,
+                bullets: needle.isEmpty ? group.bullets : [],
+                tables: group.tables
+            )
+        }
+        return ActionSection(
+            id: section.id,
+            emoji: section.emoji,
+            title: section.title,
+            kind: section.kind,
+            tasks: tasks,
+            bullets: section.bullets,
+            tables: section.tables,
+            subheads: section.subheads,
+            collapsed: collapsedGroups
+        )
+    }
+
+    /// Start of *today* in the user's local timezone — matching the engine's
+    /// daily-file naming (#46). Formerly hardcoded to Eastern.
+    private static func today() -> Date {
+        ActionItemsDay.today()
+    }
+}
+
+/// A boxed writer — actors can't be directly stored in ``@EnvironmentObject``,
+/// but a class holding the actor can.
+final class ActionItemsWriterBox: ObservableObject {
+    let writer: ActionItemsWriter
+    init(writer: ActionItemsWriter) { self.writer = writer }
+}
+
+/// Publishes the environment check result so the view's banner can react.
+@MainActor
+final class ActionItemsEnvironmentState: ObservableObject {
+    @Published var result: ActionItemsEnvironmentResult = .okResult
+}

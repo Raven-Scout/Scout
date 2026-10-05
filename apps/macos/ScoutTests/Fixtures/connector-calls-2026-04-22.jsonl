@@ -1,0 +1,11 @@
+{"ts":"2026-04-22T08:00:00Z","session_id":"s1","mode":"briefing","tool":"mcp__plugin_slack_slack__slack_send_message","connector":"mcp:plugin_slack_slack","error":false}
+{"ts":"2026-04-22T08:00:05Z","session_id":"s1","mode":"briefing","tool":"Bash","connector":"bash:ls","error":false}
+{"ts":"2026-04-22T08:00:10Z","session_id":"s1","mode":"briefing","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}
+{"ts":"2026-04-22T12:00:00Z","session_id":"s2","mode":"consolidation","tool":"mcp__plugin_slack_slack__slack_read_channel","connector":"mcp:plugin_slack_slack","error":false}
+{"ts":"2026-04-22T12:00:15Z","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+{"ts":"2026-04-22T12:00:20Z","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+{"ts":"2026-04-22T12:00:25Z","session_id":"s2","mode":"consolidation","tool":"mcp__claude_ai_Google_Drive__list_recent_files","connector":"mcp:claude_ai_Google_Drive","error":true,"err":"auth expired"}
+{"ts":"2026-04-22T18:00:00Z","session_id":"s3","mode":"dreaming","tool":"mcp__plugin_linear_linear__list_issues","connector":"mcp:plugin_linear_linear","error":false}
+{"ts":"2026-04-22T18:00:05Z","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":true,"err":"rate-limited"}
+{"ts":"2026-04-22T18:00:10Z","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}
+{"ts":"2026-04-22T18:00:15Z","session_id":"s3","mode":"dreaming","tool":"mcp__claude_ai_Gmail__search_threads","connector":"mcp:claude_ai_Gmail","error":false}

@@ -1,0 +1,288 @@
+"""Smoke tests for engine/bin/scoutctl venv resolution.
+
+The launcher is a bash script that has to find a venv across several
+layouts (canonical install, legacy in-engine, Claude Code's cache→
+marketplace split). We exercise it by laying out fake plugin trees in
+tmp_path with a stub `python` that echoes which candidate fired.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
+LAUNCHER = Path(__file__).parent.parent.parent / "bin" / "scoutctl"
+
+
+def _make_fake_venv(venv_dir: Path, label: str) -> None:
+    """Write a stub `python` that echoes its label and exits 0."""
+    bin_dir = venv_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    python = bin_dir / "python"
+    python.write_text(f"#!/bin/bash\necho VENV={label}\nexit 0\n")
+    python.chmod(python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _stage_launcher(plugin_root: Path) -> Path:
+    """Copy the real launcher into a synthetic plugin tree."""
+    bin_dir = plugin_root / "engine" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    target = bin_dir / "scoutctl"
+    shutil.copy2(LAUNCHER, target)
+    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return target
+
+
+def _run(launcher: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(launcher), "version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_picks_plugin_root_venv(tmp_path):
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    _make_fake_venv(plugin_root / ".venv", "plugin-root")
+    result = _run(launcher)
+    assert "VENV=plugin-root" in result.stdout, result
+
+
+def test_picks_engine_venv_when_plugin_root_missing(tmp_path):
+    """Legacy in-engine layout still works."""
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    _make_fake_venv(plugin_root / "engine" / ".venv", "engine-legacy")
+    result = _run(launcher)
+    assert "VENV=engine-legacy" in result.stdout, result
+
+
+def test_prefers_plugin_root_over_engine(tmp_path):
+    """When both venvs exist, the canonical install-venv.sh location wins."""
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    _make_fake_venv(plugin_root / ".venv", "canonical")
+    _make_fake_venv(plugin_root / "engine" / ".venv", "legacy")
+    result = _run(launcher)
+    assert "VENV=canonical" in result.stdout, result
+
+
+def test_cache_path_falls_back_to_marketplace(tmp_path):
+    """Launcher invoked from cache/ resolves to marketplaces/ venv."""
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.4.0"
+    marketplace_root = plugins_dir / "marketplaces" / "scout-plugin"
+    launcher = _stage_launcher(cache_root)
+    # Venv only present in marketplaces/, not in cache/.
+    _make_fake_venv(marketplace_root / ".venv", "marketplace")
+    result = _run(launcher)
+    assert "VENV=marketplace" in result.stdout, result
+
+
+@pytest.mark.parametrize("venv_rel", ["plugin/.venv", "plugin/engine/.venv"])
+def test_cache_path_falls_back_to_a_monorepo_marketplace_clone(tmp_path, venv_rel):
+    """A Raven-Scout/Scout marketplace clone keeps the plugin under plugin/
+    (marketplace source "./plugin"), so its venv is there, not at the root."""
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.12.0"
+    marketplace_root = plugins_dir / "marketplaces" / "scout-plugin"
+    launcher = _stage_launcher(cache_root)
+    _make_fake_venv(marketplace_root / venv_rel, "monorepo-marketplace")
+    result = _run(launcher)
+    assert "VENV=monorepo-marketplace" in result.stdout, result
+
+
+def test_cache_path_prefers_local_venv_when_present(tmp_path):
+    """If cache/ has its own venv, don't cross-jump."""
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.4.0"
+    marketplace_root = plugins_dir / "marketplaces" / "scout-plugin"
+    launcher = _stage_launcher(cache_root)
+    _make_fake_venv(cache_root / ".venv", "cache-local")
+    _make_fake_venv(marketplace_root / ".venv", "marketplace")
+    result = _run(launcher)
+    assert "VENV=cache-local" in result.stdout, result
+
+
+def test_caches_resolved_python_path(tmp_path):
+    """Per #81: the launcher writes the resolved Python to .scoutctl-py-cache
+    so the next invocation can skip the candidate probe."""
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    _make_fake_venv(plugin_root / ".venv", "plugin-root")
+    cache = plugin_root / ".scoutctl-py-cache"
+    assert not cache.exists()
+
+    result = _run(launcher)
+    assert "VENV=plugin-root" in result.stdout, result
+    assert cache.exists(), "first run should populate the cache"
+    cached_py = cache.read_text().strip()
+    assert cached_py.endswith(".venv/bin/python")
+
+    # Drop the venv stub; the cached path is now stale and should be ignored.
+    # If the cache were honoured blindly, the launcher would fail trying to
+    # exec a missing file.
+    cached_path = Path(cached_py)
+    cached_path.unlink()
+    cache.write_text(str(cached_path) + "\n")  # leave the stale path
+    result2 = _run(launcher)
+    # With no venv and no usable cache, we fall through to `python3 -m scout.cli`.
+    # The test environment doesn't have scout globally installed in tmp_path,
+    # so this typically returns non-zero — that's OK; we only assert the
+    # launcher itself didn't crash trying to exec a stale cached path.
+    assert result2.returncode != 127, "launcher crashed on stale cache: " + result2.stderr
+
+
+def test_cache_invalidates_when_target_disappears(tmp_path):
+    """A cached path that no longer exists must trigger a fresh probe."""
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    _make_fake_venv(plugin_root / ".venv", "plugin-root")
+
+    # Pre-seed the cache with a path that doesn't exist.
+    cache = plugin_root / ".scoutctl-py-cache"
+    cache.write_text("/nonexistent/python\n")
+
+    # Should fall through to the real probe and pick the plugin-root venv.
+    result = _run(launcher)
+    assert "VENV=plugin-root" in result.stdout, result
+    # And the cache should be updated to the correct path.
+    cached_py = cache.read_text().strip()
+    assert cached_py == str(plugin_root / ".venv" / "bin" / "python")
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs system python3 for last-resort exec")
+def test_falls_back_to_system_python3_when_no_venv(tmp_path):
+    """No venv anywhere → exec python3 -m scout.cli, which fails cleanly
+    if scout isn't installed globally. We only assert the launcher ran the
+    fallback path (non-zero exit + 'No module' message, OR scout output if
+    the dev's global python happens to have it)."""
+    plugin_root = tmp_path / "scout-plugin"
+    launcher = _stage_launcher(plugin_root)
+    result = _run(launcher)
+    # Either system python complained that scout isn't installed, or it
+    # succeeded (developer has scout globally). Both are acceptable — we
+    # just want to be sure we didn't exit before reaching the fallback.
+    assert result.returncode != 127, "launcher itself crashed: " + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Engine pointer candidate (A3 / E2b): ~/.local/state/scout/engine.json
+#
+# These run the launcher with a fully hermetic env (bare PATH, isolated HOME)
+# rather than the ambient-PATH `_run` above, so "no venv, no pointer" reliably
+# falls through to a controllable fake `python3` instead of whatever the host
+# happens to have on PATH.
+# ---------------------------------------------------------------------------
+
+
+def _fake_python(venv: Path, tag: str) -> Path:
+    py = venv / "bin" / "python"
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(f'#!/bin/sh\necho "{tag} $*"\n', encoding="utf-8")
+    py.chmod(0o755)
+    return py
+
+
+def _plugin_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "plugin"
+    (root / "engine" / "bin").mkdir(parents=True)
+    dst = root / "engine" / "bin" / "scoutctl"
+    shutil.copy(LAUNCHER, dst)
+    dst.chmod(0o755)
+    return root
+
+
+def _write_pointer(home: Path, python: Path) -> None:
+    write_pointer(
+        EnginePointer(
+            version="0.0.0",
+            engine_root="/nonexistent",
+            python=str(python),
+            scoutctl=str(python.parent / "scoutctl"),
+            vault=str(home / "Scout"),
+            managed_by="scout-app",
+            written_at="2026-01-01T00:00:00Z",
+        ),
+        home=home,
+    )
+
+
+def _run_isolated(root: Path, home: Path, extra_path: str = "") -> str:
+    env = {"HOME": str(home), "PATH": f"{extra_path}:/usr/bin:/bin".lstrip(":")}
+    out = subprocess.run(
+        [str(root / "engine" / "bin" / "scoutctl"), "version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    return out.stdout.strip()
+
+
+def test_uses_pointer_python_when_tree_has_no_venv(tmp_path):
+    home = tmp_path / "home"
+    py = _fake_python(tmp_path / "outside-venv", "POINTER_PY")
+    _write_pointer(home, py)
+    assert _run_isolated(_plugin_tree(tmp_path), home) == "POINTER_PY -m scout.cli version"
+
+
+def test_uses_pointer_python_under_a_non_ascii_path(tmp_path):
+    """The pointer is UTF-8, not \\uXXXX escapes, so the launcher's sed reads
+    back a real path (final review, Ruling 20). A fake system python3 makes a
+    miss show up as SYSTEM_PY instead of a real interpreter's error."""
+    home = tmp_path / "home"
+    py = _fake_python(tmp_path / "Résumé" / "venv", "POINTER_PY")
+    _write_pointer(home, py)
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "POINTER_PY -m scout.cli version"
+
+
+def test_prefers_in_tree_venv_over_pointer(tmp_path):
+    """Edit-and-go: a dev checkout with its own venv keeps using it."""
+    home = tmp_path / "home"
+    _write_pointer(home, _fake_python(tmp_path / "outside-venv", "POINTER_PY"))
+    root = _plugin_tree(tmp_path)
+    _fake_python(root / ".venv", "TREE_PY")
+    assert _run_isolated(root, home) == "TREE_PY -m scout.cli version"
+
+
+def test_malformed_pointer_falls_through_to_system_python3(tmp_path):
+    home = tmp_path / "home"
+    (home / ".local" / "state" / "scout").mkdir(parents=True)
+    (home / ".local" / "state" / "scout" / "engine.json").write_text("{not json", encoding="utf-8")
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+
+
+def test_pointer_python_that_no_longer_exists_is_skipped(tmp_path):
+    home = tmp_path / "home"
+    _write_pointer(home, tmp_path / "gone" / "bin" / "python")
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    py3 = sysbin / "python3"
+    py3.write_text('#!/bin/sh\necho "SYSTEM_PY $*"\n', encoding="utf-8")
+    py3.chmod(0o755)
+    assert _run_isolated(_plugin_tree(tmp_path), home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"

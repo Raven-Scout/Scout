@@ -11,14 +11,14 @@
 **Context for the engineer:**
 - The repo layout: `engine/scout/` is the package, `engine/tests/{unit,integration,...}` are tests.
 - `paths.data_dir()` resolves `$SCOUT_DATA_DIR`, falling back to `Path.home()/Scout` (`engine/scout/paths.py:22-39`). The developer machine has a LIVE vault at `~/Scout`, which is why the suite currently fails locally (8 failures) but passes on CI.
-- Cross-repo contract: `engine/tests/fixtures/contract/parser-corpus.json` must stay byte-identical to `~/scout-app/ScoutTests/Fixtures/parser-corpus.json`. Both are currently in sync at sha256 `4ebe8ae34a5b945bb5165ebd6bb6b818986c2cafec0ad30910bfd3fcb66e21a1` (verified 2026-06-10; the `0096de04…` digest quoted in issue #115's body is stale — the corpus changed in PR #118).
+- Cross-repo contract: `engine/tests/fixtures/contract/parser-corpus.json` must stay byte-identical to `apps/macos/ScoutTests/Fixtures/parser-corpus.json`. Both are currently in sync at sha256 `4ebe8ae34a5b945bb5165ebd6bb6b818986c2cafec0ad30910bfd3fcb66e21a1` (verified 2026-06-10; the `0096de04…` digest quoted in issue #115's body is stale — the corpus changed in PR #118).
 
 ### Task 0: Branch
 
 - [ ] **Step 1: Create the working branch**
 
 ```bash
-cd ~/scout-plugin
+cd plugin
 git checkout -b fix/batch-1-quick-wins
 ```
 
@@ -141,8 +141,8 @@ plugin-only PR can't silently edit the canonical corpus.
 
 - [ ] **Step 1: Confirm both repos are in sync right now**
 
-Run: `shasum -a 256 tests/fixtures/contract/parser-corpus.json ~/scout-app/ScoutTests/Fixtures/parser-corpus.json`
-Expected: both print `4ebe8ae34a5b945bb5165ebd6bb6b818986c2cafec0ad30910bfd3fcb66e21a1`. Also confirm `grep canonicalSHA256 ~/scout-app/ScoutTests/ActionItems/ParserContractTests.swift` shows the same digest. **If any differ, STOP — resolve the cross-repo drift first.**
+Run: `shasum -a 256 tests/fixtures/contract/parser-corpus.json apps/macos/ScoutTests/Fixtures/parser-corpus.json`
+Expected: both print `4ebe8ae34a5b945bb5165ebd6bb6b818986c2cafec0ad30910bfd3fcb66e21a1`. Also confirm `grep canonicalSHA256 apps/macos/ScoutTests/ActionItems/ParserContractTests.swift` shows the same digest. **If any differ, STOP — resolve the cross-repo drift first.**
 
 - [ ] **Step 2: Write the guard test**
 

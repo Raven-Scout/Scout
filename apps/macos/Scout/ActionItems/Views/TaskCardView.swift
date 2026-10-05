@@ -1,0 +1,494 @@
+import SwiftUI
+import AppKit
+
+/// A task in the Action Items List. Top-level tasks render as a collapsible
+/// card — a scannable header (priority stripe · prefix · title · source chips ·
+/// quick actions) with the dense detail (body, comments, full actions, comment
+/// composer) tucked behind a chevron. Urgent tasks start expanded; everything
+/// else starts collapsed. Nested sub-tasks render as light indented rows.
+///
+/// Inspired by the triage artifact's card + progressive-disclosure layout,
+/// keeping Scout's editorial palette.
+struct TaskCardView: View {
+    let task: ActionTask
+    let kind: ActionSection.Kind
+    let displayedDate: Date
+    let scoutDirectory: URL
+    let selection: Binding<Set<UUID>>?
+    // `@MainActor` is load-bearing: with default-MainActor + approachable
+    // concurrency, a non-isolated async closure type would carry the WriteOp
+    // across an isolation boundary as a `sending` value, and the reabstraction
+    // thunk over-releases its String payloads → EXC_BAD_ACCESS reading the op
+    // in the writer. Keeping the closure MainActor-isolated avoids that hop.
+    let onOp: @MainActor (WriteOp, Int?) async throws -> Void
+    /// Called when the user collapses the card. Recently Completed uses it to
+    /// turn an opened done task back into its one-line row.
+    let onCollapse: (() -> Void)?
+
+    @State private var inlineError: String?
+    @State private var expanded: Bool
+    @State private var showingQuickSnooze = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        task: ActionTask,
+        kind: ActionSection.Kind,
+        displayedDate: Date,
+        scoutDirectory: URL,
+        selection: Binding<Set<UUID>>? = nil,
+        startsExpanded: Bool? = nil,
+        onCollapse: (() -> Void)? = nil,
+        onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
+    ) {
+        self.task = task
+        self.kind = kind
+        self.displayedDate = displayedDate
+        self.scoutDirectory = scoutDirectory
+        self.selection = selection
+        self.onOp = onOp
+        self.onCollapse = onCollapse
+        // Urgent opens by default — its detail is what you want immediately.
+        _expanded = State(initialValue: startsExpanded ?? ((task.snoozedFromKind ?? kind) == .urgent))
+    }
+
+    var body: some View {
+        if isNested {
+            nestedRow
+        } else {
+            card
+        }
+    }
+
+    /// Sub-tasks (depth ≥ 1) stay lightweight — no card chrome, no collapse,
+    /// indented under their parent so the hierarchy reads at a glance.
+    private var isNested: Bool { task.indentLevel > 0 }
+
+    /// Kind used for visual treatment. Honors the source-section hint recorded
+    /// by `scoutctl snooze --from-kind` so an urgent task that carries forward
+    /// into the `🛌 Snoozed` section stays visually urgent.
+    var effectiveKind: ActionSection.Kind { task.snoozedFromKind ?? kind }
+
+    // MARK: - Card
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if expanded {
+                detail
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 14)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
+                )
+        )
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(DS.priorityColor(effectiveKind))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .opacity(task.done ? 0.5 : 1)
+        }
+        .padding(.bottom, 10)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+    }
+
+    // MARK: - Header (always visible, scannable)
+
+    private var header: some View {
+        // Computed once per body pass — `chips` walks the task's deep links and
+        // formats the carried-from date, so gating and rendering off two
+        // separate evaluations doubles that work for every card.
+        let chips = self.chips
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if selection != nil {
+                    selectionButton
+                }
+                InlineMarkdownText(task.subject)
+                    .font(DS.serif(15.5, weight: .medium))
+                    .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
+                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .lineLimit(expanded ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggle() }
+                if !expanded { quickActions }
+                trailingStatus
+                chevron
+            }
+            if !expanded && !task.body.isEmpty {
+                InlineMarkdownText(task.body)
+                    .font(DS.serif(13))
+                    .foregroundStyle(DS.Ink.p3)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggle() }
+            }
+            if !chips.isEmpty {
+                chipRow(chips)
+            }
+        }
+        .padding(14)
+        .contentShape(Rectangle())
+    }
+
+    private var chevron: some View {
+        Button { toggle() } label: {
+            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DS.Ink.p4)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(expanded ? "Collapse action item" : "Expand action item")
+    }
+
+    private func toggle() {
+        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        if !expanded { onCollapse?() }
+    }
+
+    /// Whether the comment composer shows. Open tasks always; a done task only
+    /// with a `[#TAG]`, because scoutctl reaches a done task by `--by-id` alone
+    /// (its `--subject` lookup matches open tasks).
+    static func canComment(_ task: ActionTask) -> Bool {
+        !task.done || task.shortPrefix != nil
+    }
+
+    // MARK: - Source/context chips
+
+    private var chips: [TaskChip] {
+        TaskChip.chips(
+            for: task,
+            carriedLabel: task.carriedInFrom.map { dateShort($0) }
+        )
+    }
+
+    private func chipRow(_ chips: [TaskChip]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(chips) { chip in
+                chipView(for: chip)
+            }
+        }
+    }
+
+    /// Renders a chip per its targets: static text (0 links), a button that
+    /// opens directly (1 link), or a dropdown listing each target (>1 links).
+    @ViewBuilder
+    private func chipView(for chip: TaskChip) -> some View {
+        switch chip.links.count {
+        case 0:
+            chipBody(for: chip)
+        case 1:
+            Button {
+                NSWorkspace.shared.open(chip.links[0].url)
+            } label: {
+                chipBody(for: chip)
+            }
+            .buttonStyle(.plainHit)
+            .help(chip.links[0].url.absoluteString)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        default:
+            Menu {
+                ForEach(chip.links) { link in
+                    Button(link.label) { NSWorkspace.shared.open(link.url) }
+                }
+            } label: {
+                chipBody(for: chip)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
+    }
+
+    private func chipBody(for chip: TaskChip) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: chipGlyph(chip.glyph))
+                .font(.system(size: 9))
+            Text(chip.label)
+                .font(DS.mono(10.5))
+                .lineLimit(1)
+        }
+        .foregroundStyle(DS.Ink.p3)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(EditorialChipBackground())
+    }
+
+    private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
+        switch glyph {
+        case .github:   return "arrow.triangle.pull"
+        case .linear:   return "circle.grid.2x2"
+        case .slack:    return "bubble.left.and.bubble.right"
+        case .carry:    return "calendar"
+        case .entity:   return "doc.text"
+        case .crossRef: return "number.square"
+        case .plain:    return "tag"
+        }
+    }
+
+    // MARK: - Quick actions (collapsed only)
+
+    private var quickActions: some View {
+        HStack(spacing: 4) {
+            if task.done {
+                iconButton("arrow.uturn.backward", help: "Reopen") {
+                    Task { await runOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+                }
+            } else {
+                iconButton("checkmark", help: "Mark done") {
+                    Task { await runOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+                }
+                iconButton("moon.zzz", help: "Snooze") { showingQuickSnooze = true }
+                    .popover(isPresented: $showingQuickSnooze) {
+                        SnoozePopoverView(sourceDate: displayedDate) { target in
+                            await runOp(.snooze(
+                                subject: task.matchableSubject,
+                                shortPrefix: task.shortPrefix,
+                                until: target,
+                                fromKind: kind.rawValue
+                            ))
+                            showingQuickSnooze = false
+                        } onCancel: {
+                            showingQuickSnooze = false
+                        }
+                    }
+            }
+        }
+    }
+
+    private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11))
+                .foregroundStyle(DS.Ink.p3)
+                .frame(width: 24, height: 22)
+                .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.base))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(help)
+    }
+
+    @ViewBuilder
+    private var trailingStatus: some View {
+        if task.done {
+            statusPill("Done", color: DS.Status.ok)
+        } else if let until = task.snoozedUntil {
+            HStack(spacing: 3) {
+                Image(systemName: "moon.zzz.fill").imageScale(.small)
+                Text(dateShort(until))
+            }
+            .font(DS.mono(10.5))
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+        }
+    }
+
+    private func statusPill(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(DS.mono(10.5, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+    }
+
+    // MARK: - Expanded detail
+
+    // Typed properties rather than inline `cond ? nil : { … }` ternaries:
+    // Xcode 26.3 (CI) can't type-check those inside the detail VStack.
+    private var editCommentHandler: ((Int, String) async -> Void)? {
+        guard Self.canComment(task) else { return nil }
+        return { index, newText in
+            await runOp(.editComment(
+                subject: task.matchableSubject,
+                shortPrefix: task.shortPrefix,
+                selector: .index(index),
+                newText: newText
+            ))
+        }
+    }
+
+    private var deleteCommentHandler: ((Int) async -> Void)? {
+        guard Self.canComment(task) else { return nil }
+        return { index in
+            await runOp(.deleteComment(
+                subject: task.matchableSubject,
+                shortPrefix: task.shortPrefix,
+                selector: .index(index)
+            ))
+        }
+    }
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !task.body.isEmpty {
+                TaskBodyView(rawBody: task.body)
+            }
+
+            if !task.comments.isEmpty {
+                // Editing and deleting reach the task the same way adding does,
+                // so they follow the same rule.
+                CommentListView(
+                    comments: task.comments,
+                    onEdit: editCommentHandler,
+                    onDelete: deleteCommentHandler
+                )
+            }
+
+            if !task.deepLinks.isEmpty {
+                TaskLinksView(links: task.deepLinks)
+            }
+
+            TaskActionsView(
+                task: task,
+                kind: effectiveKind,
+                displayedDate: displayedDate,
+                scoutDirectory: scoutDirectory
+            ) { op in
+                await runOp(op)
+            }
+
+            if Self.canComment(task) {
+                CommentComposerView(task: task, displayedDate: displayedDate) { text in
+                    let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
+                    await runOp(.addComment(
+                        subject: task.matchableSubject,
+                        shortPrefix: task.shortPrefix,
+                        text: text,
+                        author: author
+                    ))
+                }
+            }
+
+            if let err = inlineError {
+                Text(err)
+                    .font(DS.sans(11))
+                    .foregroundStyle(DS.Status.err)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    // MARK: - Nested sub-task row
+
+    private var nestedRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if selection != nil {
+                selectionButton
+            }
+            Circle()
+                .fill(DS.priorityColor(effectiveKind))
+                .frame(width: 5, height: 5)
+                .opacity(task.done ? 0.5 : 0.8)
+                .padding(.top, 7)
+            VStack(alignment: .leading, spacing: 4) {
+                InlineMarkdownText(task.subject)
+                    .font(DS.serif(13.5))
+                    .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
+                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !task.body.isEmpty {
+                    InlineMarkdownText(task.body)
+                        .font(DS.serif(12.5))
+                        .foregroundStyle(DS.Ink.p3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.leading, CGFloat(task.indentLevel) * 24 + 16)
+        .padding(.trailing, 14)
+    }
+
+    // MARK: - Helpers
+
+    private var isSelected: Bool {
+        selection?.wrappedValue.contains(task.id) == true
+    }
+
+    private var selectionButton: some View {
+        Button {
+            guard let selection else { return }
+            if isSelected {
+                selection.wrappedValue.remove(task.id)
+            } else {
+                selection.wrappedValue.insert(task.id)
+            }
+        } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHit)
+        .help(isSelected ? "Remove from copy selection" : "Add to copy selection")
+        .accessibilityLabel(isSelected ? "Selected for copying" : "Select for copying")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    }
+
+    /// Dispatches a write through `onOp` and threads any failure into the
+    /// inline error label.
+    private func runOp(_ op: WriteOp) async {
+        do {
+            try await onOp(op, task.lineNumber)
+            await MainActor.run { inlineError = nil }
+        } catch let err as ActionItemsWriterError {
+            await MainActor.run { inlineError = describe(err) }
+        } catch {
+            await MainActor.run { inlineError = error.localizedDescription }
+        }
+    }
+
+    private func describe(_ err: ActionItemsWriterError) -> String {
+        switch err {
+        case .cliNonZeroExit(_, let stderr, let kind):
+            switch kind {
+            case .noMatch:     return "Task may have been edited externally — refreshing.\n\(stderr)"
+            case .ambiguous:   return "Subject matched multiple tasks.\n\(stderr)"
+            case .environment: return "Python environment problem.\n\(stderr)"
+            case .other:       return stderr.isEmpty ? "Write failed." : stderr
+            }
+        case .processFailed(let e):
+            return "Process failed: \(e.localizedDescription)"
+        }
+    }
+
+    /// Shared "MMM d" formatter — DateFormatter init is expensive, and this
+    /// runs for every card with a snooze pill or carried-from chip in a render
+    /// pass. MainActor-bound (module default isolation), so sharing is safe.
+    private static let shortDateFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d"
+        fmt.timeZone = .current
+        return fmt
+    }()
+
+    private func dateShort(_ d: Date) -> String {
+        Self.shortDateFormatter.string(from: d)
+    }
+}

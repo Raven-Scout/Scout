@@ -1,0 +1,200 @@
+name: contract
+
+# The cross-client contract gate. Before the monorepo, these artifacts were
+# single logical files living in two or three repositories, and no CI job could
+# see across a repo edge — so two of the three drifted, one of them into the
+# shipped app bundle. This job is the whole reason the repos were merged.
+#
+# Deliberately cheap (ubuntu, Python only, no Xcode) so it can run on every PR
+# touching either side without cost pressure. Never path-filter it OUT of a
+# cross-cutting change.
+
+on:
+  pull_request:
+  push:
+    branches: [main, "migrate/**"]
+
+jobs:
+  # Path-scoped `paths:` filters were removed from `on.pull_request` above so
+  # this workflow can be a required status check (ruling R30): a check
+  # skipped by `paths:` filtering is stuck "Pending" forever and blocks
+  # merging, while a job skipped by an `if:` conditional reports "Success".
+  # This job decides, and the verify job gates on its output.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$)'
+
+  verify:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Every committed client copy of a contract snapshot, one
+      # "<canonical> <copy>" pair per line. Step 2 diffs each pair; step 2b
+      # fails the build if git tracks a snapshot copy that is not listed here.
+      SNAPSHOT_COPIES: |
+        plugin/engine/scout/connectors.snapshot.json apps/macos/ScoutTests/Fixtures/connectors.snapshot.json
+        plugin/engine/scout/connectors.snapshot.json apps/macos/Scout/Resources/connectors.snapshot.json
+        plugin/engine/scout/schedule.snapshot.json apps/macos/ScoutTests/Fixtures/schedule.snapshot.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Setup Python
+        run: uv python install 3.12
+      - name: Create venv
+        working-directory: plugin/engine
+        run: uv venv --python 3.12
+      - name: Install engine
+        working-directory: plugin/engine
+        run: uv pip install -e ".[dev]"
+
+      # 1. The canonical snapshots must match their YAML sources. (This check
+      #    existed pre-merge and is retained verbatim.)
+      - name: Canonical connectors snapshot matches connectors.yaml
+        working-directory: plugin/engine
+        run: .venv/bin/python -m scout.scripts.connectors_snapshot --check --target scout/connectors.snapshot.json
+      - name: Canonical schedule snapshot matches schedule.yaml
+        working-directory: plugin/engine
+        run: .venv/bin/python -m scout.scripts.schedule_snapshot --check --target scout/schedule.snapshot.json
+
+      # 2. Every client copy must match the canonical file. This is the check
+      #    that could not exist before the merge. Resources/ is included
+      #    because it SHIPS — a fixtures-only check would have left the
+      #    user-facing drift live for another four months.
+      - name: Client copies match the canonical snapshots
+        run: |
+          set -uo pipefail
+          status=0
+          check() {
+            local canonical="$1" copy="$2"
+            if [ ! -f "$copy" ]; then
+              echo "::error file=$copy::missing client copy of $(basename "$canonical")"
+              status=1
+              return
+            fi
+            # generated_from carries the source repo SHA and legitimately
+            # differs between regenerations; every other field must agree.
+            if diff -u \
+                 <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("generated_from", None); print(json.dumps(d, indent=2, sort_keys=True))' "$canonical") \
+                 <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("generated_from", None); print(json.dumps(d, indent=2, sort_keys=True))' "$copy"); then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::drifted from $canonical — fix with: cp $canonical $copy (never hand-edit a copy; to change the contract, edit the YAML and regenerate the canonical file — see CLAUDE.md)"
+              status=1
+            fi
+          }
+
+          while read -r canonical copy; do
+            [ -n "${copy:-}" ] || continue
+            check "$canonical" "$copy"
+          done <<< "$SNAPSHOT_COPIES"
+
+          exit $status
+
+      # 2b. ...and the list above must be complete: a new client (or a new
+      #     copy in an existing one) that vendors a snapshot without a line in
+      #     SNAPSHOT_COPIES would otherwise never be compared — the exact gap
+      #     this workflow exists to close.
+      - name: Every tracked snapshot copy is checked
+        run: |
+          set -uo pipefail
+          listed=" "
+          while read -r canonical copy; do
+            [ -n "${copy:-}" ] || continue
+            listed="$listed$canonical $copy "
+          done <<< "$SNAPSHOT_COPIES"
+          tracked="$(git ls-files -- '*connectors.snapshot.json' '*schedule.snapshot.json')"
+          status=0
+          found=0
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            found=$((found + 1))
+            case "$listed" in
+              *" $path "*) echo "OK  $path" ;;
+              *)
+                echo "::error file=$path::tracked snapshot copy is not in contract.yml's SNAPSHOT_COPIES, so nothing compares it to the canonical file — add a line for it"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          if [ "$found" -eq 0 ]; then
+            echo "::error::git ls-files found no snapshot files — the patterns may be stale"
+            status=1
+          fi
+          exit $status
+
+      # 3. The parser corpus must be byte-identical across every client that
+      #    vendors it. Same-tree now, so a plain cmp replaces the two
+      #    hand-maintained SHA-256 constants (those come out in Stage 2).
+      #
+      # 3b. ...and the glob above must be complete, same gap as 2b: a corpus
+      #     copy that doesn't match apps/*/[Ss]cout*Tests/Fixtures/ would be
+      #     silently never compared, so discover every tracked copy via
+      #     `git ls-files` and fail if one wasn't in the set this step checked.
+      - name: Parser corpus is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/parser-corpus.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/parser-corpus.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::parser-corpus.json is not byte-identical to $canonical — edit the canonical file, update EXPECTED_SHA256 and canonicalSHA256, then cp it over $copy (see CLAUDE.md)"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of parser-corpus.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*parser-corpus.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked parser-corpus.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+
+          exit $status
+
+  contract:
+    name: contract
+    needs: [changes, verify]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any gated job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a gated job ended '$r'"; exit 1 ;;
+            esac
+          done

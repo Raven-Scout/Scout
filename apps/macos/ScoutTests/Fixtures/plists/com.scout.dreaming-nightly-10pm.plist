@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scout.dreaming-nightly-10pm</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/scout-dev/Scout/run-dreaming.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/scout-dev/Scout</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/scout-dev/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/scout-dev</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/scout-dev/Scout/.scout-logs/launchd-dreaming-nightly-10pm.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/scout-dev/Scout/.scout-logs/launchd-dreaming-nightly-10pm.log</string>
+</dict>
+</plist>
