@@ -31,6 +31,12 @@
   - A release passes `--latest`. An rc passes `--prerelease --latest=false`.
   - The script never runs `git tag` or `git push` for the release tag. `gh release create --target` creates the tag on GitHub.
 - **Dry runs:** `SKIP_RELEASE=1` makes `prepare` stop after the local commit (no push, no PR), and `finalize`/`rc` stop before `gh release create`. `SKIP_NOTARIZE=1` skips every `xcrun notarytool`, `xcrun stapler` and `spctl` call.
+- **Sparkle hook (contract with #318, the in-app updates plan).** It's active when `apps/macos/scripts/sparkle-release.sh` is executable **in the commit being built** (`$wt/…`). `build_and_publish` exports `SPARKLE_BIN="$build/SourcePackages/artifacts/sparkle/Sparkle/bin"` and calls three subcommands:
+  - `preflight "$app"`, right after `xcodebuild … build` and before any `codesign`;
+  - `sign "$app" "$ident"`, **instead of** the flat app `codesign --force --options runtime …`. Sparkle's nested XPC services, `Autoupdate` and `Updater.app` must be signed inside-out, and a flat outer signature fails notarization. `codesign --verify --strict` on the app stays.
+  - `appcast "$dmg" "$tag" "$slug" "$notes" "$build/appcast.xml"`, after the DMG is final and the notes are rendered.
+  - With the hook active, a **release** without `$build/appcast.xml` is fatal. An rc or a dry run only warns. Without the hook, the flat app codesign is used and no appcast is required.
+  - The DMG's own `codesign` stays flat in `release.sh`.
 - Build number: `CURRENT_PROJECT_VERSION = git rev-list --count <sha>`. `SCOUT_PLUGIN_FLOOR` equals the release's own version `X.Y.Z`.
 - The release's repo must be `Raven-Scout/Scout`, derived from `origin` and compared case-insensitively. `SCOUT_REPO_SLUG` overrides it, for tests only.
 - Bundled-engine contract with Part C: `Scout.app/Contents/Resources/engine-release.json` has a top-level `"version"` string. A real `finalize` refuses when the file is missing or its version ≠ `X.Y.Z`. A dry run or an rc only warns when it is missing.
@@ -1115,7 +1121,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `scripts/release.sh finalize vX.Y.Z` and `scripts/release.sh rc vX.Y.Z-rc.N`;
   - build worktrees at `$REPO_ROOT/.release/<tag>`, removed after a successful publish;
   - the DMG at `.release/<tag>/apps/macos/build/release/Scout-<X.Y.Z or X.Y.Z-rc.N>.dmg`;
-  - the Sparkle hook: if `.release/<tag>/apps/macos/build/appcast.xml` exists when publishing, it is attached as a second asset.
+  - the Sparkle hook, per Global Constraints: `sparkle-release.sh preflight|sign|appcast` from the commit being built. `$build/appcast.xml`, if it exists when publishing, is attached as a second asset. It's mandatory for a release when the hook is active.
 
 - [ ] **Step 1: Write the failing tests.** Append to `test_release_script.py`:
 
@@ -1222,6 +1228,60 @@ def test_rc_and_finalize_validate_tag_shapes(tmp_path):
     assert "finalize needs vX.Y.Z" in r.run("finalize", "0.15.0").stderr
     assert "use 'rc'" in r.run("finalize", "v0.15.1-rc.1").stderr
     assert "rc needs vX.Y.Z-rc.N" in r.run("rc", "v0.15.1").stderr
+
+
+_HOOK = """#!/bin/bash
+echo "sparkle-release.sh $*" >> "$FAKE_LOG"
+case "$1" in appcast) [ -n "${FAKE_HOOK_NO_APPCAST:-}" ] || echo '<rss/>' > "$6" ;; esac
+exit 0
+"""
+
+
+def _add_sparkle_hook(r):
+    hook = r.root / "apps/macos/scripts/sparkle-release.sh"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(_HOOK, encoding="utf-8")
+    hook.chmod(0o755)
+    _git(r.root, "add", "apps/macos/scripts/sparkle-release.sh")
+    _git(r.root, "commit", "-q", "-m", "feat(app): sparkle release hook")
+    _git(r.root, "push", "-q", "origin", "main")
+
+
+def test_sparkle_hook_signs_inside_out_and_writes_the_appcast(tmp_path):
+    r = make_repo(tmp_path)
+    _add_sparkle_hook(r)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode == 0, done.stderr
+    calls = r.calls()
+    idx = {k: next(i for i, c in enumerate(calls) if c.startswith(k)) for k in (
+        "xcodebuild", "sparkle-release.sh preflight", "sparkle-release.sh sign", "sparkle-release.sh appcast",
+        "gh release create")}
+    assert idx["xcodebuild"] < idx["sparkle-release.sh preflight"] < idx["sparkle-release.sh sign"]
+    assert not any(c.startswith("codesign --force --options runtime") for c in calls)  # the hook signs the app
+    last_dmg_notary = max(i for i, c in enumerate(calls) if c.startswith("xcrun stapler staple") and c.endswith(".dmg"))
+    assert last_dmg_notary < idx["sparkle-release.sh appcast"] < idx["gh release create"]
+    assert "appcast.xml" in calls[idx["gh release create"]]
+    appcast = calls[idx["sparkle-release.sh appcast"]].split()
+    assert appcast[2].endswith("Scout-0.15.0.dmg") and appcast[3:5] == ["v0.15.0", "Raven-Scout/Scout"]
+
+
+def test_release_without_appcast_is_fatal_when_sparkle_is_present(tmp_path):
+    r = make_repo(tmp_path)
+    _add_sparkle_hook(r)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"FAKE_HOOK_NO_APPCAST": "1"})
+    assert done.returncode != 0 and "no appcast.xml" in done.stderr
+    assert not any(c.startswith("gh release create") for c in r.calls())
+
+
+def test_rc_without_appcast_only_warns(tmp_path):
+    r = make_repo(tmp_path)
+    _add_sparkle_hook(r)
+    done = r.run("rc", "v0.15.0-rc.1", extra_env={"FAKE_HOOK_NO_APPCAST": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "no appcast.xml" in done.stdout
+    assert "appcast.xml" not in next(c for c in r.calls() if c.startswith("gh release create"))
 ```
 
 - [ ] **Step 2: Run them and watch them fail.**
@@ -1249,7 +1309,7 @@ check_bundled_engine() {
 # build_and_publish TAG APP_VERSION SHA SLUG KIND   (KIND: release | rc)
 build_and_publish() {
   local tag="$1" v="$2" sha="$3" slug="$4" kind="$5"
-  local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev latest at
+  local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev latest at hook
   ident="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
   profile="${SCOUT_NOTARY_PROFILE:-scout-notary}"
 
@@ -1282,7 +1342,15 @@ build_and_publish() {
   [ -d "$app" ] || die "Scout.app not found at $app"
   check_bundled_engine "$app" "$v" "$kind"
 
-  codesign --force --options runtime --timestamp --sign "$ident" "$app"
+  # Sparkle hook (contract with #318): active when the commit being built ships it.
+  hook="$wt/apps/macos/scripts/sparkle-release.sh"
+  export SPARKLE_BIN="$build/SourcePackages/artifacts/sparkle/Sparkle/bin"
+  if [ -x "$hook" ]; then
+    "$hook" preflight "$app"
+    "$hook" sign "$app" "$ident"     # inside-out: Sparkle's XPC services, Autoupdate and Updater.app first
+  else
+    codesign --force --options runtime --timestamp --sign "$ident" "$app"
+  fi
   codesign --verify --strict --verbose=2 "$app"
   if [ "${SKIP_NOTARIZE:-0}" != 1 ]; then
     ditto -c -k --keepParent "$app" "$build/Scout-notarize.zip"
@@ -1313,6 +1381,16 @@ build_and_publish() {
       ${prev:+--prev "${prev%% *}"}
   else
     "$PY" -m scout.scripts.release_notes --repo-root "$wt" "$v" --repo "$slug" --out "$notes" --rc "$tag"
+  fi
+
+  if [ -x "$hook" ]; then
+    "$hook" appcast "$dmg" "$tag" "$slug" "$notes" "$build/appcast.xml"
+    if [ ! -f "$build/appcast.xml" ]; then
+      if [ "$kind" = release ] && [ "${SKIP_RELEASE:-0}" != 1 ]; then
+        die "no appcast.xml after sparkle-release.sh appcast: a Latest release without it 404s every installed app's update feed"
+      fi
+      echo "⚠ no appcast.xml: fine for an rc or a dry run"
+    fi
   fi
 
   set -- "$dmg"
@@ -1370,7 +1448,7 @@ There are two reasons the slug check comes first in both commands. First, `test_
 - [ ] **Step 4: Run the tests and watch them pass. Shellcheck again.**
 
 Run: `cd plugin/engine && .venv/bin/pytest tests/unit/test_release_script.py -q && shellcheck -S warning ../../scripts/release.sh`
-Expected: all pass (7 from Task 3 + 11 new). If `test_rc_is_a_prerelease_never_latest` fails on "not on any pushed branch", the harness forgot to push `main`. `make_repo` pushes it, so check that the test didn't add commits after `make_repo`.
+Expected: all pass (7 from Task 3 + 13 new). If `test_rc_is_a_prerelease_never_latest` fails on "not on any pushed branch", the harness forgot to push `main`. `make_repo` pushes it, so check that the test didn't add commits after `make_repo`.
 
 - [ ] **Step 5: Commit.**
 

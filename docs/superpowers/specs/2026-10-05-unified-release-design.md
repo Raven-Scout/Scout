@@ -111,11 +111,22 @@ One root `scripts/release.sh` replaces `apps/macos/scripts/release-app.sh`,
 2. `git worktree add` a throwaway checkout of the merge commit. Every build
    input comes from that commit.
 3. Build the app there, with `plugin/` bundled from the same commit (§5).
-   Sign it with the Developer ID, notarize, staple, and build the DMG. This
+   Sign it with the Developer ID, notarize, staple, and build the DMG.
+   - Once Sparkle has merged, the commit carries
+     `apps/macos/scripts/sparkle-release.sh` (#318). Signing the app is then
+     delegated to it: `preflight "$app"` after the build, and `sign "$app"
+     "$ident"` instead of one flat signature, because Sparkle's nested code
+     must be signed inside-out to pass notarization.
+   - The DMG's own signature stays in `release.sh`. This
    logic moves over from `release-app.sh`, including the `SCScoutPluginFloor`
    stamp, which now always equals the app's own version.
-4. Render the release notes (§3). Once Sparkle lands, also render and
-   EdDSA-sign `appcast.xml` for this DMG (§5).
+4. Render the release notes (§3). Once Sparkle lands, also call
+   `sparkle-release.sh appcast "$dmg" "$tag" "$slug" "$notes"
+   "$build/appcast.xml"`, which renders and EdDSA-signs the feed for this DMG
+   (§5).
+   - With the hook present, a **release** without `appcast.xml` is refused: a
+     Latest release without it would 404 every installed copy's update feed.
+   - An rc or a dry run only warns.
 5. Publish with **one call**:
    `gh release create vX.Y.Z --target <merge sha> --latest --title "Scout X.Y.Z" --notes-file … <DMG> [appcast.xml]`.
    That creates the tag and the release together.
@@ -228,14 +239,18 @@ marketplace, on the same version numbers (D2).
 - Parts B and C merged, Sparkle merged, `release.sh` merged.
 - A dry run (`SKIP_NOTARIZE=1 SKIP_RELEASE=1 release.sh prepare minor`, then
   `finalize` on that local commit) passes on `main`.
-- **Acceptance test (Part C's C10):**
-  - on a fresh macOS user account, download the v0.15.0 DMG from a draft
-    release, open it, and complete onboarding through a first briefing with
-    no terminal;
-  - then publish `v0.15.1-rc.1` as a pre-release, point that install at its
-    appcast, and check that Sparkle updates the app and that the engine
-    upgrades itself;
-  - check that the vault's runs keep working.
+- **Acceptance test (Part C's C10).** `finalize` has no draft mode, so it's
+  rehearsed with release candidates (agreed with #318):
+  - publish `rc v0.15.0-rc.1`;
+  - on a fresh macOS user account, install its DMG and complete onboarding
+    through a first briefing, with no terminal;
+  - publish `rc v0.15.0-rc.2` from a **later commit**, so its build number,
+    which Sparkle compares, is higher;
+  - point the rc.1 install at rc.2's appcast through `SCOUT_APPCAST_URL`, and
+    check that Sparkle updates the app and the engine upgrades itself;
+  - check that the vault's runs keep working;
+  - then `finalize v0.15.0`, and repeat the update check with
+    `v0.15.1-rc.1` afterwards.
 - Retiring `/scout-setup` is **not** required. The app's onboarding already
   makes the app the only step for new Mac users. The retirement ships in
   v0.15.0 if it's ready, otherwise v0.16.0.
