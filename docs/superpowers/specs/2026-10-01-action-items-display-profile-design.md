@@ -1,10 +1,10 @@
 # Action Items display profile: design
 
-**Date:** 2026-10-01 (revised 2026-10-03 after review)
+**Date:** 2026-10-01 (revised 2026-10-03 after review, updated 2026-10-05)
 **Status:** Proposed (for review). Docs only; code follows after approval.
 **Surface:** Scout.app in `apps/macos/` (Action Items tab, Settings). Paths below are relative to `apps/macos/`. No engine or plugin change.
-**Refs:** Raven-Scout/scout-app-legacy#52 (the customization half). The three rendering fixes from Raven-Scout/scout-app-legacy#52 ship
-separately as a small fix PR.
+**Refs:** #290 (the customization half; it was Raven-Scout/scout-app-legacy#52 before the move).
+The three rendering fixes from the same issue shipped in Raven-Scout/scout-app-legacy#122.
 
 > **Revised 2026-10-03 per review.** "Oldest first" is dropped: no daily file
 > carries the `_(carried in from YYYY-MM-DD)_` marker it sorted on. `fields.plan`
@@ -16,7 +16,7 @@ separately as a small fix PR.
 
 ## 1. Context
 
-Raven-Scout/scout-app-legacy#52 asks for "density/layout options, which fields/metadata show, list-vs-board
+#290 asks for "density/layout options, which fields/metadata show, list-vs-board
 default, sort/group options". On `main` today:
 
 | Ask | Today |
@@ -193,7 +193,7 @@ Settings scene. No new `AppState.Configuration` field: the path comes from
 
 A new Action Items section built from the existing atoms (`SettingsRow`,
 `SettingsToggle`, and an inline menu `Picker` as used for the CLI terminal at
-`SettingsView.swift:85`). It shows Default view and the same controls as the
+`SettingsView.swift:78`). It shows Default view and the same controls as the
 View menu, the file path (from `scoutDirectory`), and the warning or unreadable
 line in `DS.Status.warn` when there is one.
 
@@ -219,8 +219,14 @@ line in `DS.Status.warn` when there is one.
     sort inside each column.
   - **Cached.** The arranged sections are stored in view state and recomputed
     only when the document, the filter or the profile changes, the same way
-    `visibleSelectableIDs` is cached (Raven-Scout/scout-app-legacy#83, Raven-Scout/scout-app-legacy#88). The default profile returns the
-    input unchanged, so it costs nothing either way.
+    `visibleSelectableIDs` is cached (Raven-Scout/scout-app-legacy#83,
+    Raven-Scout/scout-app-legacy#88). The default profile returns the input
+    unchanged, so it costs nothing either way.
+  - **Task windows.** The List builds one page of rows per section
+    (`TaskWindow`), keyed by the drawn section. Select all, the visible-row check
+    and reopen therefore read the arranged sections, not the file order: under
+    A-Z, Select all takes the first page on screen, and One list pages the
+    merged list once instead of each source section.
 - **Fields** apply to the collapsed list card and to the board card. The
   expanded card always shows everything.
   - `refs`: the relation chips (GitHub, Linear, Slack, entity, cross-ref, plain)
@@ -231,7 +237,10 @@ line in `DS.Status.warn` when there is one.
     default card does not change.
 - **Compact density:** list card padding 14 → 8 points, no body preview on the
   collapsed card, every card starts collapsed (today Urgent starts expanded,
-  `TaskCardView.swift:45`). Board card padding 12 → 8, title 3 → 2 lines.
+  `TaskCardView.swift:51`). Board card padding 12 → 8, title 3 → 2 lines.
+  A density change re-applies the start state to the cards already on screen,
+  so choosing Compact collapses open cards at once. A card whose caller fixed
+  its state (`startsExpanded:`, as in Recently Completed) keeps it.
 
 ## 7. Testing
 
