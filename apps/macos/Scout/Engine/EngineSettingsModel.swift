@@ -75,7 +75,7 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         case .notInstalled:
             return EngineNextStep(
                 text: "Install the engine: run this in Terminal, then run /scout-setup in Claude Code.",
-                copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash")
+                copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash")
         case .broken:
             return EngineNextStep(text: "Repair the engine by running /scout-update in Claude Code.", copyValue: "/scout-update")
         case .managed(_, vaultBootstrapped: false):

@@ -102,7 +102,7 @@ struct EngineSettingsModelTests {
         let m = EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: nil)
         #expect(m.nextStep == EngineNextStep(
             text: "Install the engine: run this in Terminal, then run /scout-setup in Claude Code.",
-            copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/scout-plugin/main/install.sh | bash"))
+            copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash"))
     }
 
     @Test func brokenNextStepIsScoutUpdate() {
