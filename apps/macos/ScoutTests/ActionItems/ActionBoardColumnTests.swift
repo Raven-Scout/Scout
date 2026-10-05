@@ -7,7 +7,7 @@ struct ActionBoardColumnTests {
     private func task(_ subject: String, done: Bool = false, snoozedFrom: ActionSection.Kind? = nil) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 1, done: done, subject: subject, plainSubject: subject,
-            body: "", comments: [], deepLinks: [], snoozedUntil: nil, carriedInFrom: nil,
+            body: "", comments: [], deepLinks: [], details: [], snoozedUntil: nil, carriedInFrom: nil,
             snoozedFromKind: snoozedFrom
         )
     }

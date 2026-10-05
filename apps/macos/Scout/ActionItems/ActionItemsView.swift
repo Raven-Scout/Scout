@@ -690,10 +690,7 @@ struct ActionItemsView: View {
                 }
             }()
             guard statusOK else { return false }
-            guard !needle.isEmpty else { return true }
-            return t.plainSubject.lowercased().contains(needle)
-                || t.body.lowercased().contains(needle)
-                || t.comments.contains(where: { $0.text.lowercased().contains(needle) })
+            return t.matchesSearch(needle)
         }
         let tasks = section.tasks.filter(matches)
         // Archived rows are searchable too — a parked block can hold more rows

@@ -122,6 +122,7 @@ struct MatchableSubjectTests {
             body: "",
             comments: [],
             deepLinks: [],
+            details: [],
             snoozedUntil: nil,
             carriedInFrom: nil
         )

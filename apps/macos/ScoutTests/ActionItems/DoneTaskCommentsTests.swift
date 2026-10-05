@@ -13,7 +13,7 @@ struct DoneTaskCommentsTests {
         ActionTask(
             id: UUID(), lineNumber: 4, done: done,
             subject: "Send the weekly summary to Sam", plainSubject: "Send the weekly summary to Sam",
-            body: "", comments: SmokeFixtures.comments, deepLinks: [],
+            body: "", comments: SmokeFixtures.comments, deepLinks: [], details: [],
             snoozedUntil: nil, carriedInFrom: nil, shortPrefix: prefix)
     }
 
