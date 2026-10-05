@@ -171,6 +171,53 @@ struct EngineLocatorTests {
         #expect(EngineLocator(layout: layout).locate().externalSource == .marketplaceCache)
     }
 
+    /// Carried over from the migration's `ScoutctlLocator`: the Claude Code
+    /// plugin cache is the normal user's engine and outranks the dev
+    /// checkout. Both are live here, so only the precedence order can tell
+    /// them apart — a "some engine was found" assertion would pass either way.
+    @Test func marketplaceCacheBeatsTheDevCheckout() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let cache = layout.claudePluginsDir.appending(path: "cache/scout-plugin/scout/0.9.0")
+        try pluginTree(cache, version: "0.9.0")
+        try executable(cache.appending(path: ".venv/bin/scoutctl"))
+        try fm.createDirectory(at: layout.claudePluginsDir, withIntermediateDirectories: true)
+        try #"{"version": 2, "plugins": {"scout@scout-plugin": [{"version": "0.9.0", "installPath": "\#(cache.path)"}]}}"#
+            .write(to: layout.claudePluginsDir.appending(path: "installed_plugins.json"), atomically: true, encoding: .utf8)
+        try pluginTree(layout.devCheckout, version: "0.11.0")
+        try executable(layout.devCheckout.appending(path: ".venv/bin/scoutctl"))
+
+        let state = EngineLocator(layout: layout).locate()
+        #expect(state.externalSource == .marketplaceCache)
+        #expect(state.install?.scoutctl.path == cache.appending(path: ".venv/bin/scoutctl").path)
+        #expect(state.install?.version == "0.9.0")
+    }
+
+    /// A garbage `installed_plugins.json` is not an engine and must not stop
+    /// the search: the dev checkout below it is still found.
+    @Test func garbagePluginRegistryFallsThroughToTheDevCheckout() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try fm.createDirectory(at: layout.claudePluginsDir, withIntermediateDirectories: true)
+        try "not json".write(to: layout.claudePluginsDir.appending(path: "installed_plugins.json"), atomically: true, encoding: .utf8)
+        try pluginTree(layout.devCheckout, version: "0.9.0")
+        try executable(layout.devCheckout.appending(path: ".venv/bin/scoutctl"))
+        #expect(EngineLocator(layout: layout).locate().externalSource == .devCheckout)
+    }
+
+    /// Carried over from the migration's `ScoutctlLocator`: the old
+    /// `AppState` candidate list tried `~/scout-plugin/bin/scoutctl` first,
+    /// a path that has never existed in the plugin. Even with a real
+    /// checkout around it (`plugin.json` present), an executable there is
+    /// not an engine — only a venv's `scoutctl` is.
+    @Test func neverTreatsTheNonexistentDevBinPathAsAnEngine() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pluginTree(layout.devCheckout, version: "0.9.0")
+        try executable(layout.devCheckout.appending(path: "bin/scoutctl"))
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
+    }
+
     @Test func devCheckoutIsExternal() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }
