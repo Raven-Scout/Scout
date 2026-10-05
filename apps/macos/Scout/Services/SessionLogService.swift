@@ -464,18 +464,19 @@ final class SessionLogService: ObservableObject {
 
     /// Resolve commits for a Run on demand. Called by the detail pane when the
     /// user opens the Diff tab — keeps loadInitial() from doing O(N) git calls
-    /// on the main thread at launch. Pads the upper bound by 5 minutes so
-    /// commits that the runner makes in the wind-down phase (after the
-    /// "run finished" marker is written) are still picked up.
+    /// on the main thread at launch. The window and the subject claim are
+    /// shared with the reverse `CommitRunLinker` (#43), so the subject filter
+    /// runs here rather than as a git `matchingPrefix`: a `run-scout.sh` run
+    /// claims briefing, weekend-briefing and consolidation commits alike.
     func commits(for run: Run) async -> [Commit] {
         guard let git = gitService else { return [] }
-        let end = (run.endedAt ?? clock.now()).addingTimeInterval(5 * 60)
-        let start = run.startedAt.addingTimeInterval(-30)
-        return (try? await git.commits(
-            between: start,
-            and: end,
-            matchingPrefix: run.type.commitsPrefix
+        let window = run.commitWindow(now: clock.now())
+        let all = (try? await git.commits(
+            between: window.lowerBound,
+            and: window.upperBound,
+            matchingPrefix: ""
         )) ?? []
+        return all.filter(run.claims)
     }
 
     private func startWatching() {
@@ -589,19 +590,6 @@ extension RunType {
         case .dreaming:      return "dreaming"
         case .research:      return "research"
         case .manual:        return "manual"
-        }
-    }
-
-    /// The commit-subject prefix used by Scout for this run type. `.manual`
-    /// returns an empty string — the run's own logs don't say which family
-    /// it ran in, so the commit picker uses the time window only.
-    var commitsPrefix: String {
-        switch self {
-        case .morningBriefing, .weekendBriefing: return "briefing"
-        case .consolidation: return "consolidation"
-        case .dreaming:      return "dreaming"
-        case .research:      return "research"
-        case .manual:        return ""
         }
     }
 }
