@@ -2132,7 +2132,7 @@ def _register_phases() -> None:
 
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, _template_vars
+        from scout.scripts.bootstrap import BootstrapConfig, _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
             apply_to_phase_text,
@@ -2178,7 +2178,9 @@ def _register_phases() -> None:
                 missing = "snapshot" if not snap.exists() else "live"
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
-            sections = build_rendered_sections(phases_root, k, vars_, cfg.enabled_connectors)
+            sections = build_rendered_sections(
+                phases_root, k, vars_, cfg.enabled_connectors, custom=load_custom(cfg), inputs=cfg.connector_inputs
+            )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
             applied = [r for r in results if r.status == "applied"]
             review = [r for r in results if r.status == "needs-review"]

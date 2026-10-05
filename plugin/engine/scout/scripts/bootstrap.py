@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
+from scout import custom_connectors
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -33,6 +34,7 @@ from scout.scripts.bootstrap_lock import (
     release_lock,
 )
 from scout.scripts.connector_probes import normalize_connector_keys
+from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
@@ -427,8 +429,23 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
         _atomic_write(target, rendered)
 
 
-def _assemble(cfg: BootstrapConfig, kind: str) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files."""
+def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
+    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped."""
+    result = custom_connectors.load(cfg.vault, plugin_root=cfg.plugin_root)
+    for issue in result.issues:
+        print(f"warning: {custom_connectors.CUSTOM_FILE}: {issue.path}: {issue.message}", file=sys.stderr)
+    return result.connectors
+
+
+def _assemble(
+    cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
+) -> str:
+    """Assemble SKILL/DREAMING/RESEARCH from phase files, then append custom-connector sections.
+
+    ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
+    apply path passes explicit before/after sets. ``plugin/phases/custom/`` is never globbed
+    here — its templates have no ``requires:`` gate and are rendered only per connector.
+    """
     vars_ = _template_vars(cfg)
     phases_root = cfg.plugin_root / "phases"
     bodies: list[str] = [brain_merge.assembly_header(kind, cfg.vault)]
@@ -472,6 +489,12 @@ def _assemble(cfg: BootstrapConfig, kind: str) -> str:
             )
             for s in kept:
                 bodies.append(render_template(s.body, vars_))
+    if custom is None:
+        custom = load_custom(cfg)
+    for section in render_custom_sections(
+        cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
+    ):
+        bodies.append(section.rendered_body)
     return "\n\n".join(bodies)
 
 

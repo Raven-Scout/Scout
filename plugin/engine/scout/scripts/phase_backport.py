@@ -22,6 +22,8 @@ from pathlib import Path
 
 import yaml
 
+from scout.custom_connectors import CustomConnector
+from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.phase_assembly import parse_phase_file, render_template, select_sections
 
 # Assembly source dirs + consumed-modes per brain file — mirrors
@@ -78,6 +80,7 @@ class RenderedSection:
     section_name: str
     raw_body: str  # source body, with {{VARS}}
     rendered_body: str  # what assembly produced (vars substituted)
+    custom_key: str | None = None  # set for custom-connector sections; never back-ported
 
 
 @dataclass
@@ -121,7 +124,13 @@ def retemplatize(
 
 
 def build_rendered_sections(
-    phases_root: Path, kind: str, vars_: dict[str, str], enabled_connectors: set[str]
+    phases_root: Path,
+    kind: str,
+    vars_: dict[str, str],
+    enabled_connectors: set[str],
+    *,
+    custom: dict[str, CustomConnector] | None = None,
+    inputs: dict[str, str] | None = None,
 ) -> list[RenderedSection]:
     """Assemble the per-section provenance for ``kind``, mirroring ``_assemble``.
 
@@ -154,6 +163,16 @@ def build_rendered_sections(
                         rendered_body=render_template(s.body, vars_),
                     )
                 )
+    for cs in render_custom_sections(phases_root.parent, kind, custom or {}, enabled_connectors, vars_, inputs or {}):
+        out.append(
+            RenderedSection(
+                phase_file=cs.template,
+                section_name=f"custom:{cs.connector_key}:{cs.activity}",
+                raw_body=cs.raw_body,
+                rendered_body=cs.rendered_body,
+                custom_key=cs.connector_key,
+            )
+        )
     return out
 
 
@@ -236,6 +255,23 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
             continue
 
         sec = matches[0]
+        if sec.custom_key is not None:
+            # The template is shared by every connector and every user: an edit
+            # inside a custom section belongs in that connector's entry instead.
+            results.append(
+                HunkResult(
+                    "needs-review",
+                    hunk.added,
+                    phase_file=sec.phase_file,
+                    section_name=sec.section_name,
+                    anchor=hunk.anchor,
+                    reason=(
+                        f"inside custom connector {sec.custom_key!r} — change its entry in "
+                        f"connectors.custom.yaml (or run /scout-connect {sec.custom_key}) instead"
+                    ),
+                )
+            )
+            continue
         if hunk.is_replace:
             # 'replace' = a modified line, not a pure insertion. The inserter
             # only adds lines after the anchor, so back-porting a replace would
