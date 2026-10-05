@@ -93,7 +93,8 @@ def test_finalize_publishes_once_after_notarization(tmp_path):
     notarize = [i for i, c in enumerate(calls) if c.startswith("xcrun notarytool submit")]
     assert len(publish) == 1 and len(notarize) == 2 and max(notarize) < publish[0]
     line = calls[publish[0]]
-    assert f"--target {sha}" in line and "--latest" in line and "Scout-0.15.0.dmg" in line and "appcast.xml" not in line
+    assert f"--target {sha}" in line and " --latest " in f"{line} " and "--prerelease" not in line
+    assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line
     assert "MARKETING_VERSION=0.15.0" in next(c for c in calls if c.startswith("xcodebuild"))
     assert f"CURRENT_PROJECT_VERSION={_git(r.root, 'rev-list', '--count', sha)}" in next(
         c for c in calls if c.startswith("xcodebuild")
@@ -129,7 +130,9 @@ def test_rejected_notarization_publishes_nothing(tmp_path):
     _merge_release(r)
     done = r.run("finalize", "v0.15.0", extra_env={"FAKE_NOTARY_EXIT": "1"})
     assert done.returncode != 0
-    assert not any(c.startswith("gh release create") for c in r.calls())
+    calls = r.calls()
+    assert not any(c.startswith("gh release create") for c in calls)
+    assert calls[-1].startswith("xcrun notarytool submit")  # died for the right reason, not some later step
 
 
 def test_rerun_after_failure_replaces_the_stale_worktree(tmp_path):
@@ -149,6 +152,23 @@ def test_skip_flags(tmp_path):
     assert not any(c.startswith(("xcrun", "spctl", "gh release")) for c in r.calls())
 
 
+def test_skip_notarize_without_skip_release_is_refused(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"SKIP_NOTARIZE": "1"})
+    assert done.returncode != 0 and "SKIP_NOTARIZE=1 would publish" in done.stderr
+    assert not any(c.startswith("xcodebuild") for c in r.calls())
+
+
+def test_xcodebuild_failure_is_fatal_with_the_log_tailed(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"FAKE_XCODEBUILD_EXIT": "65"})
+    assert done.returncode != 0
+    assert "fake compile failure" in done.stderr and "xcodebuild failed" in done.stderr
+    assert not any(c.startswith("gh release create") for c in r.calls())
+
+
 def test_bundled_engine_must_match_and_exist(tmp_path):
     r = make_repo(tmp_path)
     _merge_release(r)
@@ -163,12 +183,21 @@ def test_bundled_engine_must_match_and_exist(tmp_path):
 
 def test_rc_is_a_prerelease_never_latest(tmp_path):
     r = make_repo(tmp_path)
+    assert r.run("prepare", "0.15.0").returncode == 0  # leaves HEAD on release/v0.15.0, pushed, carrying 0.15.0
     sha = _git(r.root, "rev-parse", "HEAD")
-    done = r.run("rc", "v0.15.1-rc.1")
+    done = r.run("rc", "v0.15.0-rc.1")
     assert done.returncode == 0, done.stderr
     line = next(c for c in r.calls() if c.startswith("gh release create"))
     assert "--prerelease" in line and "--latest=false" in line and f"--target {sha}" in line
-    assert "Scout-0.15.1-rc.1.dmg" in line and " --latest " not in f"{line} "
+    assert "Scout-0.15.0-rc.1.dmg" in line and " --latest " not in f"{line} "
+
+
+def test_rc_refuses_a_commit_that_does_not_carry_its_version(tmp_path):
+    r = make_repo(tmp_path)  # fresh main, still 0.14.0 — no prepare has run
+    done = r.run("rc", "v0.15.0-rc.1")
+    assert done.returncode != 0
+    assert "Cut release candidates from release/v0.15.0" in done.stderr
+    assert not any(c.startswith(("xcodebuild", "gh release")) for c in r.calls())
 
 
 def test_rc_and_finalize_validate_tag_shapes(tmp_path):
@@ -176,6 +205,28 @@ def test_rc_and_finalize_validate_tag_shapes(tmp_path):
     assert "finalize needs vX.Y.Z" in r.run("finalize", "0.15.0").stderr
     assert "use 'rc'" in r.run("finalize", "v0.15.1-rc.1").stderr
     assert "rc needs vX.Y.Z-rc.N" in r.run("rc", "v0.15.1").stderr
+
+
+def test_finalize_rejects_tag_glob_over_acceptance(tmp_path):
+    r = make_repo(tmp_path)
+    for bad in ("v1.2.3foo", "v1.2.3.4", "v01.2.3", "v0.15.0/../../x"):
+        done = r.run("finalize", bad)
+        assert done.returncode != 0 and "finalize needs vX.Y.Z" in done.stderr, bad
+        assert r.calls() == [], bad
+
+
+def test_rc_rejects_tag_glob_over_acceptance(tmp_path):
+    r = make_repo(tmp_path)
+    for bad in (
+        "v0.15.0-rc.1foo",
+        "v0.15.0-rc.2,",
+        "v0.15.0.1-rc.1",
+        "v0.15.0-beta-rc.1",
+        "v0.15.0-rc.0",
+    ):
+        done = r.run("rc", bad)
+        assert done.returncode != 0 and "rc needs vX.Y.Z-rc.N" in done.stderr, bad
+        assert r.calls() == [], bad
 
 
 _HOOK = """#!/bin/bash
@@ -233,6 +284,7 @@ def test_release_without_appcast_is_fatal_when_sparkle_is_present(tmp_path):
 def test_rc_without_appcast_only_warns(tmp_path):
     r = make_repo(tmp_path)
     _add_sparkle_hook(r)
+    assert r.run("prepare", "0.15.0").returncode == 0  # leaves HEAD on release/v0.15.0, pushed, carrying 0.15.0
     done = r.run("rc", "v0.15.0-rc.1", extra_env={"FAKE_HOOK_NO_APPCAST": "1"})
     assert done.returncode == 0, done.stderr
     assert "no appcast.xml" in done.stdout

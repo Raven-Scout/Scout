@@ -54,10 +54,10 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_cli_rc_uses_unreleased(tmp_path):
+def test_cli_rc_renders_the_version_section(tmp_path):
     repo, out = _repo(tmp_path), tmp_path / "notes.md"
-    cmd = [sys.executable, "-m", "scout.scripts.release_notes", "--repo-root", str(repo), "0.15.1"]
-    cmd += ["--repo", "Raven-Scout/Scout", "--rc", "v0.15.1-rc.1", "--out", str(out)]
+    cmd = [sys.executable, "-m", "scout.scripts.release_notes", "--repo-root", str(repo), "0.15.0"]
+    cmd += ["--repo", "Raven-Scout/Scout", "--rc", "v0.15.0-rc.1", "--out", str(out)]
     subprocess.run(cmd, check=True)
     assert out.read_text(encoding="utf-8") == _read("expected-rc.md")
 

@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", required=True, help="owner/repo for the compare link")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--prev", default=None, help="previous release tag, for the compare link")
-    ap.add_argument("--rc", default=None, help="vX.Y.Z-rc.N: render the [Unreleased] sections as a candidate")
+    ap.add_argument("--rc", default=None, help="vX.Y.Z-rc.N: label the output as a release candidate")
     args = ap.parse_args(argv)
     plugin_path = args.repo_root / "plugin/CHANGELOG.md"
     app_path = args.repo_root / "apps/macos/CHANGELOG.md"
@@ -61,10 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     if not app_path.exists():
         print(f"missing apps/macos/CHANGELOG.md under {args.repo_root}", file=sys.stderr)
         return 1
-    section = "Unreleased" if args.rc else args.version
-    plugin = extract_section(plugin_path.read_text(encoding="utf-8"), section)
-    app = extract_section(app_path.read_text(encoding="utf-8"), section)
-    if not args.rc and not plugin and not app:
+    plugin = extract_section(plugin_path.read_text(encoding="utf-8"), args.version)
+    app = extract_section(app_path.read_text(encoding="utf-8"), args.version)
+    if not plugin and not app:
         print(f"no [{args.version}] section in either changelog", file=sys.stderr)
         return 1
     body = render(args.version, app=app, plugin=plugin, prev_tag=args.prev, repo_slug=args.repo, rc=args.rc)
