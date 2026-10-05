@@ -14,7 +14,8 @@
 #                                     venv lives in marketplaces/ (at the
 #                                     clone root for a legacy scout-plugin
 #                                     clone, under plugin/ for a
-#                                     Raven-Scout/Scout monorepo clone)
+#                                     Raven-Scout/Scout monorepo clone, whose
+#                                     root venv is skipped as stale)
 #   4. system python3               — last resort; expects scout-engine on
 #                                     the global site-packages
 #
@@ -104,12 +105,23 @@ if [[ "$PLUGIN_ROOT" == */plugins/cache/* ]]; then
     REST="${PLUGIN_ROOT#*/cache/}"
     MARKETPLACE_NAME="${REST%%/*}"
     MARKETPLACE_CLONE="${PLUGINS_DIR}/marketplaces/${MARKETPLACE_NAME}"
-    candidates+=(
-        "${MARKETPLACE_CLONE}/.venv/bin/python"
-        "${MARKETPLACE_CLONE}/engine/.venv/bin/python"
-        "${MARKETPLACE_CLONE}/plugin/.venv/bin/python"
-        "${MARKETPLACE_CLONE}/plugin/engine/.venv/bin/python"
-    )
+    # In a monorepo clone, a venv at the clone root is a stale pre-pull
+    # editable install (install-venv.sh uses -e), so skip it. Scout.app's
+    # EngineLocator.installIfCheckout never adopts one there either.
+    if [ -f "${MARKETPLACE_CLONE}/.claude-plugin/marketplace.json" ] &&
+        [ -f "${MARKETPLACE_CLONE}/plugin/.claude-plugin/plugin.json" ]; then
+        candidates+=(
+            "${MARKETPLACE_CLONE}/plugin/.venv/bin/python"
+            "${MARKETPLACE_CLONE}/plugin/engine/.venv/bin/python"
+        )
+    else
+        candidates+=(
+            "${MARKETPLACE_CLONE}/.venv/bin/python"
+            "${MARKETPLACE_CLONE}/engine/.venv/bin/python"
+            "${MARKETPLACE_CLONE}/plugin/.venv/bin/python"
+            "${MARKETPLACE_CLONE}/plugin/engine/.venv/bin/python"
+        )
+    fi
 fi
 
 for VENV_PY in "${candidates[@]}"; do

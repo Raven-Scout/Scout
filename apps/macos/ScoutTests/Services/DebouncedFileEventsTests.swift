@@ -23,12 +23,14 @@ struct DebouncedFileEventsTests {
         }
     }
 
-    /// Poll until `condition` over the collected events holds, up to ~2s.
+    /// Poll until `condition` over the collected events holds, up to `polls`
+    /// 50 ms polls (~2s by default). Returns as soon as it holds.
     private static func waitUntil(
         _ collector: Collector,
+        polls: Int = 40,
         _ condition: @Sendable ([FileSystemEvent]) -> Bool
     ) async throws -> [FileSystemEvent] {
-        for _ in 0..<40 {
+        for _ in 0..<polls {
             let events = await collector.events
             if condition(events) { return events }
             try await Task.sleep(for: .milliseconds(50))
@@ -75,7 +77,11 @@ struct DebouncedFileEventsTests {
             base.emit(FileSystemEvent(url: fileB, kind: .modified))
         }
 
-        let received = try await Self.waitUntil(collector) {
+        // Quarantined (Raven-Scout/Scout#311): on a starved runner the pump can
+        // ingest fileA, let the window flush, and only then ingest fileB, which
+        // lands one window later — after the default ~2s budget ran out. The
+        // widened budget is liveness only; the expectations below are unchanged.
+        let received = try await Self.waitUntil(collector, polls: 200) {
             Set($0.map(\.url)) == [fileA, fileB]
         }
         // Both paths must surface (no loss), but coalesced — not 10 deliveries.
