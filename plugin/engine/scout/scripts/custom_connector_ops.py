@@ -60,7 +60,12 @@ def _message(result: CustomApplyResult) -> str:
             f"Saved. {files} has a pending review (a .proposed-merge sidecar or unresolved conflict markers); "
             "this change lands after you resolve it and run /scout-update."
         )
-    return "Saved. The plugin changed since your last update, so this takes effect after /scout-update."
+    # `before` no longer re-assembles to the snapshot: the plugin changed, or
+    # connectors.custom.yaml was hand-edited, since the last install/upgrade.
+    return (
+        "Saved. SKILL.md was last assembled from a different plugin version or connector file, "
+        "so this takes effect at the next `scoutctl bootstrap upgrade` (or /scout-update)."
+    )
 
 
 @dataclass

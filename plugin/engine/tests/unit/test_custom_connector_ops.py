@@ -148,6 +148,26 @@ def test_pending_sidecar_defers_add_but_saves_it(vault: Path):
     assert (vault / "SKILL.md.proposed-merge").read_text() == "pending"
 
 
+def test_hand_edit_defers_without_blaming_the_plugin(vault: Path):
+    """F5: a hand edit of connectors.custom.yaml also makes `before` miss the snapshot;
+    the message must not claim the plugin changed."""
+    _add(vault, SUITE)
+    raw = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
+    raw["suite_mail"]["inbound"]["focus"] = "Only the shared queue."  # hand edit, not yet upgraded
+    cc.write(vault, raw)
+    out = _add(vault, _mcp_def("alpha"))
+    assert (out.status, out.exit_code, out.waiting) == ("deferred", 3, [])
+    assert out.message == (
+        "Saved. SKILL.md was last assembled from a different plugin version or connector file, "
+        "so this takes effect at the next `scoutctl bootstrap upgrade` (or /scout-update)."
+    )
+
+
+def test_custom_file_header_says_hand_edits_land_at_the_next_upgrade():
+    header = cc.dump({}).split("schema_version")[0]
+    assert "Hand edits take effect at the next `scoutctl bootstrap upgrade`" in header
+
+
 def test_remove_takes_out_sections_entry_enabled_and_inputs(vault: Path):
     _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
     out = ops.remove(vault, "tickets", plugin_root=PLUGIN, plugin_version="0.0.0")
