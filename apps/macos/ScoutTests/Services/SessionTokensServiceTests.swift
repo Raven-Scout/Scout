@@ -41,6 +41,63 @@ struct SessionTokensServiceTests {
         #expect(entries.isEmpty)
     }
 
+    // MARK: - tolerance of real log files
+
+    @Test("one invalid UTF-8 byte does not discard every entry in the file")
+    func corruptByteDoesNotDiscardWholeFile() async throws {
+        // `session-tokens.jsonl` is appended by a Stop hook while other
+        // sessions run; a torn write can leave a byte that is not valid UTF-8.
+        // Decoding the whole file as a String first turned that into total
+        // data loss — every entry vanished, silently.
+        var bytes = Data("""
+        {"ts":"2026-04-22T12:00:00Z","ts_et":"","session_id":"a","scout_mode":"x","cwd":"/","primary_model":"claude-opus-4-7","input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0.1,"num_turns":1,"duration_ms":0,"error":null}
+
+        """.utf8)
+        bytes.append(0xFF)                      // never valid in UTF-8
+        bytes.append(contentsOf: Data("\n".utf8))
+        bytes.append(contentsOf: Data("""
+        {"ts":"2026-04-23T12:00:00Z","ts_et":"","session_id":"b","scout_mode":"x","cwd":"/","primary_model":"claude-opus-4-7","input_tokens":200,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0.2,"num_turns":1,"duration_ms":0,"error":null}
+
+        """.utf8))
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jsonl")
+        try bytes.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let svc = await SessionTokensService(trackerURL: url, fileEvents: NoopFS())
+        let entries = try await svc.loadInitial()
+
+        #expect(entries.count == 2, "both intact lines must survive one corrupt byte")
+        #expect(entries.map(\.sessionId).sorted() == ["a", "b"])
+    }
+
+    // MARK: - watching
+
+    @Test("an event emitted right after loadInitial() returns refreshes entries")
+    @MainActor func eventRightAfterLoadInitialRefreshes() async throws {
+        let tmp = try writeTemp("""
+        {"ts":"2026-04-22T12:00:00Z","ts_et":"","session_id":"a","scout_mode":"x","cwd":"/","primary_model":"claude-opus-4-7","input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0.1,"num_turns":1,"duration_ms":0,"error":null}
+        """)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let fakeFS = InjectableFS()
+        let svc = SessionTokensService(trackerURL: tmp, fileEvents: fakeFS)
+        let initial = try await svc.loadInitial()
+        #expect(initial.count == 1)
+
+        // No suspension between loadInitial() returning and the emit: on the
+        // main actor the watch task has not run yet, so the event lands only
+        // if startWatching() subscribed synchronously.
+        try """
+        {"ts":"2026-04-22T12:00:00Z","ts_et":"","session_id":"a","scout_mode":"x","cwd":"/","primary_model":"claude-opus-4-7","input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0.1,"num_turns":1,"duration_ms":0,"error":null}
+        {"ts":"2026-04-23T12:00:00Z","ts_et":"","session_id":"b","scout_mode":"x","cwd":"/","primary_model":"claude-opus-4-7","input_tokens":200,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cost_usd":0.2,"num_turns":1,"duration_ms":0,"error":null}
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        fakeFS.emit(FileSystemEvent(url: tmp, kind: .modified))
+
+        await waitUntil("entries never refreshed after the event") { svc.entries.count == 2 }
+    }
+
     // MARK: - helpers
 
     private func writeTemp(_ s: String) throws -> URL {
