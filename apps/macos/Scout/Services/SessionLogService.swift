@@ -135,6 +135,8 @@ final class SessionLogService: ObservableObject {
     // MARK: - Body parsing
 
     struct ParsedBody: Equatable, Sendable, Codable {
+        /// Absolute start from the log header; nil when the header is absent.
+        let startedAt: Date?
         let endedAt: Date?
         let exitCode: Int?
         let status: RunStatus
@@ -161,6 +163,15 @@ final class SessionLogService: ObservableObject {
         pattern: #"=== Scout(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#,
         options: [.caseInsensitive]
     )
+    // `=== Scout[ <Kind>] run starting at <date> <ZONE> <year> ===` — every
+    // historical casing (`SCOUT`, `Scout`, `Scout Research`, …). Unlike the
+    // filename, this carries the zone the run was logged in, so it is the
+    // absolute start (#43: filename starts drift by the zone delta once the
+    // machine's zone changes).
+    private static let startRegex = try! NSRegularExpression(
+        pattern: #"=== Scout(?: \w+)? run starting at (.+?) ==="#,
+        options: [.caseInsensitive]
+    )
     private static let timeoutRegex = try! NSRegularExpression(pattern: #"=== TIMEOUT:"#)
     // `=== Another {{INSTANCE_NAME}} session running (PID …) — skipping ===`.
     // INSTANCE_NAME is install-configurable and was renamed all-caps "SCOUT" →
@@ -184,6 +195,12 @@ final class SessionLogService: ObservableObject {
         let text = String(data: data, encoding: .utf8) ?? ""
         let size = Int64(data.count)
         let range = NSRange(text.startIndex..., in: text)
+
+        var startedAt: Date? = nil
+        if let match = startRegex.firstMatch(in: text, range: range),
+           let dateRange = Range(match.range(at: 1), in: text) {
+            startedAt = parseScoutTimestamp(String(text[dateRange]))
+        }
 
         var endedAt: Date? = nil
         var exitCode: Int? = nil
@@ -223,6 +240,7 @@ final class SessionLogService: ObservableObject {
 
         let errors = scanErrors(in: text)
         return ParsedBody(
+            startedAt: startedAt,
             endedAt: endedAt,
             exitCode: exitCode,
             status: status,
@@ -420,6 +438,7 @@ final class SessionLogService: ObservableObject {
                     scheduledAt: nil,
                     startedAt: filename.startedAt,
                     endedAt: body.endedAt,
+                    headerStartedAt: body.startedAt,
                     status: status,
                     exitCode: body.exitCode,
                     cost: cost?.budgetSpent,
@@ -508,6 +527,7 @@ final class SessionLogService: ObservableObject {
             scheduledAt: nil,
             startedAt: filename.startedAt,
             endedAt: body.endedAt,
+            headerStartedAt: body.startedAt,
             status: status,
             exitCode: body.exitCode,
             cost: cost?.budgetSpent,
