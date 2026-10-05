@@ -199,6 +199,75 @@ def test_non_mapping_scout_config_is_an_error_for_add_and_remove(vault: Path, op
     assert (out.status, out.exit_code) == ("error", 1)
 
 
+def _mcp_def(key: str) -> dict:
+    return {
+        "key": key,
+        "display_name": key.capitalize(),
+        "server": f"example_{key}",
+        "probe": f"mcp__example_{key}__whoami",
+        "inbound": {"tools": [f"mcp__example_{key}__search"], "focus": f"New {key} items."},
+    }
+
+
+def _assert_all_recorded(vault: Path, keys: set[str]) -> None:
+    assert keys <= set(yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"])
+    assert keys <= set(_config(vault)["connectors"]["enabled"])
+    skill = (vault / "SKILL.md").read_text()
+    for key in keys:
+        assert f"## {key.capitalize()} Inbound Scan" in skill
+
+
+def test_add_racing_another_add_keeps_both(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    """F2: vault state read before taking the lock let a concurrent add erase the other.
+
+    The first lock acquisition by `add bravo` is delayed until a whole `add gamma`
+    has committed, so bravo must read the vault only once it holds the lock.
+    """
+    assert _add(vault, _mcp_def("alpha")).status == "applied"
+    real_acquire = ops.acquire_lock_with_wait
+    calls = {"n": 0}
+
+    def acquire_after_a_rival_commits(lock: Path, **kw) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert _add(vault, _mcp_def("gamma")).status == "applied"
+        real_acquire(lock, **kw)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", acquire_after_a_rival_commits)
+    out = _add(vault, _mcp_def("bravo"))
+    assert (out.status, out.exit_code) == ("applied", 0), out.message
+    _assert_all_recorded(vault, {"alpha", "bravo", "gamma"})
+
+
+def test_remove_racing_an_add_keeps_the_add(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    """F2 for remove: an add committed while remove waits for the lock must survive it."""
+    for key in ("alpha", "bravo"):
+        assert _add(vault, _mcp_def(key)).status == "applied"
+    real_acquire = ops.acquire_lock_with_wait
+    calls = {"n": 0}
+
+    def acquire_after_a_rival_commits(lock: Path, **kw) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert _add(vault, _mcp_def("gamma")).status == "applied"
+        real_acquire(lock, **kw)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", acquire_after_a_rival_commits)
+    out = ops.remove(vault, "alpha", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code) == ("applied", 0), out.message
+    _assert_all_recorded(vault, {"bravo", "gamma"})
+    assert "alpha" not in yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
+
+
+def test_dry_run_never_takes_the_lock(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    def no_lock(*a, **kw):
+        raise AssertionError("dry-run took the vault lock")
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", no_lock)
+    assert _add(vault, SUITE, dry_run=True).status == "dry-run"
+    assert not (vault / cc.CUSTOM_FILE).exists()
+
+
 def test_list_custom_degrades_on_non_mapping_scout_config(vault: Path):
     """list_custom falls back to an empty enabled set and reports the config problem
     as an issue, rather than crashing (fix round 1)."""

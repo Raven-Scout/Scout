@@ -145,6 +145,26 @@ def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: st
     return cfg
 
 
+def _under_lock(vault: Path, key: str, change: Callable[[], Outcome]) -> Outcome:
+    """Run ``change`` holding the session lock.
+
+    ``change`` must do every read of vault state (scout-config.yaml,
+    connectors.custom.yaml, the snapshot) itself: a read made before the lock
+    is stale by the time a concurrent add/remove has committed, and writing
+    whole-file replacements from it would erase that other change.
+    """
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        acquire_lock_with_wait(lock)
+    except LockBusyError:
+        return Outcome("error", key, message="A Scout session is running; try again when it finishes.")
+    try:
+        return change()
+    finally:
+        release_lock(lock)
+
+
 def _commit(
     key: str,
     before: BootstrapConfig,
@@ -153,20 +173,11 @@ def _commit(
     custom_after: dict[str, cc.CustomConnector],
     raw_after: dict[str, Any],
 ) -> Outcome:
-    """Apply first, then write the definition and config, all under the session lock."""
+    """Apply first, then write the definition and config. The caller holds the lock."""
     vault = after.vault
-    lock = vault / ".scout-logs" / ".scout-session.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        acquire_lock_with_wait(lock)
-    except LockBusyError:
-        return Outcome("error", key, message="A Scout session is running; try again when it finishes.")
-    try:
-        result = apply_custom_change(before, after, custom_before=custom_before, custom_after=custom_after)
-        cc.write(vault, raw_after)
-        write_connector_config(vault, enabled=after.enabled_connectors, inputs=after.connector_inputs)
-    finally:
-        release_lock(lock)
+    result = apply_custom_change(before, after, custom_before=custom_before, custom_after=custom_after)
+    cc.write(vault, raw_after)
+    write_connector_config(vault, enabled=after.enabled_connectors, inputs=after.connector_inputs)
     return Outcome(
         result.status,
         key,
@@ -175,6 +186,23 @@ def _commit(
         sidecars=result.sidecars,
         waiting=result.waiting,
     )
+
+
+def _inputs_after(
+    before: BootstrapConfig, connector: cc.CustomConnector, inputs: dict[str, str]
+) -> tuple[dict[str, str], list[cc.Issue]]:
+    """The connector inputs with ``inputs`` namespaced in, plus an issue per declared input still empty."""
+    key = connector.key
+    new_inputs = dict(before.connector_inputs)
+    for name, value in inputs.items():
+        new_inputs[f"{key}__{name}"] = value
+    needs_path = f"connectors.{key}.needs_user_input"
+    issues = [
+        cc.Issue(needs_path, f"no value for {name!r}; pass --input {name}=<value>")
+        for name in connector.needs_user_input
+        if not new_inputs.get(f"{key}__{name}")
+    ]
+    return new_inputs, issues
 
 
 def add(
@@ -190,77 +218,99 @@ def add(
 ) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
+    # Outside the lock: everything that depends only on the definition and the flags.
     key, body, issues = _split(raw_def)
     if issues:
         return Outcome("invalid", key, issues)
     connector, issues = cc.parse_connector(
         key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
     )
-    before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
-    if isinstance(before, Outcome):
-        return before
-    new_inputs = dict(before.connector_inputs)
-    for name, value in inputs.items():
-        new_inputs[f"{key}__{name}"] = value
     if connector is not None:
         needs_path = f"connectors.{key}.needs_user_input"
         for name in sorted(set(inputs) - set(connector.needs_user_input)):
             issues.append(cc.Issue(needs_path, f"{name!r} is not an input this connector declares"))
-        for name in connector.needs_user_input:
-            if not new_inputs.get(f"{key}__{name}"):
-                issues.append(cc.Issue(needs_path, f"no value for {name!r}; pass --input {name}=<value>"))
     if issues or connector is None:
         return Outcome("invalid", key, issues)
-    if connector.probe.kind == "bash" and not unverified:
-        rc = probe_runner(connector.probe.value)
-        if rc != 0:
-            message = f"`{connector.probe.value}` exited {rc}"
-            return Outcome("probe-failed", key, [cc.Issue(f"connectors.{key}.probe", message)])
 
-    current = cc.load(vault, plugin_root=plugin_root)
-    after = dataclasses.replace(
-        before, enabled_connectors=before.enabled_connectors | {key}, connector_inputs=new_inputs
-    )
-    if dry_run:
-        dry_run_vars = _template_vars(after)
+    if dry_run:  # reads only, writes nothing, never takes the lock
+        before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        if isinstance(before, Outcome):
+            return before
+        new_inputs, issues = _inputs_after(before, connector, inputs)
+        if issues:
+            return Outcome("invalid", key, issues)
+        dry_run_vars = _template_vars(
+            dataclasses.replace(
+                before, enabled_connectors=before.enabled_connectors | {key}, connector_inputs=new_inputs
+            )
+        )
         sections = [
             {"target": f"{kind}.md", "activity": s.activity, "body": s.rendered_body}
             for kind in ("SKILL", "RESEARCH")
             for s in render_custom_sections(plugin_root, kind, {key: connector}, {key}, dry_run_vars, new_inputs)
         ]
         return Outcome("dry-run", key, sections=sections)
-    return _commit(
-        key,
-        before,
-        after,
-        current.connectors,
-        {**current.connectors, key: connector},
-        {**current.raw, key: body},
-    )
+
+    if connector.probe.kind == "bash" and not unverified:
+        rc = probe_runner(connector.probe.value)
+        if rc != 0:
+            message = f"`{connector.probe.value}` exited {rc}"
+            return Outcome("probe-failed", key, [cc.Issue(f"connectors.{key}.probe", message)])
+
+    def change() -> Outcome:
+        assert connector is not None
+        before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        if isinstance(before, Outcome):
+            return before
+        current = cc.load(vault, plugin_root=plugin_root)
+        new_inputs, missing_inputs = _inputs_after(before, connector, inputs)
+        if missing_inputs:  # needs the stored values, so it is checked under the lock
+            return Outcome("invalid", key, missing_inputs)
+        after = dataclasses.replace(
+            before, enabled_connectors=before.enabled_connectors | {key}, connector_inputs=new_inputs
+        )
+        return _commit(
+            key,
+            before,
+            after,
+            current.connectors,
+            {**current.connectors, key: connector},
+            {**current.raw, key: body},
+        )
+
+    return _under_lock(vault, key, change)
 
 
 def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
-    current = cc.load(vault, plugin_root=plugin_root)
-    if key not in current.raw:
-        return Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
-    before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
-    if isinstance(before, Outcome):
-        return before
-    after = dataclasses.replace(
-        before,
-        enabled_connectors=before.enabled_connectors - {key},
-        connector_inputs={k: v for k, v in before.connector_inputs.items() if not k.startswith(f"{key}__")},
-    )
-    return _commit(
-        key,
-        before,
-        after,
-        current.connectors,
-        {k: c for k, c in current.connectors.items() if k != key},
-        {k: v for k, v in current.raw.items() if k != key},
-    )
+    unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
+    # Cheap early answer without waiting for the lock; re-checked under it below.
+    if key not in cc.load(vault, plugin_root=plugin_root).raw:
+        return unknown
+
+    def change() -> Outcome:
+        current = cc.load(vault, plugin_root=plugin_root)
+        if key not in current.raw:
+            return unknown
+        before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        if isinstance(before, Outcome):
+            return before
+        after = dataclasses.replace(
+            before,
+            enabled_connectors=before.enabled_connectors - {key},
+            connector_inputs={k: v for k, v in before.connector_inputs.items() if not k.startswith(f"{key}__")},
+        )
+        return _commit(
+            key,
+            before,
+            after,
+            current.connectors,
+            {k: c for k, c in current.connectors.items() if k != key},
+            {k: v for k, v in current.raw.items() if k != key},
+        )
+
+    return _under_lock(vault, key, change)
 
 
 def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
