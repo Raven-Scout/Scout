@@ -31,7 +31,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/|\.claude-plugin/|\.github/workflows/plugin-test\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/|\.claude-plugin/|scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.github/workflows/plugin-test\.yml$|\.github/scripts/changed-paths\.sh$)'
 
   test:
     needs: changes
