@@ -6,8 +6,8 @@ import Foundation
 @MainActor
 struct ActionItemsIntegrationTests {
     @Test func writerInvokesRealScoutctlAndViewPicksUpChange() async throws {
-        // Skip if scoutctl isn't available in the environment — common on
-        // bare CI runners. Local dev should always have it on PATH.
+        // Skip if no engine is found — common on bare CI runners. Local dev
+        // should always have one (see `findScoutctl`).
         guard let scoutctl = Self.findScoutctl() else { return }
 
         // 1. Temp data dir with the action-items subdir scoutctl expects.
@@ -58,29 +58,31 @@ struct ActionItemsIntegrationTests {
         }
     }
 
-    /// Resolve scoutctl exactly as `AppState.resolveScoutctlPath()` does —
-    /// via `ScoutctlLocator`, primarily from the installed plugin cache
-    /// recorded in `~/.claude/plugins/installed_plugins.json` — instead of
-    /// this test's own stale candidate list (previously first-tried the
-    /// nonexistent `scout-plugin/bin/scoutctl` and had no knowledge of the
-    /// plugin cache, so it silently skipped on machines where scoutctl only
-    /// resolves via the cache).
-    ///
-    /// Returns nil when resolution falls back to `/usr/bin/env scoutctl`
-    /// (nothing found on disk) — detected via a non-empty `argsPrefix` — so
-    /// bare CI runners with no plugin installed still skip.
-    private static func findScoutctl() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let manifest = try? String(
-            contentsOf: ScoutctlLocator.installedPluginsJSONURL(home: home),
-            encoding: .utf8
-        )
-        let result = ScoutctlLocator.resolve(
-            home: home,
-            installedPluginsJSON: manifest,
-            isExecutable: { FileManager.default.isExecutableFile(atPath: $0.path) }
-        )
-        guard result.argsPrefix.isEmpty else { return nil }
-        return result.executable
+    /// No engine on the machine (a bare CI runner) must read as "skip", not
+    /// as a failure — and not as a fallback to some other `scoutctl`.
+    @Test func findScoutctlSkipsWhenNoEngineIsFound() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("integration-no-engine-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        #expect(Self.findScoutctl(layout: EngineLayout(home: home)) == nil)
+    }
+
+    /// Resolve scoutctl exactly as the app does — through `EngineLocator`
+    /// (pointer → `engine/current` → shim → marketplace cache → dev
+    /// checkout), which runs the venv's `scoutctl`, never the
+    /// `engine/bin/scoutctl` launcher. Returns nil when the locator finds no
+    /// engine, or only a broken one whose `scoutctl` is not executable, so
+    /// bare CI runners still skip.
+    private static func findScoutctl(layout: EngineLayout = .live) -> URL? {
+        let state = EngineLocator(layout: layout).locate()
+        switch state {
+        case .managed, .external:
+            guard let url = state.scoutctl,
+                  FileManager.default.isExecutableFile(atPath: url.path) else { return nil }
+            return url
+        case .notInstalled, .broken:
+            return nil
+        }
     }
 }

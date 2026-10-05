@@ -207,6 +207,17 @@ struct ScheduleServiceTests {
         #expect(service.upcoming.isEmpty)
     }
 
+    /// A missing `scoutctl` (ENOENT) points the user at Settings ▸ Engine
+    /// without promising an Install/Repair control Part B doesn't ship.
+    @Test func missingScoutctlPointsAtSettingsEngine() async {
+        let service = ScheduleService(
+            scoutctl: URL(fileURLWithPath: "/Users/alex/.local/bin/scoutctl"),
+            runner: RuleBasedRunner()  // no rules: every call throws ENOENT
+        )
+        await service.refresh()
+        #expect(service.lastError == "Scout engine not found — see Settings ▸ Engine.")
+    }
+
     @Test func startIsIdempotent() async {
         // Calling start() twice in a row should not crash and should not
         // orphan a still-firing timer. After stop(), the timer reference

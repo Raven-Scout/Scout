@@ -15,7 +15,7 @@
 #
 # A developer machine reports ~0.5–1 point HIGHER than the runner, because
 # several probes find things locally that don't exist in CI and so take a
-# different branch: AppState.resolveScoutctlPath (scoutctl on disk),
+# different branch: EngineLocator.locate (an engine on disk),
 # ClaudeLauncher.resolveClaudePath (the claude CLI),
 # ConnectorHealthService.loadRoster (~/scout-plugin's connectors.snapshot.json),
 # and DS.serif/DS.mono (Newsreader / JetBrains Mono installed). Same code, same
