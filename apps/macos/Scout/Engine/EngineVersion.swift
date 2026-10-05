@@ -21,8 +21,39 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
         let parts = core[0].split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
         guard (1...3).contains(parts.count), parts.allSatisfy({ $0 != nil }) else { return nil }
         let numbers = parts.compactMap { $0 } + Array(repeating: 0, count: 3 - parts.count)
+        // Ruling 58b: a hyphen with no valid pre-release after it (empty, or
+        // containing anything outside SemVer §9's identifier grammar — not
+        // least "/" and "..") must fail to parse, not silently fall back to
+        // "no pre-release". `EngineInstaller.isManagedMarketplace` builds a
+        // filesystem path out of whatever this accepts, so a permissive
+        // charset here is a path-traversal primitive, not just a cosmetic
+        // parsing nicety.
+        let validatedPreRelease: String?
+        if core.count == 2 {
+            guard let validated = EngineVersion.validatedPreRelease(String(core[1])) else { return nil }
+            validatedPreRelease = validated
+        } else {
+            validatedPreRelease = nil
+        }
         major = numbers[0]; minor = numbers[1]; patch = numbers[2]
-        preRelease = core.count == 2 && !core[1].isEmpty ? String(core[1]) : nil
+        preRelease = validatedPreRelease
+    }
+
+    /// SemVer 2.0.0 §9: a pre-release is a series of dot-separated
+    /// identifiers; each must be non-empty and contain only ASCII
+    /// alphanumerics and hyphens, and a purely-numeric identifier longer than
+    /// one digit may not have a leading zero. This is also what keeps `/` and
+    /// empty identifiers (so `..`) out of a value that later becomes a single
+    /// path component (`EngineLayout.engineRoot(version:)`).
+    private static func validatedPreRelease(_ text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        let identifiers = text.split(separator: ".", omittingEmptySubsequences: false)
+        for identifier in identifiers {
+            guard !identifier.isEmpty, identifier.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { return nil }
+            let isNumeric = identifier.allSatisfy { $0.isASCII && $0.isNumber }
+            if isNumeric && identifier.count > 1 && identifier.first == "0" { return nil }
+        }
+        return text
     }
 
     // MARK: the app↔engine floor

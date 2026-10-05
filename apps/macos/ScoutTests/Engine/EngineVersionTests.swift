@@ -119,4 +119,45 @@ struct EngineVersionTests {
     @Test func malformedStringsFailToParse() {
         #expect(EngineVersion("nope") == nil)
     }
+
+    /// Ruling 58b: the review found that an `EngineVersion("1.0.0-../../..")`-shaped
+    /// string still parsed under the first Ruling 58 fix — `preRelease` had no
+    /// charset validation, so a `/` or an empty (`..`) identifier sailed
+    /// through. SemVer §9 restricts a pre-release identifier to
+    /// `[0-9A-Za-z-]`, non-empty, which closes exactly this gap: a value that
+    /// later becomes a single filesystem path component
+    /// (`EngineLayout.engineRoot(version:)`) can never carry a path separator
+    /// or a traversal segment.
+    @Test func preReleaseIdentifiersRejectPathTraversalAndEmptySegments() {
+        #expect(EngineVersion("1.0.0-../../evil") == nil)
+        #expect(EngineVersion("1.0.0-a/b") == nil)
+        #expect(EngineVersion("1.0.0-") == nil)
+        #expect(EngineVersion("1.0.0-a..b") == nil)
+    }
+
+    /// The charset fix must not regress ordinary, previously-accepted
+    /// pre-release shapes: dotted numeric/alpha identifiers and a hyphen
+    /// *within* a single identifier (hyphen is a legal SemVer identifier
+    /// character, not just the pre-release delimiter).
+    @Test func ordinaryPreReleaseShapesStillParse() {
+        #expect(EngineVersion("1.0.0-rc.1") != nil)
+        #expect(EngineVersion("1.0.0-alpha-2") != nil)
+    }
+
+    /// SemVer §9: a purely-numeric identifier longer than one digit may not
+    /// have a leading zero (`"01"` is invalid; `"0"` alone is fine). No
+    /// existing case exercised this, so adding the restriction doesn't
+    /// regress anything (Ruling 58b).
+    @Test func leadingZeroNumericPreReleaseIdentifiersAreRejected() {
+        #expect(EngineVersion("1.0.0-01") == nil)
+        #expect(EngineVersion("1.0.0-rc.01") == nil)
+        #expect(EngineVersion("1.0.0-0") != nil)
+    }
+
+    /// The §9 charset rules sit beside Part B's lenient short core: a short
+    /// core with a valid pre-release still parses, an invalid one does not.
+    @Test func shortCoreAndPreReleaseRulesCompose() {
+        #expect(EngineVersion("1.2-rc.1") == EngineVersion("1.2.0-rc.1"))
+        #expect(EngineVersion("1.2-a/b") == nil)
+    }
 }
