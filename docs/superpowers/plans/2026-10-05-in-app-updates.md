@@ -6,7 +6,7 @@
 
 **Goal:** Scout.app updates itself through Sparkle 2.10.0. It reads a release-asset feed at `releases/latest/download/appcast.xml`, which `release.sh finalize` builds and attaches. For engines the app doesn't manage, the app also detects when the plugin is behind and hands over `/scout-update`. Both tracks feed Settings ▸ Updates and an update badge. This is a hard prerequisite of v0.15.0.
 
-**Architecture:** The old plan's Sparkle-free `UpdateService` state machine, unchanged in shape. The app track is a thin `AppUpdater` adapter around `SPUStandardUpdaterController`, which never starts in Debug builds. The plugin track is now gated on Part B's `EngineState`: `.managed` engines never show a plugin row, and `.external` ones get the old design's detect-and-hand-off. It reuses Part B's `EngineVersion` and `ClaudePluginsRegistry`. Release-time Sparkle work lives in `apps/macos/scripts/sparkle-release.sh` (`preflight`, `sign`, `appcast`), and the root `release.sh` (Raven-Scout/Scout#314, a separate workstream) calls it at three fixed points.
+**Architecture:** The old plan's Sparkle-free `UpdateService` state machine, unchanged in shape. The app track is a thin `AppUpdater` adapter around `SPUStandardUpdaterController`, which never starts in Debug builds. The plugin track is now gated on Part B's `EngineState`: `.managed` engines never show a plugin row, and `.external` ones get the old design's detect-and-hand-off. It reuses Part B's `EngineVersion` and `ClaudePluginsRegistry`. Release-time Sparkle work lives in `apps/macos/scripts/sparkle-release.sh` (`preflight`, `sign`, `appcast`), and the root `release.sh` (Raven-Scout/Scout#317, owned by the "Scout monorepo consolidation" session; it carries #314's spec and plan) calls it at three fixed points.
 
 **Tech Stack:** Swift 6.2 (Swift 5 language mode, default MainActor isolation), SwiftUI, Combine, Sparkle 2.10.0, Swift Testing, xcodebuild, `/bin/bash` 3.2-compatible shell.
 
@@ -56,7 +56,7 @@
 
 ## Task order and owners
 
-1. Sparkle package. 2. **Jordan: `generate_keys`.** It needs Task 1's build, and Tasks 4–10 don't wait for it. 3. Info.plist keys (needs Task 2's public key). 4. `UpdateService`. 5. `PluginRelease`. 6. `PluginUpdateChecker`. 7. `AppUpdater`, feed override, menu command and wiring. 8. Settings ▸ Updates. 9. Badges and the menu-bar panel. 10. `sparkle-release.sh`, its tests, the CI step and the `release-app.sh` guard. 11. Docs, changelog, and the interface note on #314. 12. **Jordan: rc rehearsal**, after merge and once `release.sh` exists.
+1. Sparkle package. 2. **Jordan: `generate_keys`.** It needs Task 1's build, and Tasks 4–10 don't wait for it. 3. Info.plist keys (needs Task 2's public key). 4. `UpdateService`. 5. `PluginRelease`. 6. `PluginUpdateChecker`. 7. `AppUpdater`, feed override, menu command and wiring. 8. Settings ▸ Updates. 9. Badges and the menu-bar panel. 10. `sparkle-release.sh`, its tests, the CI step and the `release-app.sh` guard. 11. Docs, changelog, and keeping the interface note on #317 current. 12. **Jordan: rc rehearsal**, after merge and once `release.sh` exists.
 
 If Task 2's key hasn't arrived when Task 10 is done, finish Task 11, then do Task 3 last. The PR stays draft until Task 3 is in.
 
@@ -362,13 +362,13 @@ Keeping the rows in their own file keeps the `SettingsView` diff to two lines. P
 - Create `scripts/sparkle-release.sh` and `scripts/tests/sparkle-release.test.sh`.
 - Modify `scripts/release-app.sh` (a guard) and `/.github/workflows/app-ci.yml` (one step).
 
-**The interface.** This is the contract to post on #314 (Task 11). `release.sh` exports `SPARKLE_BIN="$build/SourcePackages/artifacts/sparkle/Sparkle/bin"`, then calls:
+**The interface.** Posted on #317 (https://github.com/Raven-Scout/Scout/pull/317#issuecomment-5997374621). Agree any change with the "Scout monorepo consolidation" session there, and never edit `release.sh` here. `release.sh` exports `SPARKLE_BIN="$build/SourcePackages/artifacts/sparkle/Sparkle/bin"`, then calls:
 
-| Call site in `build_and_publish` (#314 plan, Task 4) | Command | Effect |
+| Call site in `build_and_publish` (#317, the unified-release plan's Task 4) | Command | Effect |
 | --- | --- | --- |
 | right after `xcodebuild … build`, before any `codesign` | `apps/macos/scripts/sparkle-release.sh preflight "$app"` | dies unless `Sparkle.framework` and all five nested components exist, the built `SUPublicEDKey` equals `generate_keys -p`, `SUFeedURL` is the release-asset URL, and `CFBundleVersion` is a positive integer |
 | **replaces** `codesign --force --options runtime --timestamp --sign "$ident" "$app"` | `apps/macos/scripts/sparkle-release.sh sign "$app" "$ident"` | signs inside-out in the Global Constraints order, then the outer app, then `codesign --verify --strict --deep` |
-| after the DMG is final (stapled, or signed under `SKIP_NOTARIZE=1`) and the notes are rendered | `apps/macos/scripts/sparkle-release.sh appcast "$dmg" "$tag" "$slug" "$notes" "$build/appcast.xml"` | writes the one-item appcast that #314's existing hook attaches |
+| after the DMG is final (stapled, or signed under `SKIP_NOTARIZE=1`) and the notes are rendered | `apps/macos/scripts/sparkle-release.sh appcast "$dmg" "$tag" "$slug" "$notes" "$build/appcast.xml"` | writes the one-item appcast that #317's existing hook attaches |
 
 `appcast` does the following:
 1. Stages the DMG, and the notes copied as `<dmg-basename>.md`, in a fresh temp dir.
@@ -408,7 +408,7 @@ Two asks for the `release.sh` workstream, beyond the three calls. Neither is wri
   - Write a header comment that states the interface table above and points at the spec amendment.
   - Read plist values with `/usr/libexec/PlistBuddy -c 'Print :Key'`, or with `plutil -extract Key raw`, whichever exists on macOS 15. Tests use the real one.
 - [ ] Step 5. Run the tests: all pass. Then run `shellcheck -S warning scripts/sparkle-release.sh scripts/tests/sparkle-release.test.sh`: clean.
-- [ ] Step 6. Add the `release-app.sh` guard, right after its build step and before `codesign`: if `"$APP/Contents/Frameworks/Sparkle.framework"` exists, die with "This build embeds Sparkle; release it with the root scripts/release.sh (#314), which signs Sparkle's nested code." `release-app.sh` signs flat, so the notarization it submits would be rejected. #314 Task 7 deletes this script later.
+- [ ] Step 6. Add the `release-app.sh` guard, right after its build step and before `codesign`: if `"$APP/Contents/Frameworks/Sparkle.framework"` exists, die with "This build embeds Sparkle; release it with the root scripts/release.sh (#317), which signs Sparkle's nested code." `release-app.sh` signs flat, so the notarization it submits would be rejected. #317's Task 7 deletes this script later.
 - [ ] Step 7. CI: in `app-ci.yml`'s macOS job, add this step after "Toolchain info" and before "Run ScoutTests":
 
   ```yaml
@@ -423,16 +423,16 @@ Two asks for the `release.sh` workstream, beyond the three calls. Neither is wri
 
 ---
 
-### Task 11: Docs, changelog, and the interface on #314
+### Task 11: Docs, changelog, and the interface on #317
 
 - `apps/macos/README.md`: an **Updates** section saying three things.
   - From v0.15.0 the app updates itself (**Scout → Check for Updates…**, daily checks), and Debug builds never do.
   - The plugin row appears only for engines Scout.app doesn't manage.
   - To test a release candidate, run `open -a /path/to/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/vX.Y.Z-rc.N/appcast.xml`.
 
-  Release mechanics stay in #314's docs. Link to `scripts/sparkle-release.sh` for the Sparkle steps.
+  Release mechanics stay in #317's docs. Link to `scripts/sparkle-release.sh` for the Sparkle steps.
 - `apps/macos/CHANGELOG.md` `## [Unreleased]` → `### Added`: in-app updates through Sparkle, Settings ▸ Updates, the update badge, and the plugin-update hand-off for engines the app doesn't manage.
-- Post Task 10's interface table and asks (a) and (b) as a comment on Raven-Scout/Scout#314. Don't edit its branch. Then message the "Scout sessions coordination" session.
+- If the interface changed while implementing, update the #317 comment (linked in Task 10) and tell the "Scout sessions coordination" session. Never edit #317's branch.
 - Commit `docs(updates): README Updates section + changelog`.
 
 ---
@@ -454,7 +454,7 @@ Then follow #314's v0.15.0 bar as written: the C10 clean-account test, and `v0.1
 ## Self-review against the spec and #314
 
 - **#314 §5, feed URL as a release asset:** Global Constraints, Task 3, and the Task 10 `preflight` check.
-- **`finalize` signs and attaches the appcast:** Task 10's `appcast` subcommand and #314's existing attach hook.
+- **`finalize` signs and attaches the appcast:** Task 10's `appcast` subcommand and #317's existing attach hook.
 - **The app only consumes the feed:** no feed commit, no checked-in `appcast.xml`, no `release-lib.sh`.
 - **rc pre-releases with their own appcast, through `SCOUT_APPCAST_URL`:** Tasks 7, 11 and 12.
 - **Plugin row only for engines the app doesn't manage; managed never shows it:** Tasks 4, 6 and 8.
