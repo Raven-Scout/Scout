@@ -1,21 +1,31 @@
 #!/bin/bash
-# scout-tz.sh — resolve the user's CURRENT timezone for all {{INSTANCE_NAME}} time rendering.
+# scout-tz.sh — resolve the timezone for all {{INSTANCE_NAME}} time rendering.
 #
 # This is the single substitution point for a hardcoded `TZ=<zone>` literal in the
-# brain files and helper scripts. Hardcoding a zone is a travel bug: when the user
-# changes timezone, every rendered time is wrong until the literal is hunted down.
+# brain files and helper scripts. The timezone hard rule is about using ONE
+# explicit, correct timezone consistently and NEVER bare `date` (a sandboxed
+# clock can be UTC, so bare `date` drifts the day-name at the boundary;
+# Pattern #29). It was never about any one zone.
 #
-# The timezone hard rule was never really about any one zone — it was about using
-# ONE explicit, correct timezone consistently and NEVER bare `date` (the sandbox
-# clock is UTC, so bare `date` drifts the day-name at the boundary; Pattern #29).
-# Localization just makes that one timezone a config value (the user's current
-# location) instead of a hardcoded literal.
+# That one zone is the computer's own. The scheduler fires slots at the host's
+# wall-clock times, so the dates and timestamps a run writes must come from the
+# same clock — and following the host means traveling needs no config edit.
 #
-# Source of truth: the `timezone:` field in scout-config.yaml. When the user
-# travels, they (or a future auto-detect feature) update that one field and every
-# run follows. This script reads it, validates it against the system tz database,
-# and prints it — falling back to America/New_York if missing/invalid so a bad
-# edit can never make a run timezone-blind.
+# Resolution order (scout.config.resolve_timezone resolves the same zone for
+# every input — tests/unit/test_host_timezone.py holds the two together):
+#   1. $SCOUT_USER_TIMEZONE — the runners resolve the zone once and export it
+#      here, so every process in a run agrees even if the host's zone changes
+#      mid-run (or a sandboxed child cannot read /etc/localtime).
+#   2. scout-config.yaml `user.timezone`, then the top-level `timezone:` —
+#      an OPTIONAL override, for a run that must keep a zone other than the
+#      host's. Leave it unset to follow the computer.
+#   3. The host's zone: the IANA name the /etc/localtime symlink points at.
+#      Deliberately not $TZ — that is a per-process override (the trading
+#      runner pins America/New_York for US market hours), and honouring it
+#      would give one process a different "today" from the rest of the vault.
+#   4. America/New_York, only when nothing above resolves.
+# A configured name that is not a real zone falls through to the host, with a
+# note on stderr, so a bad edit can never make a run timezone-blind.
 #
 # Usage:
 #   TZ=$(scripts/scout-tz.sh) date '+%H:%M %Z'      # the intended call site
@@ -28,14 +38,18 @@ set -euo pipefail
 
 DEFAULT_TZ="America/New_York"
 
-# Resolve the config file: explicit override, then the conventional vault path,
-# then a path derived from this script's own location (so it works from a clone).
+# Resolve the config file: explicit override, then the vault the run exported,
+# then the conventional vault path, then a path derived from this script's own
+# location (so it works from a clone).
 resolve_config() {
     if [[ -n "${SCOUT_CONFIG:-}" && -f "${SCOUT_CONFIG}" ]]; then
         echo "${SCOUT_CONFIG}"; return
     fi
     if [[ -n "${SCOUT_BASE_DIR:-}" && -f "${SCOUT_BASE_DIR}/scout-config.yaml" ]]; then
         echo "${SCOUT_BASE_DIR}/scout-config.yaml"; return
+    fi
+    if [[ -n "${SCOUT_DATA_DIR:-}" && -f "${SCOUT_DATA_DIR}/scout-config.yaml" ]]; then
+        echo "${SCOUT_DATA_DIR}/scout-config.yaml"; return
     fi
     if [[ -f "${HOME}/Scout/scout-config.yaml" ]]; then
         echo "${HOME}/Scout/scout-config.yaml"; return
@@ -58,63 +72,147 @@ tz_is_valid() {
     [[ -f "/usr/share/zoneinfo/${tz}" ]]
 }
 
+# A YAML scalar as a bare value: in order, inline comment, surrounding
+# whitespace, surrounding quotes, whitespace again (order matters — a comment
+# leaves trailing spaces that would otherwise strand the closing quote). An
+# explicit null is no value.
+clean_value() {
+    local v
+    v="$(sed -e 's/#.*$//' \
+             -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+             -e 's/^["'"'"']//' -e 's/["'"'"']$//' \
+             -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "$v" in null|Null|NULL|"~") v="" ;; esac
+    echo "$v"
+}
+
+# The configured override: `user.timezone` (a first-level key of the top-level
+# `user:` block), else the top-level `timezone:` that bootstrap writes. Empty
+# when neither is set.
+configured_tz() {
+    local config="$1" tz
+    tz="$(awk '
+        /^user:[[:space:]]*(#.*)?$/ { in_user = 1; indent = ""; next }
+        in_user && /^[^[:space:]#]/ { in_user = 0 }
+        in_user && /^[[:space:]]+[^[:space:]#]/ {
+            match($0, /^[[:space:]]+/); cur = substr($0, 1, RLENGTH)
+            if (indent == "") indent = cur
+            if (cur == indent && $0 ~ /^[[:space:]]+timezone:/) {
+                sub(/^[[:space:]]+timezone:/, ""); print; exit
+            }
+        }' "$config" | clean_value)"
+    if [[ -z "$tz" ]]; then
+        tz="$(awk '/^timezone:/ { sub(/^timezone:/, ""); print; exit }' "$config" | clean_value)"
+    fi
+    echo "$tz"
+}
+
+# The IANA name in a tz-database path: whatever follows the deepest zoneinfo*
+# directory (macOS links through /var/db/timezone/zoneinfo/ or
+# /usr/share/zoneinfo.default/, Linux through /usr/share/zoneinfo/).
+zone_from_tzdb_path() {
+    [[ "$1" =~ /zoneinfo[^/]*/ ]] || return 0
+    printf '%s\n' "$1" | sed -E 's#^.*/zoneinfo[^/]*/##'
+}
+
+# The host's zone, read off the /etc/localtime symlink ($SCOUT_LOCALTIME names
+# another link to read instead — tests, odd hosts). Follows a few hops, since
+# the first target can itself be a link. Empty when nothing resolves.
+host_tz() {
+    local link="${SCOUT_LOCALTIME:-/etc/localtime}" target name hops=0
+    while [[ -L "$link" && "$hops" -lt 8 ]]; do
+        target="$(readlink "$link")" || return 0
+        [[ "$target" == /* ]] || target="$(dirname "$link")/${target}"
+        name="$(zone_from_tzdb_path "$target")"
+        if tz_is_valid "$name"; then
+            echo "$name"; return 0
+        fi
+        link="$target"; hops=$((hops + 1))
+    done
+}
+
 resolve_tz() {
-    local config tz=""
-    config="$(resolve_config)"
-    if [[ -n "$config" ]]; then
-        # First `timezone:` line; strip key, then in order: inline comment, surrounding
-        # whitespace, surrounding quotes, whitespace again (order matters — a comment
-        # leaves trailing spaces that would otherwise strand the closing quote).
-        tz="$(awk -F': *' '/^timezone:/ {print $2; exit}' "$config" \
-              | sed -e 's/#.*$//' \
-                    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                    -e 's/^["'"'"']//' -e 's/["'"'"']$//' \
-                    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    local config tz="" source="" host
+    if [[ -n "${SCOUT_USER_TIMEZONE:-}" ]]; then
+        tz="$SCOUT_USER_TIMEZONE"; source="SCOUT_USER_TIMEZONE"
+    else
+        config="$(resolve_config)"
+        if [[ -n "$config" ]]; then
+            tz="$(configured_tz "$config")"; source="$config"
+        fi
     fi
     if tz_is_valid "$tz"; then
-        echo "$tz"
-    else
-        if [[ -n "$tz" ]]; then
-            echo "scout-tz.sh: configured timezone '$tz' not in the system tz database — falling back to ${DEFAULT_TZ}" >&2
-        fi
-        echo "$DEFAULT_TZ"
+        echo "$tz"; return
     fi
+    host="$(host_tz)"
+    if [[ -n "$tz" ]]; then
+        echo "scout-tz.sh: timezone '$tz' (from ${source}) is not in the system tz database — falling back to ${host:-$DEFAULT_TZ}" >&2
+    fi
+    echo "${host:-$DEFAULT_TZ}"
 }
 
 self_test() {
-    local fails=0 tmp tz
-    # 1. The live config resolves to a valid tz.
-    tz="$(resolve_tz)"
-    if tz_is_valid "$tz"; then echo "PASS  live config -> $tz"; else echo "FAIL  live config -> '$tz' (invalid)"; fails=$((fails+1)); fi
+    local fails=0 total=0 tmp tz host_link nohost
+    tmp="$(mktemp -d)"
+    # A fake host zone, and a host with no zone, so the cases below hold on any machine.
+    mkdir -p "$tmp/tzdb/zoneinfo/Asia"; : > "$tmp/tzdb/zoneinfo/Asia/Tokyo"
+    host_link="$tmp/localtime"; ln -s "$tmp/tzdb/zoneinfo/Asia/Tokyo" "$host_link"
+    nohost="$tmp/no-localtime"
+    check() {  # check <label> <expected> <actual>
+        total=$((total + 1))
+        if [[ "$3" == "$2" ]]; then echo "PASS  $1 -> $3"; else echo "FAIL  $1 -> '$3' (expected '$2')"; fails=$((fails + 1)); fi
+    }
 
-    # 2. A bogus configured tz falls back to the default.
-    tmp="$(mktemp)"; printf 'timezone: Mars/Olympus_Mons\n' > "$tmp"
-    tz="$(SCOUT_CONFIG="$tmp" resolve_tz 2>/dev/null)"
-    if [[ "$tz" == "$DEFAULT_TZ" ]]; then echo "PASS  bogus tz -> fallback $DEFAULT_TZ"; else echo "FAIL  bogus tz -> '$tz'"; fails=$((fails+1)); fi
-    rm -f "$tmp"
+    # 1. The live setup resolves to a valid tz.
+    tz="$(resolve_tz 2>/dev/null)"
+    total=$((total + 1))
+    if tz_is_valid "$tz"; then echo "PASS  live -> $tz"; else echo "FAIL  live -> '$tz' (invalid)"; fails=$((fails + 1)); fi
 
-    # 3. A valid EU tz (the travel case) is honored, not overridden to the default.
-    tmp="$(mktemp)"; printf 'timezone: Europe/Prague\n' > "$tmp"
-    tz="$(SCOUT_CONFIG="$tmp" resolve_tz 2>/dev/null)"
-    if [[ "$tz" == "Europe/Prague" ]]; then echo "PASS  travel tz Europe/Prague honored"; else echo "FAIL  travel tz -> '$tz'"; fails=$((fails+1)); fi
-    rm -f "$tmp"
+    # 2. No override: the host's zone.
+    printf 'platform: macos\n' > "$tmp/none.yaml"
+    check "unconfigured follows the host" "Asia/Tokyo" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/none.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
 
-    # 4. A missing config file falls back to the default (no crash under set -e).
-    tz="$(SCOUT_CONFIG="/nonexistent/scout-config.yaml" SCOUT_BASE_DIR="/nonexistent" HOME="/nonexistent" resolve_tz 2>/dev/null)"
-    if [[ "$tz" == "$DEFAULT_TZ" ]]; then echo "PASS  missing config -> fallback $DEFAULT_TZ"; else echo "FAIL  missing config -> '$tz'"; fails=$((fails+1)); fi
+    # 3. A valid override (the travel case) beats the host.
+    printf 'timezone: Europe/Prague\n' > "$tmp/prague.yaml"
+    check "override beats the host" "Europe/Prague" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/prague.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
 
-    # 5. Inline comment + quotes are stripped.
-    tmp="$(mktemp)"; printf 'timezone: "Europe/London"  # traveling\n' > "$tmp"
-    tz="$(SCOUT_CONFIG="$tmp" resolve_tz 2>/dev/null)"
-    if [[ "$tz" == "Europe/London" ]]; then echo "PASS  quotes/comment stripped"; else echo "FAIL  quotes/comment -> '$tz'"; fails=$((fails+1)); fi
-    rm -f "$tmp"
+    # 4. A bogus override falls through to the host...
+    printf 'timezone: Mars/Olympus_Mons\n' > "$tmp/bogus.yaml"
+    check "bogus override -> the host" "Asia/Tokyo" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/bogus.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
 
-    if [[ "$fails" -eq 0 ]]; then echo "--- scout-tz.sh self-test: 5/5 pass ---"; return 0
+    # 5. ...and to the default only when the host has no zone either.
+    check "bogus override, no host -> $DEFAULT_TZ" "$DEFAULT_TZ" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/bogus.yaml" SCOUT_LOCALTIME="$nohost" resolve_tz 2>/dev/null)"
+
+    # 6. No override and no host zone: the default (no crash under set -e).
+    : > "$tmp/empty.yaml"
+    check "nothing resolves -> $DEFAULT_TZ" "$DEFAULT_TZ" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/empty.yaml" SCOUT_LOCALTIME="$nohost" resolve_tz 2>/dev/null)"
+
+    # 7. Inline comment + quotes are stripped.
+    printf 'timezone: "Europe/London"  # traveling\n' > "$tmp/quoted.yaml"
+    check "quotes/comment stripped" "Europe/London" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/quoted.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
+
+    # 8. user.timezone beats the top-level key.
+    printf 'user:\n  name: Alex\n  timezone: Pacific/Auckland\ntimezone: Europe/Prague\n' > "$tmp/nested.yaml"
+    check "user.timezone beats top-level" "Pacific/Auckland" \
+        "$(SCOUT_USER_TIMEZONE="" SCOUT_CONFIG="$tmp/nested.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
+
+    # 9. The run's pinned zone beats everything.
+    check "SCOUT_USER_TIMEZONE beats all" "Europe/Lisbon" \
+        "$(SCOUT_USER_TIMEZONE="Europe/Lisbon" SCOUT_CONFIG="$tmp/prague.yaml" SCOUT_LOCALTIME="$host_link" resolve_tz 2>/dev/null)"
+
+    rm -rf "$tmp"
+    if [[ "$fails" -eq 0 ]]; then echo "--- scout-tz.sh self-test: ${total}/${total} pass ---"; return 0
     else echo "--- scout-tz.sh self-test: $fails FAIL ---"; return 1; fi
 }
 
 case "${1:-}" in
     --self-test) self_test ;;
-    -h|--help)   sed -n '2,30p' "${BASH_SOURCE[0]}" ;;
+    -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}" ;;
     *)           resolve_tz ;;
 esac

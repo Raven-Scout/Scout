@@ -924,7 +924,7 @@ def test_bootstrap_upgrade_empty_config_falls_back_to_defaults(vault: Path, monk
     monkeypatch.setattr("scout.scripts.bootstrap.upgrade", fake_upgrade)
     result = runner.invoke(cli.app, ["bootstrap", "upgrade"])
     assert result.exit_code == 0, result.output
-    assert seen == {"instance_name": "Scout", "user_name": "", "timezone": "America/New_York"}
+    assert seen == {"instance_name": "Scout", "user_name": "", "timezone": ""}  # "" = follow the host
 
 
 def test_bootstrap_resolve_records_each_named_brain_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

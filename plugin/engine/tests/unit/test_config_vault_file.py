@@ -244,7 +244,7 @@ def test_invalid_yaml_warns_and_falls_back(
     not convert a stale/corrupt file into a crash: warn and run on defaults."""
     (fake_data_dir / "scout-config.yaml").write_text("key: [unclosed", encoding="utf-8")
     cfg = config.load_config(fake_data_dir)
-    assert cfg["user"]["timezone"] == config.DEFAULT_TIMEZONE
+    assert cfg["user"]["timezone"] == ""  # packaged default: follow the host
     assert "scout-config" in capsys.readouterr().err
 
 
@@ -263,7 +263,7 @@ def test_binary_corrupted_file_warns_and_falls_back(
     """Invalid UTF-8 (disk corruption, wrong file) must degrade, not raise."""
     (fake_data_dir / "scout-config.yaml").write_bytes(b"\xff\xfe\x00\x01 not yaml")
     cfg = config.load_config(fake_data_dir)
-    assert cfg["user"]["timezone"] == config.DEFAULT_TIMEZONE
+    assert cfg["user"]["timezone"] == ""  # packaged default: follow the host
     assert "scout-config" in capsys.readouterr().err
 
 
@@ -274,7 +274,7 @@ def test_type_mismatched_section_warns_and_keeps_defaults(
     would otherwise clobber the whole subtree for every consumer."""
     _write_vault_config(fake_data_dir, {"user": "oops", "budget": 5})
     cfg = config.load_config(fake_data_dir)
-    assert cfg["user"]["timezone"] == config.DEFAULT_TIMEZONE
+    assert cfg["user"]["timezone"] == ""  # packaged default: follow the host
     assert cfg["budget"]["daily_usd"] == 50
     err = capsys.readouterr().err
     assert "user" in err and "budget" in err

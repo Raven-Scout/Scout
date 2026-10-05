@@ -484,7 +484,7 @@ flowchart LR
     budget["<b>scripts/budget-check.sh</b><br/>[bash]<br/>scoutctl budget check --verbose.<br/>Non-zero ends the run with a log line<br/>and exit 0"]:::component
     retry["<b>scripts/claude-with-retry.sh</b><br/>[bash]<br/>Runs claude -p. Re-runs the whole<br/>invocation up to 2 times with linear<br/>backoff on transient API signatures.<br/>401 and 403 stop with remediation"]:::component
     post["<b>Post-session</b><br/>[scripts/rate-limit-detect.sh,<br/>post-session-backfill.sh, run-outcome.sh,<br/>write-session-cost.sh]<br/>Rate-limit row on failure. Stable ID<br/>prefixes plus a chore commit. Run-outcome<br/>row, Telegram on repeated failure.<br/>Connector-health rollup.<br/>usage-tracker cost row with exit code"]:::component
-    tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone from scout-config.yaml<br/>for shell-side timestamps.<br/>Twin of config.today()"]:::component
+    tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone: the config's optional<br/>override, else the host's zone.<br/>Twin of config.today()"]:::component
     hb["<b>scripts/heartbeat.sh</b><br/>[bash]<br/>launchd entry point every 30 min:<br/>scoutctl heartbeat run. Once a day,<br/>session-lane-liveness.py"]:::component
     render["<b>action-items/render.py, watch.sh</b><br/>[python, fswatch]<br/>Optional markdown to HTML dashboard<br/>re-rendered on change"]:::component
   end

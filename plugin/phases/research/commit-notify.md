@@ -14,7 +14,7 @@ requires: null
 git -C "{{SCOUT_DIR}}" add -A && git -C "{{SCOUT_DIR}}" commit -m "research [HH:MM]: <summary of targets researched and key findings>"
 ```
 
-Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (default: `America/New_York`).
+Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
 
 ## Step 4b: Session Entry
 
