@@ -136,7 +136,7 @@ def validate(raw_def: Any, *, plugin_root: Path) -> Outcome:
 def _no_vault(vault: Path) -> Outcome | None:
     if (vault / "scout-config.yaml").exists():
         return None
-    return Outcome("error", message=f"no vault at {vault} — run /scout-setup first")
+    return Outcome("error", message=f"no Scout vault at {vault} — install Scout first (the Scout app, or install.sh)")
 
 
 _CONFIG_READ_ERRORS = (yaml.YAMLError, UnicodeDecodeError, OSError, TypeError, ValueError)

@@ -59,7 +59,7 @@ _GENERIC_BINARIES = frozenset(
     }
 )
 _HEADER = (
-    "# Custom connectors — managed by `scoutctl connectors custom add/remove` and /scout-connect.\n"
+    "# Custom connectors — managed by `scoutctl connectors custom add/remove`.\n"
     "# Hand edits take effect at the next `scoutctl bootstrap upgrade` (or /scout-update);\n"
     "# `scoutctl connectors custom list` reports any problems.\n"
     "# Never put credentials here or in inputs: sign each tool in through its own MCP connector or CLI.\n"

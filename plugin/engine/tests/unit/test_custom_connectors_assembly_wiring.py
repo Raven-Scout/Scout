@@ -86,6 +86,9 @@ def test_backport_renders_the_same_custom_sections_and_never_writes_into_them(tm
     results = plan_backport(snapshot, live, sections, vars_)
     assert [r.status for r in results] == ["needs-review"]
     assert "connectors.custom.yaml" in results[0].reason
+    # F6: name the shipped CLI, not the not-yet-shipped /scout-connect.
+    assert "/scout-connect" not in results[0].reason
+    assert "scoutctl connectors custom add" in results[0].reason
 
 
 def test_doctor_warns_on_custom_file_issues(tmp_path: Path):

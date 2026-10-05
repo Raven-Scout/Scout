@@ -173,7 +173,10 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
             first_fix = f"Reconnect {names} at https://claude.ai/settings/connectors (or /mcp for a local server)."
         else:
             binary = members[0].probe.binary or members[0].key
-            first_fix = f"Check that `{binary}` runs in a terminal, then run /scout-connect {members[0].key}."
+            first_fix = (
+                f"Check that `{binary}` runs in a terminal, then re-add {members[0].key} "
+                "with `scoutctl connectors custom add --file <definition>`."
+            )
         rows[health_key] = {
             "display_name": names,
             "tier": "custom",
@@ -182,7 +185,9 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
             "remediation": {
                 "first_fix": first_fix[:180],
                 "detail": f"Custom connector(s) {keys} in connectors.custom.yaml. "
-                f"If the tools were renamed, run /scout-connect for each to re-derive the definition.",
+                "If the tools were renamed, update each entry there, or re-add it with "
+                "`scoutctl connectors custom add --file <definition>` "
+                "(`scoutctl connectors custom remove <key>` drops one).",
             },
         }
     return rows

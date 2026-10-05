@@ -267,7 +267,8 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
                     anchor=hunk.anchor,
                     reason=(
                         f"inside custom connector {sec.custom_key!r} — change its entry in "
-                        f"connectors.custom.yaml (or run /scout-connect {sec.custom_key}) instead"
+                        "connectors.custom.yaml (or re-add it with "
+                        "`scoutctl connectors custom add --file <definition>`) instead"
                     ),
                 )
             )

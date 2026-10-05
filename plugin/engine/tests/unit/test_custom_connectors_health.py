@@ -56,6 +56,18 @@ def test_roster_gets_one_custom_row_per_server_and_one_per_bash_connector(fake_d
     assert len(reg["tickets"].remediation.first_fix) <= 180
 
 
+def test_custom_rows_name_only_commands_that_exist(fake_data_dir: Path):
+    """F6: /scout-connect is not shipped yet; remediation must name the real CLI."""
+    cc.write(fake_data_dir, DEFS)
+    reg = load_registry()
+    for key in ("tickets", "mcp:example_suite"):
+        remediation = reg[key].remediation
+        assert "/scout-connect" not in remediation.first_fix + remediation.detail
+        assert "scoutctl connectors custom add" in remediation.detail
+        assert len(remediation.first_fix) <= 180
+    assert "scoutctl connectors custom add --file" in reg["tickets"].remediation.first_fix
+
+
 def test_shipped_rows_win_and_broken_file_yields_no_custom_rows(fake_data_dir: Path):
     (fake_data_dir / cc.CUSTOM_FILE).write_text("connectors: [unclosed\n")
     reg = load_registry()

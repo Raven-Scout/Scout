@@ -166,6 +166,7 @@ def test_hand_edit_defers_without_blaming_the_plugin(vault: Path):
 def test_custom_file_header_says_hand_edits_land_at_the_next_upgrade():
     header = cc.dump({}).split("schema_version")[0]
     assert "Hand edits take effect at the next `scoutctl bootstrap upgrade`" in header
+    assert "/scout-connect" not in header  # F6: not shipped yet
 
 
 def test_remove_takes_out_sections_entry_enabled_and_inputs(vault: Path):
@@ -185,6 +186,10 @@ def test_remove_unknown_key_is_invalid(vault: Path):
 def test_add_without_vault_is_an_error(tmp_path: Path):
     out = ops.add(tmp_path / "missing", dict(SUITE), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={})
     assert (out.status, out.exit_code) == ("error", 1)
+    # F6: /scout-setup is retired; point at the installers that exist.
+    assert (
+        out.message == f"no Scout vault at {tmp_path / 'missing'} — install Scout first (the Scout app, or install.sh)"
+    )
 
 
 def test_list_custom_reports_definitions_and_issues(vault: Path):
