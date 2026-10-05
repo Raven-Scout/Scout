@@ -495,7 +495,13 @@ def _assemble(
         cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
     ):
         bodies.append(section.rendered_body)
-    return "\n\n".join(bodies)
+    # A trailing newline matters beyond style: `git merge-file` treats a
+    # "no newline at end of file" mismatch between base/ours/theirs as a
+    # conflict even when the visible text agrees (confirmed against git
+    # merge-file directly) — without this, any live edit that a normal
+    # editor save terminates with "\n" would spuriously conflict against an
+    # assembly that doesn't.
+    return "\n\n".join(bodies) + "\n"
 
 
 def _snapshot_dir(cfg: BootstrapConfig) -> Path:
@@ -532,7 +538,12 @@ class _Cat4Outcome:
     backups: list[str] = field(default_factory=list)  # parked copies of live files replaced on the fingerprint alone
 
 
-def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
+def _stage_cat4_upgrade(
+    cfg: BootstrapConfig,
+    *,
+    custom: dict[str, custom_connectors.CustomConnector] | None = None,
+    kinds: tuple[str, ...] = brain_merge.BRAIN_KINDS,
+) -> _Cat4Outcome:
     """Stage 5 (upgrade): reconcile each brain file with its fresh assembly.
 
     ``brain_merge.decide`` picks the action per file; see its module docstring
@@ -547,6 +558,10 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
 
     Provenance is persisted after each file, so a failure on a later file
     can't leave an earlier, already-advanced snapshot without its record.
+
+    ``custom``/``kinds`` exist for ``apply_custom_change``: reconcile only the
+    brain files a custom-connector change touched, assembled with the new
+    custom set. ``upgrade()`` uses the defaults.
     """
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -557,8 +572,9 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
         # even if this one advances no snapshot.
         _write_provenance(snapshot_dir, records)
     out = _Cat4Outcome()
-    custom = load_custom(cfg)
-    for kind in brain_merge.BRAIN_KINDS:
+    if custom is None:
+        custom = load_custom(cfg)
+    for kind in kinds:
         name = f"{kind}.md"
         ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
@@ -664,6 +680,104 @@ def resolve_brain_file(vault: Path, kind: str) -> ResolveResult:
     finally:
         release_lock(lock)
     return ResolveResult(name=name, recorded_base=recorded, removed_sidecar=removed)
+
+
+def config_from_vault(
+    vault: Path,
+    *,
+    plugin_root: Path,
+    plugin_version: str,
+    skip_jobs: bool = False,
+    skip_claude: bool = False,
+    managed_by: str = "unknown",
+) -> BootstrapConfig:
+    """BootstrapConfig for an existing vault, read back from its scout-config.yaml.
+
+    Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
+    the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError.
+    """
+    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8")) or {}
+    instance = existing.get("instance") or {}
+    user = existing.get("user") or {}
+    connectors = existing.get("connectors") or {}
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=plugin_root,
+        instance_name=instance.get("name", "Scout"),
+        instance_name_lower=instance.get("name_lower", "scout"),
+        user_name=user.get("name", ""),
+        user_email=user.get("email", ""),
+        timezone=existing.get("timezone", "America/New_York"),
+        platform=existing.get("platform", "macos"),
+        plugin_version=plugin_version,
+        enabled_connectors=set(connectors.get("enabled") or []),
+        connector_inputs=dict(connectors.get("inputs") or {}),
+        skip_jobs=skip_jobs,
+        skip_claude=skip_claude,
+        managed_by=managed_by,
+    )
+
+
+def write_connector_config(vault: Path, *, enabled: set[str], inputs: dict[str, str]) -> None:
+    """Rewrite connectors.enabled / connectors.inputs, keeping the file's comments (#251)."""
+    path = vault / "scout-config.yaml"
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text) or {}
+    connectors = data.setdefault("connectors", {})
+    connectors["enabled"] = sorted(enabled)
+    connectors["inputs"] = dict(inputs)
+    _atomic_write(path, _dump_keeping_comments(text, data))
+
+
+@dataclass
+class CustomApplyResult:
+    status: str  # "applied" | "unchanged" | "deferred" | "conflict"
+    updated: list[str] = field(default_factory=list)  # brain files that now carry the change
+    sidecars: list[str] = field(default_factory=list)  # sidecars this change wrote
+    waiting: list[str] = field(default_factory=list)  # brain files skipped: pending sidecar or conflict markers
+    backups: list[str] = field(default_factory=list)  # parked copies (pre-provenance vaults)
+
+
+def apply_custom_change(
+    before: BootstrapConfig,
+    after: BootstrapConfig,
+    *,
+    custom_before: dict[str, custom_connectors.CustomConnector],
+    custom_after: dict[str, custom_connectors.CustomConnector],
+) -> CustomApplyResult:
+    """Apply a custom-connector add/remove to the live brain files (custom-connectors spec §2).
+
+    The caller holds the vault lock. For every brain file the change touches,
+    ``before`` must re-assemble to the recorded snapshot: that proves the plugin
+    has not drifted since the last install/upgrade, so the only difference is the
+    custom delta. If any changed file fails that check, nothing is written and the
+    change waits for /scout-update ("deferred"). Otherwise the changed files go
+    through the normal ``_stage_cat4_upgrade`` reconciliation (brain_merge.decide):
+    fast-forward or merge into live, a sidecar on conflict or on a snapshot the
+    plugin didn't write, and a skip for a pending sidecar or held conflict markers.
+    Brain files the change doesn't touch are never reconciled.
+    """
+    snapshot_dir = _snapshot_dir(after)
+    changed: list[str] = []
+    for kind in brain_merge.BRAIN_KINDS:
+        old = _assemble(before, kind, custom=custom_before)
+        if old == _assemble(after, kind, custom=custom_after):
+            continue
+        snap = snapshot_dir / f"{kind}.md"
+        if not snap.exists() or snap.read_text(encoding="utf-8") != old:
+            return CustomApplyResult(status="deferred")
+        changed.append(kind)
+    if not changed:
+        return CustomApplyResult(status="unchanged")
+    outcome = _stage_cat4_upgrade(after, custom=custom_after, kinds=tuple(changed))
+    suffix = ".proposed-merge"
+    waiting = sorted({n.removesuffix(suffix) for n in outcome.skipped} | set(outcome.held))
+    conflicted = {n.removesuffix(suffix) for n in outcome.conflicts}
+    updated = [f"{k}.md" for k in changed if f"{k}.md" not in set(waiting) | conflicted]
+    status = "conflict" if outcome.conflicts else "deferred" if waiting else "applied"
+    return CustomApplyResult(
+        status=status, updated=updated, sidecars=list(outcome.conflicts), waiting=waiting, backups=list(outcome.backups)
+    )
 
 
 def _stage_jobs_install(cfg: BootstrapConfig) -> None:

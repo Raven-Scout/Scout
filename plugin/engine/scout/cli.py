@@ -1499,35 +1499,23 @@ def _register_bootstrap() -> None:
 
     def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, skip_claude: bool, managed_by: str):
         """BootstrapConfig for an existing vault, read back from scout-config.yaml
-        (extracted from the upgrade command so `auto` shares it)."""
+        (shared with the custom-connector commands via bootstrap.config_from_vault)."""
         import yaml as _yaml
 
         from scout import __version__
-        from scout.scripts.bootstrap import BootstrapConfig
+        from scout.scripts.bootstrap import config_from_vault
 
-        cfg_path = vault / "scout-config.yaml"
         try:
-            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            return config_from_vault(
+                vault,
+                plugin_root=Path(__file__).parent.parent.parent,
+                plugin_version=__version__,
+                skip_jobs=skip_jobs,
+                skip_claude=skip_claude,
+                managed_by=managed_by,
+            )
         except (_yaml.YAMLError, UnicodeDecodeError) as e:
             raise ConfigError(f"scout-config.yaml is malformed: {e}") from e
-        instance = existing.get("instance", {})
-        user = existing.get("user", {})
-        return BootstrapConfig(
-            vault=vault,
-            plugin_root=Path(__file__).parent.parent.parent,
-            instance_name=instance.get("name", "Scout"),
-            instance_name_lower=instance.get("name_lower", "scout"),
-            user_name=user.get("name", ""),
-            user_email=user.get("email", ""),
-            timezone=existing.get("timezone", "America/New_York"),
-            platform=existing.get("platform", "macos"),
-            plugin_version=__version__,
-            enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-            skip_jobs=skip_jobs,
-            skip_claude=skip_claude,
-            managed_by=managed_by,
-        )
 
     @bootstrap_app.command("install")
     def cli_bootstrap_install(
