@@ -138,6 +138,41 @@ Each command below names the repo as it is called *when that step runs*.
 
 ---
 
+## Cutover status (2026-10-05)
+
+The landing and the swap ran on 2026-10-05, from 09:42 to 10:30 CEST. Every
+[J] step had Jordan's direct OK in the migration session. Ticked boxes below
+are done.
+
+- **Landing:** Raven-Scout/scout-plugin#278 merged as eb71079, with parents
+  69ad901 and 0bbbf46.
+- **Tags and download:** 41 `app/v*` tags were seeded. v0.5.9 and v0.5.10 sit
+  on side branches and stay legacy-only. `app/v0.14.0` re-publishes the
+  shipped DMG and is Latest.
+- **Renames:** Scout became `scout-app-legacy`, then scout-plugin became
+  `Scout`, keeping 17 stars and 9 forks.
+- **Redirects verified (4.3):** git, raw, `/releases/latest`, and an existing
+  install updating through the redirect, checked in Jordan's sandbox.
+- **Notices:** the numbering notice is pinned as #280. The five Phase 0
+  closing comments were fixed, with follow-ups to their authors.
+- **Phase 9, Jordan's machine:** vault commits 582cda0e (the re-point) and
+  6798fde1 (#264's `SKILL.md` rules merged, sidecar resolved, re-added
+  `timezone:` removed). Doctor is green. The 11:00 consolidation ran green on
+  the new engine.
+- **Phase 5:**
+  - 15 issues moved to #282–#296.
+  - Re-opened here: legacy #127 → #297, #68 → #298, #131 → #299.
+  - Closed with a request to re-open here: #118 and #70.
+  - Rebased into the new layout: #261.
+- **Still open:**
+  - 5.2: legacy #129 (its own session) and #125/#128 (the Part B/C session).
+  - 5.3: #275 (a real conflict with #269 in `materialize.py`, spun off as a
+    task) and #279 (the timezone session).
+  - 6.2 and 6.3 (ping the coordinator before 6.3 changes the ruleset), 7, 8,
+    10 and 11.
+- **Freeze:** the merge freeze was lifted at about 11:35 CEST. Release rules
+  still hold: no `app/v*` build until Part B merges.
+
 ## 0. Where things stand
 
 - [ ] Branch `migrate/monorepo` is pushed as draft PR `Raven-Scout/Scout#132`
@@ -190,7 +225,7 @@ before Phase 3**.
     fixes it.
 - [x] **0.3 Notice.** Posted and pinned as scout-plugin #277. That number
   survives the swap. Phase 10.4 rewrites it for the swap and closes it.
-- [ ] **0.4 Gate, re-run right before Phase 3.5:** no external open PRs on
+- [x] **0.4 Gate, re-run right before Phase 3.5:** no external open PRs on
   scout-plugin.
 
   ```bash
@@ -214,7 +249,7 @@ repo, and the app repo is frozen until it is archived.
 This is the fix wave's C1 procedure, generalized. Each sub-step is one commit.
 If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
-- [ ] **1.0 Start clean and record the heads.**
+- [x] **1.0 Start clean and record the heads.**
 
   ```bash
   cd "$W"
@@ -230,7 +265,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git log --oneline "$MAIN_PREV..$MAIN_NEW"; git log --oneline "$UP_PREV..$UP_NEW"
   ```
 
-- [ ] **1.1 Merge Scout `main`.** Watch for two silent traps.
+- [x] **1.1 Merge Scout `main`.** Watch for two silent traps.
 
   ```bash
   git merge --no-ff --no-commit origin/main
@@ -316,7 +351,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   - Commit with a message that lists each conflict and its resolution. Use the
     fix wave's merge commit, `efaf638`, as the model.
 
-- [ ] **1.2 Subtree-pull scout-plugin `main`.**
+- [x] **1.2 Subtree-pull scout-plugin `main`.**
 
   ```bash
   git diff --name-status "$UP_PREV" HEAD:plugin > /tmp/oracle-pre.txt   # the divergence oracle, before
@@ -381,7 +416,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   plugin releases (fixed in `b0ca543`). Phase 1.4's engine suite is what
   catches this.
 
-- [ ] **1.3 Re-sync the client copies from canonical.** These are byte copies;
+- [x] **1.3 Re-sync the client copies from canonical.** These are byte copies;
   never regenerate a copy.
 
   ```bash
@@ -402,7 +437,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   "Every tracked snapshot copy is checked" step fails if a new tracked copy
   isn't listed there.
 
-- [ ] **1.4 Verify.** Paste the raw output into the PR description.
+- [x] **1.4 Verify.** Paste the raw output into the PR description.
 
   ```bash
   cd "$W/plugin/engine"
@@ -488,7 +523,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     -- ':!docs/superpowers/plans/2026-10-04-monorepo-cutover-runbook.md' ':!*.jsonl' | grep -v scout-app-legacy
   ```
 
-- [ ] **2.2 Make the existing-user sandbox now, before anything lands.** It
+- [x] **2.2 Make the existing-user sandbox now, before anything lands.** It
   holds a plugin installed from today's `scout-plugin`, so Phases 4.3 and 7.1
   can test the real upgrade path through the rename redirect.
   - **Never run `claude plugin marketplace add/remove/update` or
@@ -520,7 +555,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   python3 ~/.scout-worktrees/r27-guard.py "$SB_OLD" | diff ~/.scout-worktrees/r27-before.txt - && echo "real config untouched"
   ```
 
-- [ ] **2.3 Merge order with Part B (#125) and Part C (#128).**
+- [x] **2.3 Merge order with Part B (#125) and Part C (#128).**
   - The migration lands first.
   - Part B and Part C are open on the app repo, so after Phase 4 they are
     `scout-app-legacy#125` and `#128`. Their session re-opens them on the
@@ -548,7 +583,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ## Phase 3 — Land the monorepo in scout-plugin [J]
 
-- [ ] **3.0 Gate (local).** Phase 1 just ran and is committed, and 1.4 is
+- [x] **3.0 Gate (local).** Phase 1 just ran and is committed, and 1.4 is
   green. Nothing moved since:
 
   ```bash
@@ -579,7 +614,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     - To be sure first, push an old-dated commit saying "(#1)" to a throwaway
       repo that has an issue #1.
 
-- [ ] **3.1 [J] Push the branch to scout-plugin and open the landing PR
+- [x] **3.1 [J] Push the branch to scout-plugin and open the landing PR
   there.** Push the branch only, with no tags.
 
   ```bash
@@ -604,7 +639,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   - Pushing to `migrate/**` also starts push runs of `contract`, `plugin-test`
     and `plugin-lint`. That's expected.
 
-- [ ] **3.2 Read the checks.**
+- [x] **3.2 Read the checks.**
 
   ```bash
   gh pr checks "$NEW_PR" --repo Raven-Scout/scout-plugin --watch
@@ -619,7 +654,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     scout-plugin's old ones don't run.
   - If `plugin-test` fails only on the FS-watcher test, re-run the job.
 
-- [ ] **3.3 [J] Seed the app's release tags in scout-plugin.**
+- [x] **3.3 [J] Seed the app's release tags in scout-plugin.**
   - Every app release tag is re-created as `app/<tag>` on the same commit and
     pushed by explicit refspec. Its commits arrived with 3.1.
   - The old app repo's `v0.14.0` → `app/v0.14.0`, which `release-app.sh` now
@@ -639,7 +674,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git push https://github.com/Raven-Scout/scout-plugin.git $(git tag --list 'app/v*' | sed 's#^#refs/tags/#')
   ```
 
-- [ ] **3.4 [J] Re-publish the newest app DMG as the survivor's Latest
+- [x] **3.4 [J] Re-publish the newest app DMG as the survivor's Latest
   release.** After Phase 4, `/releases/latest` (the website's and both
   READMEs' "download the app" link) then still serves a DMG.
   - This is **not** a new build: it re-hosts the DMG that already shipped. So
@@ -668,7 +703,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git push https://github.com/Raven-Scout/scout-plugin.git --delete $(git tag --list 'app/v*' | sed 's#^#refs/tags/#')
   ```
 
-- [ ] **3.5 [J] Merge the landing PR, then go straight to Phase 4.**
+- [x] **3.5 [J] Merge the landing PR, then go straight to Phase 4.**
   - Re-run the 0.4 gate first.
   - scout-plugin's ruleset `main` allows merge commits and needs 0 approvals.
     There is no CODEOWNERS file (checked 2026-10-04), so Jordan can merge his
@@ -693,7 +728,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ## Phase 4 — The swap [J] (two renames, back to back)
 
-- [ ] **4.0 Preflight** (run before 3.5).
+- [x] **4.0 Preflight** (run before 3.5).
   - Pick a quiet window for 3.5 → Phase 4 → Phase 9: no scheduled slot due
     for about two hours (`~/.local/bin/scoutctl schedule list-upcoming --json | head`).
     Phase 9 runs right after Phase 4 (see Hard rules).
@@ -706,13 +741,13 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   jq length ~/.scout-worktrees/swap-legacy-open-prs.json ~/.scout-worktrees/swap-legacy-open-issues.json   # 8 PRs once 3.1 has closed #132 and #99; 15 issues (2026-10-04)
   ```
 
-- [ ] **4.1 [J] Rename the app repo.**
+- [x] **4.1 [J] Rename the app repo.**
 
   ```bash
   gh repo rename scout-app-legacy --repo Raven-Scout/Scout --yes
   ```
 
-- [ ] **4.1a Re-point the old app clone, still between the renames.**
+- [x] **4.1a Re-point the old app clone, still between the renames.**
   - `~/scout-app` is the only clone whose `origin` is the app repo (checked
     2026-10-04). Its 20 worktrees share its config, including `W` and the
     Part B/C worktrees.
@@ -724,13 +759,13 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git -C ~/scout-app ls-remote --exit-code origin refs/heads/main >/dev/null && echo "old clone → scout-app-legacy"
   ```
 
-- [ ] **4.2 [J] Immediately, rename scout-plugin.**
+- [x] **4.2 [J] Immediately, rename scout-plugin.**
 
   ```bash
   gh repo rename Scout --repo Raven-Scout/scout-plugin --yes
   ```
 
-- [ ] **4.3 Verify the swap and the redirects.**
+- [x] **4.3 Verify the swap and the redirects.**
 
   ```bash
   gh repo view Raven-Scout/Scout --json nameWithOwner,stargazerCount,forkCount --jq '"\(.nameWithOwner) stars=\(.stargazerCount) forks=\(.forkCount)"'   # ≥17 / ≥9
@@ -763,7 +798,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   - If the update fails here, stop: every existing user is in the same state.
     Fix forward (for example, a re-point note in #277) before anything else.
 
-- [ ] **4.4 [J] Pin the numbering notice on the survivor.**
+- [x] **4.4 [J] Pin the numbering notice on the survivor.**
 
   ```bash
   cat > /tmp/numbering-notice.md <<'EOF'
@@ -780,7 +815,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   gh issue pin "$N" --repo Raven-Scout/Scout
   ```
 
-- [ ] **4.5 Tell the sessions.** Through the coordinator, tell every session
+- [x] **4.5 Tell the sessions.** Through the coordinator, tell every session
   working in a `~/scout-app` worktree:
   - its `origin` is now `Raven-Scout/scout-app-legacy` (4.1a);
   - new work starts from a survivor clone;
@@ -789,7 +824,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   Any other clone of the app repo, on another machine or a fresh one, needs
   the same `set-url`. Its `origin` now silently names the survivor.
 
-- [ ] **4.6 [J] Fix the Phase 0 closing comments** on #216, #194, #180, #176
+- [x] **4.6 [J] Fix the Phase 0 closing comments** on #216, #194, #180, #176
   and #175 (all external contributors' PRs).
   - They say three things that are now wrong:
     - "Raven-Scout/Scout#132", which now opens scout-plugin's own #132;
@@ -814,14 +849,14 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   done
   ```
 
-- [ ] **4.7 Now run Phase 9** (Jordan's machine), before anything else. Then
+- [x] **4.7 Now run Phase 9** (Jordan's machine), before anything else. Then
   continue with Phase 5.
 
 ---
 
 ## Phase 5 — Carry open work across [J]
 
-- [ ] **5.1 [J] Transfer the app repo's open issues** (15 on 2026-10-04).
+- [x] **5.1 [J] Transfer the app repo's open issues** (15 on 2026-10-04).
   - Copy the labels first, so they survive the transfer.
   - Each transferred issue gets a new number. Its legacy URL redirects to
     the new one.
@@ -889,7 +924,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   git push --force-with-lease
   ```
 
-- [ ] **5.4 Notify.**
+- [x] **5.4 Notify.**
   - **Part B/C:** the 2.3 list.
   - **Coordinator:** `swap-issue-map.txt` and `swap-pr-map.txt`, for the agent
     memory and vault rewrite.
@@ -899,7 +934,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ## Phase 6 — Prove the gates, then require them [J]
 
-- [ ] **6.1 [J] Prove the skip path on a docs-only PR.** Do this BEFORE adding
+- [x] **6.1 [J] Prove the skip path on a docs-only PR.** Do this BEFORE adding
   the status-check rule. It must target `main`, because `app-ci` only
   triggers on PRs into `main`.
 
@@ -1113,12 +1148,12 @@ config, so no agent runs it.
   `main` fast-forwards from scout-plugin's old `main`. So the same clone
   simply pulls into the monorepo layout. No second clone is needed.
 
-- [ ] **9.1 Pick a quiet window.** Choose a time with no scheduled slot due:
+- [x] **9.1 Pick a quiet window.** Choose a time with no scheduled slot due:
 
   ```bash
   ~/.local/bin/scoutctl schedule list-upcoming --json | head
   ```
-- [ ] **9.2 Pull the clone into the monorepo layout.** Rehearse first in a
+- [x] **9.2 Pull the clone into the monorepo layout.** Rehearse first in a
   sandbox:
   - copy `~/scout-plugin` to a temp directory;
   - point a sandbox directory marketplace at it;
@@ -1145,7 +1180,7 @@ config, so no agent runs it.
   claude plugin marketplace add ~/scout-plugin
   claude plugin install scout@scout-plugin
   ```
-- [ ] **9.3 Rebuild and re-point the engine.**
+- [x] **9.3 Rebuild and re-point the engine.**
 
   ```bash
   bash ~/scout-plugin/plugin/scripts/install-venv.sh
@@ -1162,7 +1197,7 @@ config, so no agent runs it.
   `SKILL.md` the version you want, keep 9.3a's re-pointed paths, and run
   `scoutctl bootstrap resolve SKILL.md`.
 
-- [ ] **9.3a Re-point the vault.** `bootstrap upgrade` re-renders only the
+- [x] **9.3a Re-point the vault.** `bootstrap upgrade` re-renders only the
   files it manages: the runners, the templated scripts,
   `hooks/kb-pre-filter.sh`, the plists, the shim and `engine.json`. The vault
   also hard-codes `~/scout-plugin/{engine,.venv,templates,phases}` in files it
@@ -1207,7 +1242,7 @@ config, so no agent runs it.
   - Leave `DREAMING.md` out if that run staged edits to it.
   - Commit it with that run's work instead.
 
-- [ ] **9.4 Verify.**
+- [x] **9.4 Verify.**
 
   ```bash
   claude plugin list --json | grep -A3 '"scout@scout-plugin"'
