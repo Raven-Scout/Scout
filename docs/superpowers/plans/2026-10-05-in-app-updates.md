@@ -391,7 +391,12 @@ Keeping the rows in their own file keeps the `SettingsView` diff to two lines. P
    - the enclosure URL equals the prefix + DMG name;
    - `sparkle:edSignature` is present.
 
-Two asks for the `release.sh` workstream, beyond the three calls. Neither is written here:
+**Agreed with #317 (2026-10-05; #317 spec and plan at 77a7529, "Interface with Sparkle (#318), agreed" in its description).** Build to exactly this argv. Any change must be agreed with the "Scout monorepo consolidation" session first.
+- `release.sh` uses the hook only when `apps/macos/scripts/sparkle-release.sh` is executable **in the commit being built** (the finalize worktree). The file must be committed with mode `100755`; check with `git ls-files -s apps/macos/scripts/sparkle-release.sh`.
+- `sign` replaces only the flat **app** codesign. `release.sh` still signs the DMG itself, and still runs `codesign --verify --strict "$app"` after `sign`. Running that a second time is harmless.
+- #317's tests pin the order: xcodebuild < preflight < sign, no flat app codesign, and DMG staple < appcast < publish.
+
+Both asks below were accepted into #317, recorded here for context:
 - (a) For `kind=release`, a missing `$build/appcast.xml` must be fatal once this PR is merged. Otherwise a Latest release without the asset 404s every installed copy's feed until the next release.
 - (b) #314's v0.15.0 bar installs v0.15.0 "from a draft release". `finalize` has no draft mode, so a rehearsal before v0.15.0 is public needs the `rc` path (Task 12).
 
@@ -443,7 +448,7 @@ Two asks for the `release.sh` workstream, beyond the three calls. Neither is wri
 
 Recommended before `finalize v0.15.0`, because v0.15.0 is the one release where a broken updater can't be fixed through the updater:
 1. Run `scripts/release.sh rc v0.15.0-rc.1`. Copy the DMG's app to `~/scout-e2e/Scout.app`.
-2. Land any commit on `main`, then run `scripts/release.sh rc v0.15.0-rc.2`. rc.2's `sparkle:version` must be higher than rc.1's.
+2. Land any commit on `main`, then run `scripts/release.sh rc v0.15.0-rc.2` from that **later** commit. `CFBundleVersion` is the commit count, and Sparkle never offers an equal build, so rc.2's `sparkle:version` must be higher than rc.1's.
 3. Run `open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.15.0-rc.2/appcast.xml`, then **Check for Updates…**. Sparkle's sheet shows rc.2, and Settings ▸ Updates shows the badge. **Install and Relaunch**: About reads rc.2's build, and `codesign -dv` shows the team ID. On an error sheet, run `log show --last 10m --predicate 'process == "Scout" AND eventMessage CONTAINS[c] "sparkle"' --info`.
 4. Delete both pre-releases and their tags.
 
