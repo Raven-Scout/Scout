@@ -1,0 +1,13 @@
+# GitHub Pages builds docs/ with Jekyll. The website is the plain HTML here:
+# index.html, privacy.html, terms.html, the CSS and JS files, and assets/.
+# Everything else in docs/ is internal documentation (specs, plans, research,
+# architecture notes, READMEs). Keep it out of the site, so it isn't published
+# as web pages and Liquid-looking text in it (`{{ … }}`) can't break the build.
+# The build broke that way after the monorepo move, when the plans landed here.
+exclude:
+  - "*.md"
+  - superpowers/
+  - plans/
+  - specs/
+  - research/
+  - architecture/
