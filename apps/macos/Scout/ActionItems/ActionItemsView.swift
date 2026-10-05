@@ -124,15 +124,19 @@ struct ActionItemsView: View {
         // write op, every watched external rewrite) can invalidate them, and
         // a filter/search change can hide checked rows that would otherwise
         // be silently copied.
+        // Relayout first: the selection reads the drawn (arranged) rows.
         .onChange(of: docService.state) { _, _ in
-            reconcileSelection()
             relayout()
+            reconcileSelection()
         }
         .onChange(of: filter) { _, _ in
-            reconcileSelection()
             relayout()
+            reconcileSelection()
         }
-        .onChange(of: display) { _, _ in relayout() }
+        .onChange(of: display) { _, _ in
+            relayout()
+            reconcileSelection()
+        }
     }
 
     // MARK: - Content
@@ -218,8 +222,7 @@ struct ActionItemsView: View {
         if !doc.preamble.isEmpty {
             preamble(doc.preamble)
         }
-        let arranged = layout?.list
-            ?? ActionItemsArrangement.Arranged(sections: filteredSections(doc).map(filtered), kinds: [:])
+        let arranged = layout?.list ?? ActionItemsArrangement.Arranged(sections: listSections(doc), kinds: [:])
         ForEach(arranged.sections) { section in
             SectionView(
                 section: section,
@@ -259,18 +262,15 @@ struct ActionItemsView: View {
     /// that window so the task lands somewhere visible instead of vanishing
     /// into "N not shown".
     private func revealReopened(subject: String, shortPrefix: String?) {
-        guard case .loaded(let doc) = docService.state else { return }
-        for section in filteredSections(doc) where section.kind != .done {
-            let tasks = filtered(section).tasks
-            guard let index = tasks.firstIndex(where: { task in
-                guard !task.done else { return false }
-                if let shortPrefix { return task.shortPrefix == shortPrefix }
-                return task.matchableSubject == subject
-            }) else { continue }
-            windows[section.id, default: TaskWindow()].reveal(index)
-            reconcileSelection()
-            return
-        }
+        // The reparse has landed but `onChange` has not relaid out yet, and
+        // the task's row depends on the sort.
+        relayout()
+        guard case .loaded(let doc) = docService.state,
+              let target = ActionItemsLayout.revealTarget(
+                  in: listSections(doc), subject: subject, shortPrefix: shortPrefix)
+        else { return }
+        windows[target.section, default: TaskWindow()].reveal(target.index)
+        reconcileSelection()
     }
 
     /// A cross-ref chip (`#TAG`): page the tagged row in if its section's
@@ -603,10 +603,7 @@ struct ActionItemsView: View {
     /// are left out.
     private var visibleSelectableTasks: [ActionTask] {
         guard case .loaded(let doc) = docService.state else { return [] }
-        return filteredSections(doc)
-            .map(filtered)
-            .filter { ![.focus, .meetings, .digest, .done].contains($0.kind) }
-            .flatMap { Array(window(for: $0).visible($0.tasks)) }
+        return ActionItemsLayout.selectableRows(in: listSections(doc), windows: windows)
     }
 
     /// Every task the current filter/search leaves visible, including the
@@ -614,9 +611,7 @@ struct ActionItemsView: View {
     /// allowed to reference.
     private var visibleTaskIDs: Set<UUID> {
         guard case .loaded(let doc) = docService.state else { return [] }
-        return Set(filteredSections(doc).map(filtered).flatMap { section in
-            section.kind == .done ? section.tasks[...] : window(for: section).visible(section.tasks)
-        }.map(\.id))
+        return Set(ActionItemsLayout.shownRows(in: listSections(doc), windows: windows).map(\.id))
     }
 
     private var selectedTasks: [ActionTask] {
@@ -713,6 +708,11 @@ struct ActionItemsView: View {
         }
         layout = ActionItemsLayout.make(
             document: doc.sections, filtered: filteredSections(doc).map(filtered), display: display)
+    }
+
+    /// The sections the List draws, sorted and grouped by the profile.
+    private func listSections(_ doc: ActionItemsDocument) -> [ActionSection] {
+        ActionItemsLayout.listSections(layout, filtered: filteredSections(doc).map(filtered))
     }
 
     private func filteredSections(_ doc: ActionItemsDocument) -> [ActionSection] {
