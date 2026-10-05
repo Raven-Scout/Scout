@@ -1010,7 +1010,7 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
 
 ## Phase 7 — Releases (from the survivor's `main`) [J]
 
-Jordan runs both release scripts. **No agent runs them, not even "to check
+Jordan runs every release script. **No agent runs one, not even "to check
 something".**
 
 - [x] **7.1 Plugin v0.14.0.** Released 2026-10-05 as `plugin/v0.14.0` (#306) with the old
