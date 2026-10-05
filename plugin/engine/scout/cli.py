@@ -2171,6 +2171,7 @@ def _register_phases() -> None:
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
+        custom = load_custom(cfg)
         total_applied = 0
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
@@ -2179,7 +2180,7 @@ def _register_phases() -> None:
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
             sections = build_rendered_sections(
-                phases_root, k, vars_, cfg.enabled_connectors, custom=load_custom(cfg), inputs=cfg.connector_inputs
+                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
             )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
             applied = [r for r in results if r.status == "applied"]

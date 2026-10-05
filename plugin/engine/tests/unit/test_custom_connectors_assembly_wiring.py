@@ -92,3 +92,18 @@ def test_doctor_warns_on_custom_file_issues(tmp_path: Path):
     cc.write(vault, {"broken": {"display_name": "B"}})
     report = run_doctor(vault=vault, check_jobs=False)
     assert any(cc.CUSTOM_FILE in w and "connectors.broken" in w for w in report.warnings)
+
+
+def test_custom_file_warnings_print_once_per_install(tmp_path: Path, capsys):
+    """Install assembles three brain files; a broken connectors.custom.yaml must
+    be loaded (and its issues warned on) once for the whole run, not once per
+    brain kind — otherwise each real problem is reported three times over."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    cc.write(vault, {"broken": {"display_name": "B"}})
+    install(_cfg(vault, set()))
+    warning_lines = [
+        line for line in capsys.readouterr().err.splitlines() if line.startswith(f"warning: {cc.CUSTOM_FILE}:")
+    ]
+    assert warning_lines
+    assert len(warning_lines) == len(set(warning_lines))

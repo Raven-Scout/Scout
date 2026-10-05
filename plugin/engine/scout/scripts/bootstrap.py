@@ -511,8 +511,9 @@ def _stage_cat4_install(cfg: BootstrapConfig) -> None:
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     records: dict[str, brain_merge.Provenance] = {}
+    custom = load_custom(cfg)
     for kind in brain_merge.BRAIN_KINDS:
-        content = _assemble(cfg, kind)
+        content = _assemble(cfg, kind, custom=custom)
         _atomic_write(cfg.vault / f"{kind}.md", content)
         _atomic_write(snapshot_dir / f"{kind}.md", content)
         records[f"{kind}.md"] = brain_merge.Provenance.assembled(content)
@@ -556,9 +557,10 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
         # even if this one advances no snapshot.
         _write_provenance(snapshot_dir, records)
     out = _Cat4Outcome()
+    custom = load_custom(cfg)
     for kind in brain_merge.BRAIN_KINDS:
         name = f"{kind}.md"
-        ours = _assemble(cfg, kind)
+        ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
         theirs = live.read_text(encoding="utf-8") if live.exists() else ours
         snap = snapshot_dir / name
