@@ -170,6 +170,66 @@ struct EngineLocatorTests {
         #expect(EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil).installedVersionLabel == "0.11.1")
     }
 
+    /// The dev checkout after the monorepo merge: `~/scout-plugin` is a
+    /// Raven-Scout/Scout clone, with the plugin and its venv under
+    /// `plugin/`. Found through the shim or (no shim) as the dev checkout,
+    /// the root must be `plugin/`, where `plugin.json` lives, so the version
+    /// reads.
+    @Test("monorepo dev checkout resolves the in-tree plugin", arguments: [".venv", "engine/.venv"], [true, false])
+    func monorepoDevCheckoutUsesTheInTreePlugin(venv: String, viaShim: Bool) throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let plugin = EngineLayout.monorepoPlugin(in: layout.devCheckout)
+        let real = plugin.appending(path: "\(venv)/bin/scoutctl")
+        try executable(real)
+        try pluginTree(plugin, version: "0.12.0")
+        if viaShim {
+            try fm.createDirectory(at: layout.localBin, withIntermediateDirectories: true)
+            try "#!/bin/sh\n# scout-plugin scoutctl shim\nexec \"\(real.path)\" \"$@\"\n"
+                .write(to: layout.shimURL, atomically: true, encoding: .utf8)
+        }
+        let state = EngineLocator(layout: layout).locate()
+        #expect(state.externalSource == (viaShim ? .shim : .devCheckout))
+        #expect(state.install?.root.standardizedFileURL.path == plugin.standardizedFileURL.path)
+        #expect(state.install?.scoutctl.path == real.path)
+        #expect(state.install?.version == "0.12.0")
+    }
+
+    /// A venv at the monorepo checkout's own root predates the monorepo
+    /// pull. It is an editable install of a tree that has since moved under
+    /// `plugin/`, so it is never adopted, whether or not `plugin/` has a venv.
+    @Test func monorepoDevCheckoutNeverAdoptsAStaleRootVenv() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let plugin = EngineLayout.monorepoPlugin(in: layout.devCheckout)
+        try pluginTree(plugin, version: "0.12.0")
+        try executable(layout.devCheckout.appending(path: ".venv/bin/scoutctl"))
+        try executable(layout.devCheckout.appending(path: "engine/.venv/bin/scoutctl"))
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
+
+        try executable(plugin.appending(path: ".venv/bin/scoutctl"))
+        #expect(EngineLocator(layout: layout).locate().install?.scoutctl.path == plugin.appending(path: ".venv/bin/scoutctl").path)
+    }
+
+    /// Claude Code's marketplace clone of Raven-Scout/Scout is monorepo
+    /// shaped too (the marketplace's `"source": "./plugin"`), and
+    /// `install-venv.sh` puts the venv under `plugin/` there.
+    @Test func monorepoMarketplaceCloneUsesTheInTreePlugin() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let clone = layout.claudePluginsDir.appending(path: "marketplaces/scout-plugin")
+        let plugin = EngineLayout.monorepoPlugin(in: clone)
+        try pluginTree(plugin, version: "0.12.0")
+        try executable(plugin.appending(path: ".venv/bin/scoutctl"))
+        try fm.createDirectory(at: layout.claudePluginsDir, withIntermediateDirectories: true)
+        try #"{"scout-plugin": {"source": {"source": "github", "repo": "example-org/Scout"}, "installLocation": "\#(clone.path)"}}"#
+            .write(to: layout.claudePluginsDir.appending(path: "known_marketplaces.json"), atomically: true, encoding: .utf8)
+        let state = EngineLocator(layout: layout).locate()
+        #expect(state.externalSource == .marketplaceCache)
+        #expect(state.install?.root.path == plugin.path)
+        #expect(state.install?.version == "0.12.0")
+    }
+
     @Test func marketplaceCacheInstallIsExternal() throws {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }

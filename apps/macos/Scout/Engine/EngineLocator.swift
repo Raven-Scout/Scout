@@ -107,10 +107,25 @@ nonisolated struct EngineLocator: Sendable {
         if let loc = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: layout.claudePluginsDir)?.installLocation {
             roots.append(URL(fileURLWithPath: loc))
         }
-        return roots.lazy.compactMap { root in installIfVenv(at: root) }.first
+        return roots.lazy.compactMap { root in installIfCheckout(at: root) }.first
     }
 
-    private func devCheckout() -> EngineInstall? { installIfVenv(at: layout.devCheckout) }
+    private func devCheckout() -> EngineInstall? { installIfCheckout(at: layout.devCheckout) }
+
+    /// A checkout or clone in either repo shape. A Raven-Scout/Scout monorepo
+    /// (`plugin/.claude-plugin/plugin.json` exists) keeps its venv under
+    /// `plugin/`. Any venv at the monorepo's own root is stale, left from
+    /// before the clone was pulled into the monorepo, and is never adopted.
+    /// The engine's `bin/scoutctl` launcher also looks under `plugin/` for a
+    /// monorepo marketplace clone. Anything else is a legacy scout-plugin
+    /// tree with the plugin at its root.
+    private func installIfCheckout(at root: URL) -> EngineInstall? {
+        let plugin = EngineLayout.monorepoPlugin(in: root)
+        if FileManager.default.fileExists(atPath: plugin.appending(path: ".claude-plugin/plugin.json").path) {
+            return installIfVenv(at: plugin)
+        }
+        return installIfVenv(at: root)
+    }
 
     /// The pre-pointer convention: a venv at `<root>/.venv` (or `<root>/engine/.venv`).
     private func installIfVenv(at root: URL) -> EngineInstall? {

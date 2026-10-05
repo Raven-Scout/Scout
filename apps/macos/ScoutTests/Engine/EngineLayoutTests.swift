@@ -16,6 +16,7 @@ struct EngineLayoutTests {
         #expect(layout.uvURL.path == "/Users/alex/.local/bin/uv")
         #expect(layout.claudePluginsDir.path == "/Users/alex/.claude/plugins")
         #expect(layout.devCheckout.path == "/Users/alex/scout-plugin")
+        #expect(EngineLayout.monorepoPlugin(in: layout.devCheckout).path == "/Users/alex/scout-plugin/plugin")
     }
 
     @Test func versionedPaths() {

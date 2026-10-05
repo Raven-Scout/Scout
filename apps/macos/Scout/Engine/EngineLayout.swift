@@ -21,7 +21,22 @@ nonisolated struct EngineLayout: Equatable, Sendable {
     var uvURL: URL { localBin.appending(path: "uv") }
     var claudePluginsDir: URL { home.appending(path: ".claude/plugins") }
     /// The maintainer's dev checkout; adopted read-only (spec §10).
+    ///
+    /// The same clone serves both repo shapes. Before the 2026-10-05
+    /// monorepo merge it was a scout-plugin checkout with the plugin at its
+    /// root. After it, the repo is Raven-Scout/Scout (formerly
+    /// scout-plugin), and pulling the existing clone leaves the plugin under
+    /// `plugin/` (`monorepoPlugin(in:)`). The cutover runbook keeps this
+    /// path and does not add a second default location, so neither does
+    /// the app. A monorepo clone anywhere else is found through the
+    /// pointer or the shim, which `scoutctl bootstrap upgrade --managed-by
+    /// dev` writes.
     var devCheckout: URL { home.appending(path: "scout-plugin") }
+
+    /// Where a Raven-Scout/Scout monorepo checkout or marketplace clone keeps
+    /// the plugin: `<checkout>/plugin`, marked by
+    /// `plugin/.claude-plugin/plugin.json`.
+    static func monorepoPlugin(in checkout: URL) -> URL { checkout.appending(path: "plugin") }
 
     func engineRoot(version: String) -> URL { engineDir.appending(path: version) }
     func venv(version: String) -> URL { venvDir.appending(path: version) }
