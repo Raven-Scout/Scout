@@ -1,0 +1,240 @@
+import Foundation
+import Combine
+
+/// Which of the two independent things can be behind.
+enum UpdateTrack: CaseIterable, Sendable { case app, plugin }
+
+/// One track's view of the world. `currentVersion` is what's installed /
+/// running; `latestVersion` is nil until a check has answered.
+struct UpdateStatus: Equatable, Sendable {
+    enum State: Equatable, Sendable {
+        case idle, checking, upToDate, available
+        case error(String)
+    }
+    var currentVersion: String?
+    var latestVersion: String?
+    var state: State = .idle
+
+    var isAvailable: Bool { state == .available }
+}
+
+/// What the Sparkle adapter reports back. Kept Sparkle-free so the service
+/// (and its tests) never import Sparkle.
+enum AppUpdateEvent: Equatable, Sendable {
+    case found(version: String)
+    case upToDate
+    case failed(String)
+}
+
+/// The app-track controller the service drives. `AppUpdater` (Sparkle) is
+/// the production implementation; tests use a fake.
+@MainActor
+protocol AppUpdateController: AnyObject {
+    /// False in Debug builds — the updater never starts there.
+    var isEnabled: Bool { get }
+    var currentVersion: String? { get }
+    /// User-initiated check. Results come back through `AppUpdateEvent`s.
+    func checkForUpdates()
+}
+
+/// Outcome of one plugin check. `applicable == false` means the engine state
+/// the check ran against has nothing for the plugin row to show (a managed
+/// engine, no engine at all, or a broken one) — the UI hides the row; it is
+/// not an error. `installed == nil` (while `applicable`) means "no scout
+/// plugin found under this external engine" — also not an error.
+struct PluginUpdateResult: Equatable, Sendable {
+    var applicable: Bool
+    var installed: String?
+    var latest: String?
+    var isUpdateAvailable: Bool
+    var releasesURL: URL?
+    var error: String?
+
+    static let notApplicable = PluginUpdateResult(
+        applicable: false, installed: nil, latest: nil, isUpdateAvailable: false, releasesURL: nil, error: nil
+    )
+}
+
+protocol PluginUpdateChecking: Sendable {
+    func check(engine: EngineState) async -> PluginUpdateResult
+}
+
+/// One observable for both tracks; drives Settings ▸ Updates and the badges.
+///
+/// App track: Sparkle owns detection *and* installation. We only mirror what
+/// it tells us (via `applyAppEvent`) and forward the user's "check now".
+/// Plugin track: detect + hand off. The app cannot apply a plugin update —
+/// that happens inside Claude Code (`/scout-update`) — so the primary action
+/// is copying the command. The plugin row only makes sense while the engine
+/// is externally managed (devs, install.sh, Claude Code, the marketplace
+/// cache) — a Scout-managed engine updates itself, and there is nothing to
+/// report with no engine at all. We follow `engineStates` (EngineHealthService
+/// `.$state`) and recheck whenever the eligible install changes.
+@MainActor
+final class UpdateService: ObservableObject {
+    static let pluginUpdateCommand = "/scout-update"
+
+    @Published private(set) var appUpdate: UpdateStatus
+    @Published private(set) var pluginUpdate = UpdateStatus()
+    @Published private(set) var pluginRowVisible = false
+    @Published private(set) var pluginReleasesURL: URL?
+
+    private var appController: (any AppUpdateController)?
+    private let pluginChecker: any PluginUpdateChecking
+    private var cancellables: Set<AnyCancellable> = []
+
+    /// The most recent engine state received from `engineStates`, nil until
+    /// the first one arrives. `checkPlugin()` uses this; with none received
+    /// yet, it has nothing to check against and is a no-op.
+    private var latestEngineState: EngineState?
+
+    /// Dedup key for the current engine state (nil for states the plugin row
+    /// doesn't apply to), compared against the previous emission so the
+    /// 10-minute engine re-check and doctor refreshes don't refetch the
+    /// plugin when nothing eligibility-relevant changed. `hasEligibilityKey`
+    /// distinguishes "no engine state observed yet" from "observed one whose
+    /// key happens to be nil" — both must still trigger a check on first sight.
+    private var hasEligibilityKey = false
+    private var lastEligibilityKey: String?
+
+    /// The in-flight (or most recently completed) plugin check, exposed so
+    /// tests can `await service.pluginTask?.value` instead of sleeping.
+    internal private(set) var pluginTask: Task<Void, Never>?
+
+    /// - Parameters:
+    ///   - pluginChecker: the plugin-track checker (file reads + one HTTPS GET).
+    ///   - engineStates: `EngineHealthService.$state`. A `@Published`
+    ///     publisher replays its current value on subscribe, which is what
+    ///     drives the plugin track's launch check — there is no separate
+    ///     `startLaunchChecks()` to call.
+    ///   - makeAppController: builds the app-track controller, handing it the
+    ///     sink its delegate must call. A factory (not an instance) so the
+    ///     controller can capture the service's sink without a retain cycle.
+    init(pluginChecker: any PluginUpdateChecking,
+         engineStates: AnyPublisher<EngineState, Never>,
+         makeAppController: (@escaping @MainActor (AppUpdateEvent) -> Void) -> any AppUpdateController) {
+        self.pluginChecker = pluginChecker
+        self.appUpdate = UpdateStatus()
+        let controller = makeAppController { [weak self] event in
+            self?.applyAppEvent(event)
+        }
+        self.appController = controller
+        self.appUpdate.currentVersion = controller.currentVersion
+
+        // Every emission already arrives on the main actor in production
+        // (EngineHealthService.state is set from @MainActor code, and
+        // Combine delivers synchronously within that same call) and in
+        // tests (which drive the subject from a @MainActor test function),
+        // so the sink can run synchronously via `assumeIsolated` rather than
+        // hopping through `.receive(on:)` — which would make delivery
+        // asynchronous and tests non-deterministic without a sleep.
+        engineStates
+            .sink { [weak self] state in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.handleEngineState(state)
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    var appUpdatesEnabled: Bool { appController?.isEnabled ?? false }
+    var anyUpdateAvailable: Bool { availableCount > 0 }
+    var availableCount: Int {
+        (appUpdate.isAvailable ? 1 : 0) + (pluginRowVisible && pluginUpdate.isAvailable ? 1 : 0)
+    }
+
+    // MARK: App track
+
+    func applyAppEvent(_ event: AppUpdateEvent) {
+        switch event {
+        case .found(let version):
+            appUpdate.latestVersion = version
+            appUpdate.state = .available
+        case .upToDate:
+            appUpdate.latestVersion = appUpdate.currentVersion
+            appUpdate.state = .upToDate
+        case .failed(let message):
+            appUpdate.state = .error(message)
+        }
+    }
+
+    /// Sparkle shows its own UI from here on (found / up to date / error);
+    /// we just note that a check is in flight.
+    func checkApp() {
+        guard let controller = appController, controller.isEnabled else { return }
+        appUpdate.state = .checking
+        controller.checkForUpdates()
+    }
+
+    // MARK: Plugin track
+
+    /// Uses the latest engine state received from `engineStates`. A no-op
+    /// before the first one has arrived — there is nothing to check against.
+    func checkPlugin() async {
+        guard let engineState = latestEngineState else { return }
+        pluginUpdate.state = .checking
+        let result = await pluginChecker.check(engine: engineState)
+        applyPluginResult(result)
+    }
+
+    private func applyPluginResult(_ result: PluginUpdateResult) {
+        guard result.applicable else {
+            pluginRowVisible = false
+            pluginUpdate = UpdateStatus()
+            pluginReleasesURL = nil
+            return
+        }
+        pluginRowVisible = true
+        pluginUpdate.currentVersion = result.installed
+        pluginUpdate.latestVersion = result.latest
+        pluginReleasesURL = result.releasesURL
+        if let error = result.error {
+            pluginUpdate.state = .error(error)
+        } else if result.installed == nil {
+            pluginUpdate.state = .idle          // applicable, but nothing installed → row shown, nothing to report
+        } else if result.isUpdateAvailable {
+            pluginUpdate.state = .available
+        } else {
+            pluginUpdate.state = .upToDate
+        }
+    }
+
+    private func handleEngineState(_ state: EngineState) {
+        latestEngineState = state
+        let key = Self.eligibilityKey(for: state)
+        if hasEligibilityKey, key == lastEligibilityKey { return }
+        hasEligibilityKey = true
+        lastEligibilityKey = key
+        check(.plugin)
+    }
+
+    /// nil for states the plugin row doesn't apply to (`.managed`,
+    /// `.notInstalled`, `.broken`); the external install's root path
+    /// otherwise, so a different external engine is treated as a new thing
+    /// to check.
+    private static func eligibilityKey(for state: EngineState) -> String? {
+        switch state {
+        case .external(let install, _):
+            return install.root.path
+        case .managed, .notInstalled, .broken:
+            return nil
+        }
+    }
+
+    // MARK: Triggers
+
+    func check(_ track: UpdateTrack) {
+        switch track {
+        case .app:
+            checkApp()
+        case .plugin:
+            pluginTask?.cancel()
+            pluginTask = Task { [weak self] in await self?.checkPlugin() }
+        }
+    }
+
+    func checkAll() {
+        UpdateTrack.allCases.forEach(check)
+    }
+}
