@@ -82,6 +82,17 @@ def test_config_from_vault_rejects_a_non_mapping_top_level(tmp_path: Path):
         config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0")
 
 
+@pytest.mark.parametrize("inputs", ["[a]", "[1]", "[ab]", "5", "text"])
+def test_config_from_vault_rejects_non_mapping_connector_inputs(tmp_path: Path, inputs: str):
+    """F3b: `connectors.inputs` that isn't a mapping is a ValueError like any other
+    misshapen block — not a TypeError from dict(), nor `[ab]` silently read as {a: b}."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text(f"connectors:\n  inputs: {inputs}\n")
+    with pytest.raises(ValueError, match="'inputs' must be a mapping"):
+        config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0")
+
+
 def test_add_on_clean_vault_fast_forwards_live_snapshot_and_provenance(tmp_path: Path):
     before = _installed(tmp_path)
     result, after, custom_after = _add_suite(before)
@@ -202,3 +213,13 @@ def test_write_connector_config_keeps_comments(tmp_path: Path):
     data = yaml.safe_load(text)
     assert data["connectors"]["enabled"] == ["slack", "suite_mail"]
     assert data["connectors"]["inputs"] == {"suite_mail__box": "team"}
+
+
+def test_write_connector_config_with_a_null_connectors_block(tmp_path: Path):
+    """F3b: `connectors:` present but null made setdefault return None and crash."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "scout-config.yaml").write_text("timezone: ''\nconnectors:\n")
+    write_connector_config(vault, enabled={"suite_mail"}, inputs={})
+    data = yaml.safe_load((vault / "scout-config.yaml").read_text())
+    assert data["connectors"] == {"enabled": ["suite_mail"], "inputs": {}}

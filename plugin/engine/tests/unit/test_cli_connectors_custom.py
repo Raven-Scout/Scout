@@ -82,6 +82,21 @@ def test_validate_list_remove_round_trip(vault: Path):
     assert removed.exit_code == 0 and json.loads(removed.stdout)["status"] == "applied"
 
 
+def test_unexpected_failure_prints_json_and_exits_1(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    """F3a: spec §3 promises one JSON object and exit 1 for any other failure (not exit 70)."""
+    from scout.scripts import custom_connector_ops as ops
+
+    def boom(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ops, "apply_custom_change", boom)
+    result = runner.invoke(app, ["connectors", "custom", "add", "--file", "-"], input=DEF)
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["message"] == "unexpected error: RuntimeError: boom"
+
+
 def test_presets_command_prints_json():
     result = runner.invoke(app, ["connectors", "presets"])
     assert result.exit_code == 0

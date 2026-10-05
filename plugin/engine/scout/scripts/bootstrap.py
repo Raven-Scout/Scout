@@ -691,7 +691,7 @@ def config_from_vault(
     Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
     the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError,
     and ValueError when the file parses but isn't shaped as a mapping (top level, or
-    its instance/user/connectors blocks).
+    its instance/user/connectors blocks, or connectors.inputs).
     """
     existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     if existing is None:
@@ -710,6 +710,9 @@ def config_from_vault(
     instance = _submapping("instance")
     user = _submapping("user")
     connectors = _submapping("connectors")
+    inputs = connectors.get("inputs")
+    if inputs is not None and not isinstance(inputs, dict):
+        raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,
@@ -721,7 +724,7 @@ def config_from_vault(
         platform=existing.get("platform", "macos"),
         plugin_version=plugin_version,
         enabled_connectors=set(connectors.get("enabled") or []),
-        connector_inputs=dict(connectors.get("inputs") or {}),
+        connector_inputs=dict(inputs or {}),
         skip_jobs=skip_jobs,
         skip_claude=skip_claude,
         managed_by=managed_by,
@@ -733,7 +736,9 @@ def write_connector_config(vault: Path, *, enabled: set[str], inputs: dict[str, 
     path = vault / "scout-config.yaml"
     text = path.read_text(encoding="utf-8")
     data = yaml.safe_load(text) or {}
-    connectors = data.setdefault("connectors", {})
+    # Not setdefault: a present-but-null `connectors:` would come back as None.
+    connectors = data.get("connectors") or {}
+    data["connectors"] = connectors
     connectors["enabled"] = sorted(enabled)
     connectors["inputs"] = dict(inputs)
     _atomic_write(path, _dump_keeping_comments(text, data))

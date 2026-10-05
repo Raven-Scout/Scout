@@ -101,13 +101,31 @@ def _split(raw_def: Any) -> tuple[str, dict[str, Any], list[cc.Issue]]:
     return key, body, []
 
 
+def _unexpected(e: Exception) -> str:
+    return f"unexpected error: {type(e).__name__}: {e}"
+
+
+def _key_of(raw_def: Any) -> str:
+    key = raw_def.get("key") if isinstance(raw_def, dict) else None
+    return key if isinstance(key, str) else ""
+
+
+# Each public entry point below ends in a catch-all: the contract (spec §3) is one
+# JSON object and exit 1 for any failure that isn't invalid/deferred/conflict, so
+# an unexpected exception must never escape as a traceback (exit 70). The lock is
+# released by _under_lock's `finally` before the exception reaches the catch-all.
+
+
 def validate(raw_def: Any, *, plugin_root: Path) -> Outcome:
-    key, body, issues = _split(raw_def)
-    if not issues:
-        _, issues = cc.parse_connector(
-            key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
-        )
-    return Outcome("invalid" if issues else "valid", key, issues)
+    try:
+        key, body, issues = _split(raw_def)
+        if not issues:
+            _, issues = cc.parse_connector(
+                key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
+            )
+        return Outcome("invalid" if issues else "valid", key, issues)
+    except Exception as e:  # noqa: BLE001 — see the contract note above
+        return Outcome("error", _key_of(raw_def), message=_unexpected(e))
 
 
 def _no_vault(vault: Path) -> Outcome | None:
@@ -173,11 +191,16 @@ def _commit(
     custom_after: dict[str, cc.CustomConnector],
     raw_after: dict[str, Any],
 ) -> Outcome:
-    """Apply first, then write the definition and config. The caller holds the lock."""
+    """Apply first, then write config, then the definition. The caller holds the lock."""
     vault = after.vault
     result = apply_custom_change(before, after, custom_before=custom_before, custom_after=custom_after)
-    cc.write(vault, raw_after)
+    # connectors.custom.yaml goes last: if the config write fails, the definition
+    # file still says what it said before, so re-running the same add/remove finds
+    # the entry where it expects it and converges. The other order could leave a
+    # removed entry gone from the file while it stays enabled with its inputs in
+    # scout-config.yaml — and a retried `remove` then answers "no such connector".
     write_connector_config(vault, enabled=after.enabled_connectors, inputs=after.connector_inputs)
+    cc.write(vault, raw_after)
     return Outcome(
         result.status,
         key,
@@ -215,6 +238,32 @@ def add(
     dry_run: bool = False,
     unverified: bool = False,
     probe_runner: ProbeRunner = run_bash_probe,
+) -> Outcome:
+    try:
+        return _add(
+            vault,
+            raw_def,
+            plugin_root=plugin_root,
+            plugin_version=plugin_version,
+            inputs=inputs,
+            dry_run=dry_run,
+            unverified=unverified,
+            probe_runner=probe_runner,
+        )
+    except Exception as e:  # noqa: BLE001 — see the contract note above validate()
+        return Outcome("error", _key_of(raw_def), message=_unexpected(e))
+
+
+def _add(
+    vault: Path,
+    raw_def: Any,
+    *,
+    plugin_root: Path,
+    plugin_version: str,
+    inputs: dict[str, str],
+    dry_run: bool,
+    unverified: bool,
+    probe_runner: ProbeRunner,
 ) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
@@ -282,6 +331,13 @@ def add(
 
 
 def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+    try:
+        return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+    except Exception as e:  # noqa: BLE001 — see the contract note above validate()
+        return Outcome("error", key, message=_unexpected(e))
+
+
+def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
     unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
@@ -314,6 +370,13 @@ def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> 
 
 
 def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
+    try:
+        return _list_custom(vault, plugin_root=plugin_root)
+    except Exception as e:  # noqa: BLE001 — see the contract note above validate()
+        return {"connectors": [], "issues": [{"path": "", "message": _unexpected(e)}]}
+
+
+def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
     current = cc.load(vault, plugin_root=plugin_root)
     issues = list(current.issues)
     enabled: set[str] = set()

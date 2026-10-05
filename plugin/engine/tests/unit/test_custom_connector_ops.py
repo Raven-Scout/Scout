@@ -268,6 +268,76 @@ def test_dry_run_never_takes_the_lock(vault: Path, monkeypatch: pytest.MonkeyPat
     assert not (vault / cc.CUSTOM_FILE).exists()
 
 
+def _lock(vault: Path) -> Path:
+    return vault / ".scout-logs" / ".scout-session.lock"
+
+
+def _boom(*a, **kw):
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize("op", ["add", "remove"])
+def test_unexpected_exception_is_an_error_outcome_and_releases_the_lock(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, op: str
+):
+    """F3a: anything unexpected is still one JSON object with exit 1, never a traceback."""
+    if op == "remove":
+        _add(vault, SUITE)
+    monkeypatch.setattr(ops, "apply_custom_change", _boom)
+    if op == "add":
+        out = _add(vault, SUITE)
+    else:
+        out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code, out.key) == ("error", 1, "suite_mail")
+    assert out.message == "unexpected error: RuntimeError: boom"
+    assert not _lock(vault).exists()
+
+
+def test_unexpected_exception_in_validate_and_list_is_reported(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(cc, "reserved_keys", _boom)
+    out = ops.validate(dict(SUITE), plugin_root=PLUGIN)
+    assert (out.status, out.exit_code, out.message) == ("error", 1, "unexpected error: RuntimeError: boom")
+    monkeypatch.setattr(cc, "load", _boom)
+    assert ops.list_custom(vault, plugin_root=PLUGIN) == {
+        "connectors": [],
+        "issues": [{"path": "", "message": "unexpected error: RuntimeError: boom"}],
+    }
+
+
+def test_remove_with_a_null_connectors_block_in_scout_config(vault: Path):
+    """F3b: `connectors:` present but null crashed write_connector_config after the
+    custom file had already been rewritten."""
+    _add(vault, SUITE)
+    cfg = _config(vault)
+    cfg["connectors"] = None
+    (vault / "scout-config.yaml").write_text(yaml.safe_dump(cfg))
+    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
+    # Nothing was enabled (connectors: null), so no brain file changes — but both files are written.
+    assert (out.status, out.exit_code) == ("unchanged", 0), out.message
+    assert _config(vault)["connectors"] == {"enabled": [], "inputs": {}}
+    assert yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"] == {}
+
+
+@pytest.mark.parametrize("op", ["add", "remove"])
+def test_failed_config_write_leaves_the_custom_file_unchanged(vault: Path, monkeypatch: pytest.MonkeyPatch, op: str):
+    """F3c: the custom file is written last, so a config-write failure cannot half-write the vault."""
+    if op == "remove":
+        _add(vault, SUITE)
+    custom = vault / cc.CUSTOM_FILE
+    custom_before = custom.read_text() if custom.exists() else None
+
+    def disk_full(*a, **kw):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(ops, "write_connector_config", disk_full)
+    if op == "add":
+        out = _add(vault, SUITE)
+    else:
+        out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code) == ("error", 1)
+    assert (custom.read_text() if custom.exists() else None) == custom_before
+
+
 def test_list_custom_degrades_on_non_mapping_scout_config(vault: Path):
     """list_custom falls back to an empty enabled set and reports the config problem
     as an issue, rather than crashing (fix round 1)."""
