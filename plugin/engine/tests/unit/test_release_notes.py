@@ -68,3 +68,14 @@ def test_cli_refuses_when_both_sections_are_empty(tmp_path):
     cmd += ["--repo", "Raven-Scout/Scout", "--out", str(tmp_path / "n.md")]
     done = subprocess.run(cmd, capture_output=True, text=True)
     assert done.returncode == 1 and "no [9.9.9] section in either changelog" in done.stderr
+
+
+def test_cli_fails_with_missing_app_changelog(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "plugin").mkdir()
+    (repo / "plugin/CHANGELOG.md").write_text(_read("plugin-CHANGELOG.md"), encoding="utf-8")
+    cmd = [sys.executable, "-m", "scout.scripts.release_notes", "--repo-root", str(repo), "0.15.0"]
+    cmd += ["--repo", "Raven-Scout/Scout", "--out", str(tmp_path / "n.md")]
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    assert done.returncode == 1 and "missing apps/macos/CHANGELOG.md" in done.stderr and "Traceback" not in done.stderr
