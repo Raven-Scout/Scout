@@ -14,6 +14,10 @@ final class AppState: ObservableObject {
     @Published var fireNowError: String? = nil
     @Published private(set) var firingSlotKeys: Set<String> = []
     @Published private(set) var urgentActionCount: Int = 0
+    /// Sessions that need you — the Sessions sidebar badge. Forwarded from
+    /// `sessionIndexService.needsYouCount` alone, so the window does not
+    /// re-render on every index refresh.
+    @Published private(set) var sessionsNeedsYouCount: Int = 0
 
     // Existing Control Center services
     /// The FSEvents source every document service watches through. Production
@@ -30,6 +34,8 @@ final class AppState: ObservableObject {
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
+    /// The Sessions page's `scoutctl session index` driver.
+    let sessionIndexService: SessionIndexService
 
     // Process runner kept at app level so fire-now shell-outs (UpcomingStripView,
     // RunDetailView, MenuBarExtraContent) can invoke `scoutctl schedule fire-now`
@@ -153,6 +159,14 @@ final class AppState: ObservableObject {
         let ccSessions = ClaudeSessionService(
             projectsDirectory: configuration.claudeSessionsDirectory
         )
+        let sessionIndex = SessionIndexService(configuration: .init(
+            scoutctl: scoutctlExe,
+            argumentsPrefix: scoutctlArgsPrefix,
+            runner: runner,
+            fileEvents: events,
+            indexFile: scoutDir.appendingPathComponent(".scout-cache/sessions-index.json"),
+            watchRoots: configuration.agentSessionWatchRoots
+        ))
 
         let docService = ActionItemsDocumentService(
             directory: actionItemsDir, fileEvents: events, defaults: defaults
@@ -220,6 +234,7 @@ final class AppState: ObservableObject {
         self.budgetSettingsService = budgetSettings
         self.notificationService = notif
         self.claudeSessionService = ccSessions
+        self.sessionIndexService = sessionIndex
         self.actionItemsDocumentService = docService
         self.actionItemsWriterBox = writerBox
         self.actionItemsEnvState = envState
@@ -249,6 +264,11 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        sessionIndex.$needsYouCount
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] count in self?.sessionsNeedsYouCount = count }
+            .store(in: &cancellables)
         // Keep the menu-bar urgent badge live off the document the app has
         // already parsed (and re-parses on every write / watched change),
         // instead of relying solely on the panel's onAppear disk re-read —
@@ -268,6 +288,10 @@ final class AppState: ObservableObject {
         // shell-out. Tests build the same object graph with this switched off
         // so a rendered view can't reach the filesystem or the network.
         guard configuration.startsBackgroundWork else { return }
+
+        // Loads the last index from disk, then keeps it current: the sidebar
+        // badge needs it before the Sessions page is ever opened.
+        sessionIndex.start()
 
         Task { [weak self] in
             _ = try? await tracker.loadInitial()
@@ -331,6 +355,11 @@ final class AppState: ObservableObject {
         /// When false the initializer wires the object graph but starts no
         /// timers, watches, loads, or subprocesses.
         var startsBackgroundWork: Bool
+        /// Directories whose changes rebuild the session index while the
+        /// Sessions page is open (`SessionsRefresh.productionWatchRoots()` in
+        /// production). Defaults to none, so a test graph never watches the
+        /// real `~/.claude` or the desktop app's store.
+        var agentSessionWatchRoots: [URL] = []
 
         static func production() -> Configuration {
             let scoutDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -344,7 +373,8 @@ final class AppState: ObservableObject {
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: scoutDirectory),
                 parseCacheURL: SessionLogService.defaultParseCacheURL(),
-                startsBackgroundWork: true
+                startsBackgroundWork: true,
+                agentSessionWatchRoots: SessionsRefresh.productionWatchRoots()
             )
         }
 

@@ -17,6 +17,7 @@ struct MainWindowView: View {
         // layout path while rendering the same persistent bottom strip.
         NavigationSplitView {
             SidebarView(selection: $selection,
+                        sessionsBadge: appState.sessionsNeedsYouCount,
                         proposalsBadge: proposalsService.pendingCount,
                         wishlistBadge: appState.wishlistDocumentService.activeCount,
                         researchBadge: appState.researchDocumentService.activeCount)
@@ -35,6 +36,9 @@ struct MainWindowView: View {
         switch selection {
         case .controlCenter:
             ControlCenterView()
+        case .sessions:
+            SessionsView()
+                .environmentObject(appState.sessionIndexService)
         case .actionItems:
             ActionItemsView(
                 scoutDirectory: appState.scoutDirectory,
@@ -69,12 +73,13 @@ struct MainWindowView: View {
 }
 
 enum SidebarItem: Hashable, CaseIterable {
-    case controlCenter, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
+    case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
         switch self {
         case .controlCenter: return "control"
+        case .sessions:      return "sessions"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
         case .proposals:     return "proposals"
