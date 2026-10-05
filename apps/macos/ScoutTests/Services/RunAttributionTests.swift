@@ -103,6 +103,21 @@ struct RunAttributionTests {
                                     in: [run], now: t0) == nil)
     }
 
+    @Test func skippedRunsNeverClaimCommits() {
+        // A concurrency/budget skip never starts Claude, writes no finish
+        // marker, and starts after the run it was skipped by — without this
+        // guard it would win the latest-start tie-break.
+        let real = Run.make(type: .research, startedAt: t0, endedAt: t0.addingTimeInterval(3600))
+        let skippedConcurrency = Run.make(type: .research, startedAt: t0.addingTimeInterval(60),
+                                          endedAt: nil, status: .skippedConcurrency)
+        let skippedBudget = Run.make(type: .research, startedAt: t0.addingTimeInterval(90),
+                                     endedAt: nil, status: .skippedBudget)
+        let c = commit("research [22:0x]: example findings", at: 300)
+        #expect(!skippedConcurrency.claims(c))
+        #expect(!skippedBudget.claims(c))
+        #expect(CommitRunLinker.run(for: c, in: [real, skippedConcurrency, skippedBudget], now: t0)?.id == real.id)
+    }
+
     @Test func overlappingRunsPickTheLatestStart() {
         let older = Run.make(type: .research, startedAt: t0, endedAt: t0.addingTimeInterval(3600))
         let newer = Run.make(type: .research, startedAt: t0.addingTimeInterval(100),

@@ -40,12 +40,34 @@ nonisolated enum ItemOutcome: Equatable, Sendable {
         case .resolvedUncommitted:
             return "Resolved — not committed yet"
         case .resolved(let e):
+            // A file that arrived already resolved (bulk import, or a run
+            // filing finished work) only tells us when it appeared.
+            let verb = e.revision.createsFile ? "Created as resolved" : "Resolved"
             switch e.source {
-            case .run, .family: return "Resolved by \(e.source.label) · \(date(e.commit.timestamp))"
-            case .app:          return "Resolved by you · \(date(e.commit.timestamp))"
-            case .other:        return "Resolved · \(date(e.commit.timestamp))"
+            case .run, .family: return "\(verb) by \(e.source.label) · \(date(e.commit.timestamp))"
+            case .app:          return "\(verb) by you · \(date(e.commit.timestamp))"
+            case .other:        return "\(verb) · \(date(e.commit.timestamp))"
             }
         }
+    }
+}
+
+/// When the history pane must refetch. A commit alone never changes the item
+/// on disk — the app writes the file, the FSEvent reparse fires, and only
+/// then does `git commit` land; a run commits at its end. So besides the item
+/// itself, the key carries a token the list bumps after each awaited write
+/// and the newest finished run. (#43)
+nonisolated struct HistoryReloadKey: Equatable, Sendable {
+    let item: PerFileItem
+    let writeToken: Int
+    let latestFinishedRunID: Run.ID?
+
+    init(item: PerFileItem, writeToken: Int, runs: [Run]) {
+        self.item = item
+        self.writeToken = writeToken
+        // `runs` is newest-first, so the first finished one changes exactly
+        // when a newer run finishes.
+        self.latestFinishedRunID = runs.first(where: { $0.endedAt != nil })?.id
     }
 }
 

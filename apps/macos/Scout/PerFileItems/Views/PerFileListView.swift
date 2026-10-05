@@ -17,6 +17,9 @@ struct PerFileListView: View {
     /// Start/Done/Drop or an FSEvent reparse (#43).
     @State private var selectedItemID: String? = nil
     @State private var detailIsFull = false
+    /// Bumped after every awaited write, once its commit has landed, so the
+    /// open history pane refetches (the FSEvent reparse can beat the commit).
+    @State private var historyWriteToken = 0
 
     private var selectedItem: PerFileItem? {
         selectedItemID.flatMap { id in docService.items.first { $0.id == id } }
@@ -113,7 +116,7 @@ struct PerFileListView: View {
     }
 
     private func historyView(_ item: PerFileItem) -> some View {
-        PerFileItemDetailView(item: item, git: appState.gitService,
+        PerFileItemDetailView(item: item, writeToken: historyWriteToken, git: appState.gitService,
                               repoURL: appState.scoutDirectory,
                               sessionLog: appState.sessionLogService)
             .id(item.id)
@@ -320,20 +323,24 @@ struct PerFileListView: View {
         )
         showingAdd = false
         docService.reload()
+        historyWriteToken += 1
     }
 
     private func resolve(_ item: PerFileItem, _ resolution: ItemResolution) async throws {
         try await writerBox.writer.resolve(resolution, fileURL: item.fileURL, label: item.title)
         docService.reload()
+        historyWriteToken += 1
     }
 
     private func changePriority(_ item: PerFileItem, _ priority: ItemPriority) async throws {
         try await writerBox.writer.setPriority(priority, fileURL: item.fileURL, label: item.title)
         docService.reload()
+        historyWriteToken += 1
     }
 
     private func changeStatus(_ item: PerFileItem, _ status: ItemStatus) async throws {
         try await writerBox.writer.setStatus(status, fileURL: item.fileURL, label: item.title)
         docService.reload()
+        historyWriteToken += 1
     }
 }

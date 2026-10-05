@@ -59,8 +59,12 @@ extension Run {
     }
 
     /// True when the commit's subject names a family this run's runner makes.
+    /// Concurrency/budget skips never start Claude, so they make no commits —
+    /// and since they start after the run that blocked them, they'd otherwise
+    /// win the reverse link's latest-start tie-break.
     nonisolated func claims(_ commit: Commit) -> Bool {
-        CommitFamily.of(subject: commit.subject)?.runnerScript == runnerScript
+        guard status != .skippedConcurrency, status != .skippedBudget else { return false }
+        return CommitFamily.of(subject: commit.subject)?.runnerScript == runnerScript
     }
 }
 

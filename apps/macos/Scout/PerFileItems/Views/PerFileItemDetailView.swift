@@ -6,13 +6,17 @@ import SwiftUI
 /// linked) a jump to the run in Control Center.
 struct PerFileItemDetailView: View {
     let item: PerFileItem
+    /// Bumped by the list after each awaited write (the commit has landed).
+    let writeToken: Int
     @ObservedObject var sessionLog: SessionLogService
     @StateObject private var model: PerFileItemActivityModel
     @EnvironmentObject private var appState: AppState
     @State private var expanded: Set<String> = []
 
-    init(item: PerFileItem, git: GitService, repoURL: URL, sessionLog: SessionLogService) {
+    init(item: PerFileItem, writeToken: Int, git: GitService, repoURL: URL,
+         sessionLog: SessionLogService) {
         self.item = item
+        self.writeToken = writeToken
         _sessionLog = ObservedObject(wrappedValue: sessionLog)
         _model = StateObject(wrappedValue: PerFileItemActivityModel(git: git, repoURL: repoURL))
     }
@@ -25,9 +29,12 @@ struct PerFileItemDetailView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // PerFileItem is Equatable: FSEvent republishes with identical content
-        // don't refetch; a status/body change does.
-        .task(id: item) { await model.load(item) }
+        // FSEvent republishes with identical content don't refetch; a content
+        // change, a finished app write, or a finished run does (the commit
+        // lands after the file changes — see HistoryReloadKey).
+        .task(id: HistoryReloadKey(item: item, writeToken: writeToken, runs: sessionLog.runs)) {
+            await model.load(item)
+        }
     }
 
     @ViewBuilder
