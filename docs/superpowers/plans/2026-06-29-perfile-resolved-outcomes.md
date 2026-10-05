@@ -97,17 +97,17 @@
     }
 
     @Test func parseBody_headerStartIsZoneAware() throws {
-        // Logged in New York, read on a machine set to Prague.
+        // Logged in New York, read on a machine set to Berlin.
         let url = try writeLog("research-2026-04-19_15-00.log",
             "=== Scout Research run starting at Sun Apr 19 15:00:01 EDT 2026 ===\n")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let prague = TimeZone(identifier: "Europe/Prague")!
-        let parsed = try #require(SessionLogService.parseFilename(url, timeZone: prague))
+        let berlin = TimeZone(identifier: "Europe/Berlin")!
+        let parsed = try #require(SessionLogService.parseFilename(url, timeZone: berlin))
         let body = try SessionLogService.parseBody(at: url, filename: parsed)
 
         let iso = ISO8601DateFormatter()
         #expect(body.startedAt == iso.date(from: "2026-04-19T19:00:01Z"))
-        // The drift this fixes: the filename alone reads as 15:00 Prague time.
+        // The drift this fixes: the filename alone reads as 15:00 Berlin time.
         #expect(parsed.startedAt == iso.date(from: "2026-04-19T13:00:00Z"))
     }
 
@@ -142,10 +142,10 @@
         try "".write(to: trackerURL, atomically: true, encoding: .utf8)
         let tracker = UsageTrackerService(trackerURL: trackerURL, fileEvents: NoopFS())
         _ = try await tracker.loadInitial()
-        let prague = TimeZone(identifier: "Europe/Prague")!
+        let berlin = TimeZone(identifier: "Europe/Berlin")!
         let service = SessionLogService(
             logsDirectory: dir, trackerService: tracker, fileEvents: NoopFS(),
-            timeZone: prague, parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+            timeZone: berlin, parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
 
         let run = try #require(try await service.loadInitial().first)
         let iso = ISO8601DateFormatter()
