@@ -5,10 +5,12 @@ tree. `main()` is untested and is the part the release script actually shells
 out to, so an argv regression breaks a release rather than a test.
 
 `main()` calls `read_versions` / `assert_in_sync` / `set_version` with their
-default `root=PLUGIN_ROOT` — the *real* checkout. A default argument is bound
-at import, so monkeypatching `versioning.PLUGIN_ROOT` would not redirect it;
-these tests stub the three functions instead, which also keeps the suite from
-ever rewriting the repo's own version files.
+default `root=PLUGIN_ROOT` / `repo=PLUGIN_ROOT.parent` — the *real* checkout.
+A default argument is bound at import, so monkeypatching `versioning.PLUGIN_ROOT`
+would not redirect it; these tests stub the three functions instead, which also
+keeps the suite from ever rewriting the repo's own version files. `main()` calls
+`set_version(root, new, repo)` positionally, so the stub below takes `version`
+as the second positional argument rather than a keyword.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ def no_real_writes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     written: list[str] = []
     monkeypatch.setattr(versioning, "read_versions", lambda *a, **k: {"plugin.json": "1.2.3"})
     monkeypatch.setattr(versioning, "assert_in_sync", lambda *a, **k: "1.2.3")
-    monkeypatch.setattr(versioning, "set_version", lambda *, version, **k: written.append(version))
+    monkeypatch.setattr(versioning, "set_version", lambda root, version, repo_root=None: written.append(version))
     return written
 
 
