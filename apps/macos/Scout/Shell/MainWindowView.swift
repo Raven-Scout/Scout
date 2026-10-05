@@ -20,15 +20,31 @@ struct MainWindowView: View {
                         sessionsBadge: appState.sessionsNeedsYouCount,
                         proposalsBadge: proposalsService.pendingCount,
                         wishlistBadge: appState.wishlistDocumentService.activeCount,
-                        researchBadge: appState.researchDocumentService.activeCount)
+                        researchBadge: appState.researchDocumentService.activeCount,
+                        settingsAttention: appState.engineHealth.needsAttention,
+                        tabsGated: appState.engineHealth.state.gatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
-            detail
-                .background(PaperBackdrop())
+            Group {
+                if Self.showsEngineGate(state: appState.engineHealth.state, selection: selection) {
+                    EngineUnavailableView(state: appState.engineHealth.state) { selection = .settings }
+                } else {
+                    detail
+                }
+            }
+            .background(PaperBackdrop())
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
         }
+    }
+
+    /// Pure gate decision (spec §5): the detail pane shows `EngineUnavailableView`
+    /// whenever the engine can't back the tabs, unless the user is already on
+    /// Settings ▸ Engine, which shows the next step. Static + pure so it can be
+    /// unit-tested over every `EngineState` case without rendering a view.
+    nonisolated static func showsEngineGate(state: EngineState, selection: SidebarItem) -> Bool {
+        state.gatesTabs && selection != .settings
     }
 
     @ViewBuilder
@@ -72,7 +88,9 @@ struct MainWindowView: View {
     }
 }
 
-enum SidebarItem: Hashable, CaseIterable {
+/// `nonisolated`: a plain value the pure gate/dimming rules
+/// (`showsEngineGate`, `SidebarView.isDimmed`) compare off the main actor.
+nonisolated enum SidebarItem: Hashable, CaseIterable {
     case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 
     /// Short label shown in the bottom status bar's "view" cell.

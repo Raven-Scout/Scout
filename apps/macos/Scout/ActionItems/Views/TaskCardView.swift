@@ -105,6 +105,7 @@ struct TaskCardView: View {
         // formats the carried-from date, so gating and rendering off two
         // separate evaluations doubles that work for every card.
         let chips = self.chips
+        let summary = task.summary
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if selection != nil {
@@ -123,8 +124,8 @@ struct TaskCardView: View {
                 trailingStatus
                 chevron
             }
-            if !expanded && !task.body.isEmpty {
-                InlineMarkdownText(task.body)
+            if !expanded && !summary.isEmpty {
+                InlineMarkdownText(summary)
                     .font(DS.serif(13))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(2)
@@ -346,6 +347,10 @@ struct TaskCardView: View {
                 TaskBodyView(rawBody: task.body)
             }
 
+            if !task.details.isEmpty {
+                TaskDetailsView(details: task.details)
+            }
+
             if !task.comments.isEmpty {
                 // Editing and deleting reach the task the same way adding does,
                 // so they follow the same rule.
@@ -409,8 +414,8 @@ struct TaskCardView: View {
                     .strikethrough(task.done, color: DS.Ink.p4)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if !task.body.isEmpty {
-                    InlineMarkdownText(task.body)
+                if !task.summary.isEmpty {
+                    InlineMarkdownText(task.summary)
                         .font(DS.serif(12.5))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
