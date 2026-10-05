@@ -195,6 +195,18 @@ publishes. That gap is usually minutes, and it's accepted.
 - Release candidates: `vX.Y.Z-rc.N` is published as a GitHub **pre-release**
   with its own appcast. An installed build is pointed at it with #74's
   `SCOUT_APPCAST_URL` hook. It's never Latest, so users' feeds never see it.
+  - **An rc is cut from a commit that already carries its version.** In
+    practice that's the pushed `release/vX.Y.Z` branch after `prepare`, before
+    the release PR merges. `release.sh rc vX.Y.Z-rc.N` refuses any other
+    commit. The reason: §3 takes `MARKETING_VERSION` from `plugin.json`, and
+    the bundled `engine-release.json` is generated from the same file, so a
+    0.14.0 tree can't become a 0.15.0 build. The rc's notes render the
+    `[X.Y.Z]` sections that `prepare` promoted, under an rc banner.
+  - Caveat: the final release is built from `main`'s squash commit. Its build
+    number can be lower than the last rc's, which was built from the release
+    branch, so Sparkle won't offer the final to an rc install. Reinstall from
+    the DMG. The acceptance test's update checks (rc.1 → rc.2 on the release
+    branch, then the final → `v0.15.1-rc.1`) aren't affected.
 - **One-time setup only Jordan can do:** generate the EdDSA key pair (Sparkle's
   `generate_keys`). The public key goes into the app's `SUPublicEDKey`, and the
   private key stays in his login keychain beside the Developer ID.
@@ -241,16 +253,17 @@ marketplace, on the same version numbers (D2).
   `finalize` on that local commit) passes on `main`.
 - **Acceptance test (Part C's C10).** `finalize` has no draft mode, so it's
   rehearsed with release candidates (agreed with #318):
-  - publish `rc v0.15.0-rc.1`;
+  - publish `rc v0.15.0-rc.1` from `release/v0.15.0` (after `prepare`);
   - on a fresh macOS user account, install its DMG and complete onboarding
     through a first briefing, with no terminal;
-  - publish `rc v0.15.0-rc.2` from a **later commit**, so its build number,
-    which Sparkle compares, is higher;
+  - publish `rc v0.15.0-rc.2` from a **later commit** on `release/v0.15.0`,
+    so its build number, which Sparkle compares, is higher;
   - point the rc.1 install at rc.2's appcast through `SCOUT_APPCAST_URL`, and
     check that Sparkle updates the app and the engine upgrades itself;
   - check that the vault's runs keep working;
   - then `finalize v0.15.0`, and repeat the update check with
-    `v0.15.1-rc.1` afterwards.
+    `v0.15.1-rc.1` afterwards, cut from `release/v0.15.1` after
+    `prepare patch`.
 - Retiring `/scout-setup` is **not** required. The app's onboarding already
   makes the app the only step for new Mac users. The retirement ships in
   v0.15.0 if it's ready, otherwise v0.16.0.
