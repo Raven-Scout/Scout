@@ -105,4 +105,18 @@ struct EngineVersionTests {
         #expect(value as? String == "")
         #expect(EngineVersion.requiredFloor(stamped: value) == nil)
     }
+
+    /// `EngineRelease`/tag strings are `v`-prefixed; `EngineUpgrader.needsUpgrade`
+    /// compares a bare installed version against a possibly `v`-prefixed one.
+    @Test func aLeadingVPrefixParsesAndComparesEqualToTheBareVersion() {
+        #expect(EngineVersion("v0.10.0") == EngineVersion("0.10.0"))
+    }
+
+    /// Non-SemVer-shaped strings fail to parse instead of crashing or
+    /// silently truncating — `EngineUpgrader` relies on this `nil` to treat
+    /// an unparsable manifest version as untrusted (Ruling 58). A short core
+    /// (`"1.2"`) is NOT malformed: it reads as `1.2.0` (see above).
+    @Test func malformedStringsFailToParse() {
+        #expect(EngineVersion("nope") == nil)
+    }
 }
