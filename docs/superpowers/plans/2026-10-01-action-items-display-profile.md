@@ -1021,7 +1021,7 @@ struct ActionItemsArrangementTests {
         ActionTask(
             id: ActionItemsParser.stableID("t|\(key ?? subject)"), lineNumber: 1, done: false,
             subject: subject, plainSubject: subject, body: "", comments: [], deepLinks: [],
-            snoozedUntil: nil, carriedInFrom: nil, indentLevel: indent
+            details: [], snoozedUntil: nil, carriedInFrom: nil, indentLevel: indent
         )
     }
 
