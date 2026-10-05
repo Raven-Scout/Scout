@@ -14,6 +14,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **`/scout-update` and a re-run of `install.sh` switch the registered plugin version** (`commands/scout-update.md`, `install.sh`): on an existing install, `claude plugin install` only unpacks the new cache and leaves the registry on the old version, so the plugin-root resolver handed back the old plugin and the vault was upgraded against its templates. `/scout-update` now runs `claude plugin update scout@scout-plugin` for every scope Scout is installed in, and stops with `PLUGIN_UPDATE_FAILED` (and the command to run) when an update fails, instead of upgrading against the old version. `install.sh` updates its user-scope install and warns when that fails. This is the stale-registry half of #234; the resolver half shipped in #258.
 
+### Changed
+- **Scout now lives in one repo, `Raven-Scout/Scout`, and there is nothing to do.** `Raven-Scout/scout-plugin` was renamed `Raven-Scout/Scout` when the macOS app moved in. The plugin now sits under `plugin/`, with the marketplace manifest at the repo root (`.claude-plugin/marketplace.json`, `"source": "./plugin"`). The marketplace keeps its name, so the plugin id stays `scout@scout-plugin`. GitHub redirects the old name, so existing `Raven-Scout/scout-plugin` marketplaces, clones and `curl …/scout-plugin/main/install.sh` one-liners keep working.
+- **`self-update check` reads the repo-root marketplace manifest** (`engine/scout/scripts/self_update.py`) at `Raven-Scout/Scout`, so `/scout-status` reports new versions from the monorepo.
+- **`/scout-update` Step 0.2 stops only for a marketplace that points at another repo** (`commands/scout-update.md`). `Raven-Scout/Scout` and its former name `Raven-Scout/scout-plugin` both pass. A local checkout with the pre-monorepo layout gets a note to `git pull` it. The plugin-root resolver accepts both a legacy `~/scout-plugin` clone and a monorepo clone, whose plugin is at `~/scout-plugin/plugin`.
+- **`install.sh` checks where an existing `scout-plugin` marketplace points** before installing. It accepts either repo name. For any other repo it prints the re-point commands instead of reporting success, and it never removes anything itself.
+- **`scoutctl` also looks for a venv under `marketplaces/<name>/plugin/`** (`engine/bin/scoutctl`), the monorepo layout of a marketplace clone.
+
+### Upgrade notes
+- **Customized `SKILL.md`:** `/scout-plan` adds a "Plan Markers Carry Verbatim" rule to the action-items brain. A vault that edited `SKILL.md` near it gets `conflict (sidecar): SKILL.md.proposed-merge` from `/scout-update`. The upgrade still completes and the running `SKILL.md` is unchanged until you merge the sidecar and run `scoutctl bootstrap resolve SKILL.md`.
+- **Engine running from a git checkout** (a directory marketplace, or a venv built inside `plugins/marketplaces/scout-plugin/`): pulling that checkout moves `engine/` to `plugin/engine/`, so an editable venv built from the old path stops importing, and a cached `.scoutctl-py-cache` can keep pinning it. Rebuild with `plugin/scripts/install-venv.sh`, then run `scoutctl bootstrap upgrade`. Move the old venv and any stale `.scoutctl-py-cache` aside, and run `scripts/vault-repoint-monorepo.py` for the vault's own hard-coded paths. Regular installs keep their venv inside Claude Code's frozen cache copy and are not affected.
+
+
 ## [0.13.0] - 2026-10-04
 
 
