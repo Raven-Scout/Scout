@@ -35,7 +35,7 @@ from typing import IO, Any
 from scout import paths
 from scout.config import today as config_today
 from scout.events import Event, now_iso
-from scout.hooks.connector_log import classify
+from scout.hooks.connector_log import _custom_bash_connectors, classify
 from scout.ids import new_ulid
 
 
@@ -240,13 +240,14 @@ def write_records(
         return 0
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / f"connector-calls-{_local_date()}.jsonl"
+    bash_connectors = _custom_bash_connectors()  # computed once per batch, not once per record (#perf)
     written = 0
     try:
         with out_path.open("a", encoding="utf-8") as f:
             ts_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
             for rec in records:
                 is_err, err_snippet = _is_error(rec.tool_response)
-                connector = classify(rec.tool_name, rec.tool_input)
+                connector = classify(rec.tool_name, rec.tool_input, bash_connectors=bash_connectors)
                 row: dict[str, Any] = {
                     "ts": ts_utc,
                     "session_id": session_id,

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import custom_connectors as cc
 from scout.hooks.session_tool_log import (
     ToolCallRecord,
     extract_tool_calls,
@@ -143,6 +144,46 @@ def test_write_records_no_op_on_empty(tmp_path: Path) -> None:
     count = write_records([], mode="briefing", session_id="abc", log_dir=log_dir)
     assert count == 0
     assert not log_dir.exists() or not list(log_dir.glob("*.jsonl"))
+
+
+def test_write_records_resolves_custom_bash_connectors_once_per_batch(
+    fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The custom-binary map is loaded once per batch, not once per Bash record (perf)."""
+    cc.write(
+        fake_data_dir,
+        {
+            "tickets": {
+                "display_name": "Tickets",
+                "probe": {"bash": "tix whoami"},
+                "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+            },
+        },
+    )
+
+    calls: list[Path] = []
+    real_bash_binaries = cc.bash_binaries
+
+    def counting(vault: Path) -> dict[str, str]:
+        calls.append(vault)
+        return real_bash_binaries(vault)
+
+    monkeypatch.setattr(cc, "bash_binaries", counting)
+
+    log_dir = fake_data_dir / ".scout-logs"
+    records = [
+        ToolCallRecord(tool_name="Bash", tool_input={"command": "tix list"}, tool_response={}),
+        ToolCallRecord(tool_name="Bash", tool_input={"command": "cd ~/Scout && tix whoami"}, tool_response={}),
+        ToolCallRecord(tool_name="Bash", tool_input={"command": "gh pr list"}, tool_response={}),
+    ]
+    count = write_records(records, mode="briefing", session_id="abc", log_dir=log_dir)
+    assert count == 3
+    assert len(calls) == 1  # loaded once for the whole batch, not per record
+
+    rows = [json.loads(line) for line in next(log_dir.glob("connector-calls-*.jsonl")).read_text().splitlines()]
+    assert rows[0]["connector"] == "tickets"
+    assert rows[1]["connector"] == "tickets"
+    assert rows[2]["connector"] == "github"
 
 
 def test_write_records_records_error_snippet(tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ def _custom_bash_connectors() -> dict[str, str]:
         return {}
 
 
-def _bash_key(cmd: str) -> str:
+def _bash_key(cmd: str, bash_connectors: dict[str, str] | None = None) -> str:
     """Classify a Bash command by the connector binary it actually invokes.
 
     The first token is not a reliable label: ``cd ~/Scout && gh pr list`` is a
@@ -73,6 +73,12 @@ def _bash_key(cmd: str) -> str:
 
     Falls back to ``bash:<first-token>`` so non-connector calls label as before.
 
+    ``bash_connectors`` lets a caller that classifies many commands in a batch
+    (``session_tool_log.write_records``) pass a precomputed custom-binary map
+    instead of paying ``_custom_bash_connectors()``'s YAML read on every call.
+    When ``None`` (the single-call ``connector_log.run()`` path), it is computed
+    here as before.
+
     Source: scout-mistake-audit Pattern #144, confirmed 2026-08-13 by an
     accidental A/B (same token, same day: three ``cd … && gh …`` calls → CRITICAL,
     five bare ``gh …`` calls → 0 alerts). Approved by Jordan 2026-08-13 21:20 ET.
@@ -80,7 +86,9 @@ def _bash_key(cmd: str) -> str:
     if not cmd:
         return "bash"
 
-    known = {**_custom_bash_connectors(), **_BASH_CONNECTORS}  # shipped wins
+    if bash_connectors is None:
+        bash_connectors = _custom_bash_connectors()
+    known = {**bash_connectors, **_BASH_CONNECTORS}  # shipped wins
 
     segments = cmd.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
     segments = segments.replace("|", "\n")
@@ -103,14 +111,17 @@ def _bash_key(cmd: str) -> str:
     return f"bash:{first}" if first else "bash"
 
 
-def classify(tool_name: str, tool_input: dict[str, Any]) -> str:
+def classify(tool_name: str, tool_input: dict[str, Any], *, bash_connectors: dict[str, str] | None = None) -> str:
     """Map a Claude Code tool_name + tool_input to a connector key.
 
     Ported from connector-log.sh:65-76; the Bash branch now scans for the
     connector binary rather than trusting the first token (Pattern #144).
+
+    ``bash_connectors``, if given, is passed through to ``_bash_key`` to avoid
+    re-deriving the custom-binary map on every call in a batch.
     """
     if tool_name == "Bash":
-        return _bash_key((tool_input.get("command") or "").strip())
+        return _bash_key((tool_input.get("command") or "").strip(), bash_connectors)
     if tool_name.startswith("mcp__"):
         parts = tool_name.split("__")
         if len(parts) >= 2:
