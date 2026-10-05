@@ -987,6 +987,12 @@ something".**
      - `scoutctl`'s `marketplaces/<name>/plugin/` venv candidates
      - anything Phase 1 pulled in (#247's version switch on update, #264's
        `/scout-plan`, …)
+     - **a heads-up for customized vaults.** #264 adds a "Plan Markers Carry
+       Verbatim" rule to `SKILL.md`. A vault that edited `SKILL.md` near it
+       gets `conflict (sidecar): SKILL.md.proposed-merge` on `/scout-update`.
+       The upgrade still completes, and the running `SKILL.md` is unchanged
+       until the user merges the sidecar. Jordan's vault hit this on
+       2026-10-05.
   2. Prepare with **`minor`**, because the layout changed:
 
      ```bash
@@ -1146,6 +1152,16 @@ config, so no agent runs it.
   ~/scout-plugin/plugin/.venv/bin/scoutctl bootstrap upgrade --managed-by dev   # re-points plists, shim and ~/.local/state/scout/engine.json
   ~/miniconda3/bin/pip install -e ~/scout-plugin/plugin/engine                  # or uninstall that editable copy
   ```
+  **`bootstrap upgrade` can exit non-zero here, and that's expected** for a vault
+  with a customized `SKILL.md`. On 2026-10-05 it upgraded everything else, wrote
+  `conflict (sidecar): SKILL.md.proposed-merge`, left `SKILL.md` running
+  unchanged, and doctor went yellow. A script under `set -e` stops right there,
+  before 9.3a and the miniconda re-install. That leaves the hooks and the app's
+  `scoutctl` broken. Carry on with the rest of 9.3 and with 9.3a. Then resolve
+  the sidecar as `/scout-update` describes ("To resolve a sidecar"): make
+  `SKILL.md` the version you want, keep 9.3a's re-pointed paths, and run
+  `scoutctl bootstrap resolve SKILL.md`.
+
 - [ ] **9.3a Re-point the vault.** `bootstrap upgrade` re-renders only the
   files it manages: the runners, the templated scripts,
   `hooks/kb-pre-filter.sh`, the plists, the shim and `engine.json`. The vault
@@ -1178,10 +1194,18 @@ config, so no agent runs it.
   grep -n scout-plugin ~/Library/LaunchAgents/com.scout.*.plist                                  # only …/scout-plugin/plugin/… paths
   ~/scout-plugin/plugin/engine/bin/scoutctl version                                              # the path the hooks and SKILL.md now call
   git -C ~/Scout status --short                                                                  # only the re-pointed files
-  git -C ~/Scout add -u -- .claude/settings.json SKILL.md DREAMING.md RESEARCH.md CLAUDE.md run-*.sh scripts hooks
-  git -C ~/Scout commit -m "scout: re-point the vault at the monorepo layout (~/scout-plugin/plugin/…)"
+  git -C ~/Scout diff --cached --name-only                                                      # staged by someone else? leave it out
+  git -C ~/Scout commit -m "scout: re-point the vault at the monorepo layout (~/scout-plugin/plugin/…)" \
+    -- .claude/settings.json SKILL.md CLAUDE.md RESEARCH.md 'run-*.sh' scripts hooks .scout-state/last-rendered
   git -C ~/Scout rev-parse HEAD > ~/.scout-worktrees/vault-repoint.sha
   ```
+
+  Commit by path (`git commit -- <paths>`), never `git add -u` followed by a
+  bare `commit`. A scheduled run can leave its own work staged but
+  uncommitted. On 2026-10-05 the 22:02 dreaming run had left 19 files staged,
+  and a bare commit would have filed them under the re-point.
+  - Leave `DREAMING.md` out if that run staged edits to it.
+  - Commit it with that run's work instead.
 
 - [ ] **9.4 Verify.**
 
