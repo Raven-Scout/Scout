@@ -21,12 +21,19 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     extra slot). Point HOME at an empty per-test tmp dir and scrub SCOUT_*
     vars. Tests that need a data dir keep using fake_data_dir, which sets
     SCOUT_DATA_DIR after this fixture runs.
+
+    The host's timezone is hidden the same way: SCOUT_LOCALTIME points host
+    detection (scout.config.host_timezone_name, scripts/scout-tz.sh) at a link
+    that does not exist, so an unconfigured vault resolves to the packaged
+    default on every developer machine and CI host alike. Tests that exercise
+    host detection point it at a fixture symlink of their own.
     """
     home = tmp_path_factory.mktemp("hermetic-home")
     monkeypatch.setenv("HOME", str(home))
     for key in list(os.environ):
         if key.startswith("SCOUT_"):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SCOUT_LOCALTIME", str(home / "no-localtime"))
 
 
 @pytest.fixture(autouse=True)
@@ -63,9 +70,10 @@ def fake_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
 
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset any SCOUT_* env vars that might leak between tests."""
+    """Unset any SCOUT_* env vars that might leak between tests (keeping
+    _hermetic_env's SCOUT_LOCALTIME, which hides the host's timezone)."""
     for key in list(os.environ):
-        if key.startswith("SCOUT_"):
+        if key.startswith("SCOUT_") and key != "SCOUT_LOCALTIME":
             monkeypatch.delenv(key, raising=False)
 
 

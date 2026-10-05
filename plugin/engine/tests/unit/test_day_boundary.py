@@ -3,8 +3,9 @@
 Every surface that derives a daily date — the materialize backstop, the five
 action-items mutators, the daily-path default, trigger daily caps, hook
 day-stamps, and bootstrap's template date — must take "today" from the
-CONFIGURED timezone via scout.config.today / resolve_timezone, never from the
-host clock and never from a hardcoded zone.
+RESOLVED timezone via scout.config.today / resolve_timezone (the configured
+override, else the host's zone: test_host_timezone.py), never from a naive
+date.today() and never from a hardcoded zone.
 
 Probe technique: the two zones below sit at the opposite extremes of the tz
 database — their civil dates are 26 hours apart and therefore NEVER agree.

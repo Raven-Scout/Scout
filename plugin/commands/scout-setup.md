@@ -75,7 +75,7 @@ Ask each of these in order, waiting for each answer:
 1. "What would you like to name this Scout instance? (default: Scout)"
 2. "What's your name? (used in commit messages and the KB)"
 3. "What's your email? (used for git config)"
-4. "Timezone? (default: America/New_York)"
+4. "Scout follows this computer's timezone (currently `<HOST_ZONE>`), so it stays right when you travel. Press enter to keep that, or name an IANA zone (e.g. `Europe/Prague`) to pin a different one." — fill `<HOST_ZONE>` from `readlink /etc/localtime | sed -E 's#^.*/zoneinfo[^/]*/##'`. Most users keep the default; record an override only if they name one.
 
 ---
 
@@ -148,7 +148,6 @@ Omit `--claude-bin` unless the user told you a specific path: by default the eng
     --instance-name "<INSTANCE_NAME>" \
     --user-name "<USER_NAME>" \
     --user-email "<USER_EMAIL>" \
-    --timezone "<TIMEZONE>" \
     --platform "$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/')" \
     --connectors "<comma-separated-enabled-list>" \
     --user-slack-id "<USER_SLACK_ID>" \
@@ -157,6 +156,8 @@ Omit `--claude-bin` unless the user told you a specific path: by default the eng
     --max-budget "<dollars>" \
     --auto-update   # or --no-auto-update, per Step 3
 ```
+
+Add `--timezone "<IANA_ZONE>"` only if the user named an override in Step 1. Without it, the vault follows the computer's timezone: nothing is written to `scout-config.yaml`, and `scripts/scout-tz.sh` reads the zone from the host on every run.
 
 The plist + cron block installed by this step automatically reference `$SCOUTCTL` — `resolve_scoutctl_bin()` derives the path from the running engine's plugin root, so the scheduler is always pinned to the venv the wizard just used.
 

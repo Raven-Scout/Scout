@@ -454,6 +454,47 @@ def cli_materialize(
         sys.stdout.write(f"materialize: created {created}\n")
 
 
+@app.command("archive-stale")
+def cli_archive_stale(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to clean, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    days: int | None = typer.Option(
+        None, "--days", min=1, help="Archive items whose text is unchanged for this many days (default: 60)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would move; write nothing."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Move open items nobody has touched for 60+ days into the monthly stale-items archive.
+
+    `materialize` already does this once a day when it creates the day's
+    file; run this to apply it to a file that already exists. Items move
+    verbatim to `action-items/archive/stale-items-YYYY-MM.md` — nothing is
+    deleted.
+    """
+    from scout import paths
+    from scout.action_items.stale import STALE_AFTER_DAYS, archive_stale
+    from scout.config import today
+
+    vault = data_dir or paths.data_dir()
+    if date is None:
+        day = today(vault)
+    else:
+        try:
+            day = _dt.date.fromisoformat(date)
+        except ValueError as e:
+            raise ActionItemError(f"--date: invalid date {date!r}") from e
+    archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
+    if not archived:
+        sys.stdout.write("archive-stale: nothing untouched long enough to archive\n")
+        return
+    verb = "would archive" if dry_run else "archived"
+    noun = "item" if len(archived) == 1 else "items"
+    sys.stdout.write(f"archive-stale: {verb} {len(archived)} {noun}:\n")
+    for item in archived:
+        sys.stdout.write(f"  [#{item.tag}] unchanged since {item.last_changed.isoformat()}\n")
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(

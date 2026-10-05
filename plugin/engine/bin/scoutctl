@@ -18,12 +18,20 @@
 #   4. system python3               — last resort; expects scout-engine on
 #                                     the global site-packages
 #
-# Per #81: once a candidate resolves, we cache the path at
-# ${PLUGIN_ROOT}/.scoutctl-py-cache so the next invocation can `[ -x ]`
-# exactly one path instead of probing the whole list again. The cache lives
-# inside the plugin so different plugin installs don't share state. The
-# cached path is verified executable on read; if it isn't, we fall through
-# to the full probe.
+# Executable is not enough: a venv outlives its editable source, so once the
+# checkout moves (engine/ -> plugin/engine/) its python still passes `[ -x ]`
+# but dies with `No module named scout.cli`. Each executable candidate is
+# therefore probed (PROBE below) before we trust it, and a dead one falls
+# through to the next.
+#
+# Per #81: once a candidate resolves, we cache it at
+# ${PLUGIN_ROOT}/.scoutctl-py-cache so the next invocation skips the probe.
+# Line 1 is the interpreter; the remaining lines are its stamp, meaning the
+# files the probe resolved scout.cli through (the module and the installed
+# dist's METADATA). The fast path re-checks the stamp with file tests only
+# (a Python pre-check would add ~20-60 ms to every hook call). A cache that
+# fails the check is deleted, and we fall through to the full probe. The cache
+# lives inside the plugin so different plugin installs don't share state.
 set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -32,12 +40,36 @@ PLUGIN_ROOT="${ENGINE_DIR%/engine}"
 
 CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 
-# Fast path: a previously-resolved interpreter is still executable.
+# Resolves scout.cli the way `-m` will, without running it, and prints the
+# stamp. Exits non-zero when the interpreter can't find scout.cli. The dist-info
+# is found with listdir, not importlib.metadata, which costs ~30 ms to import.
+PROBE='import importlib.util, os, sys
+print(importlib.util.find_spec("scout.cli").origin)
+for d in map(os.path.abspath, sys.path):
+    try:
+        names = os.listdir(d)
+    except OSError:
+        continue
+    for n in names:
+        if n.startswith("scout_engine-") and n.endswith(".dist-info"):
+            print(os.path.join(d, n, "METADATA"))'
+
+# Fast path: the cached interpreter is executable and every stamped file is
+# still there. A cache written before stamps existed has no stamp, so it gets
+# one fresh probe.
 if [ -r "$CACHE_FILE" ]; then
-    CACHED_PY="$(cat "$CACHE_FILE" 2>/dev/null || true)"
-    if [ -n "$CACHED_PY" ] && [ -x "$CACHED_PY" ]; then
+    CACHED_PY="" STAMPED=0 MISSING=0
+    {
+        IFS= read -r CACHED_PY || true
+        while IFS= read -r STAMP || [ -n "$STAMP" ]; do
+            STAMPED=1
+            [ -f "$STAMP" ] || MISSING=1
+        done
+    } <"$CACHE_FILE"
+    if [ -n "$CACHED_PY" ] && [ -x "$CACHED_PY" ] && [ "$STAMPED" = 1 ] && [ "$MISSING" = 0 ]; then
         exec "$CACHED_PY" -m scout.cli "$@"
     fi
+    rm -f "$CACHE_FILE" 2>/dev/null || true
 fi
 
 candidates=(
@@ -81,11 +113,12 @@ if [[ "$PLUGIN_ROOT" == */plugins/cache/* ]]; then
 fi
 
 for VENV_PY in "${candidates[@]}"; do
-    if [ -x "$VENV_PY" ]; then
+    # The probe gets /dev/null as stdin, which leaves the hook payload for the real call.
+    if [ -x "$VENV_PY" ] && STAMP_LINES="$("$VENV_PY" -c "$PROBE" </dev/null 2>/dev/null)"; then
         # Best-effort write to the cache so the next call skips the probe.
         # Failures (read-only plugin root in Claude Code's cache copy, no
         # write perms, etc.) are silently ignored.
-        printf '%s\n' "$VENV_PY" >"$CACHE_FILE" 2>/dev/null || true
+        printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE" 2>/dev/null || true
         exec "$VENV_PY" -m scout.cli "$@"
     fi
 done

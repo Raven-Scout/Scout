@@ -31,7 +31,8 @@ schedule:
 
 platform: {{PLATFORM}}
 scout_dir: {{SCOUT_DIR}}
-timezone: {{TIMEZONE}}
+# timezone: Europe/Prague   # optional override. Unset, Scout follows this
+#                           # computer's own timezone (the scheduler's clock).
 github_repos: [{{GITHUB_REPOS}}]
 
 # Budget + session-limit awareness — consumed by scripts/budget-check.sh,
