@@ -278,6 +278,12 @@ def _add(
         needs_path = f"connectors.{key}.needs_user_input"
         for name in sorted(set(inputs) - set(connector.needs_user_input)):
             issues.append(cc.Issue(needs_path, f"{name!r} is not an input this connector declares"))
+        for name in sorted(n for n, value in inputs.items() if cc.CREDENTIAL_RE.search(value)):
+            msg = (
+                f"the value for {name!r} looks like a credential; inputs are written into SKILL.md "
+                "and must not be secrets — sign the tool in through its own MCP connector or CLI instead"
+            )
+            issues.append(cc.Issue(needs_path, msg))
     if issues or connector is None:
         return Outcome("invalid", key, issues)
 

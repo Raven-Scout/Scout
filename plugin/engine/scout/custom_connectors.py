@@ -27,7 +27,9 @@ SLOT_TYPES = frozenset({"briefing", "consolidation", "dreaming", "research"})
 
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _INPUT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_CREDENTIAL_RE = re.compile(
+# Also applied to `--input` values by custom_connector_ops.add: inputs are
+# rendered verbatim into SKILL.md, so they must never be secrets either.
+CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:xox[abp]-|ghp_|gho_|github_pat_|sk-|lin_api_)[A-Za-z0-9_-]{8,}"
     r"|Bearer\s+[A-Za-z0-9._~+/-]{12,}"
 )
@@ -164,8 +166,12 @@ def parse_connector(
         return None, issues
     for unknown in sorted(set(body) - _FIELDS):
         issues.append(Issue(f"{base}.{unknown}", "unknown field"))
-    if any(_CREDENTIAL_RE.search(s) for s in _strings(body)):
-        issues.append(Issue(base, "looks like it contains a credential; ask for it via needs_user_input instead"))
+    if any(CREDENTIAL_RE.search(s) for s in _strings(body)):
+        msg = (
+            "looks like it contains a credential; Scout never stores credentials — sign the tool in "
+            "through its own MCP connector or CLI instead"
+        )
+        issues.append(Issue(base, msg))
 
     display_name = body.get("display_name")
     if not isinstance(display_name, str) or not display_name.strip():

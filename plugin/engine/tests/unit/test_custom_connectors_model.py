@@ -100,6 +100,17 @@ def test_invalid_definitions_are_rejected_with_a_field_path(key, body, expected)
     assert expected in _messages(issues)
 
 
+def test_credential_rejection_points_at_the_tools_own_sign_in_not_needs_user_input():
+    """F4: inputs are rendered verbatim into SKILL.md, so the message must not steer
+    a secret into needs_user_input."""
+    _, issues = _parse("suite_mail", {**MAIL, "notes": "token ghp_abcdefghijklmnop"})
+    assert [i.message for i in issues] == [
+        "looks like it contains a credential; Scout never stores credentials — sign the tool in "
+        "through its own MCP connector or CLI instead"
+    ]
+    assert "needs_user_input" not in _messages(issues)
+
+
 @pytest.mark.parametrize("text", ["Watch the task-list board.", "Use a risk-based triage.", "Ask about sk-8 sizing."])
 def test_credential_guard_ignores_ordinary_words(text):
     c, issues = _parse("suite_mail", {**MAIL, "notes": text})

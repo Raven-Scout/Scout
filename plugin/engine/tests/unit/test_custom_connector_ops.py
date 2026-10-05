@@ -101,6 +101,20 @@ def test_missing_input_is_invalid_and_inputs_are_namespaced(vault: Path):
     assert "`tix list --team ops` — run with Bash" in (vault / "SKILL.md").read_text()
 
 
+@pytest.mark.parametrize("value", ["ghp_abcdefghijklmnop", "Bearer abcdefghijklmnopqrstu", "xoxb-1234567890-abc"])
+def test_credential_shaped_input_is_invalid_and_writes_nothing(vault: Path, value: str):
+    """F4: --input values are written into SKILL.md (committed, sent in every session prompt)."""
+    skill_before = (vault / "SKILL.md").read_text()
+    out = _add(vault, TICKETS, inputs={"team": value}, probe_runner=lambda cmd: 0)
+    assert (out.status, out.exit_code) == ("invalid", 2)
+    assert [i.path for i in out.issues] == ["connectors.tickets.needs_user_input"]
+    assert "SKILL.md" in out.issues[0].message and "secret" in out.issues[0].message
+    assert value not in out.issues[0].message
+    assert (vault / "SKILL.md").read_text() == skill_before
+    assert not (vault / cc.CUSTOM_FILE).exists()
+    assert "tickets__team" not in (_config(vault)["connectors"].get("inputs") or {})
+
+
 def test_unknown_input_name_is_invalid(vault: Path):
     out = _add(vault, TICKETS, inputs={"team": "ops", "colour": "x"}, probe_runner=lambda cmd: 0)
     assert out.status == "invalid"
