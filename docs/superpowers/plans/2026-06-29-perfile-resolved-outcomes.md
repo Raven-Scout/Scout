@@ -19,6 +19,9 @@
 
 ## Global Constraints
 
+- **Monorepo layout (since 2026-10-05):** this plan now lives in `Raven-Scout/Scout` (PR #298). Every `Scout/…` and `ScoutTests/…` path below is relative to **`apps/macos/`**, and every `xcodebuild` command runs from there. Bare `#N` references written before the move mean `Raven-Scout/scout-app-legacy#N`; issue #43 is now `Raven-Scout/Scout#286`.
+- **Approved 2026-10-05** by Jordan, with the timezone fix (Task 1) kept in this PR.
+
 - **Spec:** `docs/superpowers/specs/2026-06-28-perfile-resolved-outcomes-design.md` (rev 2). Issue #43.
 - **No scout-plugin changes; no new frontmatter.**
 - **The item's patch is always shown regardless of the run link.** A missing or wrong badge must never hide the change.
