@@ -4,7 +4,7 @@
 
 > **Revised 2026-10-03 per review:** no "oldest first" sort, no `fields.plan`, no reserved keys, no commits from the app, the List/Board switch is session-only, sub-tasks whose parent is filtered out stand alone, and the arranged sections are cached. Details in the spec's revision note.
 
-**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-profile.json` in the vault root and editable in Settings and from a View menu in the Action Items toolbar (Raven-Scout/scout-app-legacy#52).
+**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-profile.json` in the vault root and editable in Settings and from a View menu in the Action Items toolbar (#290).
 
 **Architecture:** A pure `DisplayProfileCodec` parses and patches the file under the rules in spec section 4. `DisplayProfileService` (`@MainActor ObservableObject`) owns the file: it reads it at init, follows outside edits through `FileSystemEventSource`, and writes in-app changes as patches. It never commits. It also holds the session-only current List/Board view. A pure `ActionItemsArrangement` applies sort and grouping to the already filtered sections, and `ActionItemsView` caches its result. Views take the display values as plain parameters with today's behavior as the default, so every existing call site and test keeps compiling.
 
@@ -929,8 +929,8 @@ git commit -m "feat(profile): DisplayProfileService reads, follows and patches s
 ### Task 4: Wire the service into `AppState`
 
 **Files:**
-- Modify: `Scout/Shell/AppState.swift` (property with the other `let` services at `:21-66`, construction next to the other file-watching services after `:102`, assignment block `:211-238`, `startWatching()` in the background-work block after `:270`)
-- Modify: `Scout/Shell/MainWindowView.swift:39-45` (`.environmentObject(appState.displayProfileService)` on `ActionItemsView`)
+- Modify: `Scout/Shell/AppState.swift` (property with the other `let` services at `:25-77`, construction next to the other file-watching services after `:115`, assignment block `:233-262`, `startWatching()` in the background-work block after `:307`)
+- Modify: `Scout/Shell/MainWindowView.swift:59-65` (`.environmentObject(appState.displayProfileService)` on `ActionItemsView`)
 - Modify: `ScoutTests/Shell/TabViewSmokeTests.swift:39,55` (same injection, otherwise the render traps on a missing environment object)
 - Create: `ScoutTests/Shell/AppStateDisplayProfileTests.swift`
 
@@ -1322,6 +1322,7 @@ struct CardDisplayRulesTests {
 - `chips` becomes `Self.visibleChips(TaskChip.chips(...), fields: fields)`, which drops every chip except `.carry` when `!fields.refs`.
 - when `fields.comments` and the task has comments, the chip row ends with a comment count chip (`text.bubble` glyph, `"\(n)"`, same `chipBody` styling).
 - `trailingStatus` shows the snooze pill only when `fields.snooze`.
+- `.onChange(of: density)` re-applies `startsExpanded(kind:density:)` to a card already on screen, unless the caller passed `startsExpanded:` (stored as `startsExpandedOverride`).
 
 `BoardCardView`: padding `density == .compact ? 8 : 12`, subject `lineLimit(density == .compact ? 2 : 3)`, moon icon only when `fields.snooze`, link footer only when `fields.refs`, comment count in the footer when `fields.comments`.
 
@@ -1343,9 +1344,10 @@ Smoke additions: `TaskCardView` and `BoardCardView` rendered once with `.compact
 - Modify: `Scout/ActionItems/ActionItemsView.swift`
 - Create: `Scout/Profile/ActionItemsDisplayMenu.swift`
 - Create: `Scout/Shell/ActionItemsDisplaySection.swift`
-- Modify: `Scout/Shell/SettingsView.swift` (new section after General, and the header comment's section count)
+- Modify: `Scout/Shell/SettingsView.swift` (new section after Engine, and the header comment's section count)
 - Modify: `ScoutTests/Shell/ComponentSmokeTests.swift` (renders of the menu and the section)
 - Create: `ScoutTests/ActionItems/ActionItemsLayoutTests.swift`
+- Create: `ScoutTests/ActionItems/ActionItemsLayoutWindowTests.swift`
 
 **Interfaces:**
 - `extension DisplayProfileService { func binding<V>(_ keyPath: WritableKeyPath<ActionItemsDisplay, V>) -> Binding<V> }` (in `ActionItemsDisplayMenu.swift`, imports SwiftUI).
@@ -1408,13 +1410,14 @@ struct ActionItemsLayoutTests {
 - remove `@SceneStorage("actionItemsView")`; add `@EnvironmentObject var displayProfile: DisplayProfileService` and `private var display: ActionItemsDisplay { displayProfile.profile.actionItems }`.
 - `EditorialSegmentedControl(selection: $displayProfile.currentView, ...)`; every `viewMode` read becomes `displayProfile.currentView`, including `.onChange(of:)`.
 - `ActionItemsDisplayMenu()` sits right after the segmented control.
-- **Cache:** `@State private var layout: ActionItemsLayout?`, recomputed by `relayout()` in `.onAppear` and in `.onChange` of `docService.state`, `filter` and `display`, next to the existing `reconcileSelection()` calls (`ActionItemsView.swift:105-106`). With the default profile (`isPassThrough`) `relayout()` keeps no cache and the body renders `filteredSections(doc).map(filtered)` exactly as today. Otherwise `loadedContent` renders `layout.list.sections` with `density`, `fields` and `kinds`, and the board renders `layout.boardColumns` through `BoardView(columns:scoutDirectory:density:fields:)`.
+- **Cache:** `@State private var layout: ActionItemsLayout?`, recomputed by `relayout()` in `.onAppear` and in `.onChange` of `docService.state`, `filter` and `display`, next to the existing `reconcileSelection()` calls (`ActionItemsView.swift:111-112`). With the default profile (`isPassThrough`) `relayout()` keeps no cache and the body renders `filteredSections(doc).map(filtered)` exactly as today. Otherwise `loadedContent` renders `layout.list.sections` with `density`, `fields` and `kinds`, and the board renders `layout.boardColumns` through `BoardView(columns:scoutDirectory:density:fields:)`.
+- **Task windows:** the List builds one page of rows per section (`TaskWindow`), keyed by the drawn section. `ActionItemsLayout` gains `listSections(_:filtered:)` (the arranged sections, or the filtered ones when `layout` is nil), `selectableRows(in:windows:)`, `shownRows(in:windows:)` and `revealTarget(in:subject:shortPrefix:)`. `visibleSelectableTasks`, `visibleTaskIDs` and `revealReopened` read `listSections`, so Select all and reopen follow the sort and One list. Each `.onChange` calls `relayout()` before `reconcileSelection()`, and `revealReopened` relays out first because the reparse lands before `onChange` runs. Tests: the first selectable page per sort and grouping, One list paging the merged list once, the Done drawer shown in full, a reopened task's drawn row.
 
 `ActionItemsDisplayMenu`: a `Menu` labelled `Label("View", systemImage: "slider.horizontal.3")` in `DS.sans(11.5, weight: .medium)`, `.menuStyle(.borderlessButton)`, `.fixedSize()`, with inline pickers for Sort, Group (List only), Density, and a "Show on cards" section of three toggles: References, Snooze date, Comment count.
 
-`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view, Sort, Group, Density (each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()`, as at `SettingsView.swift:85-92`), then the three fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
+`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view, Sort, Group, Density (each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()`, as at `SettingsView.swift:78-84`), then the three fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
 
-`SettingsView`: `section(label: "Action Items") { ActionItemsDisplaySection().environmentObject(appState.displayProfileService) }` after General, the same way Budget injects its service at `:113-116`.
+`SettingsView`: `section(label: "Action Items") { ActionItemsDisplaySection().environmentObject(appState.displayProfileService) }` after Engine, the same way Budget injects its service at `:106-109`.
 
 - [ ] **Step 4: Run** the layout tests and the full suite. Expected: PASS.
 
@@ -1545,6 +1548,6 @@ struct DisplayProfileRenderTests {
 
 **Type consistency.** `ActionItemsDisplay.grouping` is the Swift name for the JSON key `group` (a `Group` type would collide with SwiftUI's in view code). `ActionItemsViewMode` is reused for `defaultView` and `currentView` rather than a second List/Board enum.
 
-**Dependencies.** None on other open PRs. The Raven-Scout/scout-app-legacy#52 fix PR touches the same views: it adds `scoutDirectory` to `BoardView` and `BoardCardView` and a `startsExpanded:` parameter to `TaskCardView`. Whichever lands second takes the other's parameters; the density rule in Task 6 then applies when no explicit `startsExpanded` is passed.
+**Dependencies.** The fix PR from the same issue (Raven-Scout/scout-app-legacy#122) has merged: it added `scoutDirectory` to `BoardView` and `BoardCardView` and a `startsExpanded:` parameter to `TaskCardView`, and an explicit `startsExpanded:` wins over the density rule in Task 6. The task windows (`TaskWindow`) are covered in Task 7. #297 (sub-bullet details on the card) and #312 (Settings ▸ Engine) have merged too and touch `TaskCardView`, `ActionItemsView`, `AppState` and `SettingsView`; the code branch rebases onto them before its PR.
 
 **Deliberate divergences.** `JSONSerialization` instead of `Codable` (per-key fallback and preservation need the raw object). The service reads synchronously in `init`, unlike the async `loadInitial()` of larger services, because the file is under 1 KB and the first frame needs it. The session view lives in the service rather than in `@SceneStorage`, so it survives switching sidebar sections and the default view applies at every launch.
