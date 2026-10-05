@@ -33,7 +33,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.claude-plugin/|plugin/\.claude-plugin/|plugin/engine/pyproject\.toml$|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$)'
 
   verify:
     needs: changes
@@ -59,6 +59,11 @@ jobs:
       - name: Install engine
         working-directory: plugin/engine
         run: uv pip install -e ".[dev]"
+      # One version for Scout (spec 2026-10-05 §3): the app's MARKETING_VERSION
+      # (every build configuration) must equal plugin.json and the other manifests.
+      - name: App and plugin versions match
+        working-directory: plugin/engine
+        run: .venv/bin/python -m scout.scripts.versioning check
 
       # 1. The canonical snapshots must match their YAML sources. (This check
       #    existed pre-merge and is retained verbatim.)
