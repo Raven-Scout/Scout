@@ -28,12 +28,12 @@ struct EngineSettingsModelTests {
         #expect(m.sourceLabel == "Dev checkout (~/scout-plugin)")
         #expect(m.showsHandOff)
         #expect(!m.canUpdate)
-        #expect(!m.canRepair)
+        #expect(m.setupAction == nil)
     }
 
     @Test func notInstalledAndRedDoctorMessages() {
         let m1 = EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: nil)
-        #expect(m1.sourceLabel == "Not installed" && m1.installedVersionLabel == "—" && !m1.healthIsOK && m1.canRepair)
+        #expect(m1.sourceLabel == "Not installed" && m1.installedVersionLabel == "—" && !m1.healthIsOK && m1.setupAction == .setUp)
         let m2 = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
                                      doctor: DoctorReport(severity: .red, errors: ["launchd: com.scout.heartbeat not registered"], warnings: ["w"]),
                                      lastError: nil, bundledVersion: nil)
@@ -96,41 +96,48 @@ struct EngineSettingsModelTests {
         #expect(missing.messages.isEmpty)
     }
 
-    // MARK: F3 — the copyable next step, per state
+    // MARK: Ruling 41 — a real action for every state the app can act on
 
-    @Test func notInstalledNextStepIsTheOneLineInstaller() {
-        let m = EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: nil)
-        #expect(m.nextStep == EngineNextStep(
-            text: "Install the engine: run this in Terminal, then run /scout-setup in Claude Code.",
-            copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash"))
+    @Test func gatingStatesOpenOnboardingAsSetUpOrRepair() {
+        let notInstalled = EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: "0.11.0")
+        #expect(notInstalled.setupAction == .setUp && notInstalled.setupHelp != nil)
+        let unset = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: nil, bundledVersion: "0.11.0")
+        #expect(unset.setupAction == .setUp)
+        #expect(unset.setupHelp == "The engine is installed; finish setting up your vault.")
+        #expect(!unset.canUpdate)         // finish onboarding first, as the launch upgrade does
+        for state in [EngineState.broken(install, reason: "r"), .broken(nil, reason: "r")] {
+            let broken = EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil)
+            #expect(broken.setupAction == .repair && broken.setupHelp != nil)
+        }
+        #expect(EngineSetupAction.setUp.buttonTitle == "Set up…")
+        #expect(EngineSetupAction.repair.buttonTitle == "Repair…")
     }
 
-    @Test func brokenNextStepIsScoutUpdate() {
-        let m = EngineSettingsModel(state: .broken(install, reason: "r"), doctor: nil, lastError: nil, bundledVersion: nil)
-        #expect(m.nextStep == EngineNextStep(text: "Repair the engine by running /scout-update in Claude Code.",
-                                             copyValue: "/scout-update"))
-        let noInstall = EngineSettingsModel(state: .broken(nil, reason: "r"), doctor: nil, lastError: nil, bundledVersion: nil)
-        #expect(noInstall.nextStep?.copyValue == "/scout-update")
-    }
-
-    @Test func unbootstrappedVaultNextStepIsScoutSetup() {
-        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: nil, bundledVersion: nil)
-        #expect(m.nextStep == EngineNextStep(text: "Set up your vault by running /scout-setup in Claude Code.",
-                                             copyValue: "/scout-setup"))
-    }
-
-    @Test func usableEnginesHaveNoNextStep() {
+    @Test func usableEnginesOfferNoSetupAndExternalOnesNeverUpdateInApp() {
         let managed = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true), doctor: nil,
                                           lastError: "could not run scoutctl: x", bundledVersion: "0.11.0")
-        #expect(managed.nextStep == nil)
+        #expect(managed.setupAction == nil && managed.setupHelp == nil)
+        #expect(managed.canUpdate && !managed.showsHandOff)
         for source in [ExternalSource.devCheckout, .installSh, .claudeCode, .marketplaceCache, .shim, .unknown("x")] {
-            let external = EngineSettingsModel(state: .external(install, source), doctor: nil, lastError: nil, bundledVersion: nil)
-            #expect(external.nextStep == nil)
+            let external = EngineSettingsModel(state: .external(install, source), doctor: nil, lastError: nil, bundledVersion: "0.11.0")
+            #expect(external.setupAction == nil)
+            #expect(!external.canUpdate && external.showsHandOff)
         }
     }
 
-    @Test func copyButtonTitleNamesSlashCommandsButNotTheTerminalOneLiner() {
-        #expect(EngineSettingsSection.copyButtonTitle(for: EngineNextStep(text: "t", copyValue: "/scout-setup")) == "Copy /scout-setup")
-        #expect(EngineSettingsSection.copyButtonTitle(for: EngineNextStep(text: "t", copyValue: "curl -fsSL x | bash")) == "Copy command")
+    /// The Update button is offered exactly when the launch-time upgrade
+    /// would run, so it never shows a button that does nothing.
+    @Test("canUpdate agrees with AppState.shouldAutoUpgrade", arguments: [
+        EngineState.notInstalled,
+        .managed(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.10.0", vault: nil), vaultBootstrapped: true),
+        .managed(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.10.0", vault: nil), vaultBootstrapped: false),
+        .managed(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.11.0", vault: nil), vaultBootstrapped: true),
+        .external(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.10.0", vault: nil), .devCheckout),
+        .broken(nil, reason: "r"),
+    ])
+    func canUpdateMatchesTheLaunchUpgrade(state: EngineState) {
+        let release = EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0"), uv: .init(version: "0", sha256: [:]))
+        let m = EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: release.engine.version)
+        #expect(m.canUpdate == AppState.shouldAutoUpgrade(state: state, release: release))
     }
 }

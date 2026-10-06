@@ -1,5 +1,24 @@
 import SwiftUI
 
+/// Settings ▸ Engine's "Set up…" / "Repair…" (Ruling 41): the same flow the
+/// window's gate shows, in a sheet with a Close button. Closing only hides
+/// it — the flow (and any install it is running) carries on in `AppState`.
+struct OnboardingSheet: View {
+    @ObservedObject var model: OnboardingViewModel
+    let close: () -> Void
+
+    var body: some View {
+        OnboardingView(model: model)
+            .overlay(alignment: .topTrailing) {
+                Button("Close", action: close)
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(.plainHit).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                    .padding(16)
+            }
+            .frame(width: 720, height: 600)
+    }
+}
+
 /// First-launch setup (spec §5). Thin: every decision lives in
 /// `OnboardingViewModel`; this file only lays out the current step.
 struct OnboardingView: View {

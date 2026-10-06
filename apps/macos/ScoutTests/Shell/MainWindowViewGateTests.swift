@@ -2,12 +2,11 @@ import Testing
 import Foundation
 @testable import Scout
 
-/// Unit coverage for `MainWindowView.showsEngineGate` (spec §5, Ruling 32
-/// item 1): a pure static helper so the gate decision is testable without
-/// rendering a view. Exercised over every `EngineState` case crossed with
-/// the Settings selection (must never gate) and one other tab (must follow
-/// `gatesTabs`).
-@Suite("MainWindowView.showsEngineGate")
+/// Unit coverage for the window gate (spec §5, Ruling 41): pure static
+/// helpers so the decision is testable without rendering a view. Exercised
+/// over every `EngineState` case crossed with the Settings selection (never
+/// gated) and one other tab (gated exactly when onboarding is kept).
+@Suite("MainWindowView.showsOnboarding")
 struct MainWindowViewGateTests {
     private let install = EngineInstall(
         root: URL(fileURLWithPath: "/Users/alex/.local/share/scout/engine/0.10.0"),
@@ -24,17 +23,30 @@ struct MainWindowViewGateTests {
         ]
     }
 
-    @Test("gate tracks gatesTabs on a non-Settings tab, and never shows on Settings")
+    @Test("onboarding tracks gatesTabs on a non-Settings tab, and never shows on Settings")
     func gateFollowsGatesTabsExceptOnSettings() {
         for (name, state) in allStates {
+            let kept = AppState.keepsOnboarding(state: state, holdsWindow: false)
+            #expect(kept == state.gatesTabs, "unexpected keep for \(name)")
             #expect(
-                MainWindowView.showsEngineGate(state: state, selection: .controlCenter) == state.gatesTabs,
+                MainWindowView.showsOnboarding(state: state, selection: .controlCenter, onboardingActive: kept) == state.gatesTabs,
                 "unexpected gate for \(name) on .controlCenter"
             )
             #expect(
-                MainWindowView.showsEngineGate(state: state, selection: .settings) == false,
+                MainWindowView.showsOnboarding(state: state, selection: .settings, onboardingActive: kept) == false,
                 "gate must never show on .settings for \(name)"
             )
+        }
+    }
+
+    /// A flow that is finishing (vault just created, or Ready showing) holds
+    /// the window even once the engine no longer gates the tabs, so the user
+    /// sees it through to "Open Scout".
+    @Test func aFinishingFlowHoldsTheWindowAfterTheGateLifts() {
+        for (name, state) in allStates {
+            #expect(AppState.keepsOnboarding(state: state, holdsWindow: true), "a finishing flow must be kept for \(name)")
+            #expect(MainWindowView.showsOnboarding(state: state, selection: .controlCenter, onboardingActive: true), "\(name)")
+            #expect(!MainWindowView.showsOnboarding(state: state, selection: .settings, onboardingActive: true), "\(name)")
         }
     }
 }

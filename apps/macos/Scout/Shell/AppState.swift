@@ -52,6 +52,27 @@ final class AppState: ObservableObject {
     let engineLayout: EngineLayout
     let engineHealth: EngineHealthService
 
+    // Engine install + upgrade (spec §5)
+    /// The engine this build ships; nil only when the resource is missing
+    /// (never in a real build) or in a test configuration (Ruling 46).
+    let engineRelease: EngineRelease?
+    private let engineTarballURL: URL?
+    private let resolveClaude: @Sendable (String) -> String?
+    private let fileDownloader: any FileDownloader
+    /// Latest progress per step of the running (or last failed) engine
+    /// upgrade. Non-nil while the upgrade sheet is showing.
+    @Published private(set) var engineUpgradeProgress: [InstallStep: InstallProgress]?
+    /// Why the upgrade could not start or stopped without a failed step.
+    @Published private(set) var engineUpgradeError: String?
+    @Published private(set) var isUpgradingEngine = false
+    /// The one onboarding flow (Ruling 41): present while the engine gates
+    /// the tabs (or while a finishing flow holds the window). The window's
+    /// gate and Settings ▸ Engine's sheet show this same model, so the flow
+    /// is never rebuilt per render and never runs twice at once.
+    @Published private(set) var onboarding: OnboardingViewModel?
+    private var upgradeGeneration = 0
+    private var liveUpgradeGeneration: Int?
+
     // New Action Items services
     let actionItemsDocumentService: ActionItemsDocumentService
     let actionItemsWriterBox: ActionItemsWriterBox
@@ -260,6 +281,10 @@ final class AppState: ObservableObject {
         self.scoutctlArgumentsPrefix = scoutctlArgsPrefix
         self.engineLayout = configuration.engineLayout
         self.engineHealth = engineHealth
+        self.engineRelease = configuration.engineRelease
+        self.engineTarballURL = configuration.engineTarballURL
+        self.resolveClaude = configuration.resolveClaude
+        self.fileDownloader = configuration.fileDownloader
 
         // Forward child-service changes so AppState.objectWillChange fires when
         // wishlist/research item counts update (drives sidebar badge reactivity).
@@ -281,6 +306,13 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // The onboarding gate follows the engine state: a flow appears when
+        // the tabs become gated and goes when they no longer are.
+        engineHealth.$state
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.syncOnboarding() }
+            .store(in: &cancellables)
         sessionIndex.$needsYouCount
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -299,6 +331,11 @@ final class AppState: ObservableObject {
                 self?.urgentActionCount = Self.urgentOpenCount(in: doc)
             }
             .store(in: &cancellables)
+
+        // Correct from the first frame: the window shows onboarding at once
+        // when the located engine gates the tabs. Building the model starts
+        // no work — the view's `.task` does.
+        syncOnboarding()
 
         // Everything below spawns work that outlives the initializer — polling
         // timers, FSEvents subscriptions, launch-time loads and a `scoutctl`
@@ -333,8 +370,13 @@ final class AppState: ObservableObject {
             // subprocess round-trip) must not delay the Action Items banner.
             // The 10-minute re-check (spec §4.4) starts as soon as this first
             // refresh completes, inside the same child task — so a wedged
-            // `scoutctl action-items --help` below can't hold it back.
-            async let engineRefresh: Void = Self.refreshEngineThenStartPeriodicRefresh(engineHealth)
+            // `scoutctl action-items --help` below can't hold it back. The
+            // launch-time engine upgrade (spec §5) follows in that same child
+            // task, for the same reason; it only ever runs here, inside
+            // `startsBackgroundWork` (Ruling 46).
+            async let engineRefresh: Void = Self.refreshEngineThenStartPeriodicRefresh(engineHealth) { [weak self] in
+                await self?.runEngineUpgradeIfNeeded()
+            }
 
             // Run environment check; publish result.
             let check = ActionItemsEnvironmentCheck(
@@ -353,11 +395,159 @@ final class AppState: ObservableObject {
         startNotificationWatch()
     }
 
-    /// First engine refresh, then the 10-minute re-check — chained on their
-    /// own so nothing else in the launch task can delay the periodic refresh.
-    private static func refreshEngineThenStartPeriodicRefresh(_ engineHealth: EngineHealthService) async {
+    /// First engine refresh, then the 10-minute re-check, then `next` (the
+    /// launch-time upgrade) — chained on their own so nothing else in the
+    /// launch task can delay them.
+    private static func refreshEngineThenStartPeriodicRefresh(
+        _ engineHealth: EngineHealthService, then next: @escaping @MainActor () async -> Void = {}
+    ) async {
         await engineHealth.refresh()
         engineHealth.startPeriodicRefresh()
+        await next()
+    }
+
+    // MARK: - Engine install, onboarding, upgrade (spec §5)
+
+    /// Spec §5 "every launch": upgrade automatically only an app-managed
+    /// engine whose vault is set up (otherwise onboarding finishes first)
+    /// and whose version is older than the bundled one.
+    nonisolated static func shouldAutoUpgrade(state: EngineState, release: EngineRelease?) -> Bool {
+        guard let release, case .managed(_, vaultBootstrapped: true) = state else { return false }
+        return EngineUpgrader.needsUpgrade(state: state, bundledVersion: release.engine.version)
+    }
+
+    /// nil when this build carries no engine or Claude Code can't be found.
+    /// Async because finding `claude` can fall back to a login shell, which
+    /// must never block the main actor — it runs detached.
+    func makeInstaller(progress: @escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller? {
+        guard let engineRelease else { return nil }
+        let override = defaults.string(forKey: "claudeCLIPath") ?? ""
+        let resolve = resolveClaude
+        guard let claude = await Task.detached(operation: { resolve(override) }).value else { return nil }
+        return EngineInstaller(
+            layout: engineLayout, release: engineRelease, tarballURL: engineTarballURL, runner: runner,
+            uv: UvInstaller(release: engineRelease.uv, layout: engineLayout, downloader: fileDownloader, runner: runner),
+            claude: URL(fileURLWithPath: claude), progress: progress)
+    }
+
+    /// A fresh onboarding flow for the current engine state. `appVault` is
+    /// the vault this process's services were wired to, so Ready can say
+    /// when a different choice needs a restart (Ruling 46). `onFinished`
+    /// runs after the engine has been re-checked.
+    func makeOnboardingModel(onFinished: @escaping @MainActor () -> Void) -> OnboardingViewModel {
+        OnboardingViewModel(
+            engineState: engineHealth.state, layout: engineLayout, release: engineRelease, runner: runner,
+            prerequisites: PrerequisiteChecker(runner: runner, layout: engineLayout,
+                                               claudePathOverride: defaults.string(forKey: "claudeCLIPath") ?? "",
+                                               resolveClaude: resolveClaude),
+            makeInstaller: { [weak self] sink in await self?.makeInstaller(progress: sink) },
+            appVault: scoutDirectory,
+            onFinished: { [weak self] in
+                Task { @MainActor in
+                    await self?.engineHealth.refresh()
+                    onFinished()
+                }
+            })
+    }
+
+    /// Whether the window keeps an onboarding flow: while the engine gates
+    /// the tabs, or while a finishing flow holds it (Ruling 41).
+    nonisolated static func keepsOnboarding(state: EngineState, holdsWindow: Bool) -> Bool {
+        state.gatesTabs || holdsWindow
+    }
+
+    /// Creates the onboarding flow when the engine starts gating the tabs
+    /// and drops it when it stops — unless the user is finishing a setup
+    /// that already changed the machine.
+    func syncOnboarding() {
+        let holds = onboarding?.holdsWindow ?? false
+        if Self.keepsOnboarding(state: engineHealth.state, holdsWindow: holds) {
+            if onboarding == nil { onboarding = newOnboardingFlow() }
+        } else {
+            onboarding = nil
+        }
+    }
+
+    /// Settings ▸ Engine's "Set up…" / "Repair…": the flow already running,
+    /// else a new one.
+    @discardableResult
+    func beginOnboarding() -> OnboardingViewModel {
+        if let onboarding { return onboarding }
+        let flow = newOnboardingFlow()
+        onboarding = flow
+        return flow
+    }
+
+    private func newOnboardingFlow() -> OnboardingViewModel {
+        makeOnboardingModel(onFinished: { [weak self] in
+            guard let self else { return }
+            self.onboarding = nil
+            self.syncOnboarding()   // still gated after setup? start over honestly
+        })
+    }
+
+    /// Spec §5 "every launch": a newer bundled engine is applied for
+    /// app-managed installs. Called from the launch task only.
+    func runEngineUpgradeIfNeeded() async {
+        guard Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease) else { return }
+        await runEngineUpgrade()
+    }
+
+    /// Installs the bundled engine over a managed one (EngineUpgrader's
+    /// steps) with the upgrade sheet showing progress. Settings ▸ Engine's
+    /// Update and the sheet's Retry call this directly; every step is
+    /// idempotent, so a retry resumes where the last run stopped. Old
+    /// versions are garbage-collected only after a fully successful run.
+    func runEngineUpgrade() async {
+        guard !isUpgradingEngine else { return }
+        guard let engineRelease, case .managed(let install, _) = engineHealth.state else {
+            if engineUpgradeProgress != nil {
+                engineUpgradeError = "The engine is no longer an app-managed install, so Scout can't update it. Settings ▸ Engine shows its state."
+            }
+            return
+        }
+        isUpgradingEngine = true
+        defer { isUpgradingEngine = false }
+        upgradeGeneration += 1
+        let generation = upgradeGeneration
+        liveUpgradeGeneration = generation
+        engineUpgradeError = nil
+        engineUpgradeProgress = [:]
+
+        let ledger = InstallProgressLedger()
+        let installer = await makeInstaller { [weak self] p in
+            ledger.record(p)
+            guard let appState = self else { return }
+            Task { @MainActor in appState.applyUpgradeProgress(ledger, step: p.step, generation: generation) }
+        }
+        guard let installer else {
+            liveUpgradeGeneration = nil
+            engineUpgradeError = "Claude Code wasn't found, so the engine can't be updated. Install Claude Code (or set its path in Settings ▸ Claude Code), then Retry."
+            return
+        }
+        let ok = await installer.run(steps: EngineUpgrader.upgradeSteps, mode: .upgrade(vault: install.vault ?? scoutDirectory))
+        // Settle from the ledger; later hops from this run are dropped.
+        if liveUpgradeGeneration == generation { liveUpgradeGeneration = nil }
+        engineUpgradeProgress = ledger.snapshot
+        if ok {
+            _ = try? EngineUpgrader(layout: engineLayout, release: engineRelease).garbageCollect(keeping: engineRelease.engine.version)
+        } else if EngineUpgradeSheet.failure(progress: ledger.snapshot, error: nil) == nil {
+            engineUpgradeError = "The update stopped before it finished."
+        }
+        await engineHealth.refresh()
+        if ok { engineUpgradeProgress = nil }   // on failure the sheet stays with the log + Retry
+    }
+
+    /// The sheet's "Later": hides a failed upgrade. Ignored while one runs.
+    func dismissEngineUpgrade() {
+        guard !isUpgradingEngine else { return }
+        engineUpgradeProgress = nil
+        engineUpgradeError = nil
+    }
+
+    private func applyUpgradeProgress(_ ledger: InstallProgressLedger, step: InstallStep, generation: Int) {
+        guard generation == liveUpgradeGeneration, let latest = ledger.latest(step) else { return }
+        engineUpgradeProgress?[step] = latest
     }
 
     // MARK: - Configuration
@@ -404,11 +594,24 @@ final class AppState: ObservableObject {
         /// production). Defaults to none, so a test graph never watches the
         /// real `~/.claude` or the desktop app's store.
         var agentSessionWatchRoots: [URL] = []
+        /// The engine this build ships (spec §5). The bundle's in production;
+        /// nil in every test configuration unless a test passes one, so no
+        /// test can install or upgrade an engine by accident (Ruling 46).
+        var engineRelease: EngineRelease? = nil
+        /// The bundled `scout-engine-<v>.tar.gz` beside `engineRelease`.
+        var engineTarballURL: URL? = nil
+        /// Finds the `claude` binary from the user's path override. Production
+        /// probes the real candidates and the login shell
+        /// (`ClaudeLauncher.resolveClaudePath`); the default finds nothing.
+        var resolveClaude: @Sendable (String) -> String? = { _ in nil }
+        /// Downloads uv when no copy exists yet (installer only).
+        var fileDownloader: any FileDownloader = URLSessionDownloader()
 
         static func production() -> Configuration {
             let layout = EngineLayout.live
             let locator = EngineLocator(layout: layout)
             let state = locator.locate()
+            let release = try? EngineRelease.load(bundle: .main)
             // Vault root precedence (spec §4.4): the `scoutDataDir` default
             // (tilde expanded) → the engine pointer's `vault` → `~/Scout`.
             let vault = AppState.resolveScoutDirectory(
@@ -434,7 +637,11 @@ final class AppState: ObservableObject {
                 engineLayout: layout,
                 initialEngineState: state,
                 startsBackgroundWork: true,
-                agentSessionWatchRoots: SessionsRefresh.productionWatchRoots()
+                agentSessionWatchRoots: SessionsRefresh.productionWatchRoots(),
+                engineRelease: release,
+                engineTarballURL: release?.bundledTarballURL(bundle: .main),
+                resolveClaude: PrerequisiteChecker.defaultResolveClaude,
+                fileDownloader: URLSessionDownloader()
             )
         }
 
@@ -482,7 +689,12 @@ final class AppState: ObservableObject {
                 // user's real engine.
                 engineLayout: EngineLayout(home: engineHome),
                 initialEngineState: .external(testInstall, .unknown("test-host")),
-                startsBackgroundWork: false
+                startsBackgroundWork: false,
+                // No bundled engine and no `claude`: the test host can never
+                // install or upgrade anything (Ruling 46).
+                engineRelease: nil,
+                engineTarballURL: nil,
+                resolveClaude: { _ in nil }
             )
         }
     }

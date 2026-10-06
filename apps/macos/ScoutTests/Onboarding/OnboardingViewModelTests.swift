@@ -327,6 +327,36 @@ struct OnboardingViewModelTests {
         #expect(!m.canRetry)              // only Engine and Vault have installs
     }
 
+    /// C8: the app's factory returns nil with a release when `claude` can't
+    /// be found — the model says so instead of blaming the build.
+    @Test func installEngineWithoutClaudeSaysSo() async {
+        let m = model(release: releaseFixture)
+        m.prerequisites = ready
+        m.step = .prerequisites
+        await m.continueTapped()
+        #expect(m.step == .engine)
+        #expect(m.lastError?.contains("Claude Code wasn't found") == true)
+        #expect(m.canRetry)
+    }
+
+    /// C8: the window keeps a flow that already changed the machine until
+    /// the user taps Open Scout, even once the engine stops gating.
+    @Test func holdsWindowOnlyWhileFinishing() {
+        let m = model()
+        for step in OnboardingViewModel.Step.allCases where step != .ready {
+            m.step = step
+            #expect(!m.holdsWindow, "\(step)")
+        }
+        m.step = .vault
+        m.progress[.bootstrapVault] = InstallProgress(step: .bootstrapVault, status: .done, log: "")
+        #expect(m.holdsWindow)
+        m.step = .ready
+        #expect(m.holdsWindow)
+        m.step = .engine
+        m.busy = true
+        #expect(m.holdsWindow)
+    }
+
     func engineModel(_ support: EngineInstallerTests, _ f: EngineInstallerTests.Fixture,
                      engineState: EngineState = .notInstalled) -> OnboardingViewModel {
         f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "add"])

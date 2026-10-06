@@ -5,7 +5,8 @@ import Combine
 /// from its own actor; the model reads this back on the main actor, both live
 /// (via a hop per report) and once, synchronously, when the run returns — so
 /// `progress` and `lastError` never depend on whether those hops have run yet.
-private nonisolated final class InstallProgressLedger: @unchecked Sendable {
+/// Shared with `AppState`'s engine upgrade, which settles the same way.
+nonisolated final class InstallProgressLedger: @unchecked Sendable {
     private let lock = NSLock()
     private var latest: [InstallStep: InstallProgress] = [:]
     func record(_ p: InstallProgress) { lock.withLock { latest[p.step] = p } }
@@ -60,7 +61,10 @@ final class OnboardingViewModel: ObservableObject {
     let appVault: URL?
     private let runner: any ProcessRunner
     private let checker: PrerequisiteChecker
-    private let makeInstaller: (@escaping @Sendable (InstallProgress) -> Void) -> EngineInstaller?
+    /// Async so the app's factory can resolve the `claude` binary off the
+    /// main thread (its login-shell fallback can take a full shell startup).
+    /// nil when this build carries no engine or Claude Code can't be found.
+    private let makeInstaller: (@escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller?
     private let handoff: @MainActor (String) throws -> Void
     private let onFinished: () -> Void
 
@@ -80,7 +84,7 @@ final class OnboardingViewModel: ObservableObject {
 
     init(engineState: EngineState, layout: EngineLayout, release: EngineRelease?, runner: any ProcessRunner,
          prerequisites: PrerequisiteChecker,
-         makeInstaller: @escaping (@escaping @Sendable (InstallProgress) -> Void) -> EngineInstaller?,
+         makeInstaller: @escaping (@escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller?,
          handoff: @escaping @MainActor (String) throws -> Void = { try TerminalHandoff.run($0) },
          appVault: URL? = nil,
          onFinished: @escaping () -> Void) {
@@ -185,6 +189,12 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     var restartNote: String? { appVault.flatMap { Self.restartNote(chosenVault: vaultURL, appVault: $0) } }
+
+    /// True once this flow has changed the machine in a way the user should
+    /// see through to "Open Scout" — an install is running, the vault was
+    /// just created, or Ready is showing. The window keeps the flow up while
+    /// this holds, even after the engine stops gating the tabs (C8).
+    var holdsWindow: Bool { busy || step == .ready || (step == .vault && isDone(.bootstrapVault)) }
 
     private func isDone(_ s: InstallStep) -> Bool {
         switch progress[s]?.status { case .done?, .skipped?: return true; default: return false }
@@ -329,13 +339,15 @@ final class OnboardingViewModel: ObservableObject {
         let generation = installGeneration
         liveGeneration = generation
         let ledger = InstallProgressLedger()
-        let installer = makeInstaller { [weak self] p in
+        let installer = await makeInstaller { [weak self] p in
             ledger.record(p)
             guard let model = self else { return }
             Task { @MainActor in model.applyLiveProgress(ledger, step: p.step, generation: generation) }
         }
         guard let installer else {
-            lastError = "This build of Scout carries no engine (Debug build without a bundled tarball)."
+            lastError = release == nil
+                ? "This build of Scout carries no engine (Debug build without a bundled tarball)."
+                : "Claude Code wasn't found, so the engine can't be installed. Go Back to Prerequisites to install it (or set its path in Settings ▸ Claude Code), then Retry."
             return false
         }
         for s in steps { progress[s] = nil }

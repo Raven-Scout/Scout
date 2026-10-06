@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// Settings ▸ Engine (spec §5). Buttons that Part C implements are wired
-/// through optional closures so Part B ships with them hidden.
+/// Settings ▸ Engine (spec §5, Ruling 41). Every state the app can act on
+/// gets a real action: "Set up…" / "Repair…" open the onboarding flow,
+/// "Update" installs the bundled engine. External engines keep the copy
+/// `/scout-update` hand-off — the app never modifies them. A nil closure
+/// hides its row.
 struct EngineSettingsSection: View {
     @ObservedObject var health: EngineHealthService
     var bundledVersion: String?
+    var isUpdating: Bool = false
     var onUpdate: (() -> Void)? = nil
-    var onRepair: (() -> Void)? = nil
+    var onSetUp: (() -> Void)? = nil
     @AppStorage("scoutDataDir") private var scoutDataDir: String = ""
 
     private var model: EngineSettingsModel {
@@ -41,30 +45,16 @@ struct EngineSettingsSection: View {
                     ForEach(model.messages.dropFirst(), id: \.self) { Text($0).font(DS.mono(11)).foregroundStyle(DS.Ink.p3) }
                 }.padding(.vertical, 10)
             }
-            // Part B's honest remedy: a copyable command the user runs
-            // themselves. The app never runs it. Part C replaces this row
-            // with Install/Repair buttons.
-            if let step = model.nextStep {
-                SettingsRow(title: "Next step", help: step.text) {
-                    Button(Self.copyButtonTitle(for: step)) { Self.copyToPasteboard(step.copyValue) }
-                        .buttonStyle(.plainHit)
-                }
-                if !step.copyValue.hasPrefix("/") {
-                    Text(step.copyValue)
-                        .font(DS.mono(11)).foregroundStyle(DS.Ink.p3)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.vertical, 10)
+            if let action = model.setupAction, let onSetUp {
+                SettingsRow(title: action.rowTitle, help: model.setupHelp ?? "") {
+                    Button(action.buttonTitle) { onSetUp() }.buttonStyle(.plainHit)
                 }
             }
             if model.canUpdate, let onUpdate {
                 SettingsRow(title: "Update engine", help: "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade the vault.") {
-                    Button("Update") { onUpdate() }.buttonStyle(.plainHit)
-                }
-            }
-            if model.canRepair, let onRepair {
-                SettingsRow(title: "Repair", help: "Re-run the installer steps that failed or went missing.") {
-                    Button("Repair…") { onRepair() }.buttonStyle(.plainHit)
+                    Button(isUpdating ? "Updating…" : "Update") { onUpdate() }
+                        .buttonStyle(.plainHit)
+                        .disabled(isUpdating)
                 }
             }
             if model.showsHandOff {
@@ -74,12 +64,6 @@ struct EngineSettingsSection: View {
                 }
             }
         }
-    }
-
-    /// A slash command fits on the button ("Copy /scout-setup"); the
-    /// Terminal one-liner doesn't, so it's shown on its own line instead.
-    nonisolated static func copyButtonTitle(for step: EngineNextStep) -> String {
-        step.copyValue.hasPrefix("/") ? "Copy \(step.copyValue)" : "Copy command"
     }
 
     private static func copyToPasteboard(_ value: String) {

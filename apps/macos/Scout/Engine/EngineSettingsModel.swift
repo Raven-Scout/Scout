@@ -1,12 +1,14 @@
 import Foundation
 
-/// What the user can do today about an engine state the app can't fix itself:
-/// a sentence plus a value to copy (a Terminal command or a Claude Code slash
-/// command). Part B ships no Install/Repair buttons — the app never runs these
-/// itself; Part C replaces the row with real buttons.
-nonisolated struct EngineNextStep: Equatable, Sendable {
-    let text: String
-    let copyValue: String
+/// The onboarding flow Settings ▸ Engine offers for a state that gates the
+/// tabs (Ruling 41): "Set up…" when nothing (or no vault) is set up yet,
+/// "Repair…" when the engine that was here is broken. Both open the same
+/// onboarding flow in a sheet.
+nonisolated enum EngineSetupAction: Equatable, Sendable {
+    case setUp, repair
+
+    var buttonTitle: String { self == .setUp ? "Set up…" : "Repair…" }
+    var rowTitle: String { self == .setUp ? "Set up Scout" : "Repair engine" }
 }
 
 /// Pure presentation model for Settings ▸ Engine (spec §5). Views stay thin;
@@ -69,19 +71,23 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         return doctor.errors + doctor.warnings
     }
 
-    /// Today's real remedy for the states that gate the tabs; nil otherwise.
-    var nextStep: EngineNextStep? {
+    /// The onboarding flow for each state that gates the tabs; nil for a
+    /// usable engine (managed and set up, or external).
+    var setupAction: EngineSetupAction? {
         switch state {
-        case .notInstalled:
-            return EngineNextStep(
-                text: "Install the engine: run this in Terminal, then run /scout-setup in Claude Code.",
-                copyValue: "curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash")
-        case .broken:
-            return EngineNextStep(text: "Repair the engine by running /scout-update in Claude Code.", copyValue: "/scout-update")
-        case .managed(_, vaultBootstrapped: false):
-            return EngineNextStep(text: "Set up your vault by running /scout-setup in Claude Code.", copyValue: "/scout-setup")
-        case .managed, .external:
-            return nil
+        case .notInstalled, .managed(_, vaultBootstrapped: false): return .setUp
+        case .broken: return .repair
+        case .managed, .external: return nil
+        }
+    }
+
+    /// One line under the Set up / Repair row.
+    var setupHelp: String? {
+        switch state {
+        case .notInstalled: return "Install the engine that ships with this app and create your vault."
+        case .managed(_, vaultBootstrapped: false): return "The engine is installed; finish setting up your vault."
+        case .broken: return "Reinstall the engine that ships with this app and re-run vault setup."
+        case .managed, .external: return nil
         }
     }
 
@@ -90,7 +96,14 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
               let b = EngineVersion(bundled), let i = EngineVersion(installed) else { return false }
         return i < b
     }
-    var canUpdate: Bool { state.isManaged && isBehindBundled }
-    var canRepair: Bool { if case .external = state { return false }; return true }
+    /// An app-managed, set-up engine older than the bundled one — exactly
+    /// when the launch-time upgrade applies (`AppState.shouldAutoUpgrade`).
+    /// A vault that isn't set up finishes onboarding first.
+    var canUpdate: Bool {
+        guard case .managed(_, vaultBootstrapped: true) = state else { return false }
+        return isBehindBundled
+    }
+    /// External engines are never modified (spec §10): they update through
+    /// Claude Code, so the row hands the user `/scout-update` to run.
     var showsHandOff: Bool { if case .external = state { return isBehindBundled }; return false }
 }
