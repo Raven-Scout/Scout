@@ -2732,7 +2732,7 @@ Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout mo
 
 > **Review:** the "Scout monorepo consolidation" session owns #317's `release.sh`. Ask it to review this task's diff before merging.
 >
-> **Reviewer requirements (relayed 2026-10-06). These supersede spec §8 on two points:**
+> **Reviewer requirements (relayed 2026-10-06), now also in spec §8:**
 > - Only a final release gets the stable name. An rc (`--prerelease --latest=false`) doesn't, because `/releases/latest/download/Scout.dmg` resolves to the Latest release anyway.
 > - There is no post-publish `gh release view` check, because tests may use only the existing stub harness. The tests below cover the one `gh release create` call instead.
 

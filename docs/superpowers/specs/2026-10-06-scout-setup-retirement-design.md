@@ -377,14 +377,19 @@ the stub is deleted in v0.16.0.
 
 ## 8. The website download button
 
-- **Release.** `release.sh finalize` (and `rc`) copies the notarized DMG to
+- **Release.** `release.sh finalize` copies the notarized, stapled DMG to
   `Scout.dmg` and attaches both files: `gh release create … "$dmg"
   "$build/release/Scout.dmg" [appcast.xml]`.
+  - The copy is never re-signed or re-notarized.
+  - Publishing stays one `gh release create` call, after notarization.
+  - An rc gets no `Scout.dmg`. It is never Latest, so the button's
+    `/releases/latest/download/Scout.dmg` never reaches it.
   - The appcast keeps the versioned name.
-  - The verify step checks that `/releases/latest` carries `Scout.dmg`.
-  - #317's stubbed-`gh` test asserts both assets are in the one
-    `gh release create` call.
-  - This rides on whichever of #317 and this work merges second.
+  - #317's stubbed-`gh` tests assert that both assets are in the one call for
+    a release, and that an rc has none. They use only the existing harness.
+  - #317's owner reviews the change, which rides on whichever of #317 and
+    this work merges second. (These rules came from that review on
+    2026-10-06.)
 - **Site** (`docs/index.html`):
   - The hero's primary button becomes **Download for Mac**, linking to
     `https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg`.
