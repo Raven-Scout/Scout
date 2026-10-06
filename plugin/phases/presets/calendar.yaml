@@ -1,0 +1,9 @@
+summary: Calendar — meetings and schedule changes
+inbound: |
+  List today's and yesterday's events. For each meeting note the attendees (cross-reference `people.md`), the
+  topic, and whether it likely produced action items or needs prep. Flag meetings in the next working day that
+  need preparation {{USER_NAME}} has not done.
+outbound: |
+  Look for events {{USER_NAME}} created, cancelled, or changed since the last run. A cancelled meeting often
+  means its topic was resolved. A new event often means {{USER_NAME}} scheduled a follow-up or committed to
+  something. Added attendees suggest widening involvement; an updated description suggests prep was done.

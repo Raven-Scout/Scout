@@ -86,6 +86,11 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     let scheduledAt: Date?
     let startedAt: Date
     let endedAt: Date?
+    /// Absolute start parsed from the log header (zone-aware). `startedAt`
+    /// stays filename-derived because the run id and the Claude-session title
+    /// match format it back into wall-clock text. Commit windows use this
+    /// when present (#43).
+    let headerStartedAt: Date?
     let status: RunStatus
     let exitCode: Int?
     let cost: Decimal?
@@ -128,7 +133,7 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
         Run(
             id: id, type: type, runnerScript: runnerScript, source: source,
             scheduledAt: scheduledAt, startedAt: startedAt, endedAt: endedAt,
-            status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
+            headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf
         )
@@ -148,16 +153,25 @@ extension Run {
         cost: Decimal? = nil,
         logPath: URL = URL(fileURLWithPath: "/tmp/fake.log"),
         commits: [Commit] = [],
-        retryOf: Run.ID? = nil
+        retryOf: Run.ID? = nil,
+        runnerScript: String? = nil,
+        headerStartedAt: Date? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
             type: type,
-            runnerScript: "run-scout.sh",
+            runnerScript: runnerScript ?? {
+                switch type {
+                case .dreaming: return "run-dreaming.sh"
+                case .research: return "run-research.sh"
+                default:        return "run-scout.sh"
+                }
+            }(),
             source: source,
             scheduledAt: nil,
             startedAt: startedAt,
             endedAt: endedAt,
+            headerStartedAt: headerStartedAt,
             status: status,
             exitCode: exitCode,
             cost: cost,

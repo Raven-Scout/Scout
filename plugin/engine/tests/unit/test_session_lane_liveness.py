@@ -82,6 +82,14 @@ def _git(vault: Path, *args: str, when: datetime | None = None) -> None:
     subprocess.run(["git", "-C", str(vault), *args], env=env, check=True, capture_output=True)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-anchor NOW when each test starts. The script measures ages from its own
+    clock and rounds them to 2 decimals, so a NOW frozen at collection drifts the
+    ages as the suite runs: ~3 minutes in, 0.4931 days rounds to 0.50 (#308)."""
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(UTC))
+
+
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
