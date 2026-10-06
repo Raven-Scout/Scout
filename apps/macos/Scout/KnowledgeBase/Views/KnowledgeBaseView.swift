@@ -134,7 +134,7 @@ struct KnowledgeBaseView: View {
         case .missing:
             emptyState(icon: "folder.badge.questionmark",
                        title: "No knowledge base",
-                       detail: "Expected \(service.kbDirectory.path). Install the scout-plugin and run /scout-setup.")
+                       detail: "Expected \(service.kbDirectory.path). Setting up the vault creates it: see Settings ▸ Engine — or, for an engine managed in Claude Code, run /scout-setup there.")
         case .failed(let msg):
             emptyState(icon: "exclamationmark.triangle", title: "Couldn't read the knowledge base", detail: msg)
         case .loaded:

@@ -82,6 +82,26 @@ struct EngineSettingsSectionSmokeTests {
             size: CGSize(width: 640, height: 420))
     }
 
+    @Test("managed at the bundled version with an unfinished switch — Finish update")
+    func finishUpdate() {
+        ViewHost.render(
+            EngineSettingsSection(health: health(.managed(install, vaultBootstrapped: true)), bundledVersion: "0.10.0",
+                                  unfinishedSwitch: true, onUpdate: {}, onSetUp: {})
+                .frame(width: 640),
+            size: CGSize(width: 640, height: 420))
+    }
+
+    @Test("broken, managed by another installer — /scout-update hand-off")
+    func foreignBroken() {
+        let foreign = EngineInstall(root: URL(fileURLWithPath: "/Users/alex/scout-plugin"), scoutctl: URL(fileURLWithPath: "/usr/bin/false"),
+                                    python: nil, version: "0.10.0", vault: nil, managedBy: "dev")
+        ViewHost.render(
+            EngineSettingsSection(health: health(.broken(foreign, reason: "engine pointer names a missing scoutctl: /s")),
+                                  bundledVersion: "0.11.0", onUpdate: {}, onSetUp: {})
+                .frame(width: 640),
+            size: CGSize(width: 640, height: 420))
+    }
+
     @Test("the whole Settings pane renders with the Engine section wired")
     func settingsViewRendersWithEngineSection() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }

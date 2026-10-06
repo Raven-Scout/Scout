@@ -200,10 +200,17 @@ final class OnboardingViewModel: ObservableObject {
         switch progress[s]?.status { case .done?, .skipped?: return true; default: return false }
     }
 
-    static func initialStep(engineState: EngineState, prerequisites: Prerequisites) -> Step {
+    /// Where a flow starts. A managed engine whose vault isn't set up skips
+    /// to Identity only when it IS the bundled version: the vault step runs
+    /// the bundled version's scoutctl, so an older (or newer) install goes
+    /// through the Engine step first (Ruling 69 I5).
+    static func initialStep(engineState: EngineState, prerequisites: Prerequisites, bundledVersion: String? = nil) -> Step {
         switch engineState {
         case .managed(_, vaultBootstrapped: true), .external: return .ready
-        case .managed(_, vaultBootstrapped: false): return prerequisites.canInstallEngine ? .identity : .prerequisites
+        case .managed(let install, vaultBootstrapped: false):
+            guard prerequisites.canInstallEngine else { return .prerequisites }
+            if let bundledVersion, install.version != bundledVersion { return .engine }
+            return .identity
         case .notInstalled, .broken: return .welcome
         }
     }
@@ -247,11 +254,15 @@ final class OnboardingViewModel: ObservableObject {
         if identity.userName.isEmpty, let name = git.name { identity.userName = name }
         if identity.userEmail.isEmpty, let email = git.email { identity.userEmail = email }
         identity.vault = vaultURL
+        var landedOnEngine = false
         if step == entryStep {
-            step = Self.initialStep(engineState: engineState, prerequisites: checked)
+            step = Self.initialStep(engineState: engineState, prerequisites: checked, bundledVersion: release?.engine.version)
+            landedOnEngine = step == .engine
         }
         didStart = true
         if step == .ready { await refreshDoctor() }
+        // Landing on Engine starts the install, as Continue into it does.
+        if landedOnEngine { await installEngine() }
     }
 
     func continueTapped() async {

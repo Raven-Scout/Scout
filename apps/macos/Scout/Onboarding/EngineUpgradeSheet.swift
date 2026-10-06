@@ -8,6 +8,8 @@ struct EngineUpgradeSheet: View {
     let progress: [InstallStep: InstallProgress]
     let error: String?
     let targetVersion: String
+    /// Target == installed: finishing a switch or repairing (Ruling 69 I4).
+    var isRepair: Bool = false
     let isRunning: Bool
     let retry: () -> Void
     let dismiss: () -> Void
@@ -29,9 +31,26 @@ struct EngineUpgradeSheet: View {
         progress[.bootstrapVault]?.status == .done
     }
 
+    nonisolated static func title(targetVersion: String, isRepair: Bool) -> String {
+        if isRepair { return "Repairing the Scout engine" }
+        return targetVersion.isEmpty ? "Updating the Scout engine" : "Updating the Scout engine to \(targetVersion)"
+    }
+
+    /// What a failure means for the engine that's live right now: before the
+    /// switch the old engine is untouched; after it but before Claude Code
+    /// moved, Retry finishes that; once Claude Code moved too (only verify
+    /// failed), Retry just re-checks (Ruling 69 M2).
+    nonisolated static func statusNote(_ progress: [InstallStep: InstallProgress]) -> String {
+        guard switchedOver(progress) else { return "Your current engine keeps working until the update succeeds." }
+        if progress[.registerWithClaudeCode]?.status == .done {
+            return "The new engine is installed and Claude Code uses it; Retry re-runs the health check."
+        }
+        return "Your vault already runs the new engine; Retry finishes switching Claude Code over."
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(targetVersion.isEmpty ? "Updating the Scout engine" : "Updating the Scout engine to \(targetVersion)")
+            Text(Self.title(targetVersion: targetVersion, isRepair: isRepair))
                 .font(DS.serif(20, weight: .medium)).foregroundStyle(DS.Ink.p1)
             ForEach(EngineUpgrader.upgradeSteps, id: \.rawValue) { s in
                 HStack(spacing: 10) {
@@ -41,9 +60,7 @@ struct EngineUpgradeSheet: View {
             }
             if !isRunning, let failure = Self.failure(progress: progress, error: error) {
                 Text(failure).font(DS.mono(11)).foregroundStyle(DS.Status.warn).lineLimit(6).textSelection(.enabled)
-                Text(Self.switchedOver(progress)
-                     ? "Your vault already runs the new engine; Retry finishes switching Claude Code over."
-                     : "Your current engine keeps working until the update succeeds.")
+                Text(Self.statusNote(progress))
                     .font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
                 HStack(spacing: 16) {
                     Button("Retry", action: retry)

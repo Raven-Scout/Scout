@@ -65,11 +65,24 @@ final class AppState: ObservableObject {
     /// Why the upgrade could not start or stopped without a failed step.
     @Published private(set) var engineUpgradeError: String?
     @Published private(set) var isUpgradingEngine = false
+    /// True while the running (or last) upgrade targets the version already
+    /// installed — finishing a switch or repairing — so the sheet says so.
+    @Published private(set) var engineUpgradeIsRepair = false
+    /// `EngineUpgrader.hasUnfinishedSwitch` for the current state (Ruling 69
+    /// I1): an earlier upgrade's `bootstrap upgrade` ran but Claude Code was
+    /// never switched over. Re-read on every engine refresh.
+    @Published private(set) var engineSwitchUnfinished = false
     /// The one onboarding flow (Ruling 41): present while the engine gates
     /// the tabs (or while a finishing flow holds the window). The window's
     /// gate and Settings ▸ Engine's sheet show this same model, so the flow
     /// is never rebuilt per render and never runs twice at once.
-    @Published private(set) var onboarding: OnboardingViewModel?
+    @Published private(set) var onboarding: OnboardingViewModel? {
+        didSet { watchOnboarding() }
+    }
+    private var onboardingWatch: AnyCancellable?
+    /// Whether the last engine state seen gated the tabs — a gated → usable
+    /// transition re-runs the Action Items environment check (Ruling 69 I3).
+    private var lastGatesTabs = false
     private var upgradeGeneration = 0
     private var liveUpgradeGeneration: Int?
 
@@ -306,12 +319,13 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        // The onboarding gate follows the engine state: a flow appears when
-        // the tabs become gated and goes when they no longer are.
+        // The onboarding gate, the unfinished-switch flag and the Action
+        // Items check follow the engine state. Every refresh publishes (no
+        // de-duplication): the switch flag reads the disk, which can change
+        // while the state value doesn't.
         engineHealth.$state
-            .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.syncOnboarding() }
+            .sink { [weak self] _ in self?.engineStateDidChange() }
             .store(in: &cancellables)
         sessionIndex.$needsYouCount
             .removeDuplicates()
@@ -335,7 +349,9 @@ final class AppState: ObservableObject {
         // Correct from the first frame: the window shows onboarding at once
         // when the located engine gates the tabs. Building the model starts
         // no work — the view's `.task` does.
+        lastGatesTabs = configuration.initialEngineState.gatesTabs
         syncOnboarding()
+        refreshEngineSwitchState()
 
         // Everything below spawns work that outlives the initializer — polling
         // timers, FSEvents subscriptions, launch-time loads and a `scoutctl`
@@ -373,20 +389,16 @@ final class AppState: ObservableObject {
             // `scoutctl action-items --help` below can't hold it back. The
             // launch-time engine upgrade (spec §5) follows in that same child
             // task, for the same reason; it only ever runs here, inside
-            // `startsBackgroundWork` (Ruling 46).
+            // `startsBackgroundWork` (Ruling 46). Note that this whole block
+            // — upgrade included — still waits behind the tracker/logs loads
+            // above.
             async let engineRefresh: Void = Self.refreshEngineThenStartPeriodicRefresh(engineHealth) { [weak self] in
                 await self?.runEngineUpgradeIfNeeded()
             }
 
-            // Run environment check; publish result.
-            let check = ActionItemsEnvironmentCheck(
-                scoutctl: scoutctlExe,
-                argumentsPrefix: scoutctlArgsPrefix,
-                runner: runner
-            )
-            if let result = try? await check.run() {
-                await MainActor.run { envState.result = result }
-            }
+            // Run environment check; publish result. It runs again when the
+            // engine stops gating and after an upgrade (Ruling 69 I3).
+            await self?.recheckActionItemsEnvironment()
 
             // Drives the window gate, Settings ▸ Engine, and the sidebar badge.
             await engineRefresh
@@ -410,10 +422,53 @@ final class AppState: ObservableObject {
 
     /// Spec §5 "every launch": upgrade automatically only an app-managed
     /// engine whose vault is set up (otherwise onboarding finishes first)
-    /// and whose version is older than the bundled one.
-    nonisolated static func shouldAutoUpgrade(state: EngineState, release: EngineRelease?) -> Bool {
-        guard let release, case .managed(_, vaultBootstrapped: true) = state else { return false }
-        return EngineUpgrader.needsUpgrade(state: state, bundledVersion: release.engine.version)
+    /// and that is either older than the bundled one, or AT the bundled
+    /// version with an unfinished switch (Ruling 69 I1: a failure after
+    /// `bootstrap upgrade` rewrote the pointer).
+    nonisolated static func shouldAutoUpgrade(state: EngineState, release: EngineRelease?, switchUnfinished: Bool = false) -> Bool {
+        guard let release, case .managed(let install, vaultBootstrapped: true) = state else { return false }
+        if EngineUpgrader.needsUpgrade(state: state, bundledVersion: release.engine.version) { return true }
+        guard switchUnfinished, let installed = install.version.flatMap(EngineVersion.init),
+              let bundled = EngineVersion(release.engine.version) else { return false }
+        return installed == bundled
+    }
+
+    /// True when installing the bundled engine would move an install
+    /// backwards (the app is older than the engine) — never done.
+    nonisolated static func wouldDowngrade(installed: String?, bundled: String) -> Bool {
+        guard let i = installed.flatMap(EngineVersion.init), let b = EngineVersion(bundled) else { return false }
+        return b < i
+    }
+
+    /// Ruling 69 I3: the scoutctl every service shells out to. An engine the
+    /// app manages (or will install) is reached through the shim
+    /// (`~/.local/bin/scoutctl`), which `bootstrap` renders on install and
+    /// re-renders on every upgrade — so services wired at launch follow the
+    /// switch. An external engine keeps the scoutctl it was found at (Part B).
+    nonisolated static func serviceScoutctl(for state: EngineState, layout: EngineLayout) -> URL {
+        if case .external(let install, _) = state { return install.scoutctl }
+        return layout.shimURL
+    }
+
+    /// Probes `scoutctl action-items --help` and publishes the result to the
+    /// Action Items banner.
+    func recheckActionItemsEnvironment() async {
+        let check = ActionItemsEnvironmentCheck(scoutctl: scoutctlExecutable, argumentsPrefix: scoutctlArgumentsPrefix, runner: runner)
+        if let result = try? await check.run() { actionItemsEnvState.result = result }
+    }
+
+    private func engineStateDidChange() {
+        refreshEngineSwitchState()
+        syncOnboarding()
+        let gates = engineHealth.state.gatesTabs
+        let becameUsable = lastGatesTabs && !gates
+        lastGatesTabs = gates
+        if becameUsable { Task { [weak self] in await self?.recheckActionItemsEnvironment() } }
+    }
+
+    private func refreshEngineSwitchState() {
+        let unfinished = engineRelease.map { EngineUpgrader(layout: engineLayout, release: $0).hasUnfinishedSwitch(state: engineHealth.state) } ?? false
+        if unfinished != engineSwitchUnfinished { engineSwitchUnfinished = unfinished }
     }
 
     /// nil when this build carries no engine or Claude Code can't be found.
@@ -469,13 +524,20 @@ final class AppState: ObservableObject {
     }
 
     /// Settings ▸ Engine's "Set up…" / "Repair…": the flow already running,
-    /// else a new one.
+    /// else a new one — or nil when the engine doesn't gate (Ruling 69 M4:
+    /// there is nothing for onboarding to set up).
     @discardableResult
-    func beginOnboarding() -> OnboardingViewModel {
-        if let onboarding { return onboarding }
-        let flow = newOnboardingFlow()
-        onboarding = flow
-        return flow
+    func beginOnboarding() -> OnboardingViewModel? {
+        syncOnboarding()
+        return onboarding
+    }
+
+    /// A flow can stop holding the window without the engine state changing
+    /// (e.g. Back from a finished vault step); re-sync whenever it changes.
+    private func watchOnboarding() {
+        onboardingWatch = onboarding?.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.syncOnboarding() }
     }
 
     private func newOnboardingFlow() -> OnboardingViewModel {
@@ -489,23 +551,27 @@ final class AppState: ObservableObject {
     /// Spec §5 "every launch": a newer bundled engine is applied for
     /// app-managed installs. Called from the launch task only.
     func runEngineUpgradeIfNeeded() async {
-        guard Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease) else { return }
+        let unfinished = engineRelease.map { EngineUpgrader(layout: engineLayout, release: $0).hasUnfinishedSwitch(state: engineHealth.state) } ?? false
+        guard Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease, switchUnfinished: unfinished) else { return }
         await runEngineUpgrade()
     }
 
-    /// Installs the bundled engine over a managed one (EngineUpgrader's
-    /// steps) with the upgrade sheet showing progress. Settings ▸ Engine's
-    /// Update and the sheet's Retry call this directly; every step is
-    /// idempotent, so a retry resumes where the last run stopped. Old
-    /// versions are garbage-collected only after a fully successful run.
+    /// Installs the bundled engine over a managed, set-up one
+    /// (EngineUpgrader's steps) with the upgrade sheet showing progress.
+    /// Settings ▸ Engine's Update / Finish update / Repair and the sheet's
+    /// Retry call this directly; every step is idempotent, so a retry
+    /// resumes where the last run stopped. Old versions are garbage-
+    /// collected only after a fully successful run. Never downgrades.
     func runEngineUpgrade() async {
         guard !isUpgradingEngine else { return }
-        guard let engineRelease, case .managed(let install, _) = engineHealth.state else {
+        guard let engineRelease, case .managed(let install, vaultBootstrapped: true) = engineHealth.state,
+              !Self.wouldDowngrade(installed: install.version, bundled: engineRelease.engine.version) else {
             if engineUpgradeProgress != nil {
-                engineUpgradeError = "The engine is no longer an app-managed install, so Scout can't update it. Settings ▸ Engine shows its state."
+                engineUpgradeError = "The engine is no longer an app-managed, set-up install this app can update. Settings ▸ Engine shows its state."
             }
             return
         }
+        engineUpgradeIsRepair = install.version == engineRelease.engine.version
         isUpgradingEngine = true
         defer { isUpgradingEngine = false }
         upgradeGeneration += 1
@@ -535,7 +601,13 @@ final class AppState: ObservableObject {
             engineUpgradeError = "The update stopped before it finished."
         }
         await engineHealth.refresh()
-        if ok { engineUpgradeProgress = nil }   // on failure the sheet stays with the log + Retry
+        refreshEngineSwitchState()
+        if ok {
+            engineUpgradeProgress = nil
+            // Services reach the engine through the shim, which the upgrade
+            // re-rendered; re-probe so the Action Items banner follows.
+            await recheckActionItemsEnvironment()
+        }   // on failure the sheet stays with the log + Retry
     }
 
     /// The sheet's "Later": hides a failed upgrade. Ignored while one runs.
@@ -625,11 +697,14 @@ final class AppState: ObservableObject {
                 runner: EnvironmentInjectingRunner(base: SystemProcessRunner(), extra: ["SCOUT_DATA_DIR": vault.path]),
                 fileEvents: FileWatcher(),
                 // The engine is found by EngineLocator (pointer → conventional
-                // layout → shim → marketplace cache → dev checkout). When
-                // nothing is found we fall back to the shim path: ENOENT
-                // there is the honest failure, and EngineHealthService gates
-                // the UI on the same fact. No more `/usr/bin/env scoutctl`.
-                scoutctl: AppState.ScoutctlInvocation(executable: state.scoutctl ?? layout.shimURL, argsPrefix: []),
+                // layout → shim → marketplace cache → dev checkout). An
+                // external engine keeps the scoutctl it was found at; one the
+                // app manages — or will install — is reached through the shim,
+                // which bootstrap (re-)renders, so services follow onboarding
+                // and upgrades without a restart (Ruling 69 I3). ENOENT at
+                // the shim before setup is the honest failure, and
+                // EngineHealthService gates the UI on the same fact.
+                scoutctl: AppState.ScoutctlInvocation(executable: AppState.serviceScoutctl(for: state, layout: layout), argsPrefix: []),
                 defaults: .standard,
                 claudeSessionsDirectory: ClaudeSessionService
                     .defaultScoutSessionsDirectory(scoutDirectory: vault),

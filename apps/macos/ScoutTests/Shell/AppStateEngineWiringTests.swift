@@ -284,8 +284,9 @@ struct AppStateEngineDecisionTests {
         return GateFixture(tmp: tmp, layout: configuration.engineLayout, runner: runner, appState: AppState(configuration: configuration))
     }
 
+    /// Liveness budget ≥ 10 s (Ruling 69 M7): main-actor suites starve CI.
     func waitUntil(_ condition: () -> Bool) async throws -> Bool {
-        for _ in 0..<40 {
+        for _ in 0..<400 {
             if condition() { return true }
             try await Task.sleep(for: .milliseconds(25))
         }
@@ -329,15 +330,60 @@ struct AppStateEngineDecisionTests {
         #expect(try await waitUntil { f.appState.onboarding.map { $0 !== flow } ?? false })
     }
 
-    /// Settings' "Set up…" on a state that doesn't gate still gets a flow,
-    /// and asking again returns the same one.
-    @Test func beginOnboardingCreatesOnceAndReuses() {
+    /// Ruling 69 M4: Settings' "Set up…" gets no flow when the engine
+    /// doesn't gate (there is nothing to set up), and the window's own flow
+    /// when it does.
+    @Test func beginOnboardingOnlyWhenGating() {
         let tmp = tempDirectory("begin")
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let appState = AppState(configuration: .testing(scoutDirectory: tmp))
-        #expect(appState.onboarding == nil)
-        let flow = appState.beginOnboarding()
-        #expect(appState.onboarding === flow && appState.beginOnboarding() === flow)
+        let appState = AppState(configuration: .testing(scoutDirectory: tmp))   // external: usable
+        #expect(appState.beginOnboarding() == nil && appState.onboarding == nil)
+        let f = gateFixture()
+        defer { try? FileManager.default.removeItem(at: f.tmp) }
+        let flow = f.appState.onboarding
+        #expect(flow != nil && f.appState.beginOnboarding() === flow)
+    }
+
+    /// Ruling 69 M4: a held flow that stops holding the window (Back from a
+    /// finished vault step) goes away without any engine-state change.
+    @Test func aFlowThatStopsHoldingIsDroppedWithoutAStateChange() async throws {
+        let f = gateFixture()
+        defer { try? FileManager.default.removeItem(at: f.tmp) }
+        guard let flow = f.appState.onboarding else { Issue.record("expected a flow"); return }
+        flow.step = .ready
+        try f.writeManagedPointer()
+        await f.appState.engineHealth.refresh()       // no longer gating; Ready holds the flow
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(f.appState.onboarding === flow)
+        flow.step = .connectors                        // not holding any more
+        #expect(try await waitUntil { f.appState.onboarding == nil })
+    }
+
+    /// Ruling 69 I3: services reach an engine the app manages (or will
+    /// install) through the shim, which bootstrap re-renders on every
+    /// install/upgrade; an external engine keeps its own scoutctl.
+    @Test func servicesUseTheShimForEveryEngineTheAppOwns() {
+        let layout = EngineLayout(home: tempDirectory("shim"))
+        let i = EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/Users/alex/scout-plugin/.venv/bin/scoutctl"),
+                              python: nil, version: "0.10.0", vault: nil)
+        for state in [EngineState.notInstalled, .managed(i, vaultBootstrapped: true), .managed(i, vaultBootstrapped: false),
+                      .broken(i, reason: "r"), .broken(nil, reason: "r")] {
+            #expect(AppState.serviceScoutctl(for: state, layout: layout) == layout.shimURL, "\(state)")
+        }
+        #expect(AppState.serviceScoutctl(for: .external(i, .devCheckout), layout: layout) == i.scoutctl)
+    }
+
+    /// Ruling 69 I3: the Action Items check runs again once the engine
+    /// stops gating (onboarding finished), so the banner follows.
+    @Test func actionItemsCheckRerunsWhenTheEngineStopsGating() async throws {
+        let f = gateFixture()
+        defer { try? FileManager.default.removeItem(at: f.tmp) }
+        f.runner.on(tool: "false", prefix: ["action-items", "--help"], stdout: "Usage: scoutctl action-items")
+        f.appState.actionItemsEnvState.result = ActionItemsEnvironmentResult(ok: false, message: "Scout engine not found — see Settings ▸ Engine.")
+        try f.writeManagedPointer()
+        await f.appState.engineHealth.refresh()
+        #expect(try await waitUntil { f.appState.actionItemsEnvState.result.ok })
+        #expect(f.runner.calls.contains { $0.arguments == ["action-items", "--help"] })
     }
 
     /// With background work off, a managed engine behind the bundled one is
@@ -385,30 +431,50 @@ private final class OverrideRecorder: @unchecked Sendable {
 }
 
 /// The upgrade path end to end against a temp home: a real 0.10.0 install
-/// (real tar, a fake install-venv.sh, scripted `claude`/`scoutctl`), then
-/// the bundled 0.11.0 applied through `AppState`. Never `.live`.
+/// (real tar, a fake install-venv.sh, a simulated Claude Code, scripted
+/// `scoutctl` whose `bootstrap auto` rewrites the pointer like the engine
+/// does), then the bundled 0.11.0 applied through `AppState`. Never `.live`.
 @MainActor
 @Suite("AppState engine upgrade", .serialized)
 struct AppStateEngineUpgradeTests {
-    struct Setup {
-        let appState: AppState
+    struct Fixture {
         let layout: EngineLayout
         let runner: RuleBasedRunner
-        let home: URL
+        let claudeCode: FakeClaudeCode?
+        let release: EngineRelease
+        let tarball: URL
+        let vault: URL
+        let claude: String
+        var home: URL { layout.home }
     }
 
-    func setup(venvBuildFails: Bool = false, startsBackgroundWork: Bool = false) async throws -> Setup {
+    /// Answers `bootstrap doctor --json` red for the NEW venv's scoutctl
+    /// when set — a verify failure after the switch.
+    final class DoctorSwitch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var red = false
+        var newVersionIsRed: Bool {
+            get { lock.withLock { red } }
+            set { lock.withLock { red = newValue } }
+        }
+    }
+
+    static func pointer(_ layout: EngineLayout, version: String, vault: URL) throws {
+        try FileManager.default.createDirectory(at: layout.stateDir, withIntermediateDirectories: true)
+        let pointer = EnginePointer(
+            schemaVersion: 1, version: version, engineRoot: layout.engineRoot(version: version).path,
+            python: layout.venv(version: version).appendingPathComponent("bin/python").path,
+            scoutctl: layout.scoutctl(version: version).path, vault: vault.path, managedBy: "scout-app", writtenAt: "")
+        try JSONEncoder().encode(pointer).write(to: layout.pointerURL)
+    }
+
+    func fixture(venvBuildFails: Bool = false, doctor: DoctorSwitch = DoctorSwitch()) async throws -> Fixture {
         let support = EngineInstallerTests()
         let (f10, f11) = try await support.installedThenUpgradeFixture(venvBuildFails: venvBuildFails)
         let layout = f10.layout
         let vault = layout.home.appendingPathComponent("Scout")
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: layout.stateDir, withIntermediateDirectories: true)
-        let pointer = EnginePointer(
-            schemaVersion: 1, version: "0.10.0", engineRoot: layout.engineRoot(version: "0.10.0").path,
-            python: layout.venv(version: "0.10.0").appendingPathComponent("bin/python").path,
-            scoutctl: layout.scoutctl(version: "0.10.0").path, vault: vault.path, managedBy: "scout-app", writtenAt: "")
-        try JSONEncoder().encode(pointer).write(to: layout.pointerURL)
+        try Self.pointer(layout, version: "0.10.0", vault: vault)
         // Two older versions: a successful upgrade's GC keeps 0.11.0 and one
         // previous (0.10.0) and removes both; GC run after a failure would
         // keep 0.10.0 (still `current`) and 0.9.0 (one previous) but remove
@@ -418,83 +484,189 @@ struct AppStateEngineUpgradeTests {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             }
         }
-        f11.runner.on(tool: "scoutctl", prefix: ["bootstrap", "auto"], stdout: #"{"schema_version":1,"action":"upgrade","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"0.11.0","error":null,"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#)
-        f11.runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor", "--json"], stdout: #"{"severity":"green","errors":[],"warnings":[]}"#)
-
-        let initial = EngineLocator(layout: layout).locate()
-        if case .managed(let found, vaultBootstrapped: true) = initial {
-            #expect(found.version == "0.10.0" && found.vault?.path == vault.path)
-        } else {
-            Issue.record("fixture did not locate a managed, set-up 0.10.0: \(initial)")
+        // `bootstrap auto` from venv/<v> rewrites the pointer to <v>, as the
+        // engine's `bootstrap upgrade` does — the atomic switch.
+        f11.runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.starts(with: ["bootstrap", "auto"]) }) { url, _, _ in
+            let version = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            try Self.pointer(layout, version: version, vault: vault)
+            return ProcessResult(exitCode: 0, stdout: Data(#"{"schema_version":1,"action":"upgrade","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"\#(version)","error":null,"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#.utf8), stderr: Data())
         }
-        let claude = f10.claude.path
-        var configuration = AppState.Configuration.testing(scoutDirectory: vault, runner: f11.runner)
-        configuration.engineLayout = layout
-        configuration.initialEngineState = initial
-        configuration.engineRelease = f11.release
-        configuration.engineTarballURL = f11.tarball
+        f11.runner.on({ url, args in url.lastPathComponent == "scoutctl" && args == ["bootstrap", "doctor", "--json"] }) { url, _, _ in
+            let version = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            let red = doctor.newVersionIsRed && version == "0.11.0"
+            let json = red ? #"{"severity":"red","errors":["launchd: com.scout.heartbeat not registered"],"warnings":[]}"#
+                           : #"{"severity":"green","errors":[],"warnings":[]}"#
+            return ProcessResult(exitCode: red ? 2 : 0, stdout: Data(json.utf8), stderr: Data())
+        }
+        f11.runner.on(tool: "false", prefix: ["action-items", "--help"], stdout: "Usage: scoutctl action-items")
+        return Fixture(layout: layout, runner: f11.runner, claudeCode: f11.claudeCode, release: f11.release, tarball: f11.tarball,
+                       vault: vault, claude: f10.claude.path)
+    }
+
+    /// A fresh AppState over the fixture's home, as a (re)launch would build.
+    func appState(_ f: Fixture, startsBackgroundWork: Bool = false) -> AppState {
+        let claude = f.claude
+        var configuration = AppState.Configuration.testing(scoutDirectory: f.vault, runner: f.runner)
+        configuration.engineLayout = f.layout
+        configuration.initialEngineState = EngineLocator(layout: f.layout).locate()
+        configuration.engineRelease = f.release
+        configuration.engineTarballURL = f.tarball
         configuration.resolveClaude = { _ in claude }
         configuration.fileDownloader = NoDownloads()
         configuration.startsBackgroundWork = startsBackgroundWork
-        return Setup(appState: AppState(configuration: configuration), layout: layout, runner: f11.runner, home: layout.home)
+        return AppState(configuration: configuration)
     }
 
     func current(_ layout: EngineLayout) -> String? { try? FileManager.default.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path) }
+    func pluginVersion(_ layout: EngineLayout) -> String? { ClaudePluginsRegistry.scoutPlugin(pluginsDir: layout.claudePluginsDir)?.version }
+
+    func waitUntil(_ condition: () -> Bool) async throws -> Bool {
+        for _ in 0..<400 {
+            if condition() { return true }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        return condition()
+    }
 
     @Test(.timeLimit(.minutes(1))) func successfulUpgradeRunsTheUpgradeStepsThenCollectsGarbage() async throws {
-        let s = try await setup()
-        defer { try? FileManager.default.removeItem(at: s.home) }
-        let callsBefore = s.runner.calls.count
-        await s.appState.runEngineUpgradeIfNeeded()
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let s = appState(f)
+        #expect(s.engineHealth.state.install?.version == "0.10.0")
+        let callsBefore = f.runner.calls.count
+        await s.runEngineUpgradeIfNeeded()
 
-        #expect(s.appState.engineUpgradeProgress == nil)        // sheet closed
-        #expect(s.appState.engineUpgradeError == nil && !s.appState.isUpgradingEngine)
-        #expect(current(s.layout) == s.layout.engineRoot(version: "0.11.0").path)
-        let calls = s.runner.calls.dropFirst(callsBefore).map(\.arguments)
+        #expect(s.engineUpgradeProgress == nil)        // sheet closed
+        #expect(s.engineUpgradeError == nil && !s.isUpgradingEngine && !s.engineUpgradeIsRepair)
+        #expect(current(f.layout) == f.layout.engineRoot(version: "0.11.0").path)
+        #expect(pluginVersion(f.layout) == "0.11.0")
+        #expect(s.engineHealth.state.install?.version == "0.11.0" && !s.engineSwitchUnfinished)
+        let calls = f.runner.calls.dropFirst(callsBefore).map(\.arguments)
         let bootstrap = calls.firstIndex { $0.starts(with: ["bootstrap", "auto"]) }
         let marketplace = calls.firstIndex(of: ClaudeCodeCLI.marketplaceUpdate)
         let plugin = calls.firstIndex(of: ClaudeCodeCLI.pluginUpdate)
         #expect(bootstrap != nil && marketplace != nil && plugin != nil)
         if let bootstrap, let marketplace, let plugin { #expect(bootstrap < marketplace && marketplace < plugin) }
+        // Ruling 69 I3: the Action Items check re-ran after the upgrade.
+        #expect(calls.contains(["action-items", "--help"]))
         // GC after success: the current version and one previous stay.
         for v in ["0.8.0", "0.9.0"] {
-            #expect(!FileManager.default.fileExists(atPath: s.layout.engineRoot(version: v).path))
-            #expect(!FileManager.default.fileExists(atPath: s.layout.venv(version: v).path))
+            #expect(!FileManager.default.fileExists(atPath: f.layout.engineRoot(version: v).path))
+            #expect(!FileManager.default.fileExists(atPath: f.layout.venv(version: v).path))
         }
-        #expect(FileManager.default.fileExists(atPath: s.layout.engineRoot(version: "0.10.0").path))
+        #expect(FileManager.default.fileExists(atPath: f.layout.engineRoot(version: "0.10.0").path))
     }
 
     @Test(.timeLimit(.minutes(1))) func failedUpgradeKeepsTheSheetTheOldEngineAndEveryVersion() async throws {
-        let s = try await setup(venvBuildFails: true)
-        defer { try? FileManager.default.removeItem(at: s.home) }
-        await s.appState.runEngineUpgradeIfNeeded()
+        let f = try await fixture(venvBuildFails: true)
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let s = appState(f)
+        await s.runEngineUpgradeIfNeeded()
 
-        guard case .failed? = s.appState.engineUpgradeProgress?[.buildVenv]?.status else {
-            Issue.record("expected the sheet to show buildVenv failed: \(String(describing: s.appState.engineUpgradeProgress))"); return
+        guard case .failed? = s.engineUpgradeProgress?[.buildVenv]?.status else {
+            Issue.record("expected the sheet to show buildVenv failed: \(String(describing: s.engineUpgradeProgress))"); return
         }
-        #expect(EngineUpgradeSheet.failure(progress: s.appState.engineUpgradeProgress ?? [:], error: s.appState.engineUpgradeError)?.contains("install-venv.sh failed") == true)
-        #expect(!s.appState.isUpgradingEngine)
-        #expect(current(s.layout) == s.layout.engineRoot(version: "0.10.0").path)
+        #expect(EngineUpgradeSheet.failure(progress: s.engineUpgradeProgress ?? [:], error: s.engineUpgradeError)?.contains("install-venv.sh failed") == true)
+        #expect(EngineUpgradeSheet.statusNote(s.engineUpgradeProgress ?? [:]).contains("current engine keeps working"))
+        #expect(!s.isUpgradingEngine)
+        #expect(current(f.layout) == f.layout.engineRoot(version: "0.10.0").path)
         for v in ["0.8.0", "0.9.0"] {   // no GC on failure
-            #expect(FileManager.default.fileExists(atPath: s.layout.engineRoot(version: v).path))
+            #expect(FileManager.default.fileExists(atPath: f.layout.engineRoot(version: v).path))
         }
-        #expect(s.appState.engineHealth.state.isManaged)
-        s.appState.dismissEngineUpgrade()
-        #expect(s.appState.engineUpgradeProgress == nil)
+        #expect(s.engineHealth.state.isManaged)
+        s.dismissEngineUpgrade()
+        #expect(s.engineUpgradeProgress == nil)
     }
 
     /// Ruling 46: the automatic upgrade runs from the launch task — and only
     /// there, so this one turns background work on.
     @Test(.timeLimit(.minutes(1))) func launchUpgradesAManagedEngineBehindTheBundle() async throws {
-        let s = try await setup(startsBackgroundWork: true)
-        defer { try? FileManager.default.removeItem(at: s.home) }
-        var upgraded = false
-        for _ in 0..<200 {
-            if current(s.layout) == s.layout.engineRoot(version: "0.11.0").path, !s.appState.isUpgradingEngine { upgraded = true; break }
-            try await Task.sleep(for: .milliseconds(50))
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let s = appState(f, startsBackgroundWork: true)
+        #expect(try await waitUntil { pluginVersion(f.layout) == "0.11.0" && !s.isUpgradingEngine })
+        #expect(current(f.layout) == f.layout.engineRoot(version: "0.11.0").path)
+        #expect(f.runner.calls(to: "claude").contains(ClaudeCodeCLI.marketplaceUpdate))
+    }
+
+    /// Ruling 69 I1/M6: `marketplace update` fails AFTER the switch —
+    /// `bootstrap upgrade` rewrote the pointer to 0.11.0 and `current` already
+    /// moved, but Claude Code still loads 0.10.0. That state must stay
+    /// actionable (Finish update) and a fresh launch must finish it.
+    @Test(.timeLimit(.minutes(1))) func aFailureAfterTheSwitchIsFinishedByTheNextLaunch() async throws {
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        f.claudeCode?.failNext(ClaudeCodeCLI.marketplaceUpdate)
+        let first = appState(f)
+        await first.runEngineUpgradeIfNeeded()
+
+        guard case .failed? = first.engineUpgradeProgress?[.registerWithClaudeCode]?.status else {
+            Issue.record("expected register to fail: \(String(describing: first.engineUpgradeProgress))"); return
         }
-        #expect(upgraded)
-        #expect(s.runner.calls(to: "claude").contains(ClaudeCodeCLI.marketplaceUpdate))
+        #expect(EngineUpgradeSheet.statusNote(first.engineUpgradeProgress ?? [:]).contains("finishes switching Claude Code"))
+        #expect(current(f.layout) == f.layout.engineRoot(version: "0.11.0").path)   // `current` already moved
+        #expect(pluginVersion(f.layout) == "0.10.0")
+        #expect(first.engineHealth.state.install?.version == "0.11.0")              // the pointer switched
+        #expect(first.engineSwitchUnfinished)
+        let settings = EngineSettingsModel(state: first.engineHealth.state, doctor: first.engineHealth.doctor, lastError: nil,
+                                           bundledVersion: f.release.engine.version, unfinishedSwitch: first.engineSwitchUnfinished)
+        #expect(settings.upgradeAction == .finishUpdate && settings.canUpdate)
+        first.dismissEngineUpgrade()                                                // Later
+
+        let relaunched = appState(f, startsBackgroundWork: true)
+        #expect(try await waitUntil { pluginVersion(f.layout) == "0.11.0" && !relaunched.isUpgradingEngine })
+        #expect(try await waitUntil { !relaunched.engineSwitchUnfinished && relaunched.engineUpgradeProgress == nil })
+        #expect(relaunched.engineUpgradeIsRepair)       // target == installed: "Repairing the Scout engine"
+    }
+
+    /// Ruling 69 M6/M2/I4: only `verify` fails after the switch — Claude Code
+    /// already moved, so the switch is finished; the red doctor makes
+    /// Settings offer Repair…, and the sheet doesn't claim Retry switches
+    /// Claude Code over.
+    @Test(.timeLimit(.minutes(1))) func aVerifyFailureAfterTheSwitchOffersRepair() async throws {
+        let doctor = DoctorSwitch()
+        doctor.newVersionIsRed = true
+        let f = try await fixture(doctor: doctor)
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let s = appState(f)
+        await s.runEngineUpgradeIfNeeded()
+
+        guard case .failed? = s.engineUpgradeProgress?[.verify]?.status else {
+            Issue.record("expected verify to fail: \(String(describing: s.engineUpgradeProgress))"); return
+        }
+        let note = EngineUpgradeSheet.statusNote(s.engineUpgradeProgress ?? [:])
+        #expect(!note.contains("switching Claude Code") && note.contains("health check"))
+        #expect(pluginVersion(f.layout) == "0.11.0" && !s.engineSwitchUnfinished)
+        #expect(s.engineHealth.doctor?.severity == .red)
+        let settings = EngineSettingsModel(state: s.engineHealth.state, doctor: s.engineHealth.doctor, lastError: nil,
+                                           bundledVersion: f.release.engine.version, unfinishedSwitch: s.engineSwitchUnfinished)
+        #expect(settings.upgradeAction == .repair)
+        #expect(!AppState.shouldAutoUpgrade(state: s.engineHealth.state, release: f.release, switchUnfinished: s.engineSwitchUnfinished))
+
+        doctor.newVersionIsRed = false                  // Repair… re-runs the idempotent steps
+        await s.runEngineUpgrade()
+        #expect(s.engineUpgradeProgress == nil && s.engineUpgradeIsRepair)
+    }
+
+    /// Ruling 69 M5 + no downgrades: the upgrade refuses a vault that isn't
+    /// set up and an engine newer than the bundle.
+    @Test func upgradeRefusesUnsetVaultsAndDowngrades() async {
+        #expect(AppState.wouldDowngrade(installed: "0.12.0", bundled: "0.11.0"))
+        #expect(!AppState.wouldDowngrade(installed: "0.11.0", bundled: "0.11.0"))
+        #expect(!AppState.wouldDowngrade(installed: nil, bundled: "0.11.0"))
+        for state in [EngineState.managed(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.10.0", vault: nil), vaultBootstrapped: false),
+                      .managed(EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.12.0", vault: nil), vaultBootstrapped: true)] {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("AppStateC8-refuse-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            let runner = RuleBasedRunner()
+            var configuration = AppState.Configuration.testing(scoutDirectory: tmp, runner: runner)
+            configuration.engineRelease = EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0"), uv: .init(version: "0", sha256: [:]))
+            configuration.resolveClaude = { _ in "/Users/alex/.local/bin/claude" }
+            configuration.initialEngineState = state
+            let s = AppState(configuration: configuration)
+            await s.runEngineUpgrade()
+            #expect(s.engineUpgradeProgress == nil && runner.calls.isEmpty, "\(state)")
+        }
     }
 }
 

@@ -28,6 +28,30 @@ struct EngineUpgradeSheetTests {
     }
 }
 
+extension EngineUpgradeSheetTests {
+    /// Ruling 69 M2: the note follows what is live — the old engine before
+    /// the switch; Claude Code still to move after it; only a re-check once
+    /// Claude Code moved too.
+    @Test func statusNoteFollowsHowFarTheSwitchGot() {
+        func p(_ done: [InstallStep], failed: InstallStep) -> [InstallStep: InstallProgress] {
+            var d = Dictionary(uniqueKeysWithValues: done.map { ($0, InstallProgress(step: $0, status: .done, log: "")) })
+            d[failed] = InstallProgress(step: failed, status: .failed("x"), log: "x")
+            return d
+        }
+        #expect(EngineUpgradeSheet.statusNote(p([.ensureUv, .unpackEngine], failed: .buildVenv)).contains("current engine keeps working"))
+        #expect(EngineUpgradeSheet.statusNote(p([.ensureUv, .unpackEngine, .buildVenv, .bootstrapVault], failed: .registerWithClaudeCode))
+                    .contains("finishes switching Claude Code"))
+        let verifyOnly = EngineUpgradeSheet.statusNote(p([.ensureUv, .unpackEngine, .buildVenv, .bootstrapVault, .registerWithClaudeCode], failed: .verify))
+        #expect(!verifyOnly.contains("switching Claude Code") && verifyOnly.contains("health check"))
+    }
+
+    /// Ruling 69 I4: target == installed reads as a repair.
+    @Test func titleSaysRepairingWhenTargetIsInstalled() {
+        #expect(EngineUpgradeSheet.title(targetVersion: "0.11.0", isRepair: true) == "Repairing the Scout engine")
+        #expect(EngineUpgradeSheet.title(targetVersion: "0.11.0", isRepair: false) == "Updating the Scout engine to 0.11.0")
+    }
+}
+
 @MainActor
 @Suite("Engine upgrade + gate — smoke", .serialized)
 struct EngineUpgradeSheetSmokeTests {
@@ -40,7 +64,7 @@ struct EngineUpgradeSheetSmokeTests {
                     .unpackEngine: InstallProgress(step: .unpackEngine, status: .skipped("already unpacked"), log: ""),
                     .buildVenv: InstallProgress(step: .buildVenv, status: .failed("x"), log: "install-venv.sh failed: boom"),
                 ],
-                error: nil, targetVersion: "0.11.0", isRunning: false, retry: {}, dismiss: {}),
+                error: nil, targetVersion: "0.11.0", isRepair: true, isRunning: false, retry: {}, dismiss: {}),
             size: CGSize(width: 460, height: 420))
     }
 
@@ -66,6 +90,7 @@ struct EngineUpgradeSheetSmokeTests {
         var configuration = AppState.Configuration.testing(scoutDirectory: root)
         configuration.initialEngineState = .broken(nil, reason: "engine pointer names a missing scoutctl: /s")
         let state = AppState(configuration: configuration)
-        ViewHost.render(OnboardingSheet(model: state.beginOnboarding(), close: {}), size: CGSize(width: 720, height: 600))
+        guard let flow = state.beginOnboarding() else { Issue.record("a broken app-owned engine gates, so Settings gets a flow"); return }
+        ViewHost.render(OnboardingSheet(model: flow, close: {}), size: CGSize(width: 720, height: 600))
     }
 }

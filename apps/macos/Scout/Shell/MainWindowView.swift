@@ -46,6 +46,7 @@ struct MainWindowView: View {
                     progress: appState.engineUpgradeProgress ?? [:],
                     error: appState.engineUpgradeError,
                     targetVersion: appState.engineRelease?.engine.version ?? "",
+                    isRepair: appState.engineUpgradeIsRepair,
                     isRunning: appState.isUpgradingEngine,
                     retry: { Task { await appState.runEngineUpgrade() } },
                     dismiss: { appState.dismissEngineUpgrade() })

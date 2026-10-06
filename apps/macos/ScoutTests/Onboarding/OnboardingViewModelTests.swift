@@ -103,6 +103,33 @@ struct OnboardingViewModelTests {
         #expect(OnboardingViewModel.initialStep(engineState: .broken(nil, reason: "x"), prerequisites: ready) == .welcome)
     }
 
+    /// Ruling 69 I5: a managed engine without a vault skips to Identity only
+    /// at the bundled version — the vault step runs the bundled scoutctl.
+    @Test func anOffVersionEngineWithoutAVaultStartsAtEngine() {
+        let noClaude = Prerequisites(claude: .missing, auth: .unknown, git: .missing, uv: .missing)
+        let unset = EngineState.managed(install, vaultBootstrapped: false)   // install.version == "0.10.0"
+        #expect(OnboardingViewModel.initialStep(engineState: unset, prerequisites: ready, bundledVersion: "0.10.0") == .identity)
+        #expect(OnboardingViewModel.initialStep(engineState: unset, prerequisites: ready, bundledVersion: "0.11.0") == .engine)
+        #expect(OnboardingViewModel.initialStep(engineState: unset, prerequisites: noClaude, bundledVersion: "0.11.0") == .prerequisites)
+        #expect(OnboardingViewModel.initialStep(engineState: unset, prerequisites: ready, bundledVersion: nil) == .identity)
+    }
+
+    /// …and landing on Engine starts the install, as Continue into it does.
+    @Test(.timeLimit(.minutes(1))) func startLandingOnEngineInstalls() async {
+        let runner = RuleBasedRunner()
+        runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/x\n")
+        runner.on(tool: "c", prefix: ["--version"], stdout: "2.1.259 (Claude Code)\n")
+        runner.on(tool: "c", prefix: ["auth", "status"], stdout: #"{"loggedIn": true}"#)
+        let asked = Recorder<Int>()
+        let newer = EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0"), uv: .init(version: "0.12.1", sha256: [:]))
+        let m = model(engineState: .managed(install, vaultBootstrapped: false), release: newer, runner: runner,
+                      resolve: { _ in "/c" }, makeInstaller: { _ in asked.append(1); return nil })
+        await m.start()
+        #expect(m.step == .engine)
+        #expect(asked.all.count == 1)
+        #expect(m.lastError?.contains("Claude Code wasn't found") == true)   // the nil factory's message with a release
+    }
+
     @Test func prerequisitesGateOnlyOnClaudeInstalled() {
         let m = model()
         m.step = .prerequisites

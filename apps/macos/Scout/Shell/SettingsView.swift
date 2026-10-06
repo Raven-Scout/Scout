@@ -69,10 +69,10 @@ struct SettingsView: View {
                         health: appState.engineHealth,
                         bundledVersion: appState.engineRelease?.engine.version,
                         isUpdating: appState.isUpgradingEngine,
+                        unfinishedSwitch: appState.engineSwitchUnfinished,
                         onUpdate: { Task { await appState.runEngineUpgrade() } },
                         onSetUp: {
-                            appState.beginOnboarding()
-                            showingSetup = true
+                            if appState.beginOnboarding() != nil { showingSetup = true }
                         })
                 }
 
@@ -210,6 +210,11 @@ struct SettingsView: View {
             .padding(.top, 28)
             .padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        // The flow finished (or went away): forget the request, so the next
+        // flow doesn't pop up on its own (Ruling 69 M3).
+        .onChange(of: appState.onboarding == nil) { _, gone in
+            if gone { showingSetup = false }
         }
         .sheet(isPresented: setupSheetPresented) {
             if let onboarding = appState.onboarding {

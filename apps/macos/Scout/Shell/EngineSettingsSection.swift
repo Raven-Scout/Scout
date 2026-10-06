@@ -1,20 +1,24 @@
 import SwiftUI
 
 /// Settings ▸ Engine (spec §5, Ruling 41). Every state the app can act on
-/// gets a real action: "Set up…" / "Repair…" open the onboarding flow,
-/// "Update" installs the bundled engine. External engines keep the copy
-/// `/scout-update` hand-off — the app never modifies them. A nil closure
-/// hides its row.
+/// gets a real action: "Set up…" / "Repair…" (broken) open the onboarding
+/// flow; "Update" / "Finish update" / "Repair…" (red doctor) run the
+/// bundled-engine upgrade. External engines — and a broken one another
+/// installer manages — keep the copy `/scout-update` hand-off; the app never
+/// modifies them. A nil closure hides its row.
 struct EngineSettingsSection: View {
     @ObservedObject var health: EngineHealthService
     var bundledVersion: String?
     var isUpdating: Bool = false
+    /// `AppState.engineSwitchUnfinished` (Ruling 69 I1).
+    var unfinishedSwitch: Bool = false
     var onUpdate: (() -> Void)? = nil
     var onSetUp: (() -> Void)? = nil
     @AppStorage("scoutDataDir") private var scoutDataDir: String = ""
 
     private var model: EngineSettingsModel {
-        EngineSettingsModel(state: health.state, doctor: health.doctor, lastError: health.lastError, bundledVersion: bundledVersion)
+        EngineSettingsModel(state: health.state, doctor: health.doctor, lastError: health.lastError, bundledVersion: bundledVersion,
+                            unfinishedSwitch: unfinishedSwitch)
     }
 
     var body: some View {
@@ -27,7 +31,7 @@ struct EngineSettingsSection: View {
                     Text(root).font(DS.mono(11)).foregroundStyle(DS.Ink.p3).lineLimit(1).truncationMode(.middle)
                 }
             }
-            SettingsField(label: "Scout vault", help: "Folder Scout reads and writes. Blank = `~/Scout`, or the vault the engine was set up for. Points the app at a vault; never moves data. Takes effect after restarting Scout. Scheduled runs keep their current vault until you run /scout-update.") {
+            SettingsField(label: "Scout vault", help: model.vaultHelp) {
                 SettingsInput(text: $scoutDataDir, placeholder: health.state.install?.vault?.path ?? "~/Scout")
             }
             SettingsRow(title: "Health", help: model.messages.first ?? "Last checked \(health.lastChecked.map { $0.formatted(date: .omitted, time: .shortened) } ?? "never")") {
@@ -50,19 +54,27 @@ struct EngineSettingsSection: View {
                     Button(action.buttonTitle) { onSetUp() }.buttonStyle(.plainHit)
                 }
             }
-            if model.canUpdate, let onUpdate {
-                SettingsRow(title: "Update engine", help: "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade the vault.") {
-                    Button(isUpdating ? "Updating…" : "Update") { onUpdate() }
+            if let action = model.upgradeAction, let onUpdate {
+                SettingsRow(title: action.rowTitle, help: upgradeHelp(action)) {
+                    Button(isUpdating ? "Working…" : action.buttonTitle) { onUpdate() }
                         .buttonStyle(.plainHit)
                         .disabled(isUpdating)
                 }
             }
             if model.showsHandOff {
-                SettingsRow(title: "Update available", help: "This engine is managed outside the app. Run `/scout-update` in Claude Code.") {
+                SettingsRow(title: model.handOffTitle, help: model.handOffHelp) {
                     Button("Copy /scout-update") { Self.copyToPasteboard("/scout-update") }
                         .buttonStyle(.plainHit)
                 }
             }
+        }
+    }
+
+    private func upgradeHelp(_ action: EngineUpgradeAction) -> String {
+        switch action {
+        case .update: return "Install engine \(bundledVersion ?? "") that ships with this app, then upgrade the vault."
+        case .finishUpdate: return "An earlier update stopped before Claude Code switched over. Finish it with the engine that ships with this app."
+        case .repair: return "Re-run the engine's install steps and vault upgrade with the engine that ships with this app."
         }
     }
 
