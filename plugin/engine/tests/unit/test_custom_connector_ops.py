@@ -192,6 +192,50 @@ def test_add_without_vault_is_an_error(tmp_path: Path):
     )
 
 
+def _fake_acquire_busy(calls: list[int]):
+    def fake(lock: Path, *, timeout_s: int = 300, poll_s: int = 10) -> None:
+        calls.append(timeout_s)
+        raise ops.LockBusyError(lock, 12345)
+
+    return fake
+
+
+def test_add_no_wait_is_busy_tries_once_and_writes_nothing(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = _add(vault, SUITE, wait=False)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [0]
+    assert not (vault / cc.CUSTOM_FILE).exists()
+    assert "suite_mail" not in _config(vault)["connectors"]["enabled"]
+
+
+def test_add_wait_is_busy_after_default_timeout(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = _add(vault, SUITE, wait=True)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [300]
+
+
+def test_remove_no_wait_is_busy_tries_once(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    _add(vault, SUITE)
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0", wait=False)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [0]
+
+
+def test_remove_wait_is_busy_after_default_timeout(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    _add(vault, SUITE)
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0", wait=True)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [300]
+
+
 def test_list_custom_reports_definitions_and_issues(vault: Path):
     _add(vault, SUITE)
     raw = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]

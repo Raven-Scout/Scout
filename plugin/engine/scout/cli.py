@@ -636,6 +636,9 @@ def _register_connectors() -> None:
         input_: list[str] = typer.Option([], "--input", help="NAME=VALUE for a needs_user_input entry (repeatable)."),
         dry_run: bool = typer.Option(False, "--dry-run", help="Show the sections it would render; write nothing."),
         unverified: bool = typer.Option(False, "--unverified", help="Skip the bash probe (the app path)."),
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
     ) -> None:
         """Add or replace a custom connector and apply it to the live brain files."""
         from scout import __version__
@@ -661,17 +664,25 @@ def _register_connectors() -> None:
             inputs=inputs,
             dry_run=dry_run,
             unverified=unverified,
+            wait=not no_wait,
         )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("remove")
-    def cli_custom_remove(key: str) -> None:
+    def cli_custom_remove(
+        key: str,
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
+    ) -> None:
         """Remove a custom connector and apply the removal."""
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.custom_connector_ops import remove
 
-        outcome = remove(_paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__)
+        outcome = remove(
+            _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
+        )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("validate")
