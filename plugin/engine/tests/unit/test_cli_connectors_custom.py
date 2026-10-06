@@ -82,6 +82,32 @@ def test_validate_list_remove_round_trip(vault: Path):
     assert removed.exit_code == 0 and json.loads(removed.stdout)["status"] == "applied"
 
 
+def test_add_no_wait_prints_busy_json_and_exits_4(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    from scout.scripts import custom_connector_ops as ops
+
+    def fake_acquire(lock, *, timeout_s=300, poll_s=10):
+        raise ops.LockBusyError(lock, 12345)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", fake_acquire)
+    result = runner.invoke(app, ["connectors", "custom", "add", "--file", "-", "--no-wait"], input=DEF)
+    assert result.exit_code == 4, result.output
+    assert json.loads(result.stdout)["status"] == "busy"
+
+
+def test_remove_no_wait_prints_busy_json_and_exits_4(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    from scout.scripts import custom_connector_ops as ops
+
+    runner.invoke(app, ["connectors", "custom", "add", "--file", "-"], input=DEF)
+
+    def fake_acquire(lock, *, timeout_s=300, poll_s=10):
+        raise ops.LockBusyError(lock, 12345)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", fake_acquire)
+    result = runner.invoke(app, ["connectors", "custom", "remove", "suite_mail", "--no-wait"])
+    assert result.exit_code == 4, result.output
+    assert json.loads(result.stdout)["status"] == "busy"
+
+
 def test_unexpected_failure_prints_json_and_exits_1(vault: Path, monkeypatch: pytest.MonkeyPatch):
     """F3a: spec §3 promises one JSON object and exit 1 for any other failure (not exit 70)."""
     from scout.scripts import custom_connector_ops as ops

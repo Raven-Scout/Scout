@@ -38,6 +38,7 @@ _EXIT_CODES = {
     "probe-failed": 2,
     "deferred": 3,
     "conflict": 3,
+    "busy": 4,
 }
 
 ProbeRunner = Callable[[str], int]  # command -> exit code
@@ -168,20 +169,27 @@ def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: st
     return cfg
 
 
-def _under_lock(vault: Path, key: str, change: Callable[[], Outcome]) -> Outcome:
+def _under_lock(vault: Path, key: str, change: Callable[[], Outcome], *, wait: bool = True) -> Outcome:
     """Run ``change`` holding the session lock.
 
     ``change`` must do every read of vault state (scout-config.yaml,
     connectors.custom.yaml, the snapshot) itself: a read made before the lock
     is stale by the time a concurrent add/remove has committed, and writing
     whole-file replacements from it would erase that other change.
+
+    ``wait=False`` tries to acquire the lock exactly once (``timeout_s=0``)
+    instead of polling for the default window; either way a held lock comes
+    back as a ``busy`` Outcome, never ``error``.
     """
     lock = vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        acquire_lock_with_wait(lock)
+        if wait:
+            acquire_lock_with_wait(lock)
+        else:
+            acquire_lock_with_wait(lock, timeout_s=0)
     except LockBusyError:
-        return Outcome("error", key, message="A Scout session is running; try again when it finishes.")
+        return Outcome("busy", key, message="A Scout session is running; try again when it finishes.")
     try:
         return change()
     finally:
@@ -243,6 +251,7 @@ def add(
     dry_run: bool = False,
     unverified: bool = False,
     probe_runner: ProbeRunner = run_bash_probe,
+    wait: bool = True,
 ) -> Outcome:
     try:
         return _add(
@@ -254,6 +263,7 @@ def add(
             dry_run=dry_run,
             unverified=unverified,
             probe_runner=probe_runner,
+            wait=wait,
         )
     except Exception as e:  # noqa: BLE001 — see the contract note above validate()
         return Outcome("error", _key_of(raw_def), message=_unexpected(e))
@@ -269,6 +279,7 @@ def _add(
     dry_run: bool,
     unverified: bool,
     probe_runner: ProbeRunner,
+    wait: bool = True,
 ) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
@@ -338,17 +349,17 @@ def _add(
             {**current.raw, key: body},
         )
 
-    return _under_lock(vault, key, change)
+    return _under_lock(vault, key, change, wait=wait)
 
 
-def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wait: bool = True) -> Outcome:
     try:
-        return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version, wait=wait)
     except Exception as e:  # noqa: BLE001 — see the contract note above validate()
         return Outcome("error", key, message=_unexpected(e))
 
 
-def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wait: bool = True) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
     unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
@@ -377,7 +388,7 @@ def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) ->
             {k: v for k, v in current.raw.items() if k != key},
         )
 
-    return _under_lock(vault, key, change)
+    return _under_lock(vault, key, change, wait=wait)
 
 
 def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
