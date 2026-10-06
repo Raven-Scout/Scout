@@ -103,7 +103,10 @@ def test_one_malformed_entry_leaves_the_valid_one_working_everywhere(tmp_path: P
     """F1: `preset: [mail]` on one entry raised TypeError (unhashable) out of the
     parser and took down assembly, the roster, the probe registry and doctor."""
     vault = tmp_path / "Scout"
-    install(_cfg(vault, set()))
+    # suite_mail must be in the persisted scout-config.yaml's connectors.enabled for
+    # load_registry/resolve_registry (which read it from disk) to surface its row;
+    # bad_one need not be — it never parses into a CustomConnector either way.
+    install(_cfg(vault, {"suite_mail"}))
     cc.write(vault, {"bad_one": {**SUITE, "preset": ["mail"]}, "suite_mail": SUITE})
 
     assert "## Mail suite Inbound Scan" in _assemble(_cfg(vault, {"suite_mail", "bad_one"}), "SKILL")
