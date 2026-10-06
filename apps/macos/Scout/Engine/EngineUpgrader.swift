@@ -8,12 +8,24 @@ nonisolated struct EngineUpgrader: Sendable {
     let layout: EngineLayout
     let release: EngineRelease
 
-    static let upgradeSteps: [InstallStep] = [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode, .bootstrapVault, .verify]
+    /// Spec §5 / Ruling 68: the new engine is unpacked and its venv built
+    /// alongside the old one; `bootstrap upgrade` (run by the NEW venv's
+    /// scoutctl) is the atomic switch for the vault, plists, shim and
+    /// pointer; only then does `registerWithClaudeCode` repoint `current`
+    /// and run `marketplace update` + `plugin update`. A failure before the
+    /// switch leaves the old engine fully live, Claude Code included.
+    static let upgradeSteps: [InstallStep] = [.ensureUv, .unpackEngine, .buildVenv, .bootstrapVault, .registerWithClaudeCode, .verify]
 
     func needsUpgrade(state: EngineState) -> Bool {
+        Self.needsUpgrade(state: state, bundledVersion: release.engine.version)
+    }
+
+    /// The decision itself, independent of any on-disk layout: a managed
+    /// install whose version parses and is older than the bundled one.
+    static func needsUpgrade(state: EngineState, bundledVersion: String) -> Bool {
         guard case .managed(let install, _) = state,
               let installed = install.version.flatMap(EngineVersion.init),
-              let bundled = EngineVersion(release.engine.version) else { return false }
+              let bundled = EngineVersion(bundledVersion) else { return false }
         return installed < bundled
     }
 

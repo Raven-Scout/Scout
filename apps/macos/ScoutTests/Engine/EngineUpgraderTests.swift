@@ -26,6 +26,22 @@ struct EngineUpgraderTests {
         #expect(!up.needsUpgrade(state: .notInstalled))
     }
 
+    /// Ruling 68: the vault switches (`bootstrap upgrade`, via the new venv)
+    /// before Claude Code does — `registerWithClaudeCode` repoints `current`
+    /// and updates the marketplace + plugin only after that.
+    @Test func upgradeStepsBootstrapBeforeRegistering() {
+        #expect(EngineUpgrader.upgradeSteps == [.ensureUv, .unpackEngine, .buildVenv, .bootstrapVault, .registerWithClaudeCode, .verify])
+    }
+
+    @Test func needsUpgradeComparesTheBundledVersionAgainstAManagedInstall() {
+        let i = EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: "0.10.0", vault: nil)
+        #expect(EngineUpgrader.needsUpgrade(state: .managed(i, vaultBootstrapped: true), bundledVersion: "0.11.0"))
+        #expect(!EngineUpgrader.needsUpgrade(state: .managed(i, vaultBootstrapped: true), bundledVersion: "0.10.0"))
+        #expect(!EngineUpgrader.needsUpgrade(state: .managed(i, vaultBootstrapped: true), bundledVersion: "not-a-version"))
+        let unversioned = EngineInstall(root: URL(fileURLWithPath: "/e"), scoutctl: URL(fileURLWithPath: "/s"), python: nil, version: nil, vault: nil)
+        #expect(!EngineUpgrader.needsUpgrade(state: .managed(unversioned, vaultBootstrapped: true), bundledVersion: "0.11.0"))
+    }
+
     @Test func garbageCollectKeepsCurrentAndOnePrevious() throws {
         let l = try layout()
         defer { try? fm.removeItem(at: l.home) }

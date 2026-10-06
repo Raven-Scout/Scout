@@ -51,8 +51,10 @@ nonisolated enum InstallMode: Equatable, Sendable {
 
 /// The six idempotent steps of spec §4.4, each independently re-runnable.
 /// Nothing half-done ever looks whole: partial unpacks carry `.partial`,
-/// `current` is repointed only after the manifest check, and the pointer is
-/// written by the engine itself once its venv has run.
+/// `current` is repointed only by `registerWithClaudeCode` (Ruling 68 — so
+/// an upgrade that fails earlier never leaves Claude Code loading a tree the
+/// pointer's venv doesn't match), and the pointer is written by the engine
+/// itself once its venv has run.
 actor EngineInstaller {
     private let layout: EngineLayout
     private let release: EngineRelease
@@ -129,9 +131,11 @@ actor EngineInstaller {
         }
     }
 
+    /// Unpacks and verifies `engine/<version>` only. It never touches
+    /// `current` (Ruling 68): during an upgrade the old version stays live
+    /// until `registerWithClaudeCode` switches it.
     private func unpackEngine() async throws -> String {
         if EngineLocator.version(atRoot: engineRoot) == version {
-            try repointCurrent()
             throw Skipped(reason: "engine \(version) already unpacked")
         }
         guard let tarballURL else { throw Failure(description: "this build carries no engine tarball (scout-engine-\(version).tar.gz is missing from the app's Resources)") }
@@ -151,7 +155,6 @@ actor EngineInstaller {
         }
         try? fileManager.removeItem(at: engineRoot)
         try fileManager.moveItem(at: partial, to: engineRoot)
-        try repointCurrent()
         return engineRoot.path
     }
 
@@ -268,31 +271,56 @@ actor EngineInstaller {
         return resolvedRaw.path == resolvedCanonicalRoot.path
     }
 
+    /// Switches Claude Code to this version (Ruling 68): check the existing
+    /// `scout-plugin` marketplace is ours (a foreign one fails before
+    /// anything changes), repoint `current` at `engine/<version>`, then add
+    /// the marketplace and install the plugin — or, when both are already
+    /// there, `marketplace update` then `plugin update` (spec §5), so Claude
+    /// Code re-reads the manifest `current` now points at.
     private func registerWithClaudeCode() async throws -> String {
         let marketplace = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: layout.claudePluginsDir)
-        var notes: [String] = []
+        let marketplaceExists: Bool
         switch marketplace?.source {
         case nil:
-            let add = try await runner.run(executable: claude, arguments: ClaudeCodeCLI.marketplaceAdd(path: layout.currentEngineLink), environment: [:], workingDirectory: nil)
-            if add.exitCode != 0 {
-                let preview = Self.preview(add.stderr, max: 300)
-                throw Failure(description: "claude plugin marketplace add failed: \(preview)")
-            }
-            notes.append("marketplace added")
+            marketplaceExists = false
         case .directory(let path) where isManagedMarketplace(path: path):
-            notes.append("marketplace already points at the managed engine")
+            marketplaceExists = true
         case .some(let other):
-            throw Failure(description: "Claude Code already has a 'scout-plugin' marketplace from another source (\(other)). Adopting it instead of replacing it — see Settings ▸ Engine → Migrate.")
+            throw Failure(description: "Claude Code already has a 'scout-plugin' marketplace from another source (\(other)). Scout won't replace an install it doesn't manage; that engine keeps updating through Claude Code (/scout-update).")
+        }
+        guard EngineLocator.version(atRoot: engineRoot) == version else {
+            throw Failure(description: "engine \(version) is not unpacked at \(engineRoot.path); run “\(InstallStep.unpackEngine.title)” first")
+        }
+        try repointCurrent()
+
+        var notes: [String] = []
+        if marketplaceExists {
+            notes.append("marketplace already points at the managed engine")
+        } else {
+            try await runClaude(ClaudeCodeCLI.marketplaceAdd(path: layout.currentEngineLink))
+            notes.append("marketplace added")
         }
         let installed = ClaudePluginsRegistry.scoutPlugin(pluginsDir: layout.claudePluginsDir) != nil
-        let args = installed ? ClaudeCodeCLI.pluginUpdate : ClaudeCodeCLI.pluginInstall
+        if installed {
+            if marketplaceExists {
+                try await runClaude(ClaudeCodeCLI.marketplaceUpdate)
+                notes.append("marketplace updated")
+            }
+            try await runClaude(ClaudeCodeCLI.pluginUpdate)
+            notes.append("plugin updated (restart Claude Code to load it)")
+        } else {
+            try await runClaude(ClaudeCodeCLI.pluginInstall)
+            notes.append("plugin installed (restart Claude Code to load it)")
+        }
+        return notes.joined(separator: "; ")
+    }
+
+    private func runClaude(_ args: [String]) async throws {
         let result = try await runner.run(executable: claude, arguments: args, environment: [:], workingDirectory: nil)
         if result.exitCode != 0 {
             let preview = Self.preview(result.stderr, max: 300)
             throw Failure(description: "claude \(args.joined(separator: " ")) failed: \(preview)")
         }
-        notes.append(installed ? "plugin updated (restart Claude Code to load it)" : "plugin installed (restart Claude Code to load it)")
-        return notes.joined(separator: "; ")
     }
 
     static func bootstrapAutoArguments(mode: InstallMode, claude: URL, managedBy: String = "scout-app") -> [String] {

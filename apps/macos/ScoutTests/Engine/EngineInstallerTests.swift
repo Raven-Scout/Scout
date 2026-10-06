@@ -46,21 +46,35 @@ struct EngineInstallerTests {
         runner.on({ url, args in url.path == "/bin/bash" && args.first?.hasSuffix("install-venv.sh") == true }) { url, args, env in
             try await SystemProcessRunner().run(executable: url, arguments: args, environment: env, workingDirectory: nil)
         }
-        runner.on({ url, args in url.lastPathComponent == "scoutctl" && args == ["version"] }, { _, _, _ in ProcessResult(exitCode: 0, stdout: Data("\(version)\n".utf8), stderr: Data()) })
+        // `scoutctl version` answers the version its venv is named for
+        // (`venv/<v>/bin/scoutctl`), so one runner serves an upgrade's old
+        // and new venvs alike.
+        runner.on({ url, args in url.lastPathComponent == "scoutctl" && args == ["version"] }, { url, _, _ in
+            let venvVersion = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            return ProcessResult(exitCode: 0, stdout: Data("\(venvVersion)\n".utf8), stderr: Data())
+        })
         return Fixture(layout: layout, release: release, tarball: tarball, runner: runner)
+    }
+
+    /// The release a second, newer tarball ships — for upgrade tests.
+    func release(_ version: String, uv: EngineRelease.Uv) -> EngineRelease {
+        EngineRelease(schemaVersion: 2, version: version, engine: .init(version: version, commit: String(repeating: "c", count: 40)), uv: uv)
     }
 
     /// Build a `scout-engine-<version>.tar.gz` under `dir` for a second
     /// version, reusable against an existing fixture's layout/runner to
-    /// exercise an in-place upgrade.
+    /// exercise an in-place upgrade. `venvBuildFails` ships an
+    /// install-venv.sh that exits 1 without creating anything.
     @discardableResult
-    func buildTarball(version: String, in dir: URL) throws -> URL {
+    func buildTarball(version: String, in dir: URL, venvBuildFails: Bool = false) throws -> URL {
         let tree = dir.appendingPathComponent("tree-\(version)-\(UUID().uuidString)")
         try fm.createDirectory(at: tree.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
         try fm.createDirectory(at: tree.appendingPathComponent("scripts"), withIntermediateDirectories: true)
         try #"{"name": "scout", "version": "\#(version)"}"#.write(to: tree.appendingPathComponent(".claude-plugin/plugin.json"), atomically: true, encoding: .utf8)
-        try "#!/bin/bash\nmkdir -p \"$SCOUT_VENV_DIR/bin\"; printf '#!/bin/sh\\necho \(version)\\n' > \"$SCOUT_VENV_DIR/bin/scoutctl\"; chmod +x \"$SCOUT_VENV_DIR/bin/scoutctl\"\n"
-            .write(to: tree.appendingPathComponent("scripts/install-venv.sh"), atomically: true, encoding: .utf8)
+        let script = venvBuildFails
+            ? "#!/bin/bash\necho 'uv: resolution failed' >&2\nexit 1\n"
+            : "#!/bin/bash\nmkdir -p \"$SCOUT_VENV_DIR/bin\"; printf '#!/bin/sh\\necho \(version)\\n' > \"$SCOUT_VENV_DIR/bin/scoutctl\"; chmod +x \"$SCOUT_VENV_DIR/bin/scoutctl\"\n"
+        try script.write(to: tree.appendingPathComponent("scripts/install-venv.sh"), atomically: true, encoding: .utf8)
         let tarball = dir.appendingPathComponent("scout-engine-\(version).tar.gz")
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         p.arguments = ["-czf", tarball.path, "-C", tree.path, "."]
@@ -96,10 +110,9 @@ struct EngineInstallerTests {
         #expect(venvCall?.environment["SCOUT_UV"] == f.layout.uvURL.path)
     }
 
-    /// Ruling 54 critical 2: repointing `current` a second time used to
-    /// always fail (`FileManager.replaceItemAt` refuses a symlink as the
-    /// original). Re-running `.unpackEngine` for an already-unpacked version
-    /// must be a clean, successful skip.
+    /// Re-running `.unpackEngine` for an already-unpacked version must be a
+    /// clean, successful skip — and, since Ruling 68, neither run touches
+    /// `current`: only `.registerWithClaudeCode` repoints it.
     @Test func unpackEngineIsIdempotentOnASecondRun() async throws {
         let f = try fixture()
         defer { try? fm.removeItem(at: f.layout.home) }
@@ -110,28 +123,121 @@ struct EngineInstallerTests {
         #expect(second)
         guard case .skipped(let reason)? = seen.all.last?.status else { Issue.record("expected skipped"); return }
         #expect(reason.contains("already unpacked"))
-        #expect(try fm.destinationOfSymbolicLink(atPath: f.layout.currentEngineLink.path) == f.layout.engineRoot(version: "0.10.0").path)
+        #expect((try? fm.destinationOfSymbolicLink(atPath: f.layout.currentEngineLink.path)) == nil)
     }
 
-    /// Ruling 54 critical 1/2: unpacking a NEW version repoints `current` to
-    /// it (an absolute target) without disturbing the previous version's
-    /// files, and leaves no `current.tmp` behind.
-    @Test func unpackUpgradesToANewVersionLeavingThePreviousVersionIntact() async throws {
+    /// Ruling 54 critical 1/2 + Ruling 68: a NEW version unpacks alongside
+    /// the old one without moving `current`; registering it then repoints
+    /// `current` to it (an absolute target, atomically via `rename(2)`),
+    /// leaving the previous version's files intact and no `current.tmp`.
+    @Test func upgradeUnpacksAlongsideAndOnlyRegisterRepointsCurrent() async throws {
         let f10 = try fixture(version: "0.10.0")
         defer { try? fm.removeItem(at: f10.layout.home) }
-        let ok10 = await installer(f10) { _ in }.run(steps: [.unpackEngine], mode: .upgrade(vault: f10.layout.home))
+        f10.runner.on(tool: "claude", prefix: ["plugin"])
+        let ok10 = await installer(f10) { _ in }.run(steps: [.unpackEngine, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
         #expect(ok10)
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.10.0").path)
 
         let tarball11 = try buildTarball(version: "0.11.0", in: f10.layout.home)
-        let release11 = EngineRelease(schemaVersion: 2, version: "0.11.0", engine: .init(version: "0.11.0", commit: String(repeating: "c", count: 40)), uv: f10.release.uv)
-        let f11 = Fixture(layout: f10.layout, release: release11, tarball: tarball11, runner: f10.runner)
-        let ok11 = await installer(f11) { _ in }.run(steps: [.unpackEngine], mode: .upgrade(vault: f10.layout.home))
-        #expect(ok11)
+        let f11 = Fixture(layout: f10.layout, release: release("0.11.0", uv: f10.release.uv), tarball: tarball11, runner: f10.runner)
+        let unpacked = await installer(f11) { _ in }.run(steps: [.unpackEngine], mode: .upgrade(vault: f10.layout.home))
+        #expect(unpacked)
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.10.0").path)
 
+        let registered = await installer(f11) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(registered)
         #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.11.0").path)
         #expect(fm.fileExists(atPath: f10.layout.engineRoot(version: "0.10.0").appendingPathComponent(".claude-plugin/plugin.json").path))
         #expect(fm.fileExists(atPath: f10.layout.engineRoot(version: "0.11.0").appendingPathComponent(".claude-plugin/plugin.json").path))
         #expect(!fm.fileExists(atPath: f10.layout.engineDir.appendingPathComponent("current.tmp").path))
+    }
+
+    /// Installs 0.10.0 the way onboarding does, records Claude Code's
+    /// registry as it would then look (our directory marketplace at
+    /// `current`, the plugin installed), and returns a fixture for 0.11.0
+    /// on the same home and runner.
+    func installedThenUpgradeFixture(venvBuildFails: Bool = false) async throws -> (old: Fixture, new: Fixture) {
+        let f10 = try fixture(version: "0.10.0")
+        f10.runner.on(tool: "claude", prefix: ["plugin"])
+        let ok = await installer(f10) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(ok)
+        try fm.createDirectory(at: f10.layout.claudePluginsDir, withIntermediateDirectories: true)
+        try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(f10.layout.currentEngineLink.path)"}}}"#
+            .write(to: f10.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
+        try #"{"plugins": {"scout@scout-plugin": [{"version": "0.10.0", "installPath": "\#(f10.layout.currentEngineLink.path)"}]}}"#
+            .write(to: f10.layout.claudePluginsDir.appendingPathComponent("installed_plugins.json"), atomically: true, encoding: .utf8)
+        let tarball11 = try buildTarball(version: "0.11.0", in: f10.layout.home, venvBuildFails: venvBuildFails)
+        return (f10, Fixture(layout: f10.layout, release: release("0.11.0", uv: f10.release.uv), tarball: tarball11, runner: f10.runner))
+    }
+
+    /// Ruling 68: a failed upgrade must leave the old engine fully live —
+    /// `current` (what Claude Code's marketplace loads) still on the old
+    /// version, and Claude Code never told about the new one.
+    @Test func upgradeWhoseVenvBuildFailsLeavesCurrentOnTheOldVersion() async throws {
+        let (f10, f11) = try await installedThenUpgradeFixture(venvBuildFails: true)
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        let claudeCallsBefore = f11.runner.calls(to: "claude").count
+        let seen = ProgressRecorder()
+        let ok = await installer(f11) { seen.append($0) }.run(steps: EngineUpgrader.upgradeSteps, mode: .upgrade(vault: f10.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status, seen.all.last?.step == .buildVenv else { Issue.record("expected buildVenv to fail"); return }
+        #expect(why.contains("install-venv.sh failed"))
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.10.0").path)
+        #expect(f11.runner.calls(to: "claude").count == claudeCallsBefore)
+        #expect(!f11.runner.calls(to: "scoutctl").contains { $0.starts(with: ["bootstrap"]) })
+    }
+
+    /// Ruling 68 / spec §5: a successful upgrade switches the vault with
+    /// `bootstrap upgrade` (the NEW venv's scoutctl) BEFORE Claude Code
+    /// moves, then repoints `current` and runs exactly `marketplace update`
+    /// then `plugin update`.
+    @Test func successfulUpgradeBootstrapsThenUpdatesMarketplaceThenPlugin() async throws {
+        let (f10, f11) = try await installedThenUpgradeFixture()
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        let vault = f10.layout.home.appendingPathComponent("Scout")
+        f11.runner.on(tool: "scoutctl", prefix: ["bootstrap", "auto"], stdout: #"{"schema_version":1,"action":"upgrade","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"0.11.0","error":null,"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#)
+        f11.runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor", "--json"], stdout: #"{"severity": "green", "errors": [], "warnings": []}"#)
+        let callsBefore = f11.runner.calls.count
+        let ok = await installer(f11) { _ in }.run(steps: EngineUpgrader.upgradeSteps, mode: .upgrade(vault: vault))
+        #expect(ok)
+
+        let upgradeCalls = Array(f11.runner.calls.dropFirst(callsBefore))
+        let claudeCalls = upgradeCalls.filter { $0.executable.lastPathComponent == "claude" }.map(\.arguments)
+        #expect(claudeCalls == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginUpdate])
+        guard let bootstrapIndex = upgradeCalls.firstIndex(where: { $0.arguments.starts(with: ["bootstrap", "auto"]) }),
+              let marketplaceIndex = upgradeCalls.firstIndex(where: { $0.arguments == ClaudeCodeCLI.marketplaceUpdate }) else {
+            Issue.record("expected both a bootstrap and a marketplace update call"); return
+        }
+        #expect(bootstrapIndex < marketplaceIndex)
+        #expect(upgradeCalls[bootstrapIndex].executable == f11.layout.scoutctl(version: "0.11.0"))
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.11.0").path)
+        #expect(fm.fileExists(atPath: f10.layout.engineRoot(version: "0.10.0").path))
+    }
+
+    /// Ruling 68: register's re-run idempotence — a second register of the
+    /// same version is a clean success that leaves `current` where it was.
+    @Test func registerIsIdempotentOnASecondRun() async throws {
+        let (f10, _) = try await installedThenUpgradeFixture()
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        let ok = await installer(f10) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(ok)
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.10.0").path)
+        #expect(!fm.fileExists(atPath: f10.layout.engineDir.appendingPathComponent("current.tmp").path))
+    }
+
+    /// Registering a version that was never unpacked must fail before
+    /// `current` is pointed at a directory that doesn't exist.
+    @Test func registerRefusesAVersionThatIsNotUnpacked() async throws {
+        let f = try fixture()
+        defer { try? fm.removeItem(at: f.layout.home) }
+        f.runner.on(tool: "claude", prefix: ["plugin"])
+        let seen = ProgressRecorder()
+        let ok = await installer(f) { seen.append($0) }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status else { Issue.record("expected failure"); return }
+        #expect(why.contains("not unpacked"))
+        #expect((try? fm.destinationOfSymbolicLink(atPath: f.layout.currentEngineLink.path)) == nil)
+        #expect(f.runner.calls(to: "claude").isEmpty)
     }
 
     /// Only tests the hard-failure path for a marketplace from another
@@ -155,7 +261,8 @@ struct EngineInstallerTests {
     }
 
     /// The actual "already installed, marketplace is ours → update not
-    /// install" path (Ruling 54 important 3).
+    /// install" path (Ruling 54 important 3). Ruling 68: the marketplace is
+    /// refreshed first, so the plugin update sees the new manifest.
     @Test func registerRunsPluginUpdateWhenAlreadyInstalledAndMarketplaceIsOurs() async throws {
         let f = try fixture()
         defer { try? fm.removeItem(at: f.layout.home) }
@@ -165,10 +272,11 @@ struct EngineInstallerTests {
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
         try #"{"plugins": {"scout@scout-plugin": [{"version": "0.10.0", "installPath": "\#(f.layout.currentEngineLink.path)"}]}}"#
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("installed_plugins.json"), atomically: true, encoding: .utf8)
+        f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "update"])
         f.runner.on(tool: "claude", prefix: ["plugin", "update"])
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
-        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.pluginUpdate])
+        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginUpdate])
     }
 
     /// Ruling 53: Claude Code may have recorded the `current` symlink's own
