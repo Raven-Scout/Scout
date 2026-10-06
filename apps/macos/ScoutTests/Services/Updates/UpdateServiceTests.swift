@@ -30,6 +30,37 @@ private actor FakePluginChecker: PluginUpdateChecking {
     }
 }
 
+/// A checker whose *first* call suspends until the test calls `release()`,
+/// so a test can deterministically make an earlier check resolve *after* a
+/// later one — no sleeps, no timing races. Every call after the first
+/// returns immediately with the next configured result.
+private actor GatedPluginChecker: PluginUpdateChecking {
+    private(set) var calls: [EngineState] = []
+    private let results: [PluginUpdateResult]
+    private var callIndex = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(results: [PluginUpdateResult]) { self.results = results }
+
+    func check(engine: EngineState) async -> PluginUpdateResult {
+        let index = callIndex
+        callIndex += 1
+        calls.append(engine)
+        if index == 0 {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                waiters.append(continuation)
+            }
+        }
+        return results[min(index, results.count - 1)]
+    }
+
+    /// Resumes the first call, letting its (by now superseded) result resolve.
+    func release() {
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
 private let defaultEngineRoot = URL(fileURLWithPath: "/Users/alex/scout-plugin")
 private let defaultInstall = EngineInstall(
     root: defaultEngineRoot,
@@ -73,7 +104,7 @@ struct UpdateServiceTests {
     /// for tests that need to emit several engine states over time.
     private func makeService(
         appEnabled: Bool = true,
-        checker: FakePluginChecker,
+        checker: any PluginUpdateChecking,
         engineStates: AnyPublisher<EngineState, Never>
     ) -> (UpdateService, FakeAppController) {
         var controller: FakeAppController!
@@ -134,6 +165,10 @@ struct UpdateServiceTests {
         let (service, _, _) = make(plugin: PluginUpdateResult(
             applicable: true, installed: "0.7.2", latest: "0.8.0", isUpdateAvailable: true,
             releasesURL: URL(string: "https://github.com/example-org/scout-plugin/releases"), error: nil))
+        // `make()` seeds a replaying subject, which already scheduled a launch
+        // check against the same checker/result; settle it first so this
+        // call's generation isn't racing that still-in-flight one.
+        await service.pluginTask?.value
         await service.checkPlugin()
         #expect(service.pluginUpdate == UpdateStatus(currentVersion: "0.7.2", latestVersion: "0.8.0", state: .available))
         #expect(service.pluginReleasesURL?.absoluteString == "https://github.com/example-org/scout-plugin/releases")
@@ -143,11 +178,13 @@ struct UpdateServiceTests {
 
     @Test func pluginCheckUpToDateAndError() async {
         let (upToDate, _, _) = make()
+        await upToDate.pluginTask?.value
         await upToDate.checkPlugin()
         #expect(upToDate.pluginUpdate.state == .upToDate)
 
         let (errored, _, _) = make(plugin: PluginUpdateResult(
             applicable: true, installed: "0.7.2", latest: nil, isUpdateAvailable: false, releasesURL: nil, error: "offline"))
+        await errored.pluginTask?.value
         await errored.checkPlugin()
         #expect(errored.pluginUpdate.state == .error("offline"))
         #expect(errored.pluginUpdate.currentVersion == "0.7.2")
@@ -156,6 +193,7 @@ struct UpdateServiceTests {
     @Test func pluginNotInstalledStaysIdleWithNoVersion() async {
         let (service, _, _) = make(plugin: PluginUpdateResult(
             applicable: true, installed: nil, latest: nil, isUpdateAvailable: false, releasesURL: nil, error: nil))
+        await service.pluginTask?.value
         await service.checkPlugin()
         #expect(service.pluginUpdate.currentVersion == nil)
         #expect(service.pluginUpdate.state == .idle)   // nothing to report, but the engine is eligible so the row stays
@@ -165,6 +203,7 @@ struct UpdateServiceTests {
     @Test func bothTracksCountTowardTheBadge() async {
         let (service, controller, _) = make(plugin: PluginUpdateResult(
             applicable: true, installed: "0.7.2", latest: "0.8.0", isUpdateAvailable: true, releasesURL: nil, error: nil))
+        await service.pluginTask?.value
         await service.checkPlugin()
         controller.emit?(.found(version: "0.12.0"))
         #expect(service.availableCount == 2)
@@ -267,5 +306,44 @@ struct UpdateServiceTests {
         #expect(calls.isEmpty)
         #expect(service.pluginUpdate == UpdateStatus())
         #expect(service.pluginRowVisible == false)
+    }
+
+    /// Regression for the reviewer's finding: `pluginTask?.cancel()` in
+    /// `check(_:)` only flips the task's cancellation flag — it can't stop a
+    /// non-throwing `PluginUpdateChecking.check(engine:)` that's already
+    /// mid-await. If the superseded (first) check resolves *after* the
+    /// current (second) one, it must not overwrite the current result.
+    @Test func overlappingChecksApplyOnlyTheLatestResult() async {
+        let installA = install(named: "scout-plugin-a")
+        let installB = install(named: "scout-plugin-b")
+        let subject = PassthroughSubject<EngineState, Never>()
+        let checker = GatedPluginChecker(results: [
+            // index 0 — for installA; suspends until release(); stale by the
+            // time it resolves.
+            PluginUpdateResult(applicable: true, installed: "0.7.2", latest: "0.8.0",
+                               isUpdateAvailable: true, releasesURL: nil, error: nil),
+            // index 1 — for installB; resolves immediately and is current.
+            PluginUpdateResult(applicable: true, installed: "0.9.0", latest: "0.9.0",
+                               isUpdateAvailable: false, releasesURL: nil, error: nil),
+        ])
+        let (service, _) = makeService(checker: checker, engineStates: subject.eraseToAnyPublisher())
+
+        subject.send(.external(installA, .marketplaceCache))
+        let supersededTask = service.pluginTask   // captured before it's overwritten below
+
+        subject.send(.external(installB, .marketplaceCache))   // engine changed again before A resolved
+        await service.pluginTask?.value   // the second (current) check completes — it never suspends
+
+        #expect(service.pluginUpdate.currentVersion == "0.9.0")
+        #expect(service.pluginUpdate.state == .upToDate)
+        #expect(service.availableCount == 0)
+
+        await checker.release()          // now let the first (superseded) check resolve
+        await supersededTask?.value       // deterministically wait for it to finish discarding its result
+
+        // The stale, superseded result must not have overwritten the current one.
+        #expect(service.pluginUpdate.currentVersion == "0.9.0")
+        #expect(service.pluginUpdate.state == .upToDate)
+        #expect(service.availableCount == 0)
     }
 }

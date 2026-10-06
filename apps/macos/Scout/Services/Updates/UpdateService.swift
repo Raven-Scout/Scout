@@ -75,6 +75,9 @@ final class UpdateService: ObservableObject {
     static let pluginUpdateCommand = "/scout-update"
 
     @Published private(set) var appUpdate: UpdateStatus
+    /// `.checking` is set before applicability is known (see `checkPlugin()`),
+    /// so a stale/hidden check can still be mid-flight here. UI must gate on
+    /// `pluginRowVisible` before reading this, not the other way around.
     @Published private(set) var pluginUpdate = UpdateStatus()
     @Published private(set) var pluginRowVisible = false
     @Published private(set) var pluginReleasesURL: URL?
@@ -100,6 +103,16 @@ final class UpdateService: ObservableObject {
     /// The in-flight (or most recently completed) plugin check, exposed so
     /// tests can `await service.pluginTask?.value` instead of sleeping.
     internal private(set) var pluginTask: Task<Void, Never>?
+
+    /// Bumped at the entry of every `checkPlugin()` call, mirroring
+    /// `EngineHealthService.generation`. `pluginTask?.cancel()` in `check(_:)`
+    /// only sets the task's cancellation flag — it doesn't stop a plugin
+    /// checker that's already mid-await and non-throwing, so a superseded
+    /// check can still resolve after a newer one. Gating `applyPluginResult`
+    /// on "am I still the latest call" (rather than relying on cancellation)
+    /// is what actually prevents a late, stale result from overwriting the
+    /// current one.
+    private var pluginCheckGeneration = 0
 
     /// - Parameters:
     ///   - pluginChecker: the plugin-track checker (file reads + one HTTPS GET).
@@ -171,10 +184,18 @@ final class UpdateService: ObservableObject {
 
     /// Uses the latest engine state received from `engineStates`. A no-op
     /// before the first one has arrived — there is nothing to check against.
+    ///
+    /// Re-entrant: if a newer call starts (because the engine state changed
+    /// again, or a manual "Check now" overlaps the launch check) before this
+    /// one's `await` returns, this call's result is discarded instead of
+    /// overwriting the newer one — see `pluginCheckGeneration`.
     func checkPlugin() async {
         guard let engineState = latestEngineState else { return }
+        pluginCheckGeneration += 1
+        let myGeneration = pluginCheckGeneration
         pluginUpdate.state = .checking
         let result = await pluginChecker.check(engine: engineState)
+        guard myGeneration == pluginCheckGeneration, !Task.isCancelled else { return }
         applyPluginResult(result)
     }
 
