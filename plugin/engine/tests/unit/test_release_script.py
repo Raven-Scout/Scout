@@ -483,3 +483,14 @@ def test_rc_without_appcast_only_warns(tmp_path):
     assert done.returncode == 0, done.stderr
     assert "no appcast.xml" in done.stdout
     assert "appcast.xml" not in next(c for c in r.calls() if c.startswith("gh release create"))
+
+
+def test_finalize_refuses_a_reverted_release(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    _git(r.root, "revert", "--no-edit", "HEAD")
+    _git(r.root, "push", "-q", "origin", "main")
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode != 0
+    assert "origin/main now carries version 0.14.0, not 0.15.0" in done.stderr
+    assert not any(c.startswith(("xcodebuild", "gh release")) for c in r.calls())

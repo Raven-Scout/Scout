@@ -301,7 +301,7 @@ release_commit() {
 }
 
 cmd_finalize() {
-  local tag="${1:-}" v slug sha after
+  local tag="${1:-}" v slug sha after pj tip
   slug="$(require_slug)"
   if [[ $tag =~ $RC_TAG_RE ]]; then
     die "finalize is for releases; use 'rc' for $tag"
@@ -315,6 +315,11 @@ cmd_finalize() {
   # Build the release commit, not origin/main's tip: anything merged after it is not part of $tag.
   sha="$(release_commit "$v")"
   [ -n "$sha" ] || die "no release commit for v$v on origin/main. Merge the release PR first."
+  # A reverted release PR leaves its commit in main's history, so also require main to still carry v.
+  pj="$(git -C "$REPO_ROOT" show origin/main:plugin/.claude-plugin/plugin.json)" \
+    || die "cannot read plugin/.claude-plugin/plugin.json at origin/main"
+  tip="$("$PY" -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$pj")"
+  [ "$tip" = "$v" ] || die "origin/main now carries version $tip, not $v (was the release PR reverted, or a later release merged?). Not publishing."
   after="$(git -C "$REPO_ROOT" rev-list --count "$sha..origin/main")"
   [ "$after" = 0 ] || echo "note: $after commit(s) on origin/main after the release commit are not in $tag"
   build_and_publish "$tag" "$v" "$sha" "$slug" release
