@@ -23,6 +23,15 @@ struct UpdateStatus: Equatable, Sendable {
 enum AppUpdateEvent: Equatable, Sendable {
     case found(version: String)
     case upToDate
+    /// The update cycle ended with nothing more to report: no update found
+    /// (already covered by `.upToDate` separately), a user cancel, or an
+    /// "install later" authorization deferral. Sparkle calls
+    /// `didFinishUpdateCycleForUpdateCheck:error:` for every completed
+    /// cycle — including a silent cancel, which never calls
+    /// `didAbortWithError:` because its error is nil — so this is the only
+    /// reliable terminal signal for a check that didn't find (or install)
+    /// anything.
+    case cycleEnded
     case failed(String)
 }
 
@@ -33,8 +42,13 @@ protocol AppUpdateController: AnyObject {
     /// False in Debug builds — the updater never starts there.
     var isEnabled: Bool { get }
     var currentVersion: String? { get }
-    /// User-initiated check. Results come back through `AppUpdateEvent`s.
-    func checkForUpdates()
+    /// User-initiated check. Returns whether a check actually started —
+    /// false when disabled, or when Sparkle reports a session is already in
+    /// progress or a permission prompt is showing (in which case it has
+    /// already silently declined and calls back with nothing). Results come
+    /// back through `AppUpdateEvent`s.
+    @discardableResult
+    func checkForUpdates() -> Bool
 }
 
 /// Outcome of one plugin check. `applicable == false` means the engine state
@@ -85,6 +99,13 @@ final class UpdateService: ObservableObject {
     private var appController: (any AppUpdateController)?
     private let pluginChecker: any PluginUpdateChecking
     private var cancellables: Set<AnyCancellable> = []
+
+    /// `appUpdate.state` as it was just before the most recent `checkApp()`
+    /// actually started a check, so `.cycleEnded` (a silent cancel or
+    /// "install later" with no other event) can restore it instead of
+    /// leaving the row stuck on `.checking`. Nil means "no check in flight
+    /// from this state" — `.cycleEnded` then falls back to `.idle`.
+    private var appStateBeforeChecking: UpdateStatus.State?
 
     /// The most recent engine state received from `engineStates`, nil until
     /// the first one arrives. `checkPlugin()` uses this; with none received
@@ -167,17 +188,29 @@ final class UpdateService: ObservableObject {
         case .upToDate:
             appUpdate.latestVersion = appUpdate.currentVersion
             appUpdate.state = .upToDate
+        case .cycleEnded:
+            // Only resolve a check that's still in flight from this
+            // service's point of view; a cycle end arriving after `.found`
+            // or `.upToDate` already settled the state (e.g. "remind me
+            // later" on a found update) must not clobber it.
+            guard appUpdate.state == .checking else { return }
+            appUpdate.state = appStateBeforeChecking ?? .idle
+            appStateBeforeChecking = nil
         case .failed(let message):
             appUpdate.state = .error(message)
         }
     }
 
     /// Sparkle shows its own UI from here on (found / up to date / error);
-    /// we just note that a check is in flight.
+    /// we just note that a check is in flight — and only if one actually
+    /// started, since Sparkle silently declines (no callback at all) when a
+    /// session is already running or a permission prompt is showing.
     func checkApp() {
         guard let controller = appController, controller.isEnabled else { return }
+        let priorState = appUpdate.state
+        guard controller.checkForUpdates() else { return }
+        appStateBeforeChecking = priorState
         appUpdate.state = .checking
-        controller.checkForUpdates()
     }
 
     // MARK: Plugin track

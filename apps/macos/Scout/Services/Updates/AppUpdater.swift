@@ -46,11 +46,61 @@ final class AppUpdater: AppUpdateController {
     }
 
     /// User-initiated: Sparkle shows "checking…", then found / up to date /
-    /// error UI itself. Scheduled checks are Sparkle's own (launch + daily).
-    func checkForUpdates() {
-        guard isEnabled else { return }
+    /// error UI itself, and always finishes the cycle through the delegate's
+    /// `didFinishUpdateCycleForUpdateCheck:error:` — including a silent
+    /// cancel. Scheduled checks are Sparkle's own (launch + daily).
+    ///
+    /// Returns whether a check actually started. `canCheckForUpdates` is
+    /// false (and Sparkle declines silently, with no delegate callback at
+    /// all) while a session is already in progress or a permission prompt is
+    /// showing — `UpdateService` uses the return value to avoid marking
+    /// `.checking` for a check that never happened.
+    @discardableResult
+    func checkForUpdates() -> Bool {
+        guard isEnabled, controller.updater.canCheckForUpdates else { return false }
         controller.updater.checkForUpdates()
+        return true
     }
+
+    /// Sparkle-free so it can be unit tested without starting Sparkle or
+    /// importing it; the Sparkle constants are resolved into plain values
+    /// at the one call site that has them, `AppUpdaterDelegate.updater(_:
+    /// didFinishUpdateCycleFor:error:)` below.
+    ///
+    /// - nil error: the cycle ended with nothing further to report — a
+    ///   silent cancel ("checking…" dismissed, or "install later" on a found
+    ///   update) or a normal finish after `.found`/`.upToDate` already fired.
+    /// - `SUSparkleErrorDomain` + `SUNoUpdateError` (1001): no update was
+    ///   found. (`updaterDidNotFindUpdate(_:error:)` already emits
+    ///   `.upToDate` for this same cycle; mapping it here too keeps this
+    ///   function's result correct standalone and idempotent in
+    ///   `UpdateService.applyAppEvent`.)
+    /// - `SUInstallationCanceledError` (4007) or
+    ///   `SUInstallationAuthorizeLaterError` (4008): the user canceled the
+    ///   authorization prompt, or deferred installation — a cancel, not a
+    ///   failure.
+    /// - anything else: a genuine failure.
+    nonisolated static func cycleEndEvent(errorDomain: String?, code: Int?, localizedDescription: String) -> AppUpdateEvent {
+        guard let domain = errorDomain, let code else { return .cycleEnded }
+        guard domain == sparkleErrorDomain else { return .failed(localizedDescription) }
+        switch code {
+        case noUpdateErrorCode:
+            return .upToDate
+        case installationCanceledErrorCode, installationAuthorizeLaterErrorCode:
+            return .cycleEnded
+        default:
+            return .failed(localizedDescription)
+        }
+    }
+
+    // `nonisolated`: plain Sendable values (a String, three Ints) read only
+    // from the `nonisolated static func` above — without this, the
+    // MainActor isolation this class defaults to would make them
+    // inaccessible from that nonisolated context.
+    private nonisolated static let sparkleErrorDomain = SUSparkleErrorDomain as String
+    private nonisolated static let noUpdateErrorCode = Int(SUError.noUpdateError.rawValue)
+    private nonisolated static let installationCanceledErrorCode = Int(SUError.installationCanceledError.rawValue)
+    private nonisolated static let installationAuthorizeLaterErrorCode = Int(SUError.installationAuthorizeLaterError.rawValue)
 }
 
 /// Sparkle calls its delegate on the main thread; we assert that and hop the
@@ -79,10 +129,17 @@ final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate {
         emit(.upToDate)
     }
 
-    nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
-        // Sparkle reports user cancellation through this hook too; keep the
-        // Settings row honest but never alarming — it's shown as "Couldn't
-        // check", Sparkle already showed any dialog it wanted to.
-        emit(.failed(error.localizedDescription))
+    /// Fires for *every* completed update cycle, found-or-not, error-or-not
+    /// — including a silent cancel (dismissing the "checking…" sheet or the
+    /// found-update alert aborts with a `nil` error, which never reaches
+    /// `didAbortWithError:`). This is the only reliable terminal signal, so
+    /// it — not `didAbortWithError:` — is what resolves `.checking`.
+    nonisolated func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?) {
+        let nsError = error as NSError?
+        emit(AppUpdater.cycleEndEvent(
+            errorDomain: nsError?.domain,
+            code: nsError?.code,
+            localizedDescription: nsError?.localizedDescription ?? ""
+        ))
     }
 }

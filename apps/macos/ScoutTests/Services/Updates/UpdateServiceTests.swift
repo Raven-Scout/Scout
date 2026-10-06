@@ -8,9 +8,18 @@ private final class FakeAppController: AppUpdateController {
     let isEnabled: Bool
     let currentVersion: String? = "0.11.2"
     var checkCalls = 0
+    /// What `checkForUpdates()` returns — mirrors Sparkle's
+    /// `canCheckForUpdates` gate, which silently declines (no callback at
+    /// all) when a session is already in progress or a permission prompt is
+    /// showing.
+    var startsCheck = true
     var emit: (@MainActor (AppUpdateEvent) -> Void)?
     init(isEnabled: Bool) { self.isEnabled = isEnabled }
-    func checkForUpdates() { checkCalls += 1 }
+    @discardableResult
+    func checkForUpdates() -> Bool {
+        checkCalls += 1
+        return startsCheck
+    }
 }
 
 /// Records the `EngineState`s it was called with, so tests can assert both
@@ -157,6 +166,72 @@ struct UpdateServiceTests {
 
         controller.emit?(.failed("offline"))
         #expect(service.appUpdate.state == .error("offline"))
+    }
+
+    /// Regression for the reviewer's finding: Sparkle silently declines (no
+    /// delegate callback at all) when a session is already in progress or a
+    /// permission prompt is showing — `checkForUpdates()` reports that via
+    /// its return value, and `checkApp()` must not mark `.checking` for a
+    /// check that never started.
+    @Test func checkAppLeavesStateUnchangedWhenTheControllerDeclinesToStart() {
+        let (service, controller, _) = make()
+        controller.startsCheck = false
+        service.checkApp()
+        #expect(service.appUpdate.state == .idle)
+        #expect(controller.checkCalls == 1)
+    }
+
+    /// Regression for the reviewer's finding: a cancelled check (dismissing
+    /// the "checking…" sheet) aborts with a nil error, which never reaches
+    /// `didAbortWithError:` — only `didFinishUpdateCycleForUpdateCheck:`
+    /// fires, mapped to `.cycleEnded`. Without this, `.checking` was stuck
+    /// forever and `CheckForUpdatesView` stayed disabled.
+    @Test func cycleEndedWhileCheckingRestoresThePriorState() {
+        let (service, controller, _) = make()
+        controller.emit?(.upToDate)   // some settled state before the next check
+        #expect(service.appUpdate.state == .upToDate)
+
+        service.checkApp()
+        #expect(service.appUpdate.state == .checking)
+        controller.emit?(.cycleEnded)
+        #expect(service.appUpdate.state == .upToDate)   // restored, not stuck
+    }
+
+    /// With no prior check in this service's lifetime, there is nothing to
+    /// restore to, so `.cycleEnded` falls back to `.idle`.
+    @Test func cycleEndedWhileCheckingWithNoPriorStateFallsBackToIdle() {
+        let (service, controller, _) = make()
+        service.checkApp()
+        #expect(service.appUpdate.state == .checking)
+        controller.emit?(.cycleEnded)
+        #expect(service.appUpdate.state == .idle)
+    }
+
+    /// A `.found` (or any other settled result) that arrives before the
+    /// cycle-end callback must not be clobbered by it — e.g. the user picks
+    /// "remind me later" on a found update, which still ends the cycle.
+    @Test func cycleEndedAfterFoundLeavesAvailableAlone() {
+        let (service, controller, _) = make()
+        service.checkApp()
+        controller.emit?(.found(version: "0.12.0"))
+        #expect(service.appUpdate.state == .available)
+        controller.emit?(.cycleEnded)
+        #expect(service.appUpdate.state == .available)
+        #expect(service.appUpdate.latestVersion == "0.12.0")
+    }
+
+    /// The no-update path fires both `updaterDidNotFindUpdate` (→
+    /// `.upToDate`) and `didFinishUpdateCycleForUpdateCheck:` for the same
+    /// cycle; `AppUpdater.cycleEndEvent` maps `SUNoUpdateError` back onto
+    /// `.upToDate` too, so the second event must be a no-op, not clobber the
+    /// first with `.cycleEnded`'s restore logic.
+    @Test func upToDateThenCycleEndedStaysUpToDate() {
+        let (service, controller, _) = make()
+        service.checkApp()
+        controller.emit?(.upToDate)
+        #expect(service.appUpdate.state == .upToDate)
+        controller.emit?(.cycleEnded)
+        #expect(service.appUpdate.state == .upToDate)
     }
 
     // MARK: Plugin track results (ported; `applicable`/`releasesURL` renamed)
