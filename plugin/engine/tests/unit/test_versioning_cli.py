@@ -15,6 +15,9 @@ as the second positional argument rather than a keyword.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from scout.scripts import versioning
@@ -177,3 +180,170 @@ def test_plugin_root_points_at_the_checkout_root() -> None:
     every default-root call silently targets the wrong tree."""
     assert (versioning.PLUGIN_ROOT / ".claude-plugin" / "plugin.json").is_file()
     assert (versioning.PLUGIN_ROOT / "engine" / "pyproject.toml").is_file()
+
+
+# --- --repo-root flag, `next`, `promote`, `previous-release`, `recommend` ---
+#
+# These argv branches aren't exercised above: the autouse `no_real_writes`
+# fixture stubs `read_versions` / `assert_in_sync` / `set_version`, which is
+# enough for `check` / `current` / `bump` / `set`, but `previous-release` and
+# `recommend` shell out to real git via `previous_release()` / `recommend_level()`.
+# `--repo-root` is exactly how `main()` lets a caller point those at a throwaway
+# repo instead of the real checkout, so that's what these use.
+
+
+def test_repo_root_flag_without_a_path_is_an_error(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert versioning.main(["--repo-root"]) == 2
+    assert "--repo-root requires a path" in capsys.readouterr().err
+    assert no_real_writes == []
+
+
+def test_repo_root_flag_sets_repo_and_root_and_strips_itself_from_argv(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    calls: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        versioning,
+        "read_versions",
+        lambda root, repo: calls.append((root, repo)) or {"plugin.json": "9.9.9"},
+    )
+    assert versioning.main(["--repo-root", str(tmp_path), "current"]) == 0
+    assert calls == [(tmp_path.resolve() / "plugin", tmp_path.resolve())]
+    assert capsys.readouterr().out.strip() == "9.9.9"
+
+
+def test_next_prints_the_candidate_without_writing(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`next` previews the bump; only `bump`/`set` call `set_version` (227->229)."""
+    assert versioning.main(["next", "patch"]) == 0
+    assert capsys.readouterr().out.strip() == "1.2.4"
+    assert no_real_writes == []
+
+
+def test_promote_requires_exactly_two_args(no_real_writes: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    assert versioning.main(["promote", "1.3.0"]) == 2
+    assert "promote requires <X.Y.Z> <YYYY-MM-DD>" in capsys.readouterr().err
+    assert no_real_writes == []
+
+
+def test_promote_happy_path_calls_promote_changelogs(
+    monkeypatch: pytest.MonkeyPatch, no_real_writes: list[str], tmp_path: Path
+) -> None:
+    calls: list[tuple[Path, str, str]] = []
+    monkeypatch.setattr(
+        versioning,
+        "promote_changelogs",
+        lambda repo, *, version, date: calls.append((repo, version, date)),
+    )
+    assert versioning.main(["--repo-root", str(tmp_path), "promote", "1.3.0", "2026-06-02"]) == 0
+    assert calls == [(tmp_path.resolve(), "1.3.0", "2026-06-02")]
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+
+
+def _repo_with_tags(tmp_path: Path) -> Path:
+    """Mirrors test_versioning.py's `_repo_with_tags`: two real releases plus
+    an rc tag (never a "previous release") and a trailing feat: commit."""
+    repo = tmp_path / "r"
+    _init_repo(repo)
+    for msg, tag in [
+        ("chore: one", "app/v0.14.0"),
+        ("fix: two", "plugin/v0.14.0"),
+        ("chore: three", "v0.15.1-rc.1"),
+        ("feat: four", None),
+    ]:
+        _git(repo, "commit", "-q", "--allow-empty", "-m", msg)
+        if tag:
+            _git(repo, "tag", tag)
+    return repo
+
+
+def test_previous_release_picks_the_highest_then_newest_tag(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.main(["--repo-root", str(repo), "previous-release"]) == 0
+    tag, sha = capsys.readouterr().out.strip().split()
+    assert tag == "plugin/v0.14.0"  # same version as app/v0.14.0, but the later commit
+    assert sha == _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
+
+
+def test_previous_release_respects_the_exclude_option(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.main(["--repo-root", str(repo), "previous-release", "--exclude", "plugin/v0.14.0"]) == 0
+    assert capsys.readouterr().out.strip().startswith("app/v0.14.0 ")
+
+
+def test_previous_release_respects_the_ref_option(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.main(["--repo-root", str(repo), "previous-release", "--ref", "app/v0.14.0"]) == 0
+    assert capsys.readouterr().out.strip().startswith("app/v0.14.0 ")  # plugin/v0.14.0 isn't an ancestor yet
+
+
+def test_previous_release_prints_nothing_when_none_is_found(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = tmp_path / "empty"
+    _init_repo(repo)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "chore: only")
+    assert versioning.main(["--repo-root", str(repo), "previous-release"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_previous_release_skips_a_lexicographically_later_but_lower_version_tag(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """`git tag --merged` lists tags alphabetically, not by version: v0.10.0 sorts
+    before v0.2.0. Covers the loop's "this tag doesn't beat the current best"
+    branch (the first tag, v0.10.0, always wins the `best is None` branch — only
+    the second, lower-versioned v0.2.0 can exercise the comparison falling through)."""
+    repo = tmp_path / "r2"
+    _init_repo(repo)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "chore: a")
+    _git(repo, "tag", "v0.10.0")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "chore: b")
+    _git(repo, "tag", "v0.2.0")
+    assert versioning.main(["--repo-root", str(repo), "previous-release"]) == 0
+    assert capsys.readouterr().out.strip().startswith("v0.10.0 ")
+
+
+def test_recommend_minor_when_a_feat_commit_is_in_range(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    since = _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
+    assert versioning.main(["--repo-root", str(repo), "recommend", "--since", since]) == 0
+    assert capsys.readouterr().out.strip() == "minor"  # "feat: four" landed after it
+
+
+def test_recommend_patch_when_the_ref_excludes_the_feat_commit(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    since = _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
+    assert versioning.main(["--repo-root", str(repo), "recommend", "--since", since, "--ref", "v0.15.1-rc.1"]) == 0
+    assert capsys.readouterr().out.strip() == "patch"
+
+
+def test_recommend_defaults_since_to_none_and_ref_to_head(
+    no_real_writes: list[str], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.main(["--repo-root", str(repo), "recommend"]) == 0
+    assert capsys.readouterr().out.strip() == "minor"  # whole history includes "feat: four"
