@@ -21,6 +21,7 @@ import pytest
 
 pytest.importorskip("textual")
 
+from scout import config  # noqa: E402
 from scout.action_items.parser import ActionItem  # noqa: E402
 from scout.tui import config as tui_config  # noqa: E402
 from scout.tui.screens.spawn import build_prompt, spawn_session  # noqa: E402
@@ -39,7 +40,9 @@ def _item(**kwargs) -> ActionItem:
 
 def test_action_items_path_defaults_to_today(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(tui_config, "ACTION_ITEMS_DIR", tmp_path)
-    expected = tmp_path / f"action-items-{dt.date.today().isoformat()}.md"
+    # The resolved zone's date (scout.config.today, #207), not the host's
+    # date.today(): the two disagree for hours around midnight UTC on CI.
+    expected = tmp_path / f"action-items-{config.today().isoformat()}.md"
     assert tui_config.action_items_path() == expected
 
 
