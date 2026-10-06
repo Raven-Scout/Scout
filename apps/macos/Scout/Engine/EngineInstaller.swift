@@ -274,9 +274,10 @@ actor EngineInstaller {
     /// Switches Claude Code to this version (Ruling 68): check the existing
     /// `scout-plugin` marketplace is ours (a foreign one fails before
     /// anything changes), repoint `current` at `engine/<version>`, then add
-    /// the marketplace and install the plugin — or, when both are already
-    /// there, `marketplace update` then `plugin update` (spec §5), so Claude
-    /// Code re-reads the manifest `current` now points at.
+    /// the marketplace and install the plugin. An existing marketplace is
+    /// always refreshed with `marketplace update` first, then the plugin is
+    /// updated (spec §5) or installed, so Claude Code re-reads the manifest
+    /// `current` now points at.
     private func registerWithClaudeCode() async throws -> String {
         let marketplace = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: layout.claudePluginsDir)
         let marketplaceExists: Bool
@@ -295,17 +296,20 @@ actor EngineInstaller {
 
         var notes: [String] = []
         if marketplaceExists {
-            notes.append("marketplace already points at the managed engine")
+            // Always refresh an existing marketplace first (final review
+            // I1): Claude Code installs from the manifest it cached when the
+            // marketplace was added or last updated, so a `plugin install`
+            // after `current` moved (e.g. the plugin was uninstalled) would
+            // otherwise install the stale version and fail the postcondition
+            // below on every retry.
+            try await runClaude(ClaudeCodeCLI.marketplaceUpdate)
+            notes.append("marketplace updated")
         } else {
             try await runClaude(ClaudeCodeCLI.marketplaceAdd(path: layout.currentEngineLink))
             notes.append("marketplace added")
         }
         let installed = ClaudePluginsRegistry.scoutPlugin(pluginsDir: layout.claudePluginsDir) != nil
         if installed {
-            if marketplaceExists {
-                try await runClaude(ClaudeCodeCLI.marketplaceUpdate)
-                notes.append("marketplace updated")
-            }
             try await runClaude(ClaudeCodeCLI.pluginUpdate)
             notes.append("plugin updated (restart Claude Code to load it)")
         } else {

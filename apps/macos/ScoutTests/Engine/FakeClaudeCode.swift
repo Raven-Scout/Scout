@@ -9,19 +9,29 @@ import Foundation
 ///   (a directory marketplace, as Claude Code does — final review C1) and
 ///   records the marketplace under the manifest's own `name`. A missing or
 ///   invalid manifest fails the way Claude Code does, and records nothing.
-/// - `plugin install|update` installs the version the recorded marketplace
-///   path RESOLVES to (so a marketplace recorded at `engine/<old>` keeps
-///   loading <old>, Ruling 69 I2): the marketplace entry's `version`, else
-///   the entry's own `plugin.json` — which is what the register step's
-///   postcondition compares.
-/// - `marketplace update` re-reads the recorded directory (and fails if its
-///   manifest is gone).
+/// - Like Claude Code, it CACHES the manifest it read: `marketplace add` and
+///   `marketplace update` snapshot the scout version the recorded path
+///   RESOLVES to (so a marketplace recorded at `engine/<old>` keeps loading
+///   <old>, Ruling 69 I2), and `plugin install|update` install that cached
+///   version — the marketplace entry's `version`, else the entry's own
+///   `plugin.json` — which is what the register step's postcondition
+///   compares. Without an `update`, an install after `current` moved gets
+///   the stale cached version (final review I1). A marketplace this fake
+///   never added (a test wrote `known_marketplaces.json` itself) has no
+///   cache, so install reads the directory as it is now.
+/// - `marketplace update` fails if the recorded manifest is gone.
 ///
 /// `failNext` makes an exact argv fail.
 final class FakeClaudeCode: @unchecked Sendable {
     let pluginsDir: URL
     private let lock = NSLock()
     private var failures: [[String]: Int] = [:]
+    private var cachedScoutVersion: String?
+
+    private var cache: String? {
+        get { lock.withLock { cachedScoutVersion } }
+        set { lock.withLock { cachedScoutVersion = newValue } }
+    }
 
     init(pluginsDir: URL) { self.pluginsDir = pluginsDir }
 
@@ -75,28 +85,34 @@ final class FakeClaudeCode: @unchecked Sendable {
                 return result(1, stderr: "✘ Failed to add marketplace: \(error.message)")
             case .success(let manifest):
                 write([manifest.name: ["source": ["source": "directory", "path": args[3]]]], to: "known_marketplaces.json")
+                cache = manifest.scoutVersion
                 return result(0)
             }
         }
         if args.starts(with: ["plugin", "marketplace", "update"]) {
             guard let directory = recordedDirectory() else { return result(1, stderr: "✘ Marketplace 'scout-plugin' not found") }
-            if case .failure(let error) = Self.readManifest(directory: directory) {
+            switch Self.readManifest(directory: directory.resolvingSymlinksInPath()) {
+            case .failure(let error):
                 return result(1, stderr: "✘ Failed to update marketplace: \(error.message)")
+            case .success(let manifest):
+                cache = manifest.scoutVersion
+                return result(0)
             }
-            return result(0)
         }
         if args == ClaudeCodeCLI.pluginInstall || args == ClaudeCodeCLI.pluginUpdate {
             guard let directory = recordedDirectory() else { return result(1, stderr: "✘ Marketplace 'scout-plugin' not found") }
-            switch Self.readManifest(directory: directory.resolvingSymlinksInPath()) {
-            case .failure(let error):
-                return result(1, stderr: "✘ Failed to install plugin: \(error.message)")
-            case .success(let manifest):
-                guard let version = manifest.scoutVersion else {
-                    return result(1, stderr: "✘ Plugin 'scout' not found in marketplace 'scout-plugin'")
+            let version: String?
+            if let cached = cache {
+                version = cached
+            } else {
+                switch Self.readManifest(directory: directory.resolvingSymlinksInPath()) {
+                case .failure(let error): return result(1, stderr: "✘ Failed to install plugin: \(error.message)")
+                case .success(let manifest): version = manifest.scoutVersion
                 }
-                write(["plugins": ["scout@scout-plugin": [["scope": "user", "version": version, "installPath": directory.path]]]], to: "installed_plugins.json")
-                return result(0)
             }
+            guard let version else { return result(1, stderr: "✘ Plugin 'scout' not found in marketplace 'scout-plugin'") }
+            write(["plugins": ["scout@scout-plugin": [["scope": "user", "version": version, "installPath": directory.path]]]], to: "installed_plugins.json")
+            return result(0)
         }
         return result(0)
     }

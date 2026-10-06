@@ -360,7 +360,23 @@ struct EngineInstallerTests {
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
-        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.pluginInstall])
+        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginInstall])
+    }
+
+    /// Final review I1: our marketplace exists but the plugin isn't
+    /// installed (e.g. the user uninstalled it) and `current` has moved since
+    /// Claude Code last read the manifest. Installing without a refresh would
+    /// take Claude Code's stale cached version and fail the postcondition on
+    /// every retry; the register step refreshes first.
+    @Test func registerRefreshesAnExistingMarketplaceBeforeInstallingThePlugin() async throws {
+        let (f10, f11) = try await installedThenUpgradeFixture()
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        try fm.removeItem(at: f10.layout.claudePluginsDir.appendingPathComponent("installed_plugins.json"))   // plugin uninstalled
+        let callsBefore = f11.runner.calls(to: "claude").count
+        let ok = await installer(f11) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(ok)
+        #expect(Array(f11.runner.calls(to: "claude").dropFirst(callsBefore)) == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginInstall])
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f10.layout.claudePluginsDir)?.version == "0.11.0")
     }
 
     /// Ruling 53: Claude Code may instead have recorded the symlink's
@@ -374,7 +390,7 @@ struct EngineInstallerTests {
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
-        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.pluginInstall])
+        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginInstall])
     }
 
     /// Ruling 53: a directory marketplace that is NOT under the managed
