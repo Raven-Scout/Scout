@@ -20,6 +20,10 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     let body: String
     let comments: [TaskComment]
     let deepLinks: [TaskDeepLink]
+    /// Indented sub-bullets and continuation lines under the task line, in
+    /// source order. Excludes the sub-lines the parser already turns into
+    /// comments, refs or snooze metadata.
+    let details: [TaskDetail]
     /// Parsed from a `— 🛌 Snoozed until YYYY-MM-DD` body suffix. ``nil`` otherwise.
     let snoozedUntil: Date?
     /// Parsed from a `_(carried in from YYYY-MM-DD)_` body marker. ``nil`` otherwise.
@@ -50,6 +54,7 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         body: String,
         comments: [TaskComment],
         deepLinks: [TaskDeepLink],
+        details: [TaskDetail],
         snoozedUntil: Date?,
         carriedInFrom: Date?,
         indentLevel: Int = 0,
@@ -64,11 +69,54 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.body = body
         self.comments = comments
         self.deepLinks = deepLinks
+        self.details = details
         self.snoozedUntil = snoozedUntil
         self.carriedInFrom = carriedInFrom
         self.indentLevel = indentLevel
         self.shortPrefix = shortPrefix
         self.snoozedFromKind = snoozedFromKind
+    }
+
+    /// What a one-line surface (the collapsed card, a nested row, a concise
+    /// prompt) shows under the title: the body when the task line has one,
+    /// otherwise the first line of the first detail.
+    var summary: String {
+        if !body.isEmpty { return body }
+        guard let first = details.first else { return "" }
+        return first.text
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? ""
+    }
+
+    /// This task with `details` replaced and every other field kept. The
+    /// parser's detail branch rebuilds through here, so it can't drop a field.
+    func replacingDetails(_ details: [TaskDetail]) -> ActionTask {
+        ActionTask(
+            id: id,
+            lineNumber: lineNumber,
+            done: done,
+            subject: subject,
+            plainSubject: plainSubject,
+            body: body,
+            comments: comments,
+            deepLinks: deepLinks,
+            details: details,
+            snoozedUntil: snoozedUntil,
+            carriedInFrom: carriedInFrom,
+            indentLevel: indentLevel,
+            shortPrefix: shortPrefix,
+            snoozedFromKind: snoozedFromKind
+        )
+    }
+
+    /// Search filter. `lowercasedNeedle` must already be lowercased; an empty
+    /// needle matches everything.
+    func matchesSearch(_ lowercasedNeedle: String) -> Bool {
+        guard !lowercasedNeedle.isEmpty else { return true }
+        return plainSubject.lowercased().contains(lowercasedNeedle)
+            || body.lowercased().contains(lowercasedNeedle)
+            || comments.contains { $0.text.lowercased().contains(lowercasedNeedle) }
+            || details.contains { $0.text.lowercased().contains(lowercasedNeedle) }
     }
 
     /// Shortest reliable substring scoutctl's `--subject` matcher can use to

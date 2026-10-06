@@ -20,6 +20,9 @@ and details; otherwise it falls back to a verbatim copy of the prior file so
 nothing is silently dropped. No LLM involved, idempotent (no-op when today's
 file exists), and quiet when there is nothing to do — runner preambles invoke
 it best-effort before every session.
+
+Creating the day's file is also when items untouched for 60+ days leave it
+(``scout.action_items.stale``): once a day, before any session reads it.
 """
 
 from __future__ import annotations
@@ -119,6 +122,34 @@ def _signature(body: str) -> list[tuple[str, str, str, str, tuple[str, ...]]]:
     )
 
 
+def _archive_stale(data_dir: Path | None, today: _dt.date, body: str) -> tuple[str, str]:
+    """Move items untouched for STALE_AFTER_DAYS out of the carried body.
+
+    Returns the body to write and a banner suffix naming what moved. Once a
+    day is the right cadence: this runs only when the day's file is created.
+    Best-effort — any failure carries the body verbatim, because the
+    completeness backstop must never be blocked by housekeeping.
+    """
+    from scout.action_items import stale
+
+    try:
+        vault = paths.data_dir() if data_dir is None else data_dir
+        ledger = stale.ActivityLedger.load(vault)
+        ledger.catch_up(vault, before=today)
+        result = stale.split_stale(body.splitlines(), ledger, today=today)
+        archive = stale.write_archive(vault, today, result.archived) if result.archived else None
+        ledger.save()
+    except Exception:  # noqa: BLE001 — housekeeping must never block the copy
+        return body, ""
+    if archive is None:
+        return body, ""
+    count = len(result.archived)
+    noun = "item" if count == 1 else "items"
+    note = f" 🗄️ {count} {noun} untouched for {stale.STALE_AFTER_DAYS}+ days auto-archived → [[archive/{archive.stem}]]."
+    trailing = "\n" if body.endswith("\n") else ""
+    return "\n".join(result.lines) + trailing, note
+
+
 def materialize(
     data_dir: Path | None = None,
     date: _dt.date | None = None,
@@ -151,10 +182,13 @@ def materialize(
             prev=prev_date.isoformat(),
         )
         body = _carry_body(prev)
+        # Archive before compacting: the ledger fingerprinted the prior file as
+        # written, and compaction drops whatever headings the archive emptied.
+        body, archived_note = _archive_stale(data_dir, target_date, body)
         compacted = compact(body)
         if _signature(compacted) == _signature(body):
             body = "\n" + compacted
-        content = f"# Action Items — {_human_date(target_date)}\n{banner}\n{body}"
+        content = f"# Action Items — {_human_date(target_date)}\n{banner}{archived_note}\n{body}"
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         tmp.replace(target)

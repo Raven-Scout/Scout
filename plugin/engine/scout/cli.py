@@ -411,11 +411,27 @@ def _register_connectors() -> None:
     app.add_typer(connectors_app, name="connectors")
 
     @connectors_app.command("list")
-    def cli_connectors_list() -> None:
-        """List the registered connector roster."""
+    def cli_connectors_list(
+        json_out: bool = typer.Option(False, "--json", help="Emit the roster as JSON (consumed by Scout.app)."),
+    ) -> None:
+        """List the registered connector roster (shipped + overlay + custom)."""
+        import json as _json
+
         from scout.connectors import load_registry
 
         reg = load_registry()
+        if json_out:
+            rows = [
+                {
+                    "key": key,
+                    "display_name": reg[key].display_name,
+                    "tier": reg[key].tier.value,
+                    "required_in_types": [t.value for t in reg[key].required_in_types],
+                }
+                for key in sorted(reg.keys())
+            ]
+            typer.echo(_json.dumps({"connectors": rows}, indent=2))
+            return
         for key in sorted(reg.keys()):
             c = reg[key]
             typer.echo(f"{key}\t{c.tier.value}\t{c.display_name}")
@@ -588,6 +604,99 @@ def _register_connectors() -> None:
                     "to silence.",
                     err=True,
                 )
+
+    custom_app = typer.Typer(help="Custom connectors: any tool Scout should read (connectors.custom.yaml).")
+    connectors_app.add_typer(custom_app, name="custom")
+
+    def _plugin_root() -> Path:
+        return Path(__file__).parent.parent.parent
+
+    def _emit(payload: dict, code: int = 0) -> None:
+        import json as _json
+
+        typer.echo(_json.dumps(payload, indent=2))
+        raise typer.Exit(code=code)
+
+    def _read_definition(file: str):
+        """Parse a definition file ('-' = stdin). Returns (data, None) or (None, Outcome)."""
+        import yaml as _yaml
+
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome
+
+        try:
+            text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
+            return _yaml.safe_load(text), None
+        except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
+            return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
+
+    @custom_app.command("add")
+    def cli_custom_add(
+        file: str = typer.Option(..., "--file", help="Definition (YAML or JSON) with a `key` field; '-' reads stdin."),
+        input_: list[str] = typer.Option([], "--input", help="NAME=VALUE for a needs_user_input entry (repeatable)."),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Show the sections it would render; write nothing."),
+        unverified: bool = typer.Option(False, "--unverified", help="Skip the bash probe (the app path)."),
+    ) -> None:
+        """Add or replace a custom connector and apply it to the live brain files."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome, add
+
+        data, failed = _read_definition(file)
+        if failed is not None:
+            _emit(failed.to_json(), failed.exit_code)
+        inputs: dict[str, str] = {}
+        for item in input_:
+            name, sep, value = item.partition("=")
+            if not sep or not name:
+                bad = Outcome("invalid", issues=[Issue("--input", f"{item!r} is not NAME=VALUE")])
+                _emit(bad.to_json(), bad.exit_code)
+            inputs[name] = value
+        outcome = add(
+            _paths.data_dir(),
+            data,
+            plugin_root=_plugin_root(),
+            plugin_version=__version__,
+            inputs=inputs,
+            dry_run=dry_run,
+            unverified=unverified,
+        )
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("remove")
+    def cli_custom_remove(key: str) -> None:
+        """Remove a custom connector and apply the removal."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import remove
+
+        outcome = remove(_paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__)
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("validate")
+    def cli_custom_validate(file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin.")) -> None:
+        """Validate one definition without writing anything."""
+        from scout.scripts.custom_connector_ops import validate
+
+        data, failed = _read_definition(file)
+        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root())
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("list")
+    def cli_custom_list() -> None:
+        """List custom connectors and any problems in connectors.custom.yaml."""
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import list_custom
+
+        _emit(list_custom(_paths.data_dir(), plugin_root=_plugin_root()))
+
+    @connectors_app.command("presets")
+    def cli_connectors_presets() -> None:
+        """Preset names and their default guidance per activity (JSON)."""
+        from scout.scripts.custom_connector_ops import presets_json
+
+        _emit(presets_json(_plugin_root()))
 
 
 _register_connectors()
@@ -1499,42 +1608,32 @@ def _register_bootstrap() -> None:
 
     def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, skip_claude: bool, managed_by: str):
         """BootstrapConfig for an existing vault, read back from scout-config.yaml
-        (extracted from the upgrade command so `auto` shares it)."""
+        (shared with the custom-connector commands via bootstrap.config_from_vault)."""
         import yaml as _yaml
 
         from scout import __version__
-        from scout.scripts.bootstrap import BootstrapConfig
+        from scout.scripts.bootstrap import config_from_vault
 
-        cfg_path = vault / "scout-config.yaml"
         try:
-            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except (_yaml.YAMLError, UnicodeDecodeError) as e:
+            return config_from_vault(
+                vault,
+                plugin_root=Path(__file__).parent.parent.parent,
+                plugin_version=__version__,
+                skip_jobs=skip_jobs,
+                skip_claude=skip_claude,
+                managed_by=managed_by,
+            )
+        except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
             raise ConfigError(f"scout-config.yaml is malformed: {e}") from e
-        instance = existing.get("instance", {})
-        user = existing.get("user", {})
-        return BootstrapConfig(
-            vault=vault,
-            plugin_root=Path(__file__).parent.parent.parent,
-            instance_name=instance.get("name", "Scout"),
-            instance_name_lower=instance.get("name_lower", "scout"),
-            user_name=user.get("name", ""),
-            user_email=user.get("email", ""),
-            timezone=existing.get("timezone", "America/New_York"),
-            platform=existing.get("platform", "macos"),
-            plugin_version=__version__,
-            enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-            skip_jobs=skip_jobs,
-            skip_claude=skip_claude,
-            managed_by=managed_by,
-        )
 
     @bootstrap_app.command("install")
     def cli_bootstrap_install(
         instance_name: str = typer.Option("Scout", "--instance-name"),
         user_name: str = typer.Option(..., "--user-name"),
         user_email: str = typer.Option(..., "--user-email"),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         platform: str = typer.Option("macos", "--platform"),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
@@ -1710,7 +1809,9 @@ def _register_bootstrap() -> None:
         claude_bin: str = typer.Option(
             "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
         ),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         max_budget: str = typer.Option("5.00", "--max-budget"),
         platform: str = typer.Option("macos", "--platform"),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
@@ -1792,7 +1893,9 @@ def _register_bootstrap() -> None:
         user_name: str = typer.Option("", "--user-name", help="Required for install / migrate-legacy."),
         user_email: str = typer.Option("", "--user-email", help="Required for install / migrate-legacy."),
         instance_name: str = typer.Option("Scout", "--instance-name"),
-        timezone: str = typer.Option("America/New_York", "--timezone"),
+        timezone: str = typer.Option(
+            "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
+        ),
         platform_: str = typer.Option("auto", "--platform", help="macos | linux | auto (from uname)"),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
         user_slack_id: str = typer.Option("", "--user-slack-id"),
@@ -2096,7 +2199,7 @@ def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
         instance_name_lower=instance.get("name_lower", "scout"),
         user_name=user.get("name", ""),
         user_email=user.get("email", ""),
-        timezone=existing.get("timezone", "America/New_York"),
+        timezone=existing.get("timezone") or "",  # "" = follow the host
         platform=existing.get("platform", "macos"),
         plugin_version=__version__,
         enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
@@ -2132,7 +2235,7 @@ def _register_phases() -> None:
 
         from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, _template_vars
+        from scout.scripts.bootstrap import BootstrapConfig, _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
             apply_to_phase_text,
@@ -2160,7 +2263,7 @@ def _register_phases() -> None:
             instance_name_lower=instance.get("name_lower", "scout"),
             user_name=user.get("name", ""),
             user_email=user.get("email", ""),
-            timezone=existing.get("timezone", "America/New_York"),
+            timezone=existing.get("timezone") or "",  # "" = follow the host
             platform=existing.get("platform", "macos"),
             plugin_version=__version__,
             enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
@@ -2171,6 +2274,7 @@ def _register_phases() -> None:
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
+        custom = load_custom(cfg)
         total_applied = 0
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
@@ -2178,7 +2282,9 @@ def _register_phases() -> None:
                 missing = "snapshot" if not snap.exists() else "live"
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
-            sections = build_rendered_sections(phases_root, k, vars_, cfg.enabled_connectors)
+            sections = build_rendered_sections(
+                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
+            )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
             applied = [r for r in results if r.status == "applied"]
             review = [r for r in results if r.status == "needs-review"]

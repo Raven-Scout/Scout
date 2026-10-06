@@ -54,6 +54,7 @@ Without F-4, an embedded terminal is just a window inside the window.
 
 > **Superseded 2026-09-08** by [Agent Sessions — Design](superpowers/specs/2026-09-08-agent-sessions-design.md):
 > shared engine session index + a project × state Sessions page; the SpriteKit world is an optional later view.
+> The page is built by [plan 3](superpowers/plans/2026-10-03-agent-sessions-plan-3-sessions-page.md).
 
 **Ask:** "I want a 'sessions' page […] with a list of all of my recent
 claude code sessions so I can revisit them to see what's going on. This

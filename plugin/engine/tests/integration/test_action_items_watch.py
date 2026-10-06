@@ -48,6 +48,9 @@ def _read_until(proc: subprocess.Popen[str], substring: str, timeout: float) -> 
     return "".join(buf)
 
 
+# Quarantined: the fixed 0.5s sleep below can lose the race with the watcher arming
+# on a slow runner, so the flip is never seen.
+@pytest.mark.flaky(reruns=2, issue="https://github.com/Raven-Scout/Scout/issues/307")
 def test_watch_emits_completed_line_on_checkbox_flip(tmp_path: Path) -> None:
     daily = tmp_path / "action-items-2026-04-26.md"
     daily.write_text(

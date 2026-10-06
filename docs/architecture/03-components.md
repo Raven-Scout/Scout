@@ -297,14 +297,14 @@ flowchart LR
 
   subgraph ai ["scout.action_items"]
     direction LR
-    cli["<b>cli.py</b><br/>[Typer sub-app]<br/>mark-done, snooze, add-comment,<br/>edit-comment, delete-comment, list,<br/>render, new-prefix, materialize,<br/>backfill-prefixes, watch. All imports lazy"]:::component
+    cli["<b>cli.py</b><br/>[Typer sub-app]<br/>mark-done, snooze, add-comment,<br/>edit-comment, delete-comment, list,<br/>render, new-prefix, materialize,<br/>archive-stale, backfill-prefixes, watch. All imports lazy"]:::component
     mutators["<b>mark_done, snooze, add_comment,<br/>edit_comment, delete_comment</b><br/>[modules]<br/>One mutation each. Return an Event<br/>that nothing persists yet"]:::component
     common["<b>_common.py</b><br/>[module]<br/>resolve_target by tag or subject,<br/>registering unknown prefixes in the<br/>ID map. Comment listing and selection"]:::component
     parser["<b>parser.py</b><br/>[module]<br/>Markdown to ActionItem: status, priority,<br/>section, short_prefix. Accepts checkbox,<br/>strikethrough and Done prose as complete"]:::component
     writer["<b>writer.py</b><br/>[module]<br/>The only mutating writer: flip_checkbox,<br/>insert_below, replace_line, delete_line,<br/>add_prefix_to_line. Atomic tmp, fsync,<br/>replace. Preserves CRLF and trailing newline"]:::component
     ids["<b>scout.ids, scout.id_map</b><br/>[modules]<br/>ULIDs, 4-char Crockford prefixes with at<br/>least one letter, prefix regexes,<br/>IdMap load and save"]:::component
     backfill["<b>backfill.py</b><br/>[module]<br/>Mint and write a tag for every unprefixed<br/>open task, bottom-up. ID map saved<br/>even on failure"]:::component
-    materialize["<b>materialize.py</b><br/>[module]<br/>Guarantee today's file exists: carry the<br/>newest prior file forward under a<br/>provisional banner"]:::component
+    materialize["<b>materialize.py</b><br/>[module]<br/>Guarantee today's file exists: carry the<br/>newest prior file forward under a<br/>provisional banner, minus items<br/>untouched for 60+ days (stale.py)"]:::component
     render["<b>render.py</b><br/>[module]<br/>Second, independent parser into Section,<br/>Task, Comment, Table, plus the HTML<br/>dashboard and ANSI change lines.<br/>Owns subject, plain_subject, body"]:::component
     views["<b>list.py, diff.py, watch.py</b><br/>[modules]<br/>Filtered enumeration. Pure previous-vs-<br/>current ChangeEvents. watchdog observer<br/>printing one ANSI line per change"]:::component
   end
@@ -484,7 +484,7 @@ flowchart LR
     budget["<b>scripts/budget-check.sh</b><br/>[bash]<br/>scoutctl budget check --verbose.<br/>Non-zero ends the run with a log line<br/>and exit 0"]:::component
     retry["<b>scripts/claude-with-retry.sh</b><br/>[bash]<br/>Runs claude -p. Re-runs the whole<br/>invocation up to 2 times with linear<br/>backoff on transient API signatures.<br/>401 and 403 stop with remediation"]:::component
     post["<b>Post-session</b><br/>[scripts/rate-limit-detect.sh,<br/>post-session-backfill.sh, run-outcome.sh,<br/>write-session-cost.sh]<br/>Rate-limit row on failure. Stable ID<br/>prefixes plus a chore commit. Run-outcome<br/>row, Telegram on repeated failure.<br/>Connector-health rollup.<br/>usage-tracker cost row with exit code"]:::component
-    tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone from scout-config.yaml<br/>for shell-side timestamps.<br/>Twin of config.today()"]:::component
+    tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone: the config's optional<br/>override, else the host's zone.<br/>Twin of config.today()"]:::component
     hb["<b>scripts/heartbeat.sh</b><br/>[bash]<br/>launchd entry point every 30 min:<br/>scoutctl heartbeat run. Once a day,<br/>session-lane-liveness.py"]:::component
     render["<b>action-items/render.py, watch.sh</b><br/>[python, fswatch]<br/>Optional markdown to HTML dashboard<br/>re-rendered on change"]:::component
   end

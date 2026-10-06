@@ -53,4 +53,13 @@ struct ClaudeDesktopURLTests {
         #expect(items["q"] == prompt)
         #expect(items["folder"] == "/tmp/with space/vault")
     }
+
+    @Test func buildsURLForVeryLongPrompt() throws {
+        // 30 characters per repetition × 1,400 = 42,000.
+        let prompt = String(repeating: "🗓️ Due Tuesday — context line.\n", count: 1_400)
+        #expect(prompt.count > 40_000)
+        let url = try #require(ClaudeLauncher.makeDesktopURL(
+            prompt: prompt, mode: .code(folder: URL(fileURLWithPath: "/tmp/scout"))))
+        #expect(url.scheme == "claude")
+    }
 }

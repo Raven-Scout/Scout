@@ -1,6 +1,6 @@
 [project]
 name = "scout-engine"
-version = "0.13.0"
+version = "0.14.0"
 description = "Scout engine: CLI, hooks, runners, and Python library for the Scout productivity system."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -88,6 +88,7 @@ markers = [
     "perf: performance tests (may be skipped in fast CI runs)",
     "concurrency: tests involving multiple processes/threads",
     "slow: tests taking > 1 second",
+    "flaky(reruns, issue): quarantined known flake — rerun a failed call up to `reruns` times (tests/conftest.py); `issue` is the tracking issue URL",
 ]
 
 # Coverage is opt-in per-invocation (`pytest --cov=scout`), not wired into

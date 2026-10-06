@@ -48,7 +48,7 @@ struct TabViewSmokeTests {
     func actionItemsRendersMissingDay() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         // A day with no file on disk — the empty/missing chrome.
-        try? await vault.state.actionItemsDocumentService.load(
+        await vault.state.actionItemsDocumentService.load(
             date: Date(timeIntervalSince1970: 1_600_000_000))
 
         ViewHost.render(
@@ -128,6 +128,24 @@ struct TabViewSmokeTests {
     func controlCenterRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(ControlCenterView().environmentObject(vault.state))
+    }
+
+    @Test("the repo-state rail card renders the vault the app is looking at")
+    func repoStateRailCardRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        ViewHost.render(
+            RepoStateRailCard().environmentObject(vault.state).frame(width: 280),
+            size: CGSize(width: 280, height: 160))
+    }
+
+    @Test("the repo-state path is ~-abbreviated only under the home directory")
+    func repoStatePathAbbreviation() {
+        let home = URL(fileURLWithPath: "/Users/alex")
+        #expect(RepoStateRailCard.displayPath(URL(fileURLWithPath: "/Users/alex/Scout"), home: home) == "~/Scout")
+        #expect(RepoStateRailCard.displayPath(URL(fileURLWithPath: "/Users/alex/Vaults/Work"), home: home) == "~/Vaults/Work")
+        #expect(RepoStateRailCard.displayPath(home, home: home) == "~")
+        #expect(RepoStateRailCard.displayPath(URL(fileURLWithPath: "/Users/alexander/Scout"), home: home) == "/Users/alexander/Scout")
+        #expect(RepoStateRailCard.displayPath(URL(fileURLWithPath: "/Volumes/Data/Scout"), home: home) == "/Volumes/Data/Scout")
     }
 
     // MARK: - helpers

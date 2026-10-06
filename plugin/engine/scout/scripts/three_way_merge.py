@@ -34,6 +34,11 @@ class MergeUnavailable(RuntimeError):
     """
 
 
+def _pad_trailing_newline(text: str) -> str:
+    """``text`` with a trailing "\\n" added if it is non-empty and lacks one."""
+    return text if not text or text.endswith("\n") else text + "\n"
+
+
 def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str, str] | None = None) -> MergeResult:
     """Merge ``ours`` and ``theirs`` against common ancestor ``base``.
 
@@ -49,9 +54,17 @@ def three_way_merge(*, base: str, ours: str, theirs: str, labels: tuple[str, str
         theirs_path = tmp_path / "theirs"
         # surrogateescape: text read with it (vault files) keeps any byte that
         # is not valid UTF-8 through the merge unchanged.
-        ours_path.write_text(ours, encoding="utf-8", errors="surrogateescape")
-        base_path.write_text(base, encoding="utf-8", errors="surrogateescape")
-        theirs_path.write_text(theirs, encoding="utf-8", errors="surrogateescape")
+        #
+        # `git merge-file` conflicts on a difference that is *only* in the
+        # final newline, even when the three sides otherwise agree — e.g. an
+        # editor adds a trailing "\n" to SKILL.md on save while the plugin's
+        # own assembly doesn't end with one. Padding every non-empty side
+        # that lacks a trailing "\n" before the merge keeps that padding
+        # invisible to the diff, so a final-newline-only difference can
+        # never manufacture a conflict on its own.
+        ours_path.write_text(_pad_trailing_newline(ours), encoding="utf-8", errors="surrogateescape")
+        base_path.write_text(_pad_trailing_newline(base), encoding="utf-8", errors="surrogateescape")
+        theirs_path.write_text(_pad_trailing_newline(theirs), encoding="utf-8", errors="surrogateescape")
 
         label_args = [arg for label in labels for arg in ("-L", label)] if labels else []
         try:

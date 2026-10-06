@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import sys
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -31,8 +32,9 @@ import yaml
 from scout import paths
 from scout.errors import ConfigError
 
-# Packaged default zone (mirrors user.timezone in defaults/scout-config.yaml).
-# Also the terminal fallback when the configured zone is missing or invalid.
+# The terminal fallback, used only when neither a configured override nor the
+# host's own zone resolves (see resolve_timezone). The packaged defaults leave
+# user.timezone empty: by default Scout follows the computer's zone.
 DEFAULT_TIMEZONE = "America/New_York"
 
 
@@ -164,19 +166,70 @@ def load_config(data_dir: Path | None = None) -> dict[str, Any]:
 # ----- day boundary ---------------------------------------------------------
 #
 # Scout's "today" (daily action-items filename, trigger daily caps, freshness
-# math, rendered timestamps) is a civil date in ONE zone: the user's configured
-# timezone. Before #207 the codebase had multiple authorities — the configured
-# zone, bare host-clock date.today(), and hardcoded America/New_York — which
-# agreed only while the config read was broken. Everything below is the single
-# Python-side authority; the shell-side twin is templates/scripts/scout-tz.sh,
-# which resolves the same config field.
+# math, rendered timestamps) is a civil date in ONE zone. Before #207 the
+# codebase had multiple authorities — the configured zone, bare host-clock
+# date.today(), and hardcoded America/New_York — which agreed only while the
+# config read was broken. Everything below is the single Python-side
+# authority; the shell-side twin is templates/scripts/scout-tz.sh, and the two
+# must resolve the same zone for every input (tests/unit/test_host_timezone.py):
+#
+#   1. SCOUT_USER_TIMEZONE (env) — the runners pin each run's zone here
+#   2. scout-config.yaml user.timezone, then the top-level timezone: bootstrap
+#      writes — an optional override, never required
+#   3. the host's zone (host_timezone_name) — the scheduler fires slots at the
+#      host's wall-clock times, so by default the dates follow the same clock
+#   4. DEFAULT_TIMEZONE, only when nothing above resolves
+#
+# A configured name that is not a real zone falls through to the host.
+
+# Where the operating system records its zone: a symlink into the tz database.
+HOST_LOCALTIME = Path("/etc/localtime")
+_ZONEINFO_DIR_RE = re.compile(r"/zoneinfo[^/]*/")
+
+
+def zone_from_tzdb_path(path: str) -> str | None:
+    """The IANA name in a tz-database file path, or None.
+
+    The name is whatever follows the deepest ``zoneinfo*`` directory: macOS
+    resolves /etc/localtime through layouts like /var/db/timezone/tz/<ver>/
+    zoneinfo/ or /usr/share/zoneinfo.default/ depending on whether tzd has
+    run, so a literal ``zoneinfo/`` match is not enough.
+    """
+    matches = list(_ZONEINFO_DIR_RE.finditer(path))
+    if not matches:
+        return None
+    return path[matches[-1].end() :] or None
+
+
+def host_timezone_name(localtime: Path | None = None) -> str | None:
+    """The computer's IANA zone, read off the /etc/localtime symlink, or None.
+
+    Deliberately not ``$TZ``: that is a per-process override (the trading
+    runner pins America/New_York for US market hours), and honouring it would
+    give that one process a different "today" from the rest of the vault.
+    ``SCOUT_LOCALTIME`` names another link to read instead (tests, odd hosts).
+    """
+    link = localtime or Path(os.environ.get("SCOUT_LOCALTIME") or HOST_LOCALTIME)
+    try:
+        if not link.is_symlink():
+            return None
+        name = zone_from_tzdb_path(str(link.resolve()))
+    except OSError:
+        return None
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except Exception:
+        return None
+    return name
 
 
 def timezone_or_default(tz_name: object) -> ZoneInfo:
-    """ZoneInfo for ``tz_name``, falling back to :data:`DEFAULT_TIMEZONE`.
+    """ZoneInfo for ``tz_name``; else the host's zone; else :data:`DEFAULT_TIMEZONE`.
 
     The fallback lives INSIDE the resolver on purpose (#207): a missing,
-    malformed, or unknown zone shifts every consumer to the same default
+    malformed, or unknown zone shifts every consumer to the same zone
     together, instead of each call site inventing its own fallback and
     splitting the day boundary between surfaces.
     """
@@ -185,14 +238,18 @@ def timezone_or_default(tz_name: object) -> ZoneInfo:
             return ZoneInfo(tz_name)
         except Exception:
             pass
+    if host := host_timezone_name():
+        return ZoneInfo(host)
     return ZoneInfo(DEFAULT_TIMEZONE)
 
 
 def resolve_timezone(data_dir: Path | None = None) -> ZoneInfo:
-    """The configured day-boundary zone for ``data_dir``'s vault.
+    """The day-boundary zone for ``data_dir``'s vault: the configured
+    override if any, else the host's zone.
 
-    Never raises — config problems degrade to :data:`DEFAULT_TIMEZONE` so a
-    bad edit can never make a run timezone-blind (mirrors scout-tz.sh).
+    Never raises — config problems degrade to the host's zone, then to
+    :data:`DEFAULT_TIMEZONE`, so a bad edit can never make a run
+    timezone-blind (mirrors scout-tz.sh).
     """
     try:
         user = load_config(data_dir).get("user")
@@ -203,12 +260,12 @@ def resolve_timezone(data_dir: Path | None = None) -> ZoneInfo:
 
 
 def now(data_dir: Path | None = None) -> _dt.datetime:
-    """Wall-clock now in the configured zone (tz-aware)."""
+    """Wall-clock now in the resolved zone (tz-aware)."""
     return _dt.datetime.now(resolve_timezone(data_dir))
 
 
 def today(data_dir: Path | None = None) -> _dt.date:
-    """THE day boundary: today's civil date in the configured zone.
+    """THE day boundary: today's civil date in the resolved zone.
 
     Every writer or reader that derives a daily filename, a daily cap, or a
     "today" label must come through here (or :func:`resolve_timezone`) so the

@@ -85,7 +85,7 @@ Open Claude Code and run:
 /scout-setup
 ```
 
-The wizard asks for your name, email and timezone, detects which tools are connected, asks for your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), and whether Scout should keep itself updated. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
+The wizard asks for your name and email (Scout follows your computer's timezone; you can pin another), detects which tools are connected, asks for your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), and whether Scout should keep itself updated. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
 
 ### 3. (Optional) Install the Mac app
 

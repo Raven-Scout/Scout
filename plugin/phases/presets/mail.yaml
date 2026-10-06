@@ -1,0 +1,21 @@
+summary: Email — inbox and sent mail
+inbound: |
+  Look at mail received since the last run. Prioritize, in order: mail from people in `people.md` or frequent
+  correspondents; action-oriented subjects (review, approve, question, deadline, urgent); replies to threads
+  {{USER_NAME}} started; meeting invites and agenda shares.
+
+  Do not surface cold outreach, vendor marketing, or unsolicited sales mail. Unknown sender plus a pitch or
+  "partnership" language means skip. Mass mail from an unknown source means skip. If unsure, file under
+  Watching at most, never To Do.
+
+  Automated alerts (credential expiry, quota or spend thresholds, billing, maintenance notices) are Watching by
+  default. Promote one only when something {{USER_NAME}} relies on breaks within days. The alert's own wording
+  ("action required") is not urgency.
+outbound: |
+  Look at mail {{USER_NAME}} sent since the last run; it is strong evidence of completed work. A reply to a
+  request means that request is likely handled. A message carrying a deliverable (attachment, link, proposal)
+  means something was completed. A scheduling message means follow-up is in progress. A forward means
+  delegation or escalation. Ignore auto-replies, subscription confirmations, and newsletters.
+lookup: |
+  Search mail when an action item or meeting references a thread, a sender, or a document that was emailed,
+  and the context is not already in the knowledge base.

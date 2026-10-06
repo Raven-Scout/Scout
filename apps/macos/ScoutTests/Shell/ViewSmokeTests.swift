@@ -197,7 +197,7 @@ struct ShellViewSmokeTests {
     @Test("every sidebar destination has a status label")
     func sidebarItemsHaveStatusLabels() {
         let labels = SidebarItem.allCases.map(\.statusLabel)
-        #expect(labels.count == 8)
+        #expect(labels.count == 9)
         #expect(Set(labels).count == labels.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
     }
@@ -211,6 +211,38 @@ struct ShellViewSmokeTests {
             ViewHost.render(
                 SidebarView(selection: binding).environmentObject(vault.state),
                 size: CGSize(width: 240, height: 700))
+        }
+    }
+
+    @Test("the sidebar renders the Settings attention dot on and off")
+    func sidebarSettingsAttentionRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        for attention in [true, false] {
+            var selection = SidebarItem.controlCenter
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            ViewHost.render(
+                SidebarView(selection: binding, settingsAttention: attention).environmentObject(vault.state),
+                size: CGSize(width: 240, height: 700))
+        }
+    }
+
+    @Test("the sidebar renders with the tabs gated, from every selection")
+    func sidebarTabsGatedRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        for item in SidebarItem.allCases {
+            var selection = item
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            ViewHost.render(
+                SidebarView(selection: binding, settingsAttention: true, tabsGated: true).environmentObject(vault.state),
+                size: CGSize(width: 240, height: 700))
+        }
+    }
+
+    @Test("gated tabs dim every sidebar row but Settings; ungated dims none")
+    func sidebarDimmingRule() {
+        for item in SidebarItem.allCases {
+            #expect(SidebarView.isDimmed(item, tabsGated: true) == (item != .settings))
+            #expect(!SidebarView.isDimmed(item, tabsGated: false))
         }
     }
 
