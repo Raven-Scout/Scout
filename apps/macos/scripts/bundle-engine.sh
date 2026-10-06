@@ -3,12 +3,24 @@
 #
 #   <out>/scout-engine-<version>.tar.gz   `git archive HEAD:plugin` of the repo
 #                                          containing $SRCROOT, so the archive
-#                                          ROOT holds .claude-plugin/plugin.json
+#                                          ROOT holds .claude-plugin/plugin.json,
+#                                          plus a GENERATED
+#                                          .claude-plugin/marketplace.json (below)
 #   <out>/engine-release.json             generated: top-level "version" and
 #                                          engine.version (both plugin.json's),
 #                                          the build commit (diagnostics only)
 #                                          and the checked-in uv pin
 #                                          (Scout/Resources/uv-release.json)
+#
+# The app registers the unpacked engine as a Claude Code DIRECTORY marketplace
+# (`claude plugin marketplace add ~/.local/share/scout/engine/current`), which
+# needs <dir>/.claude-plugin/marketplace.json. In the monorepo that manifest
+# lives at the repo root (source "./plugin"), outside plugin/, so this script
+# derives one from HEAD:.claude-plugin/marketplace.json and adds it to the
+# archive with `git archive --add-virtual-file` (git >= 2.39): same name
+# ("scout-plugin" — the app's foreign-source check keys on it), same
+# owner/metadata, exactly one plugin "scout" with source "./" and version =
+# plugin.json's. Nothing extra is checked in under plugin/.
 #
 # Deterministic: the payload is the COMMITTED plugin/ tree at HEAD — no pinned
 # repo or commit, no sibling checkout, no network. Uncommitted or untracked
@@ -27,12 +39,15 @@
 # (Release or strict: a MARKETING_VERSION mismatch is an error, not a warning).
 # Exit: 0 with both files written; 1 on any failure (no git repo, no
 # plugin.json at HEAD, non-SemVer version, strict version mismatch,
-# missing or malformed uv pin).
+# missing or malformed uv pin, missing or unusable root marketplace.json,
+# a git too old for --add-virtual-file).
 set -euo pipefail
 
 APP_ROOT="${SRCROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 UV_PIN="${SCOUT_UV_PIN:-$APP_ROOT/Scout/Resources/uv-release.json}"
 MANIFEST="plugin/.claude-plugin/plugin.json"
+ROOT_MARKETPLACE=".claude-plugin/marketplace.json"    # repo root, source ./plugin
+BUNDLED_MARKETPLACE=".claude-plugin/marketplace.json"  # archive root, source ./
 
 fail() { echo "error: bundle-engine: $*" >&2; exit 1; }
 
@@ -66,6 +81,35 @@ fi
 
 [[ -f "$UV_PIN" ]] || fail "uv pin $UV_PIN not found"
 
+# The bundled directory-marketplace manifest, derived from the committed root
+# one (see the header). Key order follows the root file; json.dumps is stable,
+# so the same commit always yields the same bytes.
+ROOT_MP_JSON="$(git -C "$TOP" show "HEAD:$ROOT_MARKETPLACE" 2>/dev/null)" \
+  || fail "HEAD has no $ROOT_MARKETPLACE in $TOP: the bundled engine's directory-marketplace manifest is generated from it, and without one \`claude plugin marketplace add\` refuses the unpacked engine"
+if git -C "$TOP" cat-file -e "HEAD:plugin/$BUNDLED_MARKETPLACE" 2>/dev/null; then
+  fail "plugin/$BUNDLED_MARKETPLACE is committed, but the bundle generates that file from the root $ROOT_MARKETPLACE; remove plugin/$BUNDLED_MARKETPLACE"
+fi
+GEN_MARKETPLACE='
+import json, sys
+version = sys.argv[1]
+try:
+    root = json.loads(sys.stdin.read())
+except ValueError as e:
+    sys.exit(f"is not valid JSON ({e})")
+if not isinstance(root, dict) or root.get("name") != "scout-plugin":
+    sys.exit("must be named \"scout-plugin\": Scout.app registers the bundled engine under that marketplace name")
+plugins = root.get("plugins")
+scout = [p for p in plugins if isinstance(p, dict) and p.get("name") == "scout"] if isinstance(plugins, list) else []
+if len(scout) != 1:
+    sys.exit("needs exactly one plugin named \"scout\" in \"plugins\" (found %d)" % len(scout))
+entry = dict(scout[0])
+entry["source"] = "./"        # the archive root IS the plugin
+entry["version"] = version    # plugin.json is the one version (D2)
+print(json.dumps({k: ([entry] if k == "plugins" else v) for k, v in root.items()}, indent=2))
+'
+MARKETPLACE_JSON="$(python3 -c "$GEN_MARKETPLACE" "$VERSION" <<<"$ROOT_MP_JSON" 2>&1)" \
+  || fail "HEAD:$ROOT_MARKETPLACE ${MARKETPLACE_JSON##*$'\n'}"
+
 # --no-optional-locks: a plain `git status` takes index.lock and rewrites
 # .git/index to persist refreshed stat info for racily-clean files, even
 # though this script only reads the result — every build would otherwise
@@ -86,19 +130,39 @@ RELEASE_JSON="$OUT_DIR/engine-release.json"
 
 # Entry mtimes come from the commit, not the clock (a tree-ish archive
 # otherwise stamps "now"), so the same commit yields the same bytes.
+# The virtual marketplace.json entry takes the same --mtime, so it is just as
+# reproducible as the tree's entries.
 MTIME_ARGS=()
 ARCHIVE_HELP="$(git -C "$TOP" archive -h 2>&1 || true)"   # `-h` exits 129
 if [[ "$ARCHIVE_HELP" == *--mtime* ]]; then
   MTIME_ARGS=(--mtime="@$(git -C "$TOP" show -s --format=%ct "$COMMIT")")
 fi
+# Newer gits print the option as `--[no-]add-virtual-file`.
+[[ "$ARCHIVE_HELP" == *add-virtual-file* ]] \
+  || fail "$(git --version) has no \`git archive --add-virtual-file\` (git 2.39 or newer), which the bundle needs to add the generated $BUNDLED_MARKETPLACE; select a newer Xcode (xcode-select) or put a newer git first on PATH"
 
 TMP_TARBALL="$TARBALL.tmp.$$"; TMP_JSON="$RELEASE_JSON.tmp.$$"
 trap 'rm -f "$TMP_TARBALL" "$TMP_JSON"' EXIT
-git -C "$TOP" archive --format=tar.gz ${MTIME_ARGS[@]+"${MTIME_ARGS[@]}"} -o "$TMP_TARBALL" "$COMMIT:plugin"
+git -C "$TOP" archive --format=tar.gz ${MTIME_ARGS[@]+"${MTIME_ARGS[@]}"} \
+  --add-virtual-file="$BUNDLED_MARKETPLACE:$MARKETPLACE_JSON"$'\n' \
+  -o "$TMP_TARBALL" "$COMMIT:plugin"
 
 GOT="$(tar -xzOf "$TMP_TARBALL" .claude-plugin/plugin.json 2>/dev/null \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true)"
 [[ "$GOT" == "$VERSION" ]] || fail "archived .claude-plugin/plugin.json version \"$GOT\" != \"$VERSION\""
+
+# The archive must hold exactly one marketplace manifest that Claude Code will
+# register as "scout-plugin" and that offers scout at this version from "./".
+[[ "$(tar -tzf "$TMP_TARBALL" | grep -cx "$BUNDLED_MARKETPLACE" || true)" == 1 ]] \
+  || fail "archive does not hold exactly one $BUNDLED_MARKETPLACE"
+GOT_MP="$(tar -xzOf "$TMP_TARBALL" "$BUNDLED_MARKETPLACE" 2>/dev/null | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+p = [e for e in m.get("plugins", []) if e.get("name") == "scout"]
+print(m.get("name"), len(m.get("plugins", [])), p[0].get("source") if p else None, p[0].get("version") if p else None)
+' 2>/dev/null || true)"
+[[ "$GOT_MP" == "scout-plugin 1 ./ $VERSION" ]] \
+  || fail "archived $BUNDLED_MARKETPLACE is \"$GOT_MP\" (name, plugin count, scout source, scout version), expected \"scout-plugin 1 ./ $VERSION\""
 
 python3 - "$UV_PIN" "$VERSION" "$COMMIT" "$TMP_JSON" <<'PY' || fail "could not generate engine-release.json from $UV_PIN"
 import json, re, sys

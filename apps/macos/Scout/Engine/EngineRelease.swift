@@ -5,7 +5,9 @@ import Foundation
 /// GENERATES at build time — engine version from `plugin/.claude-plugin/
 /// plugin.json`, the build commit for diagnostics, and the checked-in uv pin
 /// (`Scout/Resources/uv-release.json`) — beside the tarball named by
-/// `tarballName` (a `git archive HEAD:plugin` of the same commit).
+/// `tarballName` (a `git archive HEAD:plugin` of the same commit, plus a
+/// generated `.claude-plugin/marketplace.json` so the unpacked engine is a
+/// Claude Code directory marketplace).
 nonisolated struct EngineRelease: Codable, Equatable, Sendable {
     nonisolated struct Engine: Codable, Equatable, Sendable {
         let version: String

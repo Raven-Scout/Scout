@@ -29,10 +29,10 @@ struct EngineInstallerTests {
 
     /// A tiny plugin tree tarred like `git archive` (no top-level prefix), plus
     /// a fake install-venv.sh that honors SCOUT_VENV_DIR by creating scoutctl.
-    func fixture(version: String = "0.10.0") throws -> Fixture {
+    func fixture(version: String = "0.10.0", withMarketplace: Bool = true) throws -> Fixture {
         let home = fm.temporaryDirectory.appendingPathComponent("installer-\(UUID().uuidString)")
         let layout = EngineLayout(home: home)
-        let tarball = try buildTarball(version: version, in: home)
+        let tarball = try buildTarball(version: version, in: home, withMarketplace: withMarketplace)
         let release = EngineRelease(schemaVersion: 2, version: version, engine: .init(version: version, commit: String(repeating: "a", count: 40)),
                                     uv: .init(version: "0.12.1", sha256: [:]))
         // uv already present so ensureUv short-circuits without a network.
@@ -70,13 +70,20 @@ struct EngineInstallerTests {
     /// Build a `scout-engine-<version>.tar.gz` under `dir` for a second
     /// version, reusable against an existing fixture's layout/runner to
     /// exercise an in-place upgrade. `venvBuildFails` ships an
-    /// install-venv.sh that exits 1 without creating anything.
+    /// install-venv.sh that exits 1 without creating anything. Like the real
+    /// bundle (bundle-engine.sh), the archive root is a directory
+    /// marketplace: `.claude-plugin/marketplace.json` beside `plugin.json`,
+    /// unless `withMarketplace` is false (the pre-fix C1 bundle).
     @discardableResult
-    func buildTarball(version: String, in dir: URL, venvBuildFails: Bool = false) throws -> URL {
+    func buildTarball(version: String, in dir: URL, venvBuildFails: Bool = false, withMarketplace: Bool = true) throws -> URL {
         let tree = dir.appendingPathComponent("tree-\(version)-\(UUID().uuidString)")
         try fm.createDirectory(at: tree.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true)
         try fm.createDirectory(at: tree.appendingPathComponent("scripts"), withIntermediateDirectories: true)
         try #"{"name": "scout", "version": "\#(version)"}"#.write(to: tree.appendingPathComponent(".claude-plugin/plugin.json"), atomically: true, encoding: .utf8)
+        if withMarketplace {
+            try #"{"name": "scout-plugin", "owner": {"name": "Alex"}, "plugins": [{"name": "scout", "source": "./", "version": "\#(version)"}]}"#
+                .write(to: tree.appendingPathComponent(".claude-plugin/marketplace.json"), atomically: true, encoding: .utf8)
+        }
         let script = venvBuildFails
             ? "#!/bin/bash\necho 'uv: resolution failed' >&2\nexit 1\n"
             : "#!/bin/bash\nmkdir -p \"$SCOUT_VENV_DIR/bin\"; printf '#!/bin/sh\\necho \(version)\\n' > \"$SCOUT_VENV_DIR/bin/scoutctl\"; chmod +x \"$SCOUT_VENV_DIR/bin/scoutctl\"\n"
@@ -112,6 +119,38 @@ struct EngineInstallerTests {
         #expect(venvCall?.environment["SCOUT_VENV_DIR"] == f.layout.venv(version: "0.10.0").path)
         #expect(venvCall?.environment["SCOUT_VENV_EXTRAS"] == "full")
         #expect(venvCall?.environment["SCOUT_UV"] == f.layout.uvURL.path)
+    }
+
+    /// Final review C1: Claude Code only accepts a directory marketplace that
+    /// has `.claude-plugin/marketplace.json`. A bundle without one (what
+    /// `git archive HEAD:plugin` alone produced in the monorepo) fails at
+    /// "Register with Claude Code" on a clean Mac — and nothing is recorded.
+    @Test func registrationFailsWhenTheBundleIsNotADirectoryMarketplace() async throws {
+        let f = try fixture(withMarketplace: false)
+        defer { try? fm.removeItem(at: f.layout.home) }
+        let seen = ProgressRecorder()
+        let ok = await installer(f) { seen.append($0) }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status, seen.all.last?.step == .registerWithClaudeCode else {
+            Issue.record("expected register to fail: \(seen.all)"); return
+        }
+        #expect(why.contains("marketplace add") && why.contains(".claude-plugin/marketplace.json"))
+        #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.marketplaceAdd(path: f.layout.currentEngineLink)])
+        #expect(ClaudePluginsRegistry.scoutMarketplace(pluginsDir: f.layout.claudePluginsDir) == nil)
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f.layout.claudePluginsDir) == nil)
+    }
+
+    /// …and the same bundle WITH the generated manifest registers: Claude
+    /// Code records it under the manifest's name (`scout-plugin`) and installs
+    /// the marketplace entry's version.
+    @Test func registrationRecordsTheBundledMarketplaceUnderItsManifestName() async throws {
+        let f = try fixture()
+        defer { try? fm.removeItem(at: f.layout.home) }
+        let ok = await installer(f) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
+        #expect(ok)
+        #expect(fm.fileExists(atPath: f.layout.currentEngineLink.appendingPathComponent(".claude-plugin/marketplace.json").path))
+        #expect(ClaudePluginsRegistry.scoutMarketplace(pluginsDir: f.layout.claudePluginsDir)?.source == .directory(path: f.layout.currentEngineLink.path))
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f.layout.claudePluginsDir)?.version == "0.10.0")
     }
 
     /// Re-running `.unpackEngine` for an already-unpacked version must be a

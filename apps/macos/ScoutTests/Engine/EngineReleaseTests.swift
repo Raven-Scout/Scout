@@ -45,6 +45,22 @@ struct EngineReleaseTests {
         #expect(release.engine.commit?.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil)
         let tarball = try #require(release.bundledTarballURL(bundle: Self.app), "the build must bundle \(release.tarballName)")
         #expect(try Self.manifestVersion(inTarball: tarball) == release.engine.version)
+        // Final review C1: the archive root must be a Claude Code DIRECTORY
+        // marketplace, or `claude plugin marketplace add engine/current`
+        // fails on every clean Mac. bundle-engine.sh generates it from the
+        // repo-root manifest: named scout-plugin (the foreign-source check
+        // keys on it), one plugin, scout, from "./" at the bundled version.
+        let marketplace = try JSONDecoder().decode(BundledMarketplace.self, from: Self.extract(".claude-plugin/marketplace.json", fromTarball: tarball))
+        #expect(marketplace.name == ClaudePluginsRegistry.scoutMarketplaceName)
+        #expect(marketplace.plugins.map(\.name) == ["scout"])
+        #expect(marketplace.plugins.first?.source == "./")
+        #expect(marketplace.plugins.first?.version == release.engine.version)
+    }
+
+    private struct BundledMarketplace: Decodable {
+        struct Plugin: Decodable { let name: String; let source: String; let version: String? }
+        let name: String
+        let plugins: [Plugin]
     }
 
     /// One version for Scout (spec D2 / §7): the bundled plugin.json version,
@@ -75,14 +91,18 @@ struct EngineReleaseTests {
     }
 
     private static func manifestVersion(inTarball tarball: URL) throws -> String {
+        struct Manifest: Decodable { let version: String }
+        return try JSONDecoder().decode(Manifest.self, from: extract(".claude-plugin/plugin.json", fromTarball: tarball)).version
+    }
+
+    private static func extract(_ member: String, fromTarball tarball: URL) throws -> Data {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        p.arguments = ["-xzOf", tarball.path, ".claude-plugin/plugin.json"]
+        p.arguments = ["-xzOf", tarball.path, member]
         let pipe = Pipe(); p.standardOutput = pipe
         try p.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        struct Manifest: Decodable { let version: String }
-        return try JSONDecoder().decode(Manifest.self, from: data).version
+        return data
     }
 }

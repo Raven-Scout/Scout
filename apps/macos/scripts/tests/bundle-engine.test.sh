@@ -10,7 +10,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 FAILS=0
 assert() { if ! eval "$1"; then echo "FAIL: $2"; FAILS=$((FAILS + 1)); else echo "ok: $2"; fi; }
 g() { git -C "$REPO" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false "$@"; }
-json() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d := d[k] for k in sys.argv[2:]]; print(d)' "$@"; }
+json() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d := d[int(k) if isinstance(d, list) else k] for k in sys.argv[2:]]; print(d)' "$@"; }
 # run <out-dir> [VAR=value ...]: the script as Xcode would run it, minus the
 # product paths; stdout+stderr to <out-dir>.log, exit code in $RC.
 run() {
@@ -19,15 +19,21 @@ run() {
 }
 
 REPO="$TMP/repo"; APP="$REPO/apps/macos"
-mkdir -p "$REPO/plugin/.claude-plugin" "$REPO/plugin/engine" "$APP/Scout/Resources"
+mkdir -p "$REPO/.claude-plugin" "$REPO/plugin/.claude-plugin" "$REPO/plugin/engine" "$APP/Scout/Resources"
 g init -q
 printf '{"name": "scout", "version": "9.9.9"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+# The repo-root marketplace (monorepo shape): source ./plugin, a stale entry
+# version, and a second plugin — none of which may reach the bundled copy.
+ROOT_MP='{"name": "scout-plugin", "owner": {"name": "Alex"}, "metadata": {"description": "d"},
+ "plugins": [{"name": "scout", "source": "./plugin", "version": "0.0.1", "description": "the engine"},
+             {"name": "other", "source": "./other"}]}'
+printf '%s\n' "$ROOT_MP" > "$REPO/.claude-plugin/marketplace.json"
 echo "print('hi')" > "$REPO/plugin/engine/x.py"
 UV_SHA_ARM="$(printf 'a%.0s' {1..64})"; UV_SHA_X86="$(printf 'b%.0s' {1..64})"
 printf '{"version": "0.12.1", "sha256": {"aarch64-apple-darwin": "%s", "x86_64-apple-darwin": "%s"}}\n' \
   "$UV_SHA_ARM" "$UV_SHA_X86" > "$APP/Scout/Resources/uv-release.json"
 echo ".venv/" > "$REPO/plugin/.gitignore"
-g add plugin apps && g commit -qm init
+g add .claude-plugin plugin apps && g commit -qm init
 COMMIT="$(g rev-parse HEAD)"
 mkdir -p "$REPO/plugin/.venv/bin" && echo junk > "$REPO/plugin/.venv/bin/python"   # ignored: must NOT ship
 
@@ -52,6 +58,20 @@ assert '[ "$(json "$RJ" engine commit)" = "$COMMIT" ]' "engine.commit is the bui
 assert '[ "$(json "$RJ" uv version)" = 0.12.1 ]' "uv.version from the pin file"
 assert '[ "$(json "$RJ" uv sha256 aarch64-apple-darwin)" = "$UV_SHA_ARM" ]' "uv arm64 sha256 from the pin file"
 assert '[ "$(json "$RJ" uv sha256 x86_64-apple-darwin)" = "$UV_SHA_X86" ]' "uv x86_64 sha256 from the pin file"
+
+# 2b. the archive root is a Claude Code DIRECTORY marketplace: a generated
+#     .claude-plugin/marketplace.json beside plugin.json, derived from the
+#     repo-root one (name/owner/metadata kept; one plugin, scout, from "./" at
+#     plugin.json's version)
+MP="$TMP/mp1.json"; tar -xzOf "$TB" .claude-plugin/marketplace.json > "$MP" 2>/dev/null || true
+assert '[ "$(tar -tzf "$TB" | grep -cx ".claude-plugin/marketplace.json")" = 1 ]' "marketplace.json at the archive root, exactly once"
+assert '[ "$(json "$MP" name)" = scout-plugin ]' "bundled marketplace keeps the name scout-plugin"
+assert '[ "$(json "$MP" owner name)" = Alex ] && [ "$(json "$MP" metadata description)" = d ]' "bundled marketplace copies owner and metadata"
+assert '[ "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))[\"plugins\"]))" "$MP")" = 1 ]' "bundled marketplace lists exactly one plugin"
+assert '[ "$(json "$MP" plugins 0 name)" = scout ] && [ "$(json "$MP" plugins 0 source)" = ./ ]' "the one plugin is scout, sourced from the archive root"
+assert '[ "$(json "$MP" plugins 0 version)" = 9.9.9 ]' "scout's marketplace version is plugin.json's, not the root entry's"
+assert '[ "$(json "$MP" plugins 0 description)" = "the engine" ]' "the root scout entry's other fields are kept"
+assert '! tar -tzf "$TB" | grep -q "^\.claude-plugin/marketplace\.json/"' "marketplace.json is a file, not a directory"
 
 # 3. deterministic: the same commit gives the same bytes
 H1="$(shasum -a 256 "$TB" | awk '{print $1}')"
@@ -78,6 +98,8 @@ g commit -qam bump
 run "$OUT"
 assert '[ -f "$OUT/scout-engine-9.10.0.tar.gz" ] && [ ! -e "$OUT/scout-engine-9.9.9.tar.gz" ]' "bump: stale tarball removed"
 assert '[ "$(json "$OUT/engine-release.json" engine version)" = 9.10.0 ] && [ "$(json "$OUT/engine-release.json" version)" = 9.10.0 ]' "bump: engine-release.json follows"
+tar -xzOf "$OUT/scout-engine-9.10.0.tar.gz" .claude-plugin/marketplace.json > "$TMP/mp5.json" 2>/dev/null || true
+assert '[ "$(json "$TMP/mp5.json" plugins 0 version)" = 9.10.0 ]' "bump: the bundled marketplace's scout version follows"
 
 # 6. MARKETING_VERSION (Xcode) must equal plugin.json's version (spec D2):
 #    an error in Release/strict builds, a warning in Debug
@@ -146,6 +168,51 @@ if stat -f '%i' "$IDX" >/dev/null 2>&1; then
 else
   echo "skip: .git/index mtime/inode check (BSD stat -f unavailable)"
 fi
+
+# 12b. the bundled marketplace manifest is generated from the committed ROOT
+#      one; a missing or unusable root manifest fails with a clear message and
+#      writes nothing
+g rm -q .claude-plugin/marketplace.json && g commit -qm "drop root marketplace"
+run "$TMP/out12b"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out12b/engine-release.json" ] && ! ls "$TMP/out12b"/scout-engine-* >/dev/null 2>&1' "missing root marketplace.json: fails, writes nothing"
+assert 'grep -q "HEAD has no .claude-plugin/marketplace.json" "$TMP/out12b.log"' "missing root marketplace.json: says why"
+g reset -q --hard HEAD~1
+
+printf '{"name": "scout-plugin", "owner": {"name": "Alex"}, "plugins": [{"name": "other", "source": "./other"}]}\n' > "$REPO/.claude-plugin/marketplace.json"
+g commit -qam "no scout entry"
+run "$TMP/out12c"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out12c/engine-release.json" ]' "root marketplace without a scout entry: fails"
+assert 'grep -q "exactly one plugin named \"scout\"" "$TMP/out12c.log"' "root marketplace without a scout entry: says why"
+g reset -q --hard HEAD~1
+
+printf '{"name": "scout-fork", "plugins": [{"name": "scout", "source": "./plugin"}]}\n' > "$REPO/.claude-plugin/marketplace.json"
+g commit -qam "renamed marketplace"
+run "$TMP/out12d"
+assert '[ "$RC" -ne 0 ] && grep -q "must be named \"scout-plugin\"" "$TMP/out12d.log"' "root marketplace not named scout-plugin: fails, says why"
+g reset -q --hard HEAD~1
+
+printf 'not json\n' > "$REPO/.claude-plugin/marketplace.json"
+g commit -qam "broken marketplace"
+run "$TMP/out12e"
+assert '[ "$RC" -ne 0 ] && grep -q "is not valid JSON" "$TMP/out12e.log"' "malformed root marketplace: fails, says why"
+g reset -q --hard HEAD~1
+
+# 12f. a committed plugin/.claude-plugin/marketplace.json would collide with
+#      the generated one (two entries at the same archive path): refuse
+printf '%s\n' "$ROOT_MP" > "$REPO/plugin/.claude-plugin/marketplace.json"
+g add plugin && g commit -qm "plugin-level marketplace"
+run "$TMP/out12f"
+assert '[ "$RC" -ne 0 ] && grep -q "plugin/.claude-plugin/marketplace.json is committed" "$TMP/out12f.log"' "committed plugin/ marketplace.json: fails, says why"
+g reset -q --hard HEAD~1
+
+# 12g. a git without `archive --add-virtual-file` (< 2.39) fails clearly
+#      rather than shipping an engine Claude Code can't register
+REAL_GIT="$(command -v git)"; mkdir -p "$TMP/oldgit"
+printf '#!/usr/bin/env bash\nif [[ " $* " == *" archive -h "* ]]; then "%s" "$@" 2>&1 | grep -v add-virtual-file; exit 129; fi\nexec "%s" "$@"\n' "$REAL_GIT" "$REAL_GIT" > "$TMP/oldgit/git"
+chmod +x "$TMP/oldgit/git"
+run "$TMP/out12g" PATH="$TMP/oldgit:$PATH"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out12g/engine-release.json" ]' "git without --add-virtual-file: fails, writes nothing"
+assert 'grep -q "add-virtual-file.*git 2.39 or newer" "$TMP/out12g.log"' "git without --add-virtual-file: says which git is needed"
 
 # 13. outside a git repository there is nothing to archive
 NOGIT="$TMP/nogit/apps/macos"; mkdir -p "$NOGIT"

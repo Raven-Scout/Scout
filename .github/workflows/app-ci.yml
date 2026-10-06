@@ -69,7 +69,8 @@ jobs:
 
       # The "Bundle Engine" build phase runs scripts/bundle-engine.sh; this
       # tests its contract (git archive of HEAD:plugin + the generated
-      # engine-release.json) against a throwaway repo.
+      # marketplace.json inside it + the generated engine-release.json)
+      # against a throwaway repo.
       - name: Bundle-engine script tests
         working-directory: apps/macos
         run: bash scripts/tests/bundle-engine.test.sh

@@ -2,12 +2,22 @@ import Foundation
 @testable import Scout
 
 /// The slice of Claude Code the installer drives, simulated on a
-/// `RuleBasedRunner` against a temp `~/.claude/plugins`: `marketplace add`
-/// records a directory marketplace; `plugin install|update` installs whatever
-/// version the recorded marketplace path RESOLVES to (as Claude Code would —
-/// so a marketplace recorded at `engine/<old>` keeps loading <old>, Ruling 69
-/// I2); `marketplace update` is a no-op. `failNext` makes an exact argv fail.
-/// Nothing runs a real `claude`.
+/// `RuleBasedRunner` against a temp `~/.claude/plugins`. Nothing runs a real
+/// `claude`.
+///
+/// - `marketplace add <dir>` requires `<dir>/.claude-plugin/marketplace.json`
+///   (a directory marketplace, as Claude Code does — final review C1) and
+///   records the marketplace under the manifest's own `name`. A missing or
+///   invalid manifest fails the way Claude Code does, and records nothing.
+/// - `plugin install|update` installs the version the recorded marketplace
+///   path RESOLVES to (so a marketplace recorded at `engine/<old>` keeps
+///   loading <old>, Ruling 69 I2): the marketplace entry's `version`, else
+///   the entry's own `plugin.json` — which is what the register step's
+///   postcondition compares.
+/// - `marketplace update` re-reads the recorded directory (and fails if its
+///   manifest is gone).
+///
+/// `failNext` makes an exact argv fail.
 final class FakeClaudeCode: @unchecked Sendable {
     let pluginsDir: URL
     private let lock = NSLock()
@@ -31,22 +41,69 @@ final class FakeClaudeCode: @unchecked Sendable {
         }
     }
 
+    /// What a directory marketplace's manifest says, or why Claude Code
+    /// would refuse it.
+    struct Manifest { let name: String; let scoutVersion: String? }
+
+    static func readManifest(directory: URL) -> Result<Manifest, ManifestError> {
+        let file = directory.appendingPathComponent(".claude-plugin/marketplace.json")
+        guard let data = try? Data(contentsOf: file) else {
+            return .failure(ManifestError(message: "Marketplace file not found at \(file.path)"))
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = object["name"] as? String, !name.isEmpty,
+              let plugins = object["plugins"] as? [[String: Any]] else {
+            return .failure(ManifestError(message: "Invalid marketplace schema in \(file.path)"))
+        }
+        guard let scout = plugins.first(where: { $0["name"] as? String == "scout" }) else {
+            return .success(Manifest(name: name, scoutVersion: nil))
+        }
+        if let version = scout["version"] as? String { return .success(Manifest(name: name, scoutVersion: version)) }
+        // No version in the entry: Claude Code falls back to the plugin's own plugin.json.
+        let source = (scout["source"] as? String) ?? "./"
+        let root = directory.appendingPathComponent(source).standardizedFileURL
+        return .success(Manifest(name: name, scoutVersion: EngineLocator.version(atRoot: root)))
+    }
+
+    struct ManifestError: Error { let message: String }
+
     private func respond(_ args: [String]) -> ProcessResult {
         if takeFailure(args) { return result(1, stderr: "simulated failure: \(args.joined(separator: " "))") }
         if args.starts(with: ["plugin", "marketplace", "add"]), args.count >= 4 {
-            write(["scout-plugin": ["source": ["source": "directory", "path": args[3]]]], to: "known_marketplaces.json")
+            switch Self.readManifest(directory: URL(fileURLWithPath: args[3])) {
+            case .failure(let error):
+                return result(1, stderr: "✘ Failed to add marketplace: \(error.message)")
+            case .success(let manifest):
+                write([manifest.name: ["source": ["source": "directory", "path": args[3]]]], to: "known_marketplaces.json")
+                return result(0)
+            }
+        }
+        if args.starts(with: ["plugin", "marketplace", "update"]) {
+            guard let directory = recordedDirectory() else { return result(1, stderr: "✘ Marketplace 'scout-plugin' not found") }
+            if case .failure(let error) = Self.readManifest(directory: directory) {
+                return result(1, stderr: "✘ Failed to update marketplace: \(error.message)")
+            }
             return result(0)
         }
-        if args.starts(with: ["plugin", "marketplace", "update"]) { return result(0) }
         if args == ClaudeCodeCLI.pluginInstall || args == ClaudeCodeCLI.pluginUpdate {
-            guard case .directory(let path)? = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: pluginsDir)?.source,
-                  let version = EngineLocator.version(atRoot: URL(fileURLWithPath: path).resolvingSymlinksInPath()) else {
-                return result(1, stderr: "marketplace not found")
+            guard let directory = recordedDirectory() else { return result(1, stderr: "✘ Marketplace 'scout-plugin' not found") }
+            switch Self.readManifest(directory: directory.resolvingSymlinksInPath()) {
+            case .failure(let error):
+                return result(1, stderr: "✘ Failed to install plugin: \(error.message)")
+            case .success(let manifest):
+                guard let version = manifest.scoutVersion else {
+                    return result(1, stderr: "✘ Plugin 'scout' not found in marketplace 'scout-plugin'")
+                }
+                write(["plugins": ["scout@scout-plugin": [["scope": "user", "version": version, "installPath": directory.path]]]], to: "installed_plugins.json")
+                return result(0)
             }
-            write(["plugins": ["scout@scout-plugin": [["version": version, "installPath": path]]]], to: "installed_plugins.json")
-            return result(0)
         }
         return result(0)
+    }
+
+    private func recordedDirectory() -> URL? {
+        guard case .directory(let path)? = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: pluginsDir)?.source else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     private func write(_ object: Any, to name: String) {
