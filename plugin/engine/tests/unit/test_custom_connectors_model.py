@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
 from scout import custom_connectors as cc
+from scout import yaml_blocks
 
 PRESETS = {"mail": {"summary": "Mail", "inbound": "Inbox rules for {{USER_NAME}}.", "outbound": "Sent rules."}}
 RESERVED = {"slack", "email", "gmail", "github"}
@@ -1297,3 +1299,163 @@ def test_recursive_alias_in_a_trailing_comment_scan_does_not_crash(tmp_path: Pat
 
     loaded = yaml.safe_load(result)
     assert loaded["connectors"]["alpha"] == _ALPHA
+
+
+# --- Fix round 3 --------------------------------------------------------------------
+
+
+def test_shallow_comment_after_deep_scalar_lines_is_recovered(tmp_path: Path):
+    """Exercises candidate (b) of the capped trim specifically: the whole-run
+    check (a) fails here (the deep `#`-led scalar lines are significant), but
+    the trailing shallow comment with no blank line before it is still safely
+    recovered as ALPHA's leading run rather than tickets' own trailing content
+    -- made observable by changing tickets (discarding its verbatim text): if
+    the comment had been misattributed to tickets' own block (candidate (b)
+    not recovering it, falling through to "trim nothing"), it would be lost
+    along with the rest of tickets' old text when tickets is redumped."""
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+        "notes": "text\n" + "".join(f"#{i}\n" for i in range(5)),
+    }
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "    notes: |\n"
+        "      text\n" + "".join(f"      #{i}\n" for i in range(5)) + "  # about alpha\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    assert yaml.safe_load(text)["connectors"]["tickets"] == body
+
+    changed = dict(body, display_name="Tix")
+    cc.write(tmp_path, {"tickets": changed, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# about alpha" in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": changed, "alpha": _ALPHA}}
+
+
+def test_split_blocks_cost_is_bounded_not_quadratic(monkeypatch: pytest.MonkeyPatch):
+    """Item 1: the trim must cost a bounded number of `safe_load` calls per
+    segment (at most 3 -- the whole run, one shallow-suffix candidate, and the
+    initial full-block parse), never one call per line of the trailing run.
+    Without this, a `|` scalar with thousands of significant `#`-led content
+    lines took ~40s to split; a block that can't load alone followed by
+    thousands of ordinary comments took ~4.5s. Both must now be near-instant,
+    checked deterministically via a counting monkeypatch rather than a wall-
+    clock budget."""
+    calls = [0]
+    real_safe_load = yaml.safe_load
+
+    def counting_safe_load(stream):
+        calls[0] += 1
+        return real_safe_load(stream)
+
+    monkeypatch.setattr(yaml, "safe_load", counting_safe_load)
+    monkeypatch.setattr(yaml_blocks.yaml, "safe_load", counting_safe_load)
+
+    # A `|` scalar whose content is 4,000 significant `#`-led lines: every
+    # candidate trim point changes the value, so the old per-line search tried
+    # (and re-parsed) every single one.
+    text = (
+        "schema_version: 1\nconnectors:\n  tickets:\n    display_name: T\n    notes: |\n"
+        + "".join(f"      # step {i}\n" for i in range(4000))
+        + "  alpha:\n    display_name: A\n    probe: p\n"
+    )
+    calls[0] = 0
+    start = time.perf_counter()
+    result = yaml_blocks.split_blocks(text, indent=2, after_key="connectors")
+    elapsed = time.perf_counter() - start
+    assert result is not None
+    assert calls[0] <= 10, f"expected a bounded call count, got {calls[0]}"
+    assert elapsed < 1.0, f"expected well under 1s, took {elapsed}s"
+
+    # A block that can't load alone (an alias to a sibling's anchor), followed
+    # by 10,000 ordinary comments: every parse attempt in the old algorithm
+    # failed (so the loop never broke early), re-parsing the whole block once
+    # per candidate line.
+    text2 = (
+        "schema_version: 1\nconnectors:\n"
+        "  alpha:\n    display_name: &dn Alpha\n    probe: p\n"
+        "  beta:\n    display_name: *dn\n    probe: b\n"
+        + "".join(f"  # note {i}\n" for i in range(10000))
+        + "  gamma:\n    display_name: G\n    probe: g\n"
+    )
+    calls[0] = 0
+    start = time.perf_counter()
+    result2 = yaml_blocks.split_blocks(text2, indent=2, after_key="connectors")
+    elapsed2 = time.perf_counter() - start
+    assert result2 is not None
+    assert calls[0] <= 15, f"expected a bounded call count, got {calls[0]}"
+    assert elapsed2 < 1.0, f"expected well under 1s, took {elapsed2}s"
+
+
+def test_boundary_absorption_deep_comment_after_removed_entry(tmp_path: Path):
+    """Item 2 (reviewer's `exp_absorb.py` case): beta's own trailing comment
+    (indented past entry level, but still a real comment) moves into gamma's
+    leading run when beta is removed. Gamma's new predecessor is now alpha
+    (unchanged, ending in a `|` scalar) instead of beta -- a boundary that
+    didn't exist in the original file. Emitting that leading run verbatim
+    right after alpha's scalar would silently absorb it as scalar content
+    instead of an inert comment. Must stay on the fast path, header and all
+    comments intact."""
+    text = (
+        "# my header\nschema_version: 1\nconnectors:\n"
+        "  alpha:\n    display_name: Alpha\n    focus: |\n      Watch for changes.\n"
+        "  beta:\n    display_name: Beta\n    probe: b\n      # old probe: b-legacy\n"
+        "  # About gamma\n  gamma:\n    display_name: Gamma\n    probe: g\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    loaded = yaml.safe_load(text)["connectors"]
+
+    cc.write(tmp_path, {"alpha": loaded["alpha"], "gamma": loaded["gamma"]})  # remove beta
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# my header")
+    assert "# About gamma" in result
+    assert yaml.safe_load(result) == {
+        "schema_version": 1,
+        "connectors": {"alpha": loaded["alpha"], "gamma": loaded["gamma"]},
+    }
+
+
+def test_boundary_absorption_keep_tail_after_removed_entry(tmp_path: Path):
+    """Item 2, the `|+` variant: a significant blank-led gap after beta's
+    `probe:` field (not actually part of any scalar -- beta has none here --
+    but positioned right where it would be swallowed if moved after alpha's
+    own `|+` keep-tail scalar) must not corrupt alpha's value when beta is
+    removed and gamma's leading run ends up sitting right after alpha."""
+    text = (
+        "# my header\nschema_version: 1\nconnectors:\n"
+        "  alpha:\n    display_name: Alpha\n    focus: |+\n      Watch.\n\n"
+        "  beta:\n    display_name: Beta\n    probe: b\n\n"
+        "  # About gamma\n  gamma:\n    display_name: Gamma\n    probe: g\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    loaded = yaml.safe_load(text)["connectors"]
+
+    cc.write(tmp_path, {"alpha": loaded["alpha"], "gamma": loaded["gamma"]})  # remove beta
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# my header")
+    assert "# About gamma" in result
+    assert yaml.safe_load(result) == {
+        "schema_version": 1,
+        "connectors": {"alpha": loaded["alpha"], "gamma": loaded["gamma"]},
+    }

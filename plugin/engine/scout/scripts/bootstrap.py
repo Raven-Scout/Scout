@@ -888,28 +888,50 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
         return fallback("its layout cannot be rewritten block by block")
     _header, segments, trailer = split
 
+    # See custom_connectors._rebuild_entries for what `prev_block_text`/
+    # `prev_intact` track and why: a `leading` run is only safe to emit
+    # verbatim when the thing right before it in `out` is still what it
+    # originally followed in `text`. A removed key's own `leading` is kept
+    # here (unlike custom_connectors, which drops it with the key) -- that's
+    # this function's existing, tested behavior -- but it still needs the
+    # same boundary check once something *else* has already changed.
     out: list[str] = []
+    prev_block_text = ""
+    prev_intact = True
     for key, leading, block in segments:
-        out += leading
+        out += leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=0)
         if key not in data:
+            prev_intact = False
             continue
-        if key in original and original[key] == data[key]:
-            out += block
-        else:
-            out.append(yaml.safe_dump({key: data[key]}, sort_keys=False))
-    out += trailer
+        try:
+            unchanged = key in original and original[key] == data[key]
+        except RecursionError:
+            unchanged = False  # a cyclic alias equality can't decide -- treat as changed
+        block_text = "".join(block) if unchanged else yaml.safe_dump({key: data[key]}, sort_keys=False)
+        out.append(block_text)
+        prev_block_text = block_text
+        prev_intact = unchanged
     added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
     if added:
         if out and not out[-1].endswith("\n"):
             out.append("\n")
-        out.append(yaml.safe_dump(added, sort_keys=False))
+        added_text = yaml.safe_dump(added, sort_keys=False)
+        out.append(added_text)
+        prev_block_text = added_text
+        prev_intact = False
+    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=0)
 
     result = "".join(out)
     try:
-        if yaml.safe_load(result) != data:
-            return fallback("the block-wise rewrite did not load back identically")
+        loaded = yaml.safe_load(result)
     except yaml.YAMLError:
         return fallback("the block-wise rewrite did not parse")
+    try:
+        mismatch = loaded != data
+    except RecursionError:
+        mismatch = True
+    if mismatch:
+        return fallback("the block-wise rewrite did not load back identically")
     return result
 
 

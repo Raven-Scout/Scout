@@ -34,17 +34,78 @@ def _leading_whitespace(line: str) -> str:
     return line[:i]
 
 
-def _has_tab_indentation(text: str) -> bool:
-    """True when some line's own indentation (not its content) contains a tab.
-    A tab elsewhere on a line -- inside a comment or a quoted value -- is fine;
-    only a tab doing the job of indentation defeats the column-counting this
-    module's splitting depends on."""
-    return any("\t" in _leading_whitespace(line) for line in text.splitlines())
+def _has_tab_indentation(text: str, indent: int) -> bool:
+    """True when a tab appears within the first ``indent + 1`` columns of some
+    line's own leading whitespace -- the zone this module's own structural
+    indentation counting (``own_indent = len(line) - len(line.lstrip(" "))``,
+    which only counts spaces) could be thrown off by a tab standing in for a
+    space. A tab deeper than that -- inside an entry's own nested content,
+    e.g. a shell command line in a ``|`` scalar -- is just data and doesn't
+    affect any column-counting this module does, so it's left alone."""
+    limit = indent + 1
+    return any("\t" in _leading_whitespace(line)[:limit] for line in text.splitlines())
 
 
 def _is_filler(line: str) -> bool:
     """A blank line, or a comment at any indent."""
     return not line.strip() or line.lstrip().startswith("#")
+
+
+def _is_shallow_comment(line: str, indent: int) -> bool:
+    """A comment indented no deeper than ``indent`` -- never part of a
+    ``|``/``>`` scalar's content (which always sits deeper than its
+    announcing key, itself deeper than ``indent``). Blank lines are
+    deliberately excluded: whether a blank line is safe to move can depend on
+    a ``|+``/``>+`` keep-tail elsewhere in the same run, which this cheap,
+    line-only check can't tell -- so this candidate never trims a blank line,
+    leaving it (and anything earlier in the run) with the current block when
+    the whole-run check doesn't already cover it."""
+    stripped = line.lstrip(" ")
+    return stripped.startswith("#") and (len(line) - len(stripped)) <= indent
+
+
+def _parses_to(text: str, value: Any) -> bool:
+    """Whether ``text`` parses to exactly ``value`` (itself already a parsed
+    result, e.g. from `_safe_load_or_sentinel`) -- one ``safe_load`` call."""
+    try:
+        return _safe_load_or_sentinel(text) == value
+    except RecursionError:
+        return False
+
+
+def fit_leading(prev_block: str, leading: list[str], indent: int) -> list[str]:
+    """A safe version of ``leading`` (a run of comment/blank lines, as returned
+    by `split_blocks`) to emit directly after ``prev_block``, when
+    ``prev_block`` is NOT what originally, in the source text, preceded
+    ``leading`` -- because an entry in between was dropped, or ``prev_block``
+    itself was rewritten.
+
+    The hazard: if ``prev_block`` ends inside a ``|``/``>`` scalar, lines that
+    were originally a harmless gap comment somewhere else in the file can get
+    silently absorbed into that scalar's value once they're moved to sit
+    right after it, instead of staying inert comments -- corrupting
+    ``prev_block``'s value (caught by `split_blocks`'s/the caller's own
+    round-trip check, but only by falling back to a full plain dump, losing
+    every comment in the file, not just this one run).
+
+    Returns ``leading`` verbatim when appending it doesn't change what
+    ``prev_block`` parses to (the common case -- most boundaries are between
+    a mapping value and a sibling key, which nothing can absorb into). If
+    that's not safe, tries a reduced form instead: every comment line
+    re-indented to ``indent`` (shallower than any scalar's own content, so it
+    can't be absorbed) with blank lines dropped entirely (a significant
+    `` |+``/``>+`` keep-tail blank line would otherwise still be swallowed).
+    If even that isn't safe, returns ``[]`` -- dropping just this one leading
+    run, never the whole file's comments, which the caller's own full
+    round-trip check would otherwise do. At most 3 ``safe_load`` calls.
+    """
+    prev_value = _safe_load_or_sentinel(prev_block)
+    if _parses_to(prev_block + "".join(leading), prev_value):
+        return leading
+    reduced = [" " * indent + line.lstrip(" \t") for line in leading if line.strip()]
+    if reduced and _parses_to(prev_block + "".join(reduced), prev_value):
+        return reduced
+    return []
 
 
 def split_blocks(
@@ -67,15 +128,16 @@ def split_blocks(
     is always ``[]``.
 
     Returns ``None`` whenever the layout can't be split with confidence, so the
-    caller falls back to a plain dump: a tab doing the job of indentation
-    anywhere, a document marker, no bare ``<after_key>:`` line when one is
-    required, a line that dedents below ``indent`` inside the block (unexpected
-    content after it), a candidate entry line that doesn't parse as a
-    single-key mapping, or duplicate keys. A sequence item (``- foo``) at
-    ``indent`` is treated as part of the previous entry's content, matching a
-    mapping whose value is a block sequence.
+    caller falls back to a plain dump: a tab that could be doing the job of
+    indentation (within the first ``indent + 1`` columns of some line), a
+    document marker, no bare ``<after_key>:`` line when one is required, a
+    line that dedents below ``indent`` inside the block (unexpected content
+    after it), a candidate entry line that doesn't parse as a single-key
+    mapping, or duplicate keys. A sequence item (``- foo``) at ``indent`` is
+    treated as part of the previous entry's content, matching a mapping whose
+    value is a block sequence.
     """
-    if _has_tab_indentation(text):
+    if _has_tab_indentation(text, indent):
         return None
     lines = text.splitlines(keepends=True)
 
@@ -133,24 +195,37 @@ def split_blocks(
         while run_start > start + 1 and _is_filler(lines[run_start - 1]):
             run_start -= 1
 
-        # Trim the longest suffix of that run that is safe to move to the
-        # next segment's leading run: the one whose removal doesn't change
-        # what this block parses to. A deep `#`-led line inside a `|`/`>`
-        # scalar, or a significant trailing blank line of a `|+`/`>+` scalar,
-        # changes the value when dropped, so it stays; a genuine gap comment
-        # or blank line does not, so it moves. Shrinks from the top of the
-        # run (the earliest, i.e. least trimming) until the values match;
-        # trimming nothing at all is always a match, so this always ends.
-        full_value = _safe_load_or_sentinel("".join(lines[start:end]))
+        # Trim the longest safe-to-move suffix of that run, at a bounded cost
+        # (at most 3 `safe_load` calls, regardless of the run's length): a
+        # deep `#`-led line inside a `|`/`>` scalar, or a significant trailing
+        # blank line of a `|+`/`>+` scalar, changes the value when dropped, so
+        # it must stay; a genuine gap comment or blank line does not, so it's
+        # safe to move to the next segment's leading run.
+        #
+        # (a) Try the whole run first -- cheap, and the common case (nothing
+        #     in the run is scalar content) needs only this one comparison.
+        # (b) If that changes the value, try the longest trailing run of
+        #     *comments* indented no deeper than entry level instead (never
+        #     including a blank line: a `|+`/`>+` keep-tail's significant
+        #     blank lines could be anywhere earlier in the run, and this
+        #     cheap check can't tell, so it leaves every blank line, and
+        #     anything before it, with the current block). This recovers a
+        #     trailing gap comment even when deep `#`-led content, or
+        #     significant blank lines, sit further back in the same run.
+        # (c) If even that changes the value, trim nothing -- leave the whole
+        #     run with this segment. Trimming nothing is always a match (it's
+        #     the same text), so (b) or (c) always ends this.
+        block_text = "".join(lines[start:end])
+        full_value = _safe_load_or_sentinel(block_text)
         cut = end
-        for c in range(run_start, end):
-            try:
-                equal = _safe_load_or_sentinel("".join(lines[start:c])) == full_value
-            except RecursionError:
-                equal = False
-            if equal:
-                cut = c
-                break
+        if _parses_to("".join(lines[start:run_start]), full_value):
+            cut = run_start
+        else:
+            shallow_cut = end
+            while shallow_cut > run_start and _is_shallow_comment(lines[shallow_cut - 1], indent):
+                shallow_cut -= 1
+            if shallow_cut < end and _parses_to("".join(lines[start:shallow_cut]), full_value):
+                cut = shallow_cut
 
         segments.append((key, lines[lead_from:start], lines[start:cut]))
         lead_from = cut

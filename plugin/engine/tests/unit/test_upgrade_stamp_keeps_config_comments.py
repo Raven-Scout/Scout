@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
+from scout.scripts.bootstrap import BootstrapConfig, _dump_keeping_comments, install, upgrade
 from scout.scripts.budget_config import apply_updates
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
@@ -192,10 +192,10 @@ def test_upgrade_keeps_a_block_scalar_hash_line_in_a_block_that_is_rewritten(vau
     This one puts the hash-shaped scalar line in `user:`, which both changes
     (a new email) on this upgrade and is NOT the last key in the file, so the
     redump path and the tail-trim both actually run. Confirmed against the
-    pre-fix splitter (fix round 1, commit 98f71f7): there the line showed up
-    twice -- once correctly inside the redumped `user:` block, and once more as
-    a stray orphan comment ahead of `instance:` (the misattributed "leading" of
-    the next key)."""
+    pre-fix splitter (the initial commit, 98f71f7, before any of this task's
+    fix rounds): there the line showed up twice -- once correctly inside the
+    redumped `user:` block, and once more as a stray orphan comment ahead of
+    `instance:` (the misattributed "leading" of the next key)."""
     config = vault / "scout-config.yaml"
     text = config.read_text(encoding="utf-8")
     assert text.index("user:") < text.index("instance:")
@@ -250,3 +250,79 @@ def test_upgrade_keeps_the_blank_line_after_user_in_the_shipped_default_config(v
     assert "\n\n# The four knobs `scoutctl budget check` enforces before every scheduled run.\n" in after
     parsed = yaml.safe_load(after)
     assert parsed["user"]["email"] == "sam@example.com"
+
+
+# --- Fix round 3 --------------------------------------------------------------------
+
+
+def test_upgrade_keeps_comments_despite_a_tab_inside_block_scalar_content(vault: Path) -> None:
+    """Item 3 (reviewer's `exp_tabs` case): a tab appearing deep inside a `|`
+    scalar's own content (e.g. a shell command line indented past the
+    scalar's content level) is just data -- it can't be structural, since the
+    tab check only looks at the first `indent + 1` columns of a line's
+    leading whitespace. It must not force the full-dump fallback."""
+    config = vault / "scout-config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "# keep me\nrunbook: |\n  make:\n  \tcc -o x x.c\n",
+        encoding="utf-8",
+    )
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    after = config.read_text(encoding="utf-8")
+    assert "# keep me" in after
+    parsed = yaml.safe_load(after)
+    assert parsed["runbook"] == "make:\n\tcc -o x x.c\n"
+    assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
+
+
+def test_upgrade_does_not_crash_on_a_recursive_alias_in_an_untouched_key(vault: Path) -> None:
+    """Item 4: `_dump_keeping_comments` compares `original[key] == data[key]`
+    with two SEPARATELY parsed copies of the same text (`original` freshly
+    parsed inside the function; `data` built earlier in `_stage_version_stamp`
+    from its own parse). A cyclic alias in an untouched top-level key makes
+    that `==` raise RecursionError rather than return False. It must count as
+    "changed" (redumping just that key), not crash the whole upgrade."""
+    config = vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + "loop: &l\n  self: *l\n", encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1"))  # must not raise RecursionError
+
+    after = config.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(after)
+    assert parsed["loop"] is parsed["loop"]["self"]
+    assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
+
+
+def test_dump_keeping_comments_falls_back_if_the_rebuild_does_not_parse(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Defense in depth, mirroring custom_connectors' own analogous test: even
+    if the per-key redump ever produced text that isn't valid YAML at all,
+    `_dump_keeping_comments` must not raise -- it falls back to a plain dump
+    and warns, rather than propagating a YAMLError."""
+    import scout.scripts.bootstrap as bootstrap_mod
+
+    monkeypatch.setattr(bootstrap_mod.yaml, "safe_dump", lambda data, **kw: "x: [unterminated\n")
+
+    result = _dump_keeping_comments("# a comment\na: 1\n", {"a": 2})  # "a" changed -> triggers the redump
+
+    assert result == "x: [unterminated\n"
+    assert "did not parse" in capsys.readouterr().err
+
+
+def test_dump_keeping_comments_removed_key_does_not_absorb_into_the_previous_scalar() -> None:
+    """Item 2 on the bootstrap side: `_stage_version_stamp` never actually
+    drops a top-level key through the public `upgrade()` entry point (it only
+    adds/overwrites), so this calls `_dump_keeping_comments` directly to
+    exercise the key-removal boundary it still has to handle correctly.
+    Removing `beta` means `gamma`'s comment -- deep enough to be absorbed by
+    `alpha`'s scalar once it's gamma's new (not its original) predecessor --
+    must be protected, not silently swallowed into alpha's value."""
+    text = "alpha:\n  note: |\n    Watch for changes.\nbeta:\n  x: 1\n    # About gamma\ngamma:\n  y: 2\n"
+    data = {"alpha": {"note": "Watch for changes.\n"}, "gamma": {"y": 2}}  # beta dropped
+
+    result = _dump_keeping_comments(text, data)
+
+    assert "# About gamma" in result
+    assert yaml.safe_load(result) == data

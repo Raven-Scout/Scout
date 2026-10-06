@@ -474,25 +474,47 @@ def _rebuild_entries(
             # entries appended below can be its indented children, not dangling
             # text after an already-closed flow mapping.
             out[-1] = "connectors:\n"
+
+    # `prev_block_text`/`prev_intact` track what a `leading`/`trailer` run is
+    # actually about to be emitted after. When that's the SAME thing it
+    # originally followed (nothing dropped in between, and that thing is
+    # itself unchanged), the run is safe to emit verbatim -- this is the
+    # common case. Otherwise (an entry was removed, the previous entry was
+    # rewritten, or a brand-new entry now comes before it) the boundary is
+    # new, and if the new predecessor ends inside a `|`/`>` scalar, emitting
+    # the run verbatim could silently become part of that scalar's value
+    # instead of staying inert comments -- `yaml_blocks.fit_leading` guards
+    # against that, at a bounded cost, only at these changed boundaries.
+    prev_block_text = "".join(out)
+    prev_intact = True
     handled: set[str] = set()
     for key, leading, block in segments:
         handled.add(key)
         if key not in raw_connectors:
-            continue  # removed: its leading comments go with it
-        out += leading
+            prev_intact = False  # removed: its leading comments go with it
+            continue
+        safe_leading = leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=2)
+        out += safe_leading
         try:
             original = yaml.safe_load("".join(block))
             unchanged = isinstance(original, dict) and key in original and original[key] == raw_connectors[key]
         except (yaml.YAMLError, RecursionError):
             unchanged = False  # unparseable, or a cyclic alias equality can't decide -- treat as changed
-        out.append("".join(block) if unchanged else _dump_entry(key, raw_connectors[key]))
+        block_text = "".join(block) if unchanged else _dump_entry(key, raw_connectors[key])
+        out.append(block_text)
+        prev_block_text = block_text
+        prev_intact = unchanged
     new_keys = [k for k in raw_connectors if k not in handled]
     if new_keys:
         if out and not out[-1].endswith("\n"):
             out.append("\n")
         for key in new_keys:
-            out.append(_dump_entry(key, raw_connectors[key]))
-    out += trailer  # new entries land before any trailing comment, not after it
+            entry_text = _dump_entry(key, raw_connectors[key])
+            out.append(entry_text)
+            prev_block_text = entry_text
+        prev_intact = False  # a freshly appended entry was never the trailer's original predecessor
+    # New entries land before any trailing comment, not after it.
+    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=2)
     return "".join(out)
 
 
