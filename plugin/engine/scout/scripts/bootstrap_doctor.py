@@ -386,6 +386,13 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     return warnings, notes
 
 
+def _check_custom_connectors(*, vault: Path) -> list[str]:
+    """One warning per problem in connectors.custom.yaml; that connector is skipped until fixed."""
+    from scout.custom_connectors import CUSTOM_FILE, load
+
+    return [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in load(vault).issues]
+
+
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
     """Run all doctor checks against ``vault``. Pure read."""
     errors: list[str] = []
@@ -495,6 +502,8 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
     # vault can still hold ones an older engine left.
     for bak in vault.glob("run-*.sh.bak.*"):
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
+
+    warnings.extend(_check_custom_connectors(vault=vault))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

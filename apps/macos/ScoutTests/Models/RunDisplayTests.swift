@@ -25,7 +25,7 @@ struct RunDisplayTests {
             let base = Run.make(type: .manual)
             return Run(
                 id: base.id, type: .manual, runnerScript: script, source: .manual,
-                scheduledAt: nil, startedAt: base.startedAt, endedAt: nil,
+                scheduledAt: nil, startedAt: base.startedAt, endedAt: nil, headerStartedAt: nil,
                 status: .success, exitCode: 0, cost: nil, budgetCap: nil,
                 logPath: base.logPath, logSizeBytes: 0,
                 errorsDetected: [], commits: [], retryOf: nil)

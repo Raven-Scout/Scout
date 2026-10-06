@@ -137,4 +137,21 @@ def resolve_registry(
             raise ConfigError(f"{overlay_path.name} is invalid: {e}") from e
         merged.update(overlay)  # overlay wins on key collision
 
+    for key, probe in _custom_probes(data_dir, plugin_root).items():
+        merged.setdefault(key, probe)  # the overlay wins on collision
+
     return merged
+
+
+def _custom_probes(data_dir: Path, plugin_root: Path) -> dict[str, Probe]:
+    """Probes derived from connectors.custom.yaml. Invalid entries are skipped, never raised."""
+    from scout.custom_connectors import load
+
+    out: dict[str, Probe] = {}
+    for key, c in load(data_dir, plugin_root=plugin_root).connectors.items():
+        needs = list(c.needs_user_input)
+        if c.probe.kind == "bash":
+            out[key] = Probe(name=key, kind=ProbeKind.BASH, bash_command=c.probe.value, needs_user_input=needs)
+        else:
+            out[key] = Probe(name=key, kind=ProbeKind.MCP_TOOL, tool_chain=[c.probe.value], needs_user_input=needs)
+    return out

@@ -602,6 +602,75 @@ struct SessionLogServiceTests {
 
         #expect(counter.count <= 3, "10-event burst caused \(counter.count) reconcile publishes")
     }
+
+    // MARK: - Header start (zone-aware, #43)
+
+    private func writeLog(_ name: String, _ text: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("header-start-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    @Test func parseBody_headerStartIsZoneAware() throws {
+        // Logged in New York, read on a machine set to Berlin.
+        let url = try writeLog("research-2026-04-19_15-00.log",
+            "=== Scout Research run starting at Sun Apr 19 15:00:01 EDT 2026 ===\n")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let berlin = TimeZone(identifier: "Europe/Berlin")!
+        let parsed = try #require(SessionLogService.parseFilename(url, timeZone: berlin))
+        let body = try SessionLogService.parseBody(at: url, filename: parsed)
+
+        let iso = ISO8601DateFormatter()
+        #expect(body.startedAt == iso.date(from: "2026-04-19T19:00:01Z"))
+        // The drift this fixes: the filename alone reads as 15:00 Berlin time.
+        #expect(parsed.startedAt == iso.date(from: "2026-04-19T13:00:00Z"))
+    }
+
+    @Test func parseBody_headerStartHandlesEuropeanZoneAndPaddedDay() throws {
+        let url = try writeLog("dreaming-2026-10-01_21-05.log",
+            "=== SCOUT Dreaming run starting at Thu Oct  1 21:05:09 CEST 2026 ===\n")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let parsed = try #require(SessionLogService.parseFilename(url))
+        let body = try SessionLogService.parseBody(at: url, filename: parsed)
+        #expect(body.startedAt == ISO8601DateFormatter().date(from: "2026-10-01T19:05:09Z"))
+    }
+
+    @Test func parseBody_missingHeaderLeavesStartNil() throws {
+        let url = try writeLog("scout-2026-04-20_08-03.log", "no header here\n")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let parsed = try #require(SessionLogService.parseFilename(url))
+        #expect(try SessionLogService.parseBody(at: url, filename: parsed).startedAt == nil)
+    }
+
+    @MainActor
+    @Test func loadInitial_carriesHeaderStartButKeepsFilenameIdentity() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("header-load-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try """
+        === Scout Research run starting at Sun Apr 19 15:00:01 EDT 2026 ===
+        === Scout Research run finished at Sun Apr 19 15:20:00 EDT 2026 (exit code: 0, duration: 1199s) ===
+        """.write(to: dir.appendingPathComponent("research-2026-04-19_15-00.log"),
+                  atomically: true, encoding: .utf8)
+        let trackerURL = dir.appendingPathComponent("usage-tracker.jsonl")
+        try "".write(to: trackerURL, atomically: true, encoding: .utf8)
+        let tracker = UsageTrackerService(trackerURL: trackerURL, fileEvents: NoopFS())
+        _ = try await tracker.loadInitial()
+        let berlin = TimeZone(identifier: "Europe/Berlin")!
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: tracker, fileEvents: NoopFS(),
+            timeZone: berlin, parseCacheURL: dir.appendingPathComponent("parse-cache.json"))
+
+        let run = try #require(try await service.loadInitial().first)
+        let iso = ISO8601DateFormatter()
+        #expect(run.headerStartedAt == iso.date(from: "2026-04-19T19:00:01Z"))
+        #expect(run.startedAt == iso.date(from: "2026-04-19T13:00:00Z"))   // unchanged semantics
+        #expect(run.id == Run.makeId(type: .research, startedAt: run.startedAt))
+    }
 }
 
 struct FixedClock: ClockSource {

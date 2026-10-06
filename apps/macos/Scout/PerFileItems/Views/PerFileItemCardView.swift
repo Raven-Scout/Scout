@@ -11,6 +11,10 @@ struct PerFileItemCardView: View {
     var onChangePriority: @MainActor (ItemPriority) async throws -> Void = { _ in }
     var onChangeStatus: @MainActor (ItemStatus) async throws -> Void = { _ in }
     let onResolve: @MainActor (ItemResolution) async throws -> Void
+    /// Highlights the card whose history is open in the detail pane (#43).
+    var isSelected: Bool = false
+    /// Opens this item's history pane. Nil hides the History button.
+    var onShowHistory: (() -> Void)? = nil
 
     @State private var isWriting = false
     @State private var errorText: String?
@@ -34,6 +38,12 @@ struct PerFileItemCardView: View {
             }
         }
         .editorialCard(padding: 18)
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 2).fill(DS.Ink.p1)
+                    .frame(width: 3).padding(.vertical, 6)
+            }
+        }
     }
 
     // MARK: - Header
@@ -86,6 +96,13 @@ struct PerFileItemCardView: View {
                     try await onChangeStatus(.open)
                 }
             }
+            if let onShowHistory {
+                Button(action: onShowHistory) {
+                    actionLabel("History", systemImage: "clock.arrow.circlepath", tint: DS.Ink.p2)
+                }
+                .buttonStyle(.plainHit)
+                .help("Show this item's history")
+            }
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
@@ -95,23 +112,27 @@ struct PerFileItemCardView: View {
     private func actionButton(_ label: String, systemImage: String, tint: Color,
                               _ op: @escaping @MainActor () async throws -> Void) -> some View {
         Button { perform(op) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage).font(.system(size: 10))
-                Text(label).font(DS.sans(11.5, weight: .medium))
-            }
-            .foregroundStyle(tint)
-            .padding(.horizontal, 12)
-            .frame(height: 26)
-            .background {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(DS.Paper.raised)
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.hard, lineWidth: 0.5))
-            }
+            actionLabel(label, systemImage: systemImage, tint: tint)
         }
         .buttonStyle(.plainHit)
         .disabled(isWriting)
         .onHover { hovering in
             if hovering, !isWriting { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+
+    private func actionLabel(_ label: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage).font(.system(size: 10))
+            Text(label).font(DS.sans(11.5, weight: .medium))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 12)
+        .frame(height: 26)
+        .background {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(DS.Paper.raised)
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DS.Rule.hard, lineWidth: 0.5))
         }
     }
 

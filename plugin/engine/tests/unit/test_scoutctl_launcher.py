@@ -106,6 +106,85 @@ def test_cache_path_falls_back_to_a_monorepo_marketplace_clone(tmp_path, venv_re
     assert "VENV=monorepo-marketplace" in result.stdout, result
 
 
+def _mark_monorepo_clone(clone: Path) -> None:
+    """Give `clone` a Raven-Scout/Scout shape: marketplace at the root, plugin under plugin/."""
+    (clone / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (clone / ".claude-plugin" / "marketplace.json").write_text(
+        '{"name": "scout-plugin", "plugins": [{"name": "scout", "source": "./plugin"}]}\n', encoding="utf-8"
+    )
+    (clone / "plugin" / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (clone / "plugin" / ".claude-plugin" / "plugin.json").write_text('{"name": "scout"}\n', encoding="utf-8")
+
+
+# A monorepo clone's root .venv is a stale pre-pull editable install, so it must
+# not win even when it still imports scout.cli (EngineLocator.installIfCheckout
+# in the app never adopts it either).
+@pytest.mark.parametrize("venv_rel", ["plugin/.venv", "plugin/engine/.venv"])
+def test_cache_path_skips_a_monorepo_clones_root_venv(tmp_path, venv_rel):
+    home = tmp_path / "home"
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.14.0"
+    clone = plugins_dir / "marketplaces" / "scout-plugin"
+    _mark_monorepo_clone(clone)
+    _stage_launcher(cache_root)
+    _fake_python(clone / ".venv", "ROOT_PY")
+    _fake_python(clone / "engine" / ".venv", "ROOT_ENGINE_PY")
+    _fake_python(clone / venv_rel, "PLUGIN_PY")
+
+    assert _run_isolated(cache_root, home) == "PLUGIN_PY -m scout.cli version"
+    assert not (clone / ".venv" / "calls").exists()
+    assert not (clone / "engine" / ".venv" / "calls").exists()
+
+
+def test_cache_path_ignores_a_monorepo_clone_with_only_a_root_venv(tmp_path):
+    """No plugin/ venv: the stale root one is still skipped, and the launcher
+    falls through to python3 rather than run the pre-pull engine."""
+    home = tmp_path / "home"
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.14.0"
+    clone = plugins_dir / "marketplaces" / "scout-plugin"
+    _mark_monorepo_clone(clone)
+    _stage_launcher(cache_root)
+    _fake_python(clone / ".venv", "ROOT_PY")
+    sysbin = _fake_system_python3(tmp_path)
+
+    assert _run_isolated(cache_root, home, extra_path=str(sysbin)) == "SYSTEM_PY -m scout.cli version"
+    assert not (clone / ".venv" / "calls").exists()
+
+
+def test_cache_path_still_uses_a_legacy_clones_root_venv(tmp_path):
+    """A legacy scout-plugin clone has its plugin at the root (marketplace
+    source "./"), so the root venv is the right one and keeps priority."""
+    home = tmp_path / "home"
+    plugins_dir = tmp_path / ".claude" / "plugins"
+    cache_root = plugins_dir / "cache" / "scout-plugin" / "scout" / "0.11.0"
+    clone = plugins_dir / "marketplaces" / "scout-plugin"
+    (clone / ".claude-plugin").mkdir(parents=True)
+    (clone / ".claude-plugin" / "marketplace.json").write_text(
+        '{"name": "scout-plugin", "plugins": [{"name": "scout", "source": "./"}]}\n', encoding="utf-8"
+    )
+    (clone / ".claude-plugin" / "plugin.json").write_text('{"name": "scout"}\n', encoding="utf-8")
+    _stage_launcher(cache_root)
+    _fake_python(clone / ".venv", "ROOT_PY")
+    _fake_python(clone / "plugin" / ".venv", "PLUGIN_PY")
+
+    assert _run_isolated(cache_root, home) == "ROOT_PY -m scout.cli version"
+
+
+def test_launcher_inside_a_monorepo_clone_ignores_the_clone_root_venv(tmp_path):
+    """Run from the clone itself (<clone>/plugin/engine/bin/scoutctl), the
+    plugin root is <clone>/plugin, so the clone-root venv is never a candidate."""
+    home = tmp_path / "home"
+    clone = tmp_path / "Scout"
+    _mark_monorepo_clone(clone)
+    _stage_launcher(clone / "plugin")
+    _fake_python(clone / ".venv", "ROOT_PY")
+    _fake_python(clone / "plugin" / ".venv", "PLUGIN_PY")
+
+    assert _run_isolated(clone / "plugin", home) == "PLUGIN_PY -m scout.cli version"
+    assert not (clone / ".venv" / "calls").exists()
+
+
 def test_cache_path_prefers_local_venv_when_present(tmp_path):
     """If cache/ has its own venv, don't cross-jump."""
     plugins_dir = tmp_path / ".claude" / "plugins"

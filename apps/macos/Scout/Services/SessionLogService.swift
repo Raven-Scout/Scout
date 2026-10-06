@@ -135,6 +135,8 @@ final class SessionLogService: ObservableObject {
     // MARK: - Body parsing
 
     struct ParsedBody: Equatable, Sendable, Codable {
+        /// Absolute start from the log header; nil when the header is absent.
+        let startedAt: Date?
         let endedAt: Date?
         let exitCode: Int?
         let status: RunStatus
@@ -161,6 +163,15 @@ final class SessionLogService: ObservableObject {
         pattern: #"=== Scout(?: \w+)? run finished at (.+?) \(exit code: (-?\d+)(?:, duration: (\d+)s)?\) ==="#,
         options: [.caseInsensitive]
     )
+    // `=== Scout[ <Kind>] run starting at <date> <ZONE> <year> ===` — every
+    // historical casing (`SCOUT`, `Scout`, `Scout Research`, …). Unlike the
+    // filename, this carries the zone the run was logged in, so it is the
+    // absolute start (#43: filename starts drift by the zone delta once the
+    // machine's zone changes).
+    private static let startRegex = try! NSRegularExpression(
+        pattern: #"=== Scout(?: \w+)? run starting at (.+?) ==="#,
+        options: [.caseInsensitive]
+    )
     private static let timeoutRegex = try! NSRegularExpression(pattern: #"=== TIMEOUT:"#)
     // `=== Another {{INSTANCE_NAME}} session running (PID …) — skipping ===`.
     // INSTANCE_NAME is install-configurable and was renamed all-caps "SCOUT" →
@@ -184,6 +195,12 @@ final class SessionLogService: ObservableObject {
         let text = String(data: data, encoding: .utf8) ?? ""
         let size = Int64(data.count)
         let range = NSRange(text.startIndex..., in: text)
+
+        var startedAt: Date? = nil
+        if let match = startRegex.firstMatch(in: text, range: range),
+           let dateRange = Range(match.range(at: 1), in: text) {
+            startedAt = parseScoutTimestamp(String(text[dateRange]))
+        }
 
         var endedAt: Date? = nil
         var exitCode: Int? = nil
@@ -223,6 +240,7 @@ final class SessionLogService: ObservableObject {
 
         let errors = scanErrors(in: text)
         return ParsedBody(
+            startedAt: startedAt,
             endedAt: endedAt,
             exitCode: exitCode,
             status: status,
@@ -420,6 +438,7 @@ final class SessionLogService: ObservableObject {
                     scheduledAt: nil,
                     startedAt: filename.startedAt,
                     endedAt: body.endedAt,
+                    headerStartedAt: body.startedAt,
                     status: status,
                     exitCode: body.exitCode,
                     cost: cost?.budgetSpent,
@@ -445,18 +464,19 @@ final class SessionLogService: ObservableObject {
 
     /// Resolve commits for a Run on demand. Called by the detail pane when the
     /// user opens the Diff tab — keeps loadInitial() from doing O(N) git calls
-    /// on the main thread at launch. Pads the upper bound by 5 minutes so
-    /// commits that the runner makes in the wind-down phase (after the
-    /// "run finished" marker is written) are still picked up.
+    /// on the main thread at launch. The window and the subject claim are
+    /// shared with the reverse `CommitRunLinker` (#43), so the subject filter
+    /// runs here rather than as a git `matchingPrefix`: a `run-scout.sh` run
+    /// claims briefing, weekend-briefing and consolidation commits alike.
     func commits(for run: Run) async -> [Commit] {
         guard let git = gitService else { return [] }
-        let end = (run.endedAt ?? clock.now()).addingTimeInterval(5 * 60)
-        let start = run.startedAt.addingTimeInterval(-30)
-        return (try? await git.commits(
-            between: start,
-            and: end,
-            matchingPrefix: run.type.commitsPrefix
+        let window = run.commitWindow(now: clock.now())
+        let all = (try? await git.commits(
+            between: window.lowerBound,
+            and: window.upperBound,
+            matchingPrefix: ""
         )) ?? []
+        return all.filter(run.claims)
     }
 
     private func startWatching() {
@@ -508,6 +528,7 @@ final class SessionLogService: ObservableObject {
             scheduledAt: nil,
             startedAt: filename.startedAt,
             endedAt: body.endedAt,
+            headerStartedAt: body.startedAt,
             status: status,
             exitCode: body.exitCode,
             cost: cost?.budgetSpent,
@@ -569,19 +590,6 @@ extension RunType {
         case .dreaming:      return "dreaming"
         case .research:      return "research"
         case .manual:        return "manual"
-        }
-    }
-
-    /// The commit-subject prefix used by Scout for this run type. `.manual`
-    /// returns an empty string — the run's own logs don't say which family
-    /// it ran in, so the commit picker uses the time window only.
-    var commitsPrefix: String {
-        switch self {
-        case .morningBriefing, .weekendBriefing: return "briefing"
-        case .consolidation: return "consolidation"
-        case .dreaming:      return "dreaming"
-        case .research:      return "research"
-        case .manual:        return ""
         }
     }
 }
