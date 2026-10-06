@@ -18,7 +18,7 @@
 - The gate before every commit: `.venv/bin/ruff check scout tests && .venv/bin/ruff format --check scout tests && .venv/bin/mypy scout` (run `ruff format scout tests` first to fix formatting).
 - Fixtures are public: use `Alex` / `alex@example.com`, servers `example_suite` / `claude.ai Example Suite` / `claude_ai_Example_Suite`, `example-org/<repo>`. No real server, workspace or person names (root `CLAUDE.md`).
 - **No test ever runs a real `claude`.** Every test injects a runner or stubs the binary on `PATH`. Task 1 is the only step that calls the real CLI, and the implementer runs it by hand.
-- `custom` subcommands always print exactly one JSON object and exit with a stable code. New statuses: `busy` (exit 4). Draft statuses and codes: `drafted` 0, `invalid` 2, `needs_auth` 3, `no_read_tools` 3, `timeout` 1, `error` 1.
+- `custom` subcommands always print exactly one JSON object and exit with a stable code. `busy` (exit 4) and `--no-wait` come from #324. Draft statuses and codes: `drafted` 0, `invalid` 2, `needs_auth` 3, `no_read_tools` 3, `timeout` 1, `error` 1.
 - The hard rule (from #261): no prose, output or message ever tells a user a tool "isn't supported", "can't be read" or "has no probe". A tool ends as **added**, **skipped by the user**, or **sign in first**.
 - Drafting calls use `--model sonnet` by default, `--tools ToolSearch`, `--disable-slash-commands`, `--no-session-persistence`, `--permission-mode dontAsk`, the prompt on **stdin**, and `cwd` = the system temp dir. Measured 2026-10-06: a bare `claude -p` loads ~51k tokens on Opus ($0.51 before a $0.05 cap stopped it; the cap is checked after the fact). With `--model haiku --tools ToolSearch --disable-slash-commands` it was 12.8k tokens and $0.026.
 - `claude -p --output-format json --json-schema …` returns an envelope with `is_error`, `subtype`, `total_cost_usd`, `result` (the JSON as text) and `structured_output` (the parsed object). Read `structured_output` first.
@@ -761,6 +761,7 @@ def test_keys_already_in_the_vault_are_taken(tmp_path):
 def test_prompt_template_carries_the_rules():
     text = cd.render_prompt(SERVER, plugin_root=PLUGIN, taken={"slack"})
     assert "+claude_ai_Example_Suite" in text and "1–4 read tools per activity" in text and "slack" in text
+    assert "on one line" in text and "markdown headings" in text  # #324's validator rules
     assert "{{" not in text
 
 
@@ -788,12 +789,13 @@ You are drafting Scout custom-connector definitions for one MCP server: {{SERVER
 2. Decide which surfaces the server covers. One server can be several connectors: a productivity suite can be mail, calendar and chat. Give each its own key.
 3. For each connector:
    - `key`: lowercase letters, digits and `_`, 2–32 characters, starting with a letter. Not one of: {{TAKEN_KEYS}}.
-   - `display_name`: what the user calls it.
+   - `display_name`: what the user calls it, on one line.
    - Activities. `inbound`: new things that may need the user's action. `outbound`: what the user did there; only where the tools record the user's own actions (mail sent, messages posted, tickets closed). `lookup`: something to query on demand, with a `when` sentence.
    - `tools`: 1–4 read tools per activity (search, list, get, read). Never a tool that sends, posts, creates, updates, deletes, moves, archives or marks anything.
    - `preset`: `mail`, `chat` or `calendar` when the surface is one of those, and then leave out `focus`/`when`. Otherwise write `focus` (inbound, outbound) or `when` (lookup): one or two sentences on what matters.
    - `probe`: the cheapest read tool (list folders, whoami, get profile).
    - `needs_user_input`: names (lowercase_with_underscores) of values only the user knows that the tools need, such as a workspace id. Usually empty.
+   - Free text (`focus`, `when`, `notes`) must not contain markdown headings (a line starting with `#`). Only use an `{{INPUT_<NAME>}}` placeholder for a name you declared in `needs_user_input`.
 4. `summary`: one entry per connector, with `scans` (what inbound and outbound scan, under ten words) and `looks_up` (what lookup answers, under ten words, or "nothing").
 5. If the server has no read tools at all, return `no_read_tools: true` with empty `definitions` and `summary`.
 
@@ -1051,257 +1053,15 @@ git commit -m "feat(connectors): custom draft — a locked-down headless draft, 
 
 ---
 
-### Task 5: `custom add|remove` — a `busy` status and `--no-wait`
+### Task 5: (dropped — requires #324)
 
-> **On hold (coordinator, 2026-10-06):** #321's owner may already have built this. Don't start until the coordination session confirms whether to reuse that work or do it here.
-
-**Files:**
-- Modify: `plugin/engine/scout/scripts/custom_connector_ops.py` (`_EXIT_CODES`, `_under_lock`, `add`, `_add`, `remove`, `_remove`)
-- Modify: `plugin/engine/scout/cli.py` (`cli_custom_add`, `cli_custom_remove`)
-- Test: `plugin/engine/tests/unit/test_custom_connector_busy.py`
-
-**Interfaces:**
-- Produces: `add(..., wait: bool = True)`, `remove(..., wait: bool = True)`; status `"busy"` with exit code 4; CLI flag `--no-wait` on `custom add` and `custom remove`.
-
-- [ ] **Step 1: Write the failing tests**
-
-```python
-"""custom add/remove report `busy` instead of a generic error; --no-wait answers at once (#321)."""
-
-from __future__ import annotations
-
-import json
-import os
-from pathlib import Path
-
-import pytest
-from typer.testing import CliRunner
-
-from scout.cli import app
-from scout.scripts import custom_connector_ops as ops
-from scout.scripts.bootstrap import BootstrapConfig, install
-from scout.scripts.bootstrap_lock import LockBusyError
-
-PLUGIN = Path(__file__).parent.parent.parent.parent
-SUITE = {
-    "key": "suite_mail",
-    "display_name": "Mail suite",
-    "server": "example_suite",
-    "probe": "mcp__example_suite__list_folders",
-    "preset": "mail",
-    "inbound": {"tools": ["mcp__example_suite__search_messages"]},
-}
-
-
-@pytest.fixture
-def vault(tmp_path: Path) -> Path:
-    v = tmp_path / "Scout"
-    install(
-        BootstrapConfig(
-            vault=v, plugin_root=PLUGIN, instance_name="TestScout", instance_name_lower="testscout",
-            user_name="Alex", user_email="alex@example.com", timezone="America/New_York", platform="macos",
-            plugin_version="0.0.0", enabled_connectors={"slack"}, connector_inputs={}, skip_jobs=True, skip_claude=True,
-        )
-    )
-    return v
-
-
-def _hold_lock(vault: Path) -> None:
-    lock = vault / ".scout-logs" / ".scout-session.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text(str(os.getpid()))  # a live pid: busy, never stale
-
-
-def test_no_wait_returns_busy_at_once(vault: Path):
-    _hold_lock(vault)
-    out = ops.add(vault, dict(SUITE), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={}, wait=False)
-    assert (out.status, out.exit_code) == ("busy", 4)
-    assert "session is running" in out.message
-
-
-def test_waiting_that_times_out_is_busy_too(vault: Path, monkeypatch: pytest.MonkeyPatch):
-    def timed_out(lock, **kw):
-        raise LockBusyError(lock, 4242)
-
-    monkeypatch.setattr(ops, "acquire_lock_with_wait", timed_out)
-    out = ops.add(vault, dict(SUITE), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={})
-    assert out.status == "busy"
-
-
-def test_remove_no_wait_is_busy(vault: Path):
-    ops.add(vault, dict(SUITE), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={})
-    _hold_lock(vault)
-    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0", wait=False)
-    assert out.status == "busy"
-
-
-def test_cli_no_wait(vault: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
-    _hold_lock(vault)
-    result = CliRunner().invoke(app, ["connectors", "custom", "add", "--file", "-", "--no-wait"], input=json.dumps(SUITE))
-    assert result.exit_code == 4
-    assert json.loads(result.stdout)["status"] == "busy"
-```
-
-- [ ] **Step 2: Run them to verify they fail**
-
-Run: `.venv/bin/pytest tests/unit/test_custom_connector_busy.py -q`
-Expected: FAIL with `TypeError: add() got an unexpected keyword argument 'wait'`.
-
-- [ ] **Step 3: Implement**
-
-In `custom_connector_ops.py`:
-
-1. Add `"busy": 4,` to `_EXIT_CODES`, and add `acquire_lock` to the `bootstrap_lock` import.
-2. Replace `_under_lock` with:
-
-```python
-def _under_lock(vault: Path, key: str, change: Callable[[], Outcome], *, wait: bool = True) -> Outcome:
-    """Run ``change`` holding the session lock.
-
-    ``change`` must do every read of vault state (scout-config.yaml,
-    connectors.custom.yaml, the snapshot) itself: a read made before the lock
-    is stale by the time a concurrent add/remove has committed, and writing
-    whole-file replacements from it would erase that other change.
-    ``wait=False`` answers ``busy`` at once instead of polling for up to 300 s.
-    """
-    lock = vault / ".scout-logs" / ".scout-session.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if wait:
-            acquire_lock_with_wait(lock)
-        else:
-            acquire_lock(lock)
-    except LockBusyError:
-        return Outcome("busy", key, message="A Scout session is running; try again when it finishes.")
-    try:
-        return change()
-    finally:
-        release_lock(lock)
-```
-
-3. Add a `wait: bool = True` keyword to `add`, `_add`, `remove` and `_remove`; pass it through each call, and end `_add` and `_remove` with `return _under_lock(vault, key, change, wait=wait)`.
-
-In `cli.py`, add to both `cli_custom_add` and `cli_custom_remove`:
-
-```python
-        no_wait: bool = typer.Option(False, "--no-wait", help="Answer `busy` at once if a Scout session holds the lock."),
-```
-
-and pass `wait=not no_wait` to `add(...)` and `remove(...)`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `.venv/bin/pytest tests/unit/test_custom_connector_busy.py tests/unit/test_custom_connector_ops.py -q`
-Expected: all PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-.venv/bin/ruff check scout tests && .venv/bin/ruff format scout tests && .venv/bin/mypy scout
-git add scout/scripts/custom_connector_ops.py scout/cli.py tests/unit/test_custom_connector_busy.py
-git commit -m "feat(connectors): custom add/remove say busy, and --no-wait answers at once"
-```
+`custom add|remove` → `busy` (exit 4) plus `--no-wait` is built in Raven-Scout/Scout#324 (its Task 1, plan `docs/superpowers/plans/2026-10-06-custom-connectors-hardening.md`). Nothing to do here. Phase 1 rebases onto #324 once it merges; Task 8's `apply_drafts` only reads the `busy` status string, so it doesn't wait on that code.
 
 ---
 
-### Task 6: `custom list` returns full definitions
+### Task 6: (dropped — requires #324)
 
-> **On hold (coordinator, 2026-10-06):** same as Task 5.
-
-**Files:**
-- Modify: `plugin/engine/scout/scripts/custom_connector_ops.py` (`_list_custom`)
-- Modify: `plugin/engine/tests/unit/test_custom_connector_ops.py` (`test_list_custom_reports_definitions_and_issues`)
-
-**Interfaces:**
-- Produces: each valid row gains `"valid": True`, `"probe": str`, `"tools": {activity: [str]}`, `"guidance": {activity: str}`, `"needs_user_input": [str]`, `"required_in_types": [str]`, `"notes": str`. Each invalid entry in `connectors.custom.yaml` becomes a row `{"key": k, "valid": False, "enabled": bool, "issues": [{"path", "message"}]}`. The top-level `issues` list is unchanged.
-
-- [ ] **Step 1: Update the existing test (it fails first)**
-
-Replace the body of `test_list_custom_reports_definitions_and_issues` from `row = listing["connectors"][0]` on with:
-
-```python
-    row = next(r for r in listing["connectors"] if r["key"] == "suite_mail")
-    assert row == {
-        "key": "suite_mail",
-        "valid": True,
-        "display_name": "Mail suite",
-        "enabled": True,
-        "server": "example_suite",
-        "health_key": "mcp:example_suite",
-        "preset": "mail",
-        "activities": ["inbound"],
-        "probe": "mcp__example_suite__list_folders",
-        "tools": {"inbound": ["mcp__example_suite__search_messages"]},
-        "guidance": {"inbound": row["guidance"]["inbound"]},
-        "needs_user_input": [],
-        "required_in_types": [],
-        "notes": "",
-    }
-    assert row["guidance"]["inbound"]  # the mail preset's text
-    broken = next(r for r in listing["connectors"] if r["key"] == "broken")
-    assert broken["valid"] is False and broken["enabled"] is False
-    assert broken["issues"] and all(i["path"].startswith("connectors.broken") for i in broken["issues"])
-    assert any(i["path"].startswith("connectors.broken") for i in listing["issues"])
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `.venv/bin/pytest tests/unit/test_custom_connector_ops.py::test_list_custom_reports_definitions_and_issues -q`
-Expected: FAIL (the row has no `valid` key).
-
-- [ ] **Step 3: Implement**
-
-Replace the `rows = [...]` block and the return in `_list_custom` with:
-
-```python
-    rows: list[dict[str, Any]] = [
-        {
-            "key": c.key,
-            "valid": True,
-            "display_name": c.display_name,
-            "enabled": c.key in enabled,
-            "server": c.server,
-            "health_key": c.health_key,
-            "preset": c.preset,
-            "activities": [a for a in cc.ACTIVITIES if a in c.activities],
-            "probe": c.probe.value,
-            "tools": {a: [t.value for t in c.activities[a].tools] for a in cc.ACTIVITIES if a in c.activities},
-            "guidance": {a: c.activities[a].guidance for a in cc.ACTIVITIES if a in c.activities},
-            "needs_user_input": list(c.needs_user_input),
-            "required_in_types": list(c.required_in_types),
-            "notes": c.notes,
-        }
-        for c in current.connectors.values()
-    ]
-    for key in current.raw:
-        if key not in current.connectors:
-            prefix = f"connectors.{key}"
-            mine = [i for i in current.issues if i.path == prefix or i.path.startswith(prefix + ".")]
-            rows.append(
-                {
-                    "key": key,
-                    "valid": False,
-                    "enabled": key in enabled,
-                    "issues": [{"path": i.path, "message": i.message} for i in mine],
-                }
-            )
-    rows.sort(key=lambda r: r["key"])
-    return {"connectors": rows, "issues": [{"path": i.path, "message": i.message} for i in issues]}
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `.venv/bin/pytest tests/unit/test_custom_connector_ops.py -q`
-Expected: all PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-.venv/bin/ruff check scout tests && .venv/bin/ruff format scout tests && .venv/bin/mypy scout
-git add scout/scripts/custom_connector_ops.py tests/unit/test_custom_connector_ops.py
-git commit -m "feat(connectors): custom list returns full definitions and invalid rows"
-```
+`custom list` with full definitions and invalid-entry rows is #324's Task 2. Its row shape (`"valid"`, `"definition"` = the entry exactly as in the file, invalid rows with `"issues"`) is the contract; the app plan reads that shape.
 
 ---
 
@@ -2262,7 +2022,7 @@ In `cli.py`, inside `_register_connectors()`, after `cli_connectors_uncovered`:
 Under `## [Unreleased]` → `### Added` in `plugin/CHANGELOG.md`:
 
 ```markdown
-- **`scoutctl setup`, a terminal setup wizard** (`engine/scout/setup_wizard.py`, `engine/scout/cli.py`) — asks what `/scout-setup` asked (name, email, timezone, connectors, budget), then runs `bootstrap auto` in-process; on an existing vault it upgrades without questions. `--yes` with `--name`/`--email` runs it headless. Every other tool you have connected is offered too: **`scoutctl connectors uncovered`** lists connected MCP servers no connector reads (no LLM), and **`scoutctl connectors custom draft --server NAME`** drafts their definitions through a locked-down headless `claude -p` (`--permission-mode dontAsk`, ToolSearch only), which the engine then checks: only that server's tools, no tool that writes. Kept drafts are added with `custom add` after the vault exists. **`scoutctl connectors setup`** does the same for an existing vault. `custom add|remove` now answer `busy` (exit 4) instead of a generic error while a session holds the lock, and `--no-wait` answers at once; `custom list` returns full definitions and invalid entries as rows. (#326, #321)
+- **`scoutctl setup`, a terminal setup wizard** (`engine/scout/setup_wizard.py`, `engine/scout/cli.py`) — asks what `/scout-setup` asked (name, email, timezone, connectors, budget), then runs `bootstrap auto` in-process; on an existing vault it upgrades without questions. `--yes` with `--name`/`--email` runs it headless. Every other tool you have connected is offered too: **`scoutctl connectors uncovered`** lists connected MCP servers no connector reads (no LLM), and **`scoutctl connectors custom draft --server NAME`** drafts their definitions through a locked-down headless `claude -p` (`--permission-mode dontAsk`, ToolSearch only), which the engine then checks: only that server's tools, no tool that writes. Kept drafts are added with `custom add` after the vault exists. **`scoutctl connectors setup`** does the same for an existing vault. (#326, #321)
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -2280,7 +2040,7 @@ Expected: all PASS.
 git add scout/setup_wizard.py scout/cli.py tests/unit/test_setup_wizard_uncovered.py ../CHANGELOG.md
 git commit -m "feat(setup): offer every uncovered server; scoutctl connectors setup"
 git push -u origin HEAD
-gh pr create --repo Raven-Scout/Scout --draft --title "feat(setup): scoutctl setup + connector drafting (setup retirement, phase 1)" --body "Phase 1 of docs/superpowers/plans/2026-10-06-scout-setup-retirement.md (spec #326). Unblocks #321's app contract."
+gh pr create --repo Raven-Scout/Scout --draft --title "feat(setup): scoutctl setup + connector drafting (setup retirement, phase 1)" --body "Phase 1 of docs/superpowers/plans/2026-10-06-scout-setup-retirement.md (spec #326). Builds on #324 (busy/--no-wait, full custom list); rebase once it merges."
 ```
 
 ---
