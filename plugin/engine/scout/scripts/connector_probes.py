@@ -144,11 +144,20 @@ def resolve_registry(
 
 
 def _custom_probes(data_dir: Path, plugin_root: Path) -> dict[str, Probe]:
-    """Probes derived from connectors.custom.yaml. Invalid entries are skipped, never raised."""
-    from scout.custom_connectors import load
+    """Probes derived from connectors.custom.yaml for connectors in connectors.enabled.
 
+    Invalid entries are skipped, never raised. A missing/unreadable/malformed
+    scout-config.yaml makes ``enabled_keys`` return an empty set, so this fails
+    closed to "no custom probes" rather than probing a connector we can't confirm
+    is enabled.
+    """
+    from scout.custom_connectors import enabled_keys, load
+
+    enabled = enabled_keys(data_dir)
     out: dict[str, Probe] = {}
     for key, c in load(data_dir, plugin_root=plugin_root).connectors.items():
+        if key not in enabled:
+            continue
         needs = list(c.needs_user_input)
         if c.probe.kind == "bash":
             out[key] = Probe(name=key, kind=ProbeKind.BASH, bash_command=c.probe.value, needs_user_input=needs)

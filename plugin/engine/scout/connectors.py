@@ -153,13 +153,17 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
     """Roster rows derived from ``<data_dir>/connectors.custom.yaml`` (custom-connectors spec §5).
 
     One row per MCP server (keyed ``mcp:<server>``, matching connector_log.classify)
-    and one per bash-only connector. Never raises: a broken custom file must not take
-    connector health down with it (bootstrap doctor reports the file instead).
+    and one per bash-only connector. Only connectors whose own key is in the vault's
+    ``connectors.enabled`` (scout-config.yaml) are included — a defined-but-disabled
+    custom connector gets no health row. Never raises: a broken custom file or a
+    broken scout-config.yaml must not take connector health down with it (bootstrap
+    doctor reports the file instead); either fails closed to "no custom rows".
     """
     try:
-        from scout.custom_connectors import load
+        from scout.custom_connectors import enabled_keys, is_generic_binary, load
 
-        connectors = load(data_dir).connectors
+        enabled = enabled_keys(data_dir)
+        connectors = {key: c for key, c in load(data_dir).connectors.items() if key in enabled}
     except Exception:
         return {}
     grouped: dict[str, list[Any]] = {}
@@ -172,11 +176,20 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
         if health_key.startswith("mcp:"):
             first_fix = f"Reconnect {names} at https://claude.ai/settings/connectors (or /mcp for a local server)."
         else:
-            binary = members[0].probe.binary or members[0].key
-            first_fix = (
-                f"Check that `{binary}` runs in a terminal, then re-add {members[0].key} "
-                "with `scoutctl connectors custom add --file <definition>`."
-            )
+            binary = members[0].probe.binary
+            if is_generic_binary(binary):
+                # `binary` is too generic (or absent) to mean anything: telling the
+                # user to "check that `curl` runs" doesn't diagnose *this*
+                # connector, since curl always runs. Name the connector instead.
+                first_fix = (
+                    f"Check that {names}'s command works in a terminal, then re-add it "
+                    "with `scoutctl connectors custom add --file <definition>`."
+                )
+            else:
+                first_fix = (
+                    f"Check that `{binary}` runs in a terminal, then re-add {members[0].key} "
+                    "with `scoutctl connectors custom add --file <definition>`."
+                )
         rows[health_key] = {
             "display_name": names,
             "tier": "custom",

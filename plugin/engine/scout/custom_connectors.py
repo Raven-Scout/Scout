@@ -56,8 +56,22 @@ _GENERIC_BINARIES = frozenset(
         "uvx",
         "jq",
         "git",
+        "osascript",
+        "npm",
+        "docker",
+        "ssh",
+        "open",
+        "echo",
+        "cat",
+        "printf",
     }
 )
+
+# Wrapper commands whose own name is not the connector being called — the real
+# binary is the next real word. Matched anywhere `first_binary` walks tokens,
+# so `timeout 10 tixcli list` reads as `tixcli`, not `timeout`.
+_WRAPPERS = frozenset({"env", "sudo", "nice", "nohup", "exec", "command", "time", "timeout", "xargs", "caffeinate"})
+_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 _HEADER = (
     "# Custom connectors — managed by `scoutctl connectors custom add/remove`.\n"
     "# Hand edits take effect at the next `scoutctl bootstrap upgrade` (or /scout-update);\n"
@@ -118,12 +132,42 @@ class CustomLoad:
 
 
 def first_binary(cmd: str) -> str | None:
-    """Basename of the first command word, skipping ``FOO=bar`` prefixes."""
+    """Basename of the first real command word.
+
+    Skips ``FOO=bar`` assignments, wrapper commands in ``_WRAPPERS`` (so
+    ``timeout 10 tixcli list`` reads as ``tixcli``, not ``timeout``), bare
+    option tokens (``-x``), the duration argument right after ``timeout``, and
+    the numeric argument right after ``nice -n``.
+
+    Known limit: an option's own value is not otherwise skipped — ``sudo -u
+    alex tix x`` reads ``alex``, not ``tix``.
+    """
     tokens = cmd.split()
     idx = 0
-    while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if "=" in tok and not tok.startswith("-"):
+            idx += 1
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        base = tok.rsplit("/", 1)[-1]
+        if base not in _WRAPPERS:
+            return base
         idx += 1
-    return tokens[idx].rsplit("/", 1)[-1] if idx < len(tokens) else None
+        if base == "timeout" and idx < len(tokens) and _DURATION_RE.match(tokens[idx]):
+            idx += 1
+        elif base == "nice" and idx < len(tokens) and tokens[idx] == "-n":
+            idx += 2  # `-n` and its value
+    return None
+
+
+def is_generic_binary(name: str | None) -> bool:
+    """True when ``name`` is too generic to identify a connector — including ``None``
+    (e.g. a probe command that is nothing but a wrapper, with no real command after
+    it). Used to decide whether remediation can honestly name a specific binary."""
+    return name is None or name in _GENERIC_BINARIES
 
 
 def _tool_ref(value: Any, path: str, issues: list[Issue]) -> ToolRef | None:
@@ -152,6 +196,18 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
+_HEADING_LINE_RE = re.compile(r"^#(#| )")
+_HEADING_MESSAGE = "must not contain markdown headings; they would break the brain file's structure"
+_INPUT_PLACEHOLDER_RE = re.compile(r"\{\{(INPUT_\w+)\}\}")
+
+
+def _has_markdown_heading(text: str) -> bool:
+    """True when any line, after ``lstrip``, starts with ``#`` followed by a space or
+    another ``#`` — a markdown heading. A ``#`` elsewhere on the line (mid-line, or a
+    bare trailing ``#`` with nothing after it) is not a heading."""
+    return any(_HEADING_LINE_RE.match(line.lstrip()) for line in text.splitlines())
+
+
 def parse_connector(
     key: str, body: Any, *, reserved: set[str], presets: dict[str, dict[str, str]]
 ) -> tuple[CustomConnector | None, list[Issue]]:
@@ -178,6 +234,8 @@ def parse_connector(
     if not isinstance(display_name, str) or not display_name.strip():
         issues.append(Issue(f"{base}.display_name", "required"))
         display_name = ""
+    elif "\n" in display_name or "\r" in display_name:
+        issues.append(Issue(f"{base}.display_name", "must be a single line"))
 
     probe: ToolRef | None = None
     if "probe" in body:
@@ -213,11 +271,16 @@ def parse_connector(
             continue
         tools = [_tool_ref(t, f"{apath}.tools[{i}]", issues) for i, t in enumerate(raw_tools)]
         guidance = block.get(gfield)
+        explicit_guidance = guidance is not None
         if guidance is None and preset is not None:
             guidance = presets[preset].get(name)
         if not isinstance(guidance, str) or not guidance.strip():
             msg = "required (a sentence on what matters) unless a preset supplies it"
             issues.append(Issue(f"{apath}.{gfield}", msg))
+            continue
+        # Preset text is shipped and trusted; only explicit text is sanitized.
+        if explicit_guidance and _has_markdown_heading(guidance):
+            issues.append(Issue(f"{apath}.{gfield}", _HEADING_MESSAGE))
             continue
         valid_tools = tuple(t for t in tools if t is not None)
         if len(valid_tools) == len(tools):
@@ -262,6 +325,20 @@ def parse_connector(
     if not isinstance(notes, str):
         issues.append(Issue(f"{base}.notes", "must be text"))
         notes = ""
+    elif _has_markdown_heading(notes):
+        issues.append(Issue(f"{base}.notes", _HEADING_MESSAGE))
+
+    declared_inputs = {n.lower() for n in needs}
+    seen_placeholders: set[str] = set()
+    for s in _strings(body):
+        for match in _INPUT_PLACEHOLDER_RE.finditer(s):
+            placeholder = match.group(1)
+            name = placeholder[len("INPUT_") :].lower()
+            if name in declared_inputs or placeholder in seen_placeholders:
+                continue
+            seen_placeholders.add(placeholder)
+            msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
+            issues.append(Issue(f"{base}.needs_user_input", msg))
 
     if issues or probe is None:
         return None, issues
@@ -370,6 +447,31 @@ def write(vault: Path, raw_connectors: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(dump(raw_connectors), encoding="utf-8")
     tmp.replace(path)
+
+
+def enabled_keys(vault: Path) -> set[str]:
+    """Keys listed under ``connectors.enabled`` in ``<vault>/scout-config.yaml``.
+
+    Read tolerantly: a missing file, unreadable file, malformed YAML, or any
+    wrong shape (not a mapping, ``connectors`` not a mapping, ``enabled`` not a
+    list) yields an empty set rather than raising. Callers use this to decide
+    whether a custom connector's roster row or probe should exist at all, so
+    this fails *closed* — an empty set hides every custom row/probe rather than
+    showing one Scout cannot confirm is enabled. Never raises.
+    """
+    try:
+        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    connectors = raw.get("connectors")
+    if not isinstance(connectors, dict):
+        return set()
+    enabled = connectors.get("enabled")
+    if not isinstance(enabled, list):
+        return set()
+    return {k for k in enabled if isinstance(k, str)}
 
 
 def bash_binaries(vault: Path) -> dict[str, str]:
