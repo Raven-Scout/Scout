@@ -179,8 +179,10 @@ in one folder.
 /// frontmatter. nil when the task has no tag, the file is missing, or it
 /// can't be read as UTF-8.
 nonisolated enum TaskContextNote {
-    static func url(for tag: String, actionItemsDirectory: URL) -> URL?
-    static func load(tag: String?, actionItemsDirectory: URL) -> String?
+    /// `scoutDirectory` is the vault root every action-items view already
+    /// holds; the note lives at `<vault>/action-items/context/<TAG>.md`.
+    static func url(for tag: String, scoutDirectory: URL) -> URL?
+    static func load(tag: String?, scoutDirectory: URL) -> String?
 }
 ```
 
