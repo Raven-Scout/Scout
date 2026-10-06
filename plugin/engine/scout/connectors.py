@@ -153,13 +153,17 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
     """Roster rows derived from ``<data_dir>/connectors.custom.yaml`` (custom-connectors spec §5).
 
     One row per MCP server (keyed ``mcp:<server>``, matching connector_log.classify)
-    and one per bash-only connector. Never raises: a broken custom file must not take
-    connector health down with it (bootstrap doctor reports the file instead).
+    and one per bash-only connector. Only connectors whose own key is in the vault's
+    ``connectors.enabled`` (scout-config.yaml) are included — a defined-but-disabled
+    custom connector gets no health row. Never raises: a broken custom file or a
+    broken scout-config.yaml must not take connector health down with it (bootstrap
+    doctor reports the file instead); either fails closed to "no custom rows".
     """
     try:
-        from scout.custom_connectors import load
+        from scout.custom_connectors import enabled_keys, load
 
-        connectors = load(data_dir).connectors
+        enabled = enabled_keys(data_dir)
+        connectors = {key: c for key, c in load(data_dir).connectors.items() if key in enabled}
     except Exception:
         return {}
     grouped: dict[str, list[Any]] = {}

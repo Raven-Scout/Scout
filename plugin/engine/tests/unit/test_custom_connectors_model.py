@@ -228,3 +228,29 @@ def test_bash_binaries_maps_probe_and_tools_and_skips_generic(tmp_path: Path):
 def test_bash_binaries_tolerates_garbage(tmp_path: Path):
     (tmp_path / cc.CUSTOM_FILE).write_text(":::\n")
     assert cc.bash_binaries(tmp_path) == {}
+
+
+def test_enabled_keys_reads_connectors_enabled(tmp_path: Path):
+    (tmp_path / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": {"enabled": ["tickets", "suite_mail"]}}))
+    assert cc.enabled_keys(tmp_path) == {"tickets", "suite_mail"}
+
+
+@pytest.mark.parametrize(
+    "write_config",
+    [
+        lambda p: None,  # missing file
+        lambda p: (p / "scout-config.yaml").write_text("connectors: [unclosed\n"),  # unparseable
+        lambda p: (p / "scout-config.yaml").write_text("- a\n- b\n"),  # not a mapping at top level
+        lambda p: (p / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": "nope"})),  # connectors not a map
+        lambda p: (p / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": {"enabled": "tickets"}})),
+        lambda p: (p / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": {}})),  # no 'enabled' key
+    ],
+)
+def test_enabled_keys_fails_closed_on_missing_or_malformed_config(tmp_path: Path, write_config):
+    write_config(tmp_path)
+    assert cc.enabled_keys(tmp_path) == set()
+
+
+def test_enabled_keys_ignores_non_string_entries(tmp_path: Path):
+    (tmp_path / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": {"enabled": ["tickets", 5, None]}}))
+    assert cc.enabled_keys(tmp_path) == {"tickets"}

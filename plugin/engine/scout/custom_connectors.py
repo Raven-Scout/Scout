@@ -372,6 +372,31 @@ def write(vault: Path, raw_connectors: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def enabled_keys(vault: Path) -> set[str]:
+    """Keys listed under ``connectors.enabled`` in ``<vault>/scout-config.yaml``.
+
+    Read tolerantly: a missing file, unreadable file, malformed YAML, or any
+    wrong shape (not a mapping, ``connectors`` not a mapping, ``enabled`` not a
+    list) yields an empty set rather than raising. Callers use this to decide
+    whether a custom connector's roster row or probe should exist at all, so
+    this fails *closed* — an empty set hides every custom row/probe rather than
+    showing one Scout cannot confirm is enabled. Never raises.
+    """
+    try:
+        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    connectors = raw.get("connectors")
+    if not isinstance(connectors, dict):
+        return set()
+    enabled = connectors.get("enabled")
+    if not isinstance(enabled, list):
+        return set()
+    return {k for k in enabled if isinstance(k, str)}
+
+
 def bash_binaries(vault: Path) -> dict[str, str]:
     """Binary → connector key for every bash probe/tool. Unvalidated and never raises (hook path)."""
     try:
