@@ -69,8 +69,26 @@ struct EngineLocatorTests {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }
         try pointer(layout, version: "0.10.0", managedBy: "scout-app")
-        guard case .broken(_, let reason) = EngineLocator(layout: layout).locate() else { Issue.record("expected .broken"); return }
+        let state = EngineLocator(layout: layout).locate()
+        guard case .broken(let install, let reason) = state else { Issue.record("expected .broken"); return }
         #expect(reason.contains("scoutctl"))
+        #expect(install?.managedBy == "scout-app")
+        #expect(!state.isBrokenOutsideApp && state.gatesTabs)   // the app's own: onboarding repairs it
+    }
+
+    /// Ruling 69 I6: a broken pointer another installer wrote is external —
+    /// never gated into onboarding (whose `bootstrap auto --managed-by
+    /// scout-app` would take it over).
+    @Test(arguments: ["dev", "install.sh", "claude-code"])
+    func brokenPointerFromAnotherManagerIsNotGated(managedBy: String) throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pointer(layout, version: "0.10.0", managedBy: managedBy)
+        let state = EngineLocator(layout: layout).locate()
+        guard case .broken(let install, _) = state else { Issue.record("expected .broken"); return }
+        #expect(install?.managedBy == managedBy)
+        #expect(state.isBrokenOutsideApp)
+        #expect(!state.gatesTabs)
     }
 
     @Test func conventionalLayoutWithoutPointerIsManagedButNotBootstrapped() throws {

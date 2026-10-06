@@ -312,6 +312,20 @@ actor EngineInstaller {
             try await runClaude(ClaudeCodeCLI.pluginInstall)
             notes.append("plugin installed (restart Claude Code to load it)")
         }
+        // Postcondition (Ruling 69 I2): exit 0 isn't proof. A marketplace
+        // Claude Code recorded by realpath (`engine/<old>`, accepted by
+        // Ruling 53) re-reads the OLD tree on `marketplace update`, and
+        // `plugin update` then succeeds without moving anything.
+        let loaded = ClaudePluginsRegistry.scoutPlugin(pluginsDir: layout.claudePluginsDir)
+        guard loaded?.version == version else {
+            let recorded: String
+            if case .directory(let path)? = ClaudePluginsRegistry.scoutMarketplace(pluginsDir: layout.claudePluginsDir)?.source {
+                recorded = path
+            } else {
+                recorded = "its '\(ClaudePluginsRegistry.scoutMarketplaceName)' marketplace"
+            }
+            throw Failure(description: "Claude Code still loads scout \(loaded?.version ?? "(not installed)") from \(recorded), not \(version)")
+        }
         return notes.joined(separator: "; ")
     }
 

@@ -359,8 +359,6 @@ struct OnboardingViewModelTests {
 
     func engineModel(_ support: EngineInstallerTests, _ f: EngineInstallerTests.Fixture,
                      engineState: EngineState = .notInstalled) -> OnboardingViewModel {
-        f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "add"])
-        f.runner.on(tool: "claude", prefix: ["plugin", "install"])
         let m = model(engineState: engineState, layout: f.layout, release: f.release, runner: f.runner,
                       makeInstaller: { sink in support.installer(f, sink: sink) })
         m.prerequisites = Prerequisites(claude: .installed(path: f.claude, version: "2.1.259"), auth: .signedIn,

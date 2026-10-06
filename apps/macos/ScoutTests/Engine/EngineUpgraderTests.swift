@@ -42,6 +42,59 @@ struct EngineUpgraderTests {
         #expect(!EngineUpgrader.needsUpgrade(state: .managed(unversioned, vaultBootstrapped: true), bundledVersion: "0.11.0"))
     }
 
+    func writeRegistry(_ l: EngineLayout, marketplacePath: String?, pluginVersion: String?) throws {
+        try fm.createDirectory(at: l.claudePluginsDir, withIntermediateDirectories: true)
+        if let marketplacePath {
+            try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(marketplacePath)"}}}"#
+                .write(to: l.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
+        }
+        if let pluginVersion {
+            try #"{"plugins": {"scout@scout-plugin": [{"version": "\#(pluginVersion)", "installPath": "\#(l.currentEngineLink.path)"}]}}"#
+                .write(to: l.claudePluginsDir.appendingPathComponent("installed_plugins.json"), atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Ruling 69 I1: after `bootstrap upgrade` rewrote the pointer to the new
+    /// version, the switch is unfinished until `current` resolves to that
+    /// root AND Claude Code's scout plugin is that version.
+    @Test func unfinishedSwitchNeedsCurrentAndThePluginOnThePointersVersion() throws {
+        let l = try layout()
+        defer { try? fm.removeItem(at: l.home) }
+        let up = EngineUpgrader(layout: l, release: release("0.11.0"))
+        let state = EngineState.managed(install("0.11.0", l: l), vaultBootstrapped: true)
+        for v in ["0.10.0", "0.11.0"] { try fm.createDirectory(at: l.engineRoot(version: v), withIntermediateDirectories: true) }
+
+        #expect(up.hasUnfinishedSwitch(state: state))                     // no `current`, no plugin
+        try fm.createSymbolicLink(at: l.currentEngineLink, withDestinationURL: l.engineRoot(version: "0.10.0"))
+        try writeRegistry(l, marketplacePath: l.currentEngineLink.path, pluginVersion: "0.11.0")
+        #expect(up.hasUnfinishedSwitch(state: state))                     // `current` still on the old root
+        try fm.removeItem(at: l.currentEngineLink)
+        try fm.createSymbolicLink(at: l.currentEngineLink, withDestinationURL: l.engineRoot(version: "0.11.0"))
+        try writeRegistry(l, marketplacePath: nil, pluginVersion: "0.10.0")
+        #expect(up.hasUnfinishedSwitch(state: state))                     // Claude Code still on the old plugin
+        try writeRegistry(l, marketplacePath: nil, pluginVersion: "0.11.0")
+        #expect(!up.hasUnfinishedSwitch(state: state))                    // finished
+        #expect(!up.hasUnfinishedSwitch(state: .managed(install("0.11.0", l: l), vaultBootstrapped: false)))
+        #expect(!up.hasUnfinishedSwitch(state: .external(install("0.10.0", l: l), .devCheckout)))
+    }
+
+    /// Ruling 69 I2: GC never deletes the engine Claude Code's marketplace
+    /// actually points at — e.g. a realpath-recorded `engine/0.9.0`.
+    @Test func garbageCollectProtectsTheMarketplacesRecordedVersion() throws {
+        let l = try layout()
+        defer { try? fm.removeItem(at: l.home) }
+        for v in ["0.8.0", "0.9.0", "0.10.0", "0.11.0"] {
+            try fm.createDirectory(at: l.engineRoot(version: v), withIntermediateDirectories: true)
+            try fm.createDirectory(at: l.venv(version: v), withIntermediateDirectories: true)
+        }
+        try fm.createSymbolicLink(at: l.currentEngineLink, withDestinationURL: l.engineRoot(version: "0.11.0"))
+        try writeRegistry(l, marketplacePath: l.engineRoot(version: "0.9.0").path, pluginVersion: nil)
+        let removed = try EngineUpgrader(layout: l, release: release("0.11.0")).garbageCollect(keeping: "0.11.0")
+        #expect(removed == ["0.8.0"])
+        #expect(fm.fileExists(atPath: l.engineRoot(version: "0.9.0").path))
+        #expect(fm.fileExists(atPath: l.engineRoot(version: "0.10.0").path))
+    }
+
     @Test func garbageCollectKeepsCurrentAndOnePrevious() throws {
         let l = try layout()
         defer { try? fm.removeItem(at: l.home) }

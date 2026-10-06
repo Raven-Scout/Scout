@@ -11,6 +11,8 @@ struct EngineInstallerTests {
         let release: EngineRelease
         let tarball: URL
         let runner: RuleBasedRunner
+        /// Simulated Claude Code registry (installed on `runner` by `fixture`).
+        var claudeCode: FakeClaudeCode? = nil
         let claude = URL(fileURLWithPath: "/Users/alex/.local/bin/claude")
     }
 
@@ -38,6 +40,10 @@ struct EngineInstallerTests {
         try "#!/bin/sh\n".write(to: layout.uvURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: layout.uvURL.path)
         let runner = RuleBasedRunner()
+        // Claude Code first: it records marketplaces and installs whatever
+        // version the recorded marketplace resolves to (Ruling 69 I2).
+        let claudeCode = FakeClaudeCode(pluginsDir: layout.claudePluginsDir)
+        claudeCode.install(on: runner)
         // Real tar for extraction; everything else is scripted.
         runner.on({ url, _ in url.path == "/usr/bin/tar" }) { url, args, _ in
             try await SystemProcessRunner().run(executable: url, arguments: args, environment: [:], workingDirectory: nil)
@@ -53,7 +59,7 @@ struct EngineInstallerTests {
             let venvVersion = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
             return ProcessResult(exitCode: 0, stdout: Data("\(venvVersion)\n".utf8), stderr: Data())
         })
-        return Fixture(layout: layout, release: release, tarball: tarball, runner: runner)
+        return Fixture(layout: layout, release: release, tarball: tarball, runner: runner, claudeCode: claudeCode)
     }
 
     /// The release a second, newer tarball ships — for upgrade tests.
@@ -91,8 +97,6 @@ struct EngineInstallerTests {
     @Test func unpackBuildRegisterProducesTheCanonicalLayout() async throws {
         let f = try fixture()
         defer { try? fm.removeItem(at: f.layout.home) }
-        f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "add"])
-        f.runner.on(tool: "claude", prefix: ["plugin", "install"])
         let ok = await installer(f) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f.layout.home.appendingPathComponent("Scout")))
         #expect(ok)
         #expect(fm.fileExists(atPath: f.layout.engineRoot(version: "0.10.0").appendingPathComponent(".claude-plugin/plugin.json").path))
@@ -133,7 +137,6 @@ struct EngineInstallerTests {
     @Test func upgradeUnpacksAlongsideAndOnlyRegisterRepointsCurrent() async throws {
         let f10 = try fixture(version: "0.10.0")
         defer { try? fm.removeItem(at: f10.layout.home) }
-        f10.runner.on(tool: "claude", prefix: ["plugin"])
         let ok10 = await installer(f10) { _ in }.run(steps: [.unpackEngine, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
         #expect(ok10)
         #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.10.0").path)
@@ -152,22 +155,17 @@ struct EngineInstallerTests {
         #expect(!fm.fileExists(atPath: f10.layout.engineDir.appendingPathComponent("current.tmp").path))
     }
 
-    /// Installs 0.10.0 the way onboarding does, records Claude Code's
-    /// registry as it would then look (our directory marketplace at
-    /// `current`, the plugin installed), and returns a fixture for 0.11.0
-    /// on the same home and runner.
+    /// Installs 0.10.0 the way onboarding does — the simulated Claude Code
+    /// then holds our directory marketplace at `current` and the plugin at
+    /// 0.10.0 — and returns a fixture for 0.11.0 on the same home and runner.
     func installedThenUpgradeFixture(venvBuildFails: Bool = false) async throws -> (old: Fixture, new: Fixture) {
         let f10 = try fixture(version: "0.10.0")
-        f10.runner.on(tool: "claude", prefix: ["plugin"])
         let ok = await installer(f10) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
         #expect(ok)
-        try fm.createDirectory(at: f10.layout.claudePluginsDir, withIntermediateDirectories: true)
-        try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(f10.layout.currentEngineLink.path)"}}}"#
-            .write(to: f10.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
-        try #"{"plugins": {"scout@scout-plugin": [{"version": "0.10.0", "installPath": "\#(f10.layout.currentEngineLink.path)"}]}}"#
-            .write(to: f10.layout.claudePluginsDir.appendingPathComponent("installed_plugins.json"), atomically: true, encoding: .utf8)
+        #expect(ClaudePluginsRegistry.scoutMarketplace(pluginsDir: f10.layout.claudePluginsDir)?.source == .directory(path: f10.layout.currentEngineLink.path))
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f10.layout.claudePluginsDir)?.version == "0.10.0")
         let tarball11 = try buildTarball(version: "0.11.0", in: f10.layout.home, venvBuildFails: venvBuildFails)
-        return (f10, Fixture(layout: f10.layout, release: release("0.11.0", uv: f10.release.uv), tarball: tarball11, runner: f10.runner))
+        return (f10, Fixture(layout: f10.layout, release: release("0.11.0", uv: f10.release.uv), tarball: tarball11, runner: f10.runner, claudeCode: f10.claudeCode))
     }
 
     /// Ruling 68: a failed upgrade must leave the old engine fully live —
@@ -214,6 +212,42 @@ struct EngineInstallerTests {
         #expect(fm.fileExists(atPath: f10.layout.engineRoot(version: "0.10.0").path))
     }
 
+    /// Ruling 69 I2: a marketplace Claude Code recorded by realpath
+    /// (`engine/0.10.0`, accepted as ours by Ruling 53) keeps loading the old
+    /// tree after `marketplace update` + `plugin update` exit 0 — the
+    /// register step must notice and fail instead of reporting success.
+    @Test func registerFailsWhenClaudeCodeStillLoadsTheOldVersion() async throws {
+        let (f10, f11) = try await installedThenUpgradeFixture()
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        let realpath = f10.layout.engineRoot(version: "0.10.0").path
+        try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(realpath)"}}}"#
+            .write(to: f10.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
+        let seen = ProgressRecorder()
+        let ok = await installer(f11) { seen.append($0) }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(!ok)
+        guard case .failed(let why)? = seen.all.last?.status, seen.all.last?.step == .registerWithClaudeCode else {
+            Issue.record("expected register to fail"); return
+        }
+        #expect(why.contains("Claude Code still loads scout 0.10.0 from \(realpath)"))
+        #expect(f11.runner.calls(to: "claude").suffix(2) == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginUpdate])
+    }
+
+    /// Ruling 69 I1/M6: a register failure after the switch leaves `current`
+    /// on the new version but Claude Code on the old plugin — and re-running
+    /// register finishes it.
+    @Test func aRegisterFailureAfterTheRepointIsFinishedByARerun() async throws {
+        let (f10, f11) = try await installedThenUpgradeFixture()
+        defer { try? fm.removeItem(at: f10.layout.home) }
+        f11.claudeCode?.failNext(ClaudeCodeCLI.marketplaceUpdate)
+        let first = await installer(f11) { _ in }.run(steps: [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(!first)
+        #expect(try fm.destinationOfSymbolicLink(atPath: f10.layout.currentEngineLink.path) == f10.layout.engineRoot(version: "0.11.0").path)
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f10.layout.claudePluginsDir)?.version == "0.10.0")
+        let second = await installer(f11) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f10.layout.home))
+        #expect(second)
+        #expect(ClaudePluginsRegistry.scoutPlugin(pluginsDir: f10.layout.claudePluginsDir)?.version == "0.11.0")
+    }
+
     /// Ruling 68: register's re-run idempotence — a second register of the
     /// same version is a clean success that leaves `current` where it was.
     @Test func registerIsIdempotentOnASecondRun() async throws {
@@ -230,7 +264,6 @@ struct EngineInstallerTests {
     @Test func registerRefusesAVersionThatIsNotUnpacked() async throws {
         let f = try fixture()
         defer { try? fm.removeItem(at: f.layout.home) }
-        f.runner.on(tool: "claude", prefix: ["plugin"])
         let seen = ProgressRecorder()
         let ok = await installer(f) { seen.append($0) }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(!ok)
@@ -272,8 +305,6 @@ struct EngineInstallerTests {
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
         try #"{"plugins": {"scout@scout-plugin": [{"version": "0.10.0", "installPath": "\#(f.layout.currentEngineLink.path)"}]}}"#
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("installed_plugins.json"), atomically: true, encoding: .utf8)
-        f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "update"])
-        f.runner.on(tool: "claude", prefix: ["plugin", "update"])
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
         #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.marketplaceUpdate, ClaudeCodeCLI.pluginUpdate])
@@ -288,7 +319,6 @@ struct EngineInstallerTests {
         try fm.createDirectory(at: f.layout.claudePluginsDir, withIntermediateDirectories: true)
         try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(f.layout.currentEngineLink.path)"}}}"#
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
-        f.runner.on(tool: "claude", prefix: ["plugin", "install"])
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
         #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.pluginInstall])
@@ -303,7 +333,6 @@ struct EngineInstallerTests {
         try fm.createDirectory(at: f.layout.claudePluginsDir, withIntermediateDirectories: true)
         try #"{"scout-plugin": {"source": {"source": "directory", "path": "\#(f.layout.engineRoot(version: "0.10.0").path)"}}}"#
             .write(to: f.layout.claudePluginsDir.appendingPathComponent("known_marketplaces.json"), atomically: true, encoding: .utf8)
-        f.runner.on(tool: "claude", prefix: ["plugin", "install"])
         let ok = await installer(f) { _ in }.run(steps: [.registerWithClaudeCode], mode: .upgrade(vault: f.layout.home))
         #expect(ok)
         #expect(f.runner.calls(to: "claude") == [ClaudeCodeCLI.pluginInstall])
