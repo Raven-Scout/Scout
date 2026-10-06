@@ -85,6 +85,7 @@ git -C "$REPO_ROOT" add \
         plugin/.claude-plugin/plugin.json \
         plugin/engine/pyproject.toml \
         plugin/engine/scout/__init__.py \
+        apps/macos/Scout.xcodeproj/project.pbxproj \
         plugin/CHANGELOG.md
 git -C "$REPO_ROOT" commit -m "release: plugin/v$NEW"
 git -C "$REPO_ROOT" push -u origin "$BRANCH"

@@ -143,9 +143,10 @@ already public.
 **Who runs it.** Jordan, on his Mac, because signing needs the Developer ID
 identity and the `scout-notary` profile.
 - `SKIP_RELEASE=1` makes `prepare` stop after the local commit, with no push
-  and no PR. It makes `finalize` stop before `gh release create`. Combined
-  with `SKIP_NOTARIZE=1`, that is a full dry run that changes nothing outside
-  the machine.
+  and no PR. It makes `finalize` and `rc` stop before `gh release create`,
+  and lets `rc` run on the local, unpushed release branch. Combined with
+  `SKIP_NOTARIZE=1`, that is a full dry run that changes nothing outside the
+  machine.
 - Agents never run `release.sh` for real unless Jordan asks for that run.
 
 **Marketplace timing.** Marketplace users see `X.Y.Z` as soon as the release PR
@@ -202,11 +203,14 @@ publishes. That gap is usually minutes, and it's accepted.
     the bundled `engine-release.json` is generated from the same file, so a
     0.14.0 tree can't become a 0.15.0 build. The rc's notes render the
     `[X.Y.Z]` sections that `prepare` promoted, under an rc banner.
-  - Caveat: the final release is built from `main`'s squash commit. Its build
-    number can be lower than the last rc's, which was built from the release
-    branch, so Sparkle won't offer the final to an rc install. Reinstall from
+  - Merge the release PR with **Create a merge commit**, not squash. The
+    final is built from that merge commit, and every rc cut from the release
+    branch is an ancestor of it, so the final's build number
+    (`git rev-list --count`) is above every rc's and Sparkle offers the final
+    to rc installs. A squash or rebase merge loses that: the final's number
+    can be lower than or equal to the last rc's, and an rc install then needs
     the DMG. The acceptance test's update checks (rc.1 → rc.2 on the release
-    branch, then the final → `v0.15.1-rc.1`) aren't affected.
+    branch, then the final → `v0.15.1-rc.1`) aren't affected either way.
 - **One-time setup only Jordan can do:** generate the EdDSA key pair (Sparkle's
   `generate_keys`). The public key goes into the app's `SUPublicEDKey`, and the
   private key stays in his login keychain beside the Developer ID.
@@ -249,8 +253,9 @@ marketplace, on the same version numbers (D2).
 
 **The bar for v0.15.0, the first one-download release:**
 - Parts B and C merged, Sparkle merged, `release.sh` merged.
-- A dry run (`SKIP_NOTARIZE=1 SKIP_RELEASE=1 release.sh prepare minor`, then
-  `finalize` on that local commit) passes on `main`.
+- A dry run passes on `main`: `SKIP_RELEASE=1 release.sh prepare minor`, then
+  `SKIP_NOTARIZE=1 SKIP_RELEASE=1 release.sh rc vX.Y.Z-rc.1` on that local
+  release branch. Nothing is pushed or published.
 - **Acceptance test (Part C's C10).** `finalize` has no draft mode, so it's
   rehearsed with release candidates (agreed with #318):
   - publish `rc v0.15.0-rc.1` from `release/v0.15.0` (after `prepare`);
@@ -285,7 +290,7 @@ marketplace, on the same version numbers (D2).
   notarization step, run against a stubbed `gh`/`xcrun` on `PATH`. No test
   ever runs the real signing.
 - **Release notes:** golden-file tests of the combined body (both sections,
-  an empty app section, and the link rewriting).
+  an empty app section).
 - **`contract`:** a step asserting that `plugin.json`'s version equals the
   project file's `MARKETING_VERSION`.
 - **Bundling** (with Part C): `EngineReleaseTests` asserts that the bundled

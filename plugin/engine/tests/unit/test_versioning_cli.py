@@ -94,6 +94,24 @@ def test_set_rejects_anything_that_is_not_x_y_z(
     assert no_real_writes == []
 
 
+@pytest.mark.parametrize("cmd", ["next", "bump"])
+@pytest.mark.parametrize("explicit", ["1.2.3", "1.2.2", "0.9.9"])
+def test_next_and_bump_refuse_an_explicit_version_that_is_not_above(
+    cmd: str, explicit: str, no_real_writes: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An explicit X.Y.Z must move forward: equal or lower would re-cut or go back. Exit 1, no traceback."""
+    assert versioning.main([cmd, explicit]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == f"{explicit} is not above the current version 1.2.3"
+    assert captured.out == "" and no_real_writes == []
+
+
+def test_set_may_go_down(no_real_writes: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    """`set` stays the unrestricted escape hatch."""
+    assert versioning.main(["set", "1.0.0"]) == 0
+    assert no_real_writes == ["1.0.0"]
+
+
 def test_bump_rejects_an_invalid_level(no_real_writes: list[str]) -> None:
     with pytest.raises(ValueError, match="invalid bump level"):
         versioning.main(["bump", "beta"])

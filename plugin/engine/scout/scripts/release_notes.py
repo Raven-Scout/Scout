@@ -25,7 +25,7 @@ def extract_section(text: str, version: str) -> str:
         if line.startswith(head):
             grab = True
             continue
-        if grab and line.startswith("## ["):
+        if grab and line.startswith("## "):  # any level-2 heading ends it, not only the next version
             break
         if grab:
             out.append(line)

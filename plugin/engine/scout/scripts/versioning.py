@@ -57,6 +57,7 @@ _TARGETS = [
 ]
 
 _CHANGELOGS = ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md")
+_UNRELEASED_HEADING = re.compile(r"(?m)^## \[Unreleased\][^\n]*$")
 _RELEASE_TAG = re.compile(r"^(?:app/|plugin/)?v(\d+)\.(\d+)\.(\d+)$")
 _FEAT = re.compile(r"^feat(\([^)]*\))?!?:")
 
@@ -92,13 +93,20 @@ def assert_in_sync(root: Path = PLUGIN_ROOT, repo_root: Path | None = None) -> s
     return distinct.pop()
 
 
+class VersionNotAboveError(ValueError):
+    """An explicit next version that does not move forward from the current one."""
+
+
 def bump(current: str, level: str) -> str:
-    if re.fullmatch(r"\d+\.\d+\.\d+", level):
-        return level  # explicit version passthrough
     parts = current.split(".")
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
         raise ValueError(f"current version {current!r} is not semver X.Y.Z")
     major, minor, patch = (int(p) for p in parts)
+    if re.fullmatch(r"\d+\.\d+\.\d+", level):
+        # Explicit version: must be strictly above, or a release would re-cut or go back. `set` is the escape hatch.
+        if tuple(int(p) for p in level.split(".")) <= (major, minor, patch):
+            raise VersionNotAboveError(f"{level} is not above the current version {current}")
+        return level
     if level == "major":
         return f"{major + 1}.0.0"
     if level == "minor":
@@ -126,11 +134,12 @@ def set_version(
 
 
 def _promote(path: Path, *, version: str, date: str) -> None:
+    # Anchored to a heading line: header prose may quote `## [Unreleased]` inline (the app's does).
     text = path.read_text(encoding="utf-8")
-    marker = "## [Unreleased]"
-    if marker not in text:
+    new_text, n = _UNRELEASED_HEADING.subn(lambda m: f"{m.group(0)}\n\n## [{version}] - {date}", text, count=1)
+    if n == 0:
         raise ValueError(f"{path} has no '## [Unreleased]' section")
-    path.write_text(text.replace(marker, f"{marker}\n\n## [{version}] - {date}\n", 1), encoding="utf-8")
+    path.write_text(new_text, encoding="utf-8")
 
 
 def promote_changelog(root: Path = PLUGIN_ROOT, *, version: str, date: str) -> None:
@@ -210,7 +219,11 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "set" and not re.fullmatch(r"\d+\.\d+\.\d+", rest[0]):
             print(f"set requires an X.Y.Z version, got {rest[0]!r}", file=sys.stderr)
             return 2
-        new = rest[0] if cmd == "set" else bump(read_versions(root, repo)["plugin.json"], rest[0])
+        try:
+            new = rest[0] if cmd == "set" else bump(read_versions(root, repo)["plugin.json"], rest[0])
+        except VersionNotAboveError as e:
+            print(e, file=sys.stderr)
+            return 1
         if cmd != "next":
             set_version(root, new, repo)
         print(new)
