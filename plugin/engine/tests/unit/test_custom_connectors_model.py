@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -608,9 +609,9 @@ def test_flow_style_file_falls_back_to_a_plain_dump(tmp_path: Path):
 
 
 def test_empty_connectors_file_then_add_works(tmp_path: Path):
-    """dump() writes an empty mapping as flow-style `connectors: {}`, which the
-    per-entry splitter correctly declines (nothing after `connectors:` on its own
-    line) -- the add must still succeed via the full-dump fallback."""
+    """dump() writes an empty mapping as flow-style `connectors: {}`. The splitter
+    recognizes that exact spelling as an empty block (fix round 1, item 6), so the
+    add takes the fast per-entry path rather than falling all the way back."""
     cc.write(tmp_path, {})
     text = (tmp_path / cc.CUSTOM_FILE).read_text()
     assert "connectors: {}" in text
@@ -721,11 +722,11 @@ def test_unparseable_entry_start_line_falls_back(tmp_path: Path):
 
 def test_non_mapping_entry_line_falls_back(tmp_path: Path):
     """A two-space-indented line that parses to something other than a single-key
-    mapping (here, a stray sequence item) can't be a connector entry."""
+    mapping (here, a flow mapping with two keys) can't be a connector entry."""
     text = (
         "schema_version: 1\n"
         "connectors:\n"
-        "  - stray\n"
+        "  {a: 1, b: 2}\n"
         "  tickets:\n"
         "    display_name: Tickets\n"
         "    probe:\n"
@@ -741,6 +742,32 @@ def test_non_mapping_entry_line_falls_back(tmp_path: Path):
     result = (tmp_path / cc.CUSTOM_FILE).read_text()
 
     assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_stray_sequence_item_at_entry_level_is_tolerated_like_bootstrap(tmp_path: Path):
+    """A `- item` line at entry level is treated as part of the previous key's
+    (sequence-valued) content, not an error -- matching
+    `yaml_blocks.split_blocks`'s shared behavior with bootstrap's top-level
+    splitter (which must tolerate this for a list-valued top-level key)."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "  - stray\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
     assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
 
 
@@ -790,6 +817,14 @@ def test_new_entry_appended_after_a_file_missing_its_final_newline(tmp_path: Pat
     assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
 
 
+def test_rebuild_entries_tolerates_an_empty_header():
+    """Defense in depth: `_rebuild_entries` is only ever called by
+    `_write_keeping_comments` with a non-empty header (the splitter always
+    includes at least the `connectors:` line), but it must not assume that --
+    an empty header must not crash the "keep it in sync" patch-up."""
+    assert cc._rebuild_entries([], [], [], {}) == ""
+
+
 def test_a_rebuild_that_does_not_parse_falls_back_to_a_plain_dump(tmp_path: Path, monkeypatch):
     """Defense in depth: even if `_rebuild_entries` ever produced text that isn't
     valid YAML at all, `write` must not raise or write garbage -- it falls back."""
@@ -801,3 +836,203 @@ def test_a_rebuild_that_does_not_parse_falls_back_to_a_plain_dump(tmp_path: Path
 
     assert result.startswith("# Custom connectors")
     assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+# --- Fix round 1 --------------------------------------------------------------------
+
+
+def test_block_scalar_hash_line_in_an_unchanged_entry_survives(tmp_path: Path):
+    """Item 1(a): a literal `|` block-scalar line that happens to start with `#`
+    (not a real YAML comment -- it's scalar content) must not be mistaken by the
+    tail-trim for a gap comment belonging to the next entry. An unchanged entry
+    must come back verbatim, with that line intact and not duplicated."""
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+        "notes": "Steps for escalation:\n#2 is the escalation path\n",
+    }
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "    notes: |\n"
+        "      Steps for escalation:\n"
+        "      #2 is the escalation path\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    # Confirm "tickets" really is unchanged relative to `body`, not just close.
+    assert yaml.safe_load(text)["connectors"]["tickets"] == body
+
+    cc.write(tmp_path, {"tickets": body, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.count("#2 is the escalation path") == 1
+    assert "notes: |\n      Steps for escalation:\n      #2 is the escalation path\n" in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": body, "alpha": _ALPHA}}
+
+
+def test_block_scalar_hash_line_does_not_linger_after_removal(tmp_path: Path):
+    """Item 1(b): removing the entry whose `|` block scalar contains a `#`-shaped
+    line must not leave a fragment of it behind as an orphan comment."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "    notes: |\n"
+        "      Steps for escalation:\n"
+        "      #2 is the escalation path\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"alpha": _ALPHA})  # drop tickets entirely
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "escalation path" not in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}
+
+
+def test_add_then_remove_keeps_the_closing_comment_at_the_end(tmp_path: Path):
+    """Item 2: a new entry must land before the trailing comment block, not after
+    it -- otherwise the trailer becomes the new entry's own leading comment, and
+    removing that entry again deletes it."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# Closing note.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    after_add = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert after_add.rstrip("\n").endswith("# Closing note.")
+    assert yaml.safe_load(after_add) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+    cc.write(tmp_path, {"tickets": _TICKETS})  # remove alpha again
+    after_remove = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "# Closing note." in after_remove
+    assert yaml.safe_load(after_remove) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+def test_a_value_containing_nan_forces_the_full_dump_fallback(tmp_path: Path):
+    """Item 3, reached honestly (no monkeypatch): `nan != nan` always, so a value
+    containing one makes the round-trip safety-net comparison see a mismatch no
+    matter how faithfully the text was actually reproduced."""
+    weird = {"display_name": "Weird", "probe": "mcp__dataplat__info", "score": float("nan")}
+    cc.write(tmp_path, {"weird": weird})  # first write: no existing file, plain dump()
+    cc.write(tmp_path, {"weird": weird})  # second write: existing file, exercises the rebuild path
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    loaded = yaml.safe_load(result)
+    assert loaded["connectors"]["weird"]["display_name"] == "Weird"
+    assert math.isnan(loaded["connectors"]["weird"]["score"])
+
+
+def test_recursive_alias_comparison_falls_back_instead_of_crashing(tmp_path: Path):
+    """Item 5: a cyclic alias makes `==` raise RecursionError rather than return
+    False. Both comparisons (`_rebuild_entries`'s per-entry check and the final
+    round-trip check) must treat that as "not equal" and fall back, not crash."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  loopy:\n"
+        "    display_name: Loopy\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+        "    loop: &l\n"
+        "      self: *l\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cyclic: dict = {}
+    cyclic["self"] = cyclic
+    new_body = {
+        "display_name": "Loopy",
+        "probe": "mcp__dataplat__info",
+        "lookup": {"tools": ["mcp__dataplat__search"], "when": "x"},
+        "loop": cyclic,
+    }
+
+    cc.write(tmp_path, {"loopy": new_body})  # must not raise RecursionError
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    loaded = yaml.safe_load(result)
+    assert loaded["connectors"]["loopy"]["display_name"] == "Loopy"
+    assert loaded["connectors"]["loopy"]["loop"] is loaded["connectors"]["loopy"]["loop"]["self"]
+
+
+def test_header_and_trailer_survive_remove_last_then_add(tmp_path: Path):
+    """Item 6: removing the only entry must not force a full re-dump (which would
+    lose the header and trailer forever) -- `connectors:` becomes `connectors: {}`,
+    which the splitter also recognizes, so a later add still takes the fast path."""
+    text = (
+        "# Custom connectors file.\n"
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# Trailing note.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {})  # remove the only entry
+    after_remove = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "# Custom connectors file." in after_remove
+    assert "# Trailing note." in after_remove
+    assert "connectors: {}" in after_remove
+    assert yaml.safe_load(after_remove) == {"schema_version": 1, "connectors": {}}
+
+    cc.write(tmp_path, {"alpha": _ALPHA})  # add again
+    after_add = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "# Custom connectors file." in after_add
+    assert "# Trailing note." in after_add
+    assert yaml.safe_load(after_add) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}

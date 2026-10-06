@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
-from scout import custom_connectors
+from scout import custom_connectors, yaml_blocks
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -861,50 +861,6 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
 
 
-def _top_level_blocks(text: str) -> tuple[list[tuple[str, list[str], list[str]]], list[str]] | None:
-    """Split a block-style YAML mapping into ``(key, leading, block)`` segments.
-
-    ``leading`` is the run of comment and blank lines directly above the key;
-    ``block`` is the key line and everything under it. The second return value
-    holds the comment and blank lines after the last block. Returns None for
-    anything this line scanner cannot split with confidence — document markers,
-    flow collections spanning lines, duplicate keys — so the caller can fall
-    back to a plain dump.
-    """
-    lines = text.splitlines(keepends=True)
-    starts: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        if not line.strip() or line[0] in " \t#":
-            continue
-        if line.startswith(("---", "...")):
-            return None
-        if line.startswith("- ") or line.rstrip() == "-":
-            continue  # a sequence item under the previous key
-        try:
-            parsed = yaml.safe_load(line)
-        except yaml.YAMLError:
-            return None
-        if not isinstance(parsed, dict) or len(parsed) != 1:
-            return None
-        starts.append((i, str(next(iter(parsed)))))
-    if len({key for _, key in starts}) != len(starts):
-        return None
-
-    def is_filler(line: str) -> bool:
-        return not line.strip() or line.lstrip().startswith("#")
-
-    segments: list[tuple[str, list[str], list[str]]] = []
-    lead_from = 0
-    for n, (start, key) in enumerate(starts):
-        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
-        # Comments and blank lines just above the next key belong to that key.
-        while end > start + 1 and is_filler(lines[end - 1]):
-            end -= 1
-        segments.append((key, lines[lead_from:start], lines[start:end]))
-        lead_from = end
-    return segments, lines[lead_from:]
-
-
 def _dump_keeping_comments(text: str, data: dict) -> str:
     """``yaml.safe_dump(data)``, but written over ``text`` so its comments survive.
 
@@ -913,7 +869,8 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
     leading comments; comments inside a changed block are lost. New keys are
     appended at the end. Falls back to a plain dump whenever the text cannot be
     split safely, or the result would not load back as ``data``, and then warns
-    on stderr if that loses comments.
+    on stderr if that loses comments. Splitting itself is shared with
+    ``custom_connectors.write`` — see ``yaml_blocks.split_blocks``.
     """
     plain = yaml.safe_dump(data, sort_keys=False)
 
@@ -922,14 +879,14 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
             print(f"warning: scout-config.yaml comments not preserved ({reason})", file=sys.stderr)
         return plain
 
-    split = _top_level_blocks(text)
+    split = yaml_blocks.split_blocks(text, indent=0)
     try:
         original = yaml.safe_load(text) or {}
     except yaml.YAMLError:
         return fallback("the file does not parse as YAML")
     if split is None or not isinstance(original, dict):
         return fallback("its layout cannot be rewritten block by block")
-    segments, trailer = split
+    _header, segments, trailer = split
 
     out: list[str] = []
     for key, leading, block in segments:

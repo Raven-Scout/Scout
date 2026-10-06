@@ -19,6 +19,8 @@ from typing import Any
 
 import yaml
 
+from scout import yaml_blocks
+
 CUSTOM_FILE = "connectors.custom.yaml"
 SCHEMA_VERSION = 1
 ACTIVITIES: tuple[str, ...] = ("inbound", "outbound", "lookup")
@@ -441,74 +443,6 @@ def dump(raw_connectors: dict[str, Any]) -> str:
     return _HEADER + body
 
 
-def _split_custom_yaml(
-    text: str,
-) -> tuple[list[str], list[tuple[str, list[str], list[str]]], list[str]] | None:
-    """Split ``text`` into ``(header, entries, trailer)`` when it is laid out the way
-    ``dump()`` always writes it: a bare ``connectors:`` key at column 0 (nothing else
-    on that line) followed by block-style entries indented by exactly two spaces.
-
-    ``header`` is every line up to and including the ``connectors:`` line, kept
-    verbatim by the caller. ``entries`` are ``(key, leading, block)`` triples in
-    file order: ``leading`` is the run of comment/blank lines directly above
-    ``key``, and ``block`` is the key's own line plus everything nested under it.
-    ``trailer`` is the comment/blank lines after the last entry.
-
-    Returns ``None`` whenever the layout can't be split with confidence, so the
-    caller falls back to a plain dump: tabs anywhere, a document marker, no bare
-    ``connectors:`` line (including a flow-style or empty ``connectors: {}``), a
-    line that dedents back to column 0 inside the block (unexpected content after
-    it), an entry line that doesn't parse as a single-key mapping, or duplicate
-    keys. Mirrors ``bootstrap._top_level_blocks``, one level deeper.
-    """
-    if "\t" in text:
-        return None
-    lines = text.splitlines(keepends=True)
-
-    conn_idx: int | None = None
-    for i, line in enumerate(lines):
-        if line.startswith(("---", "...")):
-            return None
-        if conn_idx is None and line.rstrip("\r\n") == "connectors:":
-            conn_idx = i
-    if conn_idx is None:
-        return None
-    header = lines[: conn_idx + 1]
-    body = lines[conn_idx + 1 :]
-
-    def is_filler(ln: str) -> bool:
-        return not ln.strip() or ln.lstrip().startswith("#")
-
-    starts: list[tuple[int, str]] = []
-    for i, line in enumerate(body):
-        if is_filler(line):
-            continue
-        if line[0] != " ":
-            return None  # dedented to column 0: unexpected content after the block
-        if not line.startswith("  ") or line[2] == " ":
-            continue  # content nested inside the current entry (3+ spaces)
-        try:
-            parsed = yaml.safe_load(line[2:])
-        except yaml.YAMLError:
-            return None
-        if not isinstance(parsed, dict) or len(parsed) != 1:
-            return None
-        starts.append((i, str(next(iter(parsed)))))
-
-    if len({key for _, key in starts}) != len(starts):
-        return None
-
-    segments: list[tuple[str, list[str], list[str]]] = []
-    lead_from = 0
-    for n, (start, key) in enumerate(starts):
-        end = starts[n + 1][0] if n + 1 < len(starts) else len(body)
-        while end > start + 1 and is_filler(body[end - 1]):
-            end -= 1
-        segments.append((key, body[lead_from:start], body[start:end]))
-        lead_from = end
-    return header, segments, body[lead_from:]
-
-
 def _dump_entry(key: str, value: Any) -> str:
     """``yaml.safe_dump({key: value})``, indented by two spaces to nest under ``connectors:``."""
     dumped = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True)
@@ -522,6 +456,24 @@ def _rebuild_entries(
     raw_connectors: dict[str, Any],
 ) -> str:
     out: list[str] = list(header)
+    if out:
+        # `header`'s last line is always the `connectors:` (or `connectors: {}`)
+        # declaration itself. Keep it in sync with whether any entries remain:
+        last = out[-1].rstrip("\r\n")
+        if not raw_connectors and last in ("connectors:", "connectors: {}"):
+            # Emit `connectors: {}` rather than leaving a bare `connectors:` with
+            # nothing under it (which parses back as null, not `{}`) -- otherwise
+            # removing the last entry always mismatches the round-trip check
+            # below and forces a full re-dump, losing the header (and any
+            # trailer) for good. An empty flow mapping here is also what the
+            # splitter recognizes as "no entries yet", so a later add takes the
+            # fast path again.
+            out[-1] = "connectors: {}\n"
+        elif raw_connectors and last == "connectors: {}":
+            # The reverse transition: un-emptying it back to block style so the
+            # entries appended below can be its indented children, not dangling
+            # text after an already-closed flow mapping.
+            out[-1] = "connectors:\n"
     handled: set[str] = set()
     for key, leading, block in segments:
         handled.add(key)
@@ -530,39 +482,42 @@ def _rebuild_entries(
         out += leading
         try:
             original = yaml.safe_load("".join(block))
-        except yaml.YAMLError:
-            original = None
-        unchanged = isinstance(original, dict) and key in original and original[key] == raw_connectors[key]
+            unchanged = isinstance(original, dict) and key in original and original[key] == raw_connectors[key]
+        except (yaml.YAMLError, RecursionError):
+            unchanged = False  # unparseable, or a cyclic alias equality can't decide -- treat as changed
         out.append("".join(block) if unchanged else _dump_entry(key, raw_connectors[key]))
-    out += trailer
     new_keys = [k for k in raw_connectors if k not in handled]
     if new_keys:
         if out and not out[-1].endswith("\n"):
             out.append("\n")
         for key in new_keys:
             out.append(_dump_entry(key, raw_connectors[key]))
+    out += trailer  # new entries land before any trailing comment, not after it
     return "".join(out)
 
 
 def _write_keeping_comments(text: str, raw_connectors: dict[str, Any]) -> str:
     """``dump(raw_connectors)``, but written over ``text`` so its comments survive.
 
-    See ``_split_custom_yaml`` for what layout this can rewrite entry by entry.
-    Falls back to a plain ``dump()`` whenever the layout can't be split safely, or
-    the rebuilt text doesn't load back to exactly ``raw_connectors`` -- the safety
-    net for anything this function's line-based splitting gets wrong (e.g. a bare
-    word YAML resolves to a bool instead of the intended string key).
+    See ``yaml_blocks.split_blocks`` for what layout this can rewrite entry by
+    entry. Falls back to a plain ``dump()`` whenever the layout can't be split
+    safely, or the rebuilt text doesn't load back to exactly ``raw_connectors``
+    -- the safety net for anything this function's line-based splitting gets
+    wrong (e.g. a bare word YAML resolves to a bool instead of the intended
+    string key), or for a value a Python ``==`` can't honestly compare (``nan``,
+    a cyclic alias).
     """
-    split = _split_custom_yaml(text)
+    split = yaml_blocks.split_blocks(text, indent=2, after_key="connectors")
     if split is None:
         return dump(raw_connectors)
     header, segments, trailer = split
     result = _rebuild_entries(header, segments, trailer, raw_connectors)
     try:
         loaded = yaml.safe_load(result)
-    except yaml.YAMLError:
-        return dump(raw_connectors)
-    if loaded != {"schema_version": SCHEMA_VERSION, "connectors": raw_connectors}:
+        mismatch = loaded != {"schema_version": SCHEMA_VERSION, "connectors": raw_connectors}
+    except (yaml.YAMLError, RecursionError):
+        mismatch = True
+    if mismatch:
         return dump(raw_connectors)
     return result
 

@@ -162,3 +162,25 @@ def test_upgrade_does_not_duplicate_a_key_that_starts_with_a_dash(vault: Path) -
     upgrade(_config(vault, version="0.4.2"))
 
     assert config.read_text(encoding="utf-8").count("-legacy:") == 1
+
+
+def test_upgrade_keeps_a_block_scalar_line_that_looks_like_a_comment(vault: Path) -> None:
+    """A `|` block-scalar line that happens to start with `#` is literal content,
+    not a YAML comment -- the tail-trim used while splitting unchanged blocks
+    must not mistake it for a gap comment belonging to the next key (fix round 1,
+    item 1/4). An unrelated key (`plugin:`) changes on every upgrade; this block
+    must survive untouched, with its scalar line intact and not duplicated."""
+    config = vault / "scout-config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "runbook: |\n  Steps for escalation:\n  #2 is the escalation path\n",
+        encoding="utf-8",
+    )
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    after = config.read_text(encoding="utf-8")
+    assert after.count("#2 is the escalation path") == 1
+    assert "runbook: |\n  Steps for escalation:\n  #2 is the escalation path\n" in after
+    parsed = yaml.safe_load(after)
+    assert parsed["runbook"] == "Steps for escalation:\n#2 is the escalation path\n"
+    assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
