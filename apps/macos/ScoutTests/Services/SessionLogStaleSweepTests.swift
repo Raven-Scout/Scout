@@ -26,22 +26,6 @@ struct SessionLogStaleSweepTests {
         return tracker
     }
 
-    // MARK: - RunType.commitsPrefix
-
-    @Test("each run type keys the commit filter on its own subject prefix")
-    func commitsPrefix_perRunType() {
-        #expect(RunType.morningBriefing.commitsPrefix == "briefing")
-        #expect(RunType.weekendBriefing.commitsPrefix == "briefing")
-        #expect(RunType.consolidation.commitsPrefix == "consolidation")
-        #expect(RunType.dreaming.commitsPrefix == "dreaming")
-        #expect(RunType.research.commitsPrefix == "research")
-    }
-
-    @Test("a manual run has no prefix, so the window alone picks commits")
-    func commitsPrefix_manualIsEmpty() {
-        #expect(RunType.manual.commitsPrefix == "")
-    }
-
     @Test("cost-tracker keys stay aligned with the run families")
     func costTrackerKey_perRunType() {
         #expect(RunType.morningBriefing.costTrackerKey == "briefing")
@@ -124,6 +108,29 @@ struct SessionLogStaleSweepTests {
         let iso = ISO8601DateFormatter()
         let args = try #require(runner.calls.first?.arguments)
         #expect(args.contains("--until=\(iso.string(from: now.addingTimeInterval(300)))"))
+    }
+
+    @Test("a weekend run's commits are found even though their subject says 'weekend briefing'")
+    func commits_weekendBriefingSubjectsAreClaimed() async throws {
+        let dir = try makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let sep = "\u{1E}"
+        let started = Date(timeIntervalSince1970: 1_781_600_000)
+        let ts = String(Int(started.timeIntervalSince1970) + 60)
+        let logOut = [
+            ["wb1", "wb1", ts, "weekend briefing [2026-04-18]: nothing new on the example board"].joined(separator: sep),
+            ["dr1", "dr1", ts, "dreaming [08:0x]: unrelated"].joined(separator: sep),
+        ].joined(separator: "\n")
+        let runner = ScriptedRunner(scripted: [
+            ProcessResult(exitCode: 0, stdout: Data(logOut.utf8), stderr: Data()),
+        ])
+        let service = SessionLogService(
+            logsDirectory: dir, trackerService: try await makeTracker(in: dir),
+            gitService: GitService(repoURL: dir, runner: runner),
+            fileEvents: NoopFS(), timeZone: Self.ny)
+
+        let run = Run.make(type: .weekendBriefing, startedAt: started,
+                           endedAt: started.addingTimeInterval(600))
+        #expect(await service.commits(for: run).map(\.id) == ["wb1"])
     }
 
     @Test("a git failure degrades to no commits rather than throwing")

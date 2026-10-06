@@ -54,6 +54,8 @@ struct ControlCenterView: View {
             .frame(width: 0, height: 0)
         )
         .animation(.easeInOut(duration: 0.18), value: detail)
+        .task { openPendingRunIfNeeded() }
+        .onChange(of: state.pendingRunToOpen) { _, _ in openPendingRunIfNeeded() }
     }
 
     @ViewBuilder
@@ -152,6 +154,16 @@ struct ControlCenterView: View {
     /// Called by `SessionsListView` (via callback) when a row is tapped.
     fileprivate func openDetail(_ run: Run) {
         detail = .side(run)
+    }
+
+    /// Open a run requested from another tab and clear the intent, even when
+    /// the id no longer resolves, so it can't fire later by surprise. (#43)
+    private func openPendingRunIfNeeded() {
+        guard let id = state.pendingRunToOpen else { return }
+        state.pendingRunToOpen = nil
+        if let run = state.sessionLogService.runs.first(where: { $0.id == id }) {
+            detail = .side(run)
+        }
     }
 
     // MARK: - Header

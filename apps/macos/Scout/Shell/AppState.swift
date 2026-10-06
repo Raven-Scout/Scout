@@ -12,6 +12,14 @@ final class AppState: ObservableObject {
     /// `scoutctl schedule fire-now` invocation throws or exits non-zero;
     /// cleared on the next successful fire (issue #45 — previously swallowed).
     @Published var fireNowError: String? = nil
+
+    /// A run another tab asked to open (the Wishlist/Research history pane).
+    /// ControlCenterView opens its detail and clears this. (#43)
+    @Published var pendingRunToOpen: Run.ID? = nil
+
+    /// A sidebar tab another view asked to switch to. MainWindowView applies
+    /// it to its selection and clears it. (#43)
+    @Published var requestedSidebar: SidebarItem? = nil
     @Published private(set) var firingSlotKeys: Set<String> = []
     @Published private(set) var urgentActionCount: Int = 0
     /// Sessions that need you — the Sessions sidebar badge. Forwarded from
@@ -485,6 +493,12 @@ final class AppState: ObservableObject {
                 startsBackgroundWork: false
             )
         }
+    }
+
+    /// Switch to Control Center and open `id`'s run detail. (#43)
+    func requestOpenRun(_ id: Run.ID) {
+        pendingRunToOpen = id
+        requestedSidebar = .controlCenter
     }
 
     /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally
