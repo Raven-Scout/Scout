@@ -196,6 +196,18 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
+_HEADING_LINE_RE = re.compile(r"^#(#| )")
+_HEADING_MESSAGE = "must not contain markdown headings; they would break the brain file's structure"
+_INPUT_PLACEHOLDER_RE = re.compile(r"\{\{(INPUT_\w+)\}\}")
+
+
+def _has_markdown_heading(text: str) -> bool:
+    """True when any line, after ``lstrip``, starts with ``#`` followed by a space or
+    another ``#`` — a markdown heading. A ``#`` elsewhere on the line (mid-line, or a
+    bare trailing ``#`` with nothing after it) is not a heading."""
+    return any(_HEADING_LINE_RE.match(line.lstrip()) for line in text.splitlines())
+
+
 def parse_connector(
     key: str, body: Any, *, reserved: set[str], presets: dict[str, dict[str, str]]
 ) -> tuple[CustomConnector | None, list[Issue]]:
@@ -222,6 +234,8 @@ def parse_connector(
     if not isinstance(display_name, str) or not display_name.strip():
         issues.append(Issue(f"{base}.display_name", "required"))
         display_name = ""
+    elif "\n" in display_name or "\r" in display_name:
+        issues.append(Issue(f"{base}.display_name", "must be a single line"))
 
     probe: ToolRef | None = None
     if "probe" in body:
@@ -257,11 +271,16 @@ def parse_connector(
             continue
         tools = [_tool_ref(t, f"{apath}.tools[{i}]", issues) for i, t in enumerate(raw_tools)]
         guidance = block.get(gfield)
+        explicit_guidance = guidance is not None
         if guidance is None and preset is not None:
             guidance = presets[preset].get(name)
         if not isinstance(guidance, str) or not guidance.strip():
             msg = "required (a sentence on what matters) unless a preset supplies it"
             issues.append(Issue(f"{apath}.{gfield}", msg))
+            continue
+        # Preset text is shipped and trusted; only explicit text is sanitized.
+        if explicit_guidance and _has_markdown_heading(guidance):
+            issues.append(Issue(f"{apath}.{gfield}", _HEADING_MESSAGE))
             continue
         valid_tools = tuple(t for t in tools if t is not None)
         if len(valid_tools) == len(tools):
@@ -306,6 +325,20 @@ def parse_connector(
     if not isinstance(notes, str):
         issues.append(Issue(f"{base}.notes", "must be text"))
         notes = ""
+    elif _has_markdown_heading(notes):
+        issues.append(Issue(f"{base}.notes", _HEADING_MESSAGE))
+
+    declared_inputs = {n.lower() for n in needs}
+    seen_placeholders: set[str] = set()
+    for s in _strings(body):
+        for match in _INPUT_PLACEHOLDER_RE.finditer(s):
+            placeholder = match.group(1)
+            name = placeholder[len("INPUT_") :].lower()
+            if name in declared_inputs or placeholder in seen_placeholders:
+                continue
+            seen_placeholders.add(placeholder)
+            msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
+            issues.append(Issue(f"{base}.needs_user_input", msg))
 
     if issues or probe is None:
         return None, issues

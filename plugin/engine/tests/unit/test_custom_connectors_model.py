@@ -285,3 +285,112 @@ def test_enabled_keys_fails_closed_on_missing_or_malformed_config(tmp_path: Path
 def test_enabled_keys_ignores_non_string_entries(tmp_path: Path):
     (tmp_path / "scout-config.yaml").write_text(yaml.safe_dump({"connectors": {"enabled": ["tickets", 5, None]}}))
     assert cc.enabled_keys(tmp_path) == {"tickets"}
+
+
+# --- Task 5: sanitize free text and undeclared inputs -----------------------------------
+
+
+def test_display_name_must_be_a_single_line():
+    c, issues = _parse("suite_mail", {**MAIL, "display_name": "Mail suite\nSecond line"})
+    assert c is None
+    assert "display_name: must be a single line" in _messages(issues)
+
+
+def test_display_name_with_carriage_return_is_rejected():
+    c, issues = _parse("suite_mail", {**MAIL, "display_name": "Mail suite\rSecond line"})
+    assert c is None
+    assert "display_name: must be a single line" in _messages(issues)
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "# Heading",
+        "## Heading",
+        "Some text\n# Heading\nmore text",
+        "Some text\n   # Heading indented",
+    ],
+)
+def test_notes_rejects_markdown_headings(notes):
+    c, issues = _parse("suite_mail", {**MAIL, "notes": notes})
+    assert c is None
+    assert "notes: must not contain markdown headings; they would break the brain file's structure" in _messages(issues)
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "see PROJ-1234 #2",
+        "Line one.\nLine two mentions PROJ-1234 #2 mid-line.\nLine three.",
+        "#not-a-heading-because-no-space-or-hash",
+        "#",
+    ],
+)
+def test_notes_accepts_mid_line_hash_and_multiline_text_without_headings(notes):
+    c, issues = _parse("suite_mail", {**MAIL, "notes": notes})
+    assert issues == [], _messages(issues)
+    assert c is not None and c.notes == notes.strip()
+
+
+def test_explicit_focus_with_heading_is_rejected():
+    body = {**MAIL, "inbound": {"tools": MAIL["inbound"]["tools"], "focus": "# Heading\nrest of guidance"}}
+    c, issues = _parse("suite_mail", body)
+    assert c is None
+    assert "inbound.focus: must not contain markdown headings; they would break the brain file's structure" in (
+        _messages(issues)
+    )
+
+
+def test_explicit_when_with_heading_is_rejected():
+    body = {
+        "display_name": "D",
+        "server": "dataplat",
+        "probe": "mcp__dataplat__info",
+        "lookup": {"tools": ["mcp__dataplat__search"], "when": "## Heading"},
+    }
+    c, issues = _parse("dataplat", body)
+    assert c is None
+    assert "lookup.when: must not contain markdown headings; they would break the brain file's structure" in (
+        _messages(issues)
+    )
+
+
+def test_preset_guidance_with_heading_shaped_text_is_trusted_not_rejected():
+    """The heading rule only applies to explicit focus/when text; preset text is shipped and trusted."""
+    presets = {**PRESETS, "heady": {"summary": "H", "inbound": "# Not actually checked"}}
+    body = {
+        "display_name": "Mail suite",
+        "server": "example_suite",
+        "probe": "mcp__example_suite__list_folders",
+        "preset": "heady",
+        "inbound": {"tools": ["mcp__example_suite__search_messages"]},
+    }
+    c, issues = cc.parse_connector("suite_mail", body, reserved=RESERVED, presets=presets)
+    assert issues == [], _messages(issues)
+    assert c is not None
+    assert c.activities["inbound"].guidance == "# Not actually checked"
+
+
+def test_undeclared_input_placeholder_is_rejected():
+    body = {
+        **MAIL,
+        "inbound": {"tools": [{"bash": "suite search --workspace {{INPUT_WORKSPACE_ID}}"}]},
+    }
+    c, issues = _parse("suite_mail", body)
+    assert c is None
+    assert (
+        "needs_user_input: uses {{INPUT_WORKSPACE_ID}} but does not declare `workspace_id` in needs_user_input"
+        in _messages(issues)
+    )
+
+
+def test_declared_input_placeholder_is_accepted():
+    body = {
+        **MAIL,
+        "needs_user_input": ["workspace_id"],
+        "inbound": {"tools": [{"bash": "suite search --workspace {{INPUT_WORKSPACE_ID}}"}]},
+    }
+    c, issues = _parse("suite_mail", body)
+    assert issues == [], _messages(issues)
+    assert c is not None
+    assert c.needs_user_input == ("workspace_id",)
