@@ -56,8 +56,22 @@ _GENERIC_BINARIES = frozenset(
         "uvx",
         "jq",
         "git",
+        "osascript",
+        "npm",
+        "docker",
+        "ssh",
+        "open",
+        "echo",
+        "cat",
+        "printf",
     }
 )
+
+# Wrapper commands whose own name is not the connector being called — the real
+# binary is the next real word. Matched anywhere `first_binary` walks tokens,
+# so `timeout 10 tixcli list` reads as `tixcli`, not `timeout`.
+_WRAPPERS = frozenset({"env", "sudo", "nice", "nohup", "exec", "command", "time", "timeout", "xargs", "caffeinate"})
+_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 _HEADER = (
     "# Custom connectors — managed by `scoutctl connectors custom add/remove`.\n"
     "# Hand edits take effect at the next `scoutctl bootstrap upgrade` (or /scout-update);\n"
@@ -118,12 +132,42 @@ class CustomLoad:
 
 
 def first_binary(cmd: str) -> str | None:
-    """Basename of the first command word, skipping ``FOO=bar`` prefixes."""
+    """Basename of the first real command word.
+
+    Skips ``FOO=bar`` assignments, wrapper commands in ``_WRAPPERS`` (so
+    ``timeout 10 tixcli list`` reads as ``tixcli``, not ``timeout``), bare
+    option tokens (``-x``), the duration argument right after ``timeout``, and
+    the numeric argument right after ``nice -n``.
+
+    Known limit: an option's own value is not otherwise skipped — ``sudo -u
+    alex tix x`` reads ``alex``, not ``tix``.
+    """
     tokens = cmd.split()
     idx = 0
-    while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if "=" in tok and not tok.startswith("-"):
+            idx += 1
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        base = tok.rsplit("/", 1)[-1]
+        if base not in _WRAPPERS:
+            return base
         idx += 1
-    return tokens[idx].rsplit("/", 1)[-1] if idx < len(tokens) else None
+        if base == "timeout" and idx < len(tokens) and _DURATION_RE.match(tokens[idx]):
+            idx += 1
+        elif base == "nice" and idx < len(tokens) and tokens[idx] == "-n":
+            idx += 2  # `-n` and its value
+    return None
+
+
+def is_generic_binary(name: str | None) -> bool:
+    """True when ``name`` is too generic to identify a connector — including ``None``
+    (e.g. a probe command that is nothing but a wrapper, with no real command after
+    it). Used to decide whether remediation can honestly name a specific binary."""
+    return name is None or name in _GENERIC_BINARIES
 
 
 def _tool_ref(value: Any, path: str, issues: list[Issue]) -> ToolRef | None:

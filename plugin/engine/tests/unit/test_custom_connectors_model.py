@@ -206,6 +206,37 @@ def test_first_binary_skips_env_prefix_and_path():
     assert cc.first_binary("") is None
 
 
+def test_first_binary_sees_through_wrappers():
+    assert cc.first_binary("timeout 10 tixcli list") == "tixcli"
+    assert cc.first_binary("env FOO=1 nice -n 5 tix list") == "tix"
+    # Known limit (task-4 brief): `-u`'s own value is not skipped.
+    assert cc.first_binary("sudo -u alex tix x") == "alex"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("osascript", True),
+        ("npm", True),
+        ("docker", True),
+        ("ssh", True),
+        ("open", True),
+        ("echo", True),
+        ("cat", True),
+        ("printf", True),
+        ("sh", True),
+        ("bash", True),
+        ("zsh", True),
+        ("curl", True),
+        (None, True),
+        ("tix", False),
+        ("tixcli", False),
+    ],
+)
+def test_is_generic_binary(name, expected):
+    assert cc.is_generic_binary(name) is expected
+
+
 def test_bash_binaries_maps_probe_and_tools_and_skips_generic(tmp_path: Path):
     cc.write(
         tmp_path,

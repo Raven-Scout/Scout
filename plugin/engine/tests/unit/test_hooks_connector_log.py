@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
+from scout import custom_connectors as cc
 from scout.events import Event
 from scout.hooks.connector_log import classify, run
 
@@ -49,6 +51,47 @@ def test_classify_bash_non_connector_labelling_is_unchanged():
     assert classify("Bash", {"command": "cd ~/Scout && python3 x.py"}) == "bash:cd"
     assert classify("Bash", {"command": "git -C ~/Scout log --oneline"}) == "bash:git"
     assert classify("Bash", {"command": "TZ=$(scout-tz.sh) date '+%H'"}) == "bash:date"
+
+
+def test_classify_bash_sees_through_wrapper_commands(fake_data_dir: Path):
+    """Task 4: `first_binary`'s wrapper-skipping is also used for matching known
+    connector binaries, so a wrapped call still labels correctly."""
+    cc.write(
+        fake_data_dir,
+        {
+            "tickets": {
+                "display_name": "Tickets",
+                "probe": {"bash": "tix whoami"},
+                "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+            }
+        },
+    )
+    assert classify("Bash", {"command": "timeout 10 tix list"}) == "tickets"
+    assert classify("Bash", {"command": "timeout 5 gh pr list"}) == "github"
+    assert classify("Bash", {"command": "curl -s https://example.com/items"}) == "bash:curl"
+
+
+def test_classify_bash_two_osascript_connectors_dont_claim_each_others_calls(fake_data_dir: Path):
+    """`osascript` is now generic (task-4 brief); bash_binaries must not map it to
+    either connector, so an osascript call falls back to `bash:osascript`, not a
+    guess at which connector owns it."""
+    cc.write(
+        fake_data_dir,
+        {
+            "mail_app": {
+                "display_name": "Mail app",
+                "probe": {"bash": "osascript -e 'tell application \"Mail\" to count messages'"},
+                "inbound": {"tools": [{"bash": "osascript -e 'get messages'"}], "focus": "New mail."},
+            },
+            "notes_app": {
+                "display_name": "Notes app",
+                "probe": {"bash": "osascript -e 'tell application \"Notes\" to count notes'"},
+                "inbound": {"tools": [{"bash": "osascript -e 'get notes'"}], "focus": "New notes."},
+            },
+        },
+    )
+    assert cc.bash_binaries(fake_data_dir) == {}
+    assert classify("Bash", {"command": "osascript -e 'get notes'"}) == "bash:osascript"
 
 
 def test_classify_mcp_extracts_server_segment():

@@ -78,6 +78,20 @@ def test_custom_rows_name_only_commands_that_exist(fake_data_dir: Path):
     assert "scoutctl connectors custom add --file" in reg["tickets"].remediation.first_fix
 
 
+def test_remediation_for_a_generic_probe_binary_names_the_connector_instead(fake_data_dir: Path):
+    """Task 4: `webhook`'s probe runs through `curl`, a generic binary that works for
+    everyone — telling the user to "check that curl runs" doesn't diagnose anything.
+    The honest fix names the connector instead."""
+    cc.write(fake_data_dir, DEFS)
+    _enable(fake_data_dir, "webhook")
+    reg = load_registry()
+    first_fix = reg["webhook"].remediation.first_fix
+    assert "Webhook feed" in first_fix
+    assert "`curl`" not in first_fix
+    assert "scoutctl connectors custom add --file" in first_fix
+    assert len(first_fix) <= 180
+
+
 def test_shipped_rows_win_and_broken_file_yields_no_custom_rows(fake_data_dir: Path):
     (fake_data_dir / cc.CUSTOM_FILE).write_text("connectors: [unclosed\n")
     reg = load_registry()
