@@ -23,6 +23,7 @@
 - Drafting calls use `--model sonnet` by default, `--tools ToolSearch`, `--disable-slash-commands`, `--no-session-persistence`, `--permission-mode dontAsk`, the prompt on **stdin**, and `cwd` = the system temp dir. Measured 2026-10-06: a bare `claude -p` loads ~51k tokens on Opus ($0.51 before a $0.05 cap stopped it; the cap is checked after the fact). With `--model haiku --tools ToolSearch --disable-slash-commands` it was 12.8k tokens and $0.026.
 - `claude -p --output-format json --json-schema …` returns an envelope with `is_error`, `subtype`, `total_cost_usd`, `result` (the JSON as text) and `structured_output` (the parsed object). Read `structured_output` first.
 - Every user-facing "run `/scout-setup`" becomes `open Scout.app or run \`scoutctl setup\`` — one constant, `scout.paths.SETUP_HINT` (Task 15).
+- Coverage: once #323 merges, the plugin coverage floor is exactly 98.00% (`precision = 2`). Every Phase 1 task covers all of its new lines, error branches included. Check with `.venv/bin/pytest --cov=scout --cov-report=term-missing -q` before each commit.
 - Always pass `--repo Raven-Scout/Scout` to `gh`. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Review Focus
@@ -1052,6 +1053,8 @@ git commit -m "feat(connectors): custom draft — a locked-down headless draft, 
 
 ### Task 5: `custom add|remove` — a `busy` status and `--no-wait`
 
+> **On hold (coordinator, 2026-10-06):** #321's owner may already have built this. Don't start until the coordination session confirms whether to reuse that work or do it here.
+
 **Files:**
 - Modify: `plugin/engine/scout/scripts/custom_connector_ops.py` (`_EXIT_CODES`, `_under_lock`, `add`, `_add`, `remove`, `_remove`)
 - Modify: `plugin/engine/scout/cli.py` (`cli_custom_add`, `cli_custom_remove`)
@@ -1203,6 +1206,8 @@ git commit -m "feat(connectors): custom add/remove say busy, and --no-wait answe
 ---
 
 ### Task 6: `custom list` returns full definitions
+
+> **On hold (coordinator, 2026-10-06):** same as Task 5.
 
 **Files:**
 - Modify: `plugin/engine/scout/scripts/custom_connector_ops.py` (`_list_custom`)
@@ -2724,6 +2729,8 @@ gh pr create --repo Raven-Scout/Scout --draft --title "feat(install): install.sh
 Phase 3 is the app plan. Task 13 needs #317 merged. Task 14 goes in the v0.15.0 release PR. Task 15 lands when the app plan has merged (v0.15.0 if it's in time, otherwise v0.16.0). Task 16 is the minor after Task 15 ships.
 
 ### Task 13: `release.sh` attaches `Scout.dmg` (after #317 merges)
+
+> **Review:** the "Scout monorepo consolidation" session owns #317's `release.sh`. Ask it to review this task's diff before merging.
 
 **Files:**
 - Modify: `scripts/release.sh` (the publish block after `"$hook" appcast …`)
