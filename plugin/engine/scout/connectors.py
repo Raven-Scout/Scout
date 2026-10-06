@@ -160,7 +160,7 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
     doctor reports the file instead); either fails closed to "no custom rows".
     """
     try:
-        from scout.custom_connectors import enabled_keys, load
+        from scout.custom_connectors import enabled_keys, is_generic_binary, load
 
         enabled = enabled_keys(data_dir)
         connectors = {key: c for key, c in load(data_dir).connectors.items() if key in enabled}
@@ -176,11 +176,20 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
         if health_key.startswith("mcp:"):
             first_fix = f"Reconnect {names} at https://claude.ai/settings/connectors (or /mcp for a local server)."
         else:
-            binary = members[0].probe.binary or members[0].key
-            first_fix = (
-                f"Check that `{binary}` runs in a terminal, then re-add {members[0].key} "
-                "with `scoutctl connectors custom add --file <definition>`."
-            )
+            binary = members[0].probe.binary
+            if is_generic_binary(binary):
+                # `binary` is too generic (or absent) to mean anything: telling the
+                # user to "check that `curl` runs" doesn't diagnose *this*
+                # connector, since curl always runs. Name the connector instead.
+                first_fix = (
+                    f"Check that {names}'s command works in a terminal, then re-add it "
+                    "with `scoutctl connectors custom add --file <definition>`."
+                )
+            else:
+                first_fix = (
+                    f"Check that `{binary}` runs in a terminal, then re-add {members[0].key} "
+                    "with `scoutctl connectors custom add --file <definition>`."
+                )
         rows[health_key] = {
             "display_name": names,
             "tier": "custom",
