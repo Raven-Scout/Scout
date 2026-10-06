@@ -228,3 +228,53 @@ def test_bash_binaries_maps_probe_and_tools_and_skips_generic(tmp_path: Path):
 def test_bash_binaries_tolerates_garbage(tmp_path: Path):
     (tmp_path / cc.CUSTOM_FILE).write_text(":::\n")
     assert cc.bash_binaries(tmp_path) == {}
+
+
+def test_bash_binaries_skips_an_entry_that_is_not_a_mapping(tmp_path: Path):
+    tickets = {"display_name": "T", "probe": {"bash": "tix whoami"}, "inbound": {"tools": [{"bash": "tix list"}]}}
+    cc.write(tmp_path, {"half_written": "TODO", "tickets": tickets})
+    assert cc.bash_binaries(tmp_path) == {"tix": "tickets"}
+
+
+@pytest.mark.parametrize("probe", [{"bash": "   "}, {"bash": "tix whoami", "shell": "zsh"}, 7, ["tix", "whoami"]])
+def test_a_probe_that_is_neither_an_mcp_name_nor_a_bash_command_is_rejected(probe: object):
+    c, issues = _parse("suite_mail", {**MAIL, "probe": probe})
+    assert c is None
+    assert ("connectors.suite_mail.probe", 'must be an MCP tool name or {bash: "<command>"}') in [
+        (i.path, i.message) for i in issues
+    ]
+
+
+@pytest.mark.parametrize("block", ["search everything", ["mcp__example_suite__search_messages"], None])
+def test_an_activity_that_is_not_a_mapping_is_rejected(block: object):
+    c, issues = _parse("suite_mail", {**MAIL, "lookup": block})
+    assert c is None
+    assert [(i.path, i.message) for i in issues] == [("connectors.suite_mail.lookup", "must be a mapping with `tools`")]
+
+
+def test_an_empty_file_or_a_null_connectors_block_is_empty_and_quiet():
+    assert cc.parse_file(None, reserved=RESERVED, presets=PRESETS) == cc.CustomLoad()
+    loaded = cc.parse_file({"schema_version": 1, "connectors": None}, reserved=RESERVED, presets=PRESETS)
+    assert loaded.connectors == {} and loaded.issues == [] and loaded.raw == {}
+
+
+def test_load_presets_skips_unreadable_and_non_mapping_files(tmp_path: Path):
+    presets = tmp_path / "phases" / "presets"
+    presets.mkdir(parents=True)
+    (presets / "mail.yaml").write_text("summary: Mail\ninbound: |\n  Inbox rules.\nlimit: 5\n", encoding="utf-8")
+    (presets / "broken.yaml").write_text("summary: [unclosed\n", encoding="utf-8")
+    (presets / "listy.yaml").write_text("- summary\n- inbound\n", encoding="utf-8")
+    (presets / "binary.yaml").write_bytes(b"\xff\xfe\x00")
+    # Non-text values (limit: 5) are dropped; the file itself still loads.
+    assert cc.load_presets(tmp_path) == {"mail": {"summary": "Mail", "inbound": "Inbox rules."}}
+
+
+def test_reserved_keys_survive_a_missing_registry_and_a_malformed_phase_file(tmp_path: Path):
+    from scout.scripts.connector_probes import CONNECTOR_KEY_ALIASES
+
+    phases = tmp_path / "phases" / "core"
+    phases.mkdir(parents=True)
+    (phases / "no-frontmatter.md").write_text("# just prose, no --- fence\n", encoding="utf-8")
+    # No templates/connector-probes.yaml at all: the registry read fails and is skipped.
+    reserved = cc.reserved_keys(tmp_path)
+    assert reserved == set(CONNECTOR_KEY_ALIASES) | set(CONNECTOR_KEY_ALIASES.values())

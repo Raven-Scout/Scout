@@ -385,3 +385,65 @@ def test_list_custom_degrades_on_non_mapping_scout_config(vault: Path):
     listing = ops.list_custom(vault, plugin_root=PLUGIN)
     assert listing["connectors"][0]["enabled"] is False
     assert any(i["path"] == "scout-config.yaml" for i in listing["issues"])
+
+
+@pytest.mark.parametrize("definition", ["suite_mail", ["key", "suite_mail"], None])
+def test_validate_a_definition_that_is_not_a_mapping(definition: object):
+    out = ops.validate(definition, plugin_root=PLUGIN)
+    assert (out.status, out.exit_code, out.key) == ("invalid", 2, "")
+    assert [(i.path, i.message) for i in out.issues] == [("definition", "must be a mapping with a `key` field")]
+
+
+@pytest.mark.parametrize("op", ["add", "remove"])
+def test_a_running_session_holding_the_lock_is_an_error_and_writes_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, op: str
+):
+    if op == "remove":
+        _add(vault, SUITE)
+    custom_before = (vault / cc.CUSTOM_FILE).read_text() if op == "remove" else None
+
+    def busy(lock: Path, *a, **kw):
+        raise ops.LockBusyError(lock, 4242)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", busy)
+    if op == "add":
+        out = _add(vault, SUITE)
+    else:
+        out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code) == ("error", 1)
+    assert out.message == "A Scout session is running; try again when it finishes."
+    custom = vault / cc.CUSTOM_FILE
+    assert (custom.read_text() if custom.exists() else None) == custom_before
+
+
+def test_remove_without_vault_is_an_error(tmp_path: Path):
+    out = ops.remove(tmp_path / "missing", "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert (out.status, out.exit_code) == ("error", 1)
+    assert out.message.startswith(f"no Scout vault at {tmp_path / 'missing'}")
+
+
+def test_a_conflicting_apply_exits_3_and_names_the_sidecar_to_resolve(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    from scout.scripts.bootstrap import CustomApplyResult
+
+    monkeypatch.setattr(
+        ops,
+        "apply_custom_change",
+        lambda before, after, **kw: CustomApplyResult("conflict", sidecars=["SKILL.md.proposed-merge"]),
+    )
+    out = _add(vault, SUITE)
+    assert (out.status, out.exit_code) == ("conflict", 3)
+    assert out.sidecars == ["SKILL.md.proposed-merge"]
+    assert out.message == (
+        "Saved, but SKILL.md.proposed-merge needs your review: merge it into the live file, then run "
+        "`scoutctl bootstrap resolve SKILL.md`."
+    )
+    # The definition is still saved: the conflict is about the brain file, not the entry.
+    assert "suite_mail" in yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
+
+
+def test_list_custom_without_a_scout_config_lists_everything_disabled(tmp_path: Path):
+    tickets = {k: v for k, v in TICKETS.items() if k != "key"}
+    cc.write(tmp_path, {"tickets": tickets})
+    listing = ops.list_custom(tmp_path, plugin_root=PLUGIN)
+    assert [(c["key"], c["enabled"]) for c in listing["connectors"]] == [("tickets", False)]
+    assert listing["issues"] == []
