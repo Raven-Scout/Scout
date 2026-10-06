@@ -46,11 +46,18 @@ VERSION="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 
   || fail "HEAD:$MANIFEST has no readable \"version\""
 
 # The version becomes a file name here and a directory name on the user's Mac
-# (engine/<version>), so hold it to SemVer's shape: no "/", no "..".
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] \
+# (engine/<version>), so hold it to SemVer's shape: no "/", no "..". The
+# pre-release identifier grammar mirrors EngineVersion's §9 validation
+# (EngineVersion.swift's `validatedPreRelease`): each dot-separated identifier
+# is either "0", a numeral with no leading zero, or contains a non-digit
+# (letter/hyphen) — never a bare leading-zero numeral like "01" — so a
+# version this script accepts always also parses as an EngineVersion
+# (EngineReleaseTests.everyBuildBundlesTheEngine asserts the agreement).
+IDENT='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-$IDENT(\.$IDENT)*)?$ ]] \
   || fail "HEAD:$MANIFEST version \"$VERSION\" is not a SemVer X.Y.Z[-pre]"
 if [[ -n "${MARKETING_VERSION:-}" && "$MARKETING_VERSION" != "$VERSION" ]]; then
-  DRIFT="MARKETING_VERSION $MARKETING_VERSION != $MANIFEST version $VERSION (one version for Scout, spec D2) — set them together"
+  DRIFT="MARKETING_VERSION $MARKETING_VERSION != $MANIFEST version $VERSION: plugin/.claude-plugin/plugin.json and MARKETING_VERSION (apps/macos/Scout.xcodeproj) must move together (spec D2): bump both, e.g. \`versioning set X.Y.Z\` plus MARKETING_VERSION"
   # A Release can never ship drift; a Debug build warns and still builds (the
   # D2 test in EngineReleaseTests fails it in CI).
   if [[ "${CONFIGURATION:-}" == "Release" || "${SCOUT_BUNDLE_STRICT:-0}" == 1 ]]; then fail "$DRIFT"; fi
@@ -59,7 +66,12 @@ fi
 
 [[ -f "$UV_PIN" ]] || fail "uv pin $UV_PIN not found"
 
-if [[ -n "$(git -C "$TOP" status --porcelain -- plugin)" ]]; then
+# --no-optional-locks: a plain `git status` takes index.lock and rewrites
+# .git/index to persist refreshed stat info for racily-clean files, even
+# though this script only reads the result — every build would otherwise
+# race a concurrent `git commit`. See bundle-engine.test.sh's index-untouched
+# case.
+if [[ -n "$(git --no-optional-locks -C "$TOP" status --porcelain -- plugin)" ]]; then
   echo "warning: bundle-engine: plugin/ has uncommitted changes; bundling the committed tree at HEAD (${COMMIT:0:12}) without them" >&2
 fi
 
@@ -95,6 +107,13 @@ uv = json.load(open(uv_pin))
 sha = uv.get("sha256")
 if not isinstance(uv.get("version"), str) or not isinstance(sha, dict) or not sha:
     sys.exit("uv pin needs a string \"version\" and a non-empty \"sha256\" map")
+# Both Mac architectures must be pinned at build time: a UvInstaller running
+# on the arch missing from the map would otherwise fail (or silently fetch
+# unpinned) only on whichever Mac lacks it, long after this build shipped.
+REQUIRED_ARCHES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
+missing = [arch for arch in REQUIRED_ARCHES if arch not in sha]
+if missing:
+    sys.exit(f"uv pin sha256 is missing required key(s): {', '.join(missing)}")
 if not all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in sha.values()):
     sys.exit("uv pin sha256 values must be 64 lowercase hex characters")
 release = {

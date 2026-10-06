@@ -53,9 +53,32 @@ struct EngineVersionTests {
     }
 
     @Test func garbageIsNotAVersion() {
-        for text in ["garbage", "", "1.x.0", "1..2", "1.2.3.4", "1.2.3."] {
+        for text in ["garbage", "", "1.x.0", "1..2", "1.2.3.4", "1.2.3.", "nope"] {
             #expect(EngineVersion(text) == nil, "\(text)")
         }
+    }
+
+    /// `Int(_:)` alone accepts a leading sign (`Int("+1") == 1`), which would
+    /// let a signed core part through; `EngineInstaller.isManagedMarketplace`
+    /// turns a parsed version into a filesystem path component, so this is
+    /// the same risk class the §9 pre-release charset fix (Ruling 58b)
+    /// closed for the pre-release half of the string.
+    @Test func signedCorePartsAreRejected() {
+        for text in ["+1.2.0", "1.+2.0", "1.2.+0", "1.-2.0", "-1.2.0"] {
+            #expect(EngineVersion(text) == nil, "\(text)")
+        }
+    }
+
+    /// SemVer §9's no-leading-zero rule applies to the core the same way it
+    /// already applies to a numeric pre-release identifier: no existing test
+    /// or caller relies on a leading-zero core, so the restriction is free to
+    /// add and keeps both halves of the version under one rule.
+    @Test func leadingZeroCorePartsAreRejected() {
+        for text in ["01.2.3", "1.02.3", "1.2.03", "01.02.03"] {
+            #expect(EngineVersion(text) == nil, "\(text)")
+        }
+        #expect(EngineVersion("0.0.0") != nil)
+        #expect(EngineVersion("0.9.0") != nil)
     }
 
     @Test func satisfiedWhenInstalledMeetsOrExceedsFloor() {
@@ -110,14 +133,6 @@ struct EngineVersionTests {
     /// compares a bare installed version against a possibly `v`-prefixed one.
     @Test func aLeadingVPrefixParsesAndComparesEqualToTheBareVersion() {
         #expect(EngineVersion("v0.10.0") == EngineVersion("0.10.0"))
-    }
-
-    /// Non-SemVer-shaped strings fail to parse instead of crashing or
-    /// silently truncating — `EngineUpgrader` relies on this `nil` to treat
-    /// an unparsable manifest version as untrusted (Ruling 58). A short core
-    /// (`"1.2"`) is NOT malformed: it reads as `1.2.0` (see above).
-    @Test func malformedStringsFailToParse() {
-        #expect(EngineVersion("nope") == nil)
     }
 
     /// Ruling 58b: the review found that an `EngineVersion("1.0.0-../../..")`-shaped

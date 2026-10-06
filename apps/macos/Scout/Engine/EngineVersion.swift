@@ -18,7 +18,17 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
     init?(_ text: String) {
         let trimmed = text.hasPrefix("v") ? String(text.dropFirst()) : text
         let core = trimmed.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
-        let parts = core[0].split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        let rawParts = core[0].split(separator: ".", omittingEmptySubsequences: false)
+        // `Int(_:)` alone accepts a leading sign ("+1", "-2" would already be
+        // routed to the pre-release split, but "+1.2.0" and "1.+2.0" both
+        // parsed before this check existed), and EngineInstaller.
+        // isManagedMarketplace turns the result into a path component, so a
+        // sign here is the same path-traversal-adjacent risk class as Ruling
+        // 58b's pre-release charset gap. Require ASCII digits only, with the
+        // same no-leading-zero rule §9 already applies to the pre-release
+        // (no existing test or caller relies on a leading-zero core, and
+        // real plugin.json/MARKETING_VERSION values never carry one).
+        let parts: [Int?] = rawParts.map { EngineVersion.isValidCorePart($0) ? Int($0) : nil }
         guard (1...3).contains(parts.count), parts.allSatisfy({ $0 != nil }) else { return nil }
         let numbers = parts.compactMap { $0 } + Array(repeating: 0, count: 3 - parts.count)
         // Ruling 58b: a hyphen with no valid pre-release after it (empty, or
@@ -37,6 +47,14 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
         }
         major = numbers[0]; minor = numbers[1]; patch = numbers[2]
         preRelease = validatedPreRelease
+    }
+
+    /// A core identifier (major/minor/patch) is ASCII digits only — never a
+    /// signed number — and, like a numeric pre-release identifier (§9), may
+    /// not have a leading zero unless it is exactly "0".
+    private static func isValidCorePart(_ text: Substring) -> Bool {
+        guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        return text == "0" || text.first != "0"
     }
 
     /// SemVer 2.0.0 §9: a pre-release is a series of dot-separated

@@ -37,6 +37,11 @@ struct EngineReleaseTests {
         let release = try EngineRelease.load(bundle: Self.app)
         #expect(release.schemaVersion == 2)
         #expect(release.version == release.engine.version)
+        // Agreement with EngineVersion's own validity rules (SemVer §9): a
+        // version bundle-engine.sh's regex accepts but EngineVersion rejects
+        // (e.g. a leading-zero pre-release identifier) would make
+        // EngineUpgrader.needsUpgrade silently always false.
+        #expect(EngineVersion(release.version) != nil, "bundled version \"\(release.version)\" must also parse as an EngineVersion")
         #expect(release.engine.commit?.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil)
         let tarball = try #require(release.bundledTarballURL(bundle: Self.app), "the build must bundle \(release.tarballName)")
         #expect(try Self.manifestVersion(inTarball: tarball) == release.engine.version)
@@ -51,9 +56,10 @@ struct EngineReleaseTests {
         let tarball = try #require(release.bundledTarballURL(bundle: Self.app))
         let appVersion = try #require(Self.app.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
         let manifestVersion = try Self.manifestVersion(inTarball: tarball)
-        #expect(manifestVersion == appVersion)
-        #expect(release.version == appVersion)
-        #expect(release.version == manifestVersion)
+        let hint = "plugin/.claude-plugin/plugin.json and MARKETING_VERSION (apps/macos/Scout.xcodeproj) must move together (spec D2): bump both, e.g. `versioning set X.Y.Z` plus MARKETING_VERSION"
+        #expect(manifestVersion == appVersion, "\(hint)")
+        #expect(release.version == appVersion, "\(hint)")
+        #expect(release.version == manifestVersion, "\(hint)")
     }
 
     /// The uv pin rides through bundling unchanged: the generated file's `uv`

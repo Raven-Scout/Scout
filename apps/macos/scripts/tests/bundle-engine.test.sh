@@ -116,12 +116,43 @@ printf '{"version": "0.12.1", "sha256": {"aarch64-apple-darwin": "xyz"}}\n' > "$
 run "$TMP/out9b" SCOUT_UV_PIN="$TMP/bad-uv.json"
 assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out9b/engine-release.json" ]' "malformed uv sha256: fails, no JSON"
 
-# 10. outside a git repository there is nothing to archive
+# 10. a pre-release identifier with a numeric leading zero is not SemVer
+# (§9) — EngineVersion rejects it too, so this keeps the two in agreement
+printf '{"name": "scout", "version": "1.0.0-01"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
+g commit -qam "leading-zero prerelease"
+run "$TMP/out10"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out10/engine-release.json" ]' "leading-zero pre-release identifier: fails (SemVer §9)"
+g reset -q --hard HEAD~1
+
+# 11. the uv pin must name BOTH Mac architectures, not just one
+printf '{"version": "0.12.1", "sha256": {"aarch64-apple-darwin": "%s"}}\n' "$UV_SHA_ARM" > "$TMP/missing-arch-uv.json"
+run "$TMP/out11" SCOUT_UV_PIN="$TMP/missing-arch-uv.json"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out11/engine-release.json" ]' "uv pin missing x86_64-apple-darwin: fails"
+assert 'grep -q "x86_64-apple-darwin" "$TMP/out11.log"' "uv pin missing arch: names the missing key"
+
+# 12. `git status` must not take index.lock or rewrite .git/index — a
+# concurrent `git commit` could otherwise fail mid-build. A "stat-dirty" file
+# (mtime touched, content unchanged) is exactly what makes plain `git status`
+# refresh-and-rewrite the index; --no-optional-locks must suppress that.
+touch "$REPO/plugin/.claude-plugin/plugin.json"
+IDX="$REPO/.git/index"
+if stat -f '%i' "$IDX" >/dev/null 2>&1; then
+  INODE_BEFORE="$(stat -f '%i' "$IDX")"; MTIME_BEFORE="$(stat -f '%m' "$IDX")"
+  sleep 1
+  run "$TMP/out12"
+  assert '[ "$RC" -eq 0 ] && ! grep -q warning "$TMP/out12.log"' "stat-dirty plugin.json: still bundles cleanly"
+  INODE_AFTER="$(stat -f '%i' "$IDX")"; MTIME_AFTER="$(stat -f '%m' "$IDX")"
+  assert '[ "$INODE_BEFORE" = "$INODE_AFTER" ] && [ "$MTIME_BEFORE" = "$MTIME_AFTER" ]' "git status (--no-optional-locks) leaves .git/index untouched"
+else
+  echo "skip: .git/index mtime/inode check (BSD stat -f unavailable)"
+fi
+
+# 13. outside a git repository there is nothing to archive
 NOGIT="$TMP/nogit/apps/macos"; mkdir -p "$NOGIT"
-set +e; env SRCROOT="$NOGIT" GIT_CEILING_DIRECTORIES="$TMP" SCOUT_ENGINE_OUT="$TMP/out10" bash "$SCRIPT" >/dev/null 2>&1; RC=$?; set -e
+set +e; env SRCROOT="$NOGIT" GIT_CEILING_DIRECTORIES="$TMP" SCOUT_ENGINE_OUT="$TMP/out13" bash "$SCRIPT" >/dev/null 2>&1; RC=$?; set -e
 assert '[ "$RC" -ne 0 ]' "not a git repo: fails"
 
-# 11. the script only reads the repo: HEAD and the index are untouched
+# 14. the script only reads the repo: HEAD and the index are untouched
 assert '[ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]' "repo left clean"
 
 [ "$FAILS" -eq 0 ] || exit 1
