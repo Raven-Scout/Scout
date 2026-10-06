@@ -2726,61 +2726,63 @@ gh pr create --repo Raven-Scout/Scout --draft --title "feat(install): install.sh
 
 ## Phase 4 — retire (gated; see each task)
 
-Phase 3 is the app plan. Task 13 needs #317 merged. Task 14 goes in the v0.15.0 release PR. Task 15 lands when the app plan has merged (v0.15.0 if it's in time, otherwise v0.16.0). Task 16 is the minor after Task 15 ships.
+Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout monorepo consolidation" session. Task 14 goes in the v0.15.0 release PR. Task 15 lands when the app plan has merged (v0.15.0 if it's in time, otherwise v0.16.0). Task 16 is the minor after Task 15 ships.
 
 ### Task 13: `release.sh` attaches `Scout.dmg` (after #317 merges)
 
 > **Review:** the "Scout monorepo consolidation" session owns #317's `release.sh`. Ask it to review this task's diff before merging.
+>
+> **Reviewer requirements (relayed 2026-10-06). These supersede spec §8 on two points:**
+> - Only a final release gets the stable name. An rc (`--prerelease --latest=false`) doesn't, because `/releases/latest/download/Scout.dmg` resolves to the Latest release anyway.
+> - There is no post-publish `gh release view` check, because tests may use only the existing stub harness. The tests below cover the one `gh release create` call instead.
 
 **Files:**
-- Modify: `scripts/release.sh` (the publish block after `"$hook" appcast …`)
-- Modify: `plugin/engine/tests/unit/release_harness.py` (the `gh` stub)
-- Modify: `plugin/engine/tests/unit/test_release_script.py`
+- Modify: `scripts/release.sh` (`build_and_publish`: where the asset list is built with `set -- "$dmg"`)
+- Modify: `plugin/engine/tests/unit/test_release_script.py` (the existing stub harness only; `release_harness.py` is unchanged)
 
 - [ ] **Step 1: Write the failing tests**
 
-In `test_release_script.py`, in `test_finalize_publishes_once_after_notarization`, change `assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line` to:
+In `test_finalize_publishes_once_after_notarization`, change `assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line` to:
 
 ```python
-    assert "Scout-0.15.0.dmg" in line and "/Scout.dmg" in line and "appcast.xml" not in line
+    assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())
+```
+
+In `test_finalize_attaches_the_appcast_when_present`, after its assert, add:
+
+```python
+    assert any(w.endswith("/Scout.dmg") for w in next(c for c in r.calls() if c.startswith("gh release create")).split())
 ```
 
 In `test_rc_is_a_prerelease_never_latest`, after its last assert, add:
 
 ```python
-    assert "/Scout.dmg" in line
+    assert not any(w.endswith("/Scout.dmg") for w in line.split())  # an rc isn't Latest; no stable name
 ```
 
 Add:
 
 ```python
-def test_finalize_dies_when_latest_lacks_the_stable_dmg(tmp_path):
+def test_the_stable_dmg_is_a_copy_never_signed_or_notarized_again(tmp_path):
     r = make_repo(tmp_path)
     _merge_release(r)
-    done = r.run("finalize", "v0.15.0", env={"FAKE_NO_ALIAS": "1"})
-    assert done.returncode != 0
-    assert "Scout.dmg" in done.stderr and "download button" in done.stderr
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode == 0, done.stderr
+    calls = r.calls()
+    assert sum(c.startswith("gh release create") for c in calls) == 1
+    touched = [c for c in calls if c.split()[0] in ("codesign", "xcrun", "spctl", "hdiutil")]
+    assert not any(w.endswith("/Scout.dmg") for c in touched for w in c.split())
 ```
-
-If `r.run` doesn't take `env=`, use the harness's existing way of passing `FAKE_*` knobs (the docstring at the top of `release_harness.py` lists them) and add `FAKE_NO_ALIAS` to that list.
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/pytest tests/unit/test_release_script.py -q`
-Expected: the three tests FAIL.
+Expected: the finalize and appcast tests FAIL, because there is no `/Scout.dmg` asset yet. The rc test and the new copy test already pass; they guard the implementation.
 
 - [ ] **Step 3: Implement**
 
-In `release_harness.py`'s `gh)` case, add a branch beside `"api repos/Raven-Scout/Scout/releases/latest")`:
-
-```bash
-          "release view")
-            if [ -n "${FAKE_NO_ALIAS:-}" ]; then echo "Scout-x.dmg"; else printf 'Scout-x.dmg\nScout.dmg\n'; fi ;;
-```
-
-and add `FAKE_NO_ALIAS` to the docstring's knob list.
-
-In `scripts/release.sh`, replace
+In `scripts/release.sh`, `build_and_publish`, replace
 
 ```bash
   set -- "$dmg"
@@ -2790,31 +2792,32 @@ In `scripts/release.sh`, replace
 with
 
 ```bash
-  # A stable name beside the versioned one: the website's Download for Mac button
-  # links to /releases/latest/download/Scout.dmg. Sparkle's appcast keeps the versioned name.
-  cp "$dmg" "$build/release/Scout.dmg"
-  set -- "$dmg" "$build/release/Scout.dmg"
+  set -- "$dmg"
+  if [ "$kind" = release ]; then
+    # The website's Download for Mac button links to /releases/latest/download/Scout.dmg.
+    # A plain copy of the DMG notarized and stapled above: never re-signed. An rc isn't
+    # Latest, so it doesn't get one. Sparkle's appcast keeps the versioned name.
+    cp "$dmg" "$build/release/Scout.dmg"
+    set -- "$@" "$build/release/Scout.dmg"
+  fi
   [ ! -f "$build/appcast.xml" ] || set -- "$@" "$build/appcast.xml"
 ```
 
-and, in the `kind = release` branch, after the `[ "$latest" = "$tag" ] || die …` check:
-
-```bash
-    gh release view "$tag" --repo "$slug" --json assets --jq '.assets[].name' | grep -qx 'Scout.dmg' \
-      || die "published $tag without Scout.dmg: the website's download button 404s; upload it with: gh release upload $tag $build/release/Scout.dmg --repo $slug"
-```
+The publish stays the single `gh release create "$tag" "$@" …` call after notarization.
 
 - [ ] **Step 4: Run the tests and shellcheck**
 
 Run: `.venv/bin/pytest tests/unit/test_release_script.py -q && shellcheck -S error ../../scripts/release.sh`
-Expected: all PASS.
+Expected: all PASS; shellcheck prints nothing.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit, then ask for the review**
 
 ```bash
-git add ../../scripts/release.sh tests/unit/release_harness.py tests/unit/test_release_script.py
-git commit -m "feat(release): attach the DMG as Scout.dmg too, for the website's download button"
+git add ../../scripts/release.sh tests/unit/test_release_script.py
+git commit -m "feat(release): attach the final DMG as Scout.dmg too, for the website's download button"
 ```
+
+Send the diff to the "Scout monorepo consolidation" session for review before merging.
 
 ---
 
