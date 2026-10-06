@@ -528,6 +528,31 @@ def _register_connectors() -> None:
             for name, d in dets.items():
                 typer.echo(f"{name}\t{d.status.value}\t{d.evidence}")
 
+    @connectors_app.command("uncovered")
+    def cli_connectors_uncovered(
+        json_out: bool = typer.Option(False, "--json", help="Emit JSON (consumed by Scout.app and scoutctl setup)."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        timeout: float = typer.Option(60.0, "--timeout", help="Seconds to wait for `claude mcp list`."),
+    ) -> None:
+        """Connected MCP servers that no connector reads yet (no LLM)."""
+        import json as _json
+
+        from scout.scripts import connector_detect, connector_probes
+        from scout.scripts.bootstrap import resolve_claude_bin
+        from scout.scripts.connector_uncovered import find_uncovered
+
+        listing = connector_detect.run_claude_mcp_list(resolve_claude_bin(claude_bin), timeout=timeout)
+        payload = find_uncovered(listing, registry=connector_probes.resolve_registry())
+        if json_out:
+            typer.echo(_json.dumps(payload, indent=2))
+        else:
+            for s in payload["servers"]:
+                typer.echo(f"{s['name']}\t{s['status']}")
+        if payload["error"]:
+            if not json_out:
+                typer.echo(f"error: {payload['error']}", err=True)
+            raise typer.Exit(code=1)
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(
