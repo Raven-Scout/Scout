@@ -64,9 +64,17 @@ final class OnboardingViewModel: ObservableObject {
     private let handoff: @MainActor (String) throws -> Void
     private let onFinished: () -> Void
 
+    /// True once `start()` has finished its first check. Welcome's Continue
+    /// waits for it, so a click during the check can't race `start()`
+    /// (Ruling 66).
+    @Published private(set) var didStart = false
+
     private var started = false
     private var pollGeneration = 0
     private var installGeneration = 0
+    /// The installer run whose live progress hops may still land; nil once
+    /// that run has settled, so a hop that arrives late is dropped.
+    private var liveGeneration: Int?
 
     static let briefingSlotType = "briefing"   // `SlotType.BRIEFING` in plugin/engine/scout/schedule.py
 
@@ -108,7 +116,7 @@ final class OnboardingViewModel: ObservableObject {
 
     var canContinue: Bool {
         switch step {
-        case .welcome: return !vaultPath.trimmingCharacters(in: .whitespaces).isEmpty
+        case .welcome: return didStart && vaultPathIsValid
         case .prerequisites: return prerequisites?.canInstallEngine == true
         case .engine: return [.unpackEngine, .buildVenv, .registerWithClaudeCode].allSatisfy { isDone($0) }
         case .identity: return !identity.userName.trimmingCharacters(in: .whitespaces).isEmpty && identity.userEmail.contains("@")
@@ -123,6 +131,48 @@ final class OnboardingViewModel: ObservableObject {
     var connectorKeys: [String] {
         Set(detections.keys).union(ConnectorDetection.displayNames.keys)
             .sorted { (ConnectorDetection.displayNames[$0] ?? $0) < (ConnectorDetection.displayNames[$1] ?? $1) }
+    }
+
+    /// The vault must be absolute or `~`-prefixed: a relative path would
+    /// resolve against whatever the app's working directory happens to be.
+    var vaultPathIsValid: Bool { Self.isAcceptableVaultPath(vaultPath) }
+
+    static func isAcceptableVaultPath(_ path: String) -> Bool {
+        let t = path.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("/") || t == "~" || t.hasPrefix("~/")
+    }
+
+    /// The install steps of the current step, when it has any.
+    private var installSteps: [InstallStep]? {
+        switch step {
+        case .engine: return [.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode]
+        case .vault: return [.bootstrapVault, .verify]
+        default: return nil
+        }
+    }
+
+    /// Offer Install/Retry on Engine and Vault while that step is unfinished
+    /// and nothing is running. This covers a failed run and also an Engine
+    /// step reached by Back from Identity (onboarding that started at
+    /// Identity never ran the install here). A daily-budget warning after a
+    /// successful bootstrap leaves Vault finished, so it never offers to
+    /// re-run setup.
+    var canRetry: Bool { installSteps != nil && !busy && !canContinue }
+
+    /// "Install" when this step's install has never run, else "Retry".
+    var retryTitle: String {
+        let attempted = lastError != nil || (installSteps ?? []).contains { progress[$0] != nil }
+        return attempted ? "Retry" : "Install"
+    }
+
+    func retry() async {
+        guard canRetry else { return }
+        lastError = nil
+        switch step {
+        case .engine: await installEngine()
+        case .vault: await createVault()
+        default: break
+        }
     }
 
     var dailyBudgetIsValid: Bool {
@@ -173,16 +223,24 @@ final class OnboardingViewModel: ObservableObject {
     // MARK: flow
 
     /// Runs once per model (the view's `.task` may fire again on re-appear).
+    /// The jump to `initialStep` only happens if the user is still on the
+    /// step `start()` began from. Welcome's Continue is also disabled until
+    /// this finishes. Two independent guards (Ruling 66), so the 1–3 s check
+    /// can never snap a user who has moved on back to an earlier step.
     func start() async {
         guard !started else { return }
         started = true
+        let entryStep = step
         let checked = await checker.check()
         prerequisites = checked
         let git = await gitIdentity()
         if identity.userName.isEmpty, let name = git.name { identity.userName = name }
         if identity.userEmail.isEmpty, let email = git.email { identity.userEmail = email }
         identity.vault = vaultURL
-        step = Self.initialStep(engineState: engineState, prerequisites: checked)
+        if step == entryStep {
+            step = Self.initialStep(engineState: engineState, prerequisites: checked)
+        }
+        didStart = true
         if step == .ready { await refreshDoctor() }
     }
 
@@ -269,6 +327,7 @@ final class OnboardingViewModel: ObservableObject {
         lastError = nil
         installGeneration += 1
         let generation = installGeneration
+        liveGeneration = generation
         let ledger = InstallProgressLedger()
         let installer = makeInstaller { [weak self] p in
             ledger.record(p)
@@ -282,6 +341,9 @@ final class OnboardingViewModel: ObservableObject {
         for s in steps { progress[s] = nil }
         let ok = await installer.run(steps: steps, mode: mode)
         // Settle from the ledger: the live hops above may not have run yet.
+        // From here on this run's hops are dropped, so a late one can never
+        // overwrite the settled state.
+        if liveGeneration == generation { liveGeneration = nil }
         let final = ledger.snapshot
         for (s, p) in final { progress[s] = p }
         if !ok {
@@ -292,7 +354,7 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     private func applyLiveProgress(_ ledger: InstallProgressLedger, step: InstallStep, generation: Int) {
-        guard generation == installGeneration, let latest = ledger.latest(step) else { return }
+        guard generation == liveGeneration, let latest = ledger.latest(step) else { return }
         progress[step] = latest
     }
 

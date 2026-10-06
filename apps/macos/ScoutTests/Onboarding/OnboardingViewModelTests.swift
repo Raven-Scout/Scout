@@ -27,6 +27,35 @@ private final class ScriptedResolver: @unchecked Sendable {
     var calls: Int { lock.withLock { count } }
 }
 
+/// A one-shot latch: `wait()` suspends until `open()` (then returns at once).
+private actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+/// Keeps every progress sink the model handed an installer, in order.
+private final class SinkBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sinks: [@Sendable (InstallProgress) -> Void] = []
+    func append(_ sink: @escaping @Sendable (InstallProgress) -> Void) { lock.withLock { sinks.append(sink) } }
+    var first: (@Sendable (InstallProgress) -> Void)? { lock.withLock { sinks.first } }
+    var last: (@Sendable (InstallProgress) -> Void)? { lock.withLock { sinks.last } }
+}
+
+/// Lets a runner responder reach the model created after the runner.
+private final class ModelHolder: @unchecked Sendable {
+    var model: OnboardingViewModel?
+}
+
 private struct NoDownloads: FileDownloader {
     func download(_ url: URL) async throws -> URL { throw URLError(.notConnectedToInternet) }
 }
@@ -110,7 +139,7 @@ struct OnboardingViewModelTests {
 
     // MARK: start
 
-    @Test func startPrefillsIdentityFromGitWhenGitIsPresent() async {
+    @Test(.timeLimit(.minutes(1))) func startPrefillsIdentityFromGitWhenGitIsPresent() async {
         let runner = RuleBasedRunner()
         runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/Library/Developer/CommandLineTools\n")
         runner.on(tool: "git", prefix: ["config", "--global", "user.name"], stdout: "Alex\n")
@@ -124,7 +153,7 @@ struct OnboardingViewModelTests {
 
     /// Spec §5: never touch `/usr/bin/git` when git is missing — on a Mac
     /// without the Command Line Tools that pops Apple's install dialog.
-    @Test func startNeverRunsGitWhenGitIsMissing() async {
+    @Test(.timeLimit(.minutes(1))) func startNeverRunsGitWhenGitIsMissing() async {
         let runner = RuleBasedRunner()
         runner.on(tool: "xcode-select", prefix: ["-p"], stderr: "xcode-select: error", exit: 2)
         runner.on(tool: "git", stdout: "should not be asked\n")
@@ -133,6 +162,83 @@ struct OnboardingViewModelTests {
         #expect(runner.calls(to: "git").isEmpty)
         #expect(m.prerequisites?.git == .missing)
         #expect(m.identity.userName.isEmpty)
+        #expect(runner.calls(to: "xcode-select") == [["-p"]])   // never `--install` on its own
+    }
+
+    /// A runner whose `xcode-select -p` (inside `start()`'s check) suspends
+    /// until `release` opens, after signalling `entered`.
+    fileprivate func gatedStartRunner(entered: Gate, release: Gate) -> RuleBasedRunner {
+        let runner = RuleBasedRunner()
+        runner.on({ url, args in url.lastPathComponent == "xcode-select" && args == ["-p"] }) { _, _, _ in
+            await entered.open()
+            await release.wait()
+            return ProcessResult(exitCode: 0, stdout: Data("/x\n".utf8), stderr: Data())
+        }
+        runner.on(tool: "c", prefix: ["--version"], stdout: "2.1.259 (Claude Code)\n")
+        runner.on(tool: "c", prefix: ["auth", "status"], stdout: #"{"loggedIn": true}"#)
+        return runner
+    }
+
+    /// Ruling 66 guard (a): Welcome's Continue stays disabled until `start()`
+    /// has finished, so a click during the check is ignored.
+    @Test(.timeLimit(.minutes(1))) func welcomeContinueWaitsForStart() async {
+        let entered = Gate(), release = Gate()
+        let m = model(runner: gatedStartRunner(entered: entered, release: release), resolve: { _ in "/c" })
+        let starting = Task { await m.start() }
+        await entered.wait()
+        #expect(!m.didStart)
+        #expect(!m.canContinue)
+        await m.continueTapped()
+        #expect(m.step == .welcome)
+        await release.open()
+        await starting.value
+        #expect(m.didStart)
+        #expect(m.step == .welcome)
+        #expect(m.canContinue)
+    }
+
+    /// Ruling 66 guard (b): if the step changed while `start()` was
+    /// suspended, `start()` leaves it alone instead of applying `initialStep`
+    /// (here `.identity`).
+    @Test(.timeLimit(.minutes(1))) func startDoesNotSnapBackAfterTheUserMovedOn() async {
+        let entered = Gate(), release = Gate()
+        let m = model(engineState: .managed(install, vaultBootstrapped: false),
+                      runner: gatedStartRunner(entered: entered, release: release), resolve: { _ in "/c" })
+        let starting = Task { await m.start() }
+        await entered.wait()
+        m.step = .prerequisites
+        await release.open()
+        await starting.value
+        #expect(m.step == .prerequisites)
+        #expect(m.didStart)
+    }
+
+    /// Control for the guard above: with no navigation, `start()` does jump.
+    @Test(.timeLimit(.minutes(1))) func startJumpsToTheInitialStepWhenTheUserStayed() async {
+        let runner = RuleBasedRunner()
+        runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/x\n")
+        runner.on(tool: "c", prefix: ["--version"], stdout: "2.1.259 (Claude Code)\n")
+        let m = model(engineState: .managed(install, vaultBootstrapped: false), runner: runner, resolve: { _ in "/c" })
+        await m.start()
+        #expect(m.step == .identity)
+    }
+
+    /// Minor 7: the vault must be absolute or `~`-prefixed.
+    @Test(.timeLimit(.minutes(1))) func welcomeRejectsARelativeVaultPath() async {
+        let runner = RuleBasedRunner()
+        runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/x\n")
+        let m = model(runner: runner)
+        await m.start()
+        #expect(m.canContinue)
+        for bad in ["Scout", "Documents/Scout", "./Scout", "~alex/Scout", "", "  "] {
+            m.vaultPath = bad
+            #expect(!m.vaultPathIsValid, "\(bad)")
+            #expect(!m.canContinue, "\(bad)")
+        }
+        for good in ["~", "~/Scout", "/Users/alex/Scout", " /Users/alex/Notes "] {
+            m.vaultPath = good
+            #expect(m.canContinue, "\(good)")
+        }
     }
 
     // MARK: handoffs
@@ -159,11 +265,12 @@ struct OnboardingViewModelTests {
 
     // MARK: prerequisites polling
 
-    @Test func pollingRechecksUntilClaudeIsInstalledAndSignedIn() async {
+    @Test(.timeLimit(.minutes(1))) func pollingRechecksUntilClaudeIsInstalledAndSignedIn() async {
         let runner = RuleBasedRunner()
         runner.on(tool: "c", prefix: ["--version"], stdout: "2.1.259 (Claude Code)\n")
         runner.on(tool: "c", prefix: ["auth", "status"], stdout: #"{"loggedIn": true}"#)
-        runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/x\n")
+        // Git missing too: polling must still never offer Apple's installer itself.
+        runner.on(tool: "xcode-select", prefix: ["-p"], stderr: "xcode-select: error", exit: 2)
         let resolver = ScriptedResolver([nil, nil, "/c"])
         let m = model(runner: runner, resolve: { _ in resolver.next() })
         m.prerequisitePollInterval = .milliseconds(5)
@@ -172,9 +279,12 @@ struct OnboardingViewModelTests {
         #expect(resolver.calls == 3)
         #expect(m.prerequisites?.auth == .signedIn)
         #expect(!m.needsPrerequisitePolling)
+        #expect(m.prerequisites?.git == .missing)
+        #expect(!runner.calls(to: "xcode-select").contains(["--install"]))
+        #expect(runner.calls(to: "xcode-select").count == 3)
     }
 
-    @Test func pollingDoesNothingOffThePrerequisitesStep() async {
+    @Test(.timeLimit(.minutes(1))) func pollingDoesNothingOffThePrerequisitesStep() async {
         let resolver = ScriptedResolver([nil])
         let m = model(resolve: { _ in resolver.next() })
         m.prerequisitePollInterval = .milliseconds(5)
@@ -185,7 +295,7 @@ struct OnboardingViewModelTests {
 
     /// A second poll (the view re-appearing) supersedes the first, so loops
     /// never stack; changing step ends the survivor.
-    @Test func aNewPollSupersedesTheOldOneAndAStepChangeEndsIt() async {
+    @Test(.timeLimit(.minutes(1))) func aNewPollSupersedesTheOldOneAndAStepChangeEndsIt() async {
         let runner = RuleBasedRunner()
         runner.on(tool: "xcode-select", prefix: ["-p"], stdout: "/x\n")
         let m = model(runner: runner, resolve: { _ in nil })
@@ -211,6 +321,57 @@ struct OnboardingViewModelTests {
         #expect(m.lastError?.contains("carries no engine") == true)
         #expect(!m.canContinue)
         #expect(!m.busy)
+        #expect(m.canRetry)
+        #expect(m.retryTitle == "Retry")
+        m.step = .identity
+        #expect(!m.canRetry)              // only Engine and Vault have installs
+    }
+
+    func engineModel(_ support: EngineInstallerTests, _ f: EngineInstallerTests.Fixture,
+                     engineState: EngineState = .notInstalled) -> OnboardingViewModel {
+        f.runner.on(tool: "claude", prefix: ["plugin", "marketplace", "add"])
+        f.runner.on(tool: "claude", prefix: ["plugin", "install"])
+        let m = model(engineState: engineState, layout: f.layout, release: f.release, runner: f.runner,
+                      makeInstaller: { sink in support.installer(f, sink: sink) })
+        m.prerequisites = Prerequisites(claude: .installed(path: f.claude, version: "2.1.259"), auth: .signedIn,
+                                        git: .present(URL(fileURLWithPath: "/usr/bin/git")), uv: .missing)
+        return m
+    }
+
+    /// A real install (temp home, real tar + fake install-venv.sh, scripted
+    /// claude) driven through the model reaches Continue on Engine.
+    @Test(.timeLimit(.minutes(1))) func continuingToEngineInstallsAndUnlocksContinue() async throws {
+        let support = EngineInstallerTests()
+        let f = try support.fixture()
+        defer { try? FileManager.default.removeItem(at: f.layout.home) }
+        let m = engineModel(support, f)
+        m.step = .prerequisites
+        await m.continueTapped()
+        #expect(m.step == .engine)
+        #expect(m.lastError == nil)
+        #expect(m.canContinue)
+        #expect(!m.canRetry)
+        #expect(m.progress[.registerWithClaudeCode]?.status == .done)
+        #expect(FileManager.default.isExecutableFile(atPath: f.layout.scoutctl(version: f.release.engine.version).path))
+    }
+
+    /// Minor 8: onboarding that started at Identity never ran the install,
+    /// so Back to Engine offers "Install" instead of a dead end.
+    @Test(.timeLimit(.minutes(1))) func backFromIdentityToAnUntouchedEngineStepOffersInstall() async throws {
+        let support = EngineInstallerTests()
+        let f = try support.fixture()
+        defer { try? FileManager.default.removeItem(at: f.layout.home) }
+        let m = engineModel(support, f, engineState: .managed(install, vaultBootstrapped: false))
+        m.step = .identity
+        m.back()
+        #expect(m.step == .engine)
+        #expect(!m.canContinue)
+        #expect(m.canRetry)
+        #expect(m.retryTitle == "Install")
+        await m.retry()
+        #expect(m.canContinue)
+        #expect(!m.canRetry)
+        #expect(m.lastError == nil)
     }
 
     // MARK: connectors
@@ -267,22 +428,29 @@ struct OnboardingViewModelTests {
         let runner: RuleBasedRunner
     }
 
-    func vaultFixture(bootstrapOK: Bool = true) throws -> VaultFixture {
+    static func bootstrapJSON(vault: URL, ok: Bool) -> String {
+        let action = ok ? "install" : "refused"
+        let error = ok ? "null" : #""install needs --user-name""#
+        return #"{"schema_version":1,"action":"\#(action)","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"0.10.0","error":\#(error),"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#
+    }
+
+    func vaultFixture(bootstrapOK: Bool = true, scriptAuto: Bool = true) throws -> VaultFixture {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("onboarding-\(UUID().uuidString)")
         let vault = home.appendingPathComponent("Scout")
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         let runner = RuleBasedRunner()
-        let action = bootstrapOK ? "install" : "refused"
-        let error = bootstrapOK ? "null" : #""install needs --user-name""#
-        runner.on(tool: "scoutctl", prefix: ["bootstrap", "auto"], stdout: #"{"schema_version":1,"action":"\#(action)","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"0.10.0","error":\#(error),"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#)
+        if scriptAuto {
+            runner.on(tool: "scoutctl", prefix: ["bootstrap", "auto"], stdout: Self.bootstrapJSON(vault: vault, ok: bootstrapOK))
+        }
         runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: #"{"severity":"green","errors":[],"warnings":[]}"#)
         return VaultFixture(home: home, layout: EngineLayout(home: home), vault: vault, runner: runner)
     }
 
-    func vaultModel(_ f: VaultFixture) -> OnboardingViewModel {
+    fileprivate func vaultModel(_ f: VaultFixture, sinks: SinkBox? = nil) -> OnboardingViewModel {
         let layout = f.layout, runner = f.runner
         let m = model(layout: layout, release: releaseFixture, runner: runner, makeInstaller: { sink in
-            EngineInstaller(layout: layout, release: releaseFixture, tarballURL: nil, runner: runner,
+            sinks?.append(sink)
+            return EngineInstaller(layout: layout, release: releaseFixture, tarballURL: nil, runner: runner,
                             uv: UvInstaller(release: releaseFixture.uv, layout: layout, downloader: NoDownloads(), runner: runner, systemCandidates: []),
                             claude: URL(fileURLWithPath: "/c"), progress: sink)
         })
@@ -329,6 +497,7 @@ struct OnboardingViewModelTests {
         #expect(m.lastError?.contains("daily budget") == true)
         #expect(m.lastError?.contains("config is read-only") == true)
         #expect(m.canContinue)            // setup itself succeeded
+        #expect(!m.canRetry)              // so it never offers to re-run bootstrap
     }
 
     @Test func anEmptyDailyBudgetRunsNothing() async throws {
@@ -352,6 +521,59 @@ struct OnboardingViewModelTests {
         #expect(budgetCalls(f.runner).isEmpty)
         #expect(m.lastError?.contains("install needs --user-name") == true)
         #expect(!m.canContinue)
+        #expect(m.canRetry)
+        #expect(m.retryTitle == "Retry")
+        await m.retry()
+        #expect(f.runner.calls(to: "scoutctl").filter { $0.starts(with: ["bootstrap", "auto"]) }.count == 2)
+    }
+
+    /// Minor 3: once a run has settled, a progress hop arriving late (here
+    /// a contradicting report through that run's sink) changes nothing.
+    @Test(.timeLimit(.minutes(1))) func aLateProgressHopCannotChangeTheSettledState() async throws {
+        let f = try vaultFixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let sinks = SinkBox()
+        let m = vaultModel(f, sinks: sinks)
+        m.step = .vault
+        await m.createVault()
+        #expect(m.progress[.bootstrapVault]?.status == .done)
+        sinks.last?(InstallProgress(step: .bootstrapVault, status: .failed("late"), log: "late"))
+        try? await Task.sleep(for: .milliseconds(50))   // let the hop reach the main actor
+        #expect(m.progress[.bootstrapVault]?.status == .done)
+        #expect(m.lastError == nil)
+        #expect(m.canContinue)
+    }
+
+    /// Minor 3: while a second run is in flight, a hop from the first run is
+    /// dropped. The first run's sink reports a failure in the middle of the
+    /// second run's bootstrap, and the model never shows it.
+    @Test(.timeLimit(.minutes(1))) func anOlderRunsProgressIsDroppedDuringANewRun() async throws {
+        let f = try vaultFixture(scriptAuto: false)
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let sinks = SinkBox()
+        let holder = ModelHolder()
+        let autoCalls = Recorder<Int>()
+        let seen = Recorder<String>()
+        let okJSON = Self.bootstrapJSON(vault: f.vault, ok: true)
+        f.runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.starts(with: ["bootstrap", "auto"]) }) { _, _, _ in
+            autoCalls.append(1)
+            if autoCalls.all.count == 2 {
+                sinks.first?(InstallProgress(step: .bootstrapVault, status: .failed("stale"), log: "stale"))
+                try? await Task.sleep(for: .milliseconds(50))
+                let status = await MainActor.run { holder.model?.progress[.bootstrapVault]?.status }
+                seen.append(String(describing: status))
+            }
+            return ProcessResult(exitCode: 0, stdout: Data(okJSON.utf8), stderr: Data())
+        }
+        let m = vaultModel(f, sinks: sinks)
+        holder.model = m
+        m.step = .vault
+        await m.createVault()
+        await m.createVault()
+        #expect(seen.all.count == 1)
+        #expect(seen.all.first?.contains("stale") == false)
+        #expect(m.progress[.bootstrapVault]?.status == .done)
+        #expect(m.lastError == nil)
     }
 
     // MARK: ready
@@ -376,8 +598,10 @@ struct OnboardingViewModelTests {
         runner.on(tool: "scoutctl", prefix: ["schedule", "list"], stdout: #"[{"key": "consolidation-pm", "type": "consolidation", "runner": "claude"}, {"key": "morning", "type": "briefing", "runner": "claude"}]"#)
         runner.on(tool: "scoutctl", prefix: ["schedule", "fire-now"])
         let m = model(engineState: .managed(install, vaultBootstrapped: true), runner: runner)
+        m.vaultPath = "/Users/alex/Notes"      // the vault chosen in onboarding, not the install's
         await m.runFirstBriefing()
         #expect(runner.calls(to: "scoutctl") == [["schedule", "list", "--json"], ["schedule", "fire-now", "morning"]])
+        #expect(runner.calls.map { $0.environment["SCOUT_DATA_DIR"] } == ["/Users/alex/Notes", "/Users/alex/Notes"])
         #expect(m.lastError == nil)
         #expect(m.briefingStatus != nil)
     }

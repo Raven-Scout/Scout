@@ -67,6 +67,9 @@ struct OnboardingView: View {
             bullet("Claude Code learns the /scout-* commands; scheduled sessions run via launchd.")
             bullet("Your knowledge base and action items live in the vault folder below.")
             field("Vault folder", text: $model.vaultPath, placeholder: "~/Scout")
+            if !model.vaultPathIsValid {
+                Text("Use a full path that starts with / or ~, such as ~/Scout.").font(DS.sans(11.5)).foregroundStyle(DS.Status.warn)
+            }
         }
     }
 
@@ -179,18 +182,14 @@ struct OnboardingView: View {
                     }
                 }
             }
-            // Only while this step is unfinished: a daily-budget warning after a
-            // successful bootstrap must not offer to re-run setup.
-            if model.lastError != nil, !model.canContinue, !model.busy {
-                Button("Retry") { Task { await retry() } }
+            if model.canRetry {
+                Button(model.retryTitle, action: retry)
                     .buttonStyle(.plainHit).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Accent.ink)
             }
         }
     }
 
-    private func retry() async {
-        if model.step == .engine { await model.installEngine() } else { await model.createVault() }
-    }
+    private func retry() { Task { await model.retry() } }
 
     private var footer: some View {
         HStack {

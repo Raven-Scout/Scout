@@ -14,10 +14,24 @@ struct ConnectorDetectionTests {
         #expect(ConnectorDetection.parse(Data("x".utf8)) == nil)
     }
 
-    /// An unknown status value fails the whole decode rather than guessing.
-    @Test func rejectsAnUnknownStatus() {
-        let json = #"{"email": {"status": "sideways", "needs_user_input": [], "evidence": ""}}"#
-        #expect(ConnectorDetection.parse(Data(json.utf8)) == nil)
+    /// E4: "unmappable is unknown". A status the app doesn't know, or a
+    /// missing one, becomes `.unknown`; missing optional fields get defaults.
+    @Test func unmappableStatusAndMissingFieldsDecodeTolerantly() {
+        let json = #"{"email": {"status": "sideways", "needs_user_input": [], "evidence": "e"}, "slack": {"status": "connected"}, "linear": {"evidence": "x"}, "drive": {"status": 7, "needs_user_input": "nope"}}"#
+        let d = ConnectorDetection.parse(Data(json.utf8))
+        #expect(d?["email"] == ConnectorDetection(status: .unknown, needsUserInput: [], evidence: "e"))
+        #expect(d?["slack"] == ConnectorDetection(status: .connected, needsUserInput: [], evidence: ""))
+        #expect(d?["linear"] == ConnectorDetection(status: .unknown, needsUserInput: [], evidence: "x"))
+        #expect(d?["drive"] == ConnectorDetection(status: .unknown, needsUserInput: [], evidence: ""))
+    }
+
+    /// One unreadable entry is dropped; the rest of the map survives.
+    @Test func oneBadEntryDoesNotFailTheMap() {
+        let json = #"{"email": {"status": "connected", "needs_user_input": [], "evidence": ""}, "slack": 5, "github": ["x"]}"#
+        let d = ConnectorDetection.parse(Data(json.utf8))
+        #expect(d?.keys.sorted() == ["email"])
+        #expect(d?["email"]?.status == .connected)
+        #expect(ConnectorDetection.parse(Data("[1, 2]".utf8)) == nil)
     }
 
     /// The labels cover every connector the engine's shipped probe registry
