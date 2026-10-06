@@ -444,3 +444,360 @@ def test_declared_input_placeholder_is_accepted():
     assert issues == [], _messages(issues)
     assert c is not None
     assert c.needs_user_input == ("workspace_id",)
+
+
+# --- Task 6: comment-preserving write ----------------------------------------------
+
+_TICKETS = {
+    "display_name": "Tickets",
+    "probe": {"bash": "tix whoami"},
+    "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+}
+_ALPHA = {
+    "display_name": "Alpha",
+    "probe": "mcp__dataplat__info",
+    "lookup": {"tools": ["mcp__dataplat__search"], "when": "x"},
+}
+_ZETA = {
+    "display_name": "Zeta",
+    "probe": "mcp__dataplat__info",
+    "lookup": {"tools": ["mcp__dataplat__search"], "when": "y"},
+}
+
+
+def test_header_and_untouched_entry_comments_survive_add_and_remove(tmp_path: Path):
+    text = (
+        "# Custom connectors file.\n"
+        "# Keep hands off the schema_version line.\n"
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  # The ticket tracker.\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    after_add = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "# Custom connectors file." in after_add
+    assert "# Keep hands off the schema_version line." in after_add
+    assert "# The ticket tracker." in after_add
+    assert yaml.safe_load(after_add) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    after_remove = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "# Custom connectors file." in after_remove
+    assert "# The ticket tracker." in after_remove
+    assert yaml.safe_load(after_remove) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+def test_comments_survive_add_and_remove_after_a_dump_written_file(tmp_path: Path):
+    """dump()'s own block-style output is itself a valid target for the per-entry
+    rewriter, so after the very first write, every later add/remove takes the
+    comment-preserving path rather than the full-dump path."""
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    path = tmp_path / cc.CUSTOM_FILE
+    text = path.read_text()
+    assert yaml.safe_load(text) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+    text = text.replace("  tickets:\n", "  # Jira-ish ticket tracker\n  tickets:\n")
+    path.write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    after_add = path.read_text()
+    assert "# Jira-ish ticket tracker" in after_add
+    assert yaml.safe_load(after_add) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    after_remove = path.read_text()
+    assert "# Jira-ish ticket tracker" in after_remove
+    assert yaml.safe_load(after_remove) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+def test_changed_entry_keeps_its_position_and_neighbours_comments_survive(tmp_path: Path):
+    """A changed entry is replaced in place, not moved to the end; its own inner
+    comment may be lost, but comments on its neighbours are untouched."""
+    text = (
+        "# header comment\n"
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  # alpha note\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+        "  tickets:\n"
+        "    # inner note, lost on change\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "  # zeta note\n"
+        "  zeta:\n"
+        "    display_name: Zeta\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: y\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    new_tickets = {**_TICKETS, "inbound": {**_TICKETS["inbound"], "focus": "Updated focus."}}
+
+    cc.write(tmp_path, {"alpha": _ALPHA, "tickets": new_tickets, "zeta": _ZETA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    loaded = yaml.safe_load(result)
+    assert loaded == {"schema_version": 1, "connectors": {"alpha": _ALPHA, "tickets": new_tickets, "zeta": _ZETA}}
+    assert list(loaded["connectors"]) == ["alpha", "tickets", "zeta"]
+    assert "# alpha note" in result
+    assert "# zeta note" in result
+    assert "# inner note, lost on change" not in result
+
+
+def test_trailing_comment_block_survives(tmp_path: Path):
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# Keep this note at the end of the file.\n"
+        "# Second line of the note.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    new_tickets = {**_TICKETS, "inbound": {**_TICKETS["inbound"], "focus": "Updated focus."}}
+
+    cc.write(tmp_path, {"tickets": new_tickets})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": new_tickets}}
+    assert result.endswith("# Keep this note at the end of the file.\n# Second line of the note.\n")
+
+
+def test_flow_style_file_falls_back_to_a_plain_dump(tmp_path: Path):
+    text = (
+        "schema_version: 1\n"
+        "connectors: {tickets: {display_name: Tickets, probe: {bash: 'tix whoami'}, "
+        "inbound: {tools: [{bash: 'tix list'}], focus: 'Changed tickets.'}}}\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_empty_connectors_file_then_add_works(tmp_path: Path):
+    """dump() writes an empty mapping as flow-style `connectors: {}`, which the
+    per-entry splitter correctly declines (nothing after `connectors:` on its own
+    line) -- the add must still succeed via the full-dump fallback."""
+    cc.write(tmp_path, {})
+    text = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert "connectors: {}" in text
+
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "---\n"
+            "schema_version: 1\n"
+            "connectors:\n"
+            "  tickets:\n"
+            "    display_name: Tickets\n"
+            "    probe:\n"
+            "      bash: tix whoami\n"
+            "    inbound:\n"
+            "      tools:\n"
+            "      - bash: tix list\n"
+            "      focus: Changed tickets.\n"
+        ),
+        ("schema_version: 1\nconnectors:\n\ttickets:\n\t\tdisplay_name: Tickets\n\t\tprobe:\n\t\t\tbash: tix whoami\n"),
+    ],
+    ids=["document-marker", "tabs"],
+)
+def test_document_marker_or_tabs_fall_back_to_a_plain_dump(tmp_path: Path, text: str):
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_bool_resolving_key_does_not_lose_or_duplicate_the_entry(tmp_path: Path):
+    """A hand-edited file with an unquoted `no:` key parses, line by line, as the
+    boolean False rather than the string "no" -- naive key matching would treat the
+    entry as removed and silently drop it. The result must still land exactly one
+    `no` entry, correctly quoted so it round-trips as a string."""
+    no_body = {
+        "display_name": "Negative",
+        "probe": "mcp__dataplat__info",
+        "lookup": {"tools": ["mcp__dataplat__search"], "when": "x"},
+    }
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  no:\n"
+        "    display_name: Negative\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"no": no_body})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+    loaded = yaml.safe_load(result)
+
+    assert loaded == {"schema_version": 1, "connectors": {"no": no_body}}
+    assert list(loaded["connectors"]) == ["no"]
+
+
+def test_unexpected_content_after_the_connectors_block_falls_back(tmp_path: Path):
+    """A column-0 line after the last entry (not a comment, not a document marker)
+    is content the splitter doesn't recognize; it must fall back rather than guess."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "extra: 1\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_unparseable_entry_start_line_falls_back(tmp_path: Path):
+    """An entry line that is itself invalid YAML on its own (an unterminated flow
+    collection) can't be read as a candidate key; the splitter must bail cleanly."""
+    text = "schema_version: 1\nconnectors:\n  tickets: [1, 2,\n    3]\n"
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_non_mapping_entry_line_falls_back(tmp_path: Path):
+    """A two-space-indented line that parses to something other than a single-key
+    mapping (here, a stray sequence item) can't be a connector entry."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  - stray\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_duplicate_entry_keys_fall_back(tmp_path: Path):
+    text = "schema_version: 1\nconnectors:\n  tickets:\n    display_name: A\n  tickets:\n    display_name: B\n"
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_entry_with_unparseable_body_is_redumped_not_crashed(tmp_path: Path):
+    """The entry's first line parses fine on its own (so the split succeeds), but
+    its nested content is inconsistently indented, so parsing the whole block
+    raises. That entry must be treated as changed (re-dumped), not crash."""
+    text = "schema_version: 1\nconnectors:\n  tickets:\n    display_name: Tickets\n   probe: bad\n"
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+def test_new_entry_appended_after_a_file_missing_its_final_newline(tmp_path: Path):
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets."
+    )
+    assert not text.endswith("\n")
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+def test_a_rebuild_that_does_not_parse_falls_back_to_a_plain_dump(tmp_path: Path, monkeypatch):
+    """Defense in depth: even if `_rebuild_entries` ever produced text that isn't
+    valid YAML at all, `write` must not raise or write garbage -- it falls back."""
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    monkeypatch.setattr(cc, "_rebuild_entries", lambda *a, **k: "connectors: [unterminated\n")
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}

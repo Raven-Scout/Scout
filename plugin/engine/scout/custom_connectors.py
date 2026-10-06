@@ -441,11 +441,150 @@ def dump(raw_connectors: dict[str, Any]) -> str:
     return _HEADER + body
 
 
+def _split_custom_yaml(
+    text: str,
+) -> tuple[list[str], list[tuple[str, list[str], list[str]]], list[str]] | None:
+    """Split ``text`` into ``(header, entries, trailer)`` when it is laid out the way
+    ``dump()`` always writes it: a bare ``connectors:`` key at column 0 (nothing else
+    on that line) followed by block-style entries indented by exactly two spaces.
+
+    ``header`` is every line up to and including the ``connectors:`` line, kept
+    verbatim by the caller. ``entries`` are ``(key, leading, block)`` triples in
+    file order: ``leading`` is the run of comment/blank lines directly above
+    ``key``, and ``block`` is the key's own line plus everything nested under it.
+    ``trailer`` is the comment/blank lines after the last entry.
+
+    Returns ``None`` whenever the layout can't be split with confidence, so the
+    caller falls back to a plain dump: tabs anywhere, a document marker, no bare
+    ``connectors:`` line (including a flow-style or empty ``connectors: {}``), a
+    line that dedents back to column 0 inside the block (unexpected content after
+    it), an entry line that doesn't parse as a single-key mapping, or duplicate
+    keys. Mirrors ``bootstrap._top_level_blocks``, one level deeper.
+    """
+    if "\t" in text:
+        return None
+    lines = text.splitlines(keepends=True)
+
+    conn_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.startswith(("---", "...")):
+            return None
+        if conn_idx is None and line.rstrip("\r\n") == "connectors:":
+            conn_idx = i
+    if conn_idx is None:
+        return None
+    header = lines[: conn_idx + 1]
+    body = lines[conn_idx + 1 :]
+
+    def is_filler(ln: str) -> bool:
+        return not ln.strip() or ln.lstrip().startswith("#")
+
+    starts: list[tuple[int, str]] = []
+    for i, line in enumerate(body):
+        if is_filler(line):
+            continue
+        if line[0] != " ":
+            return None  # dedented to column 0: unexpected content after the block
+        if not line.startswith("  ") or line[2] == " ":
+            continue  # content nested inside the current entry (3+ spaces)
+        try:
+            parsed = yaml.safe_load(line[2:])
+        except yaml.YAMLError:
+            return None
+        if not isinstance(parsed, dict) or len(parsed) != 1:
+            return None
+        starts.append((i, str(next(iter(parsed)))))
+
+    if len({key for _, key in starts}) != len(starts):
+        return None
+
+    segments: list[tuple[str, list[str], list[str]]] = []
+    lead_from = 0
+    for n, (start, key) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(body)
+        while end > start + 1 and is_filler(body[end - 1]):
+            end -= 1
+        segments.append((key, body[lead_from:start], body[start:end]))
+        lead_from = end
+    return header, segments, body[lead_from:]
+
+
+def _dump_entry(key: str, value: Any) -> str:
+    """``yaml.safe_dump({key: value})``, indented by two spaces to nest under ``connectors:``."""
+    dumped = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True)
+    return "".join(("  " + line if line.strip() else line) for line in dumped.splitlines(keepends=True))
+
+
+def _rebuild_entries(
+    header: list[str],
+    segments: list[tuple[str, list[str], list[str]]],
+    trailer: list[str],
+    raw_connectors: dict[str, Any],
+) -> str:
+    out: list[str] = list(header)
+    handled: set[str] = set()
+    for key, leading, block in segments:
+        handled.add(key)
+        if key not in raw_connectors:
+            continue  # removed: its leading comments go with it
+        out += leading
+        try:
+            original = yaml.safe_load("".join(block))
+        except yaml.YAMLError:
+            original = None
+        unchanged = isinstance(original, dict) and key in original and original[key] == raw_connectors[key]
+        out.append("".join(block) if unchanged else _dump_entry(key, raw_connectors[key]))
+    out += trailer
+    new_keys = [k for k in raw_connectors if k not in handled]
+    if new_keys:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        for key in new_keys:
+            out.append(_dump_entry(key, raw_connectors[key]))
+    return "".join(out)
+
+
+def _write_keeping_comments(text: str, raw_connectors: dict[str, Any]) -> str:
+    """``dump(raw_connectors)``, but written over ``text`` so its comments survive.
+
+    See ``_split_custom_yaml`` for what layout this can rewrite entry by entry.
+    Falls back to a plain ``dump()`` whenever the layout can't be split safely, or
+    the rebuilt text doesn't load back to exactly ``raw_connectors`` -- the safety
+    net for anything this function's line-based splitting gets wrong (e.g. a bare
+    word YAML resolves to a bool instead of the intended string key).
+    """
+    split = _split_custom_yaml(text)
+    if split is None:
+        return dump(raw_connectors)
+    header, segments, trailer = split
+    result = _rebuild_entries(header, segments, trailer, raw_connectors)
+    try:
+        loaded = yaml.safe_load(result)
+    except yaml.YAMLError:
+        return dump(raw_connectors)
+    if loaded != {"schema_version": SCHEMA_VERSION, "connectors": raw_connectors}:
+        return dump(raw_connectors)
+    return result
+
+
 def write(vault: Path, raw_connectors: dict[str, Any]) -> None:
-    """Atomically write the custom file (the only writer of it)."""
+    """Atomically write the custom file (the only writer of it).
+
+    Rewrites the existing file entry by entry so hand-added comments survive an
+    add/remove, when it is laid out the way this function's own output always is
+    (block-style, ``connectors:`` at column 0, each entry at two-space indent).
+    Falls back to a full re-dump -- which never preserves comments but never loses
+    data either -- whenever there is no existing file, or the rewrite can't be
+    trusted to reproduce ``raw_connectors`` exactly.
+    """
     path = vault / CUSTOM_FILE
+    try:
+        text: str | None = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = None
+    new_text = dump(raw_connectors) if text is None else _write_keeping_comments(text, raw_connectors)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(dump(raw_connectors), encoding="utf-8")
+    tmp.write_text(new_text, encoding="utf-8")
     tmp.replace(path)
 
 
