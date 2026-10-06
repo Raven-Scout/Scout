@@ -82,6 +82,32 @@ def test_conflict_markers_carry_the_given_labels():
     assert ">>>>>>> vault" in lines
 
 
+def test_final_newline_only_difference_does_not_conflict():
+    """base/ours lack a trailing "\\n"; theirs has one (e.g. an editor added it
+    on save). ours also appends a line, theirs edits a mid-file line — real,
+    non-overlapping changes that must merge cleanly despite the newline-only
+    mismatch between the three sides."""
+    base = "alpha\nbeta\ngamma"  # no trailing newline
+    ours = "alpha\nbeta\ngamma\ndelta\n"  # appended a line; now ends with \n
+    theirs = "alpha\nBETA\ngamma\n"  # mid-file edit; ends with \n though base didn't
+    result = three_way_merge(base=base, ours=ours, theirs=theirs)
+    assert result.conflicts is False
+    assert "BETA" in result.content
+    assert "delta" in result.content
+
+
+def test_final_newline_only_difference_does_not_conflict_reverse_direction():
+    """Same as above with the newline on the opposite side: base/theirs end
+    without a trailing "\\n" this time, ours does."""
+    base = "alpha\nbeta\ngamma\n"
+    ours = "alpha\nbeta\ngamma\ndelta\n"  # appended a line; keeps the trailing \n
+    theirs = "alpha\nBETA\ngamma"  # mid-file edit; drops the trailing \n
+    result = three_way_merge(base=base, ours=ours, theirs=theirs)
+    assert result.conflicts is False
+    assert "BETA" in result.content
+    assert "delta" in result.content
+
+
 def test_a_missing_git_is_reported_as_merge_unavailable(monkeypatch):
     from scout.scripts.three_way_merge import MergeUnavailable
 

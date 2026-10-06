@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scout.custom_connectors import load_presets, parse_connector, reserved_keys
 from scout.scripts.bootstrap import BootstrapConfig
 from scout.scripts.connector_probes import (
     CONNECTOR_KEY_ALIASES,
@@ -87,6 +88,32 @@ def test_legacy_gmail_config_selects_the_real_email_phase():
 
     kept = select_sections(sections, enabled_connectors=normalize_connector_keys({"gmail"}))
     assert len(kept) == len(sections)
+
+
+def test_custom_connector_can_never_shadow_a_shipped_key():
+    """Custom-connectors spec §6: every shipped probe key, phase `requires:` value, and
+    alias key and target is reserved, and a custom entry using one is rejected — so a
+    custom connector can never silently take over (or be gated like) a shipped one."""
+    shipped = (
+        _shipped_probe_keys()
+        | set(_phase_requires())
+        | set(CONNECTOR_KEY_ALIASES)
+        | set(CONNECTOR_KEY_ALIASES.values())
+    )
+    reserved = reserved_keys(REPO_ROOT)
+    assert shipped - reserved == set(), f"shipped keys a custom connector could shadow: {sorted(shipped - reserved)}"
+
+    body = {
+        "display_name": "Shadow",
+        "server": "example_shadow",
+        "probe": "mcp__example_shadow__whoami",
+        "inbound": {"tools": ["mcp__example_shadow__search"], "focus": "Anything new."},
+    }
+    presets = load_presets(REPO_ROOT)
+    for key in sorted(shipped):
+        connector, issues = parse_connector(key, body, reserved=reserved, presets=presets)
+        assert connector is None, f"custom connector {key!r} was accepted"
+        assert any(i.path == f"connectors.{key}" and "built-in connector key" in i.message for i in issues), key
 
 
 def test_bootstrap_config_normalizes_enabled_connectors(tmp_path):

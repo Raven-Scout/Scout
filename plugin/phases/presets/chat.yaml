@@ -1,0 +1,18 @@
+summary: Team chat — direct messages, mentions, channels
+inbound: |
+  Look at messages to or mentioning {{USER_NAME}} since the last run: direct messages first, then
+  @-mentions, then threads {{USER_NAME}} started or replied in, then decisions, blockers, and status updates
+  in channels tied to projects in `knowledge-base/projects/`. Check thread replies, not just top-level
+  messages; asks are often buried in threads.
+
+  Note who sent each message, where, what is being asked, how time-sensitive it is, and whether {{USER_NAME}}
+  already answered. Do not call the source quiet unless both the to-{{USER_NAME}} and the
+  from-{{USER_NAME}} scans ran.
+outbound: |
+  Look at messages {{USER_NAME}} sent since the last run, including thread replies. A reply to a request means
+  it is likely handled. A status update means the underlying work is done or in progress. A message accepting
+  ownership ("I'll take it", "on it") with no later resolving message stays an open action item for
+  {{USER_NAME}} until it is resolved or dropped.
+lookup: |
+  Search chat when an action item or meeting references a conversation, a decision, or a person whose recent
+  context is not in the knowledge base.

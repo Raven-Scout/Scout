@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
+from scout import custom_connectors
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -33,6 +34,7 @@ from scout.scripts.bootstrap_lock import (
     release_lock,
 )
 from scout.scripts.connector_probes import normalize_connector_keys
+from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
@@ -428,8 +430,23 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
         _atomic_write(target, rendered)
 
 
-def _assemble(cfg: BootstrapConfig, kind: str) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files."""
+def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
+    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped."""
+    result = custom_connectors.load(cfg.vault, plugin_root=cfg.plugin_root)
+    for issue in result.issues:
+        print(f"warning: {custom_connectors.CUSTOM_FILE}: {issue.path}: {issue.message}", file=sys.stderr)
+    return result.connectors
+
+
+def _assemble(
+    cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
+) -> str:
+    """Assemble SKILL/DREAMING/RESEARCH from phase files, then append custom-connector sections.
+
+    ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
+    apply path passes explicit before/after sets. ``plugin/phases/custom/`` is never globbed
+    here — its templates have no ``requires:`` gate and are rendered only per connector.
+    """
     vars_ = _template_vars(cfg)
     phases_root = cfg.plugin_root / "phases"
     bodies: list[str] = [brain_merge.assembly_header(kind, cfg.vault)]
@@ -473,6 +490,12 @@ def _assemble(cfg: BootstrapConfig, kind: str) -> str:
             )
             for s in kept:
                 bodies.append(render_template(s.body, vars_))
+    if custom is None:
+        custom = load_custom(cfg)
+    for section in render_custom_sections(
+        cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
+    ):
+        bodies.append(section.rendered_body)
     return "\n\n".join(bodies)
 
 
@@ -489,8 +512,9 @@ def _stage_cat4_install(cfg: BootstrapConfig) -> None:
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     records: dict[str, brain_merge.Provenance] = {}
+    custom = load_custom(cfg)
     for kind in brain_merge.BRAIN_KINDS:
-        content = _assemble(cfg, kind)
+        content = _assemble(cfg, kind, custom=custom)
         _atomic_write(cfg.vault / f"{kind}.md", content)
         _atomic_write(snapshot_dir / f"{kind}.md", content)
         records[f"{kind}.md"] = brain_merge.Provenance.assembled(content)
@@ -509,7 +533,12 @@ class _Cat4Outcome:
     backups: list[str] = field(default_factory=list)  # parked copies of live files replaced on the fingerprint alone
 
 
-def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
+def _stage_cat4_upgrade(
+    cfg: BootstrapConfig,
+    *,
+    custom: dict[str, custom_connectors.CustomConnector] | None = None,
+    kinds: tuple[str, ...] = brain_merge.BRAIN_KINDS,
+) -> _Cat4Outcome:
     """Stage 5 (upgrade): reconcile each brain file with its fresh assembly.
 
     ``brain_merge.decide`` picks the action per file; see its module docstring
@@ -524,6 +553,10 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
 
     Provenance is persisted after each file, so a failure on a later file
     can't leave an earlier, already-advanced snapshot without its record.
+
+    ``custom``/``kinds`` exist for ``apply_custom_change``: reconcile only the
+    brain files a custom-connector change touched, assembled with the new
+    custom set. ``upgrade()`` uses the defaults.
     """
     snapshot_dir = _snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -534,9 +567,11 @@ def _stage_cat4_upgrade(cfg: BootstrapConfig) -> _Cat4Outcome:
         # even if this one advances no snapshot.
         _write_provenance(snapshot_dir, records)
     out = _Cat4Outcome()
-    for kind in brain_merge.BRAIN_KINDS:
+    if custom is None:
+        custom = load_custom(cfg)
+    for kind in kinds:
         name = f"{kind}.md"
-        ours = _assemble(cfg, kind)
+        ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
         theirs = live.read_text(encoding="utf-8") if live.exists() else ours
         snap = snapshot_dir / name
@@ -640,6 +675,124 @@ def resolve_brain_file(vault: Path, kind: str) -> ResolveResult:
     finally:
         release_lock(lock)
     return ResolveResult(name=name, recorded_base=recorded, removed_sidecar=removed)
+
+
+def config_from_vault(
+    vault: Path,
+    *,
+    plugin_root: Path,
+    plugin_version: str,
+    skip_jobs: bool = False,
+    skip_claude: bool = False,
+    managed_by: str = "unknown",
+) -> BootstrapConfig:
+    """BootstrapConfig for an existing vault, read back from its scout-config.yaml.
+
+    Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
+    the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError,
+    and ValueError when the file parses but isn't shaped as a mapping (top level, or
+    its instance/user/connectors blocks, or connectors.inputs).
+    """
+    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    if existing is None:
+        existing = {}
+    if not isinstance(existing, dict):
+        raise ValueError("scout-config.yaml must be a mapping at the top level")
+
+    def _submapping(key: str) -> dict:
+        value = existing.get(key)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(f"scout-config.yaml: {key!r} must be a mapping")
+        return value
+
+    instance = _submapping("instance")
+    user = _submapping("user")
+    connectors = _submapping("connectors")
+    inputs = connectors.get("inputs")
+    if inputs is not None and not isinstance(inputs, dict):
+        raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
+    return BootstrapConfig(
+        vault=vault,
+        plugin_root=plugin_root,
+        instance_name=instance.get("name", "Scout"),
+        instance_name_lower=instance.get("name_lower", "scout"),
+        user_name=user.get("name", ""),
+        user_email=user.get("email", ""),
+        timezone=existing.get("timezone") or "",  # "" = follow the host (#279)
+        platform=existing.get("platform", "macos"),
+        plugin_version=plugin_version,
+        enabled_connectors=set(connectors.get("enabled") or []),
+        connector_inputs=dict(inputs or {}),
+        skip_jobs=skip_jobs,
+        skip_claude=skip_claude,
+        managed_by=managed_by,
+    )
+
+
+def write_connector_config(vault: Path, *, enabled: set[str], inputs: dict[str, str]) -> None:
+    """Rewrite connectors.enabled / connectors.inputs, keeping the file's comments (#251)."""
+    path = vault / "scout-config.yaml"
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text) or {}
+    # Not setdefault: a present-but-null `connectors:` would come back as None.
+    connectors = data.get("connectors") or {}
+    data["connectors"] = connectors
+    connectors["enabled"] = sorted(enabled)
+    connectors["inputs"] = dict(inputs)
+    _atomic_write(path, _dump_keeping_comments(text, data))
+
+
+@dataclass
+class CustomApplyResult:
+    status: str  # "applied" | "unchanged" | "deferred" | "conflict"
+    updated: list[str] = field(default_factory=list)  # brain files that now carry the change
+    sidecars: list[str] = field(default_factory=list)  # sidecars this change wrote
+    waiting: list[str] = field(default_factory=list)  # brain files skipped: pending sidecar or conflict markers
+    backups: list[str] = field(default_factory=list)  # parked copies (pre-provenance vaults)
+
+
+def apply_custom_change(
+    before: BootstrapConfig,
+    after: BootstrapConfig,
+    *,
+    custom_before: dict[str, custom_connectors.CustomConnector],
+    custom_after: dict[str, custom_connectors.CustomConnector],
+) -> CustomApplyResult:
+    """Apply a custom-connector add/remove to the live brain files (custom-connectors spec §2).
+
+    The caller holds the vault lock. For every brain file the change touches,
+    ``before`` must re-assemble to the recorded snapshot: that proves the plugin
+    has not drifted since the last install/upgrade, so the only difference is the
+    custom delta. If any changed file fails that check, nothing is written and the
+    change waits for /scout-update ("deferred"). Otherwise the changed files go
+    through the normal ``_stage_cat4_upgrade`` reconciliation (brain_merge.decide):
+    fast-forward or merge into live, a sidecar on conflict or on a snapshot the
+    plugin didn't write, and a skip for a pending sidecar or held conflict markers.
+    Brain files the change doesn't touch are never reconciled.
+    """
+    snapshot_dir = _snapshot_dir(after)
+    changed: list[str] = []
+    for kind in brain_merge.BRAIN_KINDS:
+        old = _assemble(before, kind, custom=custom_before)
+        if old == _assemble(after, kind, custom=custom_after):
+            continue
+        snap = snapshot_dir / f"{kind}.md"
+        if not snap.exists() or snap.read_text(encoding="utf-8") != old:
+            return CustomApplyResult(status="deferred")
+        changed.append(kind)
+    if not changed:
+        return CustomApplyResult(status="unchanged")
+    outcome = _stage_cat4_upgrade(after, custom=custom_after, kinds=tuple(changed))
+    suffix = ".proposed-merge"
+    waiting = sorted({n.removesuffix(suffix) for n in outcome.skipped} | set(outcome.held))
+    conflicted = {n.removesuffix(suffix) for n in outcome.conflicts}
+    updated = [f"{k}.md" for k in changed if f"{k}.md" not in set(waiting) | conflicted]
+    status = "conflict" if outcome.conflicts else "deferred" if waiting else "applied"
+    return CustomApplyResult(
+        status=status, updated=updated, sidecars=list(outcome.conflicts), waiting=waiting, backups=list(outcome.backups)
+    )
 
 
 def _stage_jobs_install(cfg: BootstrapConfig) -> None:
