@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import Testing
 @testable import Scout
@@ -49,12 +50,32 @@ enum ViewHost {
     }
 }
 
+/// Disabled, never checks — just enough to satisfy `UpdateService`'s app
+/// controller for a `SmokeVault`'s inert `updates` track.
+@MainActor
+private final class SmokeAppUpdateController: AppUpdateController {
+    let isEnabled = false
+    let currentVersion: String? = "0.1.0"
+    func checkForUpdates() -> Bool { false }
+}
+
+/// Always `.notApplicable` — touches neither disk nor network, matching the
+/// test-host checker `ScoutApp.init()` swaps in for `AppState.Configuration.isTestHost`.
+private struct SmokeInertPluginChecker: PluginUpdateChecking {
+    func check(engine: EngineState) async -> PluginUpdateResult { .notApplicable }
+}
+
 /// A vault laid out the way Scout expects, so views render populated rather
 /// than falling straight into their empty states.
 @MainActor
 struct SmokeVault {
     let root: URL
     let state: AppState
+    /// Inert — no Sparkle, no network, no engine. `SettingsView` (and
+    /// anything else that reads `@EnvironmentObject UpdateService`) needs one
+    /// in the environment or it traps; smoke tests don't exercise the update
+    /// flows themselves (see `UpdateServiceTests`).
+    let updates: UpdateService
 
     init() throws {
         let root = FileManager.default.temporaryDirectory
@@ -88,6 +109,10 @@ struct SmokeVault {
             .appendingPathComponent(".scout-logs/scout-2026-06-15_08-03.log"))
 
         self.state = AppState(configuration: .testing(scoutDirectory: root))
+        self.updates = UpdateService(
+            pluginChecker: SmokeInertPluginChecker(),
+            engineStates: Just(EngineState.notInstalled).eraseToAnyPublisher(),
+            makeAppController: { _ in SmokeAppUpdateController() })
     }
 
     /// Load the document services synchronously so views render with content.
@@ -276,7 +301,7 @@ struct ShellViewSmokeTests {
     func settingsRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(
-            SettingsView().environmentObject(vault.state),
+            SettingsView().environmentObject(vault.state).environmentObject(vault.updates),
             size: CGSize(width: 700, height: 620))
     }
 }
