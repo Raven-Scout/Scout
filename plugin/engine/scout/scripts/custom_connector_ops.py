@@ -398,6 +398,12 @@ def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
         return {"connectors": [], "issues": [{"path": "", "message": _unexpected(e)}]}
 
 
+def _issues_for_key(issues: list[cc.Issue], key: str) -> list[dict[str, str]]:
+    """This key's own issues: path equal to ``connectors.<key>`` or nested under it."""
+    base = f"connectors.{key}"
+    return [{"path": i.path, "message": i.message} for i in issues if i.path == base or i.path.startswith(f"{base}.")]
+
+
 def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
     current = cc.load(vault, plugin_root=plugin_root)
     issues = list(current.issues)
@@ -409,7 +415,7 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
         else:
             assert cfg is not None
             enabled = cfg.enabled_connectors
-    rows = [
+    valid_rows = [
         {
             "key": c.key,
             "display_name": c.display_name,
@@ -418,9 +424,27 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
             "health_key": c.health_key,
             "preset": c.preset,
             "activities": [a for a in cc.ACTIVITIES if a in c.activities],
+            "valid": True,
+            "definition": current.raw[c.key],
         }
-        for c in sorted(current.connectors.values(), key=lambda c: c.key)
+        for c in current.connectors.values()
     ]
+    invalid_rows = [
+        {
+            "key": key,
+            "valid": False,
+            "enabled": key in enabled,
+            "display_name": raw_def.get("display_name") if isinstance(raw_def, dict) else None,
+            "definition": raw_def,
+            "issues": _issues_for_key(current.issues, key),
+        }
+        for key, raw_def in current.raw.items()
+        if key not in current.connectors
+    ]
+    for row in invalid_rows:
+        if not isinstance(row["display_name"], str):
+            row["display_name"] = None
+    rows = sorted([*valid_rows, *invalid_rows], key=lambda r: r["key"])
     return {"connectors": rows, "issues": [{"path": i.path, "message": i.message} for i in issues]}
 
 
