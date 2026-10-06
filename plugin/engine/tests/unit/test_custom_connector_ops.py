@@ -242,8 +242,9 @@ def test_list_custom_reports_definitions_and_issues(vault: Path):
     raw["broken"] = {"display_name": "B"}
     cc.write(vault, raw)
     listing = ops.list_custom(vault, plugin_root=PLUGIN)
-    row = listing["connectors"][0]
-    assert row == {
+    assert [r["key"] for r in listing["connectors"]] == ["broken", "suite_mail"]
+    valid_row = listing["connectors"][1]
+    assert valid_row == {
         "key": "suite_mail",
         "display_name": "Mail suite",
         "enabled": True,
@@ -251,8 +252,47 @@ def test_list_custom_reports_definitions_and_issues(vault: Path):
         "health_key": "mcp:example_suite",
         "preset": "mail",
         "activities": ["inbound"],
+        "valid": True,
+        "definition": raw["suite_mail"],
     }
     assert any(i["path"].startswith("connectors.broken") for i in listing["issues"])
+
+
+def test_list_custom_includes_invalid_rows(vault: Path):
+    """A broken entry survives in CustomLoad.raw but not .connectors; it must still
+    appear in the listing as an invalid row carrying its own issues and raw definition."""
+    _add(vault, SUITE)
+    raw = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
+    raw["broken"] = {"display_name": "B"}  # no probe, no activity: several issues
+    cc.write(vault, raw)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    invalid_row = next(r for r in listing["connectors"] if r["key"] == "broken")
+    assert invalid_row["valid"] is False
+    assert invalid_row["enabled"] is False
+    assert invalid_row["display_name"] == "B"
+    assert invalid_row["definition"] == {"display_name": "B"}
+    assert invalid_row["issues"]
+    assert all(i["path"].startswith("connectors.broken") for i in invalid_row["issues"])
+    # every one of this key's issues also shows up at the top level
+    top_level_broken = [i for i in listing["issues"] if i["path"].startswith("connectors.broken")]
+    assert len(top_level_broken) == len(invalid_row["issues"])
+
+
+def test_list_custom_invalid_row_display_name_is_null_when_absent_or_not_a_string(vault: Path):
+    raw = {"no_name": {"probe": "mcp__example_suite__whoami"}, "bad_name": {"display_name": 5}}
+    cc.write(vault, raw)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    by_key = {r["key"]: r for r in listing["connectors"]}
+    assert by_key["no_name"]["display_name"] is None
+    assert by_key["bad_name"]["display_name"] is None
+
+
+def test_list_custom_file_level_issue_yields_no_rows(vault: Path):
+    (vault / cc.CUSTOM_FILE).write_text("not: [valid\n")
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    assert listing["connectors"] == []
+    assert len(listing["issues"]) == 1
+    assert listing["issues"][0]["path"] == cc.CUSTOM_FILE
 
 
 def test_presets_json_lists_shipped_presets():
