@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from scout.scripts import versioning
+from scout.scripts import release_notes, versioning
 
 
 def _fake_plugin(tmp_path: Path, version: str = "1.2.3") -> Path:
@@ -150,6 +151,16 @@ def test_bump_levels():
     assert versioning.bump("1.2.3", "9.9.9") == "9.9.9"  # explicit passthrough
 
 
+@pytest.mark.parametrize("explicit", ["1.2.3", "1.2.2", "1.1.9", "0.99.99"])
+def test_bump_refuses_an_explicit_version_that_is_not_above(explicit):
+    with pytest.raises(versioning.VersionNotAboveError, match=f"{explicit} is not above the current version 1.2.3"):
+        versioning.bump("1.2.3", explicit)
+
+
+def test_bump_compares_numerically_not_as_text():
+    assert versioning.bump("1.9.0", "1.10.0") == "1.10.0"
+
+
 def test_bump_invalid_level_raises():
     with pytest.raises(ValueError):
         versioning.bump("1.2.3", "beta")
@@ -217,6 +228,39 @@ def test_promote_changelogs_promotes_both(tmp_path):
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
         text = (tmp_path / rel).read_text()
         assert text.index("## [Unreleased]") < text.index("## [1.3.0] - 2026-10-05") < text.index("- a thing")
+
+
+REAL_REPO = Path(__file__).resolve().parents[4]
+_HEADING = re.compile(r"(?m)^## \[Unreleased\]")
+
+
+def test_promote_changelogs_on_the_real_changelogs(tmp_path):
+    """The committed changelogs, not a synthetic fixture: the app's header prose quotes
+    `## [Unreleased]` inline, and a first-occurrence replace landed the new heading mid-sentence."""
+    before: dict[str, str] = {}
+    for rel in versioning._CHANGELOGS:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        before[rel] = (REAL_REPO / rel).read_text(encoding="utf-8")
+        (tmp_path / rel).write_text(before[rel], encoding="utf-8")
+
+    versioning.promote_changelogs(tmp_path, version="9.9.0", date="2026-10-06")
+
+    for rel, old in before.items():
+        new = (tmp_path / rel).read_text(encoding="utf-8")
+        old_head, new_head = _HEADING.search(old), _HEADING.search(new)
+        assert old_head and new_head, rel
+        assert new[: new_head.start()] == old[: old_head.start()], f"{rel}: header prose changed"
+        assert release_notes.extract_section(new, "9.9.0") == release_notes.extract_section(old, "Unreleased"), rel
+        assert release_notes.extract_section(new, "Unreleased") == "", rel
+    app = release_notes.extract_section((tmp_path / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8"), "9.9.0")
+    assert "Releases before the monorepo" not in app and "scout-app-legacy" not in app
+
+
+def test_promote_ignores_an_unreleased_marker_that_is_not_a_heading(tmp_path):
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text("# Changelog\n\nKeep an `## [Unreleased]` section at the top.\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no '## \\[Unreleased\\]' section"):
+        versioning.promote_changelog(tmp_path, version="1.3.0", date="2026-06-02")
 
 
 def _git(repo: Path, *args: str) -> str:

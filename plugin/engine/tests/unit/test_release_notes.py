@@ -36,6 +36,24 @@ def test_render_release_matches_golden():
     assert out == _read("expected-release.md")
 
 
+def test_extract_section_stops_at_any_level_two_heading():
+    """The app changelog ends with `## Releases before the monorepo`: not a version, still a boundary."""
+    body = release_notes.extract_section(_read("app-CHANGELOG-trailing-section.md"), "0.15.0")
+    assert body.endswith("**Onboarding installs the engine.**")
+    assert "Something else" not in body and "never reach" not in body
+
+
+def test_render_release_with_a_trailing_section_matches_golden():
+    out = release_notes.render(
+        "0.15.0",
+        app=release_notes.extract_section(_read("app-CHANGELOG-trailing-section.md"), "0.15.0"),
+        plugin=release_notes.extract_section(_read("plugin-CHANGELOG.md"), "0.15.0"),
+        prev_tag="plugin/v0.14.0",
+        repo_slug="Raven-Scout/Scout",
+    )
+    assert out == _read("expected-release.md")
+
+
 def test_render_empty_app_section_and_no_prev():
     out = release_notes.render(
         "0.14.0",

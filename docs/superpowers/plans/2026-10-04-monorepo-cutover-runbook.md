@@ -1001,7 +1001,9 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
   - Keep `merge` in the `pull_request` rule's `allowed_merge_methods`.
   - A gate job (`contract`, `plugin-test`, …) that ends **cancelled** with no
     runner assigned and 0 steps is a GitHub hosted-runner outage, not a test
-    failure. Re-run the failed jobs once githubstatus.com clears. Seen
+    failure. Re-run the whole run once githubstatus.com clears
+    (`gh run rerun <id>`, not `--failed`): after a cancelled `changes` job,
+    re-running only the failed jobs re-runs the gate alone, and it stays red. Seen
     2026-10-05 on #315, during the Actions incident "delays when assigning
     GitHub-hosted runners", when two gates were cancelled 15 minutes after
     they were created.
@@ -1018,7 +1020,9 @@ something".**
   It is the last prefixed release, apart from an urgent `plugin/v0.14.x` patch.
 - [ ] **7.2 From v0.15.0: one release.** See `docs/superpowers/specs/2026-10-05-unified-release-design.md` and
   `scripts/release.sh`. v0.15.0 is the first one-download release, and it needs Parts B and C, Sparkle (#74), and the
-  spec §6 acceptance test. Jordan runs `prepare` and `finalize`; agents never run them for real.
+  spec §6 acceptance test. Jordan runs `prepare` and `finalize`; agents never run them for real. If `finalize`
+  fails during `gh release create`, check `gh release view vX.Y.Z --repo Raven-Scout/Scout` before re-running,
+  and delete any leftover draft first.
 
 ---
 

@@ -12,6 +12,6 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## Releases before the monorepo
 
-Up to v0.14.0 the app was released from its own repository, now archived as
+Up to v0.14.0 the app was released from its own repository, now
 [Raven-Scout/scout-app-legacy](https://github.com/Raven-Scout/scout-app-legacy/releases). Those releases are
 re-tagged `app/vX.Y.Z` here.

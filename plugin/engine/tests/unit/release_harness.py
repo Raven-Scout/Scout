@@ -3,6 +3,9 @@
 SAFETY: the script runs with PATH = <stubs>:<realbin>, where realbin holds symlinks to a short allowlist
 of harmless tools. No real codesign, xcrun, xcodebuild, security, spctl, hdiutil, ditto or gh is
 reachable, so a missing stub fails loudly instead of signing, notarizing or publishing anything.
+
+Stub knobs (env): FAKE_NO_ENGINE, FAKE_ENGINE_VERSION, FAKE_APPCAST, FAKE_NOTARY_EXIT, FAKE_GH_EXIT,
+FAKE_XCODEBUILD_EXIT, and FAKE_LATEST (what `gh api …/releases/latest` reports).
 """
 
 from __future__ import annotations
@@ -62,7 +65,8 @@ _STUB = dedent(
             prerelease=""
             for a in "$@"; do [ "$a" = "--prerelease" ] && prerelease=1; done
             [ -n "$prerelease" ] || echo "$3" > "$FAKE_LOG.latest" ;;
-          "api repos/Raven-Scout/Scout/releases/latest") cat "$FAKE_LOG.latest" ;;
+          "api repos/Raven-Scout/Scout/releases/latest")
+            if [ -n "${FAKE_LATEST:-}" ]; then echo "$FAKE_LATEST"; else cat "$FAKE_LOG.latest"; fi ;;
         esac ;;
     esac
     exit 0
@@ -149,12 +153,17 @@ def make_repo(tmp_path: Path, *, origin_url: str | None = None, version: str = "
     _git(root, "push", "-q", "origin", "main", "--tags")
     _git(root, "branch", "-q", "--set-upstream-to=origin/main", "main")
     if origin_url:
-        # Make origin *claim* another repo, so the slug check sees it. Such a test never fetches.
+        # Make origin *claim* another repo, so the slug check sees it. Such a test never fetches, and
+        # insteadOf rewrites any github.com URL to a path under the bare origin, so a stray fetch
+        # fails locally instead of reaching GitHub. `config --get remote.origin.url` still shows the claim.
         _git(root, "config", "remote.origin.url", origin_url)
+        _git(root, "config", f"url.{origin}.insteadOf", "https://github.com/")
     log = tmp_path / "calls.log"
     env = {
         "PATH": f"{stubs}:{realbin}",
         "HOME": str(tmp_path / "home"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
         "FAKE_LOG": str(log),
         "SCOUT_PY": sys.executable,
         "PYTHONPATH": str(ENGINE),
