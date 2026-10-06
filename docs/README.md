@@ -7,6 +7,7 @@ Design docs and implementation plans for features in this repo. Filed by topic, 
 | Topic | Design | Plan |
 | --- | --- | --- |
 | Schedules tab (full CRUD on `com.scout.*.plist`, auto-reload, scoped git commits) | [schedules-design.md](./schedules-design.md) | [schedules-plan.md](./schedules-plan.md) |
+| App-managed engine (Scout.app installs and owns the engine) | [superpowers/specs/2026-09-08-app-managed-engine-design.md](./superpowers/specs/2026-09-08-app-managed-engine-design.md) | [superpowers/plans/2026-09-08-app-managed-engine.md](./superpowers/plans/2026-09-08-app-managed-engine.md) |
 
 ## Where things go
 
