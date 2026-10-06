@@ -18,14 +18,14 @@ from scout.scripts.budget_config import apply_updates
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _config(vault: Path, *, version: str = "0.4.0") -> BootstrapConfig:
+def _config(vault: Path, *, version: str = "0.4.0", email: str = "alex@example.com") -> BootstrapConfig:
     return BootstrapConfig(
         vault=vault,
         plugin_root=PLUGIN_ROOT,
         instance_name="TestScout",
         instance_name_lower="testscout",
         user_name="Alex",
-        user_email="alex@example.com",
+        user_email=email,
         timezone="America/New_York",
         platform="macos",
         plugin_version=version,
@@ -184,3 +184,69 @@ def test_upgrade_keeps_a_block_scalar_line_that_looks_like_a_comment(vault: Path
     parsed = yaml.safe_load(after)
     assert parsed["runbook"] == "Steps for escalation:\n#2 is the escalation path\n"
     assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
+
+
+def test_upgrade_keeps_a_block_scalar_hash_line_in_a_block_that_is_rewritten(vault: Path) -> None:
+    """Item 4: the test above never exercises the bug it's named for -- its
+    `runbook:` block is unchanged *and* last, so the tail-trim never runs on it.
+    This one puts the hash-shaped scalar line in `user:`, which both changes
+    (a new email) on this upgrade and is NOT the last key in the file, so the
+    redump path and the tail-trim both actually run. Confirmed against the
+    pre-fix splitter (fix round 1, commit 98f71f7): there the line showed up
+    twice -- once correctly inside the redumped `user:` block, and once more as
+    a stray orphan comment ahead of `instance:` (the misattributed "leading" of
+    the next key)."""
+    config = vault / "scout-config.yaml"
+    text = config.read_text(encoding="utf-8")
+    assert text.index("user:") < text.index("instance:")
+    text = text.replace(
+        "  email: alex@example.com\n",
+        "  email: alex@example.com\n  bio: |\n    Steps:\n    #2 is the escalation path\n",
+        1,
+    )
+    config.write_text(text, encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1", email="sam@example.com"))
+
+    after = config.read_text(encoding="utf-8")
+    assert after.count("#2 is the escalation path") == 1
+    parsed = yaml.safe_load(after)
+    assert parsed["user"]["email"] == "sam@example.com"
+    assert parsed["user"]["bio"] == "Steps:\n#2 is the escalation path\n"
+
+
+def test_upgrade_keeps_an_indented_comment_directly_above_the_next_key(vault: Path) -> None:
+    """Item C: an indented (not column-0) comment sitting at the very end of a
+    block that changes on every upgrade (`plugin:`) must still be attached to
+    the next key it documents, not silently dropped along with the rewritten
+    block it happened to trail."""
+    config = vault / "scout-config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "  # about off_peak?\noff_peak:\n  start: 23\n", encoding="utf-8"
+    )
+
+    upgrade(_config(vault, version="0.4.1"))
+
+    after = config.read_text(encoding="utf-8")
+    assert "  # about off_peak?\noff_peak:\n" in after
+    parsed = yaml.safe_load(after)
+    assert parsed["off_peak"]["start"] == 23
+    assert parsed["plugin"]["version_at_last_update"] == "0.4.1"
+
+
+def test_upgrade_keeps_the_blank_line_after_user_in_the_shipped_default_config(vault: Path) -> None:
+    """Item D: the real, shipped default config has a blank line between `user:`
+    (rewritten here by a new email) and the comment documenting `budget:`. That
+    blank line is exactly the kind of gap the tail-trim must hand to the next
+    key's leading run rather than discard with the rewritten `user:` block."""
+    config = vault / "scout-config.yaml"
+    defaults_text = (PLUGIN_ROOT / "engine" / "scout" / "defaults" / "scout-config.yaml").read_text(encoding="utf-8")
+    assert "\nuser:\n" in defaults_text and "\n\n# The four knobs" in defaults_text
+    config.write_text(defaults_text, encoding="utf-8")
+
+    upgrade(_config(vault, version="0.4.1", email="sam@example.com"))
+
+    after = config.read_text(encoding="utf-8")
+    assert "\n\n# The four knobs `scoutctl budget check` enforces before every scheduled run.\n" in after
+    parsed = yaml.safe_load(after)
+    assert parsed["user"]["email"] == "sam@example.com"

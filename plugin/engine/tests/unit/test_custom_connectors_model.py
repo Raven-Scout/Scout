@@ -1036,3 +1036,264 @@ def test_header_and_trailer_survive_remove_last_then_add(tmp_path: Path):
     assert "# Custom connectors file." in after_add
     assert "# Trailing note." in after_add
     assert yaml.safe_load(after_add) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}
+
+
+# --- Fix round 2 --------------------------------------------------------------------
+
+_HDR = "# my header\nschema_version: 1\nconnectors:\n"
+
+
+def test_trailer_with_trailing_blank_line_survives_changing_the_last_entry(tmp_path: Path):
+    """Item A, reviewer case 2e: round 1's "never trim a blank line" rule made
+    the tail-walk stop at the first blank line, so a trailer followed by a
+    trailing blank line belonged to the entry above it -- and was deleted when
+    that entry changed. The closing comment must survive a change to tickets."""
+    text = _HDR + (
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# Closing note.\n"
+        "\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": dict(_TICKETS, display_name="Tix")})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# Closing note." in result
+    assert yaml.safe_load(result) == {
+        "schema_version": 1,
+        "connectors": {"tickets": dict(_TICKETS, display_name="Tix")},
+    }
+
+
+def test_trailer_with_trailing_blank_line_survives_removing_the_last_entry(tmp_path: Path):
+    """Item A, reviewer case 2f: same hazard as above, but removing (rather than
+    changing) the last of two entries."""
+    text = _HDR + (
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# Closing note.\n"
+        "\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"alpha": _ALPHA})  # drop tickets
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# Closing note." in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}
+
+
+def test_gap_comment_with_blank_lines_both_sides_survives_removing_previous_entry(tmp_path: Path):
+    """Item A, reviewer case 3a: a gap comment documenting the next entry, with a
+    blank line on both sides, must survive even when the entry *before* it is
+    removed (not just when the entry it documents changes)."""
+    text = _HDR + (
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# About alpha\n"
+        "\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"alpha": _ALPHA})  # drop tickets, the entry *before* the gap comment
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# About alpha" in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}
+
+
+def test_gap_comment_with_blank_lines_both_sides_survives_changing_previous_entry(tmp_path: Path):
+    """Item A, reviewer case 3b: same gap comment, but the entry before it
+    changes instead of being removed."""
+    text = _HDR + (
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "\n"
+        "# About alpha\n"
+        "\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": dict(_TICKETS, display_name="Tix"), "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# About alpha" in result
+    assert yaml.safe_load(result) == {
+        "schema_version": 1,
+        "connectors": {"tickets": dict(_TICKETS, display_name="Tix"), "alpha": _ALPHA},
+    }
+
+
+def test_indented_gap_comment_then_blank_survives_removing_previous_entry(tmp_path: Path):
+    """Item A, reviewer case 3e: an indented gap comment (not at entry level),
+    followed by a blank line, must also survive -- the old "never trim a blank
+    line" rule stopped the tail-walk right after the indented comment, so both
+    it and the comment were attributed to (and deleted with) the previous
+    entry."""
+    text = _HDR + (
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+        "  # About alpha (indented)\n"
+        "\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"alpha": _ALPHA})  # drop tickets
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert "# About alpha" in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"alpha": _ALPHA}}
+
+
+def test_tab_inside_a_comment_keeps_the_fast_path(tmp_path: Path):
+    """Item B: a tab anywhere forced the full-dump fallback (losing every
+    comment) even when the tab was just part of a comment's text, not doing
+    the job of indentation. Only a tab in a line's own leading whitespace
+    should trigger the fallback."""
+    text = _HDR + (
+        "  # a tab\tin this comment, not as indentation\n"
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS, "alpha": _ALPHA})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert not result.startswith("# Custom connectors")  # took the fast path, not the fallback
+    assert "a tab\tin this comment" in result
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS, "alpha": _ALPHA}}
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "extra: 1\nschema_version: 1\nconnectors:\n",
+        "schema_version: 2\nconnectors:\n",
+        "connectors:\n",
+    ],
+    ids=["extra-top-level-key", "stale-schema-version", "missing-schema-version"],
+)
+def test_header_mismatch_forces_the_full_dump_fallback(tmp_path: Path, header: str):
+    """Item 3, the honest (non-NaN) trigger the reviewer verified: the header is
+    kept verbatim no matter what, so if it doesn't parse back to exactly
+    `{"schema_version": 1, ...}` the final round-trip check must see a mismatch
+    and fall back to a plain dump -- regardless of how faithfully the entries
+    themselves were rewritten."""
+    text = header + (
+        "  tickets:\n"
+        "    display_name: Tickets\n"
+        "    probe:\n"
+        "      bash: tix whoami\n"
+        "    inbound:\n"
+        "      tools:\n"
+        "      - bash: tix list\n"
+        "      focus: Changed tickets.\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, {"tickets": _TICKETS})
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# Custom connectors")
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": {"tickets": _TICKETS}}
+
+
+def test_recursive_alias_in_a_trailing_comment_scan_does_not_crash(tmp_path: Path):
+    """Exercises `yaml_blocks.split_blocks`'s own trim-safety comparison (not
+    `_rebuild_entries`'s separate per-entry check, already covered): a cyclic
+    alias entry followed by a gap comment means the splitter compares two
+    separately-parsed copies of the same cyclic structure (with and without the
+    trailing comment) while deciding whether the comment is safe to trim. That
+    comparison must be treated as "not safe", not crash with RecursionError."""
+    text = (
+        "schema_version: 1\n"
+        "connectors:\n"
+        "  loopy:\n"
+        "    loop: &l\n"
+        "      self: *l\n"
+        "  # trailing comment\n"
+        "  alpha:\n"
+        "    display_name: Alpha\n"
+        "    probe: mcp__dataplat__info\n"
+        "    lookup:\n"
+        "      tools:\n"
+        "      - mcp__dataplat__search\n"
+        "      when: x\n"
+    )
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    loaded_loopy = yaml.safe_load(text)["connectors"]["loopy"]
+
+    cc.write(tmp_path, {"loopy": loaded_loopy, "alpha": _ALPHA})  # must not raise RecursionError
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    loaded = yaml.safe_load(result)
+    assert loaded["connectors"]["alpha"] == _ALPHA

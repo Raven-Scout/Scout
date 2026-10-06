@@ -9,9 +9,42 @@ imported by the connector-log hook on every Claude Code tool call.
 
 from __future__ import annotations
 
+from typing import Any
+
 import yaml
 
 Segment = tuple[str, list[str], list[str]]  # (key, leading comment/blank lines, key line + its body)
+
+
+def _safe_load_or_sentinel(text: str) -> Any:
+    """``yaml.safe_load``, or a fresh, unique object when it can't be parsed or
+    compared (a malformed fragment, or a cyclic alias that makes ``==`` raise
+    ``RecursionError``). The sentinel is equal only to itself, so two separate
+    "couldn't tell" results never compare equal to one another by accident."""
+    try:
+        return yaml.safe_load(text)
+    except (yaml.YAMLError, RecursionError):
+        return object()  # a fresh instance, equal only to itself
+
+
+def _leading_whitespace(line: str) -> str:
+    i = 0
+    while i < len(line) and line[i] in " \t":
+        i += 1
+    return line[:i]
+
+
+def _has_tab_indentation(text: str) -> bool:
+    """True when some line's own indentation (not its content) contains a tab.
+    A tab elsewhere on a line -- inside a comment or a quoted value -- is fine;
+    only a tab doing the job of indentation defeats the column-counting this
+    module's splitting depends on."""
+    return any("\t" in _leading_whitespace(line) for line in text.splitlines())
+
+
+def _is_filler(line: str) -> bool:
+    """A blank line, or a comment at any indent."""
+    return not line.strip() or line.lstrip().startswith("#")
 
 
 def split_blocks(
@@ -34,14 +67,15 @@ def split_blocks(
     is always ``[]``.
 
     Returns ``None`` whenever the layout can't be split with confidence, so the
-    caller falls back to a plain dump: tabs anywhere, a document marker, no bare
-    ``<after_key>:`` line when one is required, a line that dedents below
-    ``indent`` inside the block (unexpected content after it), a candidate entry
-    line that doesn't parse as a single-key mapping, or duplicate keys. A
-    sequence item (``- foo``) at ``indent`` is treated as part of the previous
-    entry's content, matching a mapping whose value is a block sequence.
+    caller falls back to a plain dump: a tab doing the job of indentation
+    anywhere, a document marker, no bare ``<after_key>:`` line when one is
+    required, a line that dedents below ``indent`` inside the block (unexpected
+    content after it), a candidate entry line that doesn't parse as a
+    single-key mapping, or duplicate keys. A sequence item (``- foo``) at
+    ``indent`` is treated as part of the previous entry's content, matching a
+    mapping whose value is a block sequence.
     """
-    if "\t" in text:
+    if _has_tab_indentation(text):
         return None
     lines = text.splitlines(keepends=True)
 
@@ -63,12 +97,9 @@ def split_blocks(
         header = lines[: conn_idx + 1]
         lines = lines[conn_idx + 1 :]
 
-    def is_filler(line: str) -> bool:
-        return not line.strip() or line.lstrip().startswith("#")
-
     starts: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
-        if is_filler(line):
+        if _is_filler(line):
             continue
         if line.startswith(("---", "...")):
             return None
@@ -91,28 +122,36 @@ def split_blocks(
     if len({key for _, key in starts}) != len(starts):
         return None
 
-    def is_trailing_filler(line: str) -> bool:
-        """Whether ``line`` may be reattributed from one segment's tail to the
-        next segment's leading run: a blank line never is (it may be a
-        significant trailing line of a ``|+``/``>+`` block scalar), and a
-        comment only is when its own indentation is no deeper than entry level
-        — deeper means it's inside the current entry's content (e.g. a literal
-        block-scalar line that happens to start with ``#``), not a genuine gap
-        comment documenting the next one."""
-        if not line.strip():
-            return False
-        stripped = line.lstrip(" ")
-        if not stripped.startswith("#"):
-            return False
-        comment_indent = len(line) - len(stripped)
-        return comment_indent <= indent
-
     segments: list[Segment] = []
     lead_from = 0
     for n, (start, key) in enumerate(starts):
         end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
-        while end > start + 1 and is_trailing_filler(lines[end - 1]):
-            end -= 1
-        segments.append((key, lines[lead_from:start], lines[start:end]))
-        lead_from = end
+
+        # The candidate run: the maximal trailing stretch of blank/comment
+        # lines, at any indent, right before the next entry (or EOF).
+        run_start = end
+        while run_start > start + 1 and _is_filler(lines[run_start - 1]):
+            run_start -= 1
+
+        # Trim the longest suffix of that run that is safe to move to the
+        # next segment's leading run: the one whose removal doesn't change
+        # what this block parses to. A deep `#`-led line inside a `|`/`>`
+        # scalar, or a significant trailing blank line of a `|+`/`>+` scalar,
+        # changes the value when dropped, so it stays; a genuine gap comment
+        # or blank line does not, so it moves. Shrinks from the top of the
+        # run (the earliest, i.e. least trimming) until the values match;
+        # trimming nothing at all is always a match, so this always ends.
+        full_value = _safe_load_or_sentinel("".join(lines[start:end]))
+        cut = end
+        for c in range(run_start, end):
+            try:
+                equal = _safe_load_or_sentinel("".join(lines[start:c])) == full_value
+            except RecursionError:
+                equal = False
+            if equal:
+                cut = c
+                break
+
+        segments.append((key, lines[lead_from:start], lines[start:cut]))
+        lead_from = cut
     return header, segments, lines[lead_from:]
