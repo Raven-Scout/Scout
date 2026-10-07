@@ -329,6 +329,8 @@ struct EngineInstallerTests {
         #expect(!ok)
         guard case .failed(let why)? = seen.all.last?.status else { Issue.record("expected failure"); return }
         #expect(why.contains("scout-plugin") && why.contains("github"))
+        // A way forward, not a dead end (final review minor).
+        #expect(why.contains("or run /scout-setup in Claude Code to finish setting up that install, then relaunch Scout."))
         #expect(f.runner.calls(to: "claude").isEmpty)
     }
 
@@ -466,6 +468,18 @@ struct EngineInstallerTests {
         #expect(call.contains("--no-interactive") && call.contains("--yes") && call.contains("--json") && call.contains("--managed-by") && call.contains("scout-app"))
         #expect(call[call.firstIndex(of: "--connectors")! + 1] == "github,slack")
         #expect(f.runner.calls.last?.environment["SCOUT_DATA_DIR"] == vault.path)
+    }
+
+    /// Final review minor: `--platform macos` goes on the install argv only;
+    /// the engine ignores it on upgrade (and notes that on stderr).
+    @Test func platformIsPassedOnInstallButNotOnUpgrade() {
+        let claude = URL(fileURLWithPath: "/Users/alex/.local/bin/claude")
+        let input = BootstrapInput(vault: URL(fileURLWithPath: "/Users/alex/Scout"), userName: "Alex", userEmail: "alex@example.com", timezone: "Europe/Prague")
+        let install = EngineInstaller.bootstrapAutoArguments(mode: .install(input), claude: claude)
+        #expect(install[install.firstIndex(of: "--platform")! + 1] == "macos")
+        let upgrade = EngineInstaller.bootstrapAutoArguments(mode: .upgrade(vault: input.vault), claude: claude)
+        #expect(!upgrade.contains("--platform") && !upgrade.contains("macos"))
+        #expect(upgrade == ["bootstrap", "auto", "--no-interactive", "--yes", "--json", "--managed-by", "scout-app", "--claude-bin", claude.path])
     }
 
     /// A yellow doctor embedded in a successful `bootstrap auto` payload

@@ -287,7 +287,7 @@ actor EngineInstaller {
         case .directory(let path) where isManagedMarketplace(path: path):
             marketplaceExists = true
         case .some(let other):
-            throw Failure(description: "Claude Code already has a 'scout-plugin' marketplace from another source (\(other)). Scout won't replace an install it doesn't manage; that engine keeps updating through Claude Code (/scout-update).")
+            throw Failure(description: Self.foreignMarketplaceMessage(other))
         }
         guard EngineLocator.version(atRoot: engineRoot) == version else {
             throw Failure(description: "engine \(version) is not unpacked at \(engineRoot.path); run “\(InstallStep.unpackEngine.title)” first")
@@ -333,6 +333,14 @@ actor EngineInstaller {
         return notes.joined(separator: "; ")
     }
 
+    /// The refusal for a `scout-plugin` marketplace Scout doesn't manage
+    /// (spec §10). It ends with a way forward, since on a fresh onboarding
+    /// this usually means the user once added the GitHub marketplace by hand
+    /// (final review minor).
+    static func foreignMarketplaceMessage(_ source: MarketplaceSource) -> String {
+        "Claude Code already has a 'scout-plugin' marketplace from another source (\(source)). Scout won't replace an install it doesn't manage; that engine keeps updating through Claude Code (/scout-update), or run /scout-setup in Claude Code to finish setting up that install, then relaunch Scout."
+    }
+
     private func runClaude(_ args: [String]) async throws {
         let result = try await runner.run(executable: claude, arguments: args, environment: [:], workingDirectory: nil)
         if result.exitCode != 0 {
@@ -341,10 +349,13 @@ actor EngineInstaller {
         }
     }
 
+    /// `--platform` only on `.install`: the engine ignores it on upgrade and
+    /// says so on stderr (final review minor).
     static func bootstrapAutoArguments(mode: InstallMode, claude: URL, managedBy: String = "scout-app") -> [String] {
-        var args = ["bootstrap", "auto", "--no-interactive", "--yes", "--json", "--managed-by", managedBy, "--platform", "macos", "--claude-bin", claude.path]
+        var args = ["bootstrap", "auto", "--no-interactive", "--yes", "--json", "--managed-by", managedBy, "--claude-bin", claude.path]
         if case .install(let i) = mode {
-            args += ["--instance-name", i.instanceName, "--user-name", i.userName, "--user-email", i.userEmail, "--timezone", i.timezone,
+            args += ["--platform", "macos",
+                     "--instance-name", i.instanceName, "--user-name", i.userName, "--user-email", i.userEmail, "--timezone", i.timezone,
                      "--connectors", i.connectors.sorted().joined(separator: ","), "--user-slack-id", i.userSlackID,
                      "--github-username", i.githubUsername, "--github-repos", i.githubRepos, "--max-budget", i.maxBudget]
         }
