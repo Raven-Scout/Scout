@@ -49,7 +49,18 @@ nonisolated struct EngineUpgrader: Sendable {
     /// may have recorded `engine/<old>` by realpath and still load it). The
     /// last two hold even when `keeping` disagrees — defense in depth, so a
     /// stale or wrong caller argument can never delete an engine something
-    /// still runs. Returns the removed versions.
+    /// still runs.
+    ///
+    /// It also sweeps (final review minor) every orphan `venv/<v>` whose
+    /// `engine/<v>` is gone — unless `<v>` is one of the protected versions
+    /// above or the kept previous one — and every stale `engine/*.partial`
+    /// left by an interrupted unpack. Only names that parse as an
+    /// `EngineVersion` (plus that `.partial` suffix) are ever touched;
+    /// `current` and `current.tmp` never are. GC runs only after a fully
+    /// successful upgrade, when no unpack is in flight.
+    ///
+    /// Returns the removed versions, then any orphan venv versions, then the
+    /// removed `.partial` directory names.
     func garbageCollect(keeping current: String) throws -> [String] {
         let fileManager = FileManager.default
         let entries = (try? fileManager.contentsOfDirectory(atPath: layout.engineDir.path)) ?? []
@@ -64,11 +75,25 @@ nonisolated struct EngineUpgrader: Sendable {
         let versions = candidates.sorted { $0.version < $1.version }.map(\.name)
         let protectedVersions = Set([current, currentLinkedVersion, marketplaceRecordedVersion].compactMap { $0 })
         let previous = versions.filter { !protectedVersions.contains($0) }.last
+        let kept = protectedVersions.union([previous].compactMap { $0 })
         var removed: [String] = []
-        for version in versions where !protectedVersions.contains(version) && version != previous {
+        for version in versions where !kept.contains(version) {
             try? fileManager.removeItem(at: layout.engineRoot(version: version))
             try? fileManager.removeItem(at: layout.venv(version: version))
             removed.append(version)
+        }
+        // Orphan venvs: no engine/<v> beside them (e.g. the engine dir was
+        // removed by hand, or an unpack failed after a venv was built).
+        let engineNames = Set(versions)
+        let venvEntries = (try? fileManager.contentsOfDirectory(atPath: layout.venvDir.path)) ?? []
+        for name in venvEntries.sorted() where EngineVersion(name) != nil && !engineNames.contains(name) && !kept.contains(name) {
+            try? fileManager.removeItem(at: layout.venv(version: name))
+            removed.append(name)
+        }
+        // Stale partial unpacks: `<v>.partial` for a well-formed version only.
+        for name in entries.sorted() where name.hasSuffix(".partial") && EngineVersion(String(name.dropLast(".partial".count))) != nil {
+            try? fileManager.removeItem(at: layout.engineDir.appendingPathComponent(name))
+            removed.append(name)
         }
         return removed
     }

@@ -146,4 +146,57 @@ struct EngineUpgraderTests {
         #expect(removed == ["0.9.0"])
         #expect(fm.fileExists(atPath: l.engineDir.appendingPathComponent("not-a-version").path))
     }
+
+    /// Final review minor: orphan `venv/<v>` (no `engine/<v>`) and stale
+    /// `engine/<v>.partial` dirs go too — but never a protected version's
+    /// venv (the kept current, what `current` resolves to, the marketplace's
+    /// recorded version, the kept previous), never `current`/`current.tmp`,
+    /// and never a name that isn't a version.
+    @Test func garbageCollectSweepsOrphanVenvsAndStalePartials() throws {
+        let l = try layout()
+        defer { try? fm.removeItem(at: l.home) }
+        for v in ["0.9.0", "0.10.0", "0.11.0"] {
+            try fm.createDirectory(at: l.engineRoot(version: v), withIntermediateDirectories: true)
+            try fm.createDirectory(at: l.venv(version: v), withIntermediateDirectories: true)
+        }
+        // Orphans: 0.7.0 and 0.8.0 have a venv but no engine dir.
+        for v in ["0.7.0", "0.8.0"] { try fm.createDirectory(at: l.venv(version: v), withIntermediateDirectories: true) }
+        // 0.6.0's venv is an orphan too, but the marketplace still records engine/0.6.0's path.
+        try fm.createDirectory(at: l.venv(version: "0.6.0"), withIntermediateDirectories: true)
+        try writeRegistry(l, marketplacePath: l.engineRoot(version: "0.6.0").path, pluginVersion: nil)
+        try fm.createDirectory(at: l.venvDir.appendingPathComponent("not-a-version"), withIntermediateDirectories: true)
+        // Stale partial unpacks, plus a non-version ".partial" that must stay.
+        for name in ["0.12.0.partial", "0.11.0.partial", "junk.partial"] {
+            try fm.createDirectory(at: l.engineDir.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        try fm.createSymbolicLink(at: l.currentEngineLink, withDestinationURL: l.engineRoot(version: "0.11.0"))
+        try fm.createSymbolicLink(at: l.engineDir.appendingPathComponent("current.tmp"), withDestinationURL: l.engineRoot(version: "0.11.0"))
+
+        let removed = try EngineUpgrader(layout: l, release: release("0.11.0")).garbageCollect(keeping: "0.11.0")
+        #expect(removed == ["0.9.0", "0.7.0", "0.8.0", "0.11.0.partial", "0.12.0.partial"])
+        for v in ["0.7.0", "0.8.0", "0.9.0"] { #expect(!fm.fileExists(atPath: l.venv(version: v).path), "\(v)") }
+        for v in ["0.6.0", "0.10.0", "0.11.0"] { #expect(fm.fileExists(atPath: l.venv(version: v).path), "\(v)") }
+        #expect(fm.fileExists(atPath: l.venvDir.appendingPathComponent("not-a-version").path))
+        #expect(!fm.fileExists(atPath: l.engineDir.appendingPathComponent("0.12.0.partial").path))
+        #expect(!fm.fileExists(atPath: l.engineDir.appendingPathComponent("0.11.0.partial").path))
+        #expect(fm.fileExists(atPath: l.engineDir.appendingPathComponent("junk.partial").path))
+        #expect(try fm.destinationOfSymbolicLink(atPath: l.currentEngineLink.path) == l.engineRoot(version: "0.11.0").path)
+        #expect((try? fm.destinationOfSymbolicLink(atPath: l.engineDir.appendingPathComponent("current.tmp").path)) != nil)
+        #expect(fm.fileExists(atPath: l.engineRoot(version: "0.10.0").path) && fm.fileExists(atPath: l.engineRoot(version: "0.11.0").path))
+    }
+
+    /// The kept previous version's venv is never an orphan sweep target,
+    /// even when the previous engine is only "kept" by being newest-older.
+    @Test func garbageCollectKeepsThePreviousVersionsVenv() throws {
+        let l = try layout()
+        defer { try? fm.removeItem(at: l.home) }
+        for v in ["0.10.0", "0.11.0"] {
+            try fm.createDirectory(at: l.engineRoot(version: v), withIntermediateDirectories: true)
+            try fm.createDirectory(at: l.venv(version: v), withIntermediateDirectories: true)
+        }
+        try fm.createSymbolicLink(at: l.currentEngineLink, withDestinationURL: l.engineRoot(version: "0.11.0"))
+        let removed = try EngineUpgrader(layout: l, release: release("0.11.0")).garbageCollect(keeping: "0.11.0")
+        #expect(removed.isEmpty)
+        #expect(fm.fileExists(atPath: l.venv(version: "0.10.0").path))
+    }
 }
