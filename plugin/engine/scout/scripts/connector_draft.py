@@ -8,7 +8,12 @@ server, none writes, and each definition passes the same validation as
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -255,3 +260,208 @@ def check_definitions(
         issues += problems
         out.append({"key": key, **body})
     return ([], issues) if issues else (out, [])
+
+
+EXIT_CODES = {"drafted": 0, "invalid": 2, "needs_auth": 3, "no_read_tools": 3, "timeout": 1, "error": 1}
+_TEMPLATE = Path(__file__).parent.parent / "defaults" / "draft-connector.md"
+_BASE_FLAGS = [
+    "--tools",
+    "ToolSearch",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "dontAsk",
+]
+
+
+@dataclass(frozen=True)
+class ClaudeResult:
+    returncode: int
+    stdout: str
+    stderr: str = ""
+
+
+ClaudeRunner = Callable[[list[str], str, float], ClaudeResult | None]
+
+
+def run_claude(argv: list[str], stdin: str, timeout: float) -> ClaudeResult | None:
+    """One headless call, from the temp dir so no project CLAUDE.md loads. None = timed out."""
+    from scout.scripts.connector_detect import probe_env
+
+    try:
+        proc = subprocess.run(
+            argv,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=probe_env(),
+            cwd=tempfile.gettempdir(),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError as e:
+        return ClaudeResult(127, "", str(e))
+    return ClaudeResult(proc.returncode, proc.stdout, proc.stderr)
+
+
+def draft_argv(claude_bin: str, model: str, schema: dict[str, Any]) -> list[str]:
+    return [
+        claude_bin,
+        "-p",
+        "--model",
+        model,
+        *_BASE_FLAGS,
+        "--json-schema",
+        json.dumps(schema),
+        "--max-budget-usd",
+        "0.50",
+        "--allowedTools",
+        "ToolSearch",
+    ]
+
+
+def probe_argv(claude_bin: str, probe: str) -> list[str]:
+    return [
+        claude_bin,
+        "-p",
+        "--model",
+        "haiku",
+        *_BASE_FLAGS,
+        "--json-schema",
+        json.dumps(PROBE_SCHEMA),
+        "--max-budget-usd",
+        "0.20",
+        "--allowedTools",
+        "ToolSearch",
+        probe,
+    ]
+
+
+_PRESET_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+
+
+def render_prompt(server_name: str, *, plugin_root: Path, taken: set[str]) -> str:
+    from scout.scripts.connector_detect import server_slug
+
+    presets = cc.load_presets(plugin_root)
+    # Preset bodies carry the shipped brain files' own `{{USER_NAME}}`-style
+    # placeholders (resolved later by phase assembly against the real user). Sent
+    # unresolved, a drafting model may echo one verbatim into a definition's free
+    # text, where nothing expands it. Describe the person generically instead.
+    preset_text = "\n".join(
+        f"- {name}: " + "; ".join(f"{k}: {_PRESET_PLACEHOLDER_RE.sub('the user', v)}" for k, v in sorted(body.items()))
+        for name, body in sorted(presets.items())
+    )
+    taken_text = ", ".join(sorted(taken | cc.reserved_keys(plugin_root))) or "none"
+    return (
+        _TEMPLATE.read_text(encoding="utf-8")
+        .replace("{{SERVER_NAME}}", server_name)
+        .replace("{{SERVER_SLUG}}", server_slug(server_name))
+        .replace("{{TAKEN_KEYS}}", taken_text)
+        .replace("{{PRESETS}}", preset_text)
+    )
+
+
+def _envelope(res: ClaudeResult) -> dict[str, Any] | None:
+    try:
+        env = json.loads(res.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return env if isinstance(env, dict) else None
+
+
+def _structured(res: ClaudeResult) -> dict[str, Any] | None:
+    env = _envelope(res)
+    if env is None or env.get("is_error"):
+        return None
+    so = env.get("structured_output")
+    if isinstance(so, dict):
+        return so
+    try:
+        parsed = json.loads(str(env.get("result", "")))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _error_text(res: ClaudeResult) -> str:
+    env = _envelope(res) or {}
+    errors = env.get("errors")
+    if isinstance(errors, list) and errors:
+        return "; ".join(str(e) for e in errors)
+    if env.get("subtype"):
+        return str(env["subtype"])
+    return (res.stderr or res.stdout).strip()[:300] or f"claude exited {res.returncode}"
+
+
+def _out(status: str, server_name: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "server": server_name,
+        "definitions": fields.get("definitions", []),
+        "summary": fields.get("summary", []),
+        "issues": [{"path": i.path, "message": i.message} for i in fields.get("issues", [])],
+        "message": fields.get("message", ""),
+    }
+
+
+def draft(
+    server_name: str,
+    *,
+    plugin_root: Path,
+    vault: Path,
+    claude_bin: str,
+    model: str = "sonnet",
+    timeout: float = 120.0,
+    runner: ClaudeRunner | None = None,
+) -> dict[str, Any]:
+    run = runner or run_claude
+    taken = set(cc.load(vault, plugin_root=plugin_root).raw) if (vault / cc.CUSTOM_FILE).exists() else set()
+    schema = draft_schema(list(cc.load_presets(plugin_root)))
+    prompt = render_prompt(server_name, plugin_root=plugin_root, taken=taken)
+    feedback = ""
+    defs: list[dict[str, Any]] = []
+    issues: list[cc.Issue] = []
+    payload: dict[str, Any] = {}
+    for _attempt in range(2):
+        res = run(draft_argv(claude_bin, model, schema), prompt + feedback, timeout)
+        if res is None:
+            return _out("timeout", server_name, message=f"drafting took longer than {timeout:.0f}s")
+        structured = _structured(res)
+        if structured is None:
+            return _out("error", server_name, message=_error_text(res))
+        payload = structured
+        if payload.get("no_read_tools"):
+            return _out("no_read_tools", server_name)
+        defs, issues = check_definitions(
+            payload.get("definitions"), server_name=server_name, plugin_root=plugin_root, taken=taken
+        )
+        if not issues:
+            break
+        feedback = "\n\nYour previous draft had these problems. Fix every one:\n" + "\n".join(
+            f"- {i.path}: {i.message}" for i in issues
+        )
+    if issues:
+        return _out("invalid", server_name, issues=issues)
+    for probe in sorted({d["probe"] for d in defs}):
+        ask = (
+            f"Load the tool {probe} with ToolSearch (query: select:{probe}), call it once with the smallest valid "
+            "arguments, and report ok=true if it returned data, or ok=false with the error text."
+        )
+        res = run(probe_argv(claude_bin, probe), ask, timeout)
+        result = _structured(res) if res is not None else None
+        if not result or not result.get("ok"):
+            reason = (result or {}).get("error") or (_error_text(res) if res is not None else "the check timed out")
+            return _out("needs_auth", server_name, message=str(reason))
+    keys = {d["key"] for d in defs}
+    summary = [
+        {"key": s["key"], "scans": str(s.get("scans", "")), "looks_up": str(s.get("looks_up", ""))}
+        for s in payload.get("summary") or []
+        if isinstance(s, dict) and s.get("key") in keys
+    ]
+    return _out("drafted", server_name, definitions=defs, summary=summary)
