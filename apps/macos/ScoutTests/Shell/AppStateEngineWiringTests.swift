@@ -445,17 +445,33 @@ struct AppStateEngineUpgradeTests {
         let tarball: URL
         let vault: URL
         let claude: String
+        /// One throwaway suite shared by every AppState built over this
+        /// fixture, so a "relaunch" sees what the last launch remembered
+        /// (final review I2). Never `.standard`.
+        let defaultsSuite: String
+        var defaults: UserDefaults { UserDefaults(suiteName: defaultsSuite)! }
         var home: URL { layout.home }
+
+        func remove() {
+            try? FileManager.default.removeItem(at: home)
+            UserDefaults().removePersistentDomain(forName: defaultsSuite)
+        }
     }
 
     /// Answers `bootstrap doctor --json` red for the NEW venv's scoutctl
-    /// when set — a verify failure after the switch.
+    /// when set — a verify failure after the switch — and makes the NEW
+    /// venv's `bootstrap auto` refuse when `newVersionRefuses` is set.
     final class DoctorSwitch: @unchecked Sendable {
         private let lock = NSLock()
         private var red = false
+        private var refuses = false
         var newVersionIsRed: Bool {
             get { lock.withLock { red } }
             set { lock.withLock { red = newValue } }
+        }
+        var newVersionRefuses: Bool {
+            get { lock.withLock { refuses } }
+            set { lock.withLock { refuses = newValue } }
         }
     }
 
@@ -488,6 +504,9 @@ struct AppStateEngineUpgradeTests {
         // engine's `bootstrap upgrade` does — the atomic switch.
         f11.runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.starts(with: ["bootstrap", "auto"]) }) { url, _, _ in
             let version = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            if doctor.newVersionRefuses && version == "0.11.0" {
+                return ProcessResult(exitCode: 1, stdout: Data(#"{"schema_version":1,"action":"refused","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"0.11.0","error":"vault has unresolved conflicts","doctor":null,"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":null}"#.utf8), stderr: Data())
+            }
             try Self.pointer(layout, version: version, vault: vault)
             return ProcessResult(exitCode: 0, stdout: Data(#"{"schema_version":1,"action":"upgrade","reason":"","dry_run":false,"vault":"\#(vault.path)","plugin_version":"\#(version)","error":null,"doctor":{"severity":"green","errors":[],"warnings":[]},"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":"p"}"#.utf8), stderr: Data())
         }
@@ -500,13 +519,13 @@ struct AppStateEngineUpgradeTests {
         }
         f11.runner.on(tool: "false", prefix: ["action-items", "--help"], stdout: "Usage: scoutctl action-items")
         return Fixture(layout: layout, runner: f11.runner, claudeCode: f11.claudeCode, release: f11.release, tarball: f11.tarball,
-                       vault: vault, claude: f10.claude.path)
+                       vault: vault, claude: f10.claude.path, defaultsSuite: "scout.tests.\(UUID().uuidString)")
     }
 
     /// A fresh AppState over the fixture's home, as a (re)launch would build.
     func appState(_ f: Fixture, startsBackgroundWork: Bool = false) -> AppState {
         let claude = f.claude
-        var configuration = AppState.Configuration.testing(scoutDirectory: f.vault, runner: f.runner)
+        var configuration = AppState.Configuration.testing(scoutDirectory: f.vault, runner: f.runner, defaults: f.defaults)
         configuration.engineLayout = f.layout
         configuration.initialEngineState = EngineLocator(layout: f.layout).locate()
         configuration.engineRelease = f.release
@@ -530,7 +549,7 @@ struct AppStateEngineUpgradeTests {
 
     @Test(.timeLimit(.minutes(1))) func successfulUpgradeRunsTheUpgradeStepsThenCollectsGarbage() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.home) }
+        defer { f.remove() }
         let s = appState(f)
         #expect(s.engineHealth.state.install?.version == "0.10.0")
         let callsBefore = f.runner.calls.count
@@ -559,7 +578,7 @@ struct AppStateEngineUpgradeTests {
 
     @Test(.timeLimit(.minutes(1))) func failedUpgradeKeepsTheSheetTheOldEngineAndEveryVersion() async throws {
         let f = try await fixture(venvBuildFails: true)
-        defer { try? FileManager.default.removeItem(at: f.home) }
+        defer { f.remove() }
         let s = appState(f)
         await s.runEngineUpgradeIfNeeded()
 
@@ -582,7 +601,7 @@ struct AppStateEngineUpgradeTests {
     /// there, so this one turns background work on.
     @Test(.timeLimit(.minutes(1))) func launchUpgradesAManagedEngineBehindTheBundle() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.home) }
+        defer { f.remove() }
         let s = appState(f, startsBackgroundWork: true)
         #expect(try await waitUntil { pluginVersion(f.layout) == "0.11.0" && !s.isUpgradingEngine })
         #expect(current(f.layout) == f.layout.engineRoot(version: "0.11.0").path)
@@ -592,10 +611,13 @@ struct AppStateEngineUpgradeTests {
     /// Ruling 69 I1/M6: `marketplace update` fails AFTER the switch —
     /// `bootstrap upgrade` rewrote the pointer to 0.11.0 and `current` already
     /// moved, but Claude Code still loads 0.10.0. That state must stay
-    /// actionable (Finish update) and a fresh launch must finish it.
-    @Test(.timeLimit(.minutes(1))) func aFailureAfterTheSwitchIsFinishedByTheNextLaunch() async throws {
+    /// actionable (Finish update). Final review I2: the launch remembered the
+    /// failure, so the next launch does NOT re-open the sheet for the same
+    /// target; Settings ▸ Engine's Finish update finishes it and clears the
+    /// memo.
+    @Test(.timeLimit(.minutes(1))) func aFailureAfterTheSwitchBacksOffThenFinishUpdateFinishesIt() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.home) }
+        defer { f.remove() }
         f.claudeCode?.failNext(ClaudeCodeCLI.marketplaceUpdate)
         let first = appState(f)
         await first.runEngineUpgradeIfNeeded()
@@ -608,15 +630,99 @@ struct AppStateEngineUpgradeTests {
         #expect(pluginVersion(f.layout) == "0.10.0")
         #expect(first.engineHealth.state.install?.version == "0.11.0")              // the pointer switched
         #expect(first.engineSwitchUnfinished)
-        let settings = EngineSettingsModel(state: first.engineHealth.state, doctor: first.engineHealth.doctor, lastError: nil,
-                                           bundledVersion: f.release.engine.version, unfinishedSwitch: first.engineSwitchUnfinished)
-        #expect(settings.upgradeAction == .finishUpdate && settings.canUpdate)
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == .init(targetVersion: "0.11.0", failedStep: .registerWithClaudeCode))
         first.dismissEngineUpgrade()                                                // Later
 
-        let relaunched = appState(f, startsBackgroundWork: true)
-        #expect(try await waitUntil { pluginVersion(f.layout) == "0.11.0" && !relaunched.isUpgradingEngine })
-        #expect(try await waitUntil { !relaunched.engineSwitchUnfinished && relaunched.engineUpgradeProgress == nil })
-        #expect(relaunched.engineUpgradeIsRepair)       // target == installed: "Repairing the Scout engine"
+        // The next launch backs off: no sheet, no installer run.
+        let relaunched = appState(f)
+        let callsBefore = f.runner.calls.count
+        #expect(AppState.shouldAutoUpgrade(state: relaunched.engineHealth.state, release: f.release, switchUnfinished: relaunched.engineSwitchUnfinished))
+        await relaunched.runEngineUpgradeIfNeeded()
+        #expect(relaunched.engineUpgradeProgress == nil && !relaunched.isUpgradingEngine)
+        #expect(f.runner.calls.count == callsBefore)
+        // …and Settings ▸ Engine still carries it.
+        let settings = EngineSettingsModel(state: relaunched.engineHealth.state, doctor: relaunched.engineHealth.doctor, lastError: nil,
+                                           bundledVersion: f.release.engine.version, unfinishedSwitch: relaunched.engineSwitchUnfinished)
+        #expect(settings.upgradeAction == .finishUpdate && settings.canUpdate)
+
+        await relaunched.runEngineUpgrade()                                         // Finish update
+        #expect(pluginVersion(f.layout) == "0.11.0" && !relaunched.engineSwitchUnfinished)
+        #expect(relaunched.engineUpgradeProgress == nil && relaunched.engineUpgradeIsRepair)   // target == installed
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
+    }
+
+    /// Final review I2: a launch upgrade that fails at `bootstrapVault` (the
+    /// vault refused; nothing switched) is remembered, so the next launch
+    /// leaves it to Settings ▸ Engine's Update — which clears the memo and,
+    /// once the cause is fixed, succeeds.
+    @Test(.timeLimit(.minutes(1))) func aBootstrapFailureBacksOffUntilSettingsUpdates() async throws {
+        let doctor = DoctorSwitch()
+        doctor.newVersionRefuses = true
+        let f = try await fixture(doctor: doctor)
+        defer { f.remove() }
+        let first = appState(f)
+        await first.runEngineUpgradeIfNeeded()
+        guard case .failed? = first.engineUpgradeProgress?[.bootstrapVault]?.status else {
+            Issue.record("expected bootstrapVault to fail: \(String(describing: first.engineUpgradeProgress))"); return
+        }
+        #expect(current(f.layout) == f.layout.engineRoot(version: "0.10.0").path)   // nothing switched
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == .init(targetVersion: "0.11.0", failedStep: .bootstrapVault))
+
+        let relaunched = appState(f)
+        let callsBefore = f.runner.calls.count
+        await relaunched.runEngineUpgradeIfNeeded()
+        #expect(relaunched.engineUpgradeProgress == nil && f.runner.calls.count == callsBefore)
+        let settings = EngineSettingsModel(state: relaunched.engineHealth.state, doctor: relaunched.engineHealth.doctor, lastError: nil,
+                                           bundledVersion: f.release.engine.version, unfinishedSwitch: relaunched.engineSwitchUnfinished)
+        #expect(settings.upgradeAction == .update && settings.canUpdate)
+
+        doctor.newVersionRefuses = false
+        await relaunched.runEngineUpgrade()                                         // Settings ▸ Engine ▸ Update
+        #expect(relaunched.engineUpgradeProgress == nil && pluginVersion(f.layout) == "0.11.0")
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
+    }
+
+    /// Final review I2: failures before `bootstrapVault` leave the old
+    /// engine fully live and are often transient, so they aren't remembered
+    /// and the next launch tries again.
+    @Test(.timeLimit(.minutes(1))) func anEarlyLaunchFailureIsRetriedOnTheNextLaunch() async throws {
+        let f = try await fixture(venvBuildFails: true)
+        defer { f.remove() }
+        await appState(f).runEngineUpgradeIfNeeded()
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
+        let relaunched = appState(f)
+        await relaunched.runEngineUpgradeIfNeeded()
+        guard case .failed? = relaunched.engineUpgradeProgress?[.buildVenv]?.status else {
+            Issue.record("expected the relaunch to try again: \(String(describing: relaunched.engineUpgradeProgress))"); return
+        }
+    }
+
+    /// Final review I2: a manual run clears the memo BEFORE it starts (and,
+    /// being manual, records nothing when it fails), so the next launch is
+    /// free to try again.
+    @Test(.timeLimit(.minutes(1))) func aManualRunClearsTheMemoEvenWhenItFails() async throws {
+        let f = try await fixture(venvBuildFails: true)
+        defer { f.remove() }
+        EngineUpgradeFailureMemo(targetVersion: "0.11.0", failedStep: .verify).save(to: f.defaults)
+        let s = appState(f)
+        await s.runEngineUpgrade()
+        guard case .failed? = s.engineUpgradeProgress?[.buildVenv]?.status else {
+            Issue.record("expected the manual run to fail at buildVenv"); return
+        }
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
+    }
+
+    /// Final review I2: the memo is per target — a newer bundled engine
+    /// than the one that failed upgrades automatically, and its success
+    /// clears the memo.
+    @Test(.timeLimit(.minutes(1))) func aDifferentBundledTargetIgnoresTheMemo() async throws {
+        let f = try await fixture()
+        defer { f.remove() }
+        EngineUpgradeFailureMemo(targetVersion: "0.10.5", failedStep: .registerWithClaudeCode).save(to: f.defaults)
+        let s = appState(f)
+        await s.runEngineUpgradeIfNeeded()
+        #expect(pluginVersion(f.layout) == "0.11.0" && s.engineUpgradeProgress == nil)
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
     }
 
     /// Ruling 69 M6/M2/I4: only `verify` fails after the switch — Claude Code
@@ -627,7 +733,7 @@ struct AppStateEngineUpgradeTests {
         let doctor = DoctorSwitch()
         doctor.newVersionIsRed = true
         let f = try await fixture(doctor: doctor)
-        defer { try? FileManager.default.removeItem(at: f.home) }
+        defer { f.remove() }
         let s = appState(f)
         await s.runEngineUpgradeIfNeeded()
 
@@ -642,10 +748,12 @@ struct AppStateEngineUpgradeTests {
                                            bundledVersion: f.release.engine.version, unfinishedSwitch: s.engineSwitchUnfinished)
         #expect(settings.upgradeAction == .repair)
         #expect(!AppState.shouldAutoUpgrade(state: s.engineHealth.state, release: f.release, switchUnfinished: s.engineSwitchUnfinished))
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == .init(targetVersion: "0.11.0", failedStep: .verify))
 
         doctor.newVersionIsRed = false                  // Repair… re-runs the idempotent steps
         await s.runEngineUpgrade()
         #expect(s.engineUpgradeProgress == nil && s.engineUpgradeIsRepair)
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
     }
 
     /// Ruling 69 M5 + no downgrades: the upgrade refuses a vault that isn't

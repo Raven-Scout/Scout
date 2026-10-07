@@ -557,11 +557,16 @@ final class AppState: ObservableObject {
     }
 
     /// Spec §5 "every launch": a newer bundled engine is applied for
-    /// app-managed installs. Called from the launch task only.
+    /// app-managed installs. Called from the launch task only. A launch
+    /// upgrade to this same target that last failed at or after
+    /// `bootstrapVault` is not retried automatically (final review I2): the
+    /// sheet would re-open on every launch for a failure that needs the
+    /// user. Settings ▸ Engine's Finish update / Repair… row carries it.
     func runEngineUpgradeIfNeeded() async {
         let unfinished = engineRelease.map { EngineUpgrader(layout: engineLayout, release: $0).hasUnfinishedSwitch(state: engineHealth.state) } ?? false
-        guard Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease, switchUnfinished: unfinished) else { return }
-        await runEngineUpgrade()
+        guard let engineRelease, Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease, switchUnfinished: unfinished) else { return }
+        if EngineUpgradeFailureMemo.load(from: defaults)?.suppressesAutoUpgrade(to: engineRelease.engine.version) == true { return }
+        await runEngineUpgrade(automatic: true)
     }
 
     /// Installs the bundled engine over a managed, set-up one
@@ -570,7 +575,11 @@ final class AppState: ObservableObject {
     /// Retry call this directly; every step is idempotent, so a retry
     /// resumes where the last run stopped. Old versions are garbage-
     /// collected only after a fully successful run. Never downgrades.
-    func runEngineUpgrade() async {
+    ///
+    /// `automatic` is the launch-time run (`runEngineUpgradeIfNeeded`): its
+    /// late-step failure is remembered so the next launch backs off. A
+    /// manual run clears that memo before it starts; any success clears it.
+    func runEngineUpgrade(automatic: Bool = false) async {
         guard !isUpgradingEngine else { return }
         guard let engineRelease, case .managed(let install, vaultBootstrapped: true) = engineHealth.state,
               !Self.wouldDowngrade(installed: install.version, bundled: engineRelease.engine.version) else {
@@ -579,6 +588,7 @@ final class AppState: ObservableObject {
             }
             return
         }
+        if !automatic { EngineUpgradeFailureMemo.clear(in: defaults) }
         engineUpgradeIsRepair = install.version == engineRelease.engine.version
         isUpgradingEngine = true
         defer { isUpgradingEngine = false }
@@ -604,9 +614,15 @@ final class AppState: ObservableObject {
         if liveUpgradeGeneration == generation { liveUpgradeGeneration = nil }
         engineUpgradeProgress = ledger.snapshot
         if ok {
+            EngineUpgradeFailureMemo.clear(in: defaults)
             _ = try? EngineUpgrader(layout: engineLayout, release: engineRelease).garbageCollect(keeping: engineRelease.engine.version)
-        } else if EngineUpgradeSheet.failure(progress: ledger.snapshot, error: nil) == nil {
-            engineUpgradeError = "The update stopped before it finished."
+        } else {
+            if automatic, let memo = EngineUpgradeFailureMemo.forFailure(target: engineRelease.engine.version, progress: ledger.snapshot) {
+                memo.save(to: defaults)
+            }
+            if EngineUpgradeSheet.failure(progress: ledger.snapshot, error: nil) == nil {
+                engineUpgradeError = "The update stopped before it finished."
+            }
         }
         await engineHealth.refresh()
         refreshEngineSwitchState()
