@@ -1,4 +1,4 @@
-# Scout.app — docs
+# Scout — docs (app and plugin)
 
 Design docs and implementation plans for features in this repo. Filed by topic, one design + one plan per feature.
 

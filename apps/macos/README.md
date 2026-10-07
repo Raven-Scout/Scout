@@ -74,7 +74,7 @@ Cmd+, opens Settings. A few fields are worth filling in:
 
 - **Launch Scout at login** — start the app automatically so it's watching your Scout instance all day.
 - **Start in menu bar** — launch with the full window hidden and use Scout from its compact panel until you need the Control Center.
-- **Scout directory** — read-only display. The app assumes `~/Scout` (the scout-plugin default).
+- **Scout directory** — read-only display of the vault the app uses: the folder you chose in onboarding, read from the engine pointer (`~/.local/state/scout/engine.json`); `~/Scout` only when there is no pointer yet.
 - **Claude CLI path** — leave blank to auto-detect (`~/.local/bin`, Homebrew, then your login shell). Used by **Launch Claude**; **Open Claude Code in** picks the terminal.
 - **Budget** — the daily budget, rolling window, skip threshold and failure backoff the scheduled runs are gated by (written to `~/Scout/scout-config.yaml`, same as `scoutctl budget set`).
 - **Linear workspace** — your Linear workspace slug (e.g. `acme-co`). Used to build Linear URLs when you click a `[[PROJ-123]]` wikilink or deep link in an action item. Leave blank to open `linear.app` without a workspace.
