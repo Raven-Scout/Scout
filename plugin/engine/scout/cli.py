@@ -716,6 +716,29 @@ def _register_connectors() -> None:
 
         _emit(list_custom(_paths.data_dir(), plugin_root=_plugin_root()))
 
+    @custom_app.command("draft")
+    def cli_custom_draft(
+        server: str = typer.Option(..., "--server", help="The server's name as `claude mcp list` shows it."),
+        json_out: bool = typer.Option(True, "--json", hidden=True, help="Always JSON; accepted for symmetry."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        model: str = typer.Option("sonnet", "--model", help="Model for the drafting call."),
+        timeout: float = typer.Option(120.0, "--timeout", help="Seconds per headless call."),
+    ) -> None:
+        """Draft custom-connector definitions for one connected server (headless claude -p, read-only)."""
+        from scout import paths as _paths
+        from scout.scripts import connector_draft
+        from scout.scripts.bootstrap import resolve_claude_bin
+
+        payload = connector_draft.draft(
+            server,
+            plugin_root=_plugin_root(),
+            vault=_paths.data_dir(),
+            claude_bin=resolve_claude_bin(claude_bin),
+            model=model,
+            timeout=timeout,
+        )
+        _emit(payload, connector_draft.EXIT_CODES[payload["status"]])
+
     @connectors_app.command("presets")
     def cli_connectors_presets() -> None:
         """Preset names and their default guidance per activity (JSON)."""
