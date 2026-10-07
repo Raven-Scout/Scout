@@ -74,8 +74,24 @@ struct OnboardingView: View {
         case .engine: progressList([.ensureUv, .unpackEngine, .buildVenv, .registerWithClaudeCode])
         case .identity: identity
         case .connectors: connectors
-        case .vault: progressList([.bootstrapVault, .verify])
+        case .vault: vault
         case .ready: ready
+        }
+    }
+
+    /// The chosen folder sits beside the progress, with Change… back to the
+    /// step that picks it — a refused vault is fixed there.
+    private var vault: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("Vault folder").font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                Text(model.vaultURL.path).font(DS.mono(11.5)).foregroundStyle(DS.Ink.p1).lineLimit(1).truncationMode(.middle)
+                if model.canChangeVault {
+                    Button("Change…") { model.changeVault() }
+                        .buttonStyle(.plainHit).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Accent.ink)
+                }
+            }
+            progressList([.bootstrapVault, .verify])
         }
     }
 

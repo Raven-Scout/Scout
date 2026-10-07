@@ -288,6 +288,22 @@ final class OnboardingViewModel: ObservableObject {
 
     func finish() { onFinished() }
 
+    static let changeVaultHint = "To use a different folder, choose Change… beside the vault path (it goes back to the first step, where you pick the folder)."
+
+    /// The Vault step shows the chosen folder with a Change… button while
+    /// the vault isn't created yet and nothing runs.
+    var canChangeVault: Bool { step == .vault && !busy && !isDone(.bootstrapVault) }
+
+    /// Change…: back to Welcome, where the vault folder is picked. Forgets
+    /// the failed vault attempt so the Vault step starts clean next time.
+    func changeVault() {
+        guard canChangeVault else { return }
+        lastError = nil
+        progress[.bootstrapVault] = nil
+        progress[.verify] = nil
+        step = .welcome
+    }
+
     // MARK: prerequisites
 
     func recheckPrerequisites() async { prerequisites = await checker.check() }
@@ -337,6 +353,12 @@ final class OnboardingViewModel: ObservableObject {
         identity.connectors = enabledConnectors
         let budget = Self.parseDailyBudget(dailyBudget)
         await runInstaller(steps: [.bootstrapVault, .verify], mode: .install(identity))
+        // A refused vault (e.g. "non-empty but not a Scout vault") is fixed
+        // by picking another folder, which lives on the first step — say so
+        // here, where the error shows (final review minor).
+        if case .failed? = progress[.bootstrapVault]?.status {
+            appendError(Self.changeVaultHint)
+        }
         // Ruling 44: the daily budget lives in the vault's config, so it is
         // only written once bootstrap created the vault. Its failure is
         // reported but never fails setup.

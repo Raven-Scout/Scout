@@ -582,6 +582,42 @@ struct OnboardingViewModelTests {
         #expect(f.runner.calls(to: "scoutctl").filter { $0.starts(with: ["bootstrap", "auto"]) }.count == 2)
     }
 
+    /// Final review minor: a vault the engine refuses ("non-empty but not a
+    /// Scout vault") is fixed on the first step, so the Vault step's error
+    /// says how to get there, and Change… goes back to Welcome with the
+    /// failed attempt forgotten. Nothing to change once the vault exists.
+    @Test func aRefusedVaultPointsBackToTheFolderPicker() async throws {
+        let f = try vaultFixture(scriptAuto: false)
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        f.runner.on(tool: "scoutctl", prefix: ["bootstrap", "auto"], stdout: #"{"schema_version":1,"action":"refused","reason":"","dry_run":false,"vault":"\#(f.vault.path)","plugin_version":"0.10.0","error":"non-empty but not a Scout vault — pick an empty folder","doctor":null,"conflicts":[],"backups":[],"snapshots_recorded":[],"pointer":null}"#)
+        let m = vaultModel(f)
+        m.step = .vault
+        #expect(m.canChangeVault)
+        await m.createVault()
+        #expect(m.lastError?.contains("non-empty but not a Scout vault") == true)
+        #expect(m.lastError?.hasSuffix(OnboardingViewModel.changeVaultHint) == true)
+        #expect(m.canChangeVault && m.canRetry)
+
+        m.changeVault()
+        #expect(m.step == .welcome)
+        #expect(m.lastError == nil && m.progress[.bootstrapVault] == nil && m.progress[.verify] == nil)
+        #expect(!m.canChangeVault)                  // only on the Vault step
+        m.changeVault()                             // a no-op elsewhere
+        #expect(m.step == .welcome)
+    }
+
+    @Test func aCreatedVaultCannotBeChanged() async throws {
+        let f = try vaultFixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let m = vaultModel(f)
+        m.step = .vault
+        await m.createVault()
+        #expect(m.progress[.bootstrapVault]?.status == .done && m.lastError == nil)
+        #expect(!m.canChangeVault)
+        m.changeVault()
+        #expect(m.step == .vault)
+    }
+
     /// Minor 3: once a run has settled, a progress hop arriving late (here
     /// a contradicting report through that run's sink) changes nothing.
     @Test(.timeLimit(.minutes(1))) func aLateProgressHopCannotChangeTheSettledState() async throws {
