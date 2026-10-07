@@ -72,6 +72,65 @@ final class GitService: @unchecked Sendable {
         return String(data: result.stdout, encoding: .utf8) ?? ""
     }
 
+    /// Every commit that touched one file, newest first, each with that file's
+    /// patch only. `--follow` tracks renames (one pathspec); scoping `--patch`
+    /// by the pathspec turns a 40-file run commit into this item's hunk. One
+    /// call per opened item (#43). `relativePath` is repo-relative.
+    func fileHistory(relativePath: String) async throws -> [FileRevision] {
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "log", "--follow", "--patch",
+                        "--no-color", "--no-ext-diff",
+                        "--format=\u{1E}%H\u{1F}%h\u{1F}%ct\u{1F}%s",
+                        "--", relativePath],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        guard result.exitCode == 0 else {
+            throw GitServiceError.gitExitNonZero(Int(result.exitCode))
+        }
+        return Self.parseFileHistory(String(decoding: result.stdout, as: UTF8.self))
+    }
+
+    /// Records begin with RS at the start of a line. No patch line can start
+    /// with RS (patch lines start with ' ', '+', '-', '@', '\\' or a header
+    /// word), so splitting on "\n" + RS is unambiguous.
+    nonisolated static func parseFileHistory(_ text: String) -> [FileRevision] {
+        ("\n" + text).components(separatedBy: "\n\u{1E}").dropFirst().compactMap { record in
+            let headerEnd = record.firstIndex(of: "\n") ?? record.endIndex
+            let fields = record[..<headerEnd].components(separatedBy: "\u{1F}")
+            guard fields.count == 4, let ts = TimeInterval(fields[2]) else { return nil }
+            let patch = String(record[headerEnd...]).trimmingCharacters(in: .newlines)
+            var insertions = 0, deletions = 0
+            for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
+                if line.hasPrefix("+++") || line.hasPrefix("---") { continue }
+                if line.hasPrefix("+") { insertions += 1 } else if line.hasPrefix("-") { deletions += 1 }
+            }
+            let commit = Commit(id: fields[0], shortSHA: fields[1],
+                                timestamp: Date(timeIntervalSince1970: ts), subject: fields[3],
+                                filesChanged: patch.isEmpty ? 0 : 1,
+                                insertions: insertions, deletions: deletions)
+            return FileRevision(commit: commit, patch: patch)
+        }
+    }
+
+    /// Repo-relative paths a commit touched (`git show --name-only`), for the
+    /// "also changed in this commit" list.
+    func filesChanged(inCommit sha: String) async throws -> [String] {
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoURL.path, "show", "--name-only", "--format=",
+                        "--no-color", sha],
+            environment: [:],
+            workingDirectory: repoURL
+        )
+        guard result.exitCode == 0 else {
+            throw GitServiceError.gitExitNonZero(Int(result.exitCode))
+        }
+        return String(decoding: result.stdout, as: UTF8.self)
+            .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
     private func parse(gitLogOutput: String, prefix: String) -> [Commit] {
         var commits: [Commit] = []
         // Each commit is: "<sha>\u{1E}<short>\u{1E}<unix-ts>\u{1E}<subject>\n<shortstat-line>?\n?"

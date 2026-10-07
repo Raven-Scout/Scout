@@ -37,6 +37,11 @@ struct MainWindowView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
         }
+        .onChange(of: appState.requestedSidebar) { _, requested in
+            guard let requested else { return }
+            selection = requested
+            appState.requestedSidebar = nil
+        }
     }
 
     /// Pure gate decision (spec §5): the detail pane shows `EngineUnavailableView`

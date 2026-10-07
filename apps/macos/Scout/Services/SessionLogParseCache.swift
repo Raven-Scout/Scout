@@ -16,7 +16,7 @@ extension SessionLogService {
     struct ParseCache: Codable, Equatable {
         /// Bump when `Entry`/`ParsedBody` shape changes so stale caches are
         /// discarded rather than mis-decoded.
-        static let version = 1
+        static let version = 2
 
         var version: Int
         var entries: [String: Entry]

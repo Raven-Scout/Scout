@@ -17,7 +17,7 @@ struct SessionLogParseCacheTests {
 
     private func body(_ exit: Int?) -> SessionLogService.ParsedBody {
         SessionLogService.ParsedBody(
-            endedAt: nil, exitCode: exit, status: .success,
+            startedAt: nil, endedAt: nil, exitCode: exit, status: .success,
             logSizeBytes: 100, errorsDetected: []
         )
     }
@@ -110,7 +110,7 @@ struct SessionLogParseCacheTests {
     @Test func cachedBodyValueIsReturnedUnchanged() {
         let files = [meta("a.log")]
         let distinct = SessionLogService.ParsedBody(
-            endedAt: Date(timeIntervalSince1970: 5), exitCode: 42, status: .failure,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: Date(timeIntervalSince1970: 5), exitCode: 42, status: .failure,
             logSizeBytes: 999, errorsDetected: [DetectedError(line: 3, pattern: "p", snippet: "s")]
         )
         let seeded = SessionLogService.resolveCachedBodies(files: files, cache: .init()) {
