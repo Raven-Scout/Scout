@@ -762,6 +762,7 @@ def test_prompt_template_carries_the_rules():
     text = cd.render_prompt(SERVER, plugin_root=PLUGIN, taken={"slack"})
     assert "+claude_ai_Example_Suite" in text and "1–4 read tools per activity" in text and "slack" in text
     assert "on one line" in text and "markdown headings" in text  # #324's validator rules
+    assert "contains a read verb" in text  # the Task 3 gate's rule
     assert "{{" not in text
 
 
@@ -791,7 +792,7 @@ You are drafting Scout custom-connector definitions for one MCP server: {{SERVER
    - `key`: lowercase letters, digits and `_`, 2–32 characters, starting with a letter. Not one of: {{TAKEN_KEYS}}.
    - `display_name`: what the user calls it, on one line.
    - Activities. `inbound`: new things that may need the user's action. `outbound`: what the user did there; only where the tools record the user's own actions (mail sent, messages posted, tickets closed). `lookup`: something to query on demand, with a `when` sentence.
-   - `tools`: 1–4 read tools per activity (search, list, get, read). Never a tool that sends, posts, creates, updates, deletes, moves, archives or marks anything.
+   - `tools`: 1–4 read tools per activity (search, list, get, read). Never a tool that sends, posts, creates, updates, deletes, moves, archives, labels or marks anything. Scout only accepts a tool whose name contains a read verb (list, get, search, read, find, query, fetch, describe, show, lookup, view) and no write verb; the same goes for the probe.
    - `preset`: `mail`, `chat` or `calendar` when the surface is one of those, and then leave out `focus`/`when`. Otherwise write `focus` (inbound, outbound) or `when` (lookup): one or two sentences on what matters.
    - `probe`: the cheapest read tool (list folders, whoami, get profile).
    - `needs_user_input`: names (lowercase_with_underscores) of values only the user knows that the tools need, such as a workspace id. Usually empty.
