@@ -2514,6 +2514,7 @@ def setup_cmd(
         daily_budget=daily_budget,
         first_run=first_run,
         managed_by=managed_by,
+        claude_bin=claude_bin,
         yes=yes,
     )
     raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))

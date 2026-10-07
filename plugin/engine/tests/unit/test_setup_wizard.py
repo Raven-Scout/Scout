@@ -161,6 +161,16 @@ def test_headless_without_connectors_enables_what_is_connected(tmp_path):
     assert calls[0][calls[0].index("--connectors") + 1] == "calendar,slack"
 
 
+def test_yes_without_an_explicit_first_run_flag_skips_the_first_run(tmp_path):
+    """--yes with no --first-run/--no-first-run (opts.first_run stays None)
+    must never prompt — it should default straight to "no", same as an
+    explicit --no-first-run."""
+    deps, calls = _deps(tmp_path)
+    opts = _opts(tmp_path, yes=True, name="Alex", email="alex@example.com")
+    assert sw.run_setup(opts, sw.HeadlessPrompter(), deps) == 0
+    assert not any(c[0] == "schedule" for c in calls)
+
+
 def test_end_of_input_cancels_before_anything_is_written(tmp_path):
     deps, calls = _deps(tmp_path)
     p = Scripted(["", "Alex"])  # runs out at the email question
@@ -218,6 +228,88 @@ def test_cli_setup_yes_wires_flags_into_options_and_runs(monkeypatch, tmp_path):
     assert auto[:6] == ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", "claude-code"]
     assert auto[auto.index("--user-name") + 1] == "Alex"
     assert auto[auto.index("--user-email") + 1] == "alex@example.com"
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 (code review): EOF at the first-run prompt isn't a cancel,
+# non-2 failure codes from bootstrap auto still stop the flow, --claude-bin
+# is forwarded to bootstrap auto.
+# ---------------------------------------------------------------------------
+
+
+def test_eof_at_first_run_prompt_is_treated_as_no_not_a_cancel(tmp_path):
+    """Ctrl-D at "Run your first briefing now?" used to propagate as an
+    uncaught EOFError (Click's "Aborted!", exit 1) even though bootstrap auto
+    had already written the vault. It must be treated as "no", not a cancel:
+    no CANCELLED message, exit 0, bootstrap's own return code."""
+    deps, calls = _deps(tmp_path)
+    # instance, name, email, keep tz, toggle enter, slack id, per-session, daily -- then EOF
+    p = Scripted(["", "", "", "", "", "U1", "", "20"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert sw.CANCELLED not in p.said
+    assert [c[0] for c in calls] == ["bootstrap", "budget"]
+    assert not any(c[0] == "schedule" for c in calls)
+    assert any("first scheduled run" in s for s in p.said)
+
+
+def test_bootstrap_failure_code_other_than_2_still_stops_the_flow(tmp_path):
+    """Only checking `code == 2` let other failure codes (e.g. 10 from a
+    ConfigError) fall through to budget/first-run as if bootstrap had
+    succeeded. Any code other than 0 (ok) or 1 (warn) must stop the flow and
+    be returned as-is."""
+    deps, calls = _deps(tmp_path, codes={"bootstrap": 10})
+    p = Scripted(["", "", "", "", "", "U1", "", "20"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 10
+    assert [c[0] for c in calls] == ["bootstrap"]
+
+
+def test_claude_bin_is_forwarded_to_bootstrap_install(tmp_path):
+    deps, calls = _deps(tmp_path)
+    p = Scripted(["", "", "", "", "", "U1", "", "20", "n"])
+    opts = _opts(tmp_path, claude_bin="/opt/homebrew/bin/claude")
+    assert sw.run_setup(opts, p, deps) == 0
+    auto = calls[0]
+    assert auto[auto.index("--claude-bin") + 1] == "/opt/homebrew/bin/claude"
+
+
+def test_claude_bin_is_forwarded_to_bootstrap_upgrade(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    opts = _opts(tmp_path, claude_bin="/opt/homebrew/bin/claude")
+    assert sw.run_setup(opts, Scripted([]), deps) == 0
+    upgrade = calls[0]
+    assert upgrade[upgrade.index("--claude-bin") + 1] == "/opt/homebrew/bin/claude"
+
+
+def test_claude_bin_omitted_from_both_argvs_when_blank(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    sw.run_setup(_opts(tmp_path), Scripted([]), deps)
+    assert "--claude-bin" not in calls[0]
+
+
+def test_cli_setup_forwards_claude_bin_flag(monkeypatch, tmp_path):
+    vault_path = tmp_path / "MyScout"
+    deps, calls = _deps(tmp_path)
+    monkeypatch.setattr("scout.setup_wizard.default_deps", lambda claude_bin="": deps)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "setup",
+            "--vault",
+            str(vault_path),
+            "--yes",
+            "--name",
+            "Alex",
+            "--email",
+            "alex@example.com",
+            "--no-first-run",
+            "--claude-bin",
+            "/opt/homebrew/bin/claude",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    auto = calls[0]
+    assert auto[auto.index("--claude-bin") + 1] == "/opt/homebrew/bin/claude"
 
 
 # ---------------------------------------------------------------------------
@@ -353,31 +445,48 @@ def test_tty_prompter_confirm_reasks_on_an_unrecognised_answer():
     assert tty.written.count("Q [Y/n]: ") == 2
 
 
-def test_tty_prompter_open_succeeds_when_dev_tty_opens(monkeypatch, tmp_path):
-    import builtins
-
-    fake_tty = tmp_path / "tty"
-    fake_tty.write_text("", encoding="utf-8")
-    real_open = builtins.open
-
-    def fake_open(path, mode="r", *args, **kwargs):
-        if path == "/dev/tty":
-            return real_open(fake_tty, mode, *args, **kwargs)
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", fake_open)
+def test_tty_prompter_open_works_on_a_real_non_seekable_pty(monkeypatch):
+    """Regression for the bug where the old ``open("/dev/tty", "r+")`` built a
+    buffered, SEEKABLE stream — a tty isn't seekable, so that raised
+    io.UnsupportedOperation (an OSError subclass) on every real terminal, and
+    TtyPrompter.open() always returned None. A regular temp file (or
+    io.StringIO) IS seekable and would hide this exact bug, so this test
+    drives a real pty's slave fd — the same kind of fd a real /dev/tty is —
+    through os.openpty(), and proves both that open() succeeds and that the
+    resulting prompter can actually read a line."""
+    master_fd, slave_fd = os.openpty()
+    monkeypatch.setattr(sw.os, "open", lambda path, flags: slave_fd)
     prompter = sw.TtyPrompter.open()
-    assert isinstance(prompter, sw.TtyPrompter)
+    try:
+        assert isinstance(prompter, sw.TtyPrompter)
+        os.write(master_fd, b"hello\n")
+        assert prompter.ask("Q") == "hello"
+    finally:
+        if prompter is not None:
+            prompter._tty.close()  # also closes the wrapped slave fd
+        os.close(master_fd)
 
 
 def test_tty_prompter_open_returns_none_when_dev_tty_cannot_open(monkeypatch):
-    import builtins
-
-    def fake_open(*args, **kwargs):
+    def fake_os_open(path, flags):
         raise OSError("no such device or address")
 
-    monkeypatch.setattr(builtins, "open", fake_open)
+    monkeypatch.setattr(sw.os, "open", fake_os_open)
     assert sw.TtyPrompter.open() is None
+
+
+def test_tty_prompter_open_closes_the_fd_when_wrapping_fails(monkeypatch):
+    """If os.open() succeeds but wrapping the fd raises OSError, the fd must
+    be closed rather than leaked."""
+    master_fd, slave_fd = os.openpty()
+    monkeypatch.setattr(sw.os, "open", lambda path, flags: slave_fd)
+    monkeypatch.setattr(sw.io, "FileIO", lambda *a, **k: (_ for _ in ()).throw(OSError("wrap failed")))
+    try:
+        assert sw.TtyPrompter.open() is None
+        with pytest.raises(OSError):
+            os.fstat(slave_fd)  # the except branch closed it
+    finally:
+        os.close(master_fd)
 
 
 # ---------------------------------------------------------------------------

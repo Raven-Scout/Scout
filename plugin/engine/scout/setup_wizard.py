@@ -7,6 +7,8 @@ tested without a vault, a terminal or a real `claude`.
 
 from __future__ import annotations
 
+import io
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -47,9 +49,22 @@ class TtyPrompter:
 
     @classmethod
     def open(cls) -> TtyPrompter | None:
+        """Open /dev/tty for reading and writing.
+
+        The builtin ``open("/dev/tty", "r+")`` builds a buffered, seekable
+        stream, and a tty isn't seekable — that raises ``io.UnsupportedOperation``
+        (an ``OSError`` subclass) on every real terminal, so the wizard always
+        reported "no terminal". Mirror ``getpass``: open the fd directly and
+        wrap it in a non-seeking ``TextIOWrapper``.
+        """
         try:
-            return cls(open("/dev/tty", "r+", encoding="utf-8"))  # noqa: SIM115 — lives for the whole run
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        except OSError:  # ENXIO: no controlling tty
+            return None
+        try:
+            return cls(io.TextIOWrapper(io.FileIO(fd, "r+"), encoding="utf-8", write_through=True))
         except OSError:
+            os.close(fd)
             return None
 
     def say(self, text: str) -> None:
@@ -105,6 +120,7 @@ class SetupOptions:
     daily_budget: str = ""
     first_run: bool | None = None
     managed_by: str = ""  # "": claude-code on install, preserve on upgrade
+    claude_bin: str = ""
     yes: bool = False
 
 
@@ -394,9 +410,10 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return 2
     if plan.action is AutoAction.UPGRADE:
         p.say(f"Found your vault at {opts.vault}, upgrading.")
-        return deps.invoke(
-            ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", opts.managed_by or "preserve"]
-        )
+        upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", opts.managed_by or "preserve"]
+        if opts.claude_bin:
+            upgrade_argv += ["--claude-bin", opts.claude_bin]
+        return deps.invoke(upgrade_argv)
     try:
         answers = _gather(opts, p, deps)
     except (EOFError, KeyboardInterrupt):
@@ -404,15 +421,26 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return 1
     if answers is None:
         return 2
-    code = deps.invoke(auto_argv(answers, opts.managed_by or "claude-code"))
-    if code == 2:
-        return 2
+    install_argv = auto_argv(answers, opts.managed_by or "claude-code")
+    if opts.claude_bin:
+        install_argv += ["--claude-bin", opts.claude_bin]
+    code = deps.invoke(install_argv)
+    if code not in (0, 1):
+        return code
     if answers.daily_budget:
         deps.invoke(["budget", "set", "--daily-usd", answers.daily_budget])
     _apply_drafts(answers, p, deps)
     first = opts.first_run
     if first is None:
-        first = False if opts.yes else p.confirm("Run your first briefing now?", False)
+        if opts.yes:
+            first = False
+        else:
+            try:
+                first = p.confirm("Run your first briefing now?", False)
+            except (EOFError, KeyboardInterrupt):
+                # Something was already written (bootstrap ran above) — this
+                # isn't a cancel, just "no" to one optional, final question.
+                first = False
     if first:
         slot = deps.first_briefing_slot()
         if slot:
