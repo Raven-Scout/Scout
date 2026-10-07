@@ -127,10 +127,18 @@ and become the **only** copy of those rules.
 **The engine checks every draft before returning it.** No draft is trusted as
 written:
 - Every tool and the probe start with `mcp__<slug>__`.
-- No tool's action segment starts with a write verb: send, post, create,
-  update, delete, remove, write, reply, forward, archive, move, edit, upload,
-  share, trash, mark, respond or cancel. The list lives in one constant and is
-  unit-tested in both directions (`list_labels` passes, `send_message` fails).
+- Every tool reads, checked word by word. The action segment (after the
+  last `__`) is split into words: camelCase, kebab-case and snake_case all
+  split. A tool is rejected if any word is a write verb (send, post, create,
+  update, delete, add, set, save, label, apply, merge, resolve, …), counting
+  `un`/`re`/`de`-prefixed forms such as `unmark` and `resend`. It is also
+  rejected unless at least one word is a read verb (list, get, search, read,
+  find, query, fetch, …).
+  - Both lists live in constants and are unit-tested in both directions:
+    `list_labels` passes; `send_message`, `unmark_message_spam`,
+    `label_message` and `add_reaction` fail.
+  - A denylist alone missed real write tools in review, so the read-verb
+    requirement is what makes this check fail closed.
 - `cc.parse_file` validation, with the reserved keys, the presets, and a key
   that doesn't collide with an existing connector.
 
