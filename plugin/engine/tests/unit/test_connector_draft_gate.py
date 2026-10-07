@@ -27,7 +27,29 @@ def _mail(**over):
 
 @pytest.mark.parametrize(
     "tool",
-    [f"{T}send_message", f"{T}sendMessage", f"{T}create-issue", f"{T}mark_read", f"{T}archive_thread", f"{T}Delete"],
+    [
+        f"{T}send_message",
+        f"{T}sendMessage",
+        f"{T}create-issue",
+        f"{T}mark_read",
+        f"{T}archive_thread",
+        f"{T}Delete",
+        f"{T}unmark_message_spam",
+        f"{T}untrash_message",
+        f"{T}unlabel_message",
+        f"{T}unshare_issue",
+        f"{T}label_message",
+        f"{T}apply_sensitive_message_label",
+        f"{T}save_issue",
+        f"{T}merge_diff",
+        f"{T}resolve_diff_thread",
+        f"{T}restore_issue_label",
+        f"{T}add_reaction",
+        f"{T}submit_diff_review",
+        f"{T}set_session_connector_enabled",
+        f"{T}resend_invite",
+        f"{T}search_and_delete",
+    ],
 )
 def test_write_tools_are_detected(tool):
     assert cd.is_write_tool(tool)
@@ -35,6 +57,20 @@ def test_write_tools_are_detected(tool):
 
 @pytest.mark.parametrize("tool", [f"{T}list_labels", f"{T}get_message", f"{T}search_threads", f"{T}listFolders"])
 def test_read_tools_pass(tool):
+    assert not cd.is_write_tool(tool)
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [f"{T}gmail_search_messages", f"{T}get_me", f"{T}whoami", f"{T}list_issue_labels", f"{T}getMessage"],
+)
+def test_read_tools_are_recognized_as_reads(tool):
+    assert cd.is_read_tool(tool)
+
+
+@pytest.mark.parametrize("tool", [f"{T}calendar_events", f"{T}messages"])
+def test_tools_with_no_read_verb_are_not_reads(tool):
+    assert not cd.is_read_tool(tool)
     assert not cd.is_write_tool(tool)
 
 
@@ -50,6 +86,13 @@ def test_a_write_tool_rejects_the_whole_draft():
     defs, issues = cd.check_definitions([bad], server_name=SERVER, plugin_root=PLUGIN, taken=set())
     assert defs == []
     assert any("send_message" in i.message for i in issues)
+
+
+def test_a_not_clearly_read_tool_rejects_the_whole_draft():
+    bad = _mail(inbound={"tools": [f"{T}search_messages", f"{T}label_message"]})
+    defs, issues = cd.check_definitions([bad], server_name=SERVER, plugin_root=PLUGIN, taken=set())
+    assert defs == []
+    assert any("label_message" in i.message and "not clearly a read tool" in i.message for i in issues)
 
 
 def test_a_tool_of_another_server_is_rejected():

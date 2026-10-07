@@ -37,19 +37,118 @@ WRITE_VERBS = frozenset(
         "mark",
         "respond",
         "cancel",
+        "label",
+        "apply",
+        "save",
+        "merge",
+        "resolve",
+        "restore",
+        "retire",
+        "add",
+        "submit",
+        "set",
+        "put",
+        "patch",
+        "insert",
+        "modify",
+        "rename",
+        "assign",
+        "close",
+        "approve",
+        "reject",
+        "publish",
+        "schedule",
+        "invite",
+        "accept",
+        "decline",
+        "comment",
+        "react",
+        "pin",
+        "star",
+        "mute",
+        "snooze",
+        "copy",
+        "import",
+        "run",
+        "execute",
+        "trigger",
+        "start",
+        "stop",
+        "deploy",
+        "enable",
+        "disable",
+        "grant",
+        "revoke",
+        "transfer",
+        "pay",
+        "purchase",
+        "book",
+        "clear",
+        "reset",
+        "sync",
+        "push",
+        "commit",
+        "drop",
+        "purge",
+        "empty",
+        "block",
+        "flag",
+        "subscribe",
+        "join",
+        "leave",
+        "kick",
+        "ban",
     }
 )
 
+READ_VERBS = frozenset(
+    {
+        "list",
+        "get",
+        "search",
+        "read",
+        "find",
+        "query",
+        "fetch",
+        "describe",
+        "show",
+        "lookup",
+        "retrieve",
+        "count",
+        "view",
+        "whoami",
+        "browse",
+        "check",
+        "status",
+    }
+)
 
-def action_verb(tool: str) -> str:
-    """First word of a tool's action segment: ``mcp__s__sendMessage`` → ``send``."""
+_WRITE_PREFIXES = ("un", "re", "de")
+
+
+def action_words(tool: str) -> list[str]:
+    """Lowercased words of a tool's action segment: ``mcp__s__sendMessage`` → ``["send", "message"]``."""
     action = tool.rsplit("__", 1)[-1]
     words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", action).lower()
-    return re.split(r"[^a-z0-9]+", words)[0]
+    return [w for w in re.split(r"[^a-z0-9]+", words) if w]
+
+
+def _is_write_word(word: str) -> bool:
+    if word in WRITE_VERBS:
+        return True
+    for prefix in _WRITE_PREFIXES:
+        if word.startswith(prefix) and word[len(prefix) :] in WRITE_VERBS:
+            return True
+    return False
 
 
 def is_write_tool(tool: str) -> bool:
-    return action_verb(tool) in WRITE_VERBS
+    return any(_is_write_word(w) for w in action_words(tool))
+
+
+def is_read_tool(tool: str) -> bool:
+    words = action_words(tool)
+    return not any(_is_write_word(w) for w in words) and any(w in READ_VERBS for w in words)
 
 
 def _tools_schema() -> dict[str, Any]:
@@ -148,8 +247,8 @@ def check_definitions(
                 issues.append(cc.Issue(base, f"{ref!r} is not a tool of {server_name}"))
                 continue
             server = server or slug
-            if is_write_tool(ref):
-                issues.append(cc.Issue(base, f"{ref!r} changes data; a draft may only read"))
+            if not is_read_tool(ref):
+                issues.append(cc.Issue(base, f"{ref!r} is not clearly a read tool; a draft may only read"))
         if server is not None:
             body["server"] = server
         _, problems = cc.parse_connector(key, body, reserved=reserved, presets=presets)
