@@ -71,3 +71,16 @@ def test_digest_stays_a_capped_section_in_the_daily_file(tmp_path: Path) -> None
     skill = _assemble(_cfg(tmp_path), "SKILL")
     fixed = skill[skill.index("**Fixed sections, in order:**") :].split("\n", 1)[0]
     assert fixed.index("`## 📋 Scout Digest`") < fixed.index("`## 🪵 Run notes")
+
+
+@pytest.mark.parametrize("kind", ["SKILL", "DREAMING", "RESEARCH"])
+def test_action_items_have_context_notes(kind: str, tmp_path: Path) -> None:
+    text = _assemble(_cfg(tmp_path), kind)
+    assert "action-items/context/<TAG>.md" in text
+
+
+def test_briefing_writes_context_to_the_note(tmp_path: Path) -> None:
+    text = _assemble(_cfg(tmp_path), "SKILL")
+    assert "Context lives in the item's own note" in text
+    assert "write or update the topic/project note and link it" not in text
+    assert "a re-tag renames the note" in text.lower()
