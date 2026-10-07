@@ -2468,6 +2468,57 @@ def tui() -> None:
     ScoutApp().run()
 
 
+@app.command("setup")
+def setup_cmd(
+    vault: Path | None = typer.Option(None, "--vault", help="Vault folder. Default: $SCOUT_DATA_DIR or ~/Scout."),
+    instance_name: str = typer.Option("", "--instance-name"),
+    name: str = typer.Option("", "--name", help="Your name (commits, the KB)."),
+    email: str = typer.Option("", "--email", help="Your email (git config)."),
+    timezone: str = typer.Option("", "--timezone", help="IANA zone to pin. Default: follow the computer."),
+    connectors: str | None = typer.Option(None, "--connectors", help="Comma-separated. Default: detect."),
+    slack_id: str = typer.Option("", "--slack-id"),
+    github_username: str = typer.Option("", "--github-username"),
+    github_repos: str = typer.Option("", "--github-repos"),
+    max_budget: str = typer.Option("", "--max-budget", help="USD per session. Default 5.00."),
+    daily_budget: str = typer.Option("", "--daily-budget", help="USD per day. Default: none."),
+    first_run: bool | None = typer.Option(None, "--first-run/--no-first-run"),
+    managed_by: str = typer.Option("", "--managed-by", help="install.sh passes install.sh."),
+    claude_bin: str = typer.Option("", "--claude-bin"),
+    yes: bool = typer.Option(False, "--yes", help="Ask nothing; take the flags and defaults."),
+) -> None:
+    """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
+    import os
+
+    from scout import paths as _paths
+    from scout.setup_wizard import HEADLESS_FLAGS, HeadlessPrompter, SetupOptions, TtyPrompter, default_deps, run_setup
+
+    if vault is not None:
+        os.environ["SCOUT_DATA_DIR"] = str(vault.expanduser())
+    prompter = HeadlessPrompter() if yes else TtyPrompter.open()
+    if prompter is None:
+        typer.echo(
+            f"error: no terminal to ask questions on. Run it headless: scoutctl setup {HEADLESS_FLAGS}", err=True
+        )
+        raise typer.Exit(code=2)
+    opts = SetupOptions(
+        vault=_paths.data_dir(),
+        instance_name=instance_name,
+        name=name,
+        email=email,
+        timezone=timezone,
+        connectors=connectors,
+        slack_id=slack_id,
+        github_username=github_username,
+        github_repos=github_repos,
+        max_budget=max_budget,
+        daily_budget=daily_budget,
+        first_run=first_run,
+        managed_by=managed_by,
+        yes=yes,
+    )
+    raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
+
+
 def main() -> None:
     try:
         app()
