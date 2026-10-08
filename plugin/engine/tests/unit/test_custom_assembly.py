@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from scout import custom_connectors as cc
 from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.phase_assembly import parse_phase_file
@@ -60,6 +64,22 @@ def test_skill_renders_inbound_and_outbound_with_preset_and_notes():
 
 def test_disabled_connector_renders_nothing():
     assert render_custom_sections(ROOT, "SKILL", CONNECTORS, set(), VARS, {}) == []
+
+
+def test_an_unusable_template_is_skipped_with_a_warning(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    custom = tmp_path / "phases" / "custom"
+    custom.mkdir(parents=True)
+    shipped = (ROOT / "phases" / "custom" / "inbound.md").read_text(encoding="utf-8")
+    (custom / "inbound.md").write_text(shipped, encoding="utf-8")
+    # outbound.md is missing entirely; lookup.md holds two sections instead of one.
+    (custom / "lookup.md").write_text(shipped + "\n" + shipped, encoding="utf-8")
+
+    out = render_custom_sections(tmp_path, "SKILL", CONNECTORS, {"suite_mail", "dataplat"}, VARS, {})
+    # Only inbound still renders; suite_mail's outbound and dataplat's lookup are dropped.
+    assert [(s.connector_key, s.activity) for s in out] == [("dataplat", "inbound"), ("suite_mail", "inbound")]
+    err = capsys.readouterr().err
+    assert f"warning: custom-connector template {custom / 'outbound.md'} unusable: " in err
+    assert f"warning: custom-connector template {custom / 'lookup.md'} must hold exactly one section" in err
 
 
 def test_lookup_lands_in_skill_and_research_but_outbound_never_in_research():
