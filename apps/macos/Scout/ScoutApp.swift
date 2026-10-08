@@ -58,7 +58,7 @@ struct ScoutApp: App {
                 .environmentObject(appState)
                 .environmentObject(updates)
         } label: {
-            MenuBarIcon(status: appState.menuBarStatus)
+            MenuBarIcon(status: appState.menuBarStatus, updateAvailable: updates.anyUpdateAvailable)
         }
         .menuBarExtraStyle(.window)
 

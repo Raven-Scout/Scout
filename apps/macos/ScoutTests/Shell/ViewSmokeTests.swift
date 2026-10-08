@@ -216,7 +216,8 @@ struct ShellViewSmokeTests {
         ViewHost.render(
             MainWindowView()
                 .environmentObject(vault.state)
-                .environmentObject(vault.state.proposalsDocumentService))
+                .environmentObject(vault.state.proposalsDocumentService)
+                .environmentObject(vault.updates))
     }
 
     @Test("every sidebar destination has a status label")
@@ -247,6 +248,18 @@ struct ShellViewSmokeTests {
             let binding = Binding(get: { selection }, set: { selection = $0 })
             ViewHost.render(
                 SidebarView(selection: binding, settingsAttention: attention).environmentObject(vault.state),
+                size: CGSize(width: 240, height: 700))
+        }
+    }
+
+    @Test("the sidebar renders the Settings update badge at 0, 1 and 2")
+    func sidebarSettingsBadgeRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        for badge in [0, 1, 2] {
+            var selection = SidebarItem.controlCenter
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            ViewHost.render(
+                SidebarView(selection: binding, settingsBadge: badge, settingsAttention: badge == 1).environmentObject(vault.state),
                 size: CGSize(width: 240, height: 700))
         }
     }
@@ -286,14 +299,17 @@ struct ShellViewSmokeTests {
     func menuBarExtraRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(
-            MenuBarExtraContent().environmentObject(vault.state),
+            MenuBarExtraContent().environmentObject(vault.state).environmentObject(vault.updates),
             size: CGSize(width: 320, height: 400))
     }
 
     @Test("the menu bar icon renders for every status")
     func menuBarIconRendersEveryStatus() {
         for status in [AppState.MenuBarStatus.idle, .running, .lastFailed, .budgetSkipped] {
-            ViewHost.render(MenuBarIcon(status: status), size: CGSize(width: 24, height: 24))
+            for updateAvailable in [false, true] {
+                ViewHost.render(MenuBarIcon(status: status, updateAvailable: updateAvailable),
+                                size: CGSize(width: 24, height: 24))
+            }
         }
     }
 
