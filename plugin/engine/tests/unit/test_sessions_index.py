@@ -781,3 +781,103 @@ def test_a_pr_linked_to_a_live_and_an_archived_session_is_fetched(fake_data_dir:
     idx = build_index(_gh_options(fake_data_dir, runner))
     assert calls == ["4"]
     assert all(x.pr is not None and x.pr.state == "OPEN" for x in idx.sessions)
+
+
+# ----- custom titles, records without a CLI id, list_main -------------------------------
+
+
+def test_custom_title_skips_garbled_and_untitled_rows_in_the_head(tmp_path: Path) -> None:
+    path = tmp_path / f"{UA}.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                '{"type": "custom-title", "customTitle": ',  # cut mid-write
+                json.dumps({"type": "custom-title", "customTitle": ""}),
+                json.dumps({"type": "custom-title", "customTitle": 42}),
+                json.dumps({"type": "custom-title", "customTitle": "scout-research-20260908-0300"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert index_mod._custom_title(path) == "scout-research-20260908-0300"
+
+
+def test_custom_title_only_reads_the_head(tmp_path: Path) -> None:
+    path = tmp_path / f"{UA}.jsonl"
+    rows = [_user(f"turn {i}", "2026-09-08T10:00:00.000Z") for i in range(index_mod._CUSTOM_TITLE_HEAD_LINES)]
+    rows.append({"type": "custom-title", "customTitle": "too late"})
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert index_mod._custom_title(path) is None
+
+
+def test_custom_title_of_an_unreadable_transcript_is_none(tmp_path: Path) -> None:
+    unreadable = tmp_path / f"{UA}.jsonl"
+    unreadable.mkdir()  # opening a directory raises an OSError
+    assert index_mod._custom_title(unreadable) is None
+
+
+def test_a_desktop_session_without_a_cli_id_is_still_indexed(fake_data_dir: Path) -> None:
+    s = support_dir()
+    write_desktop_record(s, "local_N", cliSessionId=None, title="Draft the notes", lastActivityAt=MS - 60_000)
+    # A record with no usable cwd contributes nothing to the CLI-dir lookup.
+    write_desktop_record(s, "local_M", cliSessionId=UH, cwd="", originCwd=None, lastActivityAt=MS - 120_000)
+    idx = build_index(_gh_options(fake_data_dir, lambda argv: None))
+    by_id = {x.id: x for x in idx.sessions}
+    assert set(by_id) == {"local_N", "local_M"} and idx.source_errors == []
+    n = by_id["local_N"]
+    assert n.cli_session_id is None and n.title == "Draft the notes"
+    assert n.transcript is None and n.is_open is False
+
+
+def test_a_transcript_marked_unavailable_is_never_parsed(fake_data_dir: Path) -> None:
+    s, h = support_dir(), claude_home()
+    write_desktop_record(s, "local_Q", cliSessionId=UH, transcriptUnavailable=True, lastActivityAt=MS - 86_400_000)
+    write_transcript(h, REPO_DIR, UH, [_user("hello", "2026-09-08T10:00:00.000Z")], mtime_ago_hours=1)
+    idx = build_index(_gh_options(fake_data_dir, lambda argv: None))
+    q = next(x for x in idx.sessions if x.id == "local_Q")
+    assert q.transcript is None
+    # The file's mtime still counts as activity: newer than the record's lastActivityAt.
+    last = datetime.fromisoformat(q.last_activity_at.replace("Z", "+00:00")) if q.last_activity_at else None
+    assert last is not None and NOW - last < timedelta(hours=2)
+
+
+def test_run_survives_a_legacy_cache_it_cannot_delete(fake_data_dir: Path) -> None:
+    legacy = fake_data_dir / ".scout-cache" / index_mod.LEGACY_CACHE_FILENAME
+    legacy.mkdir()  # exists, but unlink() raises
+    _, path = run(opts=_world(fake_data_dir))
+    assert path.exists() and legacy.is_dir()
+
+
+def _list(capsys: pytest.CaptureFixture[str], **over: object) -> tuple[int, str, str]:
+    kw: dict[str, object] = {
+        "states": [],
+        "project": None,
+        "include_archived": False,
+        "include_scout_runs": False,
+        "json_out": True,
+    }
+    kw.update(over)
+    rc = index_mod.list_main(**kw)  # type: ignore[arg-type]
+    out = capsys.readouterr()
+    return rc, out.out, out.err
+
+
+def test_list_main_hides_scout_runs_unless_asked(fake_data_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    run(opts=_world(fake_data_dir))
+    rc, out, _ = _list(capsys)
+    assert rc == 0 and f"cli:{UF}" not in {r["id"] for r in json.loads(out)}
+    rc, out, _ = _list(capsys, include_scout_runs=True)
+    assert rc == 0 and f"cli:{UF}" in {r["id"] for r in json.loads(out)}
+
+
+def test_list_main_says_when_nothing_matches(fake_data_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    run(opts=_world(fake_data_dir))
+    rc, out, _ = _list(capsys, project="no-such-project", json_out=False)
+    assert rc == 0 and out == "no sessions match\n"
+
+
+def test_list_main_reports_an_unreadable_index(fake_data_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    index_path(fake_data_dir).write_text("{half an index", encoding="utf-8")
+    rc, out, err = _list(capsys)
+    assert rc == 1 and out == "" and err.startswith("session list: could not read the index: ")

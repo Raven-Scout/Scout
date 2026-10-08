@@ -211,6 +211,20 @@ def test_repo_root_skips_a_broken_dot_git_file_and_keeps_walking(tmp_path: Path,
     assert repo_root(str(inner)) == str(repo)
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file anyway")
+def test_repo_root_skips_an_unreadable_dot_git_file_and_keeps_walking(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "example-repo")
+    inner = repo / "inner"
+    inner.mkdir()
+    dot = inner / ".git"
+    dot.write_text("gitdir: ../.git/modules/inner\n", encoding="utf-8")
+    dot.chmod(0)
+    try:
+        assert repo_root(str(inner)) == str(repo)
+    finally:
+        dot.chmod(0o600)
+
+
 def test_repo_root_follows_a_symlinked_project_folder(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "real" / "example-repo")
     link = tmp_path / "link-to-repo"

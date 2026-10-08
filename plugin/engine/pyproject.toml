@@ -111,6 +111,12 @@ omit = [
 # without tests does. Raise it as gaps close — never lower it to make a build
 # pass.
 fail_under = 98
+# pytest-cov decides the exit code from the total *rounded to this many
+# digits*. At coverage's default of 0, 97.82% rounds to 98 and passes while the
+# log prints "FAIL Required test coverage of 98.0% not reached". Two digits
+# makes the gate fail whenever the printed total is under the floor.
+# tests/unit/test_coverage_gate.py pins this.
+precision = 2
 show_missing = true
 skip_covered = true
 exclude_also = [

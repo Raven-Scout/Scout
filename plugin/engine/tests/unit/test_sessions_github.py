@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import scout.sessions.github as gh_module
 from scout.sessions.desktop import PRRef
 from scout.sessions.github import (
     PR_CACHE_FILENAME,
@@ -22,6 +25,8 @@ from scout.sessions.github import (
     unknown_pr_info,
     write_pr_cache,
 )
+from scout.sessions.github import default_runner as real_default_runner
+from scout.sessions.github import gh_available as real_gh_available
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 TTL = timedelta(minutes=10)
@@ -241,3 +246,71 @@ def test_three_consecutive_failures_stop_calling_gh() -> None:
     assert calls == ["1", "2", "3"]  # stopped after MAX_CONSECUTIVE_FAILURES
     assert fetched == 0 and len(errors) == 3
     assert all(out[f"{r.repo}#{r.number}"].state == "unknown" for r in refs)
+
+
+# default_runner/gh_available are imported at collection time, so these are the
+# real functions — conftest's _block_real_gh swaps only the module attributes.
+# subprocess.run and shutil.which are faked; gh never runs.
+
+
+class _Proc:
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_default_runner_returns_stdout_only_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(argv: list[str], **kw: object) -> _Proc:
+        seen.append((argv, kw))
+        return _Proc(0, '{"state": "OPEN"}')
+
+    monkeypatch.setattr(gh_module.subprocess, "run", fake_run)
+    assert real_default_runner(["pr", "view", "98"]) == '{"state": "OPEN"}'
+    argv, kw = seen[0]
+    assert argv == ["gh", "pr", "view", "98"]
+    assert kw["timeout"] == gh_module.GH_TIMEOUT_SECONDS and kw["check"] is False
+
+    monkeypatch.setattr(gh_module.subprocess, "run", lambda argv, **kw: _Proc(1, "partial output"))
+    assert real_default_runner(["pr", "view", "98"]) is None
+
+
+@pytest.mark.parametrize("exc", [OSError("gh vanished"), subprocess.TimeoutExpired(cmd="gh", timeout=10)])
+def test_default_runner_swallows_launch_failure_and_timeout(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    def boom(argv: list[str], **kw: object) -> _Proc:
+        raise exc
+
+    monkeypatch.setattr(gh_module.subprocess, "run", boom)
+    assert real_default_runner(["pr", "view", "98"]) is None
+
+
+def test_gh_available_follows_path_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gh_module.shutil, "which", lambda name: "/usr/local/bin/gh" if name == "gh" else None)
+    assert real_gh_available() is True
+    monkeypatch.setattr(gh_module.shutil, "which", lambda name: None)
+    assert real_gh_available() is False
+
+
+def test_summarize_checks_skips_junk_and_treats_unrecognised_conclusions_as_pending() -> None:
+    # A non-dict rollup entry is skipped rather than crashing the run.
+    junk: list[Any] = ["not-a-check", {"status": "COMPLETED", "conclusion": "SUCCESS"}]
+    assert summarize_checks(junk) == "passing"
+    # ACTION_REQUIRED / STALE are neither passing nor failing: still waiting on someone.
+    assert summarize_checks([{"status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}]) == "pending"
+    assert summarize_checks([{"status": "COMPLETED", "conclusion": "SUCCESS"}, {"conclusion": "STALE"}]) == "pending"
+
+
+@pytest.mark.parametrize("body", ["{not json", "[1, 2]", '"a string"'])
+def test_load_pr_cache_treats_corrupt_or_non_object_file_as_empty(tmp_path: Path, body: str) -> None:
+    path = tmp_path / PR_CACHE_FILENAME
+    path.write_text(body, encoding="utf-8")
+    assert load_pr_cache(path) == {}
+
+
+@pytest.mark.parametrize("raw", ["<html>rate limited</html>", "[]"])
+def test_refresh_treats_unparseable_or_non_object_gh_output_as_a_failure(raw: str) -> None:
+    out, errors, fetched = refresh_pr_states([REF], cache={}, now=NOW, ttl=TTL, cap=25, runner=lambda a: raw)
+    assert fetched == 0
+    assert [e.message for e in errors] == [f"pr view failed: {REF.key}"]
+    assert out[REF.key].state == "unknown" and out[REF.key].stale is True
