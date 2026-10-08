@@ -201,6 +201,44 @@ if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/
 
 Store all three results for rendering in the dashboard below.
 
+### 3g. Run health
+
+The runners record how every scheduled run ended in `.scout-logs/run-outcomes.jsonl`, outside Claude, so a run that dies at startup (an expired login) still leaves a row. The git log in 3a can't show this: a failed run commits nothing.
+
+```bash
+python3 - "$SCOUT_DIR/.scout-logs/run-outcomes.jsonl" <<'EOF'
+import json, sys, time
+rows = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+except OSError:
+    print("RUN_HEALTH_UNAVAILABLE")
+    raise SystemExit(0)
+if not rows:
+    print("RUN_HEALTH_UNAVAILABLE")
+    raise SystemExit(0)
+ok = [r for r in rows if r.get("exit_code") == 0]
+last_ok = max((r.get("finished_at") or 0 for r in ok), default=0)
+streak = 0
+for r in reversed(rows):
+    if r.get("exit_code") == 0:
+        break
+    streak += 1
+print("LAST_OK_DAYS_AGO=" + (str(int((time.time() - last_ok) // 86400)) if last_ok else "never"))
+print(f"FAILED_STREAK={streak}")
+print("NEWEST_CLASS=" + str(rows[-1].get("failure_class") or "unknown"))
+EOF
+```
+
+Store `LAST_OK_DAYS_AGO`, `FAILED_STREAK` and `NEWEST_CLASS`. `RUN_HEALTH_UNAVAILABLE` means the vault predates the ledger or has never run; skip the run-health headline.
+
 ---
 
 ## Step 4: Compose and Display the Dashboard
@@ -214,6 +252,25 @@ Present the dashboard as follows. Use clean Markdown with headers and lists. Do 
 ║           SCOUT STATUS — <INSTANCE_NAME>         ║
 ╚══════════════════════════════════════════════════╝
 ```
+
+**Run-health headline (from 3g).** Put this directly under the banner, before anything else. It's the first thing a user whose Scout "went quiet" needs to see.
+
+- `NEWEST_CLASS` is `oauth_expired`:
+
+  ```
+  ❌ Scout can't run: your Claude login expired.
+     Last successful run: <LAST_OK_DAYS_AGO> days ago (<FAILED_STREAK> failed runs since).
+     Fix: open Terminal and run  claude auth login
+  ```
+
+- `FAILED_STREAK` ≥ 2 for any other class:
+
+  ```
+  ⚠️  The last <FAILED_STREAK> scheduled runs failed (<NEWEST_CLASS>).
+     Last successful run: <LAST_OK_DAYS_AGO> days ago. Run `scoutctl bootstrap doctor`.
+  ```
+
+- Otherwise: `✅ Last successful run: <LAST_OK_DAYS_AGO> days ago` (`today` for 0).
 
 ### Config
 
