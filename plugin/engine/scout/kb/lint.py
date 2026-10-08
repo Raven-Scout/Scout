@@ -179,6 +179,48 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
     return out
 
 
+_FRONTMATTER_NAME_KEYS = ("name", "aka", "title", "aliases")
+_FM_NAME_RE = re.compile(r"^(name|aka|title|aliases):\s*(.+?)\s*$")
+
+
+def _frontmatter_names(path: Path) -> list[str]:
+    """Declared names from a file's YAML frontmatter: name / aka / title / aliases.
+
+    A wikilink may legitimately target a frontmatter-declared name rather than a
+    filename. Two readers of this vault already resolve them that way and this
+    linter did not, so every such link was reported dangling forever:
+      * Obsidian matches filenames and `aliases:`;
+      * scripts/dangling-links.py indexes `name:` / `aka:` / `title:`.
+    Indexing the union keeps the hook from disagreeing with both at once.
+
+    Deliberately a line scanner, not a YAML parse: lint runs over every tracked
+    file on every commit, frontmatter is the first few lines, and a malformed
+    document must not raise.
+    """
+    names: list[str] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            if fh.readline().strip() != "---":
+                return names
+            for _ in range(60):
+                line = fh.readline()
+                if not line or line.strip() == "---":
+                    break
+                m = _FM_NAME_RE.match(line)
+                if not m:
+                    continue
+                val = m.group(2)
+                if val.startswith("["):  # inline list: aliases: [A, B]
+                    names += [v.strip().strip("\"'") for v in val.strip("[]").split(",")]
+                elif val.startswith("-"):  # block list item on the same line
+                    names.append(val.lstrip("- ").strip("\"'"))
+                else:
+                    names.append(val.strip("\"'"))
+    except OSError:
+        return names
+    return [n for n in names if n]
+
+
 def _link_targets(repo: Path) -> set[str]:
     known: set[str] = set()
     for p in tracked_files(repo):
@@ -189,6 +231,9 @@ def _link_targets(repo: Path) -> set[str]:
             kbrel = PurePosixPath(p[len("knowledge-base/") :])
             known.add(str(kbrel).lower())
             known.add(str(kbrel.with_suffix("")).lower())
+        if p.endswith(".md"):
+            for nm in _frontmatter_names(repo / p):
+                known.add(nm.lower())
     return known
 
 
