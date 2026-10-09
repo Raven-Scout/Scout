@@ -193,6 +193,36 @@ def test_topic_citation_and_dangling_link_are_warnings(kb_repo) -> None:
     assert sorted((f.check, f.line) for f in result.warnings) == [("citation", 3), ("dangling-link", 7)]
 
 
+def test_frontmatter_name_target_is_not_dangling(kb_repo) -> None:
+    """A wikilink may target a frontmatter-declared name, not just a filename."""
+    kb_repo.stage(
+        "knowledge-base/personal/jordan-burger.md",
+        "---\nname: Jordan Burger\naliases: [JB, Jordan R. Burger]\ntype: person\n---\n\n# Jordan\n",
+    )
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "Owner is [[Jordan Burger]].\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
+
+
+def test_frontmatter_alias_list_target_is_not_dangling(kb_repo) -> None:
+    kb_repo.stage(
+        "knowledge-base/people/david-esner.md",
+        "---\nname: David Ešner\naliases: [David Esner]\n---\n\n# David\n",
+    )
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "Reviewed by [[David Esner]].\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
+
+
+def test_unknown_target_still_dangling_with_frontmatter_present(kb_repo) -> None:
+    """The fix must not turn the check off — a genuinely absent target still warns."""
+    kb_repo.stage("knowledge-base/people/sam.md", "---\nname: Sam Smith\n---\n\n# Sam\n")
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "See [[Nobody At All]].\n")
+    warnings = lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings
+    assert [f.check for f in warnings] == ["dangling-link"]
+
+
 def test_escaped_pipe_wikilink_in_table_is_not_dangling(kb_repo) -> None:
     kb_repo.stage("knowledge-base/people/sam.md", "# Sam\n")
     kb_repo.commit()
