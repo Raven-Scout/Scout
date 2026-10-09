@@ -266,7 +266,8 @@ enum ClaudeLauncher {
     /// macOS, even though they aren't in the AppleScript Language Guide. To
     /// embed a literal newline/tab, use AppleScript string concatenation
     /// instead — those escapes are not defined for AppleScript strings.
-    static func appleScriptEscape(_ s: String) -> String {
+    /// `nonisolated`: pure string work, also called by `TerminalHandoff`.
+    nonisolated static func appleScriptEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
     }
@@ -366,7 +367,7 @@ enum ClaudeLauncher {
     /// Common install locations for the `claude` CLI. Probed in order so
     /// Anthropic's `~/.local/bin` installer default wins over a Homebrew
     /// path that might be stale.
-    private static let claudePaths: [String] = [
+    private nonisolated static let claudePaths: [String] = [
         (NSString(string: "~/.local/bin/claude") as NSString).expandingTildeInPath,
         "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude",
@@ -379,7 +380,14 @@ enum ClaudeLauncher {
     ///   "not found" error instead of being masked by the probe fallback).
     /// - If `override` is empty, probe well-known locations, then ask the
     ///   user's login shell (picks up mise/asdf/nvm-style installs).
-    static func resolveClaudePath(override: String) -> String? {
+    ///
+    /// `nonisolated`: touches only `FileManager`/`ProcessInfo`/`Process`/
+    /// `Pipe`, never main-actor state, so it's safe to call off the main
+    /// thread — PrerequisiteChecker's default resolver does exactly that via
+    /// `Task.detached`, since the login-shell spawn below can block for the
+    /// length of a full shell startup and must never do that on the main
+    /// thread (e.g. a prerequisites screen polling every few seconds).
+    nonisolated static func resolveClaudePath(override: String) -> String? {
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             return FileManager.default.isExecutableFile(atPath: trimmed) ? trimmed : nil
@@ -601,7 +609,8 @@ enum ClaudeLauncher {
 
     /// Run an AppleScript source string. Surfaces compile and execution errors
     /// (including Automation-permission denial) as `terminalLaunchFailed`.
-    private static func runAppleScript(_ source: String) throws {
+    /// Internal (not private) so `TerminalHandoff.run` reuses it.
+    static func runAppleScript(_ source: String) throws {
         guard let script = NSAppleScript(source: source) else {
             throw LaunchError.terminalLaunchFailed("Could not compile the launch AppleScript.")
         }

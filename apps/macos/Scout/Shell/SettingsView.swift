@@ -24,6 +24,13 @@ struct SettingsView: View {
     @AppStorage("wishlistPath")          private var wishlistPath: String = ""
     @AppStorage("researchQueuePath")     private var researchQueuePath: String = ""
     @State private var detectedClaudePath: String?
+    /// Settings ▸ Engine's Set up / Repair sheet. It shows `AppState`'s one
+    /// onboarding flow, so it closes by itself when that flow finishes.
+    @State private var showingSetup = false
+
+    private var setupSheetPresented: Binding<Bool> {
+        Binding(get: { showingSetup && appState.onboarding != nil }, set: { showingSetup = $0 })
+    }
 
     var body: some View {
         ScrollView {
@@ -58,7 +65,15 @@ struct SettingsView: View {
                 }
 
                 section(label: "Engine") {
-                    EngineSettingsSection(health: appState.engineHealth)
+                    EngineSettingsSection(
+                        health: appState.engineHealth,
+                        bundledVersion: appState.engineRelease?.engine.version,
+                        isUpdating: appState.isUpgradingEngine,
+                        unfinishedSwitch: appState.engineSwitchUnfinished,
+                        onUpdate: { Task { await appState.runEngineUpgrade() } },
+                        onSetUp: {
+                            if appState.beginOnboarding() != nil { showingSetup = true }
+                        })
                 }
 
                 section(label: "Claude Code") {
@@ -195,6 +210,17 @@ struct SettingsView: View {
             .padding(.top, 28)
             .padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        // The flow finished (or went away): forget the request, so the next
+        // flow doesn't pop up on its own (Ruling 69 M3).
+        .onChange(of: appState.onboarding == nil) { _, gone in
+            if gone { showingSetup = false }
+        }
+        .sheet(isPresented: setupSheetPresented) {
+            if let onboarding = appState.onboarding {
+                OnboardingSheet(model: onboarding) { showingSetup = false }
+                    .id(ObjectIdentifier(onboarding))
+            }
         }
         .task {
             let detected = await Task.detached {

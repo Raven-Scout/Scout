@@ -106,7 +106,11 @@ struct EngineHealthServiceTests {
         }
         let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
         async let a: Void = svc.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        // Start the second refresh only once the first is inside its (slow)
+        // doctor call — a fixed 50 ms head start lost the race under full-
+        // suite load, and then the SECOND call got the slow red answer.
+        for _ in 0..<400 where callCount.current < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(callCount.current == 1)
         await svc.refresh()
         await a
         #expect(svc.doctor?.severity == .green)
@@ -172,4 +176,5 @@ private final class Locked: @unchecked Sendable {
     private var value: Int
     init(_ value: Int) { self.value = value }
     func increment() -> Int { lock.withLock { value += 1; return value } }
+    var current: Int { lock.withLock { value } }
 }

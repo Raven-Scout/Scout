@@ -53,9 +53,32 @@ struct EngineVersionTests {
     }
 
     @Test func garbageIsNotAVersion() {
-        for text in ["garbage", "", "1.x.0", "1..2", "1.2.3.4", "1.2.3."] {
+        for text in ["garbage", "", "1.x.0", "1..2", "1.2.3.4", "1.2.3.", "nope"] {
             #expect(EngineVersion(text) == nil, "\(text)")
         }
+    }
+
+    /// `Int(_:)` alone accepts a leading sign (`Int("+1") == 1`), which would
+    /// let a signed core part through; `EngineInstaller.isManagedMarketplace`
+    /// turns a parsed version into a filesystem path component, so this is
+    /// the same risk class the §9 pre-release charset fix (Ruling 58b)
+    /// closed for the pre-release half of the string.
+    @Test func signedCorePartsAreRejected() {
+        for text in ["+1.2.0", "1.+2.0", "1.2.+0", "1.-2.0", "-1.2.0"] {
+            #expect(EngineVersion(text) == nil, "\(text)")
+        }
+    }
+
+    /// SemVer §9's no-leading-zero rule applies to the core the same way it
+    /// already applies to a numeric pre-release identifier: no existing test
+    /// or caller relies on a leading-zero core, so the restriction is free to
+    /// add and keeps both halves of the version under one rule.
+    @Test func leadingZeroCorePartsAreRejected() {
+        for text in ["01.2.3", "1.02.3", "1.2.03", "01.02.03"] {
+            #expect(EngineVersion(text) == nil, "\(text)")
+        }
+        #expect(EngineVersion("0.0.0") != nil)
+        #expect(EngineVersion("0.9.0") != nil)
     }
 
     @Test func satisfiedWhenInstalledMeetsOrExceedsFloor() {
@@ -104,5 +127,52 @@ struct EngineVersionTests {
         let value = Bundle(for: AppState.self).object(forInfoDictionaryKey: EngineVersion.floorInfoKey)
         #expect(value as? String == "")
         #expect(EngineVersion.requiredFloor(stamped: value) == nil)
+    }
+
+    /// `EngineRelease`/tag strings are `v`-prefixed; `EngineUpgrader.needsUpgrade`
+    /// compares a bare installed version against a possibly `v`-prefixed one.
+    @Test func aLeadingVPrefixParsesAndComparesEqualToTheBareVersion() {
+        #expect(EngineVersion("v0.10.0") == EngineVersion("0.10.0"))
+    }
+
+    /// Ruling 58b: the review found that an `EngineVersion("1.0.0-../../..")`-shaped
+    /// string still parsed under the first Ruling 58 fix — `preRelease` had no
+    /// charset validation, so a `/` or an empty (`..`) identifier sailed
+    /// through. SemVer §9 restricts a pre-release identifier to
+    /// `[0-9A-Za-z-]`, non-empty, which closes exactly this gap: a value that
+    /// later becomes a single filesystem path component
+    /// (`EngineLayout.engineRoot(version:)`) can never carry a path separator
+    /// or a traversal segment.
+    @Test func preReleaseIdentifiersRejectPathTraversalAndEmptySegments() {
+        #expect(EngineVersion("1.0.0-../../evil") == nil)
+        #expect(EngineVersion("1.0.0-a/b") == nil)
+        #expect(EngineVersion("1.0.0-") == nil)
+        #expect(EngineVersion("1.0.0-a..b") == nil)
+    }
+
+    /// The charset fix must not regress ordinary, previously-accepted
+    /// pre-release shapes: dotted numeric/alpha identifiers and a hyphen
+    /// *within* a single identifier (hyphen is a legal SemVer identifier
+    /// character, not just the pre-release delimiter).
+    @Test func ordinaryPreReleaseShapesStillParse() {
+        #expect(EngineVersion("1.0.0-rc.1") != nil)
+        #expect(EngineVersion("1.0.0-alpha-2") != nil)
+    }
+
+    /// SemVer §9: a purely-numeric identifier longer than one digit may not
+    /// have a leading zero (`"01"` is invalid; `"0"` alone is fine). No
+    /// existing case exercised this, so adding the restriction doesn't
+    /// regress anything (Ruling 58b).
+    @Test func leadingZeroNumericPreReleaseIdentifiersAreRejected() {
+        #expect(EngineVersion("1.0.0-01") == nil)
+        #expect(EngineVersion("1.0.0-rc.01") == nil)
+        #expect(EngineVersion("1.0.0-0") != nil)
+    }
+
+    /// The §9 charset rules sit beside Part B's lenient short core: a short
+    /// core with a valid pre-release still parses, an invalid one does not.
+    @Test func shortCoreAndPreReleaseRulesCompose() {
+        #expect(EngineVersion("1.2-rc.1") == EngineVersion("1.2.0-rc.1"))
+        #expect(EngineVersion("1.2-a/b") == nil)
     }
 }

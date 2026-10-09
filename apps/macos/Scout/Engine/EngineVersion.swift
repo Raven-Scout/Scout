@@ -18,11 +18,60 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
     init?(_ text: String) {
         let trimmed = text.hasPrefix("v") ? String(text.dropFirst()) : text
         let core = trimmed.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
-        let parts = core[0].split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        let rawParts = core[0].split(separator: ".", omittingEmptySubsequences: false)
+        // `Int(_:)` alone accepts a leading sign ("+1", "-2" would already be
+        // routed to the pre-release split, but "+1.2.0" and "1.+2.0" both
+        // parsed before this check existed), and EngineInstaller.
+        // isManagedMarketplace turns the result into a path component, so a
+        // sign here is the same path-traversal-adjacent risk class as Ruling
+        // 58b's pre-release charset gap. Require ASCII digits only, with the
+        // same no-leading-zero rule §9 already applies to the pre-release
+        // (no existing test or caller relies on a leading-zero core, and
+        // real plugin.json/MARKETING_VERSION values never carry one).
+        let parts: [Int?] = rawParts.map { EngineVersion.isValidCorePart($0) ? Int($0) : nil }
         guard (1...3).contains(parts.count), parts.allSatisfy({ $0 != nil }) else { return nil }
         let numbers = parts.compactMap { $0 } + Array(repeating: 0, count: 3 - parts.count)
+        // Ruling 58b: a hyphen with no valid pre-release after it (empty, or
+        // containing anything outside SemVer §9's identifier grammar — not
+        // least "/" and "..") must fail to parse, not silently fall back to
+        // "no pre-release". `EngineInstaller.isManagedMarketplace` builds a
+        // filesystem path out of whatever this accepts, so a permissive
+        // charset here is a path-traversal primitive, not just a cosmetic
+        // parsing nicety.
+        let validatedPreRelease: String?
+        if core.count == 2 {
+            guard let validated = EngineVersion.validatedPreRelease(String(core[1])) else { return nil }
+            validatedPreRelease = validated
+        } else {
+            validatedPreRelease = nil
+        }
         major = numbers[0]; minor = numbers[1]; patch = numbers[2]
-        preRelease = core.count == 2 && !core[1].isEmpty ? String(core[1]) : nil
+        preRelease = validatedPreRelease
+    }
+
+    /// A core identifier (major/minor/patch) is ASCII digits only — never a
+    /// signed number — and, like a numeric pre-release identifier (§9), may
+    /// not have a leading zero unless it is exactly "0".
+    private static func isValidCorePart(_ text: Substring) -> Bool {
+        guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        return text == "0" || text.first != "0"
+    }
+
+    /// SemVer 2.0.0 §9: a pre-release is a series of dot-separated
+    /// identifiers; each must be non-empty and contain only ASCII
+    /// alphanumerics and hyphens, and a purely-numeric identifier longer than
+    /// one digit may not have a leading zero. This is also what keeps `/` and
+    /// empty identifiers (so `..`) out of a value that later becomes a single
+    /// path component (`EngineLayout.engineRoot(version:)`).
+    private static func validatedPreRelease(_ text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        let identifiers = text.split(separator: ".", omittingEmptySubsequences: false)
+        for identifier in identifiers {
+            guard !identifier.isEmpty, identifier.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { return nil }
+            let isNumeric = identifier.allSatisfy { $0.isASCII && $0.isNumber }
+            if isNumeric && identifier.count > 1 && identifier.first == "0" { return nil }
+        }
+        return text
     }
 
     // MARK: the app↔engine floor

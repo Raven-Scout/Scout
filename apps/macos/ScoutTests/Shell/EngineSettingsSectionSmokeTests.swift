@@ -2,13 +2,13 @@ import SwiftUI
 import Testing
 @testable import Scout
 
-/// Smoke coverage for Settings ▸ Engine (spec §5). Renders `EngineSettingsSection`
-/// across the states that change which rows appear — `.managed` behind a
-/// bundled version (Update + Repair wired), `.external(_, .devCheckout)` behind
-/// a bundled version (hand-off row), and the three next-step states —
-/// `.notInstalled`, `.managed` with a vault not set up, and `.broken` — plus the
-/// whole `SettingsView` wired to a populated vault, the same way
-/// `ShellViewSmokeTests.settingsRenders` in `ViewSmokeTests.swift` does.
+/// Smoke coverage for Settings ▸ Engine (spec §5, Ruling 41). Renders
+/// `EngineSettingsSection` once per action state — `.managed` behind a
+/// bundled version (Update, idle and running), `.external(_, .devCheckout)`
+/// behind a bundled version (copy-`/scout-update` hand-off), "Set up…" for
+/// `.notInstalled` and for `.managed` with a vault not set up, and "Repair…"
+/// for `.broken` — plus the whole `SettingsView` wired to a populated vault,
+/// the same way `ShellViewSmokeTests.settingsRenders` in `ViewSmokeTests.swift` does.
 ///
 /// Every `EngineHealthService` here is built from an `EngineLayout` rooted at
 /// a fresh temp directory (never `.live`) and an `initialState:` passed
@@ -31,13 +31,14 @@ struct EngineSettingsSectionSmokeTests {
             initialState: state)
     }
 
-    @Test("managed, behind the bundled version, with Update and Repair wired")
-    func managedBehindBundled() {
+    @Test("managed, behind the bundled version, with Update wired — idle and running", arguments: [false, true])
+    func managedBehindBundled(isUpdating: Bool) {
         ViewHost.render(
             EngineSettingsSection(
                 health: health(.managed(install, vaultBootstrapped: true)),
                 bundledVersion: "0.11.0",
-                onUpdate: {}, onRepair: {}
+                isUpdating: isUpdating,
+                onUpdate: {}, onSetUp: {}
             ).frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }
@@ -52,34 +53,52 @@ struct EngineSettingsSectionSmokeTests {
             size: CGSize(width: 640, height: 420))
     }
 
-    @Test("not installed")
+    @Test("not installed — Set up…")
     func notInstalled() {
         ViewHost.render(
-            EngineSettingsSection(health: health(.notInstalled), bundledVersion: nil)
+            EngineSettingsSection(health: health(.notInstalled), bundledVersion: "0.11.0", onUpdate: {}, onSetUp: {})
                 .frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }
 
-    /// `.notInstalled` (above) and `.broken` (below) also render a next-step
-    /// row — the Terminal one-liner on its own line, and "Copy /scout-update";
-    /// this is the third next-step state.
-    @Test("managed but the vault is not set up — renders the Copy /scout-setup next-step row")
-    func managedVaultNotSetUpShowsNextStep() {
+    @Test("managed but the vault is not set up — Set up…")
+    func managedVaultNotSetUp() {
         let state = EngineState.managed(install, vaultBootstrapped: false)
-        #expect(EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil).nextStep?.copyValue == "/scout-setup")
+        #expect(EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil).setupAction == .setUp)
         ViewHost.render(
-            EngineSettingsSection(health: health(state), bundledVersion: nil)
+            EngineSettingsSection(health: health(state), bundledVersion: nil, onUpdate: {}, onSetUp: {})
                 .frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }
 
-    @Test("broken")
+    @Test("broken — Repair…")
     func broken() {
         ViewHost.render(
             EngineSettingsSection(
                 health: health(.broken(install, reason: "engine pointer names a missing scoutctl: /s")),
-                bundledVersion: nil
+                bundledVersion: nil,
+                onUpdate: {}, onSetUp: {}
             ).frame(width: 640),
+            size: CGSize(width: 640, height: 420))
+    }
+
+    @Test("managed at the bundled version with an unfinished switch — Finish update")
+    func finishUpdate() {
+        ViewHost.render(
+            EngineSettingsSection(health: health(.managed(install, vaultBootstrapped: true)), bundledVersion: "0.10.0",
+                                  unfinishedSwitch: true, onUpdate: {}, onSetUp: {})
+                .frame(width: 640),
+            size: CGSize(width: 640, height: 420))
+    }
+
+    @Test("broken, managed by another installer — /scout-update hand-off")
+    func foreignBroken() {
+        let foreign = EngineInstall(root: URL(fileURLWithPath: "/Users/alex/scout-plugin"), scoutctl: URL(fileURLWithPath: "/usr/bin/false"),
+                                    python: nil, version: "0.10.0", vault: nil, managedBy: "dev")
+        ViewHost.render(
+            EngineSettingsSection(health: health(.broken(foreign, reason: "engine pointer names a missing scoutctl: /s")),
+                                  bundledVersion: "0.11.0", onUpdate: {}, onSetUp: {})
+                .frame(width: 640),
             size: CGSize(width: 640, height: 420))
     }
 

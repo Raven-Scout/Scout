@@ -15,26 +15,31 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 ## Install
 
-Scout.app sits on top of the Scout engine, so set up the engine first. (Making the app install the engine for you is on the roadmap: [#115](https://github.com/Raven-Scout/scout-app-legacy/issues/115).)
+**You need:** a Mac on macOS 13+ and a paid Claude plan (Max recommended). No
+Homebrew or Python needed — and you don't need Claude Code installed first;
+onboarding offers to install it for you.
 
-**You need:** a Mac on macOS 13+, a paid Claude plan (Max recommended), and [Claude Code](https://docs.claude.com/claude-code) installed and signed in (run `claude` once in Terminal). Turn on the tools you want Scout to read at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — Slack is strongly recommended, since Scout's daily summary arrives as a Slack DM. No Homebrew or Python needed.
+Starting with Scout 0.15, the app is the only step:
 
-1. **Install the engine.** In Terminal:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
-   ```
-   It ends with `✅ Scout plugin + engine installed.` (On a brand-new Mac it first asks you to install Apple's Command Line Tools — accept, wait, re-run.)
-2. **Create your vault.** Open Claude Code and run `/scout-setup`. It asks a few questions, detects your connected tools, creates `~/Scout/`, and installs the schedule.
-3. **Install the app.** Download the latest `Scout-*.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and drag **Scout.app** into **Applications**. It's signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
-4. **Configure.** Press ⌘, for Settings — see [First-run configuration](#first-run-configuration). Turning on **Launch Scout at login** is recommended.
+1. Download the latest `Scout-*.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and drag **Scout.app** into **Applications**. It's signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
+2. Open it. Onboarding checks for Claude Code — if it's missing, Scout offers to open Terminal with Anthropic's installer and asks you to sign in — then installs `uv` and the Scout engine under `~/.local/share/scout`, registers it with Claude Code, and asks for your name, email and the connectors you want Scout to read ([claude.ai/settings/connectors](https://claude.ai/settings/connectors) — Slack is strongly recommended, since Scout's daily summary arrives as a Slack DM). It creates your vault (default `~/Scout`) and schedules the sessions.
+3. **Configure.** Press ⌘, for Settings — see [First-run configuration](#first-run-configuration). Turning on **Launch Scout at login** is recommended.
 
-The full install guide, troubleshooting and FAQ live in the [plugin README](../../plugin/README.md#install).
+That's the whole install. Updating the app updates the engine. Already have
+Scout set up via `install.sh`, a Claude Code marketplace install, or a dev
+checkout? The app adopts it as-is — it never modifies an install it didn't
+create — and shows where it lives in Settings ▸ Engine.
+
+Prefer the terminal, or running Scout without the app? The [plugin
+README](../../plugin/README.md#install) covers `install.sh`, the no-app path.
 
 ## Requirements (for building from source)
 
 - macOS 13 (Ventura) or newer.
 - Xcode 15 or newer (for build + codesign).
-- An existing Scout instance at `~/Scout/`.
+- No pre-existing `~/Scout` vault is required — a Debug build runs the same
+  onboarding as a release build, or adopts whatever engine/vault you already
+  have, read-only.
 
 ## Build & run
 
@@ -69,7 +74,7 @@ Cmd+, opens Settings. A few fields are worth filling in:
 
 - **Launch Scout at login** — start the app automatically so it's watching your Scout instance all day.
 - **Start in menu bar** — launch with the full window hidden and use Scout from its compact panel until you need the Control Center.
-- **Scout directory** — read-only display. The app assumes `~/Scout` (the scout-plugin default).
+- **Scout directory** — read-only display of the vault the app uses: the folder you chose in onboarding, read from the engine pointer (`~/.local/state/scout/engine.json`); `~/Scout` only when there is no pointer yet.
 - **Claude CLI path** — leave blank to auto-detect (`~/.local/bin`, Homebrew, then your login shell). Used by **Launch Claude**; **Open Claude Code in** picks the terminal.
 - **Budget** — the daily budget, rolling window, skip threshold and failure backoff the scheduled runs are gated by (written to `~/Scout/scout-config.yaml`, same as `scoutctl budget set`).
 - **Linear workspace** — your Linear workspace slug (e.g. `acme-co`). Used to build Linear URLs when you click a `[[PROJ-123]]` wikilink or deep link in an action item. Leave blank to open `linear.app` without a workspace.

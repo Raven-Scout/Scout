@@ -69,8 +69,26 @@ struct EngineLocatorTests {
         let layout = try makeHome()
         defer { try? fm.removeItem(at: layout.home) }
         try pointer(layout, version: "0.10.0", managedBy: "scout-app")
-        guard case .broken(_, let reason) = EngineLocator(layout: layout).locate() else { Issue.record("expected .broken"); return }
+        let state = EngineLocator(layout: layout).locate()
+        guard case .broken(let install, let reason) = state else { Issue.record("expected .broken"); return }
         #expect(reason.contains("scoutctl"))
+        #expect(install?.managedBy == "scout-app")
+        #expect(!state.isBrokenOutsideApp && state.gatesTabs)   // the app's own: onboarding repairs it
+    }
+
+    /// Ruling 69 I6: a broken pointer another installer wrote is external —
+    /// never gated into onboarding (whose `bootstrap auto --managed-by
+    /// scout-app` would take it over).
+    @Test(arguments: ["dev", "install.sh", "claude-code"])
+    func brokenPointerFromAnotherManagerIsNotGated(managedBy: String) throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pointer(layout, version: "0.10.0", managedBy: managedBy)
+        let state = EngineLocator(layout: layout).locate()
+        guard case .broken(let install, _) = state else { Issue.record("expected .broken"); return }
+        #expect(install?.managedBy == managedBy)
+        #expect(state.isBrokenOutsideApp)
+        #expect(!state.gatesTabs)
     }
 
     @Test func conventionalLayoutWithoutPointerIsManagedButNotBootstrapped() throws {
@@ -82,6 +100,41 @@ struct EngineLocatorTests {
         guard case .managed(let install, let bootstrapped) = EngineLocator(layout: layout).locate() else { Issue.record("expected .managed"); return }
         #expect(!bootstrapped)
         #expect(install.version == "0.10.0")
+    }
+
+    /// Ruling 54: `current`'s target is normally absolute, but a relative one
+    /// (as a hand-rolled symlink, or a future engine version, might write)
+    /// must resolve against `engineDir` rather than replacing its last path
+    /// component — the same bug `EngineInstaller.repointCurrent` had.
+    @Test func conventionalLayoutWithARelativeCurrentLinkIsManaged() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try pluginTree(layout.engineRoot(version: "0.10.0"), version: "0.10.0")
+        try fm.createDirectory(at: layout.engineDir, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: layout.currentEngineLink.path, withDestinationPath: "0.10.0")
+        try executable(layout.scoutctl(version: "0.10.0"))
+        guard case .managed(let install, let bootstrapped) = EngineLocator(layout: layout).locate() else { Issue.record("expected .managed"); return }
+        #expect(!bootstrapped)
+        #expect(install.version == "0.10.0")
+    }
+
+    /// Ruling 58b audit: `conventionalLayout`'s `version` is `root.lastPathComponent`,
+    /// where `root` is resolved from `current`'s symlink destination — an
+    /// untrusted value if an attacker (or corrupted state) can write that
+    /// symlink. Unlike `isManagedMarketplace`'s manifest-version string,
+    /// there's no separate validation step here, but none is needed:
+    /// `URL.lastPathComponent` is, by construction, a single path segment
+    /// that can never itself contain `/`, so no matter how many `..`
+    /// components the destination string carries, `version` can only ever
+    /// name one more path component under `engineDir`/`venvDir` — never
+    /// escape them. The worst case is a nonsense version whose `scoutctl`
+    /// doesn't exist, which safely falls through to `.notInstalled`.
+    @Test func conventionalLayoutWithATraversalCurrentLinkNeverEscapesEngineDir() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        try fm.createDirectory(at: layout.engineDir, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: layout.currentEngineLink.path, withDestinationPath: "../../../../etc")
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
     }
 
     @Test func shimPointingAtALiveVenvIsExternal() throws {
@@ -209,6 +262,48 @@ struct EngineLocatorTests {
 
         try executable(plugin.appending(path: ".venv/bin/scoutctl"))
         #expect(EngineLocator(layout: layout).locate().install?.scoutctl.path == plugin.appending(path: ".venv/bin/scoutctl").path)
+    }
+
+    /// The same stale root venv, reached through a shim (written before the
+    /// checkout became a monorepo): the shim is not adopted, so discovery
+    /// falls through to the dev checkout's `plugin/` — `.notInstalled` until
+    /// `plugin/` has a venv, then that venv, never the root one.
+    @Test("shim into a monorepo's root venv falls through to plugin/", arguments: [".venv", "engine/.venv"])
+    func shimIntoAMonorepoRootVenvIsNotAdopted(venv: String) throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let plugin = EngineLayout.monorepoPlugin(in: layout.devCheckout)
+        try pluginTree(plugin, version: "0.12.0")
+        let stale = layout.devCheckout.appending(path: "\(venv)/bin/scoutctl")
+        try executable(stale)
+        try fm.createDirectory(at: layout.localBin, withIntermediateDirectories: true)
+        try "#!/bin/sh\n# scout-plugin scoutctl shim\nexec \"\(stale.path)\" \"$@\"\n"
+            .write(to: layout.shimURL, atomically: true, encoding: .utf8)
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
+
+        let real = plugin.appending(path: ".venv/bin/scoutctl")
+        try executable(real)
+        let state = EngineLocator(layout: layout).locate()
+        #expect(state.externalSource == .devCheckout)
+        #expect(state.install?.root.standardizedFileURL.path == plugin.standardizedFileURL.path)
+        #expect(state.install?.scoutctl.path == real.path)
+        #expect(state.install?.version == "0.12.0")
+    }
+
+    /// The fall-through applies only to a shim into the monorepo's ROOT: a
+    /// monorepo clone that isn't the dev checkout, shimmed at its stale root
+    /// venv, yields nothing rather than the stale venv.
+    @Test func shimIntoAnotherMonorepoRootVenvIsNotInstalled() throws {
+        let layout = try makeHome()
+        defer { try? fm.removeItem(at: layout.home) }
+        let elsewhere = layout.home.appending(path: "src/Scout")
+        try pluginTree(EngineLayout.monorepoPlugin(in: elsewhere), version: "0.12.0")
+        let stale = elsewhere.appending(path: ".venv/bin/scoutctl")
+        try executable(stale)
+        try fm.createDirectory(at: layout.localBin, withIntermediateDirectories: true)
+        try "#!/bin/sh\n# scout-plugin scoutctl shim\nexec \"\(stale.path)\" \"$@\"\n"
+            .write(to: layout.shimURL, atomically: true, encoding: .utf8)
+        #expect(EngineLocator(layout: layout).locate() == .notInstalled)
     }
 
     /// Claude Code's marketplace clone of Raven-Scout/Scout is monorepo
