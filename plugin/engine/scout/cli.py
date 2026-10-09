@@ -528,6 +528,31 @@ def _register_connectors() -> None:
             for name, d in dets.items():
                 typer.echo(f"{name}\t{d.status.value}\t{d.evidence}")
 
+    @connectors_app.command("uncovered")
+    def cli_connectors_uncovered(
+        json_out: bool = typer.Option(False, "--json", help="Emit JSON (consumed by Scout.app and scoutctl setup)."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        timeout: float = typer.Option(60.0, "--timeout", help="Seconds to wait for `claude mcp list`."),
+    ) -> None:
+        """Connected MCP servers that no connector reads yet (no LLM)."""
+        import json as _json
+
+        from scout.scripts import connector_detect, connector_probes
+        from scout.scripts.bootstrap import resolve_claude_bin
+        from scout.scripts.connector_uncovered import find_uncovered
+
+        listing = connector_detect.run_claude_mcp_list(resolve_claude_bin(claude_bin), timeout=timeout)
+        payload = find_uncovered(listing, registry=connector_probes.resolve_registry())
+        if json_out:
+            typer.echo(_json.dumps(payload, indent=2))
+        else:
+            for s in payload["servers"]:
+                typer.echo(f"{s['name']}\t{s['status']}")
+        if payload["error"]:
+            if not json_out:
+                typer.echo(f"error: {payload['error']}", err=True)
+            raise typer.Exit(code=1)
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(
@@ -690,6 +715,29 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import list_custom
 
         _emit(list_custom(_paths.data_dir(), plugin_root=_plugin_root()))
+
+    @custom_app.command("draft")
+    def cli_custom_draft(
+        server: str = typer.Option(..., "--server", help="The server's name as `claude mcp list` shows it."),
+        json_out: bool = typer.Option(True, "--json", hidden=True, help="Always JSON; accepted for symmetry."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        model: str = typer.Option("sonnet", "--model", help="Model for the drafting call."),
+        timeout: float = typer.Option(120.0, "--timeout", help="Seconds per headless call."),
+    ) -> None:
+        """Draft custom-connector definitions for one connected server (headless claude -p, read-only)."""
+        from scout import paths as _paths
+        from scout.scripts import connector_draft
+        from scout.scripts.bootstrap import resolve_claude_bin
+
+        payload = connector_draft.draft(
+            server,
+            plugin_root=_plugin_root(),
+            vault=_paths.data_dir(),
+            claude_bin=resolve_claude_bin(claude_bin),
+            model=model,
+            timeout=timeout,
+        )
+        _emit(payload, connector_draft.EXIT_CODES[payload["status"]])
 
     @connectors_app.command("presets")
     def cli_connectors_presets() -> None:
@@ -2418,6 +2466,58 @@ def tui() -> None:
 
         raise ActionItemError('Textual is not installed. Install with: uv pip install -e ".[full]"') from e
     ScoutApp().run()
+
+
+@app.command("setup")
+def setup_cmd(
+    vault: Path | None = typer.Option(None, "--vault", help="Vault folder. Default: $SCOUT_DATA_DIR or ~/Scout."),
+    instance_name: str = typer.Option("", "--instance-name"),
+    name: str = typer.Option("", "--name", help="Your name (commits, the KB)."),
+    email: str = typer.Option("", "--email", help="Your email (git config)."),
+    timezone: str = typer.Option("", "--timezone", help="IANA zone to pin. Default: follow the computer."),
+    connectors: str | None = typer.Option(None, "--connectors", help="Comma-separated. Default: detect."),
+    slack_id: str = typer.Option("", "--slack-id"),
+    github_username: str = typer.Option("", "--github-username"),
+    github_repos: str = typer.Option("", "--github-repos"),
+    max_budget: str = typer.Option("", "--max-budget", help="USD per session. Default 5.00."),
+    daily_budget: str = typer.Option("", "--daily-budget", help="USD per day. Default: none."),
+    first_run: bool | None = typer.Option(None, "--first-run/--no-first-run"),
+    managed_by: str = typer.Option("", "--managed-by", help="install.sh passes install.sh."),
+    claude_bin: str = typer.Option("", "--claude-bin"),
+    yes: bool = typer.Option(False, "--yes", help="Ask nothing; take the flags and defaults."),
+) -> None:
+    """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
+    import os
+
+    from scout import paths as _paths
+    from scout.setup_wizard import HEADLESS_FLAGS, HeadlessPrompter, SetupOptions, TtyPrompter, default_deps, run_setup
+
+    if vault is not None:
+        os.environ["SCOUT_DATA_DIR"] = str(vault.expanduser())
+    prompter = HeadlessPrompter() if yes else TtyPrompter.open()
+    if prompter is None:
+        typer.echo(
+            f"error: no terminal to ask questions on. Run it headless: scoutctl setup {HEADLESS_FLAGS}", err=True
+        )
+        raise typer.Exit(code=2)
+    opts = SetupOptions(
+        vault=_paths.data_dir(),
+        instance_name=instance_name,
+        name=name,
+        email=email,
+        timezone=timezone,
+        connectors=connectors,
+        slack_id=slack_id,
+        github_username=github_username,
+        github_repos=github_repos,
+        max_budget=max_budget,
+        daily_budget=daily_budget,
+        first_run=first_run,
+        managed_by=managed_by,
+        claude_bin=claude_bin,
+        yes=yes,
+    )
+    raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
 
 
 def main() -> None:
