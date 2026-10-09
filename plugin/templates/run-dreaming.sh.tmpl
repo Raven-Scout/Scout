@@ -28,6 +28,20 @@ if [ -n "$RUN_TZ" ]; then
 fi
 
 # Concurrency guard — only one {{INSTANCE_NAME}} session at a time.
+# scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
+# custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this block
+# follows its protocol (#331):
+#   - The lock is created atomically. noclobber (`set -C`) opens it with
+#     O_EXCL, so a runner never truncates a lock someone else holds.
+#   - A lock is only ever removed for a dead (or reaped) PID, and only under
+#     the O_EXCL <lock>.takeover guard, after re-reading the PID under it.
+#     Everyone removing a lock not their own takes the guard first, and
+#     nobody can create the lock while the old one occupies the path, so a
+#     lock that still reads that PID under the guard is still the old one
+#     when it is removed.
+#   - An empty or unparseable lock is busy, never stale: it is a competitor
+#     between its create and its PID write.
+#   - On exit the lock is removed only while it still holds our PID.
 # Liveness alone is not enough: a holder that is alive but not progressing
 # (host slept mid-run, wedged network call) passes `kill -0` forever and
 # would silently block every subsequent slot. Real sessions finish in
@@ -35,39 +49,118 @@ fi
 # reap it and take over, and record the reap in failures.log so the
 # takeover is visible to audit surfaces (not just this run's log).
 LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h ceiling, env-overridable
-if [ -f "$LOCK_FILE" ]; then
-    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
-    if kill -0 "$LOCK_PID" 2>/dev/null; then
+LOCK_GUARD="$LOCK_FILE.takeover"
+# A guard older than this was left by a process that died inside the guarded
+# section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
+LOCK_GUARD_ABANDONED_SECS=30
+
+_scout_mtime() {
+    # GNU stat first (errors on BSD), BSD stat second; nothing if unknown.
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true
+}
+
+_scout_lock_pid() {
+    # The PID in the lock; nothing if the lock is absent, empty or unparseable.
+    local pid
+    pid=$(tr -d ' \t\r\n' 2>/dev/null < "$LOCK_FILE") || return 0
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) echo "$pid" ;;
+    esac
+}
+
+_scout_pid_alive() {
+    # PID 0 would make kill probe our own process group; it is never a holder.
+    # ps catches a live holder under another uid, which kill -0 can't signal.
+    [ "$1" -gt 0 ] 2>/dev/null && { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
+}
+
+_scout_take_guard() {
+    local mtime
+    if ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null; then
+        return 0
+    fi
+    # Someone else is recovering the lock. Step in only if they died doing it.
+    mtime=$(_scout_mtime "$LOCK_GUARD")
+    case "$mtime" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ $(( $(date +%s) - mtime )) -gt "$LOCK_GUARD_ABANDONED_SECS" ] || return 1
+    rm -f "$LOCK_GUARD"
+    ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null
+}
+
+_scout_release_lock() {
+    # If the lock was reaped and taken over while we ran, it is not ours to remove.
+    if [ "$(_scout_lock_pid)" = "$$" ]; then
+        rm -f "$LOCK_FILE"
+    fi
+}
+
+LOCK_PID=""
+LOCK_ACQUIRED=""
+# Two attempts: recover a dead or wedged holder at most once, then retry the
+# atomic create. Any other conflict means another session holds the lock.
+for _lock_attempt in 1 2; do
+    if ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
+        LOCK_ACQUIRED=1
+        break
+    fi
+    LOCK_PID=$(_scout_lock_pid)
+    if [ ! -e "$LOCK_FILE" ]; then
+        continue   # the holder released between our create and our read
+    fi
+    if [ -z "$LOCK_PID" ] || [ "$_lock_attempt" = 2 ]; then
+        break
+    fi
+    if _scout_pid_alive "$LOCK_PID"; then
         # Lock age = seconds since the holder wrote the lock at session start.
         # Sourced from the lock file's mtime: macOS ps has no `etimes` keyword,
-        # so elapsed-seconds-of-PID is not portable. GNU stat first (errors on
-        # BSD), BSD stat second; unknown age → treat the holder as fresh.
-        LOCK_MTIME=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || stat -f %m "$LOCK_FILE" 2>/dev/null || echo "")
+        # so elapsed-seconds-of-PID is not portable. Unknown age → treat the
+        # holder as fresh.
+        LOCK_MTIME=$(_scout_mtime "$LOCK_FILE")
         LOCK_AGE=""
         case "$LOCK_MTIME" in
             ''|*[!0-9]*) ;;
             *) LOCK_AGE=$(( $(date +%s) - LOCK_MTIME )) ;;
         esac
-        if [ -n "$LOCK_AGE" ] && [ "$LOCK_AGE" -gt "$LOCK_MAX_AGE_SECS" ]; then
+        if [ -z "$LOCK_AGE" ] || [ "$LOCK_AGE" -le "$LOCK_MAX_AGE_SECS" ]; then
+            break
+        fi
+        if ! _scout_take_guard; then
+            break   # another process is already reaping or recovering it
+        fi
+        if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
             echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${LOCK_AGE}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
             echo "Reaped wedged session PID $LOCK_PID after ${LOCK_AGE}s at $(date)" >> "$LOG_DIR/failures.log"
             kill -TERM "$LOCK_PID" 2>/dev/null || true
             sleep 5
             # KILL before removing the lock: a KILLed holder cannot run its
-            # EXIT trap, so it cannot delete the lock this run is about to own.
+            # EXIT trap. Re-read after it: during the grace the holder may
+            # have released its lock and someone else taken the path.
             kill -KILL "$LOCK_PID" 2>/dev/null || true
-            rm -f "$LOCK_FILE"
-        else
-            echo "=== Another {{INSTANCE_NAME}} session running (PID $LOCK_PID) — skipping ===" >> "$LOG_FILE"
-            exit 0
+            if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                rm -f "$LOCK_FILE"
+            fi
         fi
+        rm -f "$LOCK_GUARD"
     else
-        # Stale lock file — previous session crashed
-        rm -f "$LOCK_FILE"
+        # Stale lock file — previous session crashed. Re-read under the guard:
+        # another process that read the same dead PID may have taken over.
+        if ! _scout_take_guard; then
+            break   # another process is already recovering it
+        fi
+        if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+            rm -f "$LOCK_FILE"
+        fi
+        rm -f "$LOCK_GUARD"
     fi
+done
+if [ -z "$LOCK_ACQUIRED" ]; then
+    echo "=== Another {{INSTANCE_NAME}} session running (PID ${LOCK_PID:-unknown}) — skipping ===" >> "$LOG_FILE"
+    exit 0
 fi
-echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
+trap _scout_release_lock EXIT
 
 # The prompt instructs Claude to read DREAMING.md and execute it
 PROMPT="You are {{INSTANCE_NAME}} running in DREAMING mode — the evening self-improvement and KB deep work session. Your working directory is {{SCOUT_DIR}}.
