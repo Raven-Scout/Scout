@@ -15,6 +15,9 @@ struct SidebarView: View {
     var wishlistBadge: Int = 0
     /// Count of active research topics — drives the badge on the Research row.
     var researchBadge: Int = 0
+    /// Number of update tracks (app, plugin) with an update available — drives
+    /// the badge on the Settings row, where Settings ▸ Updates lives.
+    var settingsBadge: Int = 0
     /// True when the engine needs the user's attention (spec §5) — draws a
     /// small warning dot on the Settings row.
     var settingsAttention: Bool = false
@@ -36,7 +39,7 @@ struct SidebarView: View {
             row(.knowledgeBase, label: "Knowledge Base", system: "books.vertical")
             Spacer().frame(height: 10)
             groupLabel("App")
-            row(.settings,      label: "Settings",       system: "gearshape", attention: settingsAttention)
+            row(.settings,      label: "Settings",       system: "gearshape", badge: settingsBadge, attention: settingsAttention)
             Spacer()
         }
         .padding(.horizontal, 12)

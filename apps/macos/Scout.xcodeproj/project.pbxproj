@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BEEE45A02F9599AB0078191D /* Grape in Frameworks */ = {isa = PBXBuildFile; productRef = BEEE45A22F9599AB0078191D /* Grape */; };
+		5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5AC0FFEE2F9599AB00000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +45,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BEEE45A02F9599AB0078191D /* Grape in Frameworks */,
+				5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -96,6 +98,7 @@
 			name = Scout;
 			packageProductDependencies = (
 				BEEE45A22F9599AB0078191D /* Grape */,
+				5AC0FFEE2F9599AB00000002 /* Sparkle */,
 			);
 			productName = Scout;
 			productReference = BEEE45542F95613D0078191D /* Scout.app */;
@@ -152,6 +155,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */,
+				5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BEEE45552F95613D0078191D /* Products */;
@@ -215,6 +219,14 @@
 				minimumVersion = 1.1.0;
 			};
 		};
+		5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -222,6 +234,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */;
 			productName = Grape;
+		};
+		5AC0FFEE2F9599AB00000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 

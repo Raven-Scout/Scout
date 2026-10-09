@@ -87,7 +87,7 @@ struct EngineSettingsSectionSmokeTests {
     func settingsViewRendersWithEngineSection() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(
-            SettingsView().environmentObject(vault.state),
+            SettingsView().environmentObject(vault.state).environmentObject(vault.updates),
             size: CGSize(width: 700, height: 900))
     }
 }

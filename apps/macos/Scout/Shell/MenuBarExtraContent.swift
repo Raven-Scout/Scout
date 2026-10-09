@@ -6,6 +6,7 @@ import AppKit
 /// full Scout window optional.
 struct MenuBarExtraContent: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var updates: UpdateService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -209,9 +210,23 @@ struct MenuBarExtraContent: View {
                 // so Settings would open behind the frontmost app. Activate
                 // first, then open, and dismiss the panel like a menu would.
                 footerButton("Open Scout settings", systemImage: "gearshape") {
-                    dismiss()
-                    NSApp.activate(ignoringOtherApps: true)
-                    openSettings()
+                    openScoutSettings()
+                }
+                if updates.appUpdatesEnabled {
+                    // Dev builds never update themselves — don't grow a dead item.
+                    footerButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath") {
+                        // Sparkle's own window follows; the panel is non-activating,
+                        // so front the app and dismiss it like a menu would.
+                        dismiss()
+                        NSApp.activate(ignoringOtherApps: true)
+                        updates.check(.app)
+                    }
+                    .disabled(updates.appUpdate.state == .checking)
+                }
+                if updates.anyUpdateAvailable {
+                    footerButton("Update available", systemImage: "arrow.down.circle") {
+                        openScoutSettings()
+                    }
                 }
                 footerButton("Install wake schedule", systemImage: "alarm") {
                     dismiss()
@@ -264,6 +279,12 @@ struct MenuBarExtraContent: View {
         // recreates a closed one. Never look the window up by its title:
         // RunDetailView's .navigationTitle retitles it.
         openWindow(id: "main")
+    }
+
+    private func openScoutSettings() {
+        dismiss()
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
     }
 
     private func installWakeSchedule() {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import Testing
 @testable import Scout
@@ -49,12 +50,32 @@ enum ViewHost {
     }
 }
 
+/// Disabled, never checks — just enough to satisfy `UpdateService`'s app
+/// controller for a `SmokeVault`'s inert `updates` track.
+@MainActor
+private final class SmokeAppUpdateController: AppUpdateController {
+    let isEnabled = false
+    let currentVersion: String? = "0.1.0"
+    func checkForUpdates() -> Bool { false }
+}
+
+/// Always `.notApplicable` — touches neither disk nor network, matching the
+/// test-host checker `ScoutApp.init()` swaps in for `AppState.Configuration.isTestHost`.
+private struct SmokeInertPluginChecker: PluginUpdateChecking {
+    func check(engine: EngineState) async -> PluginUpdateResult { .notApplicable }
+}
+
 /// A vault laid out the way Scout expects, so views render populated rather
 /// than falling straight into their empty states.
 @MainActor
 struct SmokeVault {
     let root: URL
     let state: AppState
+    /// Inert — no Sparkle, no network, no engine. `SettingsView` (and
+    /// anything else that reads `@EnvironmentObject UpdateService`) needs one
+    /// in the environment or it traps; smoke tests don't exercise the update
+    /// flows themselves (see `UpdateServiceTests`).
+    let updates: UpdateService
 
     init() throws {
         let root = FileManager.default.temporaryDirectory
@@ -88,6 +109,10 @@ struct SmokeVault {
             .appendingPathComponent(".scout-logs/scout-2026-06-15_08-03.log"))
 
         self.state = AppState(configuration: .testing(scoutDirectory: root))
+        self.updates = UpdateService(
+            pluginChecker: SmokeInertPluginChecker(),
+            engineStates: Just(EngineState.notInstalled).eraseToAnyPublisher(),
+            makeAppController: { _ in SmokeAppUpdateController() })
     }
 
     /// Load the document services synchronously so views render with content.
@@ -191,7 +216,8 @@ struct ShellViewSmokeTests {
         ViewHost.render(
             MainWindowView()
                 .environmentObject(vault.state)
-                .environmentObject(vault.state.proposalsDocumentService))
+                .environmentObject(vault.state.proposalsDocumentService)
+                .environmentObject(vault.updates))
     }
 
     @Test("every sidebar destination has a status label")
@@ -222,6 +248,18 @@ struct ShellViewSmokeTests {
             let binding = Binding(get: { selection }, set: { selection = $0 })
             ViewHost.render(
                 SidebarView(selection: binding, settingsAttention: attention).environmentObject(vault.state),
+                size: CGSize(width: 240, height: 700))
+        }
+    }
+
+    @Test("the sidebar renders the Settings update badge at 0, 1 and 2")
+    func sidebarSettingsBadgeRenders() throws {
+        let vault = try SmokeVault(); defer { vault.tearDown() }
+        for badge in [0, 1, 2] {
+            var selection = SidebarItem.controlCenter
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            ViewHost.render(
+                SidebarView(selection: binding, settingsBadge: badge, settingsAttention: badge == 1).environmentObject(vault.state),
                 size: CGSize(width: 240, height: 700))
         }
     }
@@ -261,14 +299,17 @@ struct ShellViewSmokeTests {
     func menuBarExtraRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(
-            MenuBarExtraContent().environmentObject(vault.state),
+            MenuBarExtraContent().environmentObject(vault.state).environmentObject(vault.updates),
             size: CGSize(width: 320, height: 400))
     }
 
     @Test("the menu bar icon renders for every status")
     func menuBarIconRendersEveryStatus() {
         for status in [AppState.MenuBarStatus.idle, .running, .lastFailed, .budgetSkipped] {
-            ViewHost.render(MenuBarIcon(status: status), size: CGSize(width: 24, height: 24))
+            for updateAvailable in [false, true] {
+                ViewHost.render(MenuBarIcon(status: status, updateAvailable: updateAvailable),
+                                size: CGSize(width: 24, height: 24))
+            }
         }
     }
 
@@ -276,7 +317,7 @@ struct ShellViewSmokeTests {
     func settingsRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
         ViewHost.render(
-            SettingsView().environmentObject(vault.state),
+            SettingsView().environmentObject(vault.state).environmentObject(vault.updates),
             size: CGSize(width: 700, height: 620))
     }
 }

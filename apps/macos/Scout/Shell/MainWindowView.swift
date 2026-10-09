@@ -4,6 +4,7 @@ struct MainWindowView: View {
     @State private var selection: SidebarItem = .controlCenter
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
+    @EnvironmentObject var updates: UpdateService
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not
@@ -21,6 +22,7 @@ struct MainWindowView: View {
                         proposalsBadge: proposalsService.pendingCount,
                         wishlistBadge: appState.wishlistDocumentService.activeCount,
                         researchBadge: appState.researchDocumentService.activeCount,
+                        settingsBadge: updates.availableCount,
                         settingsAttention: appState.engineHealth.needsAttention,
                         tabsGated: appState.engineHealth.state.gatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
