@@ -14,6 +14,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - warns in `kb-filter.md` when no file has a readable date, and reports how many dates came from the property and how many from the prose line.
 
   `kb-management.md` now asks every run to set `last_updated:` in ISO 8601 with an offset whenever it writes a KB file (#201).
+- **`scoutctl action-items` tells a missing task and an ambiguous one apart by exit code** (`engine/scout/errors.py`, `engine/scout/action_items/_common.py`). No match now exits 22 (`ActionItemNotFound`) and more than one match exits 23 (`ActionItemAmbiguous`). Both subclass `ActionItemError`, and every other action-item failure still exits 21. Scout.app keys its recovery on these codes. It expected 2 and 3, which the engine never sent, so a task renamed under the app was never retried.
 
 ## [0.15.0] - 2026-10-09
 

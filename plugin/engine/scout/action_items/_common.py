@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scout import paths
 from scout.action_items.parser import ActionItem
-from scout.errors import ActionItemError
+from scout.errors import ActionItemAmbiguous, ActionItemError, ActionItemNotFound
 from scout.id_map import IdMap, IdMapEntry
 from scout.ids import new_ulid
 
@@ -115,8 +115,9 @@ def resolve_target(
     a stable id is unique, so status filtering would only create
     found-but-wrong-status dead ends.
 
-    Raises `ActionItemError` on bad arguments, unknown prefix, no match,
-    or ambiguous match.
+    Raises `ActionItemError` on bad arguments, `ActionItemNotFound` on an
+    unknown prefix or no match, and `ActionItemAmbiguous` on more than one
+    match. Both are `ActionItemError` subclasses with their own exit codes.
     """
     if (by_id is None) == (by_subject is None):
         raise ActionItemError("resolve_target requires exactly one of by_id or by_subject")
@@ -127,7 +128,7 @@ def resolve_target(
         entry = id_map.lookup_by_prefix(by_id)
         candidates = [i for i in items if i.short_prefix == by_id]
         if len(candidates) > 1:
-            raise ActionItemError(
+            raise ActionItemAmbiguous(
                 f"ambiguous id [#{by_id}]; matched {len(candidates)} tasks:\n"
                 + "\n".join(f"  - {c.title}" for c in candidates)
             )
@@ -142,7 +143,7 @@ def resolve_target(
             # the skill writer skips registration. (Legacy unprefixed lines
             # still need `--by-subject`; the error message points the way.)
             if match is None:
-                raise ActionItemError(
+                raise ActionItemNotFound(
                     f"prefix [#{by_id}] not found in id-map; if this is a legacy line, retry with --by-subject"
                 )
             entry = IdMapEntry(
@@ -156,7 +157,7 @@ def resolve_target(
             id_map.save()
             return match, entry.ulid, "id"
         if match is None:
-            raise ActionItemError(f"prefix [#{by_id}] is in id-map but not present in this file")
+            raise ActionItemNotFound(f"prefix [#{by_id}] is in id-map but not present in this file")
         return match, entry.ulid, "id"
 
     # by_subject path
@@ -168,9 +169,9 @@ def resolve_target(
     needle = by_subject.lower()
     matches = [i for i in items if i.status == status and needle in i.title.lower()]
     if len(matches) == 0:
-        raise ActionItemError(f"no {status} task matched subject: {by_subject!r}")
+        raise ActionItemNotFound(f"no {status} task matched subject: {by_subject!r}")
     if len(matches) > 1:
-        raise ActionItemError(
+        raise ActionItemAmbiguous(
             f"ambiguous subject {by_subject!r}; matched:\n" + "\n".join(f"  - {m.title}" for m in matches)
         )
     match = matches[0]

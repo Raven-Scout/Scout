@@ -319,11 +319,13 @@ actor ActionItemsWriter {
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : fileURL.lastPathComponent
     }
 
+    /// Exit codes from `plugin/engine/scout/errors.py`: `ActionItemNotFound`
+    /// exits 22 and `ActionItemAmbiguous` 23. Exit 2 is Click's usage error,
+    /// which an engine older than the app prints for a flag it lacks.
     private static func classify(exitCode: Int32, stderr: String) -> ActionItemsWriterError.Classification {
         switch exitCode {
-        case 2: return .noMatch
-        case 3: return .ambiguous
-        case 1, 4, 5: return .other
+        case 22: return .noMatch
+        case 23: return .ambiguous
         default:
             let s = stderr.lowercased()
             if s.contains("no such option") || s.contains("no module named") || s.contains("command not found") {

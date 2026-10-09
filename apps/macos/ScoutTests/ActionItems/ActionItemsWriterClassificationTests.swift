@@ -48,9 +48,28 @@ struct ActionItemsWriterClassificationTests {
         }
     }
 
-    @Test("exit 3 means the subject matched more than one task")
-    func classify_exitThreeIsAmbiguous() async throws {
-        #expect(try await classification(exit: 3, stderr: "Multiple tasks matched.") == .ambiguous)
+    /// The engine's codes from `plugin/engine/scout/errors.py`:
+    /// `ActionItemNotFound` exits 22, `ActionItemAmbiguous` 23, and every
+    /// other `ActionItemError` 21.
+    @Test("the engine's selector codes classify as no-match and ambiguous", arguments: [
+        (Int32(22), "no open task matched subject: 'X'", ActionItemsWriterError.Classification.noMatch),
+        (23, "ambiguous subject 'X'; matched:", .ambiguous),
+        (21, "--until: invalid date 'soon'", .other),
+    ])
+    func classify_engineSelectorCodes(
+        exit: Int32, stderr: String, expected: ActionItemsWriterError.Classification
+    ) async throws {
+        #expect(try await classification(exit: exit, stderr: stderr) == expected)
+    }
+
+    /// Exit 2 is Click's usage error ("No such option"), which an engine older
+    /// than the app prints. It is not a missing task.
+    @Test("exit 2 and 3 are not task errors")
+    func classify_usageErrorsAreNotTaskErrors() async throws {
+        #expect(try await classification(
+            exit: 2, stderr: "Error: No such option: --author") == .environment)
+        #expect(try await classification(exit: 2, stderr: "Error: Missing argument 'PATH'.") == .other)
+        #expect(try await classification(exit: 3, stderr: "boom") == .other)
     }
 
     @Test("the ordinary failure codes classify as .other")
