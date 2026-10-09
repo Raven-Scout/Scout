@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from scout.scripts import versioning
+from scout.scripts import release_notes, versioning
 
 
 def _fake_plugin(tmp_path: Path, version: str = "1.2.3") -> Path:
@@ -38,6 +40,18 @@ def _fake_plugin(tmp_path: Path, version: str = "1.2.3") -> Path:
     (plugin / "engine" / "scout" / "__init__.py").write_text(
         f'"""scout."""\n\n__version__ = "{version}"\n', encoding="utf-8"
     )
+    pbx = repo / "apps" / "macos" / "Scout.xcodeproj"
+    pbx.mkdir(parents=True)
+    (pbx / "project.pbxproj").write_text(
+        "\n".join(
+            f"\t\t\t\tMARKETING_VERSION = {version};" if i % 2 == 0 else "\t\t\t\tPRODUCT_NAME = Scout;"
+            for i in range(8)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
+        (repo / rel).write_text("# Changelog\n\n## [Unreleased]\n\n### Added\n- a thing\n", encoding="utf-8")
     return plugin
 
 
@@ -50,6 +64,7 @@ def test_read_versions_reads_marketplace_from_the_repo_root(tmp_path):
         "marketplace.json": "1.2.3",
         "pyproject.toml": "1.2.3",
         "__init__.py": "1.2.3",
+        "MARKETING_VERSION": "1.2.3",
     }
 
 
@@ -64,18 +79,22 @@ def test_set_version_writes_the_repo_root_marketplace(tmp_path):
 def test_read_versions_accepts_an_explicit_repo_root(tmp_path):
     """repo_root can be pointed elsewhere than root.parent — e.g. a worktree
     whose plugin subtree and repo root are checked out separately. Relocating
-    marketplace.json outside root.parent proves repo_root is actually
-    consulted (default resolution now fails) rather than silently ignored."""
+    the repo-root files (marketplace.json, the app project file) outside
+    root.parent proves repo_root is actually consulted (default resolution
+    now fails) rather than silently ignored."""
     plugin_root = _fake_plugin(tmp_path, "1.2.3")
     other_repo = tmp_path.parent / f"{tmp_path.name}-other-repo"
     (other_repo / ".claude-plugin").mkdir(parents=True)
     (tmp_path / ".claude-plugin" / "marketplace.json").rename(other_repo / ".claude-plugin" / "marketplace.json")
+    (other_repo / "apps" / "macos").mkdir(parents=True)
+    (tmp_path / "apps" / "macos" / "Scout.xcodeproj").rename(other_repo / "apps" / "macos" / "Scout.xcodeproj")
 
     with pytest.raises(FileNotFoundError):
         versioning.read_versions(plugin_root)  # default repo_root=None -> root.parent, now missing
 
     versions = versioning.read_versions(plugin_root, repo_root=other_repo)
     assert versions["marketplace.json"] == "1.2.3"
+    assert versions["MARKETING_VERSION"] == "1.2.3"
 
 
 def test_set_version_accepts_an_explicit_repo_root(tmp_path):
@@ -89,6 +108,8 @@ def test_set_version_accepts_an_explicit_repo_root(tmp_path):
     other_repo = tmp_path.parent / f"{tmp_path.name}-other-repo"
     (other_repo / ".claude-plugin").mkdir(parents=True)
     (tmp_path / ".claude-plugin" / "marketplace.json").rename(other_repo / ".claude-plugin" / "marketplace.json")
+    (other_repo / "apps" / "macos").mkdir(parents=True)
+    (tmp_path / "apps" / "macos" / "Scout.xcodeproj").rename(other_repo / "apps" / "macos" / "Scout.xcodeproj")
 
     versioning.set_version(plugin_root, version="1.3.0", repo_root=other_repo)
 
@@ -99,14 +120,15 @@ def test_set_version_accepts_an_explicit_repo_root(tmp_path):
         "marketplace.json": "1.3.0",
         "pyproject.toml": "1.3.0",
         "__init__.py": "1.3.0",
+        "MARKETING_VERSION": "1.3.0",
     }
 
 
-def test_read_versions_returns_all_four(tmp_path):
+def test_read_versions_returns_all_five(tmp_path):
     root = _fake_plugin(tmp_path, "1.2.3")
     versions = versioning.read_versions(root)
     assert set(versions.values()) == {"1.2.3"}
-    assert len(versions) == 4
+    assert len(versions) == 5
 
 
 def test_assert_in_sync_passes_when_equal(tmp_path):
@@ -127,6 +149,16 @@ def test_bump_levels():
     assert versioning.bump("1.2.3", "minor") == "1.3.0"
     assert versioning.bump("1.2.3", "major") == "2.0.0"
     assert versioning.bump("1.2.3", "9.9.9") == "9.9.9"  # explicit passthrough
+
+
+@pytest.mark.parametrize("explicit", ["1.2.3", "1.2.2", "1.1.9", "0.99.99"])
+def test_bump_refuses_an_explicit_version_that_is_not_above(explicit):
+    with pytest.raises(versioning.VersionNotAboveError, match=f"{explicit} is not above the current version 1.2.3"):
+        versioning.bump("1.2.3", explicit)
+
+
+def test_bump_compares_numerically_not_as_text():
+    assert versioning.bump("1.9.0", "1.10.0") == "1.10.0"
 
 
 def test_bump_invalid_level_raises():
@@ -163,3 +195,116 @@ def test_promote_changelog_missing_marker_raises(tmp_path):
     path.write_text("# Changelog\n\nno unreleased section here\n")
     with pytest.raises(ValueError):
         versioning.promote_changelog(tmp_path, version="1.3.0", date="2026-06-02")
+
+
+def test_marketing_version_is_read_and_must_agree(tmp_path):
+    _fake_plugin(tmp_path, "1.2.3")
+    assert versioning.read_versions(tmp_path / "plugin", tmp_path)["MARKETING_VERSION"] == "1.2.3"
+    pbx = tmp_path / "apps/macos/Scout.xcodeproj/project.pbxproj"
+    pbx.write_text(pbx.read_text().replace("1.2.3;", "9.9.9;", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="MARKETING_VERSION differs"):
+        versioning.read_versions(tmp_path / "plugin", tmp_path)
+
+
+def test_set_version_rewrites_every_marketing_version(tmp_path):
+    _fake_plugin(tmp_path, "1.2.3")
+    versioning.set_version(tmp_path / "plugin", "1.3.0", tmp_path)
+    text = (tmp_path / "apps/macos/Scout.xcodeproj/project.pbxproj").read_text()
+    assert text.count("MARKETING_VERSION = 1.3.0;") == 4 and "1.2.3" not in text
+    assert versioning.assert_in_sync(tmp_path / "plugin", tmp_path) == "1.3.0"
+
+
+def test_drift_between_app_and_plugin_fails_check(tmp_path):
+    _fake_plugin(tmp_path, "1.2.3")
+    pbx = tmp_path / "apps/macos/Scout.xcodeproj/project.pbxproj"
+    pbx.write_text(pbx.read_text().replace("1.2.3", "1.2.4"), encoding="utf-8")
+    with pytest.raises(ValueError, match="version drift"):
+        versioning.assert_in_sync(tmp_path / "plugin", tmp_path)
+
+
+def test_promote_changelogs_promotes_both(tmp_path):
+    _fake_plugin(tmp_path, "1.2.3")
+    versioning.promote_changelogs(tmp_path, version="1.3.0", date="2026-10-05")
+    for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
+        text = (tmp_path / rel).read_text()
+        assert text.index("## [Unreleased]") < text.index("## [1.3.0] - 2026-10-05") < text.index("- a thing")
+
+
+REAL_REPO = Path(__file__).resolve().parents[4]
+_HEADING = re.compile(r"(?m)^## \[Unreleased\]")
+
+
+def test_promote_changelogs_on_the_real_changelogs(tmp_path):
+    """The committed changelogs, not a synthetic fixture: the app's header prose quotes
+    `## [Unreleased]` inline, and a first-occurrence replace landed the new heading mid-sentence."""
+    before: dict[str, str] = {}
+    for rel in versioning._CHANGELOGS:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        before[rel] = (REAL_REPO / rel).read_text(encoding="utf-8")
+        (tmp_path / rel).write_text(before[rel], encoding="utf-8")
+
+    versioning.promote_changelogs(tmp_path, version="9.9.0", date="2026-10-06")
+
+    for rel, old in before.items():
+        new = (tmp_path / rel).read_text(encoding="utf-8")
+        old_head, new_head = _HEADING.search(old), _HEADING.search(new)
+        assert old_head and new_head, rel
+        assert new[: new_head.start()] == old[: old_head.start()], f"{rel}: header prose changed"
+        assert release_notes.extract_section(new, "9.9.0") == release_notes.extract_section(old, "Unreleased"), rel
+        assert release_notes.extract_section(new, "Unreleased") == "", rel
+    app = release_notes.extract_section((tmp_path / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8"), "9.9.0")
+    assert "Releases before the monorepo" not in app and "scout-app-legacy" not in app
+
+
+def test_promote_ignores_an_unreleased_marker_that_is_not_a_heading(tmp_path):
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text("# Changelog\n\nKeep an `## [Unreleased]` section at the top.\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no '## \\[Unreleased\\]' section"):
+        versioning.promote_changelog(tmp_path, version="1.3.0", date="2026-06-02")
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _repo_with_tags(tmp_path: Path) -> Path:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    for msg, tag in [
+        ("chore: one", "app/v0.14.0"),
+        ("fix: two", "plugin/v0.14.0"),
+        ("chore: three", "v0.15.1-rc.1"),
+        ("feat: four", None),
+    ]:
+        _git(repo, "commit", "-q", "--allow-empty", "-m", msg)
+        if tag:
+            _git(repo, "tag", tag)
+    return repo
+
+
+def test_previous_release_picks_highest_then_newest_and_ignores_rc(tmp_path):
+    repo = _repo_with_tags(tmp_path)
+    tag, sha = versioning.previous_release(repo)
+    assert tag == "plugin/v0.14.0"  # same version as app/v0.14.0, but the later commit
+    assert sha == _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
+
+
+def test_previous_release_ignores_rc_tags(tmp_path):
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.previous_release(repo)[0] != "v0.15.1-rc.1"
+
+
+def test_previous_release_excludes_and_respects_ref(tmp_path):
+    repo = _repo_with_tags(tmp_path)
+    assert versioning.previous_release(repo, exclude="plugin/v0.14.0")[0] == "app/v0.14.0"
+    assert versioning.previous_release(repo, ref="app/v0.14.0", exclude="app/v0.14.0") is None
+
+
+def test_recommend_level(tmp_path):
+    repo = _repo_with_tags(tmp_path)
+    since = _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
+    assert versioning.recommend_level(repo, since) == "minor"  # "feat: four" landed after it
+    assert versioning.recommend_level(repo, since, ref="v0.15.1-rc.1") == "patch"

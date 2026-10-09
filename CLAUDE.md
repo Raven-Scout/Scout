@@ -21,10 +21,15 @@ first.** The two have different languages, test runners, and release flows.
   `CLAUDE_PLUGIN_ROOT` resolves to the materialized `plugin/` subtree only; a
   plugin file that reaches outside it is broken for every installed user, and
   nothing in this repo will tell you.
-- **Tags are prefixed:** `plugin/vX.Y.Z`, `app/vX.Y.Z`. Never push a bare
-  `vX.Y.Z` — the two artifacts collided on `v0.5.0`–`v0.13.0` before the merge.
-  The bare `v*` tags in this repo are the plugin's pre-monorepo releases; the
-  app's were re-tagged `app/vX.Y.Z`.
+- **One version, one tag, one release.** Scout's app and plugin share one version `X.Y.Z`. It lives in
+  `plugin/.claude-plugin/plugin.json`, the root `marketplace.json`, `plugin/engine/pyproject.toml`,
+  `plugin/engine/scout/__init__.py`, and every `MARKETING_VERSION` in `apps/macos/Scout.xcodeproj`;
+  `versioning check` (CI: `contract`) fails on drift. From v0.15.0 every release is ONE tag `vX.Y.Z`, cut
+  with `scripts/release.sh prepare` then `finalize`; release candidates are `vX.Y.Z-rc.N`, cut with `rc` from
+  `release/vX.Y.Z`. Never create `app/v*` or `plugin/v*` tags (sole exception before v0.15.0: an urgent
+  `plugin/v0.14.x` patch via `plugin/scripts/release-plugin.sh`); the existing ones (`app/v0.1.0`–`app/v0.14.0`,
+  `plugin/v0.14.0`) are history. Bare `v0.4.0`–`v0.13.0` are the plugin's pre-monorepo releases. Agents never
+  run `finalize`/`rc` for real.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is

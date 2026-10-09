@@ -999,97 +999,30 @@ If a merge goes wrong, run `git merge --abort` and start the sub-step again.
     Settings → Rules → `main` → "Require status checks to pass", with those
     four names.
   - Keep `merge` in the `pull_request` rule's `allowed_merge_methods`.
+  - A gate job (`contract`, `plugin-test`, …) that ends **cancelled** with no
+    runner assigned and 0 steps is a GitHub hosted-runner outage, not a test
+    failure. Re-run the whole run once githubstatus.com clears
+    (`gh run rerun <id>`, not `--failed`): after a cancelled `changes` job,
+    re-running only the failed jobs re-runs the gate alone, and it stays red. Seen
+    2026-10-05 on #315, during the Actions incident "delays when assigning
+    GitHub-hosted runners", when two gates were cancelled 15 minutes after
+    they were created.
 
 ---
 
 ## Phase 7 — Releases (from the survivor's `main`) [J]
 
-Jordan runs both release scripts. **No agent runs them, not even "to check
+Jordan runs every release script. **No agent runs one, not even "to check
 something".**
 
-- [ ] **7.1 [J] Plugin first.** Releasing it first means the app's version floor
-  names a published plugin.
-  1. Fill `plugin/CHANGELOG.md`'s `## [Unreleased]` before preparing.
-     `release-plugin.yml` refuses an empty section. Cover:
-     - the repo is now `Raven-Scout/Scout`, renamed from scout-plugin. Old
-       URLs and marketplaces redirect, so users have nothing to do.
-     - the plugin lives under `plugin/`, with `marketplace.json` at the repo
-       root
-     - `self-update check` reads the root manifest
-     - `/scout-update` Step 0.2 now stops only for a marketplace pointing at
-       another repo, and gains a two-layout `~/scout-plugin` resolver
-     - the installer's marketplace-source check
-     - `scoutctl`'s `marketplaces/<name>/plugin/` venv candidates
-     - anything Phase 1 pulled in (#247's version switch on update, #264's
-       `/scout-plan`, …)
-     - **a heads-up for dev checkouts** (anyone whose engine venv sits
-       inside a git checkout that a pull moves: a directory marketplace, or
-       a venv built in `plugins/marketplaces/scout-plugin/`). The pull moves
-       `engine/` to `plugin/engine/`, so the old editable venv stops
-       importing, and a cached launcher can keep pinning it. Fix as in 9.3b.
-       Regular installs are not affected: `install.sh` and `/scout-setup`
-       build the venv inside the frozen cache copy, which a marketplace
-       update never moves. The lasting fix is engine-side: the launcher's
-       fast path should check the import, not just `-x`.
-     - **a heads-up for customized vaults.** #264 adds a "Plan Markers Carry
-       Verbatim" rule to `SKILL.md`. A vault that edited `SKILL.md` near it
-       gets `conflict (sidecar): SKILL.md.proposed-merge` on `/scout-update`.
-       The upgrade still completes, and the running `SKILL.md` is unchanged
-       until the user merges the sidecar. Jordan's vault hit this on
-       2026-10-05.
-  2. Prepare with **`minor`**, because the layout changed:
-
-     ```bash
-     cd "$R" && git switch main && git pull --ff-only && git status --porcelain   # must print nothing
-     bash plugin/scripts/release-plugin.sh minor        # bumps on release/vX.Y.Z, commits, pushes, opens the release PR
-     ```
-  3. Merge the release PR once its four gates are green. Then:
-
-     ```bash
-     cd "$R" && git switch main && git pull --ff-only
-     NEW=$(cd plugin/engine && .venv/bin/python -m scout.scripts.versioning check)
-     bash plugin/scripts/release-plugin.sh --finalize "plugin/v$NEW"     # tags origin/main, pushes the tag
-     gh run watch --repo Raven-Scout/Scout "$(gh run list --repo Raven-Scout/Scout --workflow release-plugin.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-     gh release view "plugin/v$NEW" --repo Raven-Scout/Scout
-     gh api repos/Raven-Scout/Scout/releases/latest --jq .tag_name        # still app/v… (--latest=false)
-     ```
-  4. Re-run Phase 4.3's sandbox block. `claude plugin update` must now land
-     `plugin/v$NEW`, with an installPath inside `$SB_OLD` and a plugin-only
-     tree. Set `IP` to the installPath the block prints, then check the tree
-     with `test ! -e "$IP/apps" && ! ls "$IP"/*.xcodeproj 2>/dev/null`.
-  - Never run `versioning set` with a lower version: nothing enforces
-    monotonicity.
-  - `versioning bump` is not a query; it WRITES all four manifests (the
-    release script relies on that).
-  - Never push a bare `v*` tag.
-- [ ] **7.2 [J] App.**
-  - Needs the Developer ID Application cert in the keychain and the
-    `scout-notary` notarytool profile.
-  - The script picks the version from `apps/macos` commits since the newest
-    `app/v*` tag. That is the `app/v0.14.0` seeded in 3.3, so `git fetch --tags`
-    in `R` first. With no `app/v*` tag it stops; it never falls back to bare
-    `v*`.
-  - It stamps `SCScoutPluginFloor` from `plugin.json`, tags `app/vX.Y.Z`,
-    pushes the tag, and publishes the DMG release with
-    `--latest --repo <origin slug>`.
-
-  **Do not release the app until Part B has merged.** Until then the interim
-  `ScoutctlLocator` still has the pip/conda/`$PATH` fallbacks Jordan ruled
-  out (R37; Part B deletes it). Part B is re-opened on the survivor in 5.2;
-  check it there:
-
-  ```bash
-  gh pr list --repo Raven-Scout/Scout --state merged --head feat/app-managed-engine --json number,mergedAt   # must list it
-  ```
-
-  ```bash
-  cd "$R" && git switch main && git pull --ff-only && git fetch --tags origin
-  SKIP_NOTARIZE=1 SKIP_RELEASE=1 bash apps/macos/scripts/release-app.sh   # dry run: prints the version it would release
-  bash apps/macos/scripts/release-app.sh                                    # or pass an explicit X.Y.Z
-  gh api repos/Raven-Scout/Scout/releases/latest --jq '.tag_name, [.assets[].name]'   # app/v…, with Scout-<ver>.dmg
-  ```
-
-  `apps/macos/CHANGELOG.md` is not wired into this script (Open decision M6).
+- [x] **7.1 Plugin v0.14.0.** Released 2026-10-05 as `plugin/v0.14.0` (#306) with the old
+  `release-plugin.sh`, marketplace only. The 2.2 sandbox upgraded 0.13.0 → 0.14.0 through the rename redirect.
+  It is the last prefixed release, apart from an urgent `plugin/v0.14.x` patch.
+- [ ] **7.2 From v0.15.0: one release.** See `docs/superpowers/specs/2026-10-05-unified-release-design.md` and
+  `scripts/release.sh`. v0.15.0 is the first one-download release, and it needs Parts B and C, Sparkle (#74), and the
+  spec §6 acceptance test. Jordan runs `prepare` and `finalize`; agents never run them for real. If `finalize`
+  fails during `gh release create`, check `gh release view vX.Y.Z --repo Raven-Scout/Scout` before re-running,
+  and delete any leftover draft first.
 
 ---
 

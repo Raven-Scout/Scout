@@ -27,10 +27,11 @@ nonisolated struct EngineVersion: Equatable, Comparable, Sendable, CustomStringC
 
     // MARK: the app↔engine floor
 
-    /// Info.plist key `scripts/release-app.sh` stamps with the plugin version
-    /// in the same tree the binary was built from (`plugin/.claude-plugin/
-    /// plugin.json`). Dev builds leave the `SCOUT_PLUGIN_FLOOR` build setting
-    /// empty. Nothing in the UI reads the floor yet.
+    /// Info.plist key `scripts/release.sh` stamps with the plugin version
+    /// (equal to the app's own version) in the same tree the binary was
+    /// built from (`plugin/.claude-plugin/plugin.json`). Dev builds leave the
+    /// `SCOUT_PLUGIN_FLOOR` build setting empty. Nothing in the UI reads the
+    /// floor yet.
     static let floorInfoKey = "SCScoutPluginFloor"
 
     /// Minimum engine version this build requires; nil in unstamped dev builds.

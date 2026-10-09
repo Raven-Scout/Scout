@@ -113,14 +113,15 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: `scripts/release-app.sh [<version>]` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples **both the app and the DMG** via Apple, tags `app/v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached, marked Latest. With no version it picks the next one from the `apps/macos` commits since the last `app/v*` tag (falling back to the pre-monorepo bare `v*` tags). Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release-app.sh`). Example:
+Maintainers: releases are cut from the repo root with one script, which builds the app with the plugin
+bundled from the same commit, signs and notarizes it, and publishes one `vX.Y.Z` release:
 
 ```bash
-scripts/release-app.sh        # auto-pick the version
-scripts/release-app.sh 0.2.0  # or pass one explicitly
+scripts/release.sh prepare            # opens the release PR (auto-picks patch/minor)
+scripts/release.sh finalize v0.15.0   # after the PR merges
+scripts/release.sh rc v0.15.0-rc.1    # a pre-release, cut from release/v0.15.0 after prepare
+SKIP_NOTARIZE=1 SKIP_RELEASE=1 scripts/release.sh rc v0.15.0-rc.1   # dry run on the local release branch; publishes nothing
 ```
-
-Set `SKIP_RELEASE=1` to build the DMG locally without tagging or uploading.
 
 ## Relationship to the plugin
 
