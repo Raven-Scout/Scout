@@ -234,7 +234,7 @@ struct ActionItemsWriterTests {
     }
 
     @Test func throwsOnNonZeroExit() async throws {
-        let runner = FailingRunner(exit: 2, stderr: "No task matched --subject 'X'.")
+        let runner = FailingRunner(exit: 22, stderr: "no open task matched subject: 'X'")
         let writer = ActionItemsWriter(
             scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
             actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
@@ -248,8 +248,8 @@ struct ActionItemsWriterTests {
         } catch let err as ActionItemsWriterError {
             switch err {
             case .cliNonZeroExit(let code, let stderr, let classification):
-                #expect(code == 2)
-                #expect(stderr.contains("No task matched"))
+                #expect(code == 22)
+                #expect(stderr.contains("no open task matched"))
                 #expect(classification == .noMatch)
             default: Issue.record("unexpected classification")
             }
@@ -282,7 +282,7 @@ struct ActionItemsWriterTests {
 
         let recorder = RecordingRunner()
         recorder.scripted = [
-            ProcessResult(exitCode: 2, stdout: Data(), stderr: Data("no open task matched subject".utf8)),
+            ProcessResult(exitCode: 22, stdout: Data(), stderr: Data("no open task matched subject".utf8)),
             ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // backfill
             ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // retry
         ]
@@ -305,6 +305,28 @@ struct ActionItemsWriterTests {
         #expect(calls[1].arguments.contains("backfill-prefixes"))
         #expect(calls[2].arguments.contains("--by-id"))
         #expect(calls[2].arguments.contains("QW34"))
+    }
+
+    /// An engine older than the app rejects a new flag with Click's usage
+    /// error (exit 2). That is not a missing task, so the writer must not
+    /// backfill prefixes and retry.
+    @Test func doesNotBackfillOnAUsageError() async throws {
+        let recorder = RecordingRunner()
+        recorder.scripted = [
+            ProcessResult(exitCode: 2, stdout: Data(), stderr: Data("Error: No such option: --author".utf8)),
+        ]
+        let writer = ActionItemsWriter(
+            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
+            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
+            scoutDirectory: URL(fileURLWithPath: "/tmp"),
+            runner: recorder, gitService: nil)
+
+        await #expect(throws: ActionItemsWriterError.self) {
+            _ = try await writer.submit(
+                .addComment(subject: "Ship it", shortPrefix: nil, text: "hi", author: "alex"),
+                displayedDate: Date(), recoveryLineNumber: 1)
+        }
+        #expect(await recorder.calls.count == 1)
     }
 
     @Test func readsShortPrefixAtLineNumber() throws {
@@ -389,12 +411,7 @@ struct ActionItemsWriterTests {
             Issue.record("expected throw")
         } catch let err as ActionItemsWriterError {
             if case let .cliNonZeroExit(_, _, classification) = err {
-                // Exit code 2 still gets `.noMatch` for backward compat (existing
-                // tests rely on it). Only "non-standard" exit codes consult stderr.
-                // For `--undo`, scoutctl exits 2 with the env-shaped stderr, so we
-                // accept either classification: `.noMatch` (current) or
-                // `.environment` (preferred). Documenting current behavior.
-                #expect(classification == .noMatch || classification == .environment)
+                #expect(classification == .environment)
             } else {
                 Issue.record("expected cliNonZeroExit")
             }
