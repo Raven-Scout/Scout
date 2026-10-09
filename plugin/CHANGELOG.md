@@ -6,6 +6,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The KB staleness check reads the dates runs actually write** (`engine/scout/hooks/kb_pre_filter.py`, `phases/core/kb-management.md`). On a vault outside US Eastern almost nothing parsed, and `.scout-cache/kb-filter.md` reported `Stale: 0` exactly as a perfectly fresh KB would, so dreaming's freshness audit never selected most files. The pre-filter now:
+  - reads the frontmatter `last_updated:` (or `last_verified:`) key first, as ISO 8601 with its offset, anywhere in a long frontmatter block (#230);
+  - otherwise finds the date in the prose "Last updated" line, whatever zone tail (`CEST`, `ET`, …), `~` approximate time, `9:3x` minute or leading weekday a run wrote. A known zone abbreviation sets the zone; `PM` is never read as one;
+  - skips the per-item record folders (`scout-mistake-audit/`, `research-queue/`, `session-log/`, `kg-audits/`, `review-queue/`), whose entries have a lifecycle rather than a freshness budget;
+  - warns in `kb-filter.md` when no file has a readable date, and reports how many dates came from the property and how many from the prose line.
+
+  `kb-management.md` now asks every run to set `last_updated:` in ISO 8601 with an offset whenever it writes a KB file (#201).
+
 ## [0.15.0] - 2026-10-09
 
 ### Added

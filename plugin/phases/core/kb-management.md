@@ -99,7 +99,9 @@ To archive: move the project's folder into `archived/`, update `projects.md` to 
 
 ### KB Freshness Standards
 
-Every KB file should have a "Last updated" or "Last verified" line. The standards:
+Every KB file carries a `last_updated:` key in its YAML frontmatter, set to a valid **ISO 8601 timestamp with a numeric UTC offset**, generated with the configured-timezone `date` (see the run's timezone rule), for example `last_updated: 2026-08-12T10:20:00+02:00`.
+
+Whenever you write to a KB file, set `last_updated:` to now. If the file has no frontmatter, add a frontmatter block at the top. This key is what the staleness scan reads. A prose `**Last updated:** …` line is for humans; older files still have one, and the scan reads it only as a fallback. The standards:
 
 | File | Max staleness before it needs attention |
 |------|----------------------------------------|
@@ -113,7 +115,7 @@ Every KB file should have a "Last updated" or "Last verified" line. The standard
 
 During consolidation KB audits, **prioritize the stalest high-priority files** when choosing what to audit.
 
-**Make staleness observable, don't just assert it.** The table above is only enforceable if each file's age is machine-readable: every KB file should carry a `last_updated:` property (and, where possible, its latest-commit date) — not just a prose "Last updated" line — so a scan can rank files by staleness and a refresh driver can queue the over-threshold ones. Freshness enforced *opportunistically* — a file refreshed only when a run happens to touch its project — lets the long tail rot: files with no recent connector activity never get picked, and nothing in the system ever *sees* them aging.
+**Make staleness observable, don't just assert it.** The table above is only enforceable if each file's age is machine-readable: every KB file carries the `last_updated:` property above — not just a prose "Last updated" line — so a scan can rank files by staleness. `.scout-cache/kb-filter.md` lists the files with no readable date under NO DATE; when you touch one, give it the property and a refresh driver can queue the over-threshold ones. Freshness enforced *opportunistically* — a file refreshed only when a run happens to touch its project — lets the long tail rot: files with no recent connector activity never get picked, and nothing in the system ever *sees* them aging.
 
 **Widen discovery beyond a fixed net.** A material fact can land in an unwatched channel, an off-keyword phrasing, or a source you don't routinely scan — so don't scope KB-completeness searches to a fixed channel set or to `from:me`-style filters alone. When a fact is known to exist (referenced in a meeting, a message, or by {{USER_NAME}}) but your scan didn't surface it, treat that as a *search-depth miss*, not an absence: broaden the query (other channels, both directions, alternate terms) until you find it.
 
