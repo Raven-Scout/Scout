@@ -24,6 +24,8 @@ from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 from scout import paths
+from scout.action_items.context_notes import context_note_rel
+from scout.ids import leading_prefix_pattern
 from scout.kb.git_io import (
     changed_lines,
     head_files,
@@ -235,10 +237,33 @@ def _new_lines(repo: Path, rel: str, head_rel: str | None, baseline_text: str | 
     return [(n, t) for n, t in added if normalize_line(t) not in gone]
 
 
+_OPEN_TASK = re.compile(r"^\s*- \[ \] (.*)$")
+
+
+def _check_context_notes(repo: Path, rel: str, added: list[tuple[int, str]], staged: set[str]) -> list[Finding]:
+    """Warn (never block) when a newly added open item in a daily file has no
+    `action-items/context/<TAG>.md` note in the working tree or staged set."""
+    if not _DAILY.match(rel):
+        return []
+    out: list[Finding] = []
+    for n, text in added:
+        m = _OPEN_TASK.match(text)
+        tm = leading_prefix_pattern().match(m.group(1)) if m else None
+        if tm is None:
+            continue
+        note = context_note_rel(tm.group(1))
+        if note in staged or (repo / note).exists():
+            continue
+        out.append(Finding(rel, "missing-context-note", False, f"line {n}: [#{tm.group(1)}] has no {note}", n))
+    return out
+
+
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
-    for sp in staged_paths(repo):
+    staged_list = staged_paths(repo)
+    staged_rels = {sp.rel for sp in staged_list}
+    for sp in staged_list:
         if not cfg.in_scope(sp.rel):
             continue
         size_base = sp.head_rel
@@ -251,6 +276,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
         result.findings += _check_size(repo, sp.rel, size_base, cfg)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         result.findings += _check_lines(sp.rel, added, cfg)
+        result.findings += _check_context_notes(repo, sp.rel, added, staged_rels)
         if cfg.is_topic(sp.rel):
             result.findings += _check_citations(sp.rel, staged_text(repo, sp.rel), {n for n, _ in added})
         if known is None:

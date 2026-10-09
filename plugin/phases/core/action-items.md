@@ -406,7 +406,7 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 ### 5. Write with full context and evidence
 - If completed: mark ✅ with evidence (link to the message, calendar change, PR, commit, etc.)
 - If partially done: describe what's done and what specifically remains
-- If not started: include the full context from all sources, not just the one that surfaced it
+- If not started: write the full context from all sources into the item's note (`action-items/context/<TAG>.md`), not just the one that surfaced it
 - Always include source citations showing which connectors confirmed the item
 
 After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
@@ -417,7 +417,7 @@ Each item is **one line of up to 300 characters**, plus **at most one sub-bullet
 
 `- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
 
-Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it.
+**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag.
 
 **Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 
