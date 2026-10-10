@@ -22,6 +22,22 @@ Read every `*.md` file in `knowledge-base/research-queue/` (the thin `knowledge-
 
 This does NOT stop the opportunistic lane (a good incidental find is still worth pursuing) — it fixes the **ordering** (`urgent` first). A "this is the top priority" intention stays inert until the picker mechanically honors it.
 
+**Second source of preemption — declarative coverage mandates.** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. So ALSO run:
+
+```bash
+python3 scripts/coverage-mandates.py --session research   # exit 3 = live mandate(s); exit 4 = review_at reached or expired window
+```
+
+Any file it reports **synthesises the equivalent of a `priority: urgent` queue hit** — take it in **slot 1**, then fall through to the normal rotation. It is **bounded to the first slot**: a mandate running unbounded for weeks would starve every other lane, which is worse than under-covering. The overdue alarm in ¶3 above applies to mandates identically (two consecutive no-change passes = a **finding**, not a footnote). **On exit 4**, surface the `review_at` / expiry in the wrap notification and **do not extend the dates autonomously** — that is a governance change.
+
+**Hard Rule — Rank substantive research above the KG-gap-closure / graph-completeness lane** (applies *after* the `urgent` preemption scan above, *before* the Step 1b rotation / opportunistic pick). When no `urgent` directive is outstanding, the remaining queue is a flat field of `priority: medium` items and the picker has no signal to prefer real research over the internal graph-completeness lane. So, among non-urgent items:
+
+1. **Rank by user value:** substantive research (customer / competitive / product / user-directed) **outranks** the **KG-gap-closure / graph-completeness lane** — the `area: comprehensive-knowledge-graph-gap-analysis` items (the `G#` gaps) and anything `priority: low`.
+2. **Treat `priority: low` / the graph-completeness area as the lowest tier:** run it **only when no substantive `medium`+ item is outstanding**.
+3. **Never spend a whole research run closing a graph gap (`G#`) while a substantive item is open.** "Close gap G#" is an internal completeness objective, not a user research priority — its satisfying ✅ must not be mistaken for value (the execution can be fine; it's the *selection ordering* that's the bug).
+
+This completes the preemption fix: the rules above it let a flagged top item jump the queue; this one orders the flat `medium` field underneath.
+
 After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last verified …" continuity note to `knowledge-base/research-queue.md` (the run log).
 
 ## Step 1b: Score Entities for Research Need
