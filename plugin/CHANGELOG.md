@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The blanket "never rename or move existing files" rule is replaced by a procedure** (`phases/core/write-protocol.md` rule 4, new `templates/scripts/kb-move.sh`). The ban was written to protect Obsidian link integrity and did so by making the capability unavailable; in the reference vault that cost an approved reorganisation 126 days and left four user comments asking for moves unactioned. The replacement is a script that cannot silently break links: it `git mv`s so history follows the file, rewrites inbound path-qualified wikilinks and markdown links, **refuses** a destination whose basename already exists (bare `[[stem]]` links would become ambiguous vault-wide), reports — but never rewrites — raw paths in prose (those are usually claims about where a file *was*, and rewriting them makes the vault lie about its own history), and **aborts if the real-dangling-link count rises**. Dry-run by default; `--write` required. Note the link cost of a move is far lower than a string count suggests — Obsidian resolves `[[stem]]` by basename, so only path-qualified references break.
+
 ### Fixed
 - **The KB staleness check reads the dates runs actually write** (`engine/scout/hooks/kb_pre_filter.py`, `phases/core/kb-management.md`). On a vault outside US Eastern almost nothing parsed, and `.scout-cache/kb-filter.md` reported `Stale: 0` exactly as a perfectly fresh KB would, so dreaming's freshness audit never selected most files. The pre-filter now:
   - reads the frontmatter `last_updated:` (or `last_verified:`) key first, as ISO 8601 with its offset, anywhere in a long frontmatter block (#230);
