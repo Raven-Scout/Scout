@@ -29,7 +29,7 @@ The vault is a folder tree of **small, linked documents**, not a journal. A git 
 1. **Edit, don't append.** A changed claim is rewritten where it sits. Never add a dated paragraph below the old one.
 2. **No run narration in documents.** No session headings (`## §59 · 2026-09-07 (overnight-research …)`), no "this run found…", no per-run headline summaries, no "Demoted/Re-tiered by …" sections. Git history and the commit message carry the narrative.
 3. **Split before you exceed.** If an edit would push a file over its budget, first move content into the correct layer (a new topic, source or sibling file) and link it, then make your edit.
-4. **Never rename or move existing files.** Splitting content *out* into linked notes is expected; the original path stays as the current-state page or index.
+4. **Moving/renaming is allowed via `scripts/kb-move.sh` — never by hand.** It `git mv`s (so history follows the file), repoints inbound path-qualified links, refuses a destination whose basename already exists (that would make bare `[[stem]]` links ambiguous vault-wide), leaves raw paths *in prose* alone because those are usually claims about where a file **was**, and aborts if the vault's real-dangling-link count rises. Bare `[[wikilinks]]` resolve by basename and survive a move untouched. Splitting content *out* into linked notes is expected; the original path stays as the current-state page or index.
 
 ### When the hook blocks your commit
 
