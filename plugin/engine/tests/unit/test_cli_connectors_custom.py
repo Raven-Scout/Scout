@@ -82,6 +82,32 @@ def test_validate_list_remove_round_trip(vault: Path):
     assert removed.exit_code == 0 and json.loads(removed.stdout)["status"] == "applied"
 
 
+def test_add_no_wait_prints_busy_json_and_exits_4(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    from scout.scripts import custom_connector_ops as ops
+
+    def fake_acquire(lock, *, timeout_s=300, poll_s=10):
+        raise ops.LockBusyError(lock, 12345)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", fake_acquire)
+    result = runner.invoke(app, ["connectors", "custom", "add", "--file", "-", "--no-wait"], input=DEF)
+    assert result.exit_code == 4, result.output
+    assert json.loads(result.stdout)["status"] == "busy"
+
+
+def test_remove_no_wait_prints_busy_json_and_exits_4(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    from scout.scripts import custom_connector_ops as ops
+
+    runner.invoke(app, ["connectors", "custom", "add", "--file", "-"], input=DEF)
+
+    def fake_acquire(lock, *, timeout_s=300, poll_s=10):
+        raise ops.LockBusyError(lock, 12345)
+
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", fake_acquire)
+    result = runner.invoke(app, ["connectors", "custom", "remove", "suite_mail", "--no-wait"])
+    assert result.exit_code == 4, result.output
+    assert json.loads(result.stdout)["status"] == "busy"
+
+
 def test_unexpected_failure_prints_json_and_exits_1(vault: Path, monkeypatch: pytest.MonkeyPatch):
     """F3a: spec §3 promises one JSON object and exit 1 for any other failure (not exit 70)."""
     from scout.scripts import custom_connector_ops as ops
@@ -101,3 +127,24 @@ def test_presets_command_prints_json():
     result = runner.invoke(app, ["connectors", "presets"])
     assert result.exit_code == 0
     assert "mail" in json.loads(result.stdout)["presets"]
+
+
+def test_list_with_unquoted_date_prints_one_json_object_and_exits_0(vault: Path):
+    (vault / "connectors.custom.yaml").write_text(
+        "schema_version: 1\nconnectors:\n  broken:\n    display_name: B\n    notes: 2026-10-01\n"
+    )
+    result = runner.invoke(app, ["connectors", "custom", "list"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["connectors"][0]["definition"]["notes"] == "2026-10-01"
+
+
+def test_emit_backstops_values_json_cannot_encode(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    import datetime
+
+    from scout.scripts import custom_connector_ops as ops
+
+    monkeypatch.setattr(ops, "presets_json", lambda root: {"when": datetime.date(2026, 10, 1)})
+    result = runner.invoke(app, ["connectors", "presets"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"when": "2026-10-01"}

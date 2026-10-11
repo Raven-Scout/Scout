@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
-from scout import custom_connectors
+from scout import custom_connectors, yaml_blocks
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -441,7 +441,8 @@ def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConne
 def _assemble(
     cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
 ) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files, then append custom-connector sections.
+    """Assemble SKILL/DREAMING/RESEARCH from phase files, then add custom-connector sections
+    (appended; in RESEARCH, just before the first ``deep-research`` section).
 
     ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
     apply path passes explicit before/after sets. ``plugin/phases/custom/`` is never globbed
@@ -450,6 +451,8 @@ def _assemble(
     vars_ = _template_vars(cfg)
     phases_root = cfg.plugin_root / "phases"
     bodies: list[str] = [brain_merge.assembly_header(kind, cfg.vault)]
+    # Index in `bodies` of the first shipped section whose slot is `deep-research`.
+    deep_research_at: int | None = None
     # Map assembly target → which modes this assembly is consumed by.
     # SKILL.md is read by BOTH briefing- and consolidation-type runs (run-scout.sh
     # auto-detects which); DREAMING.md by dreaming runs only; RESEARCH.md by
@@ -489,13 +492,23 @@ def _assemble(
                 modes=target_modes,
             )
             for s in kept:
+                if deep_research_at is None and s.slot == "deep-research":
+                    deep_research_at = len(bodies)
                 bodies.append(render_template(s.body, vars_))
     if custom is None:
         custom = load_custom(cfg)
-    for section in render_custom_sections(
-        cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
-    ):
-        bodies.append(section.rendered_body)
+    custom_bodies = [
+        section.rendered_body
+        for section in render_custom_sections(
+            cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
+        )
+    ]
+    # RESEARCH: lookups go just before Deep Research, where queries happen (commit-notify sorts
+    # first alphabetically). With no such section, and for SKILL/DREAMING, they are appended.
+    if kind == "RESEARCH" and deep_research_at is not None:
+        bodies[deep_research_at:deep_research_at] = custom_bodies
+    else:
+        bodies.extend(custom_bodies)
     return "\n\n".join(bodies)
 
 
@@ -751,6 +764,7 @@ class CustomApplyResult:
     sidecars: list[str] = field(default_factory=list)  # sidecars this change wrote
     waiting: list[str] = field(default_factory=list)  # brain files skipped: pending sidecar or conflict markers
     backups: list[str] = field(default_factory=list)  # parked copies (pre-provenance vaults)
+    drifted: list[str] = field(default_factory=list)  # brain files whose snapshot missed `before` (deferred by drift)
 
 
 def apply_custom_change(
@@ -774,14 +788,18 @@ def apply_custom_change(
     """
     snapshot_dir = _snapshot_dir(after)
     changed: list[str] = []
+    drifted: list[str] = []
     for kind in brain_merge.BRAIN_KINDS:
         old = _assemble(before, kind, custom=custom_before)
         if old == _assemble(after, kind, custom=custom_after):
             continue
         snap = snapshot_dir / f"{kind}.md"
         if not snap.exists() or snap.read_text(encoding="utf-8") != old:
-            return CustomApplyResult(status="deferred")
+            drifted.append(f"{kind}.md")
+            continue
         changed.append(kind)
+    if drifted:
+        return CustomApplyResult(status="deferred", drifted=drifted)
     if not changed:
         return CustomApplyResult(status="unchanged")
     outcome = _stage_cat4_upgrade(after, custom=custom_after, kinds=tuple(changed))
@@ -861,50 +879,6 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
 
 
-def _top_level_blocks(text: str) -> tuple[list[tuple[str, list[str], list[str]]], list[str]] | None:
-    """Split a block-style YAML mapping into ``(key, leading, block)`` segments.
-
-    ``leading`` is the run of comment and blank lines directly above the key;
-    ``block`` is the key line and everything under it. The second return value
-    holds the comment and blank lines after the last block. Returns None for
-    anything this line scanner cannot split with confidence — document markers,
-    flow collections spanning lines, duplicate keys — so the caller can fall
-    back to a plain dump.
-    """
-    lines = text.splitlines(keepends=True)
-    starts: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        if not line.strip() or line[0] in " \t#":
-            continue
-        if line.startswith(("---", "...")):
-            return None
-        if line.startswith("- ") or line.rstrip() == "-":
-            continue  # a sequence item under the previous key
-        try:
-            parsed = yaml.safe_load(line)
-        except yaml.YAMLError:
-            return None
-        if not isinstance(parsed, dict) or len(parsed) != 1:
-            return None
-        starts.append((i, str(next(iter(parsed)))))
-    if len({key for _, key in starts}) != len(starts):
-        return None
-
-    def is_filler(line: str) -> bool:
-        return not line.strip() or line.lstrip().startswith("#")
-
-    segments: list[tuple[str, list[str], list[str]]] = []
-    lead_from = 0
-    for n, (start, key) in enumerate(starts):
-        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
-        # Comments and blank lines just above the next key belong to that key.
-        while end > start + 1 and is_filler(lines[end - 1]):
-            end -= 1
-        segments.append((key, lines[lead_from:start], lines[start:end]))
-        lead_from = end
-    return segments, lines[lead_from:]
-
-
 def _dump_keeping_comments(text: str, data: dict) -> str:
     """``yaml.safe_dump(data)``, but written over ``text`` so its comments survive.
 
@@ -913,7 +887,8 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
     leading comments; comments inside a changed block are lost. New keys are
     appended at the end. Falls back to a plain dump whenever the text cannot be
     split safely, or the result would not load back as ``data``, and then warns
-    on stderr if that loses comments.
+    on stderr if that loses comments. Splitting itself is shared with
+    ``custom_connectors.write`` — see ``yaml_blocks.split_blocks``.
     """
     plain = yaml.safe_dump(data, sort_keys=False)
 
@@ -922,37 +897,59 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
             print(f"warning: scout-config.yaml comments not preserved ({reason})", file=sys.stderr)
         return plain
 
-    split = _top_level_blocks(text)
+    split = yaml_blocks.split_blocks(text, indent=0)
     try:
         original = yaml.safe_load(text) or {}
     except yaml.YAMLError:
         return fallback("the file does not parse as YAML")
     if split is None or not isinstance(original, dict):
         return fallback("its layout cannot be rewritten block by block")
-    segments, trailer = split
+    _header, segments, trailer = split
 
+    # See custom_connectors._rebuild_entries for what `prev_block_text`/
+    # `prev_intact` track and why: a `leading` run is only safe to emit
+    # verbatim when the thing right before it in `out` is still what it
+    # originally followed in `text`. A removed key's own `leading` is kept
+    # here (unlike custom_connectors, which drops it with the key) -- that's
+    # this function's existing, tested behavior -- but it still needs the
+    # same boundary check once something *else* has already changed.
     out: list[str] = []
+    prev_block_text = ""
+    prev_intact = True
     for key, leading, block in segments:
-        out += leading
+        out += leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=0)
         if key not in data:
+            prev_intact = False
             continue
-        if key in original and original[key] == data[key]:
-            out += block
-        else:
-            out.append(yaml.safe_dump({key: data[key]}, sort_keys=False))
-    out += trailer
+        try:
+            unchanged = key in original and original[key] == data[key]
+        except RecursionError:
+            unchanged = False  # a cyclic alias equality can't decide -- treat as changed
+        block_text = "".join(block) if unchanged else yaml.safe_dump({key: data[key]}, sort_keys=False)
+        out.append(block_text)
+        prev_block_text = block_text
+        prev_intact = unchanged
     added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
     if added:
         if out and not out[-1].endswith("\n"):
             out.append("\n")
-        out.append(yaml.safe_dump(added, sort_keys=False))
+        added_text = yaml.safe_dump(added, sort_keys=False)
+        out.append(added_text)
+        prev_block_text = added_text
+        prev_intact = False
+    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=0)
 
     result = "".join(out)
     try:
-        if yaml.safe_load(result) != data:
-            return fallback("the block-wise rewrite did not load back identically")
+        loaded = yaml.safe_load(result)
     except yaml.YAMLError:
         return fallback("the block-wise rewrite did not parse")
+    try:
+        mismatch = loaded != data
+    except RecursionError:
+        mismatch = True
+    if mismatch:
+        return fallback("the block-wise rewrite did not load back identically")
     return result
 
 
