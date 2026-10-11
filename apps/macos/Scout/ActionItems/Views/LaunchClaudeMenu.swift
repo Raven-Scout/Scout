@@ -150,17 +150,28 @@ struct LaunchClaudeMenu: View {
             }
         case .local(let id):
             Button {
-                do {
-                    try ClaudeLauncher.resume(cliSessionID: id, cwd: scoutDirectory, config: cliConfig)
-                    launchError = nil
-                } catch {
-                    launchError = error.localizedDescription
-                }
+                resume(id)
             } label: {
                 Label("Resume this item's Claude session", systemImage: "arrow.uturn.forward")
             }
         case .unknown:
             EmptyView()
+        }
+    }
+
+    /// `claude --resume` finds a session only from the folder it ran in, read
+    /// from its transcript. Without a transcript on this Mac, a new session
+    /// starts instead.
+    private func resume(_ id: String) {
+        guard let folder = ClaudeSessionFolder.folder(forSessionID: id) else {
+            launch(.claudeDesktop(.code(folder: scoutDirectory)))
+            return
+        }
+        do {
+            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cliConfig)
+            launchError = nil
+        } catch {
+            launchError = error.localizedDescription
         }
     }
 
