@@ -488,6 +488,8 @@ def test_run_handles_empty_kb(tmp_path, monkeypatch):
         "stale": 0,
         "no_date": 0,
         "fresh": 0,
+        "scanned": 0,
+        "roots": ["knowledge-base"],
         "dated_by": {"property": 0, "prose": 0},
         "session_type": "dreaming",
         "output_path": str(tmp_path / ".scout-cache" / "kb-filter.md"),
@@ -652,3 +654,73 @@ def test_discover_kb_files_does_not_follow_symlink_loop(tmp_path):
     t.join(timeout=10)
     assert not t.is_alive(), "discover_kb_files hung on a symlink loop"
     assert not error, f"discover_kb_files raised: {error}"
+
+
+# -- the meetings/ root (#217) -----------------------------------------------
+
+
+def _make_meetings(root: Path) -> Path:
+    meetings = root / "meetings"
+    (meetings / "weekly-sync").mkdir(parents=True)
+    (meetings / "meetings.md").write_text("x")
+    (meetings / "weekly-sync" / "weekly-sync.md").write_text("x")
+    (meetings / "weekly-sync" / "2026-09-14.md").write_text("x")
+    (meetings / "weekly-sync" / "2026-09-21-offsite.md").write_text("x")
+    return meetings
+
+
+def _rels(root: Path) -> list[str]:
+    return [p.relative_to(root).as_posix() for p in discover_kb_files(root)]
+
+
+def test_discover_walks_the_top_level_meetings_tree(tmp_path):
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("x")
+    _make_meetings(tmp_path)
+    assert _rels(tmp_path) == [
+        "knowledge-base/people.md",
+        "meetings/meetings.md",
+        "meetings/weekly-sync/weekly-sync.md",
+    ]  # dated session files are per-meeting records, not ranked
+
+
+def test_discover_without_a_meetings_tree_is_unchanged(tmp_path):
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("x")
+    assert _rels(tmp_path) == ["knowledge-base/people.md"]
+
+
+def test_discover_applies_the_path_rules_inside_meetings(tmp_path):
+    _make_kb(tmp_path)
+    meetings = _make_meetings(tmp_path)
+    (meetings / "archive").mkdir()
+    (meetings / "archive" / "old-sync.md").write_text("x")
+    (meetings / "weekly-sync" / "agenda-draft.md").write_text("x")
+    assert not any("archive" in r or "draft" in r for r in _rels(tmp_path))
+
+
+def test_record_folder_names_are_only_skipped_under_knowledge_base(tmp_path):
+    """#335's skips name knowledge-base/ folders; a meeting slug that shares a name still ranks."""
+    _make_kb(tmp_path)
+    (tmp_path / "meetings" / "session-log").mkdir(parents=True)
+    (tmp_path / "meetings" / "session-log" / "session-log.md").write_text("x")
+    assert _rels(tmp_path) == ["meetings/session-log/session-log.md"]
+
+
+def test_run_ranks_meetings_and_prints_the_denominator(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("# People\n\nLast Updated: 2026-04-27 12:00\n")
+    meetings = _make_meetings(tmp_path)
+    (meetings / "weekly-sync" / "weekly-sync.md").write_text("---\nlast_updated: 2026-04-01\n---\n# Weekly sync\n")
+
+    now = datetime(2026, 4, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    event = run(session_type="dreaming", now=now)
+
+    assert event is not None
+    assert (event.payload["stale"], event.payload["no_date"], event.payload["fresh"]) == (1, 1, 1)
+    assert event.payload["scanned"] == 3
+    assert event.payload["roots"] == ["knowledge-base", "meetings"]
+    content = (tmp_path / ".scout-cache" / "kb-filter.md").read_text()
+    assert "**meetings/weekly-sync/weekly-sync.md**" in content
+    assert "Scanned: 3 files across knowledge-base/, meetings/" in content
