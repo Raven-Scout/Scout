@@ -54,6 +54,18 @@ def test_scout_connect_handles_the_probe_failed_status():
     assert "probe-failed" in _text("scout-connect.md")
 
 
+def test_scout_update_points_at_scout_connect_and_has_no_nudge():
+    text = _text("scout-update.md")
+    assert "/scout-connect" in text and "connectors uncovered --json" in text
+    assert "set-auto-update" not in text and "Auto-update nudge" not in text
+    assert "/scout-setup" not in text
+
+
+def test_scout_status_no_longer_reports_auto_update():
+    text = _text("scout-status.md")
+    assert "AUTO_UPDATE_ON" not in text and "Auto-update:" not in text
+
+
 def test_no_command_dead_ends_the_user():
     for md in sorted(COMMANDS.glob("*.md")):
         lowered = md.read_text(encoding="utf-8").lower()
