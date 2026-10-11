@@ -31,7 +31,7 @@
 # Keychain: `preflight` runs `generate_keys -p` and `appcast` runs
 # `generate_appcast`, which both read Sparkle's EdDSA key from the login
 # keychain. There is no fallback, so dry runs (SKIP_NOTARIZE=1, SKIP_RELEASE=1)
-# need that access too. Jordan's Mac has it; sandboxed agent shells don't, and
+# need that access too. The release machine has it; sandboxed agent shells don't, and
 # fail here by design.
 #
 # Git-free on purpose: this reads only its argv and SPARKLE_BIN, never HEAD,
