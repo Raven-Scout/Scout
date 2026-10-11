@@ -19,7 +19,10 @@ struct UpdatesSettingsSection: View {
                     : "Automatic updates are disabled in development builds.",
                 primaryTitle: updates.appUpdate.isAvailable ? "Install…" : nil,
                 primaryAction: { updates.check(.app) },      // Sparkle shows the update dialog
-                checkAction: { updates.check(.app) }
+                checkAction: { updates.check(.app) },
+                // Same gate as "Check for Updates…": Sparkle silently declines
+                // while a background check or permission prompt is running.
+                checkEnabled: updates.appCheckAvailable
             )
             if updates.pluginRowVisible {
                 UpdateTrackRow(
@@ -29,6 +32,7 @@ struct UpdatesSettingsSection: View {
                     primaryTitle: updates.pluginUpdate.isAvailable ? "Copy /scout-update" : nil,
                     primaryAction: copyPluginUpdateCommand,
                     checkAction: { updates.check(.plugin) },
+                    checkEnabled: updates.pluginUpdate.state != .checking,
                     footnote: updates.pluginUpdate.isAvailable
                         ? "Paste it into Claude Code to update the plugin. Scout.app updates only the engines it manages."
                         : nil,
@@ -78,6 +82,7 @@ private struct UpdateTrackRow: View {
     let primaryTitle: String?
     let primaryAction: () -> Void
     let checkAction: () -> Void
+    let checkEnabled: Bool
     var footnote: String? = nil
     var linkTitle: String? = nil
     var linkAction: () -> Void = {}
@@ -113,7 +118,7 @@ private struct UpdateTrackRow: View {
                             Button(primaryTitle, action: primaryAction)
                         }
                         Button("Check now", action: checkAction)
-                            .disabled(status.state == .checking)
+                            .disabled(!checkEnabled)
                     }
                 }
             }
