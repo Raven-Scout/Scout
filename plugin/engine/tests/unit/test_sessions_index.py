@@ -981,6 +981,15 @@ def test_a_cli_only_session_reads_its_directory_from_the_records(fake_data_dir: 
     assert s.origin_cwd == s.cwd == s.project_key == "/Users/alex/code/data_tools"
 
 
+def test_a_cli_only_session_without_cwd_records_is_kept_with_the_decoded_path(fake_data_dir: Path) -> None:
+    """No row names a cwd: the session stays in the index, under the lossy decode as before."""
+    opts = _world(fake_data_dir)
+    write_transcript(claude_home(), "-Users-alex-code-sandbox", UX, [_user("no cwd here", _ago(1))])
+    s = _session(build_index(opts), f"cli:{UX}")
+    assert s.origin_cwd == s.project_key == "/Users/alex/code/sandbox"
+    assert s.transcript is not None and s.transcript.first_prompt == "no cwd here"
+
+
 def test_the_record_matching_the_directory_name_wins(fake_data_dir: Path) -> None:
     """A session that moved into a worktree records both; the project is the one its dir encodes."""
     opts = _world(fake_data_dir)

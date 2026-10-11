@@ -72,9 +72,15 @@ def _padding() -> str:
     return _compact([server] * (RECORD_BYTES // (len(_compact(server)) + 1)))
 
 
-def _transcript(cwd: str) -> bytes:
+def _ts(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _transcript(cwd: str, start: datetime) -> bytes:
+    """Records dated from *start*, which must precede the file's mtime as on disk (#211)."""
+
     def at(n: int) -> str:
-        return f"2026-09-08T{10 + n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}.000Z"
+        return _ts(start + timedelta(seconds=n))
 
     rows: list[dict[str, Any]] = [
         {"type": "user", "timestamp": at(0), "message": {"role": "user", "content": "Tidy the parser"}}
@@ -156,8 +162,8 @@ def _build_world(root: Path, data_dir: Path) -> World:
         (wt / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
         cwds.append(str(wt))
     pad = _padding()
-    blobs = {cwd: _transcript(cwd) for cwd in cwds}
     now = datetime.now(tz=UTC).replace(microsecond=0)
+    blobs = {cwd: _transcript(cwd, now - timedelta(days=2)) for cwd in cwds}  # before every mtime below
     records: list[Path] = []
     transcripts: list[Path] = []
     for i in range(RECORDS + CLI_ONLY):
@@ -252,7 +258,7 @@ def test_index_builds_do_only_the_work_that_changed(
         _bump(r)
     turn = {
         "type": "assistant",
-        "timestamp": "2026-09-08T12:00:00.000Z",
+        "timestamp": _ts(world.opts.now - timedelta(minutes=30)),
         "message": {"role": "assistant", "content": [{"type": "text", "text": "Anything else?"}]},
     }
     appended = (_compact(turn) + "\n").encode()
