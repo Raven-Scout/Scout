@@ -124,6 +124,18 @@ def test_ledger_restarts_the_clock_when_the_text_changes(tmp_path: Path) -> None
     assert ledger.last_changed("ZQOLD") == RECENT
 
 
+def test_ledger_ignores_board_field_churn(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🟡 To Do", [*STALE_BLOCK, "  - Priority: 3", "  - Cycle: current"])), archived=True)
+    _daily(vault, RECENT, _doc(("## 🟡 To Do", [*STALE_BLOCK, "  - Priority: 2"])))
+
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=TODAY)
+
+    # A run syncing Priority/Cycle from Linear is not the item being worked on.
+    assert ledger.last_changed("ZQOLD") == OLD
+
+
 def test_ledger_treats_a_reappearing_item_as_new(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK)), archived=True)

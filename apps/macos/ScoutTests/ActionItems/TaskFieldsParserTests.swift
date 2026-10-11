@@ -104,7 +104,8 @@ struct TaskFieldsParserTests {
     @Test(arguments: [
         ("#XREF", ["XREF"]),
         ("[#XREF], #QBLK", ["XREF", "QBLK"]),
-        ("xref · 7391K  QBLK", ["XREF", "7391K", "QBLK"]),
+        ("#xref · #7391K  #QBLK", ["XREF", "7391K", "QBLK"]),
+        ("xref and QBLK", []),
         ("#X, not-a-tag, #TOOLONGTAG, #1234", []),
         ("", []),
     ])

@@ -25,7 +25,9 @@ TASK_FIELD_KEYS = frozenset({"topic", "parent", "state", "action", "depends", "s
 PRIORITY_RANGE = range(0, 5)
 
 _FIELD_LINE_RE = re.compile(r"^\s+-\s+(?P<key>[A-Za-z]+)\s*:\s*(?P<value>.*?)\s*$")
-_DEPENDS_TOKEN_RE = re.compile(r"\[?#?(?P<tag>(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{2,8})\]?")
+_DEPENDS_TOKEN_RE = re.compile(r"\[?#(?P<tag>(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{2,8})\]?")
+_DASH_BULLET_RE = re.compile(r"^(?P<indent>\s*)-\s")
+_TASK_LINE_RE = re.compile(r"^\s*-\s*\[[ xX]\]\s")
 _DEPENDS_SPLIT_RE = re.compile(r"\s*(?:,|·|\s)\s*")
 
 
@@ -50,6 +52,24 @@ def match_field_line(line: str) -> tuple[str, str] | None:
     if key not in TASK_FIELD_KEYS:
         return None
     return key, m.group("value")
+
+
+def field_owner(lines: list[str], index: int) -> int | None:
+    """Index of the task line that the field line at `lines[index]` belongs to.
+
+    The owner is the nearest dash bullet above it at a shallower indent. When
+    that bullet isn't a task line (a note, a comment), the field has no owner
+    and is ignored. Mirrors `TaskFieldsParser.owner` in the app.
+    """
+    indent = len(lines[index]) - len(lines[index].lstrip())
+    for j in range(index - 1, -1, -1):
+        line = lines[j]
+        if line.startswith("#"):
+            return None
+        bullet = _DASH_BULLET_RE.match(line)
+        if bullet is not None and len(bullet.group("indent")) < indent:
+            return j if _TASK_LINE_RE.match(line) else None
+    return None
 
 
 def parse_state(value: str) -> str | None:

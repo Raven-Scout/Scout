@@ -762,11 +762,15 @@ nonisolated extension ActionItemsParser {
             // must precede subBulletCommentRe, which would otherwise read the
             // line as a comment from author "State".
             if inSection,
-               let last = currentTasks.last,
+               !currentTasks.isEmpty,
                let field = TaskFieldsParser.match(line) {
-                currentTasks[currentTasks.count - 1] = last.replacingFields(
-                    TaskFieldsParser.applying(key: field.key, value: field.value, to: last.fields)
-                )
+                if let ownerLine = TaskFieldsParser.owner(in: lines, of: i),
+                   let index = currentTasks.lastIndex(where: { $0.lineNumber == ownerLine + 1 }) {
+                    let owner = currentTasks[index]
+                    currentTasks[index] = owner.replacingFields(
+                        TaskFieldsParser.applying(key: field.key, value: field.value, to: owner.fields)
+                    )
+                }
                 i += 1; continue
             }
 

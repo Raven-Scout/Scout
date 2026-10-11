@@ -42,7 +42,7 @@ nonisolated enum TaskFieldsParser {
 
     private static let lineRe = try! NSRegularExpression(pattern: #"^\s+-\s+([A-Za-z]+)\s*:\s*(.*?)\s*$"#)
     private static let dependsTokenRe = try! NSRegularExpression(
-        pattern: #"^\[?#?((?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{2,8})\]?$"#
+        pattern: #"^\[?#((?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{2,8})\]?$"#
     )
     private static let dependsSeparators = CharacterSet(charactersIn: ",·").union(.whitespaces)
 
@@ -53,6 +53,26 @@ nonisolated enum TaskFieldsParser {
         let key = ns.substring(with: m.range(at: 1)).lowercased()
         guard keys.contains(key) else { return nil }
         return (key, ns.substring(with: m.range(at: 2)))
+    }
+
+    private static let dashBulletRe = try! NSRegularExpression(pattern: #"^(\s*)-\s"#)
+    private static let taskLineRe = try! NSRegularExpression(pattern: #"^\s*-\s*\[[ xX]\]\s"#)
+
+    /// Index of the task line that the field line at `lines[index]` belongs
+    /// to: the nearest dash bullet above it at a shallower indent. `nil` when
+    /// that bullet isn't a task line (a note, a comment), so the field is
+    /// ignored. Mirrors `field_owner` in the engine's `task_fields.py`.
+    static func owner(in lines: [String], of index: Int) -> Int? {
+        let indent = lines[index].prefix { $0 == " " || $0 == "\t" }.count
+        for j in stride(from: index - 1, through: 0, by: -1) {
+            let line = lines[j]
+            if line.hasPrefix("#") { return nil }
+            let ns = line as NSString
+            guard let m = dashBulletRe.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
+                  m.range(at: 1).length < indent else { continue }
+            return taskLineRe.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) == nil ? nil : j
+        }
+        return nil
     }
 
     static func applying(key: String, value: String, to fields: TaskFields) -> TaskFields {
