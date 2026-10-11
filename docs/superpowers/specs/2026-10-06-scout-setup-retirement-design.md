@@ -109,20 +109,51 @@ The drafting rules are #261 Task 9's `scout-connect.md` sections 1–2. They mov
 into an engine prompt template, `plugin/engine/scout/defaults/draft-connector.md`,
 and become the **only** copy of those rules.
 
-**Two headless calls, each narrowed to the tools it needs:** built-in tools limited to ToolSearch (plus the probe tool for the probe call), `dontAsk`, no slash commands, no session persistence, and a temp-dir cwd. They are not fully isolated: user-level Claude Code settings (allow rules, hooks) still load, which is tracked as a follow-up.
+**Two headless calls, each narrowed to the tools it needs and isolated from the user's settings:** built-in tools limited to ToolSearch (plus the probe tool for the probe call), `dontAsk`, no slash commands, no session persistence, a temp-dir cwd so no project `CLAUDE.md` loads, and the isolation below. `test_connector_draft_isolation.py` pins both argvs.
 
 1. **Draft.** One call reads the server's tools and drafts definitions.
    - Command:
-     `claude -p --output-format json --json-schema <draft schema> --permission-mode dontAsk --allowedTools ToolSearch --max-budget-usd 0.50 <prompt>`.
+     `claude -p --model sonnet --tools ToolSearch --disable-slash-commands --no-session-persistence --output-format json --permission-mode dontAsk <isolation> --json-schema <draft schema> --max-budget-usd 0.50 --allowedTools ToolSearch`,
+     with the prompt on stdin.
    - The prompt names the server and its slug.
    - The model loads the server's tool names and descriptions with ToolSearch
      (`+<slug>`). It can call nothing else, because `dontAsk` denies every
      tool not in `--allowedTools`.
 2. **Probe.** A second call checks each draft's probe.
    - Command:
-     `claude -p --output-format json --json-schema {ok, error} --permission-mode dontAsk --allowedTools <the probe tool, exact name> --max-budget-usd 0.10`.
+     `claude -p --model haiku <same base flags> <isolation> --json-schema {ok, error} --max-budget-usd 0.20 --allowedTools ToolSearch <the probe tool, exact name>`.
    - It calls that one read tool once. If the call fails, the server needs
      sign-in.
+
+**Isolation from the user's settings (#350).** Without it, `claude -p` loads
+`~/.claude/settings.json`. Its global `permissions.allow` rules would apply, so
+a pre-approved MCP write tool could be called while drafting, and its hooks would
+run. The gate below sees only the definition the model returns, not what the
+session called. So `<isolation>` is:
+- `--setting-sources ""`: no user, project or local settings.
+- `--settings '{"disableAllHooks": true, …}'`: hooks off, plugin hooks included.
+- Only what the target server needs to stay visible, because excluding user
+  settings hides it too:
+  - a `plugin:<name>:<server>` gets the user's enabled `<name>@<marketplace>`
+    keys back as `enabledPlugins` in `--settings`, never the whole map;
+  - a user-scope server (in the `mcpServers` of `~/.claude.json`, or
+    `$CLAUDE_CONFIG_DIR/.claude.json`) gets only its own entry, through
+    `--mcp-config <file>`. The file is 0600 in a fresh 0700 temp dir, so tokens
+    in `env` or `headers` never reach the command line, and it is deleted on
+    every exit path;
+  - a claude.ai connector, or a server that resolves to neither, gets nothing
+    extra, and ToolSearch finds what it can.
+- `MCP_CONNECTION_NONBLOCKING=false` in the subprocess env. It is undocumented
+  (Claude Code 2.1.x). Without it, a `-p` session with no other MCP server
+  configured starts before the claude.ai connectors arrive, and ToolSearch sees
+  none of them. If a release drops it, drafting a claude.ai server fails
+  closed, as `no_read_tools` or `error`.
+
+Two limits: admin-managed policy settings still apply, and project- and
+local-scope servers stay invisible, as they already were from the temp dir.
+Verified against Claude Code 2.1.278 with a scratch config dir. Without the
+isolation, a globally allowed write tool was called and both user hooks fired.
+With it, the call was denied and no hook ran.
 
 **The engine checks every draft before returning it.** No draft is trusted as
 written:

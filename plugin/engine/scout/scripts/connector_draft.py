@@ -9,10 +9,13 @@ server, none writes, and each definition passes the same validation as
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -286,10 +289,109 @@ class ClaudeResult:
 ClaudeRunner = Callable[[list[str], str, float], ClaudeResult | None]
 
 
+@dataclass(frozen=True)
+class Isolation:
+    """What a drafting or probe session gets instead of the user's settings (#350).
+
+    Both sessions run with ``--setting-sources ""``: no user, project or local
+    settings, so no global allow rule can approve a write tool and no settings
+    hook runs. ``settings`` (passed as ``--settings``) always turns hooks off,
+    which also covers plugin hooks, and may re-enable the target server's own
+    plugin. ``mcp_config`` is a temp file holding the target's user-scope
+    ``mcpServers`` entry, or None.
+    """
+
+    settings: dict[str, Any]
+    mcp_config: Path | None
+
+    def flags(self) -> list[str]:
+        out = ["--setting-sources", "", "--settings", json.dumps(self.settings)]
+        if self.mcp_config is not None:
+            out += ["--mcp-config", str(self.mcp_config)]
+        return out
+
+
+def _claude_config_dir() -> Path | None:
+    raw = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(raw) if raw else None
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def session_settings(server_name: str) -> dict[str, Any]:
+    """``--settings`` for a session about ``server_name``: hooks off, plus that server's plugin.
+
+    Excluding user settings drops ``enabledPlugins`` with them, which hides every
+    plugin's MCP servers. A ``plugin:<name>:<server>`` target gets back only the
+    user's enabled ``<name>@<marketplace>`` keys, never the whole map.
+    """
+    settings: dict[str, Any] = {"disableAllHooks": True}
+    m = re.match(r"plugin:([^:]+):", server_name)
+    if not m:
+        return settings
+    cfg = _claude_config_dir() or Path.home() / ".claude"
+    enabled = _read_json_object(cfg / "settings.json").get("enabledPlugins")
+    if isinstance(enabled, dict):
+        mine = {k: True for k, v in enabled.items() if v is True and k.split("@", 1)[0] == m[1]}
+        if mine:
+            settings["enabledPlugins"] = mine
+    return settings
+
+
+def user_mcp_server(server_name: str) -> dict[str, Any] | None:
+    """The user-scope ``mcpServers`` entry for ``server_name`` (``claude mcp add -s user``), or None.
+
+    Those live in ``~/.claude.json`` (``$CLAUDE_CONFIG_DIR/.claude.json`` when
+    set) and are hidden along with user settings.
+    """
+    cfg = _claude_config_dir()
+    servers = _read_json_object(cfg / ".claude.json" if cfg else Path.home() / ".claude.json").get("mcpServers")
+    entry = servers.get(server_name) if isinstance(servers, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+@contextmanager
+def isolated_session(server_name: str) -> Iterator[Isolation]:
+    """The ``Isolation`` for ``server_name``; any ``--mcp-config`` file is deleted on exit.
+
+    A server entry can carry tokens in ``env`` or ``headers``, so it goes in a
+    0600 file in a fresh 0700 directory, never on the command line. A server
+    that is neither a plugin's nor user-scope (a claude.ai connector, or one
+    that can't be resolved) gets neither, and ToolSearch finds what it can.
+    """
+    entry = user_mcp_server(server_name)
+    tmp = tempfile.mkdtemp(prefix="scout-draft-") if entry is not None else None
+    try:
+        path = None
+        if tmp is not None:
+            path = Path(tmp) / "mcp.json"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"mcpServers": {server_name: entry}}, f)
+        yield Isolation(settings=session_settings(server_name), mcp_config=path)
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def run_claude(argv: list[str], stdin: str, timeout: float) -> ClaudeResult | None:
     """One headless call, from the temp dir so no project CLAUDE.md loads. None = timed out."""
     from scout.scripts.connector_detect import probe_env
 
+    env = probe_env()
+    # Undocumented Claude Code switch (found in the 2.1.x binary, #350). By
+    # default `-p` starts without waiting for MCP servers; with no other server
+    # configured, which is the usual case once user settings are excluded, it
+    # starts before the claude.ai connectors arrive and ToolSearch sees none.
+    # "false" makes it wait. If a release drops it, drafting a claude.ai server
+    # fails as no_read_tools or error; it never widens what the session can do.
+    env["MCP_CONNECTION_NONBLOCKING"] = "false"
     try:
         proc = subprocess.run(
             argv,
@@ -298,7 +400,7 @@ def run_claude(argv: list[str], stdin: str, timeout: float) -> ClaudeResult | No
             text=True,
             timeout=timeout,
             check=False,
-            env=probe_env(),
+            env=env,
             cwd=tempfile.gettempdir(),
         )
     except subprocess.TimeoutExpired:
@@ -308,13 +410,14 @@ def run_claude(argv: list[str], stdin: str, timeout: float) -> ClaudeResult | No
     return ClaudeResult(proc.returncode, proc.stdout, proc.stderr)
 
 
-def draft_argv(claude_bin: str, model: str, schema: dict[str, Any]) -> list[str]:
+def draft_argv(claude_bin: str, model: str, schema: dict[str, Any], isolation: Isolation) -> list[str]:
     return [
         claude_bin,
         "-p",
         "--model",
         model,
         *_BASE_FLAGS,
+        *isolation.flags(),
         "--json-schema",
         json.dumps(schema),
         "--max-budget-usd",
@@ -324,7 +427,7 @@ def draft_argv(claude_bin: str, model: str, schema: dict[str, Any]) -> list[str]
     ]
 
 
-def probe_argv(claude_bin: str, probe: str) -> list[str]:
+def probe_argv(claude_bin: str, probe: str, isolation: Isolation) -> list[str]:
     # The gate already enforces this; refuse here too, since `--allowedTools`
     # would read a comma, space or `*` in `probe` as more than one rule.
     if not cc.MCP_TOOL_RE.match(probe):
@@ -335,6 +438,7 @@ def probe_argv(claude_bin: str, probe: str) -> list[str]:
         "--model",
         "haiku",
         *_BASE_FLAGS,
+        *isolation.flags(),
         "--json-schema",
         json.dumps(PROBE_SCHEMA),
         "--max-budget-usd",
@@ -433,44 +537,45 @@ def draft(
         taken |= set(cc.load(vault, plugin_root=plugin_root).raw)
     schema = draft_schema(list(cc.load_presets(plugin_root)))
     prompt = render_prompt(server_name, plugin_root=plugin_root, taken=taken)
-    feedback = ""
-    defs: list[dict[str, Any]] = []
-    issues: list[cc.Issue] = []
-    payload: dict[str, Any] = {}
-    for _attempt in range(2):
-        res = run(draft_argv(claude_bin, model, schema), prompt + feedback, timeout)
-        if res is None:
-            return _out("timeout", server_name, message=f"drafting took longer than {timeout:.0f}s")
-        structured = _structured(res)
-        if structured is None:
-            return _out("error", server_name, message=_error_text(res))
-        payload = structured
-        if payload.get("no_read_tools"):
-            return _out("no_read_tools", server_name)
-        defs, issues = check_definitions(
-            payload.get("definitions"), server_name=server_name, plugin_root=plugin_root, taken=taken
-        )
-        if not issues:
-            break
-        feedback = "\n\nYour previous draft had these problems. Fix every one:\n" + "\n".join(
-            f"- {i.path}: {i.message}" for i in issues
-        )
-    if issues:
-        return _out("invalid", server_name, issues=issues)
-    for probe in sorted({d["probe"] for d in defs}):
-        ask = (
-            f"Load the tool {probe} with ToolSearch (query: select:{probe}), call it once with the smallest valid "
-            "arguments, and report ok=true if it returned data, or ok=false with the error text."
-        )
-        res = run(probe_argv(claude_bin, probe), ask, timeout)
-        result = _structured(res) if res is not None else None
-        if not result or not result.get("ok"):
-            reason = (result or {}).get("error") or (_error_text(res) if res is not None else "the check timed out")
-            return _out("needs_auth", server_name, message=str(reason))
-    keys = {d["key"] for d in defs}
-    summary = [
-        {"key": s["key"], "scans": str(s.get("scans", "")), "looks_up": str(s.get("looks_up", ""))}
-        for s in payload.get("summary") or []
-        if isinstance(s, dict) and s.get("key") in keys
-    ]
-    return _out("drafted", server_name, definitions=defs, summary=summary)
+    with isolated_session(server_name) as iso:
+        feedback = ""
+        defs: list[dict[str, Any]] = []
+        issues: list[cc.Issue] = []
+        payload: dict[str, Any] = {}
+        for _attempt in range(2):
+            res = run(draft_argv(claude_bin, model, schema, iso), prompt + feedback, timeout)
+            if res is None:
+                return _out("timeout", server_name, message=f"drafting took longer than {timeout:.0f}s")
+            structured = _structured(res)
+            if structured is None:
+                return _out("error", server_name, message=_error_text(res))
+            payload = structured
+            if payload.get("no_read_tools"):
+                return _out("no_read_tools", server_name)
+            defs, issues = check_definitions(
+                payload.get("definitions"), server_name=server_name, plugin_root=plugin_root, taken=taken
+            )
+            if not issues:
+                break
+            feedback = "\n\nYour previous draft had these problems. Fix every one:\n" + "\n".join(
+                f"- {i.path}: {i.message}" for i in issues
+            )
+        if issues:
+            return _out("invalid", server_name, issues=issues)
+        for probe in sorted({d["probe"] for d in defs}):
+            ask = (
+                f"Load the tool {probe} with ToolSearch (query: select:{probe}), call it once with the smallest valid "
+                "arguments, and report ok=true if it returned data, or ok=false with the error text."
+            )
+            res = run(probe_argv(claude_bin, probe, iso), ask, timeout)
+            result = _structured(res) if res is not None else None
+            if not result or not result.get("ok"):
+                reason = (result or {}).get("error") or (_error_text(res) if res is not None else "the check timed out")
+                return _out("needs_auth", server_name, message=str(reason))
+        keys = {d["key"] for d in defs}
+        summary = [
+            {"key": s["key"], "scans": str(s.get("scans", "")), "looks_up": str(s.get("looks_up", ""))}
+            for s in payload.get("summary") or []
+            if isinstance(s, dict) and s.get("key") in keys
+        ]
+        return _out("drafted", server_name, definitions=defs, summary=summary)

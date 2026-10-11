@@ -86,7 +86,7 @@ def test_the_draft_call_limits_tools_and_takes_the_prompt_on_stdin(tmp_path):
 @pytest.mark.parametrize("probe", [f"{T}*", f"{T}*,list", f"{T}* list", f"{T}list_x,Bash(curl:*)", "Bash"])
 def test_probe_argv_refuses_a_name_that_is_not_one_mcp_tool(probe):
     with pytest.raises(ValueError, match="not an MCP tool name"):
-        cd.probe_argv("claude", probe)
+        cd.probe_argv("claude", probe, cd.Isolation(settings={}, mcp_config=None))
 
 
 def test_one_retry_with_feedback_then_invalid(tmp_path):

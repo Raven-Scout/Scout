@@ -42,7 +42,7 @@ Server names, input values and keys come from tool output or the user, so they a
 "$SCOUTCTL" connectors custom draft --server '<server name exactly as listed>' --json
 ```
 
-Run it with a long Bash timeout (`timeout: 600000` ms): one draft can run past the 2-minute default. Act on `status`:
+Run it with a long Bash timeout (`timeout: 600000` ms): one draft can run past the 2-minute default. The engine drafts in its own headless `claude -p` sessions, isolated from the user's Claude Code settings. No user, project or local settings load, so no global allow rule or settings hook applies; plugin hooks are off too; and the only tool a session may call is ToolSearch (the probe may also call its one probe tool). Each session gets back only what the named server needs to be visible: its plugin, or its user-scope MCP entry. Two limits: admin-managed policy settings still apply, and a project- or local-scope server is invisible to the draft, which then usually comes back `no_read_tools`. Act on `status`:
 
 - `drafted`: show each definition in three lines: *display name · what it scans · what it looks up*. Take the display name from `definitions[]` and the other two from the `summary` entry with the same `key` (`summary` carries only `key`, `scans` and `looks_up`). Ask the user to confirm, or to adjust it. An adjustment may only remove tools or activities, skip a definition, or rewrite the `focus`, `when` or `notes` text; never add, rename or swap a tool, because the engine checks tool names when you add a definition but not that each tool only reads. Ask for each name in a definition's `needs_user_input`.
 - `needs_auth`: the sign-in sentence. Never show the raw engine `message`.
