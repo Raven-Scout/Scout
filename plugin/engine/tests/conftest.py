@@ -86,6 +86,8 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     for key in list(os.environ):
         if key.startswith("SCOUT_"):
             monkeypatch.delenv(key, raising=False)
+    # Claude Code's own config dir overrides HOME for ~/.claude.json and settings.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("SCOUT_LOCALTIME", str(home / "no-localtime"))
 
 

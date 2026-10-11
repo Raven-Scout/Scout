@@ -309,7 +309,11 @@ final class SessionIndexService: ObservableObject {
         guard result.exitCode != 0 else { return nil }
         let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
         if result.exitCode == 2 && stderr.contains("No such command") { return .engineTooOld }
-        if result.exitCode == 127 { return .engineMissing }  // `/usr/bin/env scoutctl` with no scoutctl on PATH
+        // scoutctl runs by the absolute path EngineLocator resolved (or, when
+        // it resolved none, the `~/.local/bin/scoutctl` shim itself), never
+        // through PATH. So 127 is the shim's `exec` failing: its target, a
+        // venv's scoutctl, is missing.
+        if result.exitCode == 127 { return .engineMissing }
         return .failed
     }
 

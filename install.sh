@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Scout one-command installer.
 #   curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
-# Sets up the PLUGIN + ENGINE. The interactive vault is then created with /scout-setup.
+# Installs the plugin + engine, then runs `scoutctl setup` (your details, connectors,
+# the vault, the schedule). Re-running it on an existing vault upgrades it.
 #
 # Flags: --check  (verify preconditions only; make no changes)
+# Anything else goes to `scoutctl setup`, e.g. headless:
+#   curl -fsSL …/install.sh | bash -s -- --yes --name "Alex" --email alex@example.com
 set -euo pipefail
 
 MARKETPLACE="Raven-Scout/Scout"
 PLUGIN_ID="scout@scout-plugin"
 CHECK_ONLY=0
-[ "${1:-}" = "--check" ] && CHECK_ONLY=1
+if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
 
 # The native Claude Code and uv installers both put binaries in ~/.local/bin,
 # which a fresh login shell may not have on PATH yet.
@@ -170,13 +173,10 @@ bash "$ROOT/scripts/install-venv.sh" \
   || fail "engine installed but scoutctl does not run. Retry with:
        bash \"$ROOT/scripts/install-venv.sh\""
 
-cat <<'DONE'
-
-✅ Scout plugin + engine installed.
-
-Next step — create your vault (interactive: detects your connectors, collects
-your details, sets the schedule):
-
-    Open Claude Code and run:  /scout-setup
-
-DONE
+echo
+echo "✅ Scout plugin + engine installed."
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "   Prefer a Mac app? Download Scout.app from https://raven-scout.github.io/Scout/ — it adopts this install."
+fi
+echo
+exec "$ROOT/.venv/bin/scoutctl" setup --managed-by install.sh "$@"

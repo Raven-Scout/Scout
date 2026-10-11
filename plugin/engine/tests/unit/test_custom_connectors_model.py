@@ -103,6 +103,34 @@ def test_invalid_definitions_are_rejected_with_a_field_path(key, body, expected)
     assert expected in _messages(issues)
 
 
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "mcp__example_suite__*",
+        "mcp__example_suite__*,list",
+        "mcp__example_suite__* list",
+        "mcp__example_suite__list_x,Bash(curl:*)",
+        "mcp__example_suite__list_x\n",
+        "mcp__example suite__list_x",
+    ],
+)
+def test_a_tool_name_outside_the_strict_pattern_is_rejected(tool):
+    """One validator: `custom add` and the draft gate both refuse a name that
+    `--allowedTools` would split into more than one rule."""
+    c, issues = _parse("suite_mail", {**MAIL, "inbound": {"tools": [tool]}})
+    assert c is None
+    assert f"connectors.suite_mail.inbound.tools[0]: {tool!r} is not an MCP tool name" in _messages(issues)
+    c, issues = _parse("suite_mail", {**MAIL, "probe": tool})
+    assert c is None and "connectors.suite_mail.probe" in _messages(issues)
+
+
+@pytest.mark.parametrize(
+    "tool", ["mcp__example_suite__search_messages", "mcp__plugin_example-kit_search-tool__find", "mcp__a__b"]
+)
+def test_tool_name_pattern_accepts_real_shapes(tool):
+    assert cc.MCP_TOOL_RE.match(tool)
+
+
 def test_credential_rejection_points_at_the_tools_own_sign_in_not_needs_user_input():
     """F4: inputs are rendered verbatim into SKILL.md, so the message must not steer
     a secret into needs_user_input."""
@@ -1606,3 +1634,64 @@ def test_first_binary_command_presence_check_is_not_a_call():
     assert cc.first_binary("command -v gh") is None
     assert cc.first_binary("command -V gh") is None
     assert cc.first_binary("command gh pr list") == "gh"
+
+
+def test_first_binary_skips_shell_comment_lines():
+    """#344: a model-drafted multi-line command often opens with a comment line."""
+    assert cc.first_binary("# fetch open tickets\ntix list --open") == "tix"
+    assert cc.first_binary("  # indented comment\n\n  tix list") == "tix"
+    assert cc.first_binary("# only a comment") is None
+
+
+def test_multi_line_bash_tool_and_probe_with_shell_comments_stay_valid():
+    """#344: 0.15.0 accepted multi-line `bash:` values; they are rendered fenced, not rejected."""
+    body = {
+        "display_name": "Tickets",
+        "probe": {"bash": "# is the CLI signed in?\ntix whoami"},
+        "inbound": {"tools": [{"bash": "# fetch open tickets\ntix list --open\n"}], "focus": "Open tickets."},
+    }
+    c, issues = _parse("tix", body)
+    assert issues == [] and c is not None
+    assert c.activities["inbound"].tools[0].value == "# fetch open tickets\ntix list --open"
+    assert c.probe.binary == "tix"
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        ("ops\nmore", "must be a single line"),
+        ("ops\r", "must be a single line"),
+        ("# Ops team", "must not contain markdown headings; they would break the brain file's structure"),
+        ("  ## Ops", "must not contain markdown headings; they would break the brain file's structure"),
+        ("ghp_abcdefghijklmnop", "looks like a credential"),
+    ],
+)
+def test_input_issues_reject_multi_line_heading_and_credential_values_without_echoing_them(value: str, problem: str):
+    issues = cc.input_issues("tix", {"team": value})
+    assert [i.path for i in issues] == ["connectors.tix.needs_user_input"]
+    assert issues[0].message.startswith("the value for 'team' ")
+    assert problem in issues[0].message
+    assert value.strip() not in issues[0].message
+
+
+@pytest.mark.parametrize("value", ["ops", "team #2", "#ops", "", None, 12345])
+def test_input_issues_accept_plain_single_line_values(value: object):
+    assert cc.input_issues("tix", {"team": value}) == []
+
+
+def test_stored_input_issues_name_the_config_entry_and_skip_undeclared_or_unset_inputs():
+    c, _ = _parse(
+        "tix",
+        {
+            "display_name": "Tickets",
+            "probe": {"bash": "tix whoami"},
+            "needs_user_input": ["team", "board"],
+            "inbound": {"tools": [{"bash": "tix list --team {{INPUT_TEAM}}"}], "focus": "Open tickets."},
+        },
+    )
+    assert c is not None
+    stored = {"tix__team": "ops\n# Injected", "other__team": "x\ny", "unrelated": "a\nb"}
+    issues = cc.stored_input_issues({"tix": c}, stored)
+    assert [i.path for i in issues] == ["connectors.tix.needs_user_input"] * 2
+    assert all("scout-config.yaml (connectors.inputs.tix__team)" in i.message for i in issues)
+    assert "Injected" not in _messages(issues)

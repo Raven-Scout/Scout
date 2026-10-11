@@ -51,9 +51,23 @@ class KBSchemaError(KBError):
 
 
 class ActionItemError(ScoutError):
-    """Action-item operation failure (no-match, ambiguous, write error)."""
+    """Action-item operation failure: bad arguments, a write error, or a
+    comment selector that matches no comment or several. A stale comment
+    selector stays here (exit 21): backfilling prefixes can't fix it."""
 
     exit_code = 21
+
+
+class ActionItemNotFound(ActionItemError):
+    """No task matched the --subject or --by-id selector."""
+
+    exit_code = 22
+
+
+class ActionItemAmbiguous(ActionItemError):
+    """The --subject or --by-id selector matched more than one task."""
+
+    exit_code = 23
 
 
 class ExternalProcessError(ScoutError):

@@ -450,8 +450,7 @@ def test_no_prompt_round_trips_scout_config_through_pyyaml() -> None:
     assert offenders == []
 
 
-def test_the_update_nudge_uses_the_engine_writer() -> None:
-    """/scout-setup records its answer through `bootstrap install --auto-update`;
-    /scout-update's nudge is the one place that edits an existing vault's block."""
-    text = (REPO_ROOT / "commands" / "scout-update.md").read_text(encoding="utf-8")
-    assert '"$SCOUTCTL" config set-auto-update --enabled' in text
+def test_no_command_asks_about_auto_update() -> None:
+    """The auto-update question is retired (spec S2): no command sets the preference any more."""
+    for md in sorted((REPO_ROOT / "commands").glob("*.md")):
+        assert "set-auto-update" not in md.read_text(encoding="utf-8"), md.name

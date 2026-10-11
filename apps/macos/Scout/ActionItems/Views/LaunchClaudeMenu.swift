@@ -125,7 +125,8 @@ struct LaunchClaudeMenu: View {
 
     private func launch(_ target: ClaudeLauncher.Target) {
         do {
-            try ClaudeLauncher.launch(target: target, prompt: ClaudeLauncher.prompt(for: task))
+            let note = TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+            try ClaudeLauncher.launch(target: target, prompt: ClaudeLauncher.prompt(for: task, contextNote: note))
             launchError = nil
         } catch {
             launchError = error.localizedDescription

@@ -8,7 +8,7 @@ import pytest
 
 from scout.action_items._common import list_comment_lines, resolve_target, select_comment
 from scout.action_items.parser import ActionItem
-from scout.errors import ActionItemError
+from scout.errors import ActionItemAmbiguous, ActionItemError, ActionItemNotFound
 from scout.id_map import IdMap, IdMapEntry
 
 
@@ -77,7 +77,7 @@ def test_resolve_target_rejects_both_args_set(fake_data_dir: Path) -> None:
 
 
 def test_resolve_target_unknown_id_raises(fake_data_dir: Path) -> None:
-    with pytest.raises(ActionItemError, match="prefix.*not found"):
+    with pytest.raises(ActionItemNotFound, match="prefix.*not found"):
         resolve_target(items=[], data_dir=fake_data_dir, by_id="ZZZZ", by_subject=None)
 
 
@@ -142,7 +142,7 @@ def test_resolve_target_ambiguous_subject_raises(fake_data_dir: Path) -> None:
             short_prefix=None,
         ),
     ]
-    with pytest.raises(ActionItemError, match="ambiguous"):
+    with pytest.raises(ActionItemAmbiguous, match="ambiguous"):
         resolve_target(items=items, data_dir=fake_data_dir, by_id=None, by_subject="reply")
 
 
@@ -156,7 +156,7 @@ def test_resolve_target_prefix_in_idmap_but_missing_from_items_raises(
     m.register(IdMapEntry("01HXAAA", "A3F7", "task X", "today.md", 5))
     m.save()
     # Items list is empty — simulates the wrong-file case.
-    with pytest.raises(ActionItemError, match="is in id-map but not present"):
+    with pytest.raises(ActionItemNotFound, match="is in id-map but not present"):
         resolve_target(items=[], data_dir=fake_data_dir, by_id="A3F7", by_subject=None)
 
 
@@ -184,7 +184,7 @@ def test_resolve_target_by_subject_does_not_match_prefix_token(fake_data_dir: Pa
             short_prefix="A3F7",
         ),
     ]
-    with pytest.raises(ActionItemError, match="no open task matched"):
+    with pytest.raises(ActionItemNotFound, match="no open task matched"):
         resolve_target(items=items, data_dir=fake_data_dir, by_id=None, by_subject="A3F7")
 
 
@@ -238,7 +238,7 @@ def test_resolve_target_ambiguous_id_raises(fake_data_dir: Path) -> None:
             short_prefix="IOTA",
         ),
     ]
-    with pytest.raises(ActionItemError, match="ambiguous id"):
+    with pytest.raises(ActionItemAmbiguous, match="ambiguous id"):
         resolve_target(items=items, data_dir=fake_data_dir, by_id="IOTA", by_subject=None)
 
 

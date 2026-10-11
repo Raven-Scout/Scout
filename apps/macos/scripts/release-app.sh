@@ -183,6 +183,13 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+# This script signs flat, which Apple's notary rejects for an app that embeds
+# Sparkle (its nested code must be signed inside-out). Refuse before signing.
+if [[ -d "$APP/Contents/Frameworks/Sparkle.framework" ]]; then
+  echo "✗ This build embeds Sparkle; release it with the root scripts/release.sh (#317), which signs Sparkle's nested code." >&2
+  exit 1
+fi
+
 echo "→ Signing Scout.app with Developer ID + hardened runtime"
 # --options runtime enables the hardened runtime (required for notarization);
 # --timestamp embeds a secure timestamp so the signature stays valid past the
