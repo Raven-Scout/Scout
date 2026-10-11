@@ -12,6 +12,7 @@ from pathlib import Path
 
 from scout import paths
 from scout.action_items.parser import ActionItem
+from scout.action_items.task_fields import TASK_FIELD_KEYS
 from scout.errors import ActionItemAmbiguous, ActionItemError, ActionItemNotFound
 from scout.id_map import IdMap, IdMapEntry
 from scout.ids import new_ulid
@@ -19,10 +20,11 @@ from scout.ids import new_ulid
 # Matches the comment shape that `add-comment` writes:
 #   `  - <author>: <text>`
 # Author allows letters/digits/`._-` to mirror the parser's tolerance.
-# The snooze marker `  - snoozed-until: YYYY-MM-DD` also fits this shape; we
-# strip those when listing comments since they are not user-authored notes.
+# The snooze marker `  - snoozed-until: YYYY-MM-DD` and the board fields
+# (`  - State: waiting`, see task_fields.py) also fit this shape; we strip
+# those when listing comments since they are not user-authored notes.
 _COMMENT_SUB_BULLET_RE = re.compile(r"^(?P<indent>\s+)-\s+(?P<author>[A-Za-z][A-Za-z0-9._-]*)\s*:\s*(?P<text>.+?)\s*$")
-_SNOOZE_MARKER_AUTHORS = {"snoozed-until"}
+_NON_COMMENT_AUTHORS = {"snoozed-until"} | TASK_FIELD_KEYS
 
 
 def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, str, str]]:
@@ -30,8 +32,8 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
 
     Returns a list of `(line_number, author, text)` tuples for each comment
     `  - <author>: <text>` sub-bullet attached to the task, in file order.
-    The `snoozed-until` marker is filtered out — it's machine metadata, not
-    a user-authored comment.
+    The `snoozed-until` marker and board fields are filtered out — they're
+    machine metadata, not user-authored comments.
 
     Stops at the first non-indented line, empty line, or a new task line.
     """
@@ -55,7 +57,7 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
             j += 1
             continue
         author = m.group("author")
-        if author.lower() in _SNOOZE_MARKER_AUTHORS:
+        if author.lower() in _NON_COMMENT_AUTHORS:
             j += 1
             continue
         comments.append((j + 1, author, m.group("text")))

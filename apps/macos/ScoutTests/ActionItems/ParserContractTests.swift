@@ -13,22 +13,42 @@ struct ParserContractTests {
     /// On an intentional corpus change: re-copy the canonical corpus into both
     /// repos, then update this digest to the output of
     /// `shasum -a 256 ScoutTests/Fixtures/parser-corpus.json`.
-    static let canonicalSHA256 = "2381ee1b76d446e186036e734f516e1c236ffab687ff38f6ed1a7cca9bcdd66f"
+    static let canonicalSHA256 = "c4237bc4aafd1daf84a3ffb82f254383d56b6d6f2f4460b43be89aead3794d63"
 
     struct Corpus: Decodable {
         let entries: [Entry]
     }
 
     struct Entry: Decodable {
+        struct Fields: Decodable, Equatable {
+            let topic: String?
+            let parent: String?
+            let state: String?
+            let action: String?
+            let depends: [String]
+            let session: String?
+            let priority: Int?
+            let cycle: String?
+        }
         struct Expected: Decodable {
             let short_prefix: String?
             let subject: String
             let plain_subject: String
             let body: String
+            let fields: Fields?
+            let comment_authors: [String]?
         }
         let name: String
         let line: String
+        let sub_lines: [String]?
         let expected: Expected
+    }
+
+    private static func fields(_ f: TaskFields) -> Entry.Fields {
+        Entry.Fields(
+            topic: f.topic, parent: f.parent, state: f.state?.rawValue, action: f.action,
+            depends: f.depends, session: f.session, priority: f.priority, cycle: f.cycle
+        )
     }
 
     private static func corpusURL() throws -> URL {
@@ -53,7 +73,7 @@ struct ParserContractTests {
         #expect(!entries.isEmpty)
         let url = URL(fileURLWithPath: "/tmp/action-items-2026-04-20.md")
         for e in entries {
-            let text = "# T\n\n## 🔴 Urgent\n\n\(e.line)\n"
+            let text = "# T\n\n## 🔴 Urgent\n\n" + ([e.line] + (e.sub_lines ?? [])).joined(separator: "\n") + "\n"
             let doc: ActionItemsDocument
             do {
                 doc = try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count)
@@ -61,15 +81,21 @@ struct ParserContractTests {
                 Issue.record("\(e.name): threw \(error)")
                 continue
             }
-            let tasks = doc.sections.flatMap { $0.tasks }
+            let tasks = doc.sections.flatMap { $0.tasks }.filter { $0.indentLevel == 0 }
             guard let t = tasks.first, tasks.count == 1 else {
-                Issue.record("\(e.name): expected exactly one task, got \(tasks.count)")
+                Issue.record("\(e.name): expected exactly one top-level task, got \(tasks.count)")
                 continue
             }
             #expect(t.shortPrefix == e.expected.short_prefix, "\(e.name): short_prefix")
             #expect(t.subject == e.expected.subject, "\(e.name): subject")
             #expect(t.plainSubject == e.expected.plain_subject, "\(e.name): plain_subject")
             #expect(t.body == e.expected.body, "\(e.name): body")
+            if let expected = e.expected.fields {
+                #expect(Self.fields(t.fields) == expected, "\(e.name): fields")
+            }
+            if let authors = e.expected.comment_authors {
+                #expect(t.comments.map(\.author) == authors, "\(e.name): comment_authors")
+            }
         }
     }
 }

@@ -173,6 +173,48 @@ Good vs bad (anonymized):
 - Never write, edit or remove them yourself. If one looks wrong, say so in the digest and leave it.
 - A past `block:` without an `actual:` is data the estimate feedback loop still needs. Keep it until the task is done and the user has logged the time with `/scout-plan review`.
 
+### Board Fields (optional)
+
+The app's topic board reads a few machine sub-bullets that a section can't express. Like plan markers and `- Refs:`, they are an exception to the one-sub-bullet rule in **Item line format**, but only because they are short and rare: write one only when it adds something the section, the title and the body don't already say. Most tasks carry none, or only `- Topic:`. They go directly under the task line, after any plan markers, in this order:
+
+    - [ ] [#REPLYX] **Reply to Alex about her purchase question**
+      - Topic: #STRM
+      - Parent: #RTALL
+      - State: doing
+      - Action: Reply
+      - Depends: #XREF, #QBLK
+      - Session: https://claude.ai/code/session_0123
+      - Priority: 2
+      - Cycle: current
+
+- `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
+- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and close the parent; with none left, close it too. Closing means ticking it and moving it to ✅ Recently Completed with its children as the evidence, so the Continuity-Dropoff Audit sees a closure.
+- `State:` is written only as `doing` or `blocked`; everything else comes from where the task sits. Write `doing` only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. An agent drafting while it works is `doing`; a related session merely running is not. Write `blocked` only for a blocker that is not a task (an outage, a decision outside this board). A task waiting on another task gets `Depends:` instead, and the board derives blocked from it.
+- `Action:` names the next step on a 🔴 Urgent or 🟡 To Do task, 1–3 words ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"), when the title doesn't already say it. Never on a parent.
+- `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Find that from this PR's body and the other PRs fetched this run.
+- `Session:` is the Claude session working on it: a `claude.ai/code/session_…` link, or a local session's UUID.
+- `Priority:` is the linked Linear issue's priority, 1 urgent … 4 low; omit it for 0 (no priority). `Cycle: current` marks a Linear issue in the active cycle, on tasks someone is working. Omit both without a Linear issue, and rewrite either only when the Linear value actually changed.
+- Carry them forward verbatim with the task, like plan markers. Never fold them into `- Refs:`.
+
+**How the board places a task**, first rule that applies:
+1. A ticked `[x]` task is done.
+2. An active snooze (`snoozed-until` in the future) puts it on hold until that date.
+3. A `Depends:` on a task that is still open makes it blocked. A dependency that is done or gone no longer blocks.
+4. `State: doing` or `State: blocked` applies.
+5. Otherwise the section decides: 🔴 Urgent and 🟡 To Do are {{USER_NAME}}'s move, 🟢 Watching is waiting on someone else, 🅿️ Parked is on hold.
+
+**Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
+
+    # Topics
+
+    ## [#STRM] Make stream reattach survive a restart
+    - Session: https://claude.ai/code/session_0123
+    - Summary: Two PRs, the second needs the first
+
+- Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte.
+- Remove a topic once none of its tasks has been open for 14 days.
+
 ### Hard Rule — Trim by Demotion, Never by Omission
 
 When the list grows long, achieve focus by **reprioritizing**, never by hiding items from view. "Don't overwhelm me" and "don't drop my items" are both real constraints — resolve the tension by demotion *within* view, not omission *from* view.
@@ -411,7 +453,7 @@ Each item is **one line of up to 300 characters**, plus **at most one sub-bullet
 
 `- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
 
-**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag.
+**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
 **Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 

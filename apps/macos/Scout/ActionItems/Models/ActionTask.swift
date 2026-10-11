@@ -44,6 +44,8 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     /// into the target day's `🛌 Snoozed` section, which the section header
     /// alone would render as `.neutral`.
     let snoozedFromKind: ActionSection.Kind?
+    /// Optional board fields from `- State:` / `- Depends:` / … sub-bullets.
+    let fields: TaskFields
 
     init(
         id: UUID,
@@ -59,7 +61,8 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         carriedInFrom: Date?,
         indentLevel: Int = 0,
         shortPrefix: String? = nil,
-        snoozedFromKind: ActionSection.Kind? = nil
+        snoozedFromKind: ActionSection.Kind? = nil,
+        fields: TaskFields = .empty
     ) {
         self.id = id
         self.lineNumber = lineNumber
@@ -75,6 +78,7 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.indentLevel = indentLevel
         self.shortPrefix = shortPrefix
         self.snoozedFromKind = snoozedFromKind
+        self.fields = fields
     }
 
     /// What a one-line surface (the collapsed card, a nested row, a concise
@@ -105,7 +109,29 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
             carriedInFrom: carriedInFrom,
             indentLevel: indentLevel,
             shortPrefix: shortPrefix,
-            snoozedFromKind: snoozedFromKind
+            snoozedFromKind: snoozedFromKind,
+            fields: fields
+        )
+    }
+
+    /// This task with `fields` replaced and every other field kept.
+    func replacingFields(_ fields: TaskFields) -> ActionTask {
+        ActionTask(
+            id: id,
+            lineNumber: lineNumber,
+            done: done,
+            subject: subject,
+            plainSubject: plainSubject,
+            body: body,
+            comments: comments,
+            deepLinks: deepLinks,
+            details: details,
+            snoozedUntil: snoozedUntil,
+            carriedInFrom: carriedInFrom,
+            indentLevel: indentLevel,
+            shortPrefix: shortPrefix,
+            snoozedFromKind: snoozedFromKind,
+            fields: fields
         )
     }
 

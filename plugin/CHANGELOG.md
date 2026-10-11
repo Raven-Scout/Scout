@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Optional board fields on action items** (`engine/scout/action_items/task_fields.py`, `engine/scout/action_items/topics.py`, `phases/core/action-items.md`). A task can carry `- Topic:`, `- Parent:`, `- State:`, `- Action:`, `- Depends:`, `- Session:`, `- Priority:` and `- Cycle:` sub-bullets for the app's upcoming topic board, and runs describe each workstream in `action-items/topics.md`. A field belongs to the nearest task line above it at a shallower indent; tags must be written `#TAG`. The fields are metadata, never comments or context, so `delete-comment` / `edit-comment --index`, the HTML render and `ActionItem.details` skip them, and changing one doesn't reset an item's stale clock. `new-prefix` no longer mints a tag a topic uses. The parser corpus now pins the fields for both parsers. Files without them parse as before (#340).
+
 ## [0.16.0] - 2026-10-11
 
 ### Added
