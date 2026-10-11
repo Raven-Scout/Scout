@@ -370,6 +370,13 @@ def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> Answers | None:
         )
     a.timezone = _ask_timezone(p, opts, deps)
     _ask_connectors(p, opts, deps, a)
+    if opts.yes:
+        listing = deps.list_uncovered()
+        names = [s["name"] for s in listing.get("servers") or []]
+        if names:
+            p.say(f"You also have {', '.join(names)} connected — run `scoutctl connectors setup` to add them.")
+    else:
+        a.drafts = offer_uncovered(p, deps)
     a.max_budget = opts.max_budget or (
         "5.00"
         if opts.yes
@@ -395,8 +402,85 @@ def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> Answers | None:
     return a
 
 
-def _apply_drafts(a: Answers, p: Prompter, deps: SetupDeps) -> None:
-    """Task 8 fills this in; Task 7 has no drafts to apply."""
+_SIGN_IN = (
+    "sign in first: in Claude Code run /mcp (or claude.ai ▸ Settings ▸ Connectors), "
+    "then run `scoutctl connectors setup`."
+)
+
+
+def offer_uncovered(p: Prompter, deps: SetupDeps) -> list[KeptDraft]:
+    """Offer every connected server no connector reads; return the drafts the user keeps."""
+    listing = deps.list_uncovered()
+    if listing.get("error"):
+        p.say(f"Couldn't list your other connected tools ({listing['error']}). Run `scoutctl connectors setup` later.")
+        return []
+    servers = listing.get("servers") or []
+    if not servers:
+        return []
+    p.say("Also connected: " + ", ".join(s["name"] for s in servers) + ".")
+    kept: list[KeptDraft] = []
+    for s in servers:
+        name = s["name"]
+        if s["status"] != "connected":
+            p.say(f"  {name}: {_SIGN_IN}")
+            continue
+        if not p.confirm(f"  Add {name}?", True):
+            continue
+        p.say("    drafting (about 30 s)…")
+        result = deps.draft(name)
+        status = result.get("status")
+        if status == "needs_auth":
+            p.say(f"    {name}: {_SIGN_IN}")
+            continue
+        if status != "drafted":
+            reason = result.get("message") or status
+            p.say(
+                f"    Scout couldn't find anything to read in {name} yet ({reason}). "
+                "Retry with `scoutctl connectors setup`."
+            )
+            continue
+        summary = {x["key"]: x for x in result.get("summary", [])}
+        for d in result.get("definitions", []):
+            line = summary.get(d["key"], {})
+            p.say(f"    {d['display_name']} · {line.get('scans', '')} · {line.get('looks_up', '')}")
+            inputs = {
+                n: p.ask(f"    {n.replace('_', ' ')} for {d['display_name']}") for n in d.get("needs_user_input", [])
+            }
+            if p.confirm("    Keep it?", True):
+                kept.append(KeptDraft(d, inputs))
+    return kept
+
+
+def apply_drafts(drafts: list[KeptDraft], p: Prompter, deps: SetupDeps) -> int:
+    """Add each kept draft with `custom add`; return how many are live."""
+    applied = 0
+    for k in drafts:
+        out = deps.add_custom(k.definition, k.inputs)
+        label = k.definition.get("display_name", k.definition.get("key", ""))
+        status = out.get("status")
+        if status in ("applied", "unchanged"):
+            applied += 1
+            p.say(f"  Added {label}.")
+        elif status == "busy":
+            p.say(f"  {label}: a Scout session is running. Run `scoutctl connectors setup` again when it finishes.")
+        else:
+            issues = "; ".join(f"{i['path']}: {i['message']}" for i in out.get("issues", []))
+            p.say(f"  {label}: {out.get('message') or status}{(' — ' + issues) if issues else ''}")
+    return applied
+
+
+def run_connectors_setup(vault: Path, p: Prompter, deps: SetupDeps) -> int:
+    """`scoutctl connectors setup`: the "Also connected" step on its own, for an existing vault."""
+    if not (vault / "scout-config.yaml").exists():
+        p.say(f"No Scout vault at {vault}. Set Scout up first: open Scout.app or run `scoutctl setup`.")
+        return 2
+    try:
+        kept = offer_uncovered(p, deps)
+    except (EOFError, KeyboardInterrupt):
+        p.say(CANCELLED)
+        return 1
+    apply_drafts(kept, p, deps)
+    return 0
 
 
 def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
@@ -429,7 +513,7 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return code
     if answers.daily_budget:
         deps.invoke(["budget", "set", "--daily-usd", answers.daily_budget])
-    _apply_drafts(answers, p, deps)
+    apply_drafts(answers.drafts, p, deps)
     first = opts.first_run
     if first is None:
         if opts.yes:

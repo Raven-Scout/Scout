@@ -553,6 +553,20 @@ def _register_connectors() -> None:
                 typer.echo(f"error: {payload['error']}", err=True)
             raise typer.Exit(code=1)
 
+    @connectors_app.command("setup")
+    def cli_connectors_setup(
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+    ) -> None:
+        """Offer every connected tool Scout doesn't read yet, draft it, and add the ones you keep."""
+        from scout import paths as _paths
+        from scout.setup_wizard import TtyPrompter, default_deps, run_connectors_setup
+
+        prompter = TtyPrompter.open()
+        if prompter is None:
+            typer.echo("error: needs a terminal. In Claude Code, run /scout-connect instead.", err=True)
+            raise typer.Exit(code=2)
+        raise typer.Exit(code=run_connectors_setup(_paths.data_dir(), prompter, default_deps(claude_bin)))
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(
