@@ -372,7 +372,7 @@ struct ActionItemsWriterTests {
 
 // MARK: - Test doubles
 
-actor RecordingRunner: ProcessRunner {
+actor RecordingRunner {
     struct Call: Sendable { let executable: URL; let arguments: [String]; let env: [String: String] }
     var calls: [Call] = []
     /// Scripted FIFO results. When non-empty, each `run` pops the next result;
@@ -395,6 +395,8 @@ actor RecordingRunner: ProcessRunner {
         return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
     }
 }
+
+extension RecordingRunner: ProcessRunner {}
 
 actor SlowRecordingRunner: ProcessRunner {
     struct Event: Sendable { enum Kind { case start, end }; let kind: Kind; let at: Date }

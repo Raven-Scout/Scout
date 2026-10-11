@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A write to the topic board's own files, outside any daily file.
 enum BoardWriteOp: Sendable, Equatable {
@@ -9,7 +10,7 @@ enum BoardWriteOp: Sendable, Equatable {
 
     var fileName: String {
         switch self {
-        case .renameTopic: TopicsFileLoader.fileName
+        case .renameTopic: TopicsFileLoader.namesFileName
         case .dismiss: DismissedFileLoader.fileName
         }
     }
@@ -21,6 +22,28 @@ enum BoardWriteOp: Sendable, Equatable {
         case .dismiss(let key):
             ["action-items", "dismiss", "--key", key, "--data-dir", dataDirectory.path]
         }
+    }
+
+    /// What the board shows when the write fails: scoutctl's own reason when
+    /// it gave one, so "no such topic" and a broken engine read differently.
+    func failureMessage(for error: Error) -> String {
+        let action = switch self {
+        case .renameTopic: "Couldn't save the new name"
+        case .dismiss: "Couldn't close that entry"
+        }
+        guard let reason = Self.reason(from: error) else { return "\(action). Try again." }
+        return "\(action): \(reason)"
+    }
+
+    private static func reason(from error: Error) -> String? {
+        guard case ActionItemsWriterError.cliNonZeroExit(_, let stderr, _) = error else { return nil }
+        let line = stderr.split(whereSeparator: \.isNewline).last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard let line else { return nil }
+        let text = line.trimmingCharacters(in: .whitespaces)
+        for prefix in ["Error: ", "error: "] where text.hasPrefix(prefix) {
+            return String(text.dropFirst(prefix.count))
+        }
+        return text
     }
 
     var commitMessage: String {
@@ -41,7 +64,8 @@ actor BoardWriter {
     private let runner: any ProcessRunner
     private let git: (any GitServiceProtocol)?
     private var tail: Task<Void, Never>?
-    private var supportsWrites: Bool?
+    private var supportsWrites = false
+    private static let log = Logger(subsystem: "com.scout.Scout", category: "BoardWriter")
 
     static let feature = "topic_board_v1"
 
@@ -72,25 +96,33 @@ actor BoardWriter {
     }
 
     /// Whether the installed engine has `rename-topic` and `dismiss`: its
-    /// `scoutctl manifest show` advertises `topic_board_v1`. Asked once; an
-    /// older engine gets the board without those two actions.
+    /// `scoutctl manifest show` advertises `topic_board_v1`. Only a yes is
+    /// remembered: an older engine, or a probe that failed at launch, is asked
+    /// again next time, so an engine upgraded while the app runs shows them.
     func supportsBoardWrites() async -> Bool {
-        if let cached = supportsWrites { return cached }
+        if supportsWrites { return true }
         let result = try? await runner.run(
             executable: scoutctl,
             arguments: argumentsPrefix + ["manifest", "show"],
             environment: [:],
             workingDirectory: scoutDirectory
         )
-        let supported = result.map { $0.exitCode == 0 && EngineFeatures.decode($0.stdout).contains(Self.feature) } ?? false
-        supportsWrites = supported
-        return supported
+        supportsWrites = result.map { $0.exitCode == 0 && EngineFeatures.decode($0.stdout).contains(Self.feature) } ?? false
+        return supportsWrites
     }
 
     private func perform(_ op: BoardWriteOp) async throws {
         try await run(op.scoutctlArguments(dataDirectory: actionItemsDirectory.deletingLastPathComponent()))
         let file = actionItemsDirectory.appendingPathComponent(op.fileName)
-        try? await git?.commitPaths([Self.relativePath(of: file, in: scoutDirectory)], message: op.commitMessage)
+        guard let path = Self.relativePath(of: file, in: scoutDirectory) else {
+            Self.log.debug("Not committing \(file.path, privacy: .public): outside \(self.scoutDirectory.path, privacy: .public)")
+            return
+        }
+        do {
+            try await git?.commitPaths([path], message: op.commitMessage)
+        } catch {
+            Self.log.debug("Commit of \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func run(_ arguments: [String]) async throws {
@@ -114,9 +146,10 @@ actor BoardWriter {
         }
     }
 
-    static func relativePath(of file: URL, in repo: URL) -> String {
+    /// `file`'s path inside `repo`, or `nil` when it lies outside it.
+    static func relativePath(of file: URL, in repo: URL) -> String? {
         let full = file.standardizedFileURL.path
         let prefix = repo.standardizedFileURL.path + "/"
-        return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : file.lastPathComponent
+        return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : nil
     }
 }

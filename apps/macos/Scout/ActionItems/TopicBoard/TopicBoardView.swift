@@ -70,12 +70,13 @@ struct TopicBoardView: View {
             .frame(maxWidth: .infinity)
         }
         .task(id: sections) {
+            writeError = nil
             reloadBoardFiles()
             let directory = actionItemsDirectory
             let day = fileDate
             doneDates = await Task.detached { DoneHistory.load(from: directory, upTo: day) }.value
+            canWrite = await writerBox.boardWriter.supportsBoardWrites()
         }
-        .task { canWrite = await writerBox.boardWriter.supportsBoardWrites() }
     }
 
     private func isOpen(_ key: String) -> Binding<Bool> {
@@ -104,22 +105,26 @@ struct TopicBoardView: View {
         Task {
             do {
                 try await writerBox.boardWriter.submit(op)
+                reloadBoardFiles()
             } catch {
-                writeError = Self.message(for: op)
+                reloadBoardFiles()
+                await show(op.failureMessage(for: error))
             }
-            reloadBoardFiles()
         }
     }
+
+    /// Shows a write error until the next write, the next board reload, or
+    /// `errorSeconds`, whichever comes first.
+    private func show(_ message: String) async {
+        writeError = message
+        try? await Task.sleep(for: .seconds(Self.errorSeconds))
+        if writeError == message { writeError = nil }
+    }
+
+    static let errorSeconds = 8
 
     private func reloadBoardFiles() {
         topics = TopicsFileLoader.load(from: actionItemsDirectory)
         dismissed = DismissedFileLoader.load(from: actionItemsDirectory)
-    }
-
-    private static func message(for op: BoardWriteOp) -> String {
-        switch op {
-        case .renameTopic: "Couldn't save the new name. Try again."
-        case .dismiss: "Couldn't close that entry. Try again."
-        }
     }
 }

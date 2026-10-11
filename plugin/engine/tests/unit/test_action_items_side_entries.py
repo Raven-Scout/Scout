@@ -61,11 +61,17 @@ def test_drop_dismissed_keeps_tasks_and_other_sections() -> None:
         f"- [ ] [#AAAA] **A task that links {SLACK}**",
         "## 🟢 Watching",
         "- Close the stale draft",
+        "## 🧹 Loose ends",
+        "# Notes",
+        "- Close the stale draft",
     ]
     assert drop_dismissed(lines, {SLACK, "Close the stale draft"}) == [
         "## 📥 Inbox",
         f"- [ ] [#AAAA] **A task that links {SLACK}**",
         "## 🟢 Watching",
+        "- Close the stale draft",
+        "## 🧹 Loose ends",
+        "# Notes",
         "- Close the stale draft",
     ]
     assert drop_dismissed(lines, set()) is lines

@@ -23,8 +23,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   (#340). The board lists the daily file's `📥 Inbox` and `🧹 Loose ends`. A
   pencil on the topic row saves your own name through
   `scoutctl action-items rename-topic`; a × closes an entry through
-  `scoutctl action-items dismiss`. Both are hidden when the installed engine
-  doesn't advertise `topic_board_v1`.
+  `scoutctl action-items dismiss`. Names go to `action-items/topic-names.md`,
+  which runs never write. Both are hidden while the installed engine doesn't
+  advertise `topic_board_v1`, and show once it does, without a relaunch. A
+  failed save shows scoutctl's reason.
 
 ## [0.16.0] - 2026-10-11
 
