@@ -233,6 +233,7 @@ def test_connectors_setup_needs_a_vault(tmp_path):
     p = Scripted([])
     assert sw.run_connectors_setup(tmp_path / "missing", p, deps) == 2
     assert any("scoutctl setup" in s for s in p.said)
+    assert not any("Scout.app" in s for s in p.said)  # the app's setup ships in phase 3
 
 
 def _vault(tmp_path):

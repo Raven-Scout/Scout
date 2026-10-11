@@ -4,7 +4,7 @@
 
 **Goal:** Make `scoutctl setup` (run by `install.sh`) and three new engine commands (`connectors uncovered`, `connectors custom draft`, `connectors setup`) do everything `/scout-setup` did, add `/scout-connect`, then retire `/scout-setup` to a stub and put a **Download for Mac** button on the website.
 
-**Architecture:** All setup logic lives in the engine (Python). `connectors uncovered` lists connected MCP servers no connector reads. `connectors custom draft` drafts definitions for one server through a locked-down headless `claude -p`, then validates them in the engine. `scoutctl setup` is a terminal wizard (`scout/setup_wizard.py`) that asks the questions, then calls the existing `bootstrap auto` in-process and applies kept drafts with `custom add`. `install.sh`, `/scout-connect` and (later, in the app plan) Scout.app are front ends over those commands.
+**Architecture:** All setup logic lives in the engine (Python). `connectors uncovered` lists connected MCP servers no connector reads. `connectors custom draft` drafts definitions for one server through a headless `claude -p`, then validates them in the engine. `scoutctl setup` is a terminal wizard (`scout/setup_wizard.py`) that asks the questions, then calls the existing `bootstrap auto` in-process and applies kept drafts with `custom add`. `install.sh`, `/scout-connect` and (later, in the app plan) Scout.app are front ends over those commands.
 
 **Tech Stack:** Python 3.12 + Typer (engine), pytest, bash (`install.sh`, `release.sh`), Markdown slash commands, static HTML (`docs/index.html`).
 
@@ -2446,7 +2446,7 @@ curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh |
 `scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it.
 ````
 
-Renumber `### 3. (Optional) Install the Mac app` to `### 2. (Optional) Install the Mac app`. Leave its text and the "Updating later" paragraph as they are; Task 14 rewrites them for v0.15.0.
+Renumber `### 3. (Optional) Install the Mac app` to `### 2. (Optional) Install the Mac app`. Leave its text and the "Updating later" paragraph as they are; Task 14 rewrites them for v0.16.0.
 
 - [ ] **Step 2: Fix the Quick Start sentences**
 
@@ -2465,7 +2465,7 @@ Scout reads more than the tools it ships instructions for. Anything you have con
 - During setup, `scoutctl setup` (and Scout.app's onboarding) offers every connected server no connector reads yet.
 - Later, run `/scout-connect` in Claude Code, `scoutctl connectors setup` in a terminal, or use Scout.app's Settings ▸ Connectors.
 
-Scout drafts each definition for you through a read-only headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The engine rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. Tools that need you to sign in first say so, and pick up where they left off once you have.
+Scout drafts each definition for you through a headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The engine rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. Tools that need you to sign in first say so, and pick up where they left off once you have.
 ```
 
 - [ ] **Step 4: Changelog, then commit and open the phase-2 PR**
@@ -2487,7 +2487,7 @@ gh pr create --repo Raven-Scout/Scout --draft --title "feat(install): install.sh
 
 ## Phase 4 — retire (gated; see each task)
 
-Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout monorepo consolidation" session. Task 14 goes in the v0.15.0 release PR. Task 15 lands when the app plan has merged (v0.15.0 if it's in time, otherwise v0.16.0). Task 16 is the minor after Task 15 ships.
+Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout monorepo consolidation" session. Task 14 goes in the v0.16.0 release PR. Task 15 lands when the app plan has merged (v0.16.0 if it's in time, otherwise v0.17.0). Task 16 is the minor after Task 15 ships.
 
 ### Task 13: `release.sh` attaches `Scout.dmg` (after #317 merges)
 
@@ -2582,9 +2582,9 @@ Send the diff to the "Scout monorepo consolidation" session for review before me
 
 ---
 
-### Task 14: The website's **Download for Mac** button and the READMEs (in the v0.15.0 release PR)
+### Task 14: The website's **Download for Mac** button and the READMEs (in the v0.16.0 release PR)
 
-Do this on the `release/v0.15.0` branch after `release.sh prepare`, so it merges with the release PR and `finalize` follows within minutes.
+Do this on the `release/v0.16.0` branch after `release.sh prepare`, so it merges with the release PR and `finalize` follows within minutes.
 
 **Files:**
 - Modify: `docs/index.html` (the hero's `.ctas`, the `#install` block)
@@ -2689,7 +2689,7 @@ git add ../../docs/index.html ../../README.md ../README.md tests/unit/test_site_
 git commit -m "docs(site): Download for Mac button; READMEs lead with the app"
 ```
 
-After `finalize v0.15.0`: click the button on `https://raven-scout.github.io/Scout/` and check it downloads v0.15.0's DMG, and `spctl --assess --type open --context context:primary-signature -v ~/Downloads/Scout.dmg` accepts it. That is the spec's C10 addition.
+After `finalize v0.16.0`: click the button on `https://raven-scout.github.io/Scout/` and check it downloads v0.16.0's DMG, and `spctl --assess --type open --context context:primary-signature -v ~/Downloads/Scout.dmg` accepts it. That is the spec's C10 addition.
 
 ---
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -13,6 +15,7 @@ from scout import setup_wizard as sw
 from scout.cli import app
 from scout.scripts.bootstrap_auto import AutoAction, Plan
 from scout.scripts.connector_detect import Detection, DetectStatus
+from scout.scripts.engine_pointer import EnginePointer, read_pointer, write_pointer
 
 
 class Scripted:
@@ -44,7 +47,24 @@ DETECTIONS = {
 }
 
 
-def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None):
+THIS_PYTHON = str(Path(sys.executable).absolute())
+DEV_PYTHON = "/opt/dev/scout/plugin/engine/.venv/bin/python"
+
+
+def _pointer(managed_by, python=THIS_PYTHON):
+    root = str(Path(python).parent.parent.parent)
+    return EnginePointer(
+        version="0.15.0",
+        engine_root=root,
+        python=python,
+        scoutctl=str(Path(python).parent / "scoutctl"),
+        vault="/tmp/Scout",
+        managed_by=managed_by,
+        written_at="2026-10-01T00:00:00Z",
+    )
+
+
+def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None, pointer=None):
     calls: list[list[str]] = []
     codes = codes or {}
 
@@ -52,9 +72,11 @@ def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None):
         calls.append(args)
         return codes.get(args[0], 0)
 
+    if pointer is None and manager is not None:
+        pointer = _pointer(manager)
     deps = sw.SetupDeps(
         plan=lambda vault: Plan(plan, "test"),
-        pointer_manager=lambda: manager,
+        pointer=lambda: pointer,
         git_identity=lambda: ("Alex", "alex@example.com"),
         host_zone=lambda: "America/New_York",
         detect_connectors=lambda: DETECTIONS,
@@ -221,6 +243,35 @@ def test_cli_without_a_terminal_and_without_yes_exits_2(monkeypatch, tmp_path):
     assert "--yes" in result.output and "--name" in result.output and "--email" in result.output
 
 
+def test_an_upgrade_needs_no_terminal(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    assert sw.run_setup(_opts(tmp_path), sw.NoTerminalPrompter(), deps) == 0
+    assert calls[0][:2] == ["bootstrap", "auto"]
+
+
+def test_a_first_install_without_a_terminal_lists_the_headless_flags(tmp_path, capsys):
+    deps, calls = _deps(tmp_path)
+    assert sw.run_setup(_opts(tmp_path), sw.NoTerminalPrompter(), deps) == 2
+    assert sw.HEADLESS_FLAGS in capsys.readouterr().out
+    assert calls == []
+
+
+def test_no_terminal_prompter_cannot_confirm(tmp_path):
+    with pytest.raises(sw.NoTerminal):
+        sw.NoTerminalPrompter().confirm("Q", True)
+
+
+def test_cli_upgrade_without_a_terminal_and_without_yes_proceeds(monkeypatch, tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Scout"))
+    monkeypatch.setattr(sw.TtyPrompter, "open", classmethod(lambda cls: None))
+    monkeypatch.setattr("scout.setup_wizard.default_deps", lambda claude_bin="": deps)
+    result = CliRunner().invoke(app, ["setup"])
+    assert result.exit_code == 0, result.output
+    assert "--name" not in result.output
+    assert calls[0][:2] == ["bootstrap", "auto"]
+
+
 def test_invoke_scoutctl_returns_the_exit_code():
     assert sw.invoke_scoutctl(["connectors", "custom", "remove", "--help"]) == 0
     assert sw.invoke_scoutctl(["no-such-command"]) == 2
@@ -277,6 +328,30 @@ def test_eof_at_first_run_prompt_is_treated_as_no_not_a_cancel(tmp_path):
     assert [c[0] for c in calls] == ["bootstrap", "budget"]
     assert not any(c[0] == "schedule" for c in calls)
     assert any("first scheduled run" in s for s in p.said)
+
+
+def test_no_terminal_at_first_run_prompt_is_treated_as_no(tmp_path, capsys):
+    """No /dev/tty, no --yes, every answer given as a flag and no
+    --first-run/--no-first-run: _gather asks nothing, bootstrap writes the
+    vault, then the first-run confirm raised NoTerminal (a traceback after a
+    successful install). It must read as "no", like end of input."""
+    deps, calls = _deps(tmp_path)
+    opts = _opts(
+        tmp_path,
+        instance_name="Scout",
+        name="Alex",
+        email="alex@example.com",
+        timezone="Europe/Berlin",
+        connectors="calendar",
+        max_budget="5.00",
+        daily_budget="20",
+    )
+    assert sw.run_setup(opts, sw.NoTerminalPrompter(), deps) == 0
+    assert [c[0] for c in calls] == ["bootstrap", "budget"]
+    assert not any(c[0] == "schedule" for c in calls)
+    out = capsys.readouterr().out
+    assert "first scheduled run" in out
+    assert sw.HEADLESS_FLAGS not in out
 
 
 def test_bootstrap_failure_code_other_than_2_still_stops_the_flow(tmp_path):
@@ -581,21 +656,131 @@ def test_default_deps_wires_plan_git_identity_and_invoke():
     assert deps.git_identity is sw._git_identity
 
 
-def test_default_deps_pointer_manager_reads_the_pointer(monkeypatch):
+def test_default_deps_pointer_reads_the_pointer(monkeypatch):
     from scout.scripts import engine_pointer
 
-    class FakePointer:
-        managed_by = "install.sh"
-
-    monkeypatch.setattr(engine_pointer, "read_pointer", lambda home: FakePointer())
-    assert sw.default_deps().pointer_manager() == "install.sh"
+    ptr = _pointer("install.sh")
+    monkeypatch.setattr(engine_pointer, "read_pointer", lambda home: ptr)
+    assert sw.default_deps().pointer() is ptr
 
 
-def test_default_deps_pointer_manager_is_none_without_a_pointer(monkeypatch):
+def test_default_deps_pointer_is_none_without_a_pointer(monkeypatch):
     from scout.scripts import engine_pointer
 
     monkeypatch.setattr(engine_pointer, "read_pointer", lambda home: None)
-    assert sw.default_deps().pointer_manager() is None
+    assert sw.default_deps().pointer() is None
+
+
+# ---------------------------------------------------------------------------
+# P8: a re-run (install.sh passes --managed-by install.sh) must not change who
+# manages an existing vault's engine. Real pointer files in a tmp HOME.
+# ---------------------------------------------------------------------------
+
+
+def _home_with_pointer(tmp_path, managed_by, python):
+    home = tmp_path / "home"
+    write_pointer(_pointer(managed_by, python), home=home)
+    return home
+
+
+def test_rerun_on_a_dev_managed_vault_leaves_the_manager_and_pointer(tmp_path):
+    home = _home_with_pointer(tmp_path, "dev", DEV_PYTHON)
+    before = (home / ".local/state/scout/engine.json").read_bytes()
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    p = Scripted([])
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), p, deps) == 0
+    assert calls == []  # no bootstrap run from this engine: the pointer and launchd jobs stay put
+    assert (home / ".local/state/scout/engine.json").read_bytes() == before
+    said = "\n".join(p.said)
+    assert "managed by dev" in said
+    assert "/opt/dev/scout/plugin/engine/.venv/bin/scoutctl bootstrap upgrade" in said
+    # The user-explicit way to hand the vault to this engine:
+    assert f"{Path(THIS_PYTHON).parent / 'scoutctl'} bootstrap upgrade --managed-by install.sh" in said
+
+
+def test_rerun_from_the_dev_engine_itself_keeps_dev_explicitly(tmp_path):
+    home = _home_with_pointer(tmp_path, "dev", THIS_PYTHON)
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "dev"
+
+
+def test_rerun_from_the_same_engine_with_an_unknown_pointer_records_install_sh(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("unknown", THIS_PYTHON))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def test_rerun_without_a_pointer_records_install_sh(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=None)
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def _cache_python(home, version):
+    return str(home / ".claude/plugins/cache/scout-plugin/scout" / version / ".venv/bin/python")
+
+
+@pytest.mark.parametrize("recorded", ["install.sh", "claude-code"])
+def test_rerun_after_a_release_upgrades_and_keeps_the_label(tmp_path, monkeypatch, recorded):
+    """install.sh runs the engine from a per-version plugin-cache venv, so after
+    a release the pointer names the old version's python. That is still the
+    same install: upgrade, and pass the recorded manager explicitly (preserve
+    across interpreters would demote it to unknown)."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    home = _home_with_pointer(tmp_path, recorded, _cache_python(home, "0.15.0"))
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[:2] == ["bootstrap", "auto"]
+    assert argv[argv.index("--managed-by") + 1] == recorded
+
+
+def test_rerun_over_an_unknown_pointer_in_the_plugin_cache_records_install_sh(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("unknown", _cache_python(home, "0.15.0")))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def test_rerun_over_an_unknown_pointer_on_a_dev_checkout_keeps_it(tmp_path, monkeypatch):
+    """A plain `bootstrap upgrade` from a checkout records unknown; install.sh
+    must not take that engine over."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    home = _home_with_pointer(tmp_path, "unknown", DEV_PYTHON)
+    before = (home / ".local/state/scout/engine.json").read_bytes()
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    p = Scripted([])
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), p, deps) == 0
+    assert calls == []
+    assert (home / ".local/state/scout/engine.json").read_bytes() == before
+    assert any("managed by unknown" in s for s in p.said)
+
+
+def test_rerun_on_an_app_managed_vault_is_still_refused(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("scout-app", DEV_PYTHON))
+    p = Scripted([])
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), p, deps) == 2
+    assert calls == [] and any("Scout.app" in s for s in p.said)
+
+
+def test_fresh_install_records_install_sh_even_over_another_engines_pointer(tmp_path):
+    deps, calls = _deps(tmp_path, pointer=_pointer("dev", DEV_PYTHON))
+    opts = _opts(tmp_path, yes=True, name="Alex", email="alex@example.com", managed_by="install.sh")
+    assert sw.run_setup(opts, sw.HeadlessPrompter(), deps) == 0
+    argv = calls[0]
+    assert argv[:2] == ["bootstrap", "auto"]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
 
 
 def test_default_deps_detect_connectors_wires_detect_and_probes(monkeypatch):
