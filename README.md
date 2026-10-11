@@ -35,7 +35,7 @@ it sets up the plugin and engine:
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 ```
 
-Then open Claude Code and run `/scout-setup` to create your vault.
+It installs the plugin and engine, then walks you through setup (your details, connectors, budget) and creates `~/Scout/`.
 
 > **Installed from `Raven-Scout/scout-plugin`?** Nothing to do. This repo *is*
 > scout-plugin, renamed to `Raven-Scout/Scout` when the macOS app moved in, and

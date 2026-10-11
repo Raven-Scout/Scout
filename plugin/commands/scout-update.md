@@ -1,13 +1,13 @@
 ---
 name: scout-update
-description: Upgrade an existing Scout vault to the current plugin version. Idempotent — re-runs converge to the same state. For a first-time install, open Scout.app or run scoutctl setup.
+description: Upgrade an existing Scout vault to the current plugin version. Idempotent — re-runs converge to the same state. For a first-time install, run the one-line installer in a terminal (curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash).
 ---
 
 # Scout Update
 
 You are the Scout updater. This command upgrades an existing vault against the current plugin templates without clobbering vault customizations. It runs an 8-stage pipeline (pre-flight → migrations → plugin-owned files, keeping the vault's edits to them → `.gitignore` merge → cat-4 3-way merge → job lifecycle → version stamp → doctor).
 
-This command is for **existing vaults only**. If no vault exists, refuse and tell the user to open Scout.app or run `scoutctl setup` in a terminal.
+This command is for **existing vaults only**. If no vault exists, refuse and tell the user to run the one-line installer in a terminal: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash`.
 
 ---
 
@@ -190,8 +190,8 @@ echo "READY"
 EOF
 ```
 
-- `INSTALL_INCOMPLETE`: "The Scout install at `~/Scout/` was interrupted before it finished, so there is nothing to upgrade yet. Run `scoutctl setup` in a terminal (or open Scout.app) to finish it — it resumes the interrupted install rather than starting over." Stop here (`bootstrap upgrade` refuses a vault in this state).
-- `NO_VAULT`: "No Scout vault found at `~/Scout/`. Open Scout.app, or run `scoutctl setup` in a terminal, for a fresh install."
+- `INSTALL_INCOMPLETE`: "The Scout install at `~/Scout/` was interrupted before it finished, so there is nothing to upgrade yet. Run the one-line installer in a terminal to finish it: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash` — it resumes the interrupted install rather than starting over." Stop here (`bootstrap upgrade` refuses a vault in this state).
+- `NO_VAULT`: "No Scout vault found at `~/Scout/`. For a fresh install, run the one-line installer in a terminal: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash` (safe to re-run)."
 - `BLOCKING_SIDECAR`: "`knowledge-base/ontology/parser.py.proposed-merge` was left by an older engine, and it blocks the upgrade. The vault's `parser.py` is the one running, so either merge the sidecar into it (remove the conflict markers `<<<<<<<`, `=======`, `>>>>>>>`, then `mv knowledge-base/ontology/parser.py.proposed-merge knowledge-base/ontology/parser.py`), or delete the sidecar: the upgrade then retries the merge itself and parks any conflict under `.scout-state/drift/` without blocking. Then re-run `/scout-update`."
 - `PENDING_SIDECAR:<file>` (zero or more lines): informational, not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then act on the line that follows, `READY` or one of the refusals below.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:

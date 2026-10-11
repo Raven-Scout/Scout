@@ -77,7 +77,7 @@ In Terminal:
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 ```
 
-It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin and builds the engine. Then it asks a few questions: your name and email (Scout follows your computer's timezone; you can pin another), which detected tools to use, your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), and a budget. Every other tool you have connected is offered as a custom connector. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
+It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin and builds the engine. Then it asks a few questions: a name for this Scout instance, your name and email, your timezone (Scout follows your computer's; you can pin another), which detected tools to use, your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), your GitHub username and repos if GitHub is on, and a budget per session and per day. Every other tool you have connected is offered as a custom connector. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
 
 To install without questions (a provisioning script, CI):
 
@@ -85,7 +85,7 @@ To install without questions (a provisioning script, CI):
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash -s -- --yes --name "Alex" --email alex@example.com
 ```
 
-`scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it.
+`scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it, and keeps the engine the vault already records as its manager (a dev checkout, say).
 
 ### 2. Add the Mac app later (optional)
 
@@ -237,10 +237,10 @@ Scout works with any subset of connectors. More connectors means richer cross-ch
 
 Scout reads more than the tools it ships instructions for. Anything you have connected to Claude Code (a mail suite, a chat tool, a CRM, a support desk) can become a **custom connector**:
 
-- During setup, `scoutctl setup` (and Scout.app's onboarding) offers every connected server no connector reads yet.
-- Later, run `/scout-connect` in Claude Code, `scoutctl connectors setup` in a terminal, or use Scout.app's Settings ▸ Connectors.
+- During setup, `scoutctl setup` offers every connected server no connector reads yet.
+- Later, run `/scout-connect` in Claude Code, or `scoutctl connectors setup` in a terminal.
 
-Scout drafts each definition for you through a headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The engine rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. Tools that need you to sign in first say so, and pick up where they left off once you have.
+Scout drafts each definition for you through a headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The drafting check rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. A tool that needs you to sign in first says so: sign in, then run `/scout-connect <server>` again.
 
 ## Knowledge Graph
 
@@ -325,6 +325,7 @@ scout-plugin/
   commands/
     scout-setup.md          -- Interactive setup wizard (fresh installs)
     scout-update.md         -- Upgrade plugin + vault (existing installs)
+    scout-connect.md        -- Add or remove a custom connector (any connected MCP server)
     scout-status.md         -- Dashboard command
     scout-work.md           -- Interactive work session (in-conversation)
     scout-plan.md           -- Interactive day planning with calendar blocks (in-conversation)
