@@ -6,6 +6,13 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- In-app updates through Sparkle: **Scout → Check for Updates…**, a daily
+  background check, and a **Settings ▸ Updates** pane. An update badge shows
+  when a new version is available. Debug builds never check.
+- For engines Scout.app doesn't manage, the app detects when the plugin is
+  behind and hands off to `/scout-update`.
+
 ### Changed
 - The app now lives at `apps/macos/` in the Scout monorepo (was
   `Raven-Scout/Scout` repo root). No behavior change.

@@ -67,6 +67,12 @@ jobs:
           echo "--- macOS SDKs ---"
           xcodebuild -showsdks | grep -i macos || true
 
+      # Release-time Sparkle steps that scripts/release.sh calls (signing
+      # order, key preflight, appcast checks), tested against stubs.
+      - name: sparkle-release tests
+        working-directory: apps/macos
+        run: bash scripts/tests/sparkle-release.test.sh
+
       # The "Bundle Engine" build phase runs scripts/bundle-engine.sh; this
       # tests its contract (git archive of HEAD:plugin + the generated
       # marketplace.json inside it + the generated engine-release.json)

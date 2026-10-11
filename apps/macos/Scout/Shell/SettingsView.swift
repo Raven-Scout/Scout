@@ -196,6 +196,8 @@ struct SettingsView: View {
                     }
                 }
 
+                section(label: "Updates") { UpdatesSettingsSection() }
+
                 section(label: "About") {
                     SettingsCard(padding: 14) {
                         VStack(alignment: .leading, spacing: 0) {

@@ -81,6 +81,24 @@ Cmd+, opens Settings. A few fields are worth filling in:
 - **Your name** — shown next to comments you add to action items. Defaults to `user`.
 - **Notify on failed runs / rate-limit** — macOS notifications when a scheduled run fails, times out, or is rate-limited.
 
+## Updates
+
+From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks daily and shows a badge when a new version is ready (see **Settings ▸ Updates**). Debug builds never check for updates.
+
+Which mechanism updates what:
+
+- **Scout.app** updates through Sparkle, as above.
+- **The engine Scout.app manages** (the one onboarding installs under `~/.local/share/scout`) is installed and upgraded by Scout.app itself: updating the app updates the engine.
+- **Engines Scout.app doesn't manage** (`install.sh`, a Claude Code marketplace install, a dev checkout) get the plugin row in **Settings ▸ Updates**. It shows installed → latest and copies `/scout-update` for you to run in Claude Code. Managed engines don't show the row.
+
+To test a release candidate, point an installed build at the candidate's appcast:
+
+```bash
+open -a /path/to/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/vX.Y.Z-rc.N/appcast.xml
+```
+
+The Sparkle signing and appcast steps live in [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh); see [Cutting a release](#cutting-a-release) for the release flow.
+
 ## Repo layout
 
 ```
@@ -127,6 +145,8 @@ scripts/release.sh finalize v0.16.0   # after the PR merges
 scripts/release.sh rc v0.16.0-rc.1    # a pre-release, cut from release/v0.16.0 after prepare
 SKIP_NOTARIZE=1 SKIP_RELEASE=1 scripts/release.sh rc v0.16.0-rc.1   # dry run on the local release branch; publishes nothing
 ```
+
+The script calls [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh) to sign Sparkle's nested helpers and to generate and sign the appcast ([Raven-Scout/Scout#317](https://github.com/Raven-Scout/Scout/pull/317)). The older app-only `scripts/release-app.sh` refuses any build that embeds Sparkle, so use the root script.
 
 ## Relationship to the plugin
 
