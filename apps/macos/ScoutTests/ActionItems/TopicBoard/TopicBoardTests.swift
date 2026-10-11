@@ -257,6 +257,24 @@ struct TopicBoardTests {
         #expect(tags(b.topics[0].steps[0].children) == ["KIDA"])
     }
 
+    @Test func parentCyclesKeepEveryStep() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#AAAA] **A**",
+            "  - Parent: #BBBB",
+            "- [ ] [#BBBB] **B**",
+            "  - Parent: #AAAA",
+            "- [ ] [#CCCC] **C**",
+            "  - Parent: #CCCC",
+            "- [ ] [#DDDD] **D**",
+            "- [ ] [#EEEE] **E, under a cycle member**",
+            "  - Parent: #AAAA",
+        ])
+        #expect(allKeys(b).sorted() == ["AAAA", "BBBB", "CCCC", "DDDD", "EEEE"])
+        let a = try #require(b.topics.flatMap(\.steps).first { $0.item.key == "AAAA" })
+        #expect(tags(a.children) == ["EEEE"])
+    }
+
     @Test func childOfAMissingParentIsTopLevel() throws {
         let b = try board(["## 🔴 Urgent", "- [ ] [#KIDA] **Orphan**", "  - Parent: #GONE"])
         #expect(tags(b.topics[0].steps) == ["KIDA"])

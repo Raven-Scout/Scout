@@ -13,6 +13,12 @@ nonisolated enum BoardExpansion {
         return keys.joined(separator: "\n")
     }
 
+    /// `raw` without the keys not in `live`, so rows that left the board
+    /// don't pile up.
+    static func pruned(_ raw: String, keeping live: Set<String>) -> String {
+        keys(raw).filter(live.contains).joined(separator: "\n")
+    }
+
     private static func keys(_ raw: String) -> [String] {
         raw.split(separator: "\n").map(String.init)
     }

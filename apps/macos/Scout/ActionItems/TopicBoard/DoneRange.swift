@@ -37,10 +37,10 @@ nonisolated enum DoneRange: String, CaseIterable, Sendable {
     }
 }
 
-/// A completed task with the day it was completed.
+/// A completed task with the day it was completed, when that's known.
 nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
     let task: ActionTask
-    let date: Date
+    let date: Date?
 
     var id: UUID { task.id }
 
@@ -48,13 +48,14 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
 
     /// Done tasks in `range`, newest first. The date is the first `YYYY-MM-DD`
     /// in a `- Completed:` sub-bullet, else the day the task first showed up
-    /// ticked, else the daily file's date.
+    /// ticked. Without either it is unknown: the task is still done this week
+    /// (Recently Completed keeps a week), but never counts as today or
+    /// yesterday, and sorts last.
     /// - Parameter doneDates: the day each tag first showed up ticked in an
     ///   earlier daily file (`DoneHistory`), used when a task has no
     ///   `- Completed:` date.
     static func entries(
         sections: [ActionSection],
-        fileDate: Date,
         doneDates: [String: Date] = [:],
         range: DoneRange,
         today: Date,
@@ -63,11 +64,11 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
         sections
             .flatMap { section in section.tasks.filter { $0.indentLevel == 0 && ($0.done || section.kind == .done) } }
             .map { task in
-                let date = completedDate(task, calendar: calendar) ?? task.shortPrefix.flatMap { doneDates[$0] } ?? fileDate
+                let date = completedDate(task, calendar: calendar) ?? task.shortPrefix.flatMap { doneDates[$0] }
                 return DoneEntry(task: task, date: date)
             }
-            .filter { range.contains($0.date, today: today, calendar: calendar) }
-            .sorted { $0.date > $1.date }
+            .filter { entry in entry.date.map { range.contains($0, today: today, calendar: calendar) } ?? (range == .week) }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
     }
 
     private static func completedDate(_ task: ActionTask, calendar: Calendar) -> Date? {

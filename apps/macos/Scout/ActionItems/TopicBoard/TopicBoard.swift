@@ -47,7 +47,7 @@ nonisolated struct TopicBoard: Equatable, Sendable {
         let held = layout.filtering ? [] : items.filter { $0.state == .hold }.sorted(by: BoardItem.byPriority)
         let base = items.filter(layout.isTopLevel)
         let baseKeys = Set(base.map(\.key))
-        let tops = base.filter { item in !(item.task.fields.parent.map(baseKeys.contains) ?? false) }
+        let tops = base.filter { item in !(layout.parent(of: item.key).map(baseKeys.contains) ?? false) }
         let roots = tops + layout.unreachable(from: tops + held)
         let groups = Dictionary(grouping: roots, by: \.topicKey)
             .mapValues { $0.sorted(by: BoardItem.byPriority) }
@@ -97,7 +97,9 @@ private nonisolated struct Layout {
     let filter: Set<BoardState>
     let openKeys: Set<String>
     let stateByKey: [String: BoardState]
-    /// Built once: sub-steps by parent, blocked steps by what they depend on.
+    /// Built once: each step's parent (none when its `Parent:` chain leads
+    /// back to it), sub-steps by parent, blocked steps by what they depend on.
+    private let parentByKey: [String: String]
     private let childrenByParent: [String: [BoardItem]]
     private let dependentsByKey: [String: [BoardItem]]
 
@@ -106,7 +108,9 @@ private nonisolated struct Layout {
         self.filter = filter
         openKeys = Set(items.filter { $0.state.isOpen }.map(\.key))
         stateByKey = Dictionary(items.map { ($0.key, $0.state) }, uniquingKeysWith: { first, _ in first })
-        childrenByParent = Dictionary(grouping: items.filter { $0.task.fields.parent != nil }) { $0.task.fields.parent ?? "" }
+        let parents = Self.acyclicParents(items)
+        parentByKey = parents
+        childrenByParent = Dictionary(grouping: items.filter { parents[$0.key] != nil }) { parents[$0.key] ?? "" }
         var dependents: [String: [BoardItem]] = [:]
         for item in items where item.state == .blocked {
             for key in Set(item.task.fields.depends) { dependents[key, default: []].append(item) }
@@ -115,6 +119,27 @@ private nonisolated struct Layout {
     }
 
     var filtering: Bool { !filter.isEmpty }
+
+    func parent(of key: String) -> String? { parentByKey[key] }
+
+    /// `Parent:` links, minus any whose chain leads back to the step itself
+    /// (A ↔ B, or a step that is its own parent): those steps stand alone
+    /// rather than drop off the board.
+    static func acyclicParents(_ items: [BoardItem]) -> [String: String] {
+        let declared = Dictionary(
+            items.compactMap { item in item.task.fields.parent.map { (item.key, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return declared.filter { key, parent in
+            var visited: Set<String> = [key]
+            var next: String? = parent
+            while let current = next {
+                guard visited.insert(current).inserted else { return current != key }
+                next = declared[current]
+            }
+            return true
+        }
+    }
 
     func shown(_ state: BoardState) -> Bool { !filtering || filter.contains(state) }
 

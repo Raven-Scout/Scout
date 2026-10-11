@@ -24,7 +24,7 @@ struct BoardSideListsView: View {
             } rows: {
                 ForEach(done) { entry in
                     VStack(alignment: .leading, spacing: 1) {
-                        Text([entry.task.shortPrefix, entry.date.formatted(.dateTime.day().month(.abbreviated))]
+                        Text([entry.task.shortPrefix, entry.date?.formatted(.dateTime.day().month(.abbreviated))]
                             .compactMap { $0 }
                             .joined(separator: " · "))
                             .font(DS.sans(11.5))

@@ -21,4 +21,8 @@ struct BoardExpansionTests {
     @Test func closedByDefault() {
         #expect(!BoardExpansion.contains("STRM", in: ""))
     }
+
+    @Test func pruningKeepsOnlyLiveKeys() {
+        #expect(BoardExpansion.pruned("STRM\nstep:GONE\nstep:RTAPI\nOLD", keeping: ["STRM", "step:RTAPI"]) == "STRM\nstep:RTAPI")
+    }
 }
