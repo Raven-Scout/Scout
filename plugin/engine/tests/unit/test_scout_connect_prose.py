@@ -1,0 +1,61 @@
+"""The Claude Code commands route every tool to custom connectors and never dead-end the user."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+COMMANDS = Path(__file__).parent.parent.parent.parent / "commands"
+TEMPLATE = Path(__file__).parent.parent.parent / "scout" / "defaults" / "draft-connector.md"
+DEAD_ENDS = (
+    "not supported",
+    "isn't supported",
+    "doesn't come with",
+    "does not come with",
+    "no probe for it",
+    "can't read",
+)
+
+
+def _text(name: str) -> str:
+    return (COMMANDS / name).read_text(encoding="utf-8")
+
+
+def test_scout_connect_calls_the_engine_contract():
+    text = _text("scout-connect.md")
+    assert text.startswith("---\nname: scout-connect\n")
+    for call in (
+        "connectors uncovered --json",
+        "connectors custom draft --server",
+        "connectors custom add --file -",
+        "connectors custom remove",
+        "busy",
+    ):
+        assert call in text, call
+
+
+def test_scout_connect_does_not_restate_the_drafting_rules():
+    assert "1–4 read tools per activity" in TEMPLATE.read_text(encoding="utf-8")
+    assert "1–4 read tools per activity" not in _text("scout-connect.md")
+
+
+def test_scout_connect_adjustments_never_add_tools():
+    text = _text("scout-connect.md")
+    assert "never add, rename or swap a tool" in text
+
+
+def test_scout_connect_never_shows_raw_engine_messages_on_a_failed_draft():
+    text = _text("scout-connect.md")
+    assert "Scout couldn't find anything to read in" in text
+    assert "(<message>)" not in text
+    assert "Never show the raw engine `message`" in text
+
+
+def test_scout_connect_handles_the_probe_failed_status():
+    assert "probe-failed" in _text("scout-connect.md")
+
+
+def test_no_command_dead_ends_the_user():
+    for md in sorted(COMMANDS.glob("*.md")):
+        lowered = md.read_text(encoding="utf-8").lower()
+        for phrase in DEAD_ENDS:
+            assert phrase not in lowered, f"{md.name} contains {phrase!r}"
