@@ -12,9 +12,13 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from scout.errors import ConfigError
+from scout.schedule import SlotRuntime, SlotType, load_schedule
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
 SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"})
@@ -318,7 +322,215 @@ def build_report(
     return RunHealth(severity=severity, findings=ordered, evaluated_at=now, last_ok_at=last_ok_at, slots=slots)
 
 
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+TICK_STALL = timedelta(hours=2)
+FIRE_MATCH_SLACK = timedelta(seconds=120)
+_STALE_FIX = "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor"
+_SILENT_FIX = "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log"
+_STALLED_FIX = (
+    "Reinstall the scheduler job: scoutctl schedule install-plist --force (macOS) "
+    "or scoutctl schedule install-cron (Linux)"
+)
+
+
+def longest_gap_hours(weekdays: tuple[str, ...]) -> int:
+    """24 x the longest run of days between scheduled weekdays (daily 24, one day 168)."""
+    days = sorted({_WEEKDAYS.index(d[:3].lower()) for d in weekdays if d[:3].lower() in _WEEKDAYS})
+    if not days:
+        return 24
+    if len(days) == 1:
+        return 168
+    return 24 * max([b - a for a, b in zip(days, days[1:], strict=False)] + [days[0] + 7 - days[-1]])
+
+
+def _parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def read_last_fires(vault: Path) -> dict[str, datetime]:
+    """``.scout-state/last-fire.json`` -> {slot key: last fire time}; {} on any error."""
+    try:
+        data = json.loads((vault / ".scout-state" / "last-fire.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = data.get("last_fire") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    fires: dict[str, datetime] = {}
+    for key, value in raw.items():
+        ts = _parse_ts(value)
+        if ts is not None:
+            fires[str(key)] = ts
+    return fires
+
+
+def last_tick_completed(vault: Path) -> datetime | None:
+    """Newest ``schedule.tick.completed`` event time in the two newest event logs."""
+    files = sorted((vault / ".scout-logs").glob("schedule-events-*.jsonl"), key=lambda p: p.name)[-2:]
+    newest: datetime | None = None
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # pragma: no cover - unreadable log
+            continue
+        for line in text.splitlines():
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict) or obj.get("kind") != "schedule.tick.completed":
+                continue
+            ts = _parse_ts(obj.get("ts"))
+            if ts is not None and (newest is None or ts > newest):
+                newest = ts
+    return newest
+
+
+def vault_birth(vault: Path) -> datetime | None:
+    """Root-commit time when the vault itself is a git repo, else scout-config.yaml mtime, else None."""
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if top.returncode == 0 and Path(top.stdout.strip()).resolve() == vault.resolve():
+            log = subprocess.run(
+                ["git", "-C", str(vault), "log", "--max-parents=0", "--format=%ct", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            stamps = [int(x) for x in log.stdout.split() if x.isdigit()] if log.returncode == 0 else []
+            if stamps:
+                return datetime.fromtimestamp(min(stamps), UTC)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        return datetime.fromtimestamp((vault / "scout-config.yaml").stat().st_mtime, UTC)
+    except OSError:
+        return None
+
+
+def _age(delta: timedelta) -> str:
+    hours = int(delta.total_seconds() // 3600)
+    return f"{hours // 24} d" if hours >= 72 else f"{hours} h"
+
+
+def schedule_findings(
+    vault: Path, rows: list[OutcomeRow], *, now: datetime
+) -> tuple[list[Finding], tuple[SlotStatus, ...]]:
+    """Slot, fire and scheduler-liveness findings, plus per-slot status."""
+    findings: list[Finding] = []
+    statuses: list[SlotStatus] = []
+    birth = vault_birth(vault)
+
+    tick = last_tick_completed(vault)
+    if tick is not None and now - tick > TICK_STALL:
+        findings.append(
+            Finding(
+                id="scheduler.stalled",
+                severity="red",
+                since=tick,
+                summary=f"The scheduler has not completed a tick since {iso_z(tick)}.",
+                fix=_STALLED_FIX,
+                source="events",
+            )
+        )
+    elif tick is None and birth is not None and now - birth > TICK_STALL:
+        findings.append(
+            Finding(
+                id="scheduler.stalled",
+                severity="red",
+                since=None,
+                summary="The scheduler has never recorded a tick.",
+                fix=_STALLED_FIX,
+                source="events",
+            )
+        )
+
+    schedule_path = vault / ".scout-state" / "schedule.yaml"
+    try:
+        schedule = load_schedule(schedule_path)
+        schedule_mtime = datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
+    except (ConfigError, OSError):
+        return findings, ()
+
+    fires = read_last_fires(vault)
+    first_row = min((r.started_at for r in rows), default=None)
+    ref = max(birth, schedule_mtime) if birth is not None else None
+    slot_findings: list[Finding] = []
+    stale: list[Finding] = []
+    judged = 0
+    for slot in schedule.values():
+        if slot.type is SlotType.MANUAL or slot.runtime is not SlotRuntime.LOCAL:
+            continue
+        judged += 1
+        key = slot.key
+        gap = longest_gap_hours(slot.weekdays)
+        mw = slot.missed_window_hours
+        fire = fires.get(key)
+        mine = [r for r in rows if r.slot == key]
+        statuses.append(
+            SlotStatus(key=key, type=slot.type.value, last_fire=fire, last_outcome=mine[-1] if mine else None)
+        )
+        if fire is None:
+            if ref is not None and now - ref > timedelta(hours=gap + mw):
+                slot_findings.append(
+                    Finding(
+                        id=f"slot.never_fired:{key}",
+                        severity="yellow",
+                        since=None,
+                        summary=f"{key} has never fired.",
+                        fix=_STALE_FIX,
+                        source="schedule",
+                    )
+                )
+            continue
+        if now - fire > timedelta(hours=2 * gap + mw):
+            stale.append(
+                Finding(
+                    id=f"slot.stale:{key}",
+                    severity="yellow",
+                    since=fire,
+                    summary=f"{key} last fired {_age(now - fire)} ago.",
+                    fix=_STALE_FIX,
+                    source="schedule",
+                )
+            )
+        if (
+            first_row is not None
+            and fire > first_row
+            and now - fire >= timedelta(hours=mw)
+            and not any(r.started_at >= fire - FIRE_MATCH_SLACK for r in mine)
+        ):
+            slot_findings.append(
+                Finding(
+                    id=f"slot.fired_silent:{key}",
+                    severity="yellow",
+                    since=fire,
+                    summary=f"{key} fired at {iso_z(fire)} but no run outcome was recorded.",
+                    fix=_SILENT_FIX,
+                    source="ledger",
+                )
+            )
+    if stale and len(stale) == judged:
+        stale = [replace(f, severity="red") for f in stale]
+    return findings + slot_findings + stale, tuple(statuses)
+
+
 def evaluate(vault: Path, *, now: datetime | None = None) -> RunHealth:
     now = now or datetime.now(UTC)
     rows = read_outcomes(vault)
-    return build_report(ledger_findings(rows, vault=vault, now=now), now=now, last_ok_at=_last_ok_at(rows))
+    found = ledger_findings(rows, vault=vault, now=now)
+    sched, slots = schedule_findings(vault, rows, now=now)
+    return build_report(found + sched, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
