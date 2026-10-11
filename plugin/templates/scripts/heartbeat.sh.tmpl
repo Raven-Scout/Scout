@@ -36,24 +36,21 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN_FLAG=("--dry-run")
 fi
 
-# Session-lane liveness watchdog, once a day. Connector health watches tool
-# calls inside a run, and the run-outcome record watches one run's exit; neither
-# notices a whole session type (say, dreaming) quietly producing nothing for
-# weeks. The optional vault helper scripts/session-lane-liveness.py does.
-# --quiet prints only when a lane is unhealthy; it exits 2 (dark) or 3 (firing
-# but silent), and `|| true` keeps a red lane from killing the heartbeat. A
-# date-stamped marker makes it fire once a day, not on every tick.
+# Daily run-health sweep. run-outcome.sh calls `scoutctl health notify` after every
+# run that reaches it, but a slot that never fires never calls run-outcome.sh, so
+# nothing would push for it. The sweep catches that. `health notify` always exits
+# 0; `|| true` keeps the heartbeat alive regardless. A date-stamped marker makes
+# it run once a day, not on every tick.
 if [[ ${#DRY_RUN_FLAG[@]} -eq 0 ]]; then
-    _lane_tz="$("$SCOUT_DATA_DIR/scripts/scout-tz.sh" 2>/dev/null || echo America/New_York)"
-    _lane_day="$(TZ="$_lane_tz" date '+%Y-%m-%d')"
-    _lane_marker="$SCOUT_DATA_DIR/.scout-cache/lane-liveness-${_lane_day}.done"
-    if [[ ! -f "$_lane_marker" ]] \
-        && [[ -f "$SCOUT_DATA_DIR/scripts/session-lane-liveness.py" ]]; then
+    _sweep_tz="$("$SCOUT_DATA_DIR/scripts/scout-tz.sh" 2>/dev/null || echo America/New_York)"
+    _sweep_day="$(TZ="$_sweep_tz" date '+%Y-%m-%d')"
+    _sweep_marker="$SCOUT_DATA_DIR/.scout-cache/health-sweep-${_sweep_day}.done"
+    if [[ ! -f "$_sweep_marker" ]]; then
         mkdir -p "$SCOUT_DATA_DIR/.scout-cache" "$SCOUT_DATA_DIR/.scout-logs" 2>/dev/null || true
-        python3 "$SCOUT_DATA_DIR/scripts/session-lane-liveness.py" --quiet --notify \
-            >>"$SCOUT_DATA_DIR/.scout-logs/lane-liveness.log" 2>&1 || true
-        : >"$_lane_marker" 2>/dev/null || true
-        find "$SCOUT_DATA_DIR/.scout-cache" -name 'lane-liveness-*.done' \
+        "$SCOUTCTL_BIN" health notify --quiet \
+            >>"$SCOUT_DATA_DIR/.scout-logs/health-notify.log" 2>&1 || true
+        : >"$_sweep_marker" 2>/dev/null || true
+        find "$SCOUT_DATA_DIR/.scout-cache" -name 'health-sweep-*.done' \
             -mtime +7 -delete 2>/dev/null || true
     fi
 fi

@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -197,8 +196,8 @@ def test_the_installed_runner_records_its_outcome_and_rolls_up_connector_health(
     assert (row["slot"], row["exit_code"], row["failure_class"]) == ("morning-briefing", 1, "oauth_expired")
     made = _calls(calls)
     assert ["connector-health-report"] in made
-    (notice,) = [argv for argv in made if argv[:2] == ["notify", "telegram"]]
-    assert notice[notice.index("--tier") + 1] == "info"
+    assert ["health", "notify", "--quiet"] in made
+    assert not [argv for argv in made if argv[:1] == ["notify"]], "Telegram goes through the engine, not bash"
 
 
 def test_the_installed_kb_pre_filter_caches_the_freshness_view(vault: Path, bindir: Path, calls: Path) -> None:
@@ -213,25 +212,9 @@ def test_the_installed_kb_pre_filter_caches_the_freshness_view(vault: Path, bind
     assert ["hook", "kb-pre-filter", "--session-type", "briefing"] in _calls(calls)
 
 
-def test_the_installed_heartbeat_runs_the_lane_watchdog(vault: Path, bindir: Path, calls: Path) -> None:
-    # A vault whose dreaming lane last committed a month ago.
-    stamp = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    git_env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "Scout Bot",
-        "GIT_AUTHOR_EMAIL": "alex@example.com",
-        "GIT_COMMITTER_NAME": "Scout Bot",
-        "GIT_COMMITTER_EMAIL": "alex@example.com",
-        "GIT_AUTHOR_DATE": stamp,
-        "GIT_COMMITTER_DATE": stamp,
-    }
-    for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "dreaming [22:00]: KB deep work"]):
-        subprocess.run(["git", "-C", str(vault), *args], env=git_env, check=True, capture_output=True)
-
+def test_the_installed_heartbeat_sweeps_run_health(vault: Path, bindir: Path, calls: Path) -> None:
     result = _run(vault / "scripts" / "heartbeat.sh", vault, bindir)
 
     assert result.returncode == 0, result.stderr
-    log = (vault / ".scout-logs" / "lane-liveness.log").read_text(encoding="utf-8")
-    assert "**dreaming** — 🔴 DARK" in log
-    assert list((vault / ".scout-cache").glob("lane-liveness-*.done"))
-    assert ["heartbeat", "run"] in _calls(calls)
+    assert list((vault / ".scout-cache").glob("health-sweep-*.done"))
+    assert _calls(calls) == [["health", "notify", "--quiet"], ["heartbeat", "run"]]
