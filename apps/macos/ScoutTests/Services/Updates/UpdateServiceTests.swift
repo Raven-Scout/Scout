@@ -222,6 +222,21 @@ struct UpdateServiceTests {
         #expect(service.appUpdate.state == .upToDate)   // restored, not stuck
     }
 
+    /// A second check that starts while the first is still `.checking` (e.g.
+    /// a click while Sparkle's update alert is showing) must not save
+    /// `.checking` as the restore state, or a later silent cycle end would
+    /// leave the row stuck on it.
+    @Test func overlappingChecksThenCycleEndedRestoreTheOriginalState() {
+        let (service, controller, _) = make()
+        controller.emit?(.upToDate)
+        service.checkApp()
+        service.checkApp()
+        #expect(controller.checkCalls == 2)
+        #expect(service.appUpdate.state == .checking)
+        controller.emit?(.cycleEnded)
+        #expect(service.appUpdate.state == .upToDate)
+    }
+
     /// With no prior check in this service's lifetime, there is nothing to
     /// restore to, so `.cycleEnded` falls back to `.idle`.
     @Test func cycleEndedWhileCheckingWithNoPriorStateFallsBackToIdle() {

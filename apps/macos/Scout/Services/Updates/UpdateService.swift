@@ -229,7 +229,12 @@ final class UpdateService: ObservableObject {
         guard let controller = appController, controller.isEnabled else { return }
         let priorState = appUpdate.state
         guard controller.checkForUpdates() else { return }
-        appStateBeforeChecking = priorState
+        // A check overlapping one still in flight keeps the first check's
+        // restore state: saving `.checking` here would leave a later silent
+        // `.cycleEnded` restoring `.checking`, stuck forever.
+        if priorState != .checking {
+            appStateBeforeChecking = priorState
+        }
         appUpdate.state = .checking
     }
 
