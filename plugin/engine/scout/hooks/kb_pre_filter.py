@@ -35,6 +35,7 @@ from scout import paths
 from scout.config import resolve_timezone
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
+from scout.kb.frontmatter import frontmatter_block
 
 
 def _boundary_zone() -> ZoneInfo:
@@ -127,6 +128,13 @@ _DATE_RE = re.compile(
 
 _FRONTMATTER_KEY_RE = re.compile(r"^(last_updated|last_verified):\s*(.*)$")
 
+# The frontmatter `priority:` key, and the older prose marker a file without it
+# may carry in its head (`Priority: 🔴`, `**Priority:** 🔴`, `> **Priority:** 🔴`,
+# `- **Priority:** 🔴`).
+# Both anchored at the start of the line (#240).
+_PRIORITY_KEY_RE = re.compile(r"^priority:\s*(.*)$", re.IGNORECASE)
+_PRIORITY_PROSE_RE = re.compile(r"^\s*(?:>\s*)?(?:[-*]\s+)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
+
 
 # -- helpers -----------------------------------------------------------------
 
@@ -148,11 +156,23 @@ def _read_head(path: Path, n: int = HEAD_SCAN_LINES) -> list[str]:
 # -- public API --------------------------------------------------------------
 
 
+def _priority_hours(value: str) -> int:
+    """The budget a priority value's emoji names, else the default."""
+    for emoji, hours in PRIORITY_FRESHNESS.items():
+        if emoji in value:
+            return hours
+    return DEFAULT_FRESHNESS_HOURS
+
+
 def freshness_hours_for(path: Path, *, lines: list[str] | None = None) -> int:
     """Compute the freshness budget (hours) for a KB file.
 
-    Bash lines 28-50. Special-cased basenames take precedence; everything else
-    falls back to YAML frontmatter `priority:` matching by emoji substring.
+    Special-cased basenames take precedence. Otherwise the frontmatter
+    `priority:` key sets it by emoji (🔴 / 🟡 / 🟢), read from the whole
+    frontmatter block (#230); a file without the key falls back to a prose
+    marker (`**Priority:** 🔴`) in the first HEAD_SCAN_LINES lines. Both are
+    matched at the start of a line, so a comment, value or table cell that
+    merely mentions `priority:` never shadows the real key (#240).
 
     Optional `lines` parameter: when provided (pre-read by the caller), skips
     the internal _read_head call. Pass `lines` from classify() to avoid reading
@@ -162,17 +182,19 @@ def freshness_hours_for(path: Path, *, lines: list[str] | None = None) -> int:
     if name in FRESHNESS_OVERRIDES:
         return FRESHNESS_OVERRIDES[name]
 
-    # Look for priority in the first 25 lines.
-    head = lines if lines is not None else _read_head(path)
-    for line in head:
-        # Bash: grep -i 'priority:' | head -1 | sed 's/.*priority: *//' | tr -d '"'
-        m = re.search(r"priority:\s*(.*)", line, re.IGNORECASE)
+    head = lines if lines is not None else _read_head(path, n=FRONTMATTER_SCAN_LINES)
+    block = frontmatter_block(head, require_close=False)
+    body_start = 0
+    if block is not None:
+        for line in block:
+            m = _PRIORITY_KEY_RE.match(line)
+            if m:
+                return _priority_hours(re.sub(r"\s+#.*$", "", m.group(1)))
+        body_start = len(block) + 2
+    for line in head[body_start:HEAD_SCAN_LINES]:
+        m = _PRIORITY_PROSE_RE.match(line)
         if m:
-            value = m.group(1).replace('"', "")
-            for emoji, hours in PRIORITY_FRESHNESS.items():
-                if emoji in value:
-                    return hours
-            return DEFAULT_FRESHNESS_HOURS
+            return _priority_hours(m.group(1))
     return DEFAULT_FRESHNESS_HOURS
 
 
@@ -283,12 +305,8 @@ def parse_date(s: str, tz: ZoneInfo | None = None) -> datetime | None:
 
 def _frontmatter_value(lines: list[str]) -> str:
     """The ``last_updated:`` value from the YAML frontmatter, else ``last_verified:``, else ""."""
-    if not lines or lines[0].strip() != "---":
-        return ""
     found: dict[str, str] = {}
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
+    for line in frontmatter_block(lines, require_close=False) or []:
         m = _FRONTMATTER_KEY_RE.match(line)
         if m and m.group(1) not in found:
             # Drop a YAML comment (` # …`) and surrounding quotes.
@@ -395,7 +413,7 @@ def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = N
     now_aware = now if now.tzinfo is not None else now.replace(tzinfo=zone)
     age_seconds = now_aware.timestamp() - parsed.timestamp()
     age_hours = int(age_seconds // 3600)
-    budget = freshness_hours_for(path, lines=head_lines[:HEAD_SCAN_LINES])
+    budget = freshness_hours_for(path, lines=head_lines)
 
     label = "STALE" if age_hours > budget else "FRESH"
     return (

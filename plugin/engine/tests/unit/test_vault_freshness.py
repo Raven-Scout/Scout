@@ -153,6 +153,14 @@ def test_the_budget_tiers_are_the_kb_pre_filter_tiers() -> None:
         ("projects/b.md", "**Priority:** 🟢\n"),
         ("projects/c.md", "priority: none\n"),
         ("projects/d.md", "# no priority\n"),
+        # #240: only the key itself, at line start, counts.
+        ("projects/e.md", "---\n# the `priority:` key stays in the head\nname: x\npriority: 🔴\n---\n"),
+        ("projects/f.md", "---\nsummary: Sam set priority: low\npriority: 🔴\n---\n"),
+        ("projects/g.md", "---\nname: x\n---\n| rule | sort by `priority: 🔴` first |\n"),
+        ("projects/h.md", "---\npriority: 🟢\n---\n> **Priority:** 🔴 this week\n"),
+        ("projects/i.md", "---\npriority: 🟡  # was 🔴 until the launch\n---\n"),
+        ("projects/j.md", "- **Priority:** 🔴 launch week\n"),
+        ("projects/k.md", "\n".join(["---", *[f"# log {i}" for i in range(40)], "priority: 🔴", "---"]) + "\n"),
     ],
 )
 def test_a_file_gets_the_same_budget_as_in_the_kb_pre_filter(vault: Path, rel: str, body: str) -> None:
