@@ -568,9 +568,10 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         else:
             try:
                 first = p.confirm("Run your first briefing now?", False)
-            except (EOFError, KeyboardInterrupt):
+            except (NoTerminal, EOFError, KeyboardInterrupt):
                 # Something was already written (bootstrap ran above) — this
                 # isn't a cancel, just "no" to one optional, final question.
+                # No terminal (every answer came as a flag) reads the same way.
                 first = False
     if first:
         slot = deps.first_briefing_slot()

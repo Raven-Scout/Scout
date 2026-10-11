@@ -308,6 +308,30 @@ def test_eof_at_first_run_prompt_is_treated_as_no_not_a_cancel(tmp_path):
     assert any("first scheduled run" in s for s in p.said)
 
 
+def test_no_terminal_at_first_run_prompt_is_treated_as_no(tmp_path, capsys):
+    """No /dev/tty, no --yes, every answer given as a flag and no
+    --first-run/--no-first-run: _gather asks nothing, bootstrap writes the
+    vault, then the first-run confirm raised NoTerminal (a traceback after a
+    successful install). It must read as "no", like end of input."""
+    deps, calls = _deps(tmp_path)
+    opts = _opts(
+        tmp_path,
+        instance_name="Scout",
+        name="Alex",
+        email="alex@example.com",
+        timezone="Europe/Berlin",
+        connectors="calendar",
+        max_budget="5.00",
+        daily_budget="20",
+    )
+    assert sw.run_setup(opts, sw.NoTerminalPrompter(), deps) == 0
+    assert [c[0] for c in calls] == ["bootstrap", "budget"]
+    assert not any(c[0] == "schedule" for c in calls)
+    out = capsys.readouterr().out
+    assert "first scheduled run" in out
+    assert sw.HEADLESS_FLAGS not in out
+
+
 def test_bootstrap_failure_code_other_than_2_still_stops_the_flow(tmp_path):
     """Only checking `code == 2` let other failure codes (e.g. 10 from a
     ConfigError) fall through to budget/first-run as if bootstrap had
