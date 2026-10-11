@@ -175,6 +175,19 @@ struct ComponentSmokeTests {
         ViewHost.render(TaskDetailsView(details: []), size: cardSize)
     }
 
+    @Test("the context note section renders with and without a note")
+    func contextNoteSectionRenders() throws {
+        let vault = FileManager.default.temporaryDirectory.appendingPathComponent("ctx-\(UUID().uuidString)")
+        let dir = vault.appendingPathComponent("action-items/context")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: vault) }
+        try "---\ntag: DETX\n---\n\nWaiting on Priya.\n\n```\nscoutctl digest --batch\n```\n"
+            .write(to: dir.appendingPathComponent("DETX.md"), atomically: true, encoding: .utf8)
+        ViewHost.render(TaskContextNoteSection(tag: "DETX", scoutDirectory: vault), size: cardSize)
+        ViewHost.render(TaskContextNoteSection(tag: "NESTX", scoutDirectory: vault), size: cardSize)
+        ViewHost.render(TaskContextNoteSection(tag: nil, scoutDirectory: vault), size: cardSize)
+    }
+
     @Test("a section renders for every kind")
     func sectionRendersEveryKind() {
         for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal,
