@@ -456,8 +456,17 @@ The heartbeat system opportunistically triggers extra sessions (dreaming or rese
 
 ## FAQ / Troubleshooting
 
+**Scout stopped running (it's gone quiet).**
+Almost always, your Claude Code login has expired. Every scheduled run then fails within seconds, before it can tell you anything. Open Terminal and run:
+
+```
+claude auth login
+```
+
+The next scheduled run picks it up; nothing else needs reinstalling. Scout raises a desktop notification when this happens (at most once a day), and `/scout-status` and `scoutctl bootstrap doctor` both report it. Older installs only get those alerts after `/scout-update`, so if yours never warned you, upgrade too.
+
 **My scheduled runs aren't firing.**
-Run `scoutctl bootstrap doctor` first — it checks the schedule, the launchd agents, and that the `claude` path the runners use actually exists. On macOS, `launchctl list | grep scout` should show `com.scout.schedule-tick` and `com.scout.heartbeat`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed (missed runs catch up when it wakes). Check logs in `.scout-logs/` for errors from the last attempted run. If a log mentions a 401/403, Claude Code's sign-in expired: run `claude` once in Terminal to sign in again.
+Run `scoutctl bootstrap doctor` first — it checks the schedule, the launchd agents, and that the `claude` path the runners use actually exists. On macOS, `launchctl list | grep scout` should show `com.scout.schedule-tick` and `com.scout.heartbeat`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed (missed runs catch up when it wakes). Check logs in `.scout-logs/` for errors from the last attempted run. If a log mentions a 401/403, see "Scout stopped running" above.
 
 **My runs keep getting skipped because of budget.**
 If a session log ends with `=== Budget check: skipping this run ===`, the budget check is stopping it before Claude even starts. Diagnose with:

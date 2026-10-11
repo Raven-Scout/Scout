@@ -219,6 +219,94 @@ def test_explicit_null_containers_are_absent_but_wrong_shapes_still_report() -> 
     assert leases == {} and [e.message for e in errors] == ["worktrees is not an object"]
 
 
+def test_pr_links_skip_junk_incomplete_and_duplicate_entries() -> None:
+    s = support_dir()
+    repo = "example-org/example-repo"
+    write_desktop_record(
+        s,
+        "local_aaa",
+        prs=[
+            "not-a-link",
+            {"prNumber": 98, "repo": repo},
+            {"prNumber": 98, "repo": repo, "url": "https://github.com/example-org/example-repo/pull/98"},  # dup
+            {"prNumber": "99", "repo": repo},  # number is a string
+            {"prNumber": 100},  # no repo
+        ],
+        prNumber=98,  # the legacy single-PR fields repeat the same PR
+        prRepository=repo,
+        prState="OPEN",
+    )
+    records, errors = load_desktop_records(s)
+    assert errors == []
+    assert records[0].prs == [PRRef(number=98, repo=repo, url=None, legacy_state=None)]
+
+
+def test_a_record_that_is_valid_json_but_not_an_object_is_reported() -> None:
+    s = support_dir()
+    write_desktop_record(s, "local_ok")
+    (s / "claude-code-sessions" / "org-0000" / "user-0000" / "local_list.json").write_text("[1, 2]", encoding="utf-8")
+    records, errors = load_desktop_records(s)
+    assert [r.session_id for r in records] == ["local_ok"]
+    assert [e.message for e in errors] == ["local_list.json: not a JSON object"]
+
+
+def test_a_record_that_vanishes_before_stat_is_reported_not_fatal() -> None:
+    s = support_dir()
+    write_desktop_record(s, "local_ok")
+    # A dangling symlink is listed by the glob but cannot be stat'ed — the same
+    # shape as the desktop app deleting a record between the glob and the stat.
+    (s / "claude-code-sessions" / "org-0000" / "user-0000" / "local_gone.json").symlink_to(s / "nowhere.json")
+    records, errors = load_desktop_records(s)
+    assert [r.session_id for r in records] == ["local_ok"]
+    assert len(errors) == 1 and errors[0].source == "desktop" and errors[0].message.startswith("local_gone.json: ")
+
+
+def test_unparseable_desktop_config_and_worktrees_are_source_errors() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    (s / "claude_desktop_config.json").write_text("{truncated", encoding="utf-8")
+    (s / "git-worktrees.json").write_bytes(b"\xff\xfe not utf-8")
+    groups, gerrors = load_groups(s)
+    leases, lerrors = load_worktree_leases(s)
+    assert groups.names == {} and groups.assignments == {} and leases == {}
+    assert [e.source for e in gerrors] == ["desktop-config"]
+    assert gerrors[0].message.startswith("claude_desktop_config.json: ")
+    assert [e.source for e in lerrors] == ["desktop-worktrees"]
+    assert lerrors[0].message.startswith("git-worktrees.json: ")
+
+
+def test_load_groups_and_leases_skip_malformed_entries_quietly() -> None:
+    s = support_dir()
+    s.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "preferences": {
+            "epitaxyPrefs": {
+                "dframe-group-scopes": {
+                    "org-0000/broken": "not-a-scope",
+                    "org-0000/user-0000": {
+                        "groups": [
+                            {"id": "cg-1", "name": "Example Repo"},
+                            {"id": "cg-2"},  # no name
+                            {"id": "", "name": "Blank id"},
+                            "cg-3",
+                        ],
+                        "assignments": {"code:local_aaa": "cg-1", "code:local_bbb": 7},
+                    },
+                }
+            }
+        }
+    }
+    (s / "claude_desktop_config.json").write_text(json.dumps(payload), encoding="utf-8")
+    groups, errors = load_groups(s)
+    assert errors == []
+    assert groups.names == {"cg-1": "Example Repo"} and groups.assignments == {"local_aaa": "cg-1"}
+
+    worktrees = {"bad": "not-a-lease", "w1": {"path": "/Users/alex/code/w1", "leasedBy": "local_aaa"}}
+    (s / "git-worktrees.json").write_text(json.dumps({"worktrees": worktrees}), encoding="utf-8")
+    leases, errors = load_worktree_leases(s)
+    assert errors == [] and set(leases) == {"local_aaa"}
+
+
 # ----- desktop record cache (1b spec §3.1) ------------------------------------------
 
 
