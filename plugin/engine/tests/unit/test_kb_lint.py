@@ -7,7 +7,9 @@ import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 
-from scout.kb.lint import OVERRIDE_ENV, lint_staged, override_count, run_hook
+import pytest
+
+from scout.kb.lint import OVERRIDE_ENV, _frontmatter_aliases, lint_staged, override_count, run_hook
 from scout.kb.lint_config import load_lint_config
 
 TOPIC = "knowledge-base/topics/widget/retrieval.md"
@@ -193,34 +195,65 @@ def test_topic_citation_and_dangling_link_are_warnings(kb_repo) -> None:
     assert sorted((f.check, f.line) for f in result.warnings) == [("citation", 3), ("dangling-link", 7)]
 
 
-def test_frontmatter_name_target_is_not_dangling(kb_repo) -> None:
-    """A wikilink may target a frontmatter-declared name, not just a filename."""
+def test_frontmatter_alias_target_is_not_dangling(kb_repo) -> None:
+    """Obsidian resolves a wikilink to a frontmatter alias, not just a filename."""
     kb_repo.stage(
-        "knowledge-base/personal/jordan-burger.md",
-        "---\nname: Jordan Burger\naliases: [JB, Jordan R. Burger]\ntype: person\n---\n\n# Jordan\n",
+        "knowledge-base/people/sam-example.md",
+        '---\nname: Sam Example\naliases: [Sam Example, "Example, Sam"]\ntype: person\n---\n\n# Sam\n',
     )
     kb_repo.commit()
-    kb_repo.stage(PROJECT, "Owner is [[Jordan Burger]].\n")
+    kb_repo.stage(PROJECT, "Owner is [[Sam Example]], also [[sam example#Role|Sam]] and [[Example, Sam]].\n")
     assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
 
 
-def test_frontmatter_alias_list_target_is_not_dangling(kb_repo) -> None:
+def test_frontmatter_block_list_alias_is_not_dangling(kb_repo) -> None:
+    """The block-list form is what Obsidian's Properties editor writes."""
     kb_repo.stage(
-        "knowledge-base/people/david-esner.md",
-        "---\nname: David Ešner\naliases: [David Esner]\n---\n\n# David\n",
+        "knowledge-base/people/zoe-example.md",
+        "---\naliases:\n  - Zoë Example\n  - 'Z. Example'\ntags: [person]\n---\n\n# Zoë\n",
     )
     kb_repo.commit()
-    kb_repo.stage(PROJECT, "Reviewed by [[David Esner]].\n")
+    kb_repo.stage(PROJECT, "Reviewed by [[Zoë Example]] and [[Z. Example]].\n")
     assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
 
 
-def test_unknown_target_still_dangling_with_frontmatter_present(kb_repo) -> None:
-    """The fix must not turn the check off — a genuinely absent target still warns."""
-    kb_repo.stage("knowledge-base/people/sam.md", "---\nname: Sam Smith\n---\n\n# Sam\n")
+def test_frontmatter_name_or_title_alone_is_still_dangling(kb_repo) -> None:
+    """`name:` / `title:` are not link targets in Obsidian, so a link that only
+    matches one is broken for the reader and must keep warning."""
+    kb_repo.stage("knowledge-base/people/sam.md", "---\nname: Sam Smith\ntitle: Weekly sync\n---\n\n# Sam\n")
     kb_repo.commit()
-    kb_repo.stage(PROJECT, "See [[Nobody At All]].\n")
+    kb_repo.stage(PROJECT, "See [[Sam Smith]] and [[Weekly sync]] and [[Nobody At All]].\n")
     warnings = lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings
-    assert [f.check for f in warnings] == ["dangling-link"]
+    assert [f.check for f in warnings] == ["dangling-link"] * 3
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "expected"),
+    [
+        ("aliases: Solo Name\n", ["Solo Name"]),
+        ("aliases: Solo Name # trailing comment\n", ["Solo Name"]),
+        ("aliases: ['A, B', C]\n", ["A, B", "C"]),
+        ('aliases:\n- One\n- "Two"\nname: X\n', ["One", "Two"]),
+        ("aliases: []\n", []),
+        ("aliases: null\n", []),
+        ("aliases: ~\n", []),
+        ("aliases:\nname: X\n", []),
+        ("meta:\n  aliases: [Nested]\n", []),
+    ],
+)
+def test_frontmatter_aliases_forms(tmp_path, frontmatter, expected) -> None:
+    f = tmp_path / "note.md"
+    f.write_text(f"---\n{frontmatter}---\n\n# Note\n", encoding="utf-8")
+    assert _frontmatter_aliases(f) == expected
+
+
+def test_frontmatter_aliases_bom_crlf_and_late_frontmatter(tmp_path) -> None:
+    bom = tmp_path / "bom.md"
+    bom.write_bytes("\ufeff---\r\naliases: [Bom Name]\r\n---\r\n".encode())
+    assert _frontmatter_aliases(bom) == ["Bom Name"]
+    late = tmp_path / "late.md"
+    late.write_text("# Title\n\n---\naliases: [Not Frontmatter]\n---\n", encoding="utf-8")
+    assert _frontmatter_aliases(late) == []
 
 
 def test_escaped_pipe_wikilink_in_table_is_not_dangling(kb_repo) -> None:

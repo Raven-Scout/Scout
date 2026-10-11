@@ -181,19 +181,29 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
     return out
 
 
-_FRONTMATTER_NAME_KEYS = ("name", "aka", "title", "aliases")
-_FM_NAME_RE = re.compile(r"^(name|aka|title|aliases):\s*(.+?)\s*$")
+_FM_ALIASES_RE = re.compile(r"^aliases:[ \t]*(.*?)\s*$")
+_FM_LIST_ITEM_RE = re.compile(r"^\s*-\s+(.*?)\s*$")
+_FM_INLINE_ITEM_RE = re.compile(r"""\s*(?:"([^"]*)"|'([^']*)'|([^,]*))\s*(?:,|$)""")
+_FM_NON_NAMES = {"", "null", "~", "|", ">", "[]"}
 
 
-def _frontmatter_names(path: Path) -> list[str]:
-    """Declared names from a file's YAML frontmatter: name / aka / title / aliases.
+def _fm_scalar(raw: str) -> str:
+    """One YAML scalar: quotes stripped, or an unquoted value's ` #` comment."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1].strip()
+    return raw.split(" #", 1)[0].strip()
 
-    A wikilink may legitimately target a frontmatter-declared name rather than a
-    filename. Two readers of this vault already resolve them that way and this
-    linter did not, so every such link was reported dangling forever:
-      * Obsidian matches filenames and `aliases:`;
-      * scripts/dangling-links.py indexes `name:` / `aka:` / `title:`.
-    Indexing the union keeps the hook from disagreeing with both at once.
+
+def _frontmatter_aliases(path: Path) -> list[str]:
+    """The `aliases:` a file's YAML frontmatter declares.
+
+    Obsidian resolves a wikilink to a filename or to one of the target's
+    `aliases`, and to nothing else in frontmatter — `name:` and `title:` are
+    not link targets there, so indexing them would silence links that are
+    broken for the reader. All three forms Obsidian reads or writes are
+    handled: a scalar, an inline list, and a block list (what its Properties
+    editor saves).
 
     Deliberately a line scanner, not a YAML parse: lint runs over every tracked
     file on every commit, frontmatter is the first few lines, and a malformed
@@ -201,26 +211,34 @@ def _frontmatter_names(path: Path) -> list[str]:
     """
     names: list[str] = []
     try:
-        with path.open(encoding="utf-8", errors="replace") as fh:
+        with path.open(encoding="utf-8-sig", errors="replace") as fh:
             if fh.readline().strip() != "---":
                 return names
+            in_block = False
             for _ in range(60):
                 line = fh.readline()
                 if not line or line.strip() == "---":
                     break
-                m = _FM_NAME_RE.match(line)
+                if in_block:
+                    item = _FM_LIST_ITEM_RE.match(line)
+                    if item:
+                        names.append(_fm_scalar(item.group(1)))
+                        continue
+                    in_block = False
+                m = _FM_ALIASES_RE.match(line)
                 if not m:
                     continue
-                val = m.group(2)
-                if val.startswith("["):  # inline list: aliases: [A, B]
-                    names += [v.strip().strip("\"'") for v in val.strip("[]").split(",")]
-                elif val.startswith("-"):  # block list item on the same line
-                    names.append(val.lstrip("- ").strip("\"'"))
+                val = m.group(1)
+                if not val or val.startswith("#"):  # block list follows
+                    in_block = True
+                elif val.startswith("[") and val.endswith("]"):  # inline list
+                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(val[1:-1]):
+                        names.append(dq or sq or bare.strip())
                 else:
-                    names.append(val.strip("\"'"))
+                    names.append(_fm_scalar(val))
     except OSError:
         return names
-    return [n for n in names if n]
+    return [n for n in names if n.lower() not in _FM_NON_NAMES]
 
 
 def _link_targets(repo: Path) -> set[str]:
@@ -234,7 +252,7 @@ def _link_targets(repo: Path) -> set[str]:
             known.add(str(kbrel).lower())
             known.add(str(kbrel.with_suffix("")).lower())
         if p.endswith(".md"):
-            for nm in _frontmatter_names(repo / p):
+            for nm in _frontmatter_aliases(repo / p):
                 known.add(nm.lower())
     return known
 
