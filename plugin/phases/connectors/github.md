@@ -76,10 +76,11 @@ When a PR becomes an action item, the line must state **what the PR does, which 
 
 - **What it does** — the change in one plain-English phrase, not the raw PR title.
 - **Which project/area** — resolve the repo/PR against the KB so it links to the right project entity, not just a bare repo name.
-- **What's blocked** — who is waiting on it, or what ships once it merges. "Review feedback needing a response" and "approval blocking a release" are different priorities; the downstream context is what distinguishes them.
+- **What's blocked** — who is waiting on it, or what ships once it merges. "Review feedback needing a response" and "approval blocking a release" are different priorities; the downstream context is what distinguishes them. Before writing that a PR waits on another PR, or that it doesn't, apply **PR status claims** in the GitHub Cross-Check.
 - **How long it's waited** — staleness drives ordering.
 
 A bare title + status is not enough context to act on.
+
 
 ### New Issues Assigned
 
@@ -206,12 +207,21 @@ Before promoting any candidate action item to To Do, verify against GitHub:
 **When an action item references a specific PR, check the PR's current state:**
 
 ```bash
-gh pr view {number} --repo {owner}/{repo} --json state,reviewDecision,mergedAt,closedAt,statusCheckRollup
+gh pr view {number} --repo {owner}/{repo} --json state,reviewDecision,mergedAt,closedAt,statusCheckRollup,reviewRequests,latestReviews,body,baseRefName,mergeStateStatus
 ```
 
 - If the PR was merged since the action item was created, the item may be Done.
 - If new commits were pushed that address review comments, update the item accordingly (e.g., "changes requested" -> "changes pushed, re-review needed").
 - If CI checks are now passing that were previously failing, update the item.
+
+**PR status claims.** Before an item says a PR "needs review", is "ready to merge" or "independent", or that {{USER_NAME}} should ask someone, check, this run, from the fields above:
+
+1. **Whether review is what's missing.** `reviewDecision` is set only when branch protection or a ruleset requires reviews: `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`. Empty means no approval is required, so "needs review" is wrong. `mergeStateStatus` then says what actually stops the merge: `BLOCKED` (a required review or check), `BEHIND` (needs the base merged in), `DIRTY` (conflicts), `UNSTABLE` (a failing check) or `CLEAN` (ready). Don't read branch protection endpoints for this: a repo on rulesets returns 404 from `/protection`, and that endpoint 404s for non-admins too.
+2. **Who was asked.** `reviewRequests` lists only reviewers who haven't submitted yet. Read `latestReviews` for those who have. Name them; name a `Team` entry as the team, as in the direct-vs-team buckets above. Never write "ask X" or "no reviewer yet" without checking both.
+3. **Functional dependencies.** A PR depends on another PR, in any repo, when its feature only works once that one lands, even if it merges cleanly and does nothing alone (flag, config and chart PRs count). Look in this PR's `body` and in the bodies of the PRs already fetched this run. Never call such a PR independent or suggest merging it alone: say what it waits on.
+4. **Summaries are leads, not facts.** A claim from a session transcript, an earlier action item or another agent's summary is re-checked against these fields before it is repeated.
+
+If a check can't run, write the claim as `[unverified — not queried this run]`.
 
 **When an action item references code work, check for related PRs:**
 
