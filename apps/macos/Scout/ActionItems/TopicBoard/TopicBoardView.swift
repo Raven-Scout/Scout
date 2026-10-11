@@ -59,7 +59,7 @@ struct TopicBoardView: View {
                 BoardSideListsView(
                     inbox: SideEntry.entries(inSectionTitled: "Inbox", of: sections, dismissed: dismissed),
                     looseEnds: SideEntry.entries(inSectionTitled: "Loose ends", of: sections, dismissed: dismissed),
-                    done: DoneEntry.entries(sections: sections, fileDate: fileDate, doneDates: doneDates, range: doneRange, today: .now),
+                    done: DoneEntry.entries(sections: sections, doneDates: doneDates, range: doneRange, today: .now),
                     doneRange: $doneRange,
                     onDismiss: dismissAction
                 )
@@ -72,11 +72,21 @@ struct TopicBoardView: View {
         .task(id: sections) {
             writeError = nil
             reloadBoardFiles()
+            pruneOpenRows()
             let directory = actionItemsDirectory
             let day = fileDate
             doneDates = await Task.detached { DoneHistory.load(from: directory, upTo: day) }.value
             canWrite = await writerBox.boardWriter.supportsBoardWrites()
         }
+    }
+
+    /// Forgets open rows that are no longer on today's board. Past days are
+    /// left alone, so browsing them doesn't close today's rows.
+    private func pruneOpenRows() {
+        guard Calendar.current.isDateInToday(fileDate) else { return }
+        let items = TopicBoard.boardItems(sections: sections, metas: topics, today: .now)
+        let live = Set(items.map { StepRowView.expansionKey($0.key) } + items.map(\.topicKey) + [Self.holdKey])
+        openRaw = BoardExpansion.pruned(openRaw, keeping: live)
     }
 
     private func isOpen(_ key: String) -> Binding<Bool> {

@@ -14,8 +14,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   filters the board. Sub-steps (`- Parent:`) nest under their parent. A Mine
   step shows its next action as a chip; the chip or the hover bubble opens an
   inline "What should Claude do?" box that sends the note to the item's own
-  session (resume a local one, open a cloud one, or start a new one). Done
-  shows this week, today or yesterday. Open rows are remembered. Tab walks
+  session (resume a local one from its own folder, open a cloud one, or
+  start a new one). Done shows this week, today or yesterday. Open rows are remembered. Tab walks
   the rows; Space expands one and Return asks Claude. A topic shows the
   user's own name from `action-items/topic-names.md` when there is one.
   Task edits stay in List.
@@ -27,6 +27,18 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   which runs never write. Both are hidden while the installed engine doesn't
   advertise `topic_board_v1`, and show once it does, without a relaunch. A
   failed save shows scoutctl's reason.
+
+### Changed
+- When a section or board column has more rows than it shows, a
+  "Showing 20 of 53 · Show 20 more" line now sits right under its header, not
+  only at the bottom of the list. When 21–40 rows are hidden, both lines also
+  offer **Show all**. The 20-row page size is unchanged (Raven-Scout/Scout#356).
+
+### Fixed
+- Action Items search matches a task's `[#TAG]` (typed with or without the
+  `#`). Before, searching a tag found nothing, so a task beyond a section's
+  first 20 rows could only be found with **Show more** or by searching its
+  title (Raven-Scout/Scout#356).
 
 ## [0.16.0] - 2026-10-11
 

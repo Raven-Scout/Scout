@@ -32,6 +32,14 @@ nonisolated struct TaskWindow: Equatable, Sendable {
         tasks.count - visible(tasks).count
     }
 
+    /// "Showing 20 of 53" for the row above a windowed list, or `nil` when
+    /// every row is built. The footer alone was easy to miss: a task past the
+    /// window looked missing from the app (#356).
+    func summary(in tasks: [ActionTask]) -> String? {
+        guard hiddenCount(in: tasks) > 0 else { return nil }
+        return "Showing \(visible(tasks).count) of \(tasks.count)"
+    }
+
     /// How many rows the next ``showMore()`` adds, for the button label.
     /// Measured rather than assumed to be a page: sub-task runs at either
     /// boundary move the cut.
@@ -43,6 +51,28 @@ nonisolated struct TaskWindow: Equatable, Sendable {
 
     mutating func showMore() {
         limit += Self.pageSize
+    }
+
+    /// Most hidden rows "Show all" builds in one go: two pages. Past that a
+    /// single click would bring back the eager-layout freeze this type exists
+    /// to prevent.
+    static let showAllLimit = 40
+
+    /// Whether to offer "Show all": more is hidden than the next page reveals,
+    /// but no more than ``showAllLimit``. When the next page already reveals
+    /// everything, "Show N more" says the same thing.
+    func canShowAll(in tasks: [ActionTask]) -> Bool {
+        let hidden = hiddenCount(in: tasks)
+        return hidden > nextPageCount(in: tasks) && hidden <= Self.showAllLimit
+    }
+
+    /// Builds every row of `tasks`, but never more than ``showAllLimit`` beyond
+    /// what is built now: a caller that passes a longer list than the row
+    /// counted (the unfiltered section behind a search, say) mustn't unwindow
+    /// the backlog. Rows a later reparse adds stay windowed.
+    mutating func showAll(in tasks: [ActionTask]) {
+        let capped = min(tasks.count, visible(tasks).count + Self.showAllLimit)
+        limit = max(limit, capped)
     }
 
     /// Grows the window a page at a time until row `index` is built.

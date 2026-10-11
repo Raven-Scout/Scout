@@ -7,14 +7,20 @@ import AppKit
 /// it pre-filled.
 enum BoardPromptSender {
     enum Route: Equatable {
-        case resume(id: String)
+        case resume(id: String, folder: URL)
         case open(URL)
         case newSession
     }
 
-    static func route(for session: String?) -> Route {
+    /// A local session resumes only when its transcript says which folder it
+    /// ran in: `claude --resume` finds a session from that folder alone.
+    /// Without it, the note starts a new session instead.
+    static func route(
+        for session: String?,
+        folderFor: (String) -> URL? = { ClaudeSessionFolder.folder(forSessionID: $0) }
+    ) -> Route {
         switch session.map(SessionReference.init) {
-        case .local(let id): .resume(id: id)
+        case .local(let id): folderFor(id).map { .resume(id: id, folder: $0) } ?? .newSession
         case .cloud(let url): .open(url)
         case .unknown, nil: .newSession
         }
@@ -38,16 +44,27 @@ enum BoardPromptSender {
     static func send(_ prompt: String, session: String?, scoutDirectory: URL, cli: CLIConfig) throws -> String {
         let route = route(for: session)
         switch route {
-        case .resume(let id):
+        case .resume(let id, let folder):
             copy(prompt)
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: scoutDirectory, config: cli)
+            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cli)
         case .open(let url):
             copy(prompt)
             NSWorkspace.shared.open(url)
         case .newSession:
-            try ClaudeLauncher.launch(target: .claudeDesktop(.code(folder: scoutDirectory)), prompt: prompt)
+            try startSession(prompt, in: scoutDirectory, cli: cli)
         }
         return confirmation(for: route)
+    }
+
+    /// A new Claude Code session in Claude Desktop, or in the terminal set in
+    /// Settings when Claude Desktop isn't installed.
+    @MainActor
+    private static func startSession(_ prompt: String, in folder: URL, cli: CLIConfig) throws {
+        do {
+            try ClaudeLauncher.launch(target: .claudeDesktop(.code(folder: folder)), prompt: prompt)
+        } catch ClaudeLauncher.LaunchError.claudeDesktopNotInstalled {
+            try ClaudeLauncher.launch(target: .cli(cwd: folder, config: cli), prompt: prompt)
+        }
     }
 
     @MainActor

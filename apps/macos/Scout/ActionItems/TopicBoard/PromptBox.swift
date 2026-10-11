@@ -13,7 +13,7 @@ struct PromptBox: View {
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
     @State private var draft = ""
     @State private var note: String?
-    @State private var failed = false
+    @State private var failure: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -41,10 +41,12 @@ struct PromptBox: View {
                     .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("Cancel") { isOpen = false }
                     .buttonStyle(.bordered)
-                if failed {
-                    Text("Couldn't send. Try again.")
+                if let failure {
+                    Text(failure)
                         .font(DS.sans(12))
                         .foregroundStyle(DS.Status.err)
+                        .lineLimit(2)
+                        .help(failure)
                 }
             }
         }
@@ -70,14 +72,14 @@ struct PromptBox: View {
                 scoutDirectory: scoutDirectory,
                 cli: cli
             )
-            failed = false
+            failure = nil
             draft = ""
             Task {
                 try? await Task.sleep(for: .seconds(2.5))
                 isOpen = false
             }
         } catch {
-            failed = true
+            failure = "Couldn't send: \(error.localizedDescription)"
         }
     }
 }
