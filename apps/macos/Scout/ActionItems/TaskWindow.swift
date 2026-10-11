@@ -66,10 +66,13 @@ nonisolated struct TaskWindow: Equatable, Sendable {
         return hidden > nextPageCount(in: tasks) && hidden <= Self.showAllLimit
     }
 
-    /// Builds every row of `tasks`. Rows a later reparse adds past them stay
-    /// windowed.
+    /// Builds every row of `tasks`, but never more than ``showAllLimit`` beyond
+    /// what is built now: a caller that passes a longer list than the row
+    /// counted (the unfiltered section behind a search, say) mustn't unwindow
+    /// the backlog. Rows a later reparse adds stay windowed.
     mutating func showAll(in tasks: [ActionTask]) {
-        limit = max(limit, tasks.count)
+        let capped = min(tasks.count, visible(tasks).count + Self.showAllLimit)
+        limit = max(limit, capped)
     }
 
     /// Grows the window a page at a time until row `index` is built.

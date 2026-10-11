@@ -140,6 +140,17 @@ struct TaskWindowTests {
         #expect(window.hiddenCount(in: grown) > 0)
     }
 
+    @Test("show all never grows the window by more than the limit")
+    func showAllIsCapped() {
+        // A caller handing over a bigger list than the row counted (say, the
+        // unfiltered section behind a search) must not unwindow a backlog:
+        // once the search clears, every row would be built at once.
+        let backlog = tasks(944)
+        var window = TaskWindow()
+        window.showAll(in: backlog)
+        #expect(window.visible(backlog).count == TaskWindow.pageSize + TaskWindow.showAllLimit)
+    }
+
     @Test("reveal grows the window until the row is built")
     func revealBuildsTheRow() {
         let all = tasks(TaskWindow.pageSize * 5)
