@@ -16,15 +16,24 @@ first.** The two have different languages, test runners, and release flows.
 
 - **`.claude-plugin/marketplace.json` lives at the REPO ROOT**, not in `plugin/`.
   `claude plugin marketplace add` reads it from there. `plugin.json` — the
-  canonical version — lives at `plugin/.claude-plugin/plugin.json`.
+  canonical version — lives at `plugin/.claude-plugin/plugin.json`. Its scout
+  entry pins a `git-subdir` source to the **`stable` branch** (#362), so installs
+  get the latest release, never `main`'s tip. Only `release.sh finalize` moves
+  `stable`. Never point the entry back at `"./plugin"`, and never push `stable`
+  by hand except to run the recovery command `finalize` prints.
 - **Everything the plugin needs at runtime must stay under `plugin/`.**
   `CLAUDE_PLUGIN_ROOT` resolves to the materialized `plugin/` subtree only; a
   plugin file that reaches outside it is broken for every installed user, and
   nothing in this repo will tell you.
-- **Tags are prefixed:** `plugin/vX.Y.Z`, `app/vX.Y.Z`. Never push a bare
-  `vX.Y.Z` — the two artifacts collided on `v0.5.0`–`v0.13.0` before the merge.
-  The bare `v*` tags in this repo are the plugin's pre-monorepo releases; the
-  app's were re-tagged `app/vX.Y.Z`.
+- **One version, one tag, one release.** Scout's app and plugin share one version `X.Y.Z`. It lives in
+  `plugin/.claude-plugin/plugin.json`, the root `marketplace.json`, `plugin/engine/pyproject.toml`,
+  `plugin/engine/scout/__init__.py`, and every `MARKETING_VERSION` in `apps/macos/Scout.xcodeproj`;
+  `versioning check` (CI: `contract`) fails on drift. From v0.16.0 every release is ONE tag `vX.Y.Z`, cut
+  with `scripts/release.sh prepare` then `finalize`; release candidates are `vX.Y.Z-rc.N`, cut with `rc` from
+  `release/vX.Y.Z`. Never create `app/v*` or `plugin/v*` tags (sole exception before v0.16.0: an urgent
+  `plugin/v0.15.x` patch via `plugin/scripts/release-plugin.sh`); the existing ones (`app/v0.1.0`–`app/v0.14.0`,
+  `plugin/v0.14.0`, `plugin/v0.15.0`) are history. The app was never released as 0.15.0. Bare `v0.4.0`–`v0.13.0` are the plugin's pre-monorepo releases. Agents never
+  run `finalize`/`rc` for real.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is

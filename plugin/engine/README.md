@@ -34,8 +34,9 @@ install methods are all supported:
 - **Claude Code marketplace** — Claude Code clones the marketplace repo to
   `~/.claude/plugins/marketplaces/<marketplace>/` and runs the plugin from a
   versioned copy under `~/.claude/plugins/cache/<marketplace>/scout/<version>/`.
-  In a `Raven-Scout/Scout` clone the plugin is the `plugin/` subdirectory (the
-  marketplace's `"source": "./plugin"`), so the clone-side venv is
+  The versioned copy comes from the `stable` branch (the latest release), while
+  the clone tracks `main`. In a `Raven-Scout/Scout` clone the plugin is the
+  `plugin/` subdirectory, so the clone-side venv is
   `marketplaces/<marketplace>/plugin/.venv`; a legacy `scout-plugin` clone has
   it at the clone root. `engine/bin/scoutctl` probes both when it runs from
   `cache/`.

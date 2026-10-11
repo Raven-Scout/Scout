@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from scout.action_items.task_fields import TaskFields, apply_field, field_owner, match_field_line
 from scout.ids import leading_prefix_pattern
 
 
@@ -32,6 +33,7 @@ class ActionItem:
     raw_line: str = ""
     line_number: int = 0
     short_prefix: str | None = None
+    fields: TaskFields = field(default_factory=TaskFields)
 
 
 PRIORITY_MAP = {
@@ -151,6 +153,13 @@ def parse_lines(lines: list[str]) -> list[ActionItem]:
 
         # Sub-bullets (indented) belong to current item
         if indent >= 2 and current_item:
+            # Board fields are metadata on the task line that owns them, not
+            # context: they never land in `details`.
+            task_field = match_field_line(line)
+            if task_field is not None:
+                if field_owner(lines, i - 1) == current_item.line_number - 1:
+                    current_item.fields = apply_field(current_item.fields, *task_field)
+                continue
             # Extract links from sub-bullets
             urls = URL_PATTERN.findall(content)
             current_item.context_links.extend(urls)

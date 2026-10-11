@@ -71,6 +71,62 @@ def test_freshness_hours_priority_only_in_first_25_lines(tmp_path):
     assert freshness_hours_for(f) == 168
 
 
+def test_freshness_hours_comment_naming_the_key_does_not_shadow_it(tmp_path):
+    """#240: a comment that mentions `priority:` used to win over the key."""
+    f = tmp_path / "proj.md"
+    f.write_text(
+        "---\n"
+        "# the `priority:` key is hoisted above the provenance log so it stays\n"
+        "# inside HEAD_SCAN_LINES\n"
+        'name: "example-suite"\n'
+        "last_updated: 2026-09-16\n"
+        'priority: "high 🔴"\n'
+        "---\n"
+    )
+    assert freshness_hours_for(f) == 72
+
+
+def test_freshness_hours_value_mentioning_the_key_does_not_shadow_it(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\nsummary: Sam set priority: low on the old ticket\npriority: 🔴\n---\n")
+    assert freshness_hours_for(f) == 72
+
+
+def test_freshness_hours_body_mention_does_not_count(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\nname: x\n---\n# Project\n\n| rule | sort by `priority: 🔴` first |\n")
+    assert freshness_hours_for(f) == 168
+
+
+def test_freshness_hours_frontmatter_key_beats_a_body_marker(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\npriority: 🟢\n---\n> **Priority:** 🔴 for this week only\n")
+    assert freshness_hours_for(f) == 336
+
+
+def test_freshness_hours_reads_a_prose_priority_marker(tmp_path):
+    f = tmp_path / "proj.md"
+    for marker in ("> **Priority:** 🔴 launch week", "- **Priority:** 🔴", "Priority: 🔴"):
+        f.write_text(f"# Project\n\n{marker}\n")
+        assert freshness_hours_for(f) == 72, marker
+
+
+def test_freshness_hours_ignores_an_emoji_in_the_keys_trailing_comment(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\npriority: 🟡  # was 🔴 until the launch\n---\n")
+    assert freshness_hours_for(f) == 168
+
+
+def test_freshness_hours_reads_the_key_past_the_head_window_in_long_frontmatter(tmp_path):
+    """#230's long-frontmatter case, for priority: the whole block is read."""
+    f = tmp_path / "proj.md"
+    filler = [f"# provenance {i}" for i in range(40)]
+    f.write_text("\n".join(["---", "last_updated: 2026-09-10", *filler, "priority: 🔴", "---", "# Project"]) + "\n")
+    assert freshness_hours_for(f) == 72
+    label, details = classify(f, datetime(2026, 9, 17, tzinfo=ZoneInfo("UTC")), tmp_path, tz=ZoneInfo("UTC"))
+    assert (label, details["budget_hours"]) == ("STALE", 72)
+
+
 # -- extract_date_string ------------------------------------------------------
 
 
@@ -432,6 +488,8 @@ def test_run_handles_empty_kb(tmp_path, monkeypatch):
         "stale": 0,
         "no_date": 0,
         "fresh": 0,
+        "scanned": 0,
+        "roots": ["knowledge-base"],
         "dated_by": {"property": 0, "prose": 0},
         "session_type": "dreaming",
         "output_path": str(tmp_path / ".scout-cache" / "kb-filter.md"),
@@ -596,3 +654,86 @@ def test_discover_kb_files_does_not_follow_symlink_loop(tmp_path):
     t.join(timeout=10)
     assert not t.is_alive(), "discover_kb_files hung on a symlink loop"
     assert not error, f"discover_kb_files raised: {error}"
+
+
+# -- the meetings/ root (#217) -----------------------------------------------
+
+
+def _make_meetings(root: Path) -> Path:
+    meetings = root / "meetings"
+    (meetings / "weekly-sync").mkdir(parents=True)
+    (meetings / "meetings.md").write_text("x")
+    (meetings / "weekly-sync" / "weekly-sync.md").write_text("x")
+    (meetings / "weekly-sync" / "2026-09-14.md").write_text("x")
+    (meetings / "weekly-sync" / "2026-09-21-offsite.md").write_text("x")
+    return meetings
+
+
+def _rels(root: Path) -> list[str]:
+    return [p.relative_to(root).as_posix() for p in discover_kb_files(root)]
+
+
+def test_discover_walks_the_top_level_meetings_tree(tmp_path):
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("x")
+    _make_meetings(tmp_path)
+    assert _rels(tmp_path) == [
+        "knowledge-base/people.md",
+        "meetings/meetings.md",
+        "meetings/weekly-sync/weekly-sync.md",
+    ]  # dated session files are per-meeting records, not ranked
+
+
+def test_discover_tells_session_files_from_home_files(tmp_path):
+    _make_kb(tmp_path)
+    one_off = tmp_path / "meetings" / "2026-09-14-offsite"
+    one_off.mkdir(parents=True)
+    for name in ("2026-09-14-offsite.md", "2026-09-14_notes.md", "2026-09-14.prep.md", "2026-09-14 recap.md"):
+        (one_off / name).write_text("x")
+    (tmp_path / "meetings" / "2026-09-30.md").write_text("x")
+    assert _rels(tmp_path) == [
+        "meetings/2026-09-14-offsite/2026-09-14-offsite.md",  # the home file of a date-named meeting
+        "meetings/2026-09-30.md",  # directly under meetings/, not a session file
+    ]
+
+
+def test_discover_without_a_meetings_tree_is_unchanged(tmp_path):
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("x")
+    assert _rels(tmp_path) == ["knowledge-base/people.md"]
+
+
+def test_discover_applies_the_path_rules_inside_meetings(tmp_path):
+    _make_kb(tmp_path)
+    meetings = _make_meetings(tmp_path)
+    (meetings / "archive").mkdir()
+    (meetings / "archive" / "old-sync.md").write_text("x")
+    (meetings / "weekly-sync" / "agenda-draft.md").write_text("x")
+    assert not any("archive" in r or "draft" in r for r in _rels(tmp_path))
+
+
+def test_record_folder_names_are_only_skipped_under_knowledge_base(tmp_path):
+    """#335's skips name knowledge-base/ folders; a meeting slug that shares a name still ranks."""
+    _make_kb(tmp_path)
+    (tmp_path / "meetings" / "session-log").mkdir(parents=True)
+    (tmp_path / "meetings" / "session-log" / "session-log.md").write_text("x")
+    assert _rels(tmp_path) == ["meetings/session-log/session-log.md"]
+
+
+def test_run_ranks_meetings_and_prints_the_denominator(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    kb = _make_kb(tmp_path)
+    (kb / "people.md").write_text("# People\n\nLast Updated: 2026-04-27 12:00\n")
+    meetings = _make_meetings(tmp_path)
+    (meetings / "weekly-sync" / "weekly-sync.md").write_text("---\nlast_updated: 2026-04-01\n---\n# Weekly sync\n")
+
+    now = datetime(2026, 4, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    event = run(session_type="dreaming", now=now)
+
+    assert event is not None
+    assert (event.payload["stale"], event.payload["no_date"], event.payload["fresh"]) == (1, 1, 1)
+    assert event.payload["scanned"] == 3
+    assert event.payload["roots"] == ["knowledge-base", "meetings"]
+    content = (tmp_path / ".scout-cache" / "kb-filter.md").read_text()
+    assert "**meetings/weekly-sync/weekly-sync.md**" in content
+    assert "Scanned: 3 files across knowledge-base/, meetings/" in content

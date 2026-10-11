@@ -55,20 +55,6 @@ enum WriteOp: Sendable {
         }
     }
 
-    /// Return a copy of this op with its short prefix replaced. Used by the
-    /// writer's safety-net to promote an unprefixed op to `--by-id` after a
-    /// just-in-time backfill mints a prefix for the target line.
-    func withShortPrefix(_ prefix: String) -> WriteOp {
-        switch self {
-        case .addComment(let s, _, let t, let a): return .addComment(subject: s, shortPrefix: prefix, text: t, author: a)
-        case .deleteComment(let s, _, let sel):   return .deleteComment(subject: s, shortPrefix: prefix, selector: sel)
-        case .editComment(let s, _, let sel, let n): return .editComment(subject: s, shortPrefix: prefix, selector: sel, newText: n)
-        case .markDone(let s, _):                 return .markDone(subject: s, shortPrefix: prefix)
-        case .reopen(let s, _):                   return .reopen(subject: s, shortPrefix: prefix)
-        case .snooze(let s, _, let u, let fk):    return .snooze(subject: s, shortPrefix: prefix, until: u, fromKind: fk)
-        }
-    }
-
     /// scoutctl subcommand under `action-items`.
     fileprivate var scoutctlSubcommand: String {
         switch self {
@@ -200,14 +186,13 @@ actor ActionItemsWriter {
     /// Submit a write. Submissions are strictly serialized — only one CLI
     /// runs end-to-end at a time, even across concurrent callers.
     @discardableResult
-    func submit(_ op: WriteOp, displayedDate: Date, recoveryLineNumber: Int? = nil) async throws -> WriteResult {
+    func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
         let previous = tail
         let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
             _ = await previous?.value
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
-                recoveryLineNumber: recoveryLineNumber,
                 scoutctl: scoutctl,
                 argumentsPrefix: argumentsPrefix,
                 actionItemsDirectory: actionItemsDirectory,
@@ -220,31 +205,9 @@ actor ActionItemsWriter {
         return try await task.value
     }
 
-    /// Read the `[#XXXX]` prefix on a specific 1-based line of an action-items
-    /// file, or nil if that line has no prefix / doesn't exist. Used by the
-    /// safety-net after a just-in-time backfill — line numbers are stable
-    /// because `backfill_prefixes` edits lines in place (no insert/remove).
-    static func shortPrefix(inFile url: URL, atLine line: Int) -> String? {
-        guard line >= 1,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let lines = text.components(separatedBy: "\n")
-        guard line <= lines.count else { return nil }
-        let target = lines[line - 1]
-        // Grammar matches the parser: 2–8 [A-Z0-9] with ≥1 letter (capture
-        // group 1); rejects pure-numeric GitHub issue refs like `[#555]`.
-        guard let re = try? NSRegularExpression(
-            pattern: #"^\s*- \[[ xX]\] \[#(?=[A-Z0-9]{2,8}\])([A-Z0-9]*[A-Z][A-Z0-9]*)\]"#
-        ) else { return nil }
-        let range = NSRange(target.startIndex..., in: target)
-        guard let m = re.firstMatch(in: target, range: range),
-              let r = Range(m.range(at: 1), in: target) else { return nil }
-        return String(target[r])
-    }
-
     private static func perform(
         op: WriteOp,
         displayedDate: Date,
-        recoveryLineNumber: Int?,
         scoutctl: URL,
         argumentsPrefix: [String],
         actionItemsDirectory: URL,
@@ -269,35 +232,10 @@ actor ActionItemsWriter {
 
         let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
         if result.exitCode != 0 {
+            // No retry on .noMatch: the list is stale, so the line a task was on
+            // may now hold another task. The caller reparses and the user
+            // acts on the fresh list.
             let cls = Self.classify(exitCode: result.exitCode, stderr: stderr)
-            // Safety net: an unprefixed op missed on --subject. Mint prefixes via a
-            // one-shot backfill, then retry by stable id. One attempt only.
-            if cls == .noMatch, op.shortPrefix == nil, let line = recoveryLineNumber {
-                _ = try? await runner.run(
-                    executable: scoutctl,
-                    arguments: argumentsPrefix + ["action-items", "backfill-prefixes", dailyFile.path],
-                    environment: [:], workingDirectory: scoutDirectory)
-                if let prefix = Self.shortPrefix(inFile: dailyFile, atLine: line) {
-                    let retryOp = op.withShortPrefix(prefix)
-                    let retry: ProcessResult
-                    do {
-                        retry = try await runner.run(
-                            executable: scoutctl,
-                            arguments: argumentsPrefix + retryOp.scoutctlArguments(dailyFilePath: dailyFile),
-                            environment: [:], workingDirectory: scoutDirectory)
-                    } catch { throw ActionItemsWriterError.processFailed(error) }
-                    let retryStderr = String(data: retry.stderr, encoding: .utf8) ?? ""
-                    if retry.exitCode == 0 {
-                        let slug = Self.slugify(op.subject)
-                        let rel = Self.relativePathInRepo(fileURL: dailyFile, repo: scoutDirectory)
-                        try? await gitService?.commitPaths([rel], message: "action-items: \(op.verb) \(slug)")
-                        return WriteResult(stderr: retryStderr)
-                    }
-                    throw ActionItemsWriterError.cliNonZeroExit(
-                        exitCode: retry.exitCode, stderr: retryStderr,
-                        classification: Self.classify(exitCode: retry.exitCode, stderr: retryStderr))
-                }
-            }
             throw ActionItemsWriterError.cliNonZeroExit(
                 exitCode: result.exitCode, stderr: stderr, classification: cls)
         }
@@ -319,11 +257,13 @@ actor ActionItemsWriter {
         return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : fileURL.lastPathComponent
     }
 
+    /// Exit codes from `plugin/engine/scout/errors.py`: `ActionItemNotFound`
+    /// exits 22 and `ActionItemAmbiguous` 23. Exit 2 is Click's usage error,
+    /// which an engine older than the app prints for a flag it lacks.
     private static func classify(exitCode: Int32, stderr: String) -> ActionItemsWriterError.Classification {
         switch exitCode {
-        case 2: return .noMatch
-        case 3: return .ambiguous
-        case 1, 4, 5: return .other
+        case 22: return .noMatch
+        case 23: return .ambiguous
         default:
             let s = stderr.lowercased()
             if s.contains("no such option") || s.contains("no module named") || s.contains("command not found") {

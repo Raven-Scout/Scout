@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scout import paths
+from scout.action_items.task_fields import match_field_line
 from scout.action_items.writer import atomic_write_lines
 from scout.ids import leading_prefix_pattern
 
@@ -131,10 +132,16 @@ def task_blocks(lines: list[str]) -> list[TaskBlock]:
 
 
 def _fingerprints(lines: list[str]) -> dict[str, str]:
-    """Tag → digest of its block text. Rows sharing a tag hash together."""
+    """Tag → digest of its block text. Rows sharing a tag hash together.
+
+    Board-field lines (`- Priority:`, `- Cycle:`, …) are left out: a run
+    refreshing them from Linear is not the item being worked on.
+    """
     parts: dict[str, list[str]] = {}
     for b in task_blocks(lines):
-        parts.setdefault(b.tag, []).extend(ln.rstrip() for ln in lines[b.start : b.end] if ln.strip())
+        parts.setdefault(b.tag, []).extend(
+            ln.rstrip() for ln in lines[b.start : b.end] if ln.strip() and match_field_line(ln) is None
+        )
     return {tag: hashlib.sha256("\n".join(body).encode("utf-8")).hexdigest() for tag, body in parts.items()}
 
 

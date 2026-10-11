@@ -48,6 +48,15 @@ def _cc_encode(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
+def _ts(dt: datetime) -> str:
+    """A record timestamp the way Claude Code writes it."""
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _ago(hours: float) -> str:
+    return _ts(NOW - timedelta(hours=hours))
+
+
 def _user(text: str, ts: str) -> dict:
     return {"type": "user", "timestamp": ts, "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
@@ -102,7 +111,7 @@ def _world(fake_data_dir: Path, *, gh_ok: bool = True, use_gh: bool = True) -> B
         h,
         REPO_DIR + "--claude-worktrees-w1",
         UA,
-        [_user("fix it", "2026-09-08T10:00:00.000Z"), _assistant_text("Which file?", "2026-09-08T10:00:05.000Z")],
+        [_user("fix it", _ago(2.1)), _assistant_text("Which file?", _ago(2))],
         mtime_ago_hours=2,
     )
     write_pid_file(h, 4242, UA, "/Users/alex/code/example-repo/.claude/worktrees/w1")
@@ -130,9 +139,7 @@ def _world(fake_data_dir: Path, *, gh_ok: bool = True, use_gh: bool = True) -> B
     # Groups: A → "Example Repo", B → "Archived".
     write_desktop_config(s, {"cg-1": "Example Repo", "cg-arch": "Archived"}, {"local_A": "cg-1", "local_B": "cg-arch"})
     # E: CLI-only session, recent.
-    write_transcript(
-        h, "-Users-alex-code-other", UE, [_user("cli only work", "2026-09-08T09:00:00.000Z")], mtime_ago_hours=3
-    )
+    write_transcript(h, "-Users-alex-code-other", UE, [_user("cli only work", _ago(3))], mtime_ago_hours=3)
     # F: Scout's own scheduled run inside the vault (custom-title first line).
     vault_dir = _cc_encode(str(fake_data_dir))
     write_transcript(
@@ -141,14 +148,12 @@ def _world(fake_data_dir: Path, *, gh_ok: bool = True, use_gh: bool = True) -> B
         UF,
         [
             {"type": "custom-title", "customTitle": "scout-morning-briefing-20260908-1150", "sessionId": UF},
-            _user("You are Scout…", "2026-09-08T11:50:00.000Z"),
+            _user("You are Scout…", _ago(0.2)),
         ],
         mtime_ago_hours=0.2,
     )
     # G: CLI-only but 20 days old → outside transcript window, excluded.
-    write_transcript(
-        h, "-Users-alex-code-old", UG, [_user("ancient", "2026-08-19T09:00:00.000Z")], mtime_ago_hours=20 * 24
-    )
+    write_transcript(h, "-Users-alex-code-old", UG, [_user("ancient", _ago(20 * 24))], mtime_ago_hours=20 * 24)
     return BuildOptions(
         data_dir=fake_data_dir,
         settings=AgentSessionsSettings(),
@@ -218,7 +223,7 @@ def test_vault_dir_with_a_space_and_underscore_still_matches_its_transcripts(fak
         UH,
         [
             {"type": "custom-title", "customTitle": "scout-dreaming-20260908-1830", "sessionId": UH},
-            _user("You are Scout…", "2026-09-08T18:30:00.000Z"),
+            _user("You are Scout…", _ago(0.5)),
         ],
         mtime_ago_hours=0.5,
     )
@@ -353,7 +358,7 @@ def test_non_string_text_part_in_a_transcript_never_aborts_the_build(fake_data_d
         UE,
         [
             {"type": "user", "message": {"content": [{"type": "text", "text": {"nested": "x"}}]}},
-            _user("cli only work", "2026-09-08T09:00:00.000Z"),
+            _user("cli only work", _ago(3)),
         ],
         mtime_ago_hours=3,
     )
@@ -881,3 +886,126 @@ def test_list_main_reports_an_unreadable_index(fake_data_dir: Path, capsys: pyte
     index_path(fake_data_dir).write_text("{half an index", encoding="utf-8")
     rc, out, err = _list(capsys)
     assert rc == 1 and out == "" and err.startswith("session list: could not read the index: ")
+
+
+# ----- last activity is the last record, not the file mtime (#211) --------------------
+
+UX = "77777777-0000-0000-0000-000000000000"
+UY = "66666666-0000-0000-0000-000000000000"
+
+
+def _session(idx: Index, sid: str):  # noqa: ANN202
+    return next(s for s in idx.sessions if s.id == sid)
+
+
+def test_a_touched_transcript_keeps_its_last_record_time(fake_data_dir: Path) -> None:
+    """Something other than the user rewrote the file today; its last record is three days old."""
+    opts = _world(fake_data_dir)
+    last = NOW - timedelta(days=3)
+    write_transcript(
+        claude_home(),
+        "-Users-alex-code-sandbox",
+        UX,
+        [_user("try the prototype", _ts(last - timedelta(minutes=5))), _assistant_text("Done.", _ts(last))],
+        mtime_ago_hours=0.5,
+    )
+    s = _session(build_index(opts), f"cli:{UX}")
+    assert s.last_activity_at == dt_to_iso(last)
+
+    run(opts=opts, render=True, tz_name="UTC")
+    digest = (fake_data_dir / ".scout-cache" / "cc-sessions.md").read_text(encoding="utf-8")
+    assert "try the prototype" not in digest.split("## Activity", 1)[1]  # outside the 24h window
+
+
+def test_a_desktop_session_takes_its_last_record_over_the_mtime(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    write_desktop_record(support_dir(), "local_X", cliSessionId=UY, lastActivityAt=MS - 5 * 3_600_000)
+    last = NOW - timedelta(hours=4)
+    write_transcript(
+        claude_home(), "-Users-alex-code-sandbox", UY, [_user("check the build", _ts(last))], mtime_ago_hours=0.1
+    )
+    assert _session(build_index(opts), "local_X").last_activity_at == dt_to_iso(last)
+
+
+def test_a_desktop_session_outside_the_window_keeps_its_own_time(fake_data_dir: Path) -> None:
+    """Its transcript is never read, so a touched file must not move the record's time."""
+    opts = _world(fake_data_dir)
+    write_desktop_record(support_dir(), "local_X", cliSessionId=UY, lastActivityAt=MS - 60 * 86_400_000)
+    write_transcript(
+        claude_home(), "-Users-alex-code-sandbox", UY, [_user("old", _ago(60 * 24))], mtime_ago_hours=20 * 24
+    )
+    assert _session(build_index(opts), "local_X").last_activity_at == dt_to_iso(NOW - timedelta(days=60))
+
+
+def test_a_cli_only_session_whose_last_record_left_the_window_is_dropped(fake_data_dir: Path) -> None:
+    """Step 2 admits on the mtime; the last record decides (#211)."""
+    opts = _world(fake_data_dir)
+    write_transcript(
+        claude_home(), "-Users-alex-code-sandbox", UX, [_user("long ago", _ago(20 * 24))], mtime_ago_hours=1
+    )
+    idx = build_index(opts)
+    assert f"cli:{UX}" not in {s.id for s in idx.sessions}
+    assert idx.source_counts["cli_only"] == 2  # E and F from the world, as before
+
+
+def test_a_transcript_without_record_times_falls_back_to_its_mtime(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    path = write_transcript(
+        claude_home(),
+        "-Users-alex-code-sandbox",
+        UX,
+        [{"type": "user", "message": {"role": "user", "content": "no timestamp"}}],
+        mtime_ago_hours=1,
+    )
+    s = _session(build_index(opts), f"cli:{UX}")
+    assert s.last_activity_at == index_mod.ns_to_iso(path.stat().st_mtime_ns)
+
+
+# ----- a CLI-only session's directory comes from its records (#212) -------------------
+
+
+def _cwd_user(text: str, cwd: str) -> dict:
+    return {**_user(text, _ts(NOW - timedelta(hours=1))), "cwd": cwd}
+
+
+def test_a_cli_only_session_reads_its_directory_from_the_records(fake_data_dir: Path) -> None:
+    """`-Users-alex-code-data-tools` decodes to a path that does not exist; the record says which."""
+    opts = _world(fake_data_dir)
+    write_transcript(
+        claude_home(),
+        "-Users-alex-code-data-tools",
+        UX,
+        [_cwd_user("tidy the loader", "/Users/alex/code/data_tools")],
+    )
+    s = _session(build_index(opts), f"cli:{UX}")
+    assert s.origin_cwd == s.cwd == s.project_key == "/Users/alex/code/data_tools"
+
+
+def test_a_cli_only_session_without_cwd_records_is_kept_with_the_decoded_path(fake_data_dir: Path) -> None:
+    """No row names a cwd: the session stays in the index, under the lossy decode as before."""
+    opts = _world(fake_data_dir)
+    write_transcript(claude_home(), "-Users-alex-code-sandbox", UX, [_user("no cwd here", _ago(1))])
+    s = _session(build_index(opts), f"cli:{UX}")
+    assert s.origin_cwd == s.project_key == "/Users/alex/code/sandbox"
+    assert s.transcript is not None and s.transcript.first_prompt == "no cwd here"
+
+
+def test_the_record_matching_the_directory_name_wins(fake_data_dir: Path) -> None:
+    """A session that moved into a worktree records both; the project is the one its dir encodes."""
+    opts = _world(fake_data_dir)
+    write_transcript(
+        claude_home(),
+        "-Users-alex-code-example-suite",
+        UX,
+        [
+            {"type": "file-history-snapshot", "cwd": "/Users/alex/code/example-suite/.claude/worktrees/w2"},
+            _cwd_user("start", "/Users/alex/code/example-suite"),
+        ],
+    )
+    assert _session(build_index(opts), f"cli:{UX}").origin_cwd == "/Users/alex/code/example-suite"
+
+
+def test_a_session_whose_records_never_match_its_directory_uses_the_first_one(fake_data_dir: Path) -> None:
+    opts = _world(fake_data_dir)
+    write_transcript(claude_home(), "-Users-alex-code-old-name", UX, [_cwd_user("resume", "/Users/alex/code/new_name")])
+    assert _session(build_index(opts), f"cli:{UX}").origin_cwd == "/Users/alex/code/new_name"

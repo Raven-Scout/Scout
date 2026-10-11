@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scout.action_items.task_fields import TASK_FIELD_KEYS
 from scout.errors import ActionItemError
 from scout.ids import leading_prefix_pattern
 
@@ -116,7 +117,7 @@ COMMENT_DASH_RE = re.compile(
 # *metadata*, not conversation comments, and must not render as comments.
 # The closed vocabulary is defined by the briefing format in
 # phases/core/action-items.md (Source/Context/Evidence/Completed/…) plus the
-# machine `snoozed-until` marker. Matched case-insensitively.
+# machine `snoozed-until` marker and board fields. Matched case-insensitively.
 COMMENT_METADATA_KEYS = frozenset(
     {
         "source",
@@ -127,6 +128,7 @@ COMMENT_METADATA_KEYS = frozenset(
         "current status",
         "snoozed-until",
     }
+    | TASK_FIELD_KEYS
 )
 
 

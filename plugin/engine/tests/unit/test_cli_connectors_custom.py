@@ -73,6 +73,40 @@ def test_malformed_input_flag_exits_2(vault: Path):
     assert result.exit_code == 2
 
 
+TIX_DEF = """\
+key: tix
+display_name: Tickets
+probe: {bash: tix whoami}
+needs_user_input: [team]
+inbound:
+  tools:
+    - bash: |
+        # fetch open tickets
+        tix list --team {{INPUT_TEAM}}
+  focus: Open tickets.
+"""
+
+
+@pytest.mark.parametrize("value", ["# Ops", "ops\nmore"])
+def test_validate_and_add_check_input_values(vault: Path, value: str):
+    """#344: a multi-line bash value is valid; a heading or multi-line input value is not."""
+    validate = ["connectors", "custom", "validate", "--file", "-"]
+    assert runner.invoke(app, [*validate, "--input", "team=ops"], input=TIX_DEF).exit_code == 0
+    for cmd in (validate, ["connectors", "custom", "add", "--file", "-", "--dry-run"]):
+        result = runner.invoke(app, [*cmd, "--input", f"team={value}"], input=TIX_DEF)
+        assert result.exit_code == 2
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "invalid"
+        assert [i["path"] for i in payload["issues"]] == ["connectors.tix.needs_user_input"]
+        assert value not in result.stdout
+
+
+def test_validate_malformed_input_flag_exits_2():
+    result = runner.invoke(app, ["connectors", "custom", "validate", "--file", "-", "--input", "novalue"], input=DEF)
+    assert result.exit_code == 2 and json.loads(result.stdout)["issues"][0]["path"] == "--input"
+    assert "novalue" not in result.stdout  # a bare secret passed without NAME= is never echoed
+
+
 def test_validate_list_remove_round_trip(vault: Path):
     assert runner.invoke(app, ["connectors", "custom", "validate", "--file", "-"], input=DEF).exit_code == 0
     runner.invoke(app, ["connectors", "custom", "add", "--file", "-"], input=DEF)

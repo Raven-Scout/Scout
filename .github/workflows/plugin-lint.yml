@@ -31,7 +31,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|apps/macos/scripts/|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|scripts/|apps/macos/scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/changed-paths\.sh$)'
 
   lint:
     needs: changes
@@ -66,7 +66,7 @@ jobs:
           shellcheck plugin/engine/bin/scoutctl
           # installer (repo root), both release scripts, and the PR-gating
           # script every workflow's `changes` job runs — error severity
-          shellcheck -S error install.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
+          shellcheck -S error install.sh scripts/*.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
           # all shell templates seeded into user vaults (placeholders don't
           # break shellcheck parsing) — error severity
           find plugin/templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error
@@ -97,8 +97,13 @@ jobs:
                   if key not in entry:
                       sys.exit(f"marketplace.json plugins[{i}] missing required key: {key!r}")
 
-          if plugins[0]["source"] != "./plugin":
-              sys.exit(f"marketplace.json source must be './plugin', got {plugins[0]['source']!r}")
+          # Marketplace installs follow the `stable` branch, which only
+          # `scripts/release.sh finalize` moves (#362). "./plugin" would serve
+          # main's tip under the last release's version.
+          pinned = {"source": "git-subdir", "url": "https://github.com/Raven-Scout/Scout.git",
+                    "path": "plugin", "ref": "stable"}
+          if plugins[0]["source"] != pinned:
+              sys.exit(f"marketplace.json source must be {pinned!r}, got {plugins[0]['source']!r}")
 
           print("plugin manifests valid")
           PY

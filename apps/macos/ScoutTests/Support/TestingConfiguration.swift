@@ -14,9 +14,10 @@ extension AppState.Configuration {
         runner: any ProcessRunner = StubRunner(
             result: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
         ),
-        // A fresh suite per graph: nothing to wipe, nothing shared between
-        // suites running in parallel, and no plist is ever written because
-        // nothing stores a value in it.
+        // A fresh suite per graph: nothing shared between suites running in
+        // parallel. A test whose graph STORES a value (e.g. the launch
+        // upgrade's failure memo) passes its own named suite and removes it
+        // with `removePersistentDomain(forName:)`, so no plist is left behind.
         defaults: UserDefaults = UserDefaults(suiteName: "scout.tests.\(UUID().uuidString)")!
     ) -> AppState.Configuration {
         // Never the real home — a test graph must never locate (or

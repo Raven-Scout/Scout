@@ -1,5 +1,5 @@
 {
-  "_doc": "Cross-language parser contract. Each entry is a raw action-item task line; both the Swift (scout-app) and Python (scout-plugin) parsers MUST reproduce expected exactly. Seeded with scout-app #10 failure modes. Canonical copy lives here. The same corpus will be asserted by scout-app's Swift ParserContractTests; the copies are kept byte-identical by a checksum guard added in M3.4. Field contract (matches scout-app/Scout/ActionItems/ActionItemsParser.swift, the reference parser): short_prefix = bare 2-8 char [A-Z0-9] tag (>=1 letter) extracted+removed from the line, else null; subject = leading title with bold/strike/wikilink markup RETAINED but with the [#XXXX] prefix removed; plain_subject = subject with markdown tokens stripped (the form the --subject substring matcher compares against); body = remainder after the first ' — '/' – '/' - ' separator found OUTSIDE bold/strike/code/wikilink/link tokens (else ''). Note: italic _(...)_ is NOT a separator, so trailing _(...)_ parentheticals stay in subject.",
+  "_doc": "Cross-language parser contract. Each entry is a raw action-item task line; both the Swift (scout-app) and Python (scout-plugin) parsers MUST reproduce expected exactly. Seeded with scout-app #10 failure modes. Canonical copy lives here. The same corpus will be asserted by scout-app's Swift ParserContractTests; the copies are kept byte-identical by a checksum guard added in M3.4. Field contract (matches scout-app/Scout/ActionItems/ActionItemsParser.swift, the reference parser): short_prefix = bare 2-8 char [A-Z0-9] tag (>=1 letter) extracted+removed from the line, else null; subject = leading title with bold/strike/wikilink markup RETAINED but with the [#XXXX] prefix removed; plain_subject = subject with markdown tokens stripped (the form the --subject substring matcher compares against); body = remainder after the first ' — '/' – '/' - ' separator found OUTSIDE bold/strike/code/wikilink/link tokens (else ''). Note: italic _(...)_ is NOT a separator, so trailing _(...)_ parentheticals stay in subject. Optional board fields: an entry may add sub_lines (indented lines under the task) with expected.fields (topic, parent, state, action, depends, session, priority, cycle) and expected.comment_authors; both are asserted on the top-level task only.",
   "entries": [
     {
       "name": "prefixed-emoji-bold",
@@ -132,6 +132,206 @@
         "plain_subject": "🟡 Renew passport",
         "body": "due 2026-11-15 · → [[personal/task-passport-renewal]]"
       }
+    },
+    {
+      "name": "fields-all",
+      "line": "- [ ] [#FLDA] **Reply to Alex about the demo** — still open",
+      "sub_lines": [
+        "  - Topic: #STRM",
+        "  - Parent: #RTALL",
+        "  - State: doing",
+        "  - Action: Reply",
+        "  - Depends: #XREF, [#QBLK]",
+        "  - Session: https://claude.ai/code/session_0123",
+        "  - Priority: 2",
+        "  - Cycle: Current",
+        "  - alex: pinged in thread"
+      ],
+      "expected": {
+        "short_prefix": "FLDA",
+        "subject": "**Reply to Alex about the demo**",
+        "plain_subject": "Reply to Alex about the demo",
+        "body": "still open",
+        "fields": {
+          "topic": "STRM",
+          "parent": "RTALL",
+          "state": "doing",
+          "action": "Reply",
+          "depends": [
+            "XREF",
+            "QBLK"
+          ],
+          "session": "https://claude.ai/code/session_0123",
+          "priority": 2,
+          "cycle": "current"
+        },
+        "comment_authors": [
+          "alex"
+        ]
+      },
+      "_note": "Every board field once, then a real comment: the fields are metadata, only `alex` is a comment author. Cycle is lower-cased."
+    },
+    {
+      "name": "fields-invalid-values",
+      "line": "- [ ] [#FLDB] **Ship the tracing job**",
+      "sub_lines": [
+        "  - State: sometime",
+        "  - Priority: 7",
+        "  - Topic: STRM",
+        "  - Depends: none, PR #12 in example-org/repo"
+      ],
+      "expected": {
+        "short_prefix": "FLDB",
+        "subject": "**Ship the tracing job**",
+        "plain_subject": "Ship the tracing job",
+        "body": "",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": null,
+          "action": null,
+          "depends": [],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": []
+      },
+      "_note": "Invalid values are ignored, but the reserved keys still never become comments. Tags need their `#`: bare words (`STRM`, `none`, `PR`, `in`) and the numeric `#12` are not tags."
+    },
+    {
+      "name": "field-key-space-before-colon",
+      "line": "- [ ] [#FLDC] **Review Sam's PR**",
+      "sub_lines": [
+        "  - State : doing"
+      ],
+      "expected": {
+        "short_prefix": "FLDC",
+        "subject": "**Review Sam's PR**",
+        "plain_subject": "Review Sam's PR",
+        "body": "",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": "doing",
+          "action": null,
+          "depends": [],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": []
+      },
+      "_note": "`Key : value` is a field on both sides, matching how both comment parsers allow space before the colon."
+    },
+    {
+      "name": "field-after-comment",
+      "line": "- [ ] [#FLDD] **Answer Priya**",
+      "sub_lines": [
+        "  - alex: drafted a reply",
+        "  - State: doing"
+      ],
+      "expected": {
+        "short_prefix": "FLDD",
+        "subject": "**Answer Priya**",
+        "plain_subject": "Answer Priya",
+        "body": "",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": "doing",
+          "action": null,
+          "depends": [],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": [
+          "alex"
+        ]
+      },
+      "_note": "A field after a comment at the same indent still belongs to the task."
+    },
+    {
+      "name": "field-under-nested-task",
+      "line": "- [ ] [#FLDE] **Parent step** — open",
+      "sub_lines": [
+        "  - [ ] [#CHLD] **Child step**",
+        "    - State: doing"
+      ],
+      "expected": {
+        "short_prefix": "FLDE",
+        "subject": "**Parent step**",
+        "plain_subject": "Parent step",
+        "body": "open",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": null,
+          "action": null,
+          "depends": [],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": []
+      },
+      "_note": "A field belongs to the nearest task line above it at a shallower indent, here the nested child, never the top task."
+    },
+    {
+      "name": "field-under-plain-note",
+      "line": "- [ ] [#FLDF] **Plan the demo**",
+      "sub_lines": [
+        "  - a plain note",
+        "    - State: doing"
+      ],
+      "expected": {
+        "short_prefix": "FLDF",
+        "subject": "**Plan the demo**",
+        "plain_subject": "Plan the demo",
+        "body": "",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": null,
+          "action": null,
+          "depends": [],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": []
+      },
+      "_note": "When the nearest shallower bullet is not a task line, the field has no owner and is ignored."
+    },
+    {
+      "name": "depends-tag-tokens",
+      "line": "- [ ] [#XI7391] **Flip the flag**",
+      "sub_lines": [
+        "  - Depends: #XREF and [#QBLK], #7391K · #X"
+      ],
+      "expected": {
+        "short_prefix": "XI7391",
+        "subject": "**Flip the flag**",
+        "plain_subject": "Flip the flag",
+        "body": "",
+        "fields": {
+          "topic": null,
+          "parent": null,
+          "state": null,
+          "action": null,
+          "depends": [
+            "XREF",
+            "QBLK",
+            "7391K"
+          ],
+          "session": null,
+          "priority": null,
+          "cycle": null
+        },
+        "comment_authors": []
+      },
+      "_note": "Only `#TAG` / `[#TAG]` tokens count, separated by commas, `·` or spaces; `and` and the 1-char `#X` are dropped."
     }
   ]
 }

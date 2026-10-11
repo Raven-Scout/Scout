@@ -6,7 +6,7 @@ import Testing
 /// Answers `scoutctl session index` calls: `--no-gh` ones from `fast`, the
 /// others from `pr`. Either lane can be held open to prove the other one does
 /// not wait for it.
-actor ScriptedSessionsRunner: ProcessRunner {
+actor ScriptedSessionsRunner {
     private(set) var calls: [[String]] = []
     private(set) var environments: [[String: String]] = []
     private var fast: ProcessResult
@@ -32,12 +32,6 @@ actor ScriptedSessionsRunner: ProcessRunner {
     func releaseFast() { holdingFast = false; fastWaiters.forEach { $0.resume() }; fastWaiters = [] }
     func releasePR() { holdingPR = false; prWaiters.forEach { $0.resume() }; prWaiters = [] }
 
-    nonisolated func run(
-        executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?
-    ) async throws -> ProcessResult {
-        await answer(arguments, environment: environment)
-    }
-
     private func answer(_ arguments: [String], environment: [String: String]) async -> ProcessResult {
         calls.append(arguments)
         environments.append(environment)
@@ -47,6 +41,17 @@ actor ScriptedSessionsRunner: ProcessRunner {
         }
         if holdingPR { await withCheckedContinuation { prWaiters.append($0) } }
         return pr
+    }
+}
+
+// Conformance lives in an extension: on Swift 6.4 (Xcode 27), declaring it on the
+// actor itself fails in some compile batches with "'nonisolated' modifier cannot
+// be applied to this declaration" on `run`.
+extension ScriptedSessionsRunner: ProcessRunner {
+    nonisolated func run(
+        executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?
+    ) async throws -> ProcessResult {
+        await answer(arguments, environment: environment)
     }
 }
 

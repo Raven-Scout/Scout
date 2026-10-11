@@ -79,6 +79,78 @@ struct TaskWindowTests {
         #expect(promised == TaskWindow.pageSize - 5)
     }
 
+    @Test("the top summary counts shown of total, only while rows are hidden (#356)")
+    func summaryCountsShownOfTotal() {
+        var window = TaskWindow()
+        let all = tasks(53)
+        #expect(window.summary(in: all) == "Showing 20 of 53")
+        window.showMore()
+        #expect(window.summary(in: all) == "Showing 40 of 53")
+        window.showMore()
+        #expect(window.summary(in: all) == nil)
+        #expect(TaskWindow().summary(in: tasks(TaskWindow.pageSize)) == nil)
+        #expect(TaskWindow().summary(in: []) == nil)
+    }
+
+    @Test("the summary counts the sub-tasks a page boundary carries along")
+    func summaryCountsCarriedSubTasks() {
+        var all = tasks(TaskWindow.pageSize)
+        all += (0..<2).map { task(900 + $0, indent: 1) }
+        all += tasks(5)
+        #expect(TaskWindow().summary(in: all) == "Showing 22 of 27")
+    }
+
+    @Test("Show all is offered only when more than a page but at most 40 rows remain")
+    func showAllOfferedForASmallRemainder() {
+        let window = TaskWindow()
+        // ≤ a page hidden: "Show N more" already shows everything.
+        #expect(!window.canShowAll(in: tasks(TaskWindow.pageSize + 20)))
+        // 21…40 hidden: offered.
+        #expect(window.canShowAll(in: tasks(TaskWindow.pageSize + 21)))
+        #expect(window.canShowAll(in: tasks(TaskWindow.pageSize + TaskWindow.showAllLimit)))
+        // > 40 hidden: building them all at once is too costly.
+        #expect(!window.canShowAll(in: tasks(TaskWindow.pageSize + TaskWindow.showAllLimit + 1)))
+        // Nothing hidden.
+        #expect(!window.canShowAll(in: tasks(3)))
+    }
+
+    @Test("Show all becomes available once paging brings the remainder under the limit")
+    func showAllAfterPaging() {
+        let all = tasks(93)  // 73 hidden at first
+        var window = TaskWindow()
+        #expect(!window.canShowAll(in: all))
+        window.showMore()    // 53 hidden
+        #expect(!window.canShowAll(in: all))
+        window.showMore()    // 33 hidden
+        #expect(window.canShowAll(in: all))
+    }
+
+    @Test("show all builds every row, sub-tasks included, and paging still works after")
+    func showAllBuildsEverything() {
+        var all = tasks(TaskWindow.pageSize + 30)
+        all.append(task(900, indent: 1))
+        var window = TaskWindow()
+        window.showAll(in: all)
+        #expect(window.visible(all).count == all.count)
+        #expect(window.hiddenCount(in: all) == 0)
+        #expect(window.summary(in: all) == nil)
+        #expect(!window.canShowAll(in: all))
+        // A reparse that adds rows leaves them windowed, not all built.
+        let grown = all + tasks(TaskWindow.pageSize * 3)
+        #expect(window.hiddenCount(in: grown) > 0)
+    }
+
+    @Test("show all never grows the window by more than the limit")
+    func showAllIsCapped() {
+        // A caller handing over a bigger list than the row counted (say, the
+        // unfiltered section behind a search) must not unwindow a backlog:
+        // once the search clears, every row would be built at once.
+        let backlog = tasks(944)
+        var window = TaskWindow()
+        window.showAll(in: backlog)
+        #expect(window.visible(backlog).count == TaskWindow.pageSize + TaskWindow.showAllLimit)
+    }
+
     @Test("reveal grows the window until the row is built")
     func revealBuildsTheRow() {
         let all = tasks(TaskWindow.pageSize * 5)
