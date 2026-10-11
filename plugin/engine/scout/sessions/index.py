@@ -46,7 +46,7 @@ INDEX_FILENAME = "sessions-index.json"
 LEGACY_CACHE_FILENAME = "cc-sessions.cache.json"  # pre-plan-1 cache; deleted on first run
 _CUSTOM_TITLE_HEAD_LINES = 5
 # How far into a transcript to look for the record whose `cwd` the project dir encodes.
-# Claude Code writes `cwd` on almost every row, so the first few lines nearly always do.
+# Claude Code writes `cwd` on nearly every row; the matching one is rarely past line 60.
 _CWD_HEAD_LINES = 200
 
 
@@ -306,7 +306,7 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
         for p in (rec.cwd, rec.origin_cwd):
             if p:
                 known_dirs.setdefault(_encode_dirname(p), p)
-    cli_only = 0
+    cli_only_ids: set[str] = set()
     for uuid, path in tpaths.items():
         if uuid in by_cli:
             continue
@@ -314,11 +314,12 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
             st = path.stat()
             if opts.now - datetime.fromtimestamp(st.st_mtime_ns / 1e9, tz=UTC) > window:
                 continue
-            sessions.append(_cli_only_session(uuid, path, known_dirs))
+            sess = _cli_only_session(uuid, path, known_dirs)
         except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
             errors.append(SourceError(source="transcript", message=f"{path.name}: {exc}"))
             continue
-        cli_only += 1
+        sessions.append(sess)
+        cli_only_ids.add(sess.id)
 
     # 3. Transcript facts, liveness, last activity.
     looked_up: set[str] = set()  # transcript-cache keys used this run; only these are written back
@@ -332,7 +333,9 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
                 # last record: an upper bound that decides cheaply whether to read it at all.
                 bound = _latest(own, ns_to_iso(tpath.stat().st_mtime_ns))
                 last = parse_iso(bound)
-                sess.last_activity_at = bound
+                # Unread, the record's own time stands. The mtime is all a CLI-only session has,
+                # and the only sign of later activity when the transcript is marked unavailable.
+                sess.last_activity_at = bound if own is None or sess.id in no_transcript else own
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
                     looked_up.add(str(tpath))
                     sess.transcript = transcript_info(tpath, cache=tcache, stats=stats)
@@ -343,6 +346,14 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
                 errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
         if cli_uuid is not None and cli_uuid in live:
             sess.is_open = True
+
+    # Step 2 admitted CLI-only sessions on their mtime; their last record decides.
+    def _left_window(sess: AgentSession) -> bool:
+        last = parse_iso(sess.last_activity_at)
+        return sess.id in cli_only_ids and last is not None and opts.now - last > window
+
+    sessions = [sess for sess in sessions if not _left_window(sess)]
+    cli_only = sum(1 for sess in sessions if sess.id in cli_only_ids)
 
     # 4. PR state. Only PRs linked to a session that is not archived are fetched: an archived
     # session is `done` whatever its PR says (rule 1), so its PRs keep their cached state (or

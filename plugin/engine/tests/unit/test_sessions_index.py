@@ -223,7 +223,7 @@ def test_vault_dir_with_a_space_and_underscore_still_matches_its_transcripts(fak
         UH,
         [
             {"type": "custom-title", "customTitle": "scout-dreaming-20260908-1830", "sessionId": UH},
-            _user("You are Scout…", "2026-09-08T18:30:00.000Z"),
+            _user("You are Scout…", _ago(0.5)),
         ],
         mtime_ago_hours=0.5,
     )
@@ -358,7 +358,7 @@ def test_non_string_text_part_in_a_transcript_never_aborts_the_build(fake_data_d
         UE,
         [
             {"type": "user", "message": {"content": [{"type": "text", "text": {"nested": "x"}}]}},
-            _user("cli only work", "2026-09-08T09:00:00.000Z"),
+            _user("cli only work", _ago(3)),
         ],
         mtime_ago_hours=3,
     )
@@ -925,6 +925,27 @@ def test_a_desktop_session_takes_its_last_record_over_the_mtime(fake_data_dir: P
         claude_home(), "-Users-alex-code-sandbox", UY, [_user("check the build", _ts(last))], mtime_ago_hours=0.1
     )
     assert _session(build_index(opts), "local_X").last_activity_at == dt_to_iso(last)
+
+
+def test_a_desktop_session_outside_the_window_keeps_its_own_time(fake_data_dir: Path) -> None:
+    """Its transcript is never read, so a touched file must not move the record's time."""
+    opts = _world(fake_data_dir)
+    write_desktop_record(support_dir(), "local_X", cliSessionId=UY, lastActivityAt=MS - 60 * 86_400_000)
+    write_transcript(
+        claude_home(), "-Users-alex-code-sandbox", UY, [_user("old", _ago(60 * 24))], mtime_ago_hours=20 * 24
+    )
+    assert _session(build_index(opts), "local_X").last_activity_at == dt_to_iso(NOW - timedelta(days=60))
+
+
+def test_a_cli_only_session_whose_last_record_left_the_window_is_dropped(fake_data_dir: Path) -> None:
+    """Step 2 admits on the mtime; the last record decides (#211)."""
+    opts = _world(fake_data_dir)
+    write_transcript(
+        claude_home(), "-Users-alex-code-sandbox", UX, [_user("long ago", _ago(20 * 24))], mtime_ago_hours=1
+    )
+    idx = build_index(opts)
+    assert f"cli:{UX}" not in {s.id for s in idx.sessions}
+    assert idx.source_counts["cli_only"] == 2  # E and F from the world, as before
 
 
 def test_a_transcript_without_record_times_falls_back_to_its_mtime(fake_data_dir: Path) -> None:
