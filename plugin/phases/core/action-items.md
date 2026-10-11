@@ -188,7 +188,7 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
       - Cycle: current
 
 - `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
-- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and remove the parent; with none left, remove the parent.
+- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and close the parent; with none left, close it too. Closing means ticking it and moving it to ✅ Recently Completed with its children as the evidence, so the Continuity-Dropoff Audit sees a closure.
 - `State:` is written only as `doing` or `blocked`; everything else comes from where the task sits. Write `doing` only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. An agent drafting while it works is `doing`; a related session merely running is not. Write `blocked` only for a blocker that is not a task (an outage, a decision outside this board). A task waiting on another task gets `Depends:` instead, and the board derives blocked from it.
 - `Action:` names the next step on a 🔴 Urgent or 🟡 To Do task, 1–3 words ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"), when the title doesn't already say it. Never on a parent.
 - `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Find that from this PR's body and the other PRs fetched this run.
@@ -203,10 +203,6 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
 4. `State: doing` or `State: blocked` applies.
 5. Otherwise the section decides: 🔴 Urgent and 🟡 To Do are {{USER_NAME}}'s move, 🟢 Watching is waiting on someone else, 🅿️ Parked is on hold.
 
-So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} alone can take the next step and can take it now: an open question to them (verified still open), a review requested from them by name, or their own PR that is approved, green, unblocked and only needs merging. Anything waiting on a person goes to 🟢 Watching, including a bot-only approval while a human reviewer is still requested. **Re-check every task on every run** against these rules, not only the ones that changed.
-
-**The body is the next step.** Keep it to at most two short sentences (about 25 words): what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
-
 **Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
 
     # Topics
@@ -216,7 +212,7 @@ So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} 
     - Summary: Two PRs, the second needs the first
 
 - Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
-- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte: a `- Renamed:` line is the user's own name for the topic, and you never write, change or remove it.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte.
 - Remove a topic once none of its tasks has been open for 14 days.
 
 ### Hard Rule — Trim by Demotion, Never by Omission
