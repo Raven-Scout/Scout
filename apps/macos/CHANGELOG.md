@@ -15,8 +15,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   step shows its next action as a chip; the chip or the hover bubble opens an
   inline "What should Claude do?" box that sends the note to the item's own
   session (resume a local one, open a cloud one, or start a new one). Done
-  shows this week, today or yesterday. Open rows are remembered. Read-only:
-  writes stay in List.
+  shows this week, today or yesterday. Open rows are remembered. Tab walks
+  the rows; Space expands one and Return asks Claude. A topic shows the
+  user's own name from `action-items/topic-names.md` when there is one.
+  Read-only: writes stay in List.
 
 ## [0.16.0] - 2026-10-11
 
