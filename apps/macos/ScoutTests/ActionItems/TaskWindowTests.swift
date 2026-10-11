@@ -79,6 +79,27 @@ struct TaskWindowTests {
         #expect(promised == TaskWindow.pageSize - 5)
     }
 
+    @Test("the top summary counts shown of total, only while rows are hidden (#356)")
+    func summaryCountsShownOfTotal() {
+        var window = TaskWindow()
+        let all = tasks(53)
+        #expect(window.summary(in: all) == "Showing 20 of 53")
+        window.showMore()
+        #expect(window.summary(in: all) == "Showing 40 of 53")
+        window.showMore()
+        #expect(window.summary(in: all) == nil)
+        #expect(TaskWindow().summary(in: tasks(TaskWindow.pageSize)) == nil)
+        #expect(TaskWindow().summary(in: []) == nil)
+    }
+
+    @Test("the summary counts the sub-tasks a page boundary carries along")
+    func summaryCountsCarriedSubTasks() {
+        var all = tasks(TaskWindow.pageSize)
+        all += (0..<2).map { task(900 + $0, indent: 1) }
+        all += tasks(5)
+        #expect(TaskWindow().summary(in: all) == "Showing 22 of 27")
+    }
+
     @Test("reveal grows the window until the row is built")
     func revealBuildsTheRow() {
         let all = tasks(TaskWindow.pageSize * 5)

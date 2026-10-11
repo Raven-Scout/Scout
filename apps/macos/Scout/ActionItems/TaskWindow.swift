@@ -32,6 +32,14 @@ nonisolated struct TaskWindow: Equatable, Sendable {
         tasks.count - visible(tasks).count
     }
 
+    /// "Showing 20 of 53" for the row above a windowed list, or `nil` when
+    /// every row is built. The footer alone was easy to miss: a task past the
+    /// window looked missing from the app (#356).
+    func summary(in tasks: [ActionTask]) -> String? {
+        guard hiddenCount(in: tasks) > 0 else { return nil }
+        return "Showing \(visible(tasks).count) of \(tasks.count)"
+    }
+
     /// How many rows the next ``showMore()`` adds, for the button label.
     /// Measured rather than assumed to be a page: sub-task runs at either
     /// boundary move the cut.

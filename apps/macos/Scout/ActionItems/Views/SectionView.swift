@@ -50,6 +50,7 @@ struct SectionView: View {
                 // Eager means every row costs layout time, so only a window of
                 // them is built — see `TaskWindow`.
                 VStack(alignment: .leading, spacing: 0) {
+                    WindowSummaryRow(window: window, tasks: section.tasks, action: onShowMore)
                     ForEach(window.visible(section.tasks)) { task in
                         TaskCardView(
                             task: task,

@@ -47,12 +47,12 @@ struct BoardView: View {
                     .padding(.vertical, 8)
             } else {
                 let window = windows[column.kind] ?? TaskWindow()
+                let showMore = { windows[column.kind, default: TaskWindow()].showMore() }
+                WindowSummaryRow(window: window, tasks: column.tasks, action: showMore)
                 ForEach(window.visible(column.tasks)) { task in
                     BoardCardView(task: task, kind: column.kind, scoutDirectory: scoutDirectory)
                 }
-                ShowMoreRow(window: window, tasks: column.tasks) {
-                    windows[column.kind, default: TaskWindow()].showMore()
-                }
+                ShowMoreRow(window: window, tasks: column.tasks, action: showMore)
             }
         }
         .frame(width: collapsed ? 200 : 280, alignment: .leading)
