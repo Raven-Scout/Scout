@@ -22,7 +22,9 @@ _TASK = [
     "## 🔴 Urgent",
     "- [ ] [#REPLYX] **Reply to Alex about her purchase question** — still open",
     "  - Topic: #STRM",
+    "  - Parent: #RTALL",
     "  - State: waiting",
+    "  - Action: Review + decide",
     "  - Depends: #XREF, [#QBLK]",
     "  - Session: https://claude.ai/code/session_0123",
     "  - Priority: 2",
@@ -101,7 +103,9 @@ def test_parser_collects_fields_on_the_task() -> None:
     [item] = parse_lines(_TASK)
     assert item.fields == TaskFields(
         topic="STRM",
+        parent="RTALL",
         state="waiting",
+        action="Review + decide",
         depends=("XREF", "QBLK"),
         session="https://claude.ai/code/session_0123",
         priority=2,
@@ -117,7 +121,7 @@ def test_parser_defaults_to_empty_fields() -> None:
 def test_comment_index_skips_fields(tmp_path: Path) -> None:
     path = tmp_path / "today.md"
     path.write_text("\n".join(_TASK) + "\n", encoding="utf-8")
-    assert list_comment_lines(path, task_line_number=2) == [(9, "alex", "pinged in thread")]
+    assert list_comment_lines(path, task_line_number=2) == [(11, "alex", "pinged in thread")]
 
 
 def test_render_keeps_fields_out_of_comments(tmp_path: Path) -> None:

@@ -7,7 +7,9 @@ struct TaskFieldsParserTests {
     private let fieldLines = [
         "- [ ] [#REPLYX] **Reply to Alex about her purchase question** — still open",
         "  - Topic: #STRM",
+        "  - Parent: #RTALL",
         "  - State: waiting",
+        "  - Action: Review + decide",
         "  - Depends: #XREF, [#QBLK]",
         "  - Session: https://claude.ai/code/session_0123",
         "  - Priority: 2",
@@ -27,7 +29,9 @@ struct TaskFieldsParserTests {
         let task = try onlyTask(fieldLines)
         #expect(task.fields == TaskFields(
             topic: "STRM",
+            parent: "RTALL",
             state: .waiting,
+            action: "Review + decide",
             depends: ["XREF", "QBLK"],
             session: "https://claude.ai/code/session_0123",
             priority: 2,

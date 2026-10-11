@@ -181,22 +181,33 @@ Good vs bad (anonymized):
 
 ### Board Fields (optional)
 
-Up to six machine sub-bullets give the app's topic board what the section alone can't say. Write them directly under the task line, after any plan markers, in this order, and only when you know the value:
+Up to eight machine sub-bullets give the app's topic board what the section alone can't say. Write them directly under the task line, after any plan markers, in this order, and only when you know the value:
 
     - [ ] [#REPLYX] **Reply to Alex about her purchase question**
       - Topic: #STRM
-      - State: waiting
+      - Parent: #RTALL
+      - State: mine
+      - Action: Reply
       - Depends: #XREF, #QBLK
       - Session: https://claude.ai/code/session_0123
       - Priority: 2
       - Cycle: current
 
 - `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
-- `State:` is one of `mine` (needs {{USER_NAME}}'s action or decision), `doing` ({{USER_NAME}} or an agent is working on it), `waiting` (on someone else), `blocked` (by another task) or `hold`. Omit it when the section already says it: the app reads 🔴/🟡 as `mine`, 🟢 as `waiting` and `[x]` as done. Snooze stays the way to park a task until a date, and an active snooze wins over `State:`; `hold` is for parking with no date.
+- `State:` is one of `mine`, `doing`, `waiting`, `blocked` or `hold`. Omit it when the section already says it: the app reads 🔴/🟡 as `mine`, 🟢 as `waiting` and `[x]` as done. Snooze stays the way to park a task until a date, and an active snooze wins over `State:`; `hold` is for parking with no date. Apply the states strictly:
+  - **`mine`** only when {{USER_NAME}} alone can take the next step and can take it now: a question to them that you verified is still open, a review requested from them by name, or their own PR that is approved, green, unblocked and only needs merging.
+  - **`doing`** only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. A related session merely running doesn't count. An agent drafting while it works is `doing`, not `mine`.
+  - **`waiting`** for anything waiting on a person, including a bot-only approval while a human reviewer is still requested.
+  - **`blocked`** for anything with an open dependency.
+- `Action:` is required on every `mine` task: a 1–3 word imperative naming what {{USER_NAME}} does next ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"). Omit it on a parent.
+- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and remove the parent; with none left, remove the parent.
 - `Depends:` lists the `[#TAG]`s of tasks this one needs first. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Read both PR bodies to find out. A task with an open dependency is `State: blocked`.
 - `Session:` is the Claude session working on it (a `claude.ai/code/session_…` link, or a local session's UUID).
 - `Priority:` is the linked Linear issue's priority (0 none, 1 urgent … 4 low). `Cycle: current` marks a Linear issue in the active cycle. Omit both without a Linear issue.
 - Carry them forward verbatim with the task, like plan markers, and update a value only when you have just verified it. Never fold them into `- Refs:`.
+- **Re-check every task on every run** against these rules, not only the ones that changed: a state or action that was right yesterday may not be today.
+
+**The body is the next step.** Keep a task's body to at most two short sentences (about 25 words): what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
 
 **Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
 
