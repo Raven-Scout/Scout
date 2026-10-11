@@ -68,4 +68,29 @@ struct TaskDetailModelTests {
         #expect(t.matchesSearch("ping alex"))
         #expect(t.matchesSearch(""))
     }
+
+    /// #356: the "N not shown" footer says ⌘F searches every row, so a task
+    /// past the window has to be findable by the `[#TAG]` its card shows.
+    @Test func searchMatchesShortPrefixWithOrWithoutHash() {
+        let t = ActionTask(
+            id: UUID(), lineNumber: 1, done: false,
+            subject: "**Ship the fix**", plainSubject: "Ship the fix",
+            body: "", comments: [], deepLinks: [], details: [],
+            snoozedUntil: nil, carriedInFrom: nil, shortPrefix: "ZQXV10"
+        )
+        #expect(t.matchesSearch("zqxv10"))
+        #expect(t.matchesSearch("#zqxv10"))
+        #expect(t.matchesSearch("zqxv"))
+        #expect(!t.matchesSearch("#zqxv11"))
+    }
+
+    @Test func bareHashDoesNotMatchEveryTaggedTask() {
+        let t = ActionTask(
+            id: UUID(), lineNumber: 1, done: false,
+            subject: "**Ship the fix**", plainSubject: "Ship the fix",
+            body: "", comments: [], deepLinks: [], details: [],
+            snoozedUntil: nil, carriedInFrom: nil, shortPrefix: "ZQXV10"
+        )
+        #expect(!t.matchesSearch("#"))
+    }
 }

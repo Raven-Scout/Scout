@@ -1,0 +1,484 @@
+# Run health and headless updates — design
+
+**Status:** approved 2026-10-11 (§12 records the decisions). Docs only; no code lands from this PR.
+**Date:** 2026-10-11 (against `origin/main` @ `157db11`, v0.16.0).
+**Issues:** #233, #199, #267 (remaining items), #210, #237, #218, #231 (Track 3, "Scout stopped
+running and nobody knew") and #360 (scheduled self-update for engines Scout.app doesn't manage).
+
+## 1. Intent
+
+Scout's scheduled runs fail quietly. An expired login cost a vault 21 days and 72 runs before a
+person noticed (#233). A session type was dead for three months (#199). A laptop's idle sleep kills
+runs partway through, and their logs read like API errors (#210). Since v0.15 parts of this are
+covered: the retry wrapper raises a desktop alert on an auth failure, and `/scout-status` leads with
+the failed-run streak. But each surface has its own rules, and most of them only help someone who
+already suspects a problem.
+
+#360 adds a new unattended actor: an engine that upgrades itself on a headless host. An upgrade that
+fails, or leaves a sidecar nobody sees, is the same silent failure. So this spec does two things,
+in this order:
+
+1. It defines **one run-health surface**: what gets recorded, what turns it yellow or red, and who
+   gets told.
+2. It defines **headless updates** as one more producer and consumer of that surface.
+
+**Success means:**
+- A run that fails, a slot that stops firing, or a scheduler that stops ticking reaches a human
+  within a day. That holds with no app installed and with Claude's login dead.
+- Every surface (doctor, `/scout-status`, Scout.app, the session wrap, push notifications) shows
+  the same verdict, computed by the same code.
+- An `install.sh` or `claude-code` engine with `auto_update.enabled: true` gets each stable release
+  within about a day of publication. It never upgrades while a session holds the vault lock. A
+  failed or held upgrade is visible on the same surface. App-managed engines are never touched.
+
+## 2. What exists today (verified on `157db11`)
+
+| Piece | Where | What it does | Gap |
+|---|---|---|---|
+| Run ledger | `templates/scripts/run-outcome.sh.tmpl` → `.scout-logs/run-outcomes.jsonl` | One row per run: slot, mode, start/finish, exit code, `failure_class` (`oauth_expired`, `network`, `git_lock`, `rate_limited`, `budget`, `unknown`) | A lock-busy or budget skip `exit 0`s before the row is written, so a fired slot can leave no row. No count of the run's output. |
+| Telegram streak notice | same file, `cmd_record` | Pushes at streak 1 (`info`) and 2 (`action_required`), then stops | Telegram only, and only if it is configured. Stays silent for the rest of a long outage. Rules live in bash. |
+| Auth desktop alert | `templates/scripts/claude-with-retry.sh.tmpl` `notify_auth_failure` | `osascript` / `notify-send`, at most once a day, cleared by a successful run | Auth only. |
+| `failures.log` | the three `run-*.sh` templates | One line per failed run, plus lock reaps | Only `/scout-meta-review` reads it, by hand. |
+| Lane liveness | `templates/scripts/session-lane-liveness.py`, run once a day by `heartbeat.sh` with `--quiet --notify` | Per session type: OK / DEGRADED / FIRING-BUT-SILENT / DARK, judged by commits and the run ledger | A second rule set with its own notifier. Stdlib only, by design. |
+| Doctor | `engine/scout/scripts/bootstrap_doctor.py` | Install health. Also turns RED when the newest run log ends in an auth failure. | No slot or scheduler liveness (#199). The auth check makes an engine upgrade "fail" (red post-upgrade doctor) when only the login is broken. |
+| `/scout-status` 3g | `commands/scout-status.md` | Inline Python over `run-outcomes.jsonl`: last OK, streak, newest class | A third copy of the streak rule. |
+| Scout.app | `EngineHealthService` runs `bootstrap doctor --json` at launch and every 600 s; `SessionLogService` parses `.log` markers for the menu-bar dot | Shows install health and the newest run | Never reads `run-outcomes.jsonl`, `last-fire.json` or `failures.log`. |
+| Scheduler | `schedule_tick.py` | Records `last-fire.json` on spawn; events in `.scout-logs/schedule-events-<date>.jsonl`; skips spawning with `network-offline` when api.anthropic.com is unreachable | Records fires, not results. Nothing joins the schedule against fires. |
+| `degraded.json` | — | Not in this repo. #237's alert text and `degraded.json` belong to one vault's local wrapper. | — |
+| Self-update | `self_update.py`, `scoutctl self-update check` | Read-only. Compares `__version__` with `plugins[0].version` of `marketplace.json` on `main` | Nothing applies updates. `main`'s manifest can be ahead of the latest published release (§7.4). |
+| `auto_update` | template, `bootstrap install --auto-update`, `config set-auto-update` | Writes the key | Nothing reads it. The template comment promises scheduled upgrades. `/scout-setup` Step 3 still asks the question. `scoutctl setup` doesn't ask. The template variable reads `connector_inputs.auto_update_enabled`, which no code sets. |
+| Session lock | inline in each `run-*.sh` (#331), `bootstrap_lock.py` (#330) | Atomic create, takeover guard, 2 h reap of a wedged holder | #330/#331 fixed the double-hold race only. Runners still `exit 0` immediately when the lock is busy ("skipping"), with no outcome row. There is no wait and no redundancy check (#218). The lock code is copied three times. |
+| Heartbeat | `heartbeat.py`, every 30 min (launchd `com.scout.heartbeat`, cron `*/30`) | Launches extra dreaming/research sessions | 4 of 6 cadence knobs can't be set (#231). The dirty-tree operand has no filter. |
+| Power | — | No `caffeinate` anywhere (#210). `install_wake_schedule.py` (pmset wake) exists for the asleep-through-the-window case. | — |
+
+## 3. Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | **One evaluator**, `engine/scout/health.py`, computes a `RunHealth` report from the on-disk ledgers. It reads only and writes nothing except the notifier state. Every consumer calls it, through `scoutctl health --json` or in-process. | Today there are three streak rules (bash, status prose, lane script). One verdict needs one implementation. |
+| D2 | **Run health is separate from install health.** `bootstrap doctor` keeps `severity` and its exit code for install health. Its `--json` gains an additive `run_health` block, and its text output gains a "Run health" section. The auth-log check moves from doctor errors into run health. | The app's `EngineUpgrader` and `bootstrap auto` treat a red doctor as a failed upgrade. An expired login must not fail an engine upgrade, and a broken install must not hide behind "runs are fine". |
+| D3 | **Ledgers, not snapshots.** Append-only: `run-outcomes.jsonl` (extended) and new `update-outcomes.jsonl`. No `health.json` cache and no `degraded.json`. `failures.log` stays as written for one release (meta-review reads it) and gets no new readers. | Derived state goes stale. A ledger is something every consumer can recompute and test. |
+| D4 | **One notifier**, `scoutctl health notify`. It pushes on transitions into red, sends a reminder every 24 h while red, and sends one "recovered" notice. Yellow never pushes. It replaces run-outcome's inline Telegram streak and the lane script's `--notify`. | The 1-then-2-then-silence rule lets a long outage go quiet. One state machine fixes de-duplication in one place. |
+| D5 | **The engine-independent floor stays in bash.** The wrapper's auth desktop alert is unchanged. `run-outcome.sh` gains one fallback: if `scoutctl` can't run, it raises a local desktop alert, rate-limited by a marker, saying the engine is broken. | A broken engine, including one an unattended upgrade broke, can't report itself. The floor has to work without it. |
+| D6 | **Headless updates ride the heartbeat.** `heartbeat.sh` starts `scoutctl self-update run` detached, at most once a day. No new launchd job, plist or cron line. | Both platforms already run the heartbeat every 30 min. A new job means a new registration check, a new install path, and a new way to break. |
+| D7 | **Eligibility:** `auto_update.enabled` is true, the pointer's `managed_by` is `install.sh` or `claude-code`, and the pointer describes the engine running the command. `scout-app` is refused before anything else, by its own test. `dev` and `unknown` are skipped with a recorded reason. | Agrees with the coordinator on `dev`: a checkout belongs to its owner. It may be on a branch, carry unpushed or unstaged engine edits (#199 comment), or be the live install itself. The updater reports "behind" for it instead. `unknown` names no channel to update through. |
+| D8 | **Stable means published.** Apply version V only when `main`'s `marketplace.json` says V **and** a non-draft, non-prerelease GitHub release `vV` exists that was published at least `soak_hours` ago (default 24). | `release.sh prepare` bumps `main`'s manifest before `finalize` publishes. A manifest-only check would ship a release that was never finalized. |
+| D9 | **The engine moves before the switch; the vault upgrades under the lock.** Fetching the plugin and building the new venv happen without the lock: they touch neither the vault nor the live engine. Only `bootstrap auto` takes the lock, which it already does. If the lock is busy, the attempt is `deferred`, not failed. | Holding the lock across a venv build (minutes) would delay or skip a scheduled run. `bootstrap`'s own lock already serialises it against `run-*.sh`, and no reentrancy is needed. |
+| D10 | **Roll back the engine only before the switch; after it, roll forward.** This mirrors the app's Part C rule: a failure before the vault step leaves the old engine live and pointed to. A failure at or after `bootstrap auto` holds, goes red and notifies. Nothing re-renders the vault with an older engine. | A vault rendered by V and then re-rendered by V−1 is a state no test covers. `bootstrap` steps are idempotent, so a retry, or `scoutctl bootstrap upgrade` by hand, converges. |
+| D11 | **Sidecars never block runs, and only blocking sidecars block updates.** A brain-file sidecar left by an unattended upgrade is parked as today (the live file keeps running), shows as a yellow finding, and gets one informational push. A pending brain sidecar does not hold later updates: #266 made upgrades skip just that file. A `parser.py.proposed-merge` (which `bootstrap` refuses on) or a red install doctor holds the update. | Consistent with #266. #360's text says to hold on any brain sidecar; that is Open question Q2. |
+| D12 | **No scheduler pre-flight skip on a dead login** (the last open box of #267). | Slots fire on their own schedule, so a dead login costs one 4-second run per slot, not one per tick. A skip would have to detect that the user logged back in, and getting that wrong keeps Scout down after the fix. The run is the probe. Q3 asks Jordan to confirm. |
+
+## 4. The run-health surface
+
+### 4.1 Records
+
+**`.scout-logs/run-outcomes.jsonl`** (existing; new fields are additive and readers ignore unknown keys):
+
+| Field | New? | Meaning |
+|---|---|---|
+| `slot`, `mode`, `started_at`, `finished_at`, `duration_s`, `exit_code`, `failure_class`, `log` | — | As today. |
+| `outcome` | new | `ok` \| `failed` \| `skipped_lock` \| `skipped_budget` \| `skipped_redundant`. Rows without it read as `ok`/`failed` from `exit_code`. |
+| `trigger` | new | `schedule` (`SCOUT_FORCE_MODE` set by the tick), `heartbeat` (new `SCOUT_TRIGGER=heartbeat` env from `heartbeat.launch_runner`), or `manual`. |
+| `commits_in_window` | new | The number of commits in `[started_at, finished_at]`, or `null` when unmeasured (§4.5, #237). |
+| `newest_commit` | new | The short SHA of the newest of those commits, or `null`. |
+
+Skips write a row too. `run-*.sh` calls `run-outcome.sh record` on the lock-busy and budget paths
+before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fired and vanished".
+
+**`.scout-logs/update-outcomes.jsonl`** (new, one row per `self-update run` that got past the daily gate):
+
+```json
+{"at": 1791720000, "from": "0.16.0", "target": "0.17.0", "managed_by": "install.sh",
+ "result": "applied", "step": "verify", "doctor": "green", "sidecars": [],
+ "detail": "", "log": "self-update-2026-10-12.log"}
+```
+
+`result` is one of:
+- `up_to_date`
+- `not_eligible`: carries the reason (`disabled`, `managed_by=dev`, …)
+- `waiting_release`: on `main`, but not published or still soaking
+- `deferred`: lock busy, or a slot is due soon
+- `held`: a blocking sidecar, or a red install doctor before the update started
+- `applied`
+- `applied_with_sidecars`
+- `failed`
+
+`step` is one of `check`, `fetch`, `venv`, `vault`, `verify`.
+
+**Existing inputs the evaluator also reads:**
+- `.scout-state/schedule.yaml` and `.scout-state/last-fire.json`, for slot liveness;
+- `schedule-events-*.jsonl` (`schedule.tick.completed`), for scheduler liveness;
+- `brain_merge.pending_brain_sidecars`, for sidecars;
+- `git log`, for lane output, ported from `session-lane-liveness.py`.
+
+**`.scout-state/health-notify.json`** (new, notifier state only):
+`{finding_id: {first_seen, last_pushed, pushes}}` plus `last_overall`.
+
+### 4.2 Findings: what turns it yellow or red
+
+`RunHealth = {severity, findings[], evaluated_at}`. Each finding is
+`{id, severity, since, summary, fix, source}`. Its `id` is stable, so the notifier can de-duplicate.
+`severity` is the worst finding, or green when there are none.
+
+| id | Condition | Severity | Source | Issue |
+|---|---|---|---|---|
+| `auth.expired` | The newest non-skip outcome is `oauth_expired`. Fallback for vaults without the ledger: today's newest-log scan. | red | ledger, log | #267, #233 |
+| `runs.failing` | Trailing consecutive non-skip runs with `outcome=failed`: 1 is yellow, ≥2 is red. `since` is the last success. | yellow / red | ledger | #233 |
+| `slot.never_fired:<key>` | A slot in `schedule.yaml` has no `last-fire` entry, and the vault is older than that slot's longest weekday gap plus its `missed_window_hours`. | yellow | schedule × last-fire | #199 |
+| `slot.stale:<key>` | Last fire is older than 2 × the slot's largest legitimate gap (from `weekdays` + `fires_at_local`) + `missed_window_hours`. Red when **every** slot is stale. | yellow / red | schedule × last-fire | #199, #210 |
+| `slot.fired_silent:<key>` | Fired at least `missed_window_hours` ago, with no outcome row of that slot since the fire. | yellow | last-fire × ledger | #218 |
+| `scheduler.stalled` | No `schedule.tick.completed` event in the last 2 h. | red | events | #199 |
+| `lane.dark:<type>` / `lane.silent:<type>` | Ported unchanged from `session-lane-liveness.py`: the budgets, `NO DATA YET`, commit attribution. | red / yellow | git × ledger | #199 |
+| `lock.skips` | ≥3 `skipped_lock` rows in 24 h. | yellow | ledger | #218 |
+| `update.failed` | The newest `update-outcomes` row is `failed`. | red | update ledger | #360 |
+| `update.held` | The newest row is `held`, or `deferred` for more than 72 h. | yellow | update ledger | #360 |
+| `update.sidecars` | Brain sidecars are pending and the newest update row lists them. Otherwise the doctor's existing sidecar warning covers it. | yellow | sidecars | #360 |
+| `update.behind` | An eligible engine is >14 days behind a published release, or a `dev`/`unknown` engine is behind at all. | note (never changes severity) | self-update check | #360 |
+
+A note on `scheduler.stalled`: on a laptop that just woke, launchd runs the missed `StartInterval`
+tick within seconds. So a 2 h threshold doesn't fire on wake. When the scheduler is dead, nothing
+evaluates on a timer; only on-demand consumers see it (doctor, status, the app every 600 s). That is
+an accepted limit: the heartbeat is the second job and could cross-check, but see §10.
+
+### 4.3 Who gets told
+
+| Consumer | How it reads | What it shows |
+|---|---|---|
+| **Push** (`scoutctl health notify`) | Called by producers after they write: `run-outcome.sh` after each run, `self-update run` after each attempt, and `heartbeat.sh` once a day as a liveness sweep, which catches slots that never fire and so never call `run-outcome.sh`. | Red transitions, a 24 h reminder ("Scout has not completed a run in 3 days — your Claude login expired"), and "recovered". Channels below. |
+| **`bootstrap doctor`** | In-process. | A "Run health" section in text output. A `run_health` block in `--json`. The exit code is unchanged (D2). |
+| **`scoutctl health`** | — | `--json` (the contract), human text, exit 0/1/2. Replaces the inline Python in `/scout-status` 3g. |
+| **`/scout-status`** | `scoutctl health --json` | Headline from the worst finding, using today's wording for `auth.expired`. Per-type "last run" lines come from `last-fire.json` and the ledger, not `git log -10` (#199 §3). |
+| **Session wrap** | The pre-flight step of the phases runs `scoutctl health --json` into `.scout-cache/run-health.json`. | The wrap notification leads with red findings, then a yellow summary. Only measured claims (§4.5). |
+| **Scout.app** | `bootstrap doctor --json`, which it already runs every 600 s. Decodes the new optional `run_health`. | Settings ▸ Engine gets a "Runs" row with severity and the first finding. The sidebar dot also lights on run-health red. External engines also get an "Updates" row from `update.*` findings (§7.8). |
+| **`/scout-meta-review`** | Unchanged for one release, then moved to `scoutctl health`. | — |
+
+**Push channels**, tried in order and recorded per push in the notifier state:
+1. **Desktop**: `osascript` (macOS) or `notify-send` with the user bus (Linux), moved from the wrapper into `scout/notify_desktop.py`. It skips `auth.expired` when the wrapper's `.auth-alert-sent` marker is less than 24 h old, so a dead login doesn't ping twice.
+2. **Telegram**: through `scoutctl notify telegram` when configured. Red uses `action_required`; recovery and informational pushes use `info`.
+3. **`notify.command`** (Q4): an optional `notify.command` in `scout-config.yaml`. It runs the user's command with `SCOUT_NOTIFY_TITLE`, `SCOUT_NOTIFY_BODY`, `SCOUT_NOTIFY_SEVERITY` and `SCOUT_NOTIFY_FINDING` in its environment, with a 30 s timeout. Its exit status is recorded but never changes the caller's. It is how an always-on Linux host without a desktop or Telegram pages someone, for example through `mail` or a webhook `curl`.
+
+### 4.4 Notifier state machine
+
+For each finding `id` that is red now:
+- Not in the state, or seen less than 24 h ago and not yet pushed → push "new" and record it.
+- Pushed more than 24 h ago → push a reminder that names how long it has been.
+
+When the overall severity drops from red to yellow or green, send one "recovered" push and clear
+the red ids. Findings that disappear are dropped from the state. Pushes are best-effort and never
+change a caller's exit code.
+
+`run-outcome.sh` keeps its ledger write and classifier in bash. It loses the streak and Telegram
+code and gains:
+
+```bash
+"$SCOUTCTL" health notify --quiet >>"$log" 2>&1 \
+  || notify_engine_unreachable   # D5: bash, marker-rate-limited, local only
+```
+
+### 4.5 Measured claims only (#237)
+
+Upstream has no "run produced nothing" literal; that text lives in one vault's local wrapper. The
+rule #237 asks for still applies to everything this design writes:
+
+- `run-outcome.sh` measures `commits_in_window` with `git log --since=@<started_at>`. It first checks
+  that `started_at` is a plausible epoch (> 1 000 000 000 and ≤ now). An invalid bound records
+  `null`, never `0`: `approxidate` silently treats a bad bound as "now".
+- Finding and push text says "N commits in this run's window (newest `abc1234`)", or "no commits in
+  this run's window", or says nothing about output when the value is `null`. It never says "by this
+  run".
+
+## 5. Runner hardening
+
+### 5.1 Power assertion (#210)
+
+`claude-with-retry.sh` wraps both the attempt and the backoff `sleep`:
+- macOS: `caffeinate -i -m -s`.
+- Linux: `systemd-inhibit --what=idle:sleep --why="Scout run"` when it is present.
+- `SCOUT_NO_CAFFEINATE=1` turns it off.
+
+The backoff sleep is the more exposed line (#210 §"backoff path"), so a test asserts that both call
+sites use the wrapper array.
+
+A host that sleeps through a whole slot window is not a power-assertion problem. The existing pmset
+wake schedule covers it, and `slot.stale` reports it.
+
+### 5.2 The session lock moves into one sourced file (#218)
+
+The three inline copies of the #331 protocol move to `scripts/scout-lock.sh` (a new cat-1 template).
+Each runner sources it.
+
+**Generation 1: wait instead of skip.**
+- A busy lock is polled every 30 s for up to `SCOUT_LOCK_WAIT_SECS` (default 1800).
+- Recovery, the takeover guard and the 2 h wedge reap keep their current behaviour.
+- On timeout, the runner records `outcome=skipped_lock` and exits 0.
+
+**Generation 2: redundancy.**
+- At start, unconditionally, the runner looks for a **witness**: the newest ledger row of the same
+  runner kind with `outcome=ok` and `finished_at` inside the last `SCOUT_REDUNDANT_WINDOW_MIN`
+  (default 60). This reads the ledger, not log mtimes or epilogue dates.
+- **Waited** (`waited > 0`) and the runner is `dreaming` or `research` → skip with
+  `outcome=skipped_redundant`. The waiter's work is provably the holder's.
+- **Every other case** (no wait, or `scout` kind) → log a warning and run. A back-to-back run is
+  sometimes the only reader of the previous run's blind spot (#218, second comment).
+- `SCOUT_REDUNDANT_WAIT=off|warn|enforce` overrides the default.
+
+The updater's `bootstrap auto` is just another lock holder (D9). A run that fires during it waits,
+and the updater's lock hold is bounded by the vault step, which takes seconds.
+
+### 5.3 Heartbeat knobs (#231)
+
+- Wire `min_gap_minutes`, `off_peak_min_gap_minutes`, `dreaming_signal_hours` and
+  `research_min_gap_hours` under a nested `heartbeat:` block. The flat keys keep working.
+- An unknown key under `heartbeat:` produces a warning in `heartbeat.log` and in doctor. It is no
+  longer dropped silently.
+- The dirty-tree operand ignores `.scout-state/`, `.scout-logs/` and `.scout-cache/`. A new
+  `heartbeat.dirty_tree_triggers: true|false` (default true) can turn it off.
+- `heartbeat.log` names the operand that fired (`signal_hours` or `dirty_tree`) and stamps times in
+  the configured zone.
+- Heartbeat launches set `SCOUT_TRIGGER=heartbeat`, so the ledger can count them.
+
+## 6. Preventing the expired login (#267, remaining items)
+
+- **`claude setup-token` at setup.** `scoutctl setup` gains a step for engines it sets up as
+  `install.sh`/`claude-code`.
+  - The question: "Scheduled runs use your Claude login, which expires. Create a long-lived token for
+    unattended runs? [y/N]". Interactive only.
+  - Under `--yes`, it prints how to do it later: `scoutctl auth setup-token`, a new subcommand that
+    wraps `claude setup-token` and stores the result.
+  - Storage: `~/.config/scout/claude-oauth-token`, mode 0600, outside the vault and never committed.
+  - Runners `export CLAUDE_CODE_OAUTH_TOKEN` from it when the file exists and the variable is unset.
+  - Doctor warns on wrong permissions.
+- **Scheduler pre-flight skip:** not built (D12).
+
+## 7. Headless updates (#360)
+
+### 7.1 Trigger and cadence
+
+- `heartbeat.sh` gains a block next to the lane-liveness one. Once per local day (date marker in
+  `.scout-cache/`), it starts `scoutctl self-update run` detached (`nohup`, own session, output to
+  `.scout-logs/self-update-<date>.log`), then continues to `heartbeat run`.
+- The marker is written only after `self-update run` has recorded a row other than `deferred`. A
+  deferred attempt therefore retries on the next heartbeat tick.
+- **Preferred window:** the configured off-peak hours (default 23–06). Outside them it runs only
+  when the last completed check is more than 36 h old. A laptop that's always asleep at night still
+  updates.
+- **Not near a run:** defer when the vault lock is held by a live PID, or when any slot is due in
+  the next 45 min (from `schedule list-upcoming`).
+
+### 7.2 Eligibility (D7)
+
+Checked in this order, each recording `not_eligible` with its reason:
+
+1. The pointer's `managed_by` is `scout-app` → refuse. A test asserts that nothing past this line
+   runs, whatever the config says.
+2. `auto_update.enabled` is not `true`.
+3. The pointer is missing, or doesn't describe this interpreter.
+4. `managed_by` is `dev` or `unknown`. The row still carries `target` from the check, which feeds
+   `update.behind`.
+5. `channel` is not `stable`.
+
+### 7.3 Steps
+
+| Step | Lock? | What | On failure |
+|---|---|---|---|
+| `check` | no | `self_update.check()` plus the release check (§7.4). Equal → `up_to_date`. Unpublished or soaking → `waiting_release`. | `failed` with `step=check` only after 3 consecutive network failures; earlier ones are `deferred`. |
+| pre-flight | no | `bootstrap_auto.detect(vault)` refuses on a blocking sidecar, and the install doctor is not red. | `held` |
+| `fetch` | no | `claude plugin marketplace update scout-plugin`, then `claude plugin update scout@scout-plugin --scope user`. Resolve `installPath` from `claude plugin list --json`. Require that its `plugin.json` version equals the target and that the path differs from the live `engine_root`. | `failed`, old engine live |
+| `venv` | no | `install-venv.sh` in the **new** root only. `install-venv.sh` deletes an existing venv, so it never runs against the live root. Then check that `<new>/.venv/bin/scoutctl version` equals the target. | `failed`, old engine live |
+| `vault` | `bootstrap` takes it (300 s wait) | `<new scoutctl> bootstrap auto --no-interactive --yes --json --managed-by <same>`, the same call the app's `EngineInstaller` makes. It re-points the plist or cron block, shim and pointer at the new venv. | `LockBusyError` refusal (`mutated:false`) → `deferred`. Any other refusal, or `mutated:true` → `failed` (D10). |
+| `verify` | no | New `bootstrap doctor --json`: install severity is not red. | `failed` (D10) |
+
+Results:
+- Install doctor green or yellow with no new `conflicts` → `applied`.
+- With new `conflicts` (sidecars) → `applied_with_sidecars`, which sends one informational push
+  naming the files and `scoutctl bootstrap drift`.
+
+### 7.4 What "available" means (D8)
+
+`self_update.check()` keeps reading `main`'s `marketplace.json`. `self-update run` additionally
+requires `GET https://api.github.com/repos/Raven-Scout/Scout/releases/tags/v<target>` (unauthenticated,
+one call a day) to return a release that is not a draft, not a prerelease, and whose `published_at`
+is at least `auto_update.soak_hours` (default 24) old.
+
+One known gap remains. A marketplace engine installs whatever `main` holds under that version
+number, not the tagged tree. Commits that land on `main` after a release are installed under the
+same version. This design narrows the risk (it acts only after a published release has soaked), but
+pinning marketplace installs to the tag is a separate change, tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362) (Q5).
+
+### 7.5 Rate limits and backoff
+
+- At most one `check` per 24 h. At most one applied version per 24 h.
+- After `failed` for target V: wait 24 h before retrying V. After 3 failures of V, stop retrying V
+  until a newer version appears or the user runs `scoutctl self-update run --force`. Meanwhile
+  `update.failed` stays red, with a reminder push every 24 h.
+- `deferred` doesn't count as a failure. `update.held` turns yellow once deferrals pass 72 h.
+
+### 7.6 Rollback (D10)
+
+- **Before `vault`:** nothing has been re-pointed, so the old venv, plist, shim and pointer stay
+  live. The leftover state is that Claude Code's plugin registry now names V. Interactive sessions
+  load V's commands, while scheduled runs and the shim use the old engine. The finding says so, and
+  the next successful attempt converges it. (Re-pinning the registry belongs to the tag-pinning issue, Q5.)
+- **At or after `vault`:** no automatic downgrade. `update.failed` is red and names the step. The
+  fix line is `scoutctl bootstrap upgrade` (idempotent), with the log path. The previous version's
+  cache directory is left in place. The updater never deletes engine directories; Claude Code's
+  cache owns them.
+
+### 7.7 Sidecars unattended (D11)
+
+They are parked exactly as an interactive upgrade parks them, and runs continue on the live file.
+`applied_with_sidecars` sends one push, and the `update.sidecars` / doctor warnings stay yellow until
+`scoutctl bootstrap resolve`. Only the parser-sidecar refusal and a red install doctor hold later
+updates.
+
+### 7.8 The app
+
+- App-managed engines: nothing changes. The updater refuses at step 1, and Sparkle plus
+  `EngineUpgrader` remain the only path.
+- External engines with the updater on: Settings ▸ Engine replaces "Copy `/scout-update`" with
+  "Updates automatically. Last checked <when>: <result>", read from the `update.*` findings in
+  `run_health`. With it off, the hand-off row stays.
+
+### 7.9 Config and the leftovers
+
+- `templates/scout-config.yaml.tmpl` comment:
+  "Engines installed with install.sh or Claude Code: when enabled, the heartbeat installs each
+  stable release about a day after it is published and tells you if an upgrade needs attention.
+  Engines managed by Scout.app ignore this; the app updates itself. Toggle with
+  `scoutctl config set-auto-update`."
+  It also gains `soak_hours: 24`.
+- The template variable renders from the vault's existing `auto_update.enabled`, else from the
+  packaged default, not from `connector_inputs` (#195 comment, write side).
+- `auto_update_config.py`'s appended-block comment drops "toggle via /scout-update".
+- `/scout-setup` Step 3 and its `--auto-update` hand-off are deleted. The retirement spec (S2, §7.1)
+  already shrinks `/scout-setup` to a stub; if that stub lands first, this item is a no-op.
+- `scoutctl setup` asks "Keep Scout up to date automatically? [Y/n]" for `install.sh`/`claude-code`
+  engines and accepts `--auto-update/--no-auto-update`. The default is **on** (Q1), and it passes
+  through to `bootstrap auto`, which gains the flag.
+- This partly reverses Decision S2 of the setup-retirement spec, for non-app engines only. The spec
+  should be amended with a pointer here when this is approved.
+
+## 8. Per-issue mapping
+
+| Issue | Closed by | PR (§9) |
+|---|---|---|
+| #233 permanent failure notifies nobody | `runs.failing` + `auth.expired` findings, the notifier with reminders, and the engine-unreachable floor | P1, P2 |
+| #199 no slot liveness in doctor | `slot.never_fired` / `slot.stale` / `scheduler.stalled` / lane findings in doctor and status; status re-sourced from last-fire + ledger. The #199 comment's "deployment state" ask (is the engine current against a live ref) becomes `update.behind` for every engine kind. | P1, P3, P7 |
+| #267 remaining: setup-token; pre-flight skip | `scoutctl auth setup-token` + setup step + runner export; pre-flight closed as won't-do (D12) | P6 |
+| #210 no power assertion | `caffeinate` / `systemd-inhibit` on attempt and backoff | P4 |
+| #237 hard-coded "run produced nothing" | Measured `commits_in_window` with a validated bound, and the measured-claims rule for all health text. The literal itself is vault-local. | P4 |
+| #218 lock wait without completion check | `scout-lock.sh` (wait, skip rows, unconditional witness, skip only for waited dreaming/research) | P4 |
+| #231 heartbeat knobs | Nested `heartbeat:` block, unknown-key warning, dirty-tree filter, operand logging, zone stamps | P5 |
+| #360 headless self-update | §7 | P7, P8 |
+
+## 9. Sequencing into small PRs
+
+Each PR is independently shippable and leaves `main` releasable.
+
+1. **P1: health core.**
+   - `scout/health.py` (evaluator, findings for `auth.*`, `runs.*`, `slot.*`, `scheduler.*`) and
+     `scoutctl health [--json]`.
+   - Doctor's `run_health` block and text section. The auth check moves out of install severity (D2).
+   - Engine only. The doctor JSON change is additive, so the app is unaffected until P3.
+2. **P2: notifier.**
+   - `scoutctl health notify`, `notify_desktop.py`, the `notify.command` channel (Q4), `health-notify.json`.
+   - `run-outcome.sh` drops its streak and Telegram code and gains the notify call plus the bash
+     floor.
+   - The lane rules are ported into `health.py`. `heartbeat.sh` runs the daily sweep instead of
+     `session-lane-liveness.py --notify`; the script stays as a stdlib-only manual instrument.
+3. **P3: consumers.**
+   - `/scout-status` 3g and its last-run lines; the wrap pre-flight in `phases/`.
+   - The app's `DoctorReport.runHealth` decoder, Settings ▸ Engine "Runs" row, and sidebar dot, with
+     a shared fixture. The plugin and app sides go in ONE commit (the contract rule in the root
+     `CLAUDE.md`).
+4. **P4: runner hardening.**
+   - `scout-lock.sh` (gen 1 + gen 2); skip outcome rows; `outcome` / `trigger` /
+     `commits_in_window` fields; `caffeinate`.
+   - Template-only plus the cat-1 registration. Vaults pick it up on `/scout-update`, or through P7.
+5. **P5: heartbeat config (#231).** Engine only.
+6. **P6: setup-token (#267).** `scoutctl auth setup-token`, the setup step, the runner export, the
+   doctor permission check.
+7. **P7: `self-update run`.**
+   - Eligibility, release check, steps, `update-outcomes.jsonl`, the `update.*` findings, the
+     heartbeat hook.
+   - It switches on for existing non-app vaults whose `auto_update.enabled` is already `true`:
+     `/scout-setup` Step 3 wrote that key for years, believing it was live. That is the behaviour
+     those users opted into. The P7 release notes must say so, and the first push after an applied
+     update names the setting and how to turn it off.
+   - `--dry-run` prints the plan without fetching.
+8. **P8: switch it on.**
+   - The `scoutctl setup` question and flag, `bootstrap auto --auto-update`, the template comment
+     and render fix, removing `/scout-setup` Step 3.
+   - The app's "Updates automatically" row for external engines (one commit with its fixture).
+
+P1 → P2 → P3 is the critical path for Track 3. P4–P6 are independent of each other and of P2. P7
+needs P1 (findings) and P2 (pushes).
+
+## 10. Out of scope
+
+- A scheduled `meta-review` slot (#199's third ask). Run health makes it unnecessary for liveness.
+- The heartbeat cross-checking a dead tick job. `scheduler.stalled` is visible on demand. A second
+  watchdog is not justified until a dead tick job is observed in the field.
+- Pinning marketplace engines to release tags ([#362](https://github.com/Raven-Scout/Scout/issues/362), Q5).
+- Updating `dev` checkouts (D7).
+- iOS app consumption of run health.
+
+## 11. Test strategy
+
+- **Evaluator (P1):** pure function over a fixture vault directory (`tmp_path` with ledger,
+  schedule, last-fire, event rows) and an injected clock. Cover:
+  - one test per finding, including the boundaries (streak 1 vs 2, exactly 2× gap, a vault younger
+    than a slot's gap → no `never_fired`);
+  - the #233 shape: 72 `oauth_expired` rows with fresh `last-fire`, so `slot.*` stays green while
+    `auth.expired` is red;
+  - the #193 shape: a slot key absent from `last-fire`.
+
+  Fixtures are anonymised per `plugin/CLAUDE.md`.
+- **Doctor contract:** severity and exit code are unchanged with a red `run_health` (D2). A vault
+  whose only problem is an expired login gives install `green` and run health `red`. A JSON snapshot
+  test covers `run_health`, and the Swift `DoctorReportTests` decode it with and without the block.
+- **Notifier (P2):** a table-driven state machine (new red → push; 23 h → none; 25 h → reminder;
+  red → green → one recovery; yellow → none; wrapper marker fresh → no desktop for `auth.expired`).
+  Channels are injected; no real `osascript`. `notify.command` gets its env vars, and a hanging
+  or failing command is timed out and recorded without changing the exit code.
+- **Bash templates (P2, P4):** follow the existing pattern of tests rendering a template and running
+  it with stub binaries on `PATH`. Cover:
+  - `run-outcome.sh` with an unreachable `scoutctl` → one floor alert, rate-limited;
+  - `commits_in_window` against a repo with a commit at `@1500000000` and bounds `@0` / garbage →
+    `null`, not 0;
+  - both `caffeinate` sites;
+  - `scout-lock.sh` wait / timeout / witness cases, including the #218 negative controls: failed
+    holder, other kind, outside the window, `scout` kind, the escape hatch, and the unwaited serial
+    run that must not skip.
+
+  The three-way regex-equality test is kept.
+- **Updater (P7):** `self-update run` with injected `check`, release fetcher, and a fake `claude`
+  executable that materialises a new plugin root.
+  - `scout-app` refusal is the first test and asserts that no subprocess runs.
+  - `dev` / `unknown` → `not_eligible` with a target.
+  - Unpublished, prerelease and soaking → `waiting_release`.
+  - Lock held → `deferred`, with no fetch.
+  - A fetch or venv failure leaves the pointer and plist untouched.
+  - `bootstrap auto` refusals map to `deferred` / `failed`.
+  - Conflicts → `applied_with_sidecars`.
+  - Backoff after 3 failures.
+- **End to end (manual, before P8 merges):**
+  - A Linux container with `install.sh`, cron and no desktop, pointed at a local marketplace path
+    with a fake newer release. Expect: applied within a day; doctor green; scheduled runs continue;
+    a conflicting brain edit gives `applied_with_sidecars`.
+  - The same on macOS, with an app-managed engine present: the updater refuses.
+
+## 12. Decisions on the review questions (2026-10-11)
+
+Jordan accepted every recommendation on 2026-10-11. The table keeps each question with its decision.
+
+| # | Question | Decision |
+|---|---|---|
+| Q1 | Auto-update default for non-app engines when `scoutctl setup` / `install.sh` asks, and under `--yes`. | **On** (§7.9). A headless host has no other path to fixes, and D8's soak plus D10's hold limit the blast radius. |
+| Q2 | Hold updates on any brain-file sidecar (#360's text), or only on the blocking parser sidecar or a red install doctor? | **Parser sidecar or red install doctor only** (D11), consistent with #266. |
+| Q3 | Scheduler pre-flight skip on a dead login (#267). | **Dropped** (D12). Close that checkbox on #267. |
+| Q4 | Push channel for headless hosts with no desktop and no Telegram. | **Add `notify.command`** in P2 (§4.3, channel 3). |
+| Q5 | Is "published release + 24 h soak" enough, or pin marketplace installs to the tag? | **Ship D8 now.** Tag pinning, including re-pinning the registry on rollback, is tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362). |
+| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
+| Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
+| Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
