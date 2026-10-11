@@ -975,6 +975,7 @@ def test_bootstrap_doctor_reports_severity_and_findings(vault: Path, monkeypatch
             notes: list[str] = []
             errors = ["missing knowledge-base/"]
             exit_code = 0
+            run_health = None
 
         return R()
 

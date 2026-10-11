@@ -7,7 +7,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`scoutctl health [--json]`: one run-health verdict** (`engine/scout/health.py`, `engine/scout/cli.py`). It reports failed runs, an expired Claude login, slots that never fire or went stale, a fired run with no recorded outcome, a stalled scheduler and repeated lock skips, computed from the run ledger, the schedule and the scheduler's events (#233, #199).
 - **Optional board fields on action items** (`engine/scout/action_items/task_fields.py`, `engine/scout/action_items/topics.py`, `phases/core/action-items.md`). A task can carry `- Topic:`, `- Parent:`, `- State:`, `- Action:`, `- Depends:`, `- Session:`, `- Priority:` and `- Cycle:` sub-bullets for the app's upcoming topic board, and runs describe each workstream in `action-items/topics.md`. A field belongs to the nearest task line above it at a shallower indent; tags must be written `#TAG`. The fields are metadata, never comments or context, so `delete-comment` / `edit-comment --index`, the HTML render and `ActionItem.details` skip them, and changing one doesn't reset an item's stale clock. `new-prefix` no longer mints a tag a topic uses. The parser corpus now pins the fields for both parsers. Files without them parse as before (#340).
+
+### Changed
+- **`bootstrap doctor` reports run health separately** (`engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/scripts/bootstrap_auto.py`, `engine/scout/cli.py`). `--json` gains a `run_health` block and the text output a "run health" section. An expired Claude login is now a red run-health finding instead of a red install error, so it no longer fails an engine upgrade's post-upgrade check, and the doctor's exit code reflects install health only (D2).
 
 ## [0.16.0] - 2026-10-11
 

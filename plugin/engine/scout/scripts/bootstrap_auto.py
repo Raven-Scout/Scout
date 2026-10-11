@@ -96,6 +96,7 @@ def doctor_dict(report: DoctorReport | None) -> dict[str, Any] | None:
         "errors": list(getattr(report, "errors", None) or []),
         "warnings": list(getattr(report, "warnings", None) or []),
         "notes": list(getattr(report, "notes", None) or []),
+        "run_health": rh.to_dict() if (rh := getattr(report, "run_health", None)) else None,
     }
 
 

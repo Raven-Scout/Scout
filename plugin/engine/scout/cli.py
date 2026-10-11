@@ -1927,6 +1927,12 @@ def _register_bootstrap() -> None:
             typer.echo(f"note: {n}")
         for e in report.errors:
             typer.echo(f"error: {e}", err=True)
+        if report.run_health is not None:
+            # Never start these with warning:/error:/note: (the app's legacy
+            # text parser reads those prefixes).
+            typer.echo(f"run health: {report.run_health.severity}")
+            for f in report.run_health.findings:
+                typer.echo(f"run health {f.severity}: {f.id}: {f.summary}")
         raise typer.Exit(code=report.exit_code)
 
     @bootstrap_app.command("migrate-legacy")
