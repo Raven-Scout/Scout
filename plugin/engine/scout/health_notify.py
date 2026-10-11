@@ -7,23 +7,32 @@ from the Telegram client can embed the bot token.
 
 from __future__ import annotations
 
+import fcntl
 import functools
+import json
 import os
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
-from scout import notify_desktop
+from scout import health, notify_desktop
 from scout.errors import ConfigError
+from scout.health import RunHealth
 from scout.scripts import notify_telegram
 
 AUTH_FINDING_ID = "auth.expired"
 AUTH_ALERT_WINDOW_S = 24 * 3600
 COMMAND_TIMEOUT_S = 30
+STATE_FILE = ".scout-state/health-notify.json"
+LOCK_FILE = ".scout-state/health-notify.lock"
+REMIND_AFTER = timedelta(hours=24)
+LOCK_TIMEOUT_S = 10.0
+LOCK_RETRY_S = 0.2
 
 ChannelResult = dict
 
@@ -158,3 +167,153 @@ def fan_out(
         if res is not None:
             results.append(res)
     return results
+
+
+# ----- state machine ----------------------------------------------------
+
+
+def load_state(vault: Path) -> dict:
+    """The saved notifier state; ``{}`` when missing, corrupt, or not a mapping."""
+    try:
+        data = json.loads((vault / STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_state(vault: Path, state: dict) -> None:
+    """Atomically write the state; a write failure must never break a run."""
+    path = vault / STATE_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _elapsed_words(delta: timedelta) -> str:
+    days = int(delta.total_seconds() // 86400)
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''}"
+    hours = max(1, int(delta.total_seconds() // 3600))
+    return f"{hours} hour{'s' if hours != 1 else ''}"
+
+
+def _push_for(finding: health.Finding, kind: str, body: str) -> Push:
+    return Push(
+        finding_id=finding.id,
+        kind=kind,
+        severity="red",
+        title=f"Scout: {finding.summary[:60]}",
+        body=body,
+    )
+
+
+def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], dict]:
+    """Decide which pushes the report earns, and the state that remembers them."""
+    prior = state.get("findings")
+    prior = prior if isinstance(prior, dict) else {}
+    stamp = health.iso_z(now)
+    pushes: list[Push] = []
+    findings: dict[str, dict] = {}
+    for f in report.findings:
+        old = prior.get(f.id)
+        old = old if isinstance(old, dict) else {}
+        first_seen = _parse_stamp(old.get("first_seen")) or now
+        entry: dict = {"first_seen": health.iso_z(first_seen), "last_pushed": None, "pushes": 0}
+        if f.severity == "red":
+            last_pushed = _parse_stamp(old.get("last_pushed"))
+            count = old.get("pushes") if isinstance(old.get("pushes"), int) else 0
+            entry["last_pushed"] = old.get("last_pushed") if last_pushed else None
+            entry["pushes"] = count
+            if last_pushed is None:
+                pushes.append(_push_for(f, "new", f"{f.summary}\nFix: {f.fix}"))
+            elif now - last_pushed >= REMIND_AFTER:
+                elapsed = _elapsed_words(now - first_seen)
+                pushes.append(_push_for(f, "reminder", f"Still failing after {elapsed}: {f.summary}\nFix: {f.fix}"))
+            if pushes and pushes[-1].finding_id == f.id:
+                entry["last_pushed"] = stamp
+                entry["pushes"] = count + 1
+        findings[f.id] = entry
+    new_state: dict = {"findings": findings, "last_overall": report.severity}
+    if "last_recovered" in state:
+        new_state["last_recovered"] = state["last_recovered"]
+    if state.get("last_overall") == "red" and report.severity != "red":
+        warnings = sum(1 for f in report.findings if f.severity == "yellow")
+        body = "Scout runs are healthy again."
+        if report.severity == "yellow":
+            body = f"Scout runs are healthy again; remaining warnings: {warnings}"
+        pushes.append(
+            Push(
+                finding_id="recovered",
+                kind="recovered",
+                severity=report.severity,
+                title="Scout: runs recovered",
+                body=body,
+            )
+        )
+    return pushes, new_state
+
+
+def _acquire_lock(vault: Path, *, timeout: float, sleep: Callable[[float], None]):
+    """Take the exclusive advisory lock, retrying up to ``timeout`` s; None if it stays held."""
+    path = vault / LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                return None
+            sleep(LOCK_RETRY_S)
+
+
+def notify(
+    vault: Path,
+    *,
+    now: datetime | None = None,
+    channels: list[Callable[[Push], ChannelResult | None]] | None = None,
+    report: RunHealth | None = None,
+    lock_timeout: float = LOCK_TIMEOUT_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[tuple[Push, list[ChannelResult]]]:
+    """Evaluate run health, push what is newly red / overdue / recovered, remember it.
+
+    Serialised by an advisory lock so a run-end call and a heartbeat sweep cannot
+    both announce the same failure. Never raises: pushes are best-effort.
+    """
+    try:
+        lock = _acquire_lock(vault, timeout=lock_timeout, sleep=sleep)
+        if lock is None:
+            return []
+        with lock:
+            now = now or datetime.now(UTC)
+            report = report or health.evaluate(vault, now=now)
+            pushes, state = plan(report, load_state(vault), now=now)
+            sent: list[tuple[Push, list[ChannelResult]]] = []
+            for push in pushes:
+                results = fan_out(push, vault=vault, now=now, channels=channels)
+                sent.append((push, results))
+                if push.kind == "recovered":
+                    state["last_recovered"] = results
+                else:
+                    state["findings"][push.finding_id]["last_results"] = results
+            save_state(vault, state)
+            return sent
+    except Exception:  # noqa: BLE001 - a notifier fault must never fail the run that called it
+        return []

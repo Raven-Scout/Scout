@@ -1666,6 +1666,21 @@ def _register_health() -> None:
                 typer.echo(f"    fix: {f.fix}")
         raise typer.Exit(code=report.exit_code)
 
+    @health_app.command("notify")
+    def cli_health_notify(
+        quiet: bool = typer.Option(False, "--quiet", help="Print nothing when there is no push."),
+    ) -> None:
+        """Push newly red / overdue / recovered run-health changes; always exits 0."""
+        from scout import health_notify as _hn
+        from scout import paths as _paths
+
+        sent = _hn.notify(_paths.data_dir())
+        for push, results in sent:
+            ok = ",".join(r["channel"] for r in results if r.get("ok")) or "none"
+            typer.echo(f"pushed {push.kind} {push.finding_id}: {ok}")
+        if not sent and not quiet:
+            typer.echo("nothing to push")
+
 
 _register_health()
 
