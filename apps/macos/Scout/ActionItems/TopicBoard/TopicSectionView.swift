@@ -10,17 +10,25 @@ struct TopicSectionView: View {
     /// `nil` hides the rename pencil (the engine can't save a rename).
     var onRename: ((String) -> Void)?
 
+    @State private var asking = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DisclosureRow(
                 height: Self.headerHeight,
                 label: topic.title,
                 expanded: $expanded,
-                prompt: { BoardPrompt.topic(topic) },
-                session: topic.meta?.session,
-                scoutDirectory: scoutDirectory
+                onAsk: { asking = true }
             ) { hovered in
                 header(hovered: hovered)
+            }
+            if asking {
+                PromptBox(
+                    context: { BoardPrompt.topic(topic) },
+                    session: topic.meta?.session,
+                    scoutDirectory: scoutDirectory,
+                    isOpen: $asking
+                )
             }
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {

@@ -35,6 +35,6 @@ enum BoardPrompt {
     }
 
     private static func flatten(_ steps: [BoardStep], depth: Int = 0) -> [(item: BoardItem, depth: Int)] {
-        steps.flatMap { [($0.item, depth)] + flatten($0.blocked, depth: depth + 1) }
+        steps.flatMap { [($0.item, depth)] + flatten($0.nested, depth: depth + 1) }
     }
 }

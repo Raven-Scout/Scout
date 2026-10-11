@@ -171,7 +171,7 @@ struct TopicBoardTests {
     }
 
     private func allKeys(_ b: TopicBoard) -> [String] {
-        func walk(_ steps: [BoardStep]) -> [String] { steps.flatMap { [$0.item.key] + walk($0.blocked) } }
+        func walk(_ steps: [BoardStep]) -> [String] { steps.flatMap { [$0.item.key] + walk($0.nested) } }
         return walk(b.topics.flatMap(\.steps)) + walk(b.onHold)
     }
 
@@ -216,5 +216,68 @@ struct TopicBoardTests {
             "  - Depends: #AAAA, #BBBB",
         ])
         #expect(allKeys(b).sorted() == ["AAAA", "BBBB", "XXXX"])
+    }
+
+    @Test func childrenNestUnderTheirParentBeforeBlockedSteps() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#PRNT] **Land the reattach work**",
+            "- [ ] [#KIDA] **Merge the API**",
+            "  - Parent: #PRNT",
+            "  - Action: Merge",
+            "- [ ] [#KIDB] **Review the UI**",
+            "  - Parent: #PRNT",
+            "  - State: waiting",
+            "- [ ] [#KIDH] **Parked part**",
+            "  - Parent: #PRNT",
+            "  - State: hold",
+            "- [ ] [#BLKD] **Flip the flag**",
+            "  - State: blocked",
+            "  - Depends: #PRNT",
+        ])
+        let parent = try #require(b.topics.first?.steps.first)
+        #expect(tags(b.topics[0].steps) == ["PRNT"])
+        #expect(tags(parent.children) == ["KIDA", "KIDB", "KIDH"])
+        #expect(tags(parent.blocked) == ["BLKD"])
+        #expect(parent.blockedCount == 1)
+        #expect(b.onHold.isEmpty)
+        #expect(allKeys(b).sorted() == ["BLKD", "KIDA", "KIDB", "KIDH", "PRNT"])
+    }
+
+    @Test func filteringHidesHeldChildren() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#PRNT] **Parent**",
+            "- [ ] [#KIDA] **Mine child**",
+            "  - Parent: #PRNT",
+            "- [ ] [#KIDH] **Held child**",
+            "  - Parent: #PRNT",
+            "  - State: hold",
+        ], filter: [.mine])
+        #expect(tags(b.topics[0].steps[0].children) == ["KIDA"])
+    }
+
+    @Test func childOfAMissingParentIsTopLevel() throws {
+        let b = try board(["## 🔴 Urgent", "- [ ] [#KIDA] **Orphan**", "  - Parent: #GONE"])
+        #expect(tags(b.topics[0].steps) == ["KIDA"])
+    }
+
+    @Test func actionChipOnlyOnMineLeaves() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#PRNT] **Parent**",
+            "- [ ] [#KIDA] **Merge it**",
+            "  - Parent: #PRNT",
+            "  - Action: Merge",
+            "- [ ] [#KIDB] **No action named**",
+            "  - Parent: #PRNT",
+            "- [ ] [#WAIT] **Waiting**",
+            "  - State: waiting",
+        ])
+        let steps = b.topics.flatMap(\.steps)
+        let parent = try #require(steps.first { $0.item.key == "PRNT" })
+        #expect(StepRowView.actionLabel(for: parent) == nil)
+        #expect(parent.children.map(StepRowView.actionLabel) == ["Merge", ActionChip.fallback])
+        #expect(StepRowView.actionLabel(for: try #require(steps.first { $0.item.key == "WAIT" })) == nil)
     }
 }
