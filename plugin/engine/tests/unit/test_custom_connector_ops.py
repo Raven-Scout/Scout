@@ -479,7 +479,7 @@ def test_validate_a_definition_that_is_not_a_mapping(definition: object):
 
 
 @pytest.mark.parametrize("op", ["add", "remove"])
-def test_a_running_session_holding_the_lock_is_an_error_and_writes_nothing(
+def test_a_running_session_holding_the_lock_is_busy_and_writes_nothing(
     vault: Path, monkeypatch: pytest.MonkeyPatch, op: str
 ):
     if op == "remove":
@@ -494,7 +494,7 @@ def test_a_running_session_holding_the_lock_is_an_error_and_writes_nothing(
         out = _add(vault, SUITE)
     else:
         out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
-    assert (out.status, out.exit_code) == ("error", 1)
+    assert (out.status, out.exit_code) == ("busy", 4)
     assert out.message == "A Scout session is running; try again when it finishes."
     custom = vault / cc.CUSTOM_FILE
     assert (custom.read_text() if custom.exists() else None) == custom_before
