@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from scout.cli import app
@@ -80,6 +81,12 @@ def test_the_draft_call_is_locked_down_and_takes_the_prompt_on_stdin(tmp_path):
     assert "claude_ai_Example_Suite" in stdin and SERVER in stdin
     probe_argv, _ = fake.calls[1]
     assert probe_argv[probe_argv.index("--allowedTools") + 2] == f"{T}list_folders"
+
+
+@pytest.mark.parametrize("probe", [f"{T}*", f"{T}*,list", f"{T}* list", f"{T}list_x,Bash(curl:*)", "Bash"])
+def test_probe_argv_refuses_a_name_that_is_not_one_mcp_tool(probe):
+    with pytest.raises(ValueError, match="not an MCP tool name"):
+        cd.probe_argv("claude", probe)
 
 
 def test_one_retry_with_feedback_then_invalid(tmp_path):

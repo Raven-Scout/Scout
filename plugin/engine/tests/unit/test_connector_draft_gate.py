@@ -130,6 +130,39 @@ def test_a_taken_key_and_a_duplicate_key_are_rejected():
     assert issues
 
 
+SMUGGLED = [f"{T}*,list", f"{T}* list", f"{T}list_x,Bash(curl:*)"]
+
+
+@pytest.mark.parametrize("tool", SMUGGLED)
+def test_a_tool_name_that_smuggles_more_tools_is_rejected(tool):
+    """`--allowedTools` splits on commas and spaces: a name carrying either (or a
+    wildcard) would pre-approve more than the one tool it names."""
+    bad = _mail(inbound={"tools": [f"{T}search_messages", tool]})
+    defs, issues = cd.check_definitions([bad], server_name=SERVER, plugin_root=PLUGIN, taken=set())
+    assert defs == []
+    assert any(repr(tool) in i.message and "not an MCP tool name" in i.message for i in issues)
+
+
+@pytest.mark.parametrize("tool", SMUGGLED)
+def test_a_probe_that_smuggles_more_tools_is_rejected(tool):
+    defs, issues = cd.check_definitions([_mail(probe=tool)], server_name=SERVER, plugin_root=PLUGIN, taken=set())
+    assert defs == [] and any(i.path == "connectors.suite_mail.probe" for i in issues)
+
+
+def test_one_bad_definition_among_several_rejects_the_whole_batch():
+    good_cal = {
+        "key": "suite_calendar",
+        "display_name": "Calendar suite",
+        "probe": f"{T}list_calendars",
+        "preset": "calendar",
+        "inbound": {"tools": [f"{T}list_events"]},
+    }
+    bad = _mail(inbound={"tools": [f"{T}send_message"]})
+    defs, issues = cd.check_definitions([good_cal, bad], server_name=SERVER, plugin_root=PLUGIN, taken=set())
+    assert defs == []
+    assert issues and all(i.path.startswith("connectors.suite_mail") for i in issues)
+
+
 def test_an_empty_draft_is_an_issue():
     defs, issues = cd.check_definitions([], server_name=SERVER, plugin_root=PLUGIN, taken=set())
     assert defs == [] and issues

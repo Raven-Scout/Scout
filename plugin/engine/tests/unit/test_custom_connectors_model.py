@@ -103,6 +103,34 @@ def test_invalid_definitions_are_rejected_with_a_field_path(key, body, expected)
     assert expected in _messages(issues)
 
 
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "mcp__example_suite__*",
+        "mcp__example_suite__*,list",
+        "mcp__example_suite__* list",
+        "mcp__example_suite__list_x,Bash(curl:*)",
+        "mcp__example_suite__list_x\n",
+        "mcp__example suite__list_x",
+    ],
+)
+def test_a_tool_name_outside_the_strict_pattern_is_rejected(tool):
+    """One validator: `custom add` and the draft gate both refuse a name that
+    `--allowedTools` would split into more than one rule."""
+    c, issues = _parse("suite_mail", {**MAIL, "inbound": {"tools": [tool]}})
+    assert c is None
+    assert f"connectors.suite_mail.inbound.tools[0]: {tool!r} is not an MCP tool name" in _messages(issues)
+    c, issues = _parse("suite_mail", {**MAIL, "probe": tool})
+    assert c is None and "connectors.suite_mail.probe" in _messages(issues)
+
+
+@pytest.mark.parametrize(
+    "tool", ["mcp__example_suite__search_messages", "mcp__plugin_example-kit_search-tool__find", "mcp__a__b"]
+)
+def test_tool_name_pattern_accepts_real_shapes(tool):
+    assert cc.MCP_TOOL_RE.match(tool)
+
+
 def test_credential_rejection_points_at_the_tools_own_sign_in_not_needs_user_input():
     """F4: inputs are rendered verbatim into SKILL.md, so the message must not steer
     a secret into needs_user_input."""

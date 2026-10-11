@@ -325,6 +325,10 @@ def draft_argv(claude_bin: str, model: str, schema: dict[str, Any]) -> list[str]
 
 
 def probe_argv(claude_bin: str, probe: str) -> list[str]:
+    # The gate already enforces this; refuse here too, since `--allowedTools`
+    # would read a comma, space or `*` in `probe` as more than one rule.
+    if not cc.MCP_TOOL_RE.match(probe):
+        raise ValueError(f"{probe!r} is not an MCP tool name (mcp__<server>__<tool>)")
     return [
         claude_bin,
         "-p",
