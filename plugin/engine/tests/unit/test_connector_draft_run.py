@@ -1,4 +1,4 @@
-"""connectors custom draft: two locked-down headless calls, then the gate (spec §4.2)."""
+"""connectors custom draft: two headless calls (built-in tools limited to ToolSearch), then the gate (spec §4.2)."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def test_drafted(tmp_path):
     assert out["server"] == SERVER and out["schema_version"] == 1
 
 
-def test_the_draft_call_is_locked_down_and_takes_the_prompt_on_stdin(tmp_path):
+def test_the_draft_call_limits_tools_and_takes_the_prompt_on_stdin(tmp_path):
     fake = FakeClaude([GOOD])
     _draft(fake, tmp_path)
     argv, stdin = fake.calls[0]

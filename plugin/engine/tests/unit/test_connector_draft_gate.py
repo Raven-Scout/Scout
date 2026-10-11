@@ -62,7 +62,7 @@ def test_read_tools_pass(tool):
 
 @pytest.mark.parametrize(
     "tool",
-    [f"{T}gmail_search_messages", f"{T}get_me", f"{T}whoami", f"{T}list_issue_labels", f"{T}getMessage"],
+    [f"{T}example_search_messages", f"{T}get_me", f"{T}whoami", f"{T}list_issue_labels", f"{T}getMessage"],
 )
 def test_read_tools_are_recognized_as_reads(tool):
     assert cd.is_read_tool(tool)
