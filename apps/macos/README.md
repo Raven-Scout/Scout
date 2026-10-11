@@ -19,7 +19,7 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 Homebrew or Python needed — and you don't need Claude Code installed first;
 onboarding offers to install it for you.
 
-Starting with Scout 0.15, the app is the only step:
+Starting with Scout 0.16, the app is the only step:
 
 1. Download the latest `Scout-*.dmg` from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and drag **Scout.app** into **Applications**. It's signed with a Developer ID and notarized by Apple, so it opens with a normal double-click.
 2. Open it. Onboarding checks for Claude Code — if it's missing, Scout offers to open Terminal with Anthropic's installer and asks you to sign in — then installs `uv` and the Scout engine under `~/.local/share/scout`, registers it with Claude Code, and asks for your name, email and the connectors you want Scout to read ([claude.ai/settings/connectors](https://claude.ai/settings/connectors) — Slack is strongly recommended, since Scout's daily summary arrives as a Slack DM). It creates your vault (default `~/Scout`) and schedules the sessions.

@@ -53,7 +53,7 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
-**The primary install is Scout.app** (starting with Scout 0.15): download it from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
+**The primary install is Scout.app** (starting with Scout 0.16): download it from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
 
 ### Before you start
 

@@ -14,7 +14,7 @@ Obsidian-compatible knowledge base, plus native apps to read and steer it.
 
 ## Install
 
-**Download Scout.app** — starting with Scout 0.15, that's the whole install.
+**Download Scout.app** — starting with Scout 0.16, that's the whole install.
 Grab the latest `Scout-*.dmg` from
 [Releases](https://github.com/Raven-Scout/Scout/releases), drag **Scout.app**
 into Applications, and open it. Onboarding takes it from there: it checks for
