@@ -110,7 +110,14 @@ struct SmokeVault {
             .appendingPathComponent(".scout-logs/scout-2026-06-15_08-03.log"))
 
         self.state = AppState(configuration: .testing(scoutDirectory: root))
-        self.updates = UpdateService(
+        self.updates = Self.inertUpdates()
+    }
+
+    /// An inert `UpdateService` for any smoke render that reaches a view
+    /// reading `@EnvironmentObject UpdateService` (`MainWindowView`,
+    /// `SettingsView`, the menu-bar panel), outside a `SmokeVault` too.
+    static func inertUpdates() -> UpdateService {
+        UpdateService(
             pluginChecker: SmokeInertPluginChecker(),
             engineStates: Just(EngineState.notInstalled).eraseToAnyPublisher(),
             makeAppController: { _ in SmokeAppUpdateController() })

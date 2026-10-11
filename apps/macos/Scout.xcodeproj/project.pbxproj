@@ -87,6 +87,7 @@
 				BEEE45502F95613D0078191D /* Sources */,
 				BEEE45512F95613D0078191D /* Frameworks */,
 				BEEE45522F95613D0078191D /* Resources */,
+				BEEE45B02F9599AB0078191D /* Bundle Engine */,
 			);
 			buildRules = (
 			);
@@ -185,6 +186,33 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		BEEE45B02F9599AB0078191D /* Bundle Engine */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../plugin/.claude-plugin/plugin.json",
+				"$(SRCROOT)/../../.claude-plugin/marketplace.json",
+				"$(SRCROOT)/Scout/Resources/uv-release.json",
+				"$(SRCROOT)/scripts/bundle-engine.sh",
+			);
+			name = "Bundle Engine";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/bundle-engine.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		BEEE45502F95613D0078191D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -280,7 +308,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -343,7 +371,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -381,7 +409,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.12.0;
+				MARKETING_VERSION = 0.15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.Scout.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -415,7 +443,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.12.0;
+				MARKETING_VERSION = 0.15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.Scout;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -436,7 +464,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.12.0;
+				MARKETING_VERSION = 0.15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.ScoutTests.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -455,7 +483,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.12.0;
+				MARKETING_VERSION = 0.15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.ScoutTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;

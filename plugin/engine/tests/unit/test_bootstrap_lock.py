@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -177,3 +178,127 @@ def test_acquire_lock_is_atomic_under_concurrent_callers(tmp_path):
     assert sorted(results) == ["busy", "success"], f"expected exactly one success and one busy, got: {results}"
     assert lock.exists()
     assert lock.read_text().strip() == str(os.getpid())
+
+
+# Regression: stale recovery read the dead PID, then unlinked the path. A
+# second waiter that read the same dead PID could unlink the live lock the
+# first had just taken, then win its own create: two holders (#322).
+
+DEAD_PID = 999999  # macOS default max PID is 99998; 999999 is reliably unused.
+
+
+def _live_holder_takes_over_after_first_read(monkeypatch, lock):
+    """Make `_read_lock_pid` return the dead PID, then simulate another waiter
+    completing its takeover (writing a live PID) before this caller acts on it."""
+    from scout.scripts import bootstrap_lock
+
+    real_read = bootstrap_lock._read_lock_pid
+    state = {"raced": False}
+
+    def racing_read(path):
+        pid = real_read(path)
+        if not state["raced"] and path == lock and pid == DEAD_PID:
+            state["raced"] = True
+            lock.write_text(str(os.getppid()))  # the other waiter's live lock
+        return pid
+
+    monkeypatch.setattr(bootstrap_lock, "_read_lock_pid", racing_read)
+
+
+def test_acquire_lock_stale_recovery_never_removes_a_fresh_live_lock(tmp_path, monkeypatch):
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(str(DEAD_PID))
+    _live_holder_takes_over_after_first_read(monkeypatch, lock)
+
+    with pytest.raises(LockBusyError):
+        acquire_lock(lock)
+    assert lock.read_text().strip() == str(os.getppid())
+    assert sorted(p.name for p in tmp_path.iterdir()) == [lock.name]  # no takeover debris
+
+
+def test_remove_stale_lock_never_removes_a_fresh_live_lock(tmp_path, monkeypatch):
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(str(DEAD_PID))
+    _live_holder_takes_over_after_first_read(monkeypatch, lock)
+
+    remove_stale_lock(lock)
+    assert lock.read_text().strip() == str(os.getppid())
+    assert sorted(p.name for p in tmp_path.iterdir()) == [lock.name]
+
+
+def test_acquire_lock_wins_when_another_waiter_already_cleared_the_stale_lock(tmp_path, monkeypatch):
+    from scout.scripts import bootstrap_lock
+
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(str(DEAD_PID))
+    real_read = bootstrap_lock._read_lock_pid
+
+    def read_then_vanish(path):
+        pid = real_read(path)
+        if path == lock and pid == DEAD_PID:
+            lock.unlink()  # the other waiter discarded it first
+        return pid
+
+    monkeypatch.setattr(bootstrap_lock, "_read_lock_pid", read_then_vanish)
+    acquire_lock(lock)
+    assert lock.read_text().strip() == str(os.getpid())
+
+
+def test_stale_recovery_waits_while_another_waiter_holds_the_takeover_guard(tmp_path):
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(str(DEAD_PID))
+    guard = tmp_path / ".scout-session.lock.takeover"
+    guard.write_text("")  # another waiter is mid-recovery
+
+    with pytest.raises(LockBusyError):
+        acquire_lock(lock)
+    assert lock.read_text().strip() == str(DEAD_PID)  # not ours to touch yet
+    assert guard.exists()
+
+
+def test_stale_recovery_clears_a_takeover_guard_whose_owner_died(tmp_path):
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text(str(DEAD_PID))
+    guard = tmp_path / ".scout-session.lock.takeover"
+    guard.write_text("")
+    old = time.time() - 3600
+    os.utime(guard, (old, old))
+
+    with pytest.raises(LockBusyError):
+        acquire_lock(lock)  # this poll clears the abandoned guard...
+    assert not guard.exists()
+    acquire_lock(lock)  # ...and the next one recovers the stale lock
+    assert lock.read_text().strip() == str(os.getpid())
+
+
+def test_remove_stale_lock_leaves_an_unparseable_lock_alone(tmp_path):
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text("")
+    remove_stale_lock(lock)
+    assert lock.exists()
+
+
+def test_release_lock_leaves_an_empty_lock_alone(tmp_path):
+    """An empty lock is a competitor between its O_EXCL create and its PID
+    write; it isn't ours to remove."""
+    lock = tmp_path / ".scout-session.lock"
+    lock.write_text("")
+    release_lock(lock)
+    assert lock.exists()
+
+
+def test_release_lock_tolerates_a_lock_that_vanished(tmp_path, monkeypatch):
+    from scout.scripts import bootstrap_lock
+
+    lock = tmp_path / ".scout-session.lock"
+    acquire_lock(lock)
+    real_read = bootstrap_lock._read_lock_pid
+
+    def read_then_vanish(path):
+        pid = real_read(path)
+        path.unlink()
+        return pid
+
+    monkeypatch.setattr(bootstrap_lock, "_read_lock_pid", read_then_vanish)
+    release_lock(lock)  # must not raise
+    assert not lock.exists()

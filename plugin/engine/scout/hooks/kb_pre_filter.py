@@ -1,8 +1,10 @@
 """UserPromptSubmit hook — pre-session KB staleness scorer.
 
-Direct port of ~/Scout/hooks/kb-pre-filter.sh. Behavior identical:
+Started as a port of ~/Scout/hooks/kb-pre-filter.sh:
   - Walks $SCOUT_DATA_DIR/knowledge-base/, classifying each *.md file
-    as STALE / NO_DATE / FRESH against a per-file freshness budget.
+    as STALE / NO_DATE / FRESH against a per-file freshness budget. The date
+    comes from the frontmatter `last_updated:` key, else the prose
+    "Last updated" line, read in any zone a run writes (#201).
   - Writes $SCOUT_DATA_DIR/.scout-cache/kb-filter.md so the SCOUT skill
     can read this cache instead of re-scanning the filesystem.
   - Exits 0 even on partial failure (single bad file doesn't block the session).
@@ -12,6 +14,8 @@ Discovery exclusions are layered to match the bash:
   - per-file basename skip: review-queue.md, archived.md, *-archive*,
     *-draft*, *-prompt*
   - per-file rel-path skip: */people/*.md (entity files)
+  - per-item record folders: knowledge-base/{scout-mistake-audit,
+    research-queue,session-log,kg-audits,review-queue}/ (#201)
 
 Hooks must NEVER raise — main() catches all exceptions and returns 0.
 """
@@ -64,17 +68,6 @@ PRIORITY_FRESHNESS: dict[str, int] = {
 # Default freshness budget for project files with no priority frontmatter.
 DEFAULT_FRESHNESS_HOURS = 168
 
-# Date formats tried in order. Bash lines 59-61 (3 BSD `date -j -f` formats)
-# plus lines 67-68 (5 Python formats). The first 3 are duplicated by Python so
-# we just need the union.
-DATE_FORMATS: tuple[str, ...] = (
-    "%B %d, %Y %I:%M %p",
-    "%B %d, %Y %H:%M",
-    "%B %d, %Y",
-    "%Y-%m-%d %H:%M",
-    "%Y-%m-%d",
-)
-
 # Per-file basename skip rules. Bash line 90.
 SKIP_BASENAMES: tuple[str, ...] = ("review-queue.md", "archived.md")
 SKIP_BASENAME_GLOBS: tuple[str, ...] = ("*-archive*", "*-draft*", "*-prompt*")
@@ -82,9 +75,57 @@ SKIP_BASENAME_GLOBS: tuple[str, ...] = ("*-archive*", "*-draft*", "*-prompt*")
 # Find-level path exclusions. Bash lines 128-130.
 SKIP_PATH_FRAGMENTS: tuple[str, ...] = ("/ontology/", "archive", "/personal/")
 
-# How many lines to scan from the file head for date and priority markers.
-# Bash uses head -25.
+# knowledge-base/ folders of per-item records: mistake-audit entries, research
+# and review queue items, session logs, KG audit reports. Each record has its
+# own lifecycle (a `status:`, a creation `date:`), not a freshness budget, and
+# together they buried the real KB documents in the NO DATE list (#201).
+SKIP_KB_SUBDIRS: frozenset[str] = frozenset(
+    {"scout-mistake-audit", "research-queue", "session-log", "kg-audits", "review-queue"}
+)
+
+# How many lines to scan from the file head for the prose date line and the
+# priority marker. Bash uses head -25.
 HEAD_SCAN_LINES = 25
+
+# How far classify() reads, so a `last_updated:` key at the bottom of a long
+# frontmatter block is still found (#230). The prose and priority scans stay
+# within HEAD_SCAN_LINES.
+FRONTMATTER_SCAN_LINES = 200
+
+# Zone abbreviations a run may append to a prose date, mapped to the zone they
+# name. Anything else after the time is ignored and the configured zone
+# applies. Left out on purpose: IST (India / Ireland) is ambiguous; CST is read
+# as US Central, Scout's default region.
+TZ_ABBREVIATIONS: dict[str, str] = {
+    **dict.fromkeys(("ET", "EST", "EDT"), "America/New_York"),
+    **dict.fromkeys(("CT", "CST", "CDT"), "America/Chicago"),
+    **dict.fromkeys(("MT", "MST", "MDT"), "America/Denver"),
+    **dict.fromkeys(("PT", "PST", "PDT"), "America/Los_Angeles"),
+    **dict.fromkeys(("UTC", "GMT"), "UTC"),
+    **dict.fromkeys(("CET", "CEST"), "Europe/Berlin"),
+    **dict.fromkeys(("WET", "WEST"), "Europe/Lisbon"),
+    **dict.fromkeys(("EET", "EEST"), "Europe/Athens"),
+    "BST": "Europe/London",
+    "JST": "Asia/Tokyo",
+    **dict.fromkeys(("AEST", "AEDT"), "Australia/Sydney"),
+}
+
+# A full ISO 8601 timestamp anywhere in the text (`2026-08-12T10:20:00+02:00`).
+_ISO_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?")
+
+# A date, then optionally a time and a zone abbreviation, found anywhere in the
+# text, so a leading weekday or a trailing note can't defeat it. The time takes
+# `~` (approximate) and an `x` last digit (`9:3x`), which runs write. The
+# meridiem is matched before the zone, so `PM` is never read as one.
+_DATE_RE = re.compile(
+    r"(?:(?P<iso>\d{4}-\d{2}-\d{2})"
+    r"|(?P<mon>[A-Za-z]{3,9})\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<year>\d{4}))"
+    r"(?:(?:\s+|,\s*)(?:at\s+)?~?(?P<hour>\d{1,2}):(?P<minute>\d[\dxX])(?::\d{2})?"
+    r"(?:\s*(?P<meridiem>[AaPp])\.?[Mm]\.?\b)?)?"
+    r"(?:\s+(?P<zone>[A-Z]{2,4})\b)?"
+)
+
+_FRONTMATTER_KEY_RE = re.compile(r"^(last_updated|last_verified):\s*(.*)$")
 
 
 # -- helpers -----------------------------------------------------------------
@@ -150,7 +191,11 @@ def extract_date_string(path: Path, *, lines: list[str] | None = None) -> str:
     the internal _read_head call. Pass `lines` from classify() to avoid reading
     the file twice per classify (#78).
     """
-    head = lines if lines is not None else _read_head(path)
+    return _prose_date_line(lines if lines is not None else _read_head(path))
+
+
+def _prose_date_line(head: list[str]) -> str:
+    """The cleaned date text from the first "Last updated" / "Last verified" line in ``head``."""
     line = ""
     for raw in head:
         # Single space (not \s+) for strict bash parity — bash uses literal " ".
@@ -175,34 +220,102 @@ def extract_date_string(path: Path, *, lines: list[str] | None = None) -> str:
     return line.strip()
 
 
-def parse_date(s: str, tz: ZoneInfo | None = None) -> datetime | None:
-    """Parse a date string against the 5 known formats. Returns None on failure.
-
-    Bash lines 53-77 — also strips ' at ', ' ET'/' EDT'/' EST' tails, and
-    parentheticals in its own pre-clean. We trust extract_date_string to have
-    already cleaned the string, but apply the same minimal pre-clean here for
-    parity (callers may pass raw strings).
-
-    The wall-clock date is interpreted in ``tz`` (default: the configured
-    zone). Callers in a loop should resolve the zone once and pass it in.
-    """
-    if not s:
-        return None
-    cleaned = s.replace("**", "")
-    cleaned = re.sub(r"\s+at\s+", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+(ET|EDT|EST).*$", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*\(.*$", "", cleaned)
-    cleaned = cleaned.strip()
-    if not cleaned:
-        return None
-
-    zone = tz or _boundary_zone()
-    for fmt in DATE_FORMATS:
+def _month_day_year(mon: str, day: str, year: str) -> datetime | None:
+    # %B takes "September", %b takes "Sep"; mon[:3] also covers "Sept".
+    for text, fmt in ((mon, "%B"), (mon, "%b"), (mon[:3], "%b")):
         try:
-            return datetime.strptime(cleaned, fmt).replace(tzinfo=zone)
+            return datetime.strptime(f"{text} {day} {year}", f"{fmt} %d %Y")
         except ValueError:
             continue
     return None
+
+
+def parse_date(s: str, tz: ZoneInfo | None = None) -> datetime | None:
+    """Find the first date in ``s`` and return it zone-aware, or None.
+
+    Reads the renderings runs actually write (#201): an ISO 8601 timestamp
+    with its offset; or a date (``2026-08-12`` / ``August 12, 2026``) with an
+    optional time (``~9:30 PM``, ``09:3x``) and zone abbreviation (``CEST``,
+    ``ET``). A known abbreviation sets the zone; otherwise the wall-clock time
+    is read in ``tz`` (default: the configured zone). An impossible time is
+    dropped and the date kept. Callers in a loop should resolve the zone once
+    and pass it in.
+    """
+    if not s:
+        return None
+    text = s.replace("**", "")
+    zone = tz or _boundary_zone()
+
+    m = _ISO_TIMESTAMP_RE.search(text)
+    if m:
+        try:
+            parsed = datetime.fromisoformat(m.group(0))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=zone)
+
+    for m in _DATE_RE.finditer(text):
+        if m.group("iso"):
+            try:
+                day = datetime.fromisoformat(m.group("iso"))
+            except ValueError:
+                continue
+        else:
+            found = _month_day_year(m.group("mon"), m.group("day"), m.group("year"))
+            if found is None:
+                continue
+            day = found
+        named = TZ_ABBREVIATIONS.get(m.group("zone") or "")
+        when_zone = ZoneInfo(named) if named else zone
+        if m.group("hour") is None:
+            return day.replace(tzinfo=when_zone)
+        hour = int(m.group("hour"))
+        minute = int(m.group("minute").lower().replace("x", "0"))
+        meridiem = (m.group("meridiem") or "").lower()
+        if meridiem and 1 <= hour <= 12:
+            hour = hour % 12 + (12 if meridiem == "p" else 0)
+        if hour > 23 or minute > 59:
+            return day.replace(tzinfo=when_zone)
+        return day.replace(hour=hour, minute=minute, tzinfo=when_zone)
+    return None
+
+
+def _frontmatter_value(lines: list[str]) -> str:
+    """The ``last_updated:`` value from the YAML frontmatter, else ``last_verified:``, else ""."""
+    if not lines or lines[0].strip() != "---":
+        return ""
+    found: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        m = _FRONTMATTER_KEY_RE.match(line)
+        if m and m.group(1) not in found:
+            # Drop a YAML comment (` # …`) and surrounding quotes.
+            value = re.sub(r"\s+#.*$", "", m.group(2)).strip().strip("\"'")
+            found[m.group(1)] = value
+    return found.get("last_updated") or found.get("last_verified") or ""
+
+
+def resolve_date(lines: list[str], tz: ZoneInfo) -> tuple[datetime | None, str, str]:
+    """Return ``(when, source, raw)`` for a KB file's head lines.
+
+    ``source`` is ``"property"`` for the frontmatter ``last_updated:`` (or
+    ``last_verified:``) key that kb-management.md asks every file to carry,
+    ``"prose"`` for the older ``**Last updated:** …`` line, or ``"none"``. The
+    property wins; an unreadable property falls back to the prose line.
+    """
+    value = _frontmatter_value(lines)
+    if value:
+        when = parse_date(value, tz=tz)
+        if when is not None:
+            return when, "property", value
+    prose = _prose_date_line(lines[:HEAD_SCAN_LINES])
+    if prose:
+        when = parse_date(prose, tz=tz)
+        if when is not None:
+            return when, "prose", prose
+    return None, "none", prose or value
 
 
 def discover_kb_files(scout_dir: Path) -> list[Path]:
@@ -244,6 +357,10 @@ def discover_kb_files(scout_dir: Path) -> list[Path]:
             # people.md is allowed because there's no subdir segment)
             if "/people/" in rel_posix:
                 continue
+            # Per-item record folders directly under knowledge-base/.
+            parts = rel_posix.split("/")
+            if len(parts) > 2 and parts[1] in SKIP_KB_SUBDIRS:
+                continue
 
             candidates.append(p)
 
@@ -261,14 +378,11 @@ def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = N
     and freshness_hours_for to avoid opening the file twice per classify (#78).
     """
     rel = path.relative_to(scout_dir).as_posix()
-    # Read head lines once; share with both helpers to avoid double I/O (#78).
-    head_lines = _read_head(path)
-    datestr = extract_date_string(path, lines=head_lines)
-    if not datestr:
-        return ("NO_DATE", {"rel": rel})
-
+    # Read once, far enough for long frontmatter (#230); share with both
+    # helpers to avoid double I/O (#78).
+    head_lines = _read_head(path, n=FRONTMATTER_SCAN_LINES)
     zone = tz or _boundary_zone()
-    parsed = parse_date(datestr, tz=zone)
+    parsed, source, datestr = resolve_date(head_lines, zone)
     if parsed is None:
         return ("NO_DATE", {"rel": rel})
 
@@ -281,7 +395,7 @@ def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = N
     now_aware = now if now.tzinfo is not None else now.replace(tzinfo=zone)
     age_seconds = now_aware.timestamp() - parsed.timestamp()
     age_hours = int(age_seconds // 3600)
-    budget = freshness_hours_for(path, lines=head_lines)
+    budget = freshness_hours_for(path, lines=head_lines[:HEAD_SCAN_LINES])
 
     label = "STALE" if age_hours > budget else "FRESH"
     return (
@@ -291,8 +405,17 @@ def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = N
             "age_hours": age_hours,
             "budget_hours": budget,
             "datestr": datestr,
+            "source": source,
         },
     )
+
+
+def _count_sources(entries: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"property": 0, "prose": 0}
+    for entry in entries:
+        source = entry.get("source", "prose")
+        counts[source] = counts.get(source, 0) + 1
+    return counts
 
 
 def render_output(
@@ -303,8 +426,22 @@ def render_output(
     session_type: str,
     now_et: str,
 ) -> str:
-    """Render the kb-filter.md content. Mirrors bash lines 134-164."""
+    """Render the kb-filter.md content. Mirrors bash lines 134-164.
+
+    Adds two lines the bash never had (#201): a warning when no file has a
+    readable date, so a staleness check that read nothing can't look like a
+    healthy KB, and where the dates came from, so the prose fallback is
+    visible as files move to the ``last_updated:`` property.
+    """
     lines: list[str] = [f"# KB Pre-Filter — {now_et} ({session_type})", ""]
+    dated = stale + fresh
+    if no_date and not dated:
+        lines.append(
+            f"> ⚠ None of the {len(no_date)} KB files has a readable date — the staleness check did not run. "
+            "Give each file a `last_updated:` frontmatter key in ISO 8601 with an offset "
+            "(e.g. `2026-08-12T10:20:00+02:00`)."
+        )
+        lines.append("")
 
     if stale:
         lines.append("## STALE — Need reading/audit")
@@ -329,6 +466,9 @@ def render_output(
     lines.append("")
     lines.append("---")
     lines.append(f"Stale: {len(stale)} | No date: {len(no_date)} | Fresh: {len(fresh)}")
+    if dated:
+        by = _count_sources(dated)
+        lines.append(f"Dates read from: {by['property']} last_updated property, {by['prose']} prose line")
     # Trailing newline to match bash `echo` semantics.
     return "\n".join(lines) + "\n"
 
@@ -389,6 +529,7 @@ def run(
         "stale": len(stale),
         "no_date": len(no_date),
         "fresh": len(fresh),
+        "dated_by": _count_sources(stale + fresh),
         "session_type": session_type,
         "output_path": str(out_path),
     }

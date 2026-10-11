@@ -19,6 +19,8 @@ from typing import Any
 
 import yaml
 
+from scout import yaml_blocks
+
 CUSTOM_FILE = "connectors.custom.yaml"
 SCHEMA_VERSION = 1
 ACTIVITIES: tuple[str, ...] = ("inbound", "outbound", "lookup")
@@ -56,8 +58,22 @@ _GENERIC_BINARIES = frozenset(
         "uvx",
         "jq",
         "git",
+        "osascript",
+        "npm",
+        "docker",
+        "ssh",
+        "open",
+        "echo",
+        "cat",
+        "printf",
     }
 )
+
+# Wrapper commands whose own name is not the connector being called — the real
+# binary is the next real word. Matched anywhere `first_binary` walks tokens,
+# so `timeout 10 tixcli list` reads as `tixcli`, not `timeout`.
+_WRAPPERS = frozenset({"env", "sudo", "nice", "nohup", "exec", "command", "time", "timeout", "xargs", "caffeinate"})
+_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 _HEADER = (
     "# Custom connectors — managed by `scoutctl connectors custom add/remove`.\n"
     "# Hand edits take effect at the next `scoutctl bootstrap upgrade` (or /scout-update);\n"
@@ -118,12 +134,44 @@ class CustomLoad:
 
 
 def first_binary(cmd: str) -> str | None:
-    """Basename of the first command word, skipping ``FOO=bar`` prefixes."""
+    """Basename of the first real command word.
+
+    Skips ``FOO=bar`` assignments, wrapper commands in ``_WRAPPERS`` (so
+    ``timeout 10 tixcli list`` reads as ``tixcli``, not ``timeout``), bare
+    option tokens (``-x``), the duration argument right after ``timeout``, and
+    the numeric argument right after ``nice -n``.
+
+    Known limit: an option's own value is not otherwise skipped — ``sudo -u
+    alex tix x`` reads ``alex``, not ``tix``.
+    """
     tokens = cmd.split()
     idx = 0
-    while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if "=" in tok and not tok.startswith("-"):
+            idx += 1
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        base = tok.rsplit("/", 1)[-1]
+        if base not in _WRAPPERS:
+            return base
         idx += 1
-    return tokens[idx].rsplit("/", 1)[-1] if idx < len(tokens) else None
+        if base == "command" and idx < len(tokens) and tokens[idx] in ("-v", "-V"):
+            return None  # `command -v gh` asks whether gh exists; it does not call it
+        if base == "timeout" and idx < len(tokens) and _DURATION_RE.match(tokens[idx]):
+            idx += 1
+        elif base == "nice" and idx < len(tokens) and tokens[idx] == "-n":
+            idx += 2  # `-n` and its value
+    return None
+
+
+def is_generic_binary(name: str | None) -> bool:
+    """True when ``name`` is too generic to identify a connector — including ``None``
+    (e.g. a probe command that is nothing but a wrapper, with no real command after
+    it). Used to decide whether remediation can honestly name a specific binary."""
+    return name is None or name in _GENERIC_BINARIES
 
 
 def _tool_ref(value: Any, path: str, issues: list[Issue]) -> ToolRef | None:
@@ -152,6 +200,18 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
+_HEADING_LINE_RE = re.compile(r"^#(#| )")
+_HEADING_MESSAGE = "must not contain markdown headings; they would break the brain file's structure"
+_INPUT_PLACEHOLDER_RE = re.compile(r"\{\{(INPUT_\w+)\}\}")
+
+
+def _has_markdown_heading(text: str) -> bool:
+    """True when any line, after ``lstrip``, starts with ``#`` followed by a space or
+    another ``#`` — a markdown heading. A ``#`` elsewhere on the line (mid-line, or a
+    bare trailing ``#`` with nothing after it) is not a heading."""
+    return any(_HEADING_LINE_RE.match(line.lstrip()) for line in text.splitlines())
+
+
 def parse_connector(
     key: str, body: Any, *, reserved: set[str], presets: dict[str, dict[str, str]]
 ) -> tuple[CustomConnector | None, list[Issue]]:
@@ -178,6 +238,8 @@ def parse_connector(
     if not isinstance(display_name, str) or not display_name.strip():
         issues.append(Issue(f"{base}.display_name", "required"))
         display_name = ""
+    elif "\n" in display_name or "\r" in display_name:
+        issues.append(Issue(f"{base}.display_name", "must be a single line"))
 
     probe: ToolRef | None = None
     if "probe" in body:
@@ -213,11 +275,16 @@ def parse_connector(
             continue
         tools = [_tool_ref(t, f"{apath}.tools[{i}]", issues) for i, t in enumerate(raw_tools)]
         guidance = block.get(gfield)
+        explicit_guidance = guidance is not None
         if guidance is None and preset is not None:
             guidance = presets[preset].get(name)
         if not isinstance(guidance, str) or not guidance.strip():
             msg = "required (a sentence on what matters) unless a preset supplies it"
             issues.append(Issue(f"{apath}.{gfield}", msg))
+            continue
+        # Preset text is shipped and trusted; only explicit text is sanitized.
+        if explicit_guidance and _has_markdown_heading(guidance):
+            issues.append(Issue(f"{apath}.{gfield}", _HEADING_MESSAGE))
             continue
         valid_tools = tuple(t for t in tools if t is not None)
         if len(valid_tools) == len(tools):
@@ -262,6 +329,26 @@ def parse_connector(
     if not isinstance(notes, str):
         issues.append(Issue(f"{base}.notes", "must be text"))
         notes = ""
+    elif _has_markdown_heading(notes):
+        issues.append(Issue(f"{base}.notes", _HEADING_MESSAGE))
+
+    # Exactly what custom_assembly substitutes: INPUT_<NAME.upper()>. Anything else
+    # (including a mixed-case spelling) would render literally, so it is rejected.
+    declared_inputs = {f"INPUT_{n.upper()}" for n in needs}
+    seen_placeholders: set[str] = set()
+    for s in _strings(body):
+        for match in _INPUT_PLACEHOLDER_RE.finditer(s):
+            placeholder = match.group(1)
+            if placeholder in declared_inputs or placeholder in seen_placeholders:
+                continue
+            seen_placeholders.add(placeholder)
+            name = placeholder[len("INPUT_") :].lower()
+            if f"INPUT_{name.upper()}" in declared_inputs:
+                fixed = f"INPUT_{name.upper()}"
+                msg = f"uses {{{{{placeholder}}}}}; write it as {{{{{fixed}}}}} (placeholders are upper case)"
+            else:
+                msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
+            issues.append(Issue(f"{base}.needs_user_input", msg))
 
     if issues or probe is None:
         return None, issues
@@ -364,12 +451,151 @@ def dump(raw_connectors: dict[str, Any]) -> str:
     return _HEADER + body
 
 
+def _dump_entry(key: str, value: Any) -> str:
+    """``yaml.safe_dump({key: value})``, indented by two spaces to nest under ``connectors:``."""
+    dumped = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True)
+    return "".join(("  " + line if line.strip() else line) for line in dumped.splitlines(keepends=True))
+
+
+def _rebuild_entries(
+    header: list[str],
+    segments: list[tuple[str, list[str], list[str]]],
+    trailer: list[str],
+    raw_connectors: dict[str, Any],
+) -> str:
+    out: list[str] = list(header)
+    if out:
+        # `header`'s last line is always the `connectors:` (or `connectors: {}`)
+        # declaration itself. Keep it in sync with whether any entries remain:
+        last = out[-1].rstrip("\r\n")
+        if not raw_connectors and last in ("connectors:", "connectors: {}"):
+            # Emit `connectors: {}` rather than leaving a bare `connectors:` with
+            # nothing under it (which parses back as null, not `{}`) -- otherwise
+            # removing the last entry always mismatches the round-trip check
+            # below and forces a full re-dump, losing the header (and any
+            # trailer) for good. An empty flow mapping here is also what the
+            # splitter recognizes as "no entries yet", so a later add takes the
+            # fast path again.
+            out[-1] = "connectors: {}\n"
+        elif raw_connectors and last == "connectors: {}":
+            # The reverse transition: un-emptying it back to block style so the
+            # entries appended below can be its indented children, not dangling
+            # text after an already-closed flow mapping.
+            out[-1] = "connectors:\n"
+
+    # `prev_block_text`/`prev_intact` track what a `leading`/`trailer` run is
+    # actually about to be emitted after. When that's the SAME thing it
+    # originally followed (nothing dropped in between, and that thing is
+    # itself unchanged), the run is safe to emit verbatim -- this is the
+    # common case. Otherwise (an entry was removed, the previous entry was
+    # rewritten, or a brand-new entry now comes before it) the boundary is
+    # new, and if the new predecessor ends inside a `|`/`>` scalar, emitting
+    # the run verbatim could silently become part of that scalar's value
+    # instead of staying inert comments -- `yaml_blocks.fit_leading` guards
+    # against that, at a bounded cost, only at these changed boundaries.
+    prev_block_text = "".join(out)
+    prev_intact = True
+    handled: set[str] = set()
+    for key, leading, block in segments:
+        handled.add(key)
+        if key not in raw_connectors:
+            prev_intact = False  # removed: its leading comments go with it
+            continue
+        safe_leading = leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=2)
+        out += safe_leading
+        try:
+            original = yaml.safe_load("".join(block))
+            unchanged = isinstance(original, dict) and key in original and original[key] == raw_connectors[key]
+        except (yaml.YAMLError, RecursionError):
+            unchanged = False  # unparseable, or a cyclic alias equality can't decide -- treat as changed
+        block_text = "".join(block) if unchanged else _dump_entry(key, raw_connectors[key])
+        out.append(block_text)
+        prev_block_text = block_text
+        prev_intact = unchanged
+    new_keys = [k for k in raw_connectors if k not in handled]
+    if new_keys:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        for key in new_keys:
+            entry_text = _dump_entry(key, raw_connectors[key])
+            out.append(entry_text)
+            prev_block_text = entry_text
+        prev_intact = False  # a freshly appended entry was never the trailer's original predecessor
+    # New entries land before any trailing comment, not after it.
+    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=2)
+    return "".join(out)
+
+
+def _write_keeping_comments(text: str, raw_connectors: dict[str, Any]) -> str:
+    """``dump(raw_connectors)``, but written over ``text`` so its comments survive.
+
+    See ``yaml_blocks.split_blocks`` for what layout this can rewrite entry by
+    entry. Falls back to a plain ``dump()`` whenever the layout can't be split
+    safely, or the rebuilt text doesn't load back to exactly ``raw_connectors``
+    -- the safety net for anything this function's line-based splitting gets
+    wrong (e.g. a bare word YAML resolves to a bool instead of the intended
+    string key), or for a value a Python ``==`` can't honestly compare (``nan``,
+    a cyclic alias).
+    """
+    split = yaml_blocks.split_blocks(text, indent=2, after_key="connectors")
+    if split is None:
+        return dump(raw_connectors)
+    header, segments, trailer = split
+    result = _rebuild_entries(header, segments, trailer, raw_connectors)
+    try:
+        loaded = yaml.safe_load(result)
+        mismatch = loaded != {"schema_version": SCHEMA_VERSION, "connectors": raw_connectors}
+    except (yaml.YAMLError, RecursionError):
+        mismatch = True
+    if mismatch:
+        return dump(raw_connectors)
+    return result
+
+
 def write(vault: Path, raw_connectors: dict[str, Any]) -> None:
-    """Atomically write the custom file (the only writer of it)."""
+    """Atomically write the custom file (the only writer of it).
+
+    Rewrites the existing file entry by entry so hand-added comments survive an
+    add/remove, when it is laid out the way this function's own output always is
+    (block-style, ``connectors:`` at column 0, each entry at two-space indent).
+    Falls back to a full re-dump -- which never preserves comments but never loses
+    data either -- whenever there is no existing file, or the rewrite can't be
+    trusted to reproduce ``raw_connectors`` exactly.
+    """
     path = vault / CUSTOM_FILE
+    try:
+        text: str | None = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = None
+    new_text = dump(raw_connectors) if text is None else _write_keeping_comments(text, raw_connectors)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(dump(raw_connectors), encoding="utf-8")
+    tmp.write_text(new_text, encoding="utf-8")
     tmp.replace(path)
+
+
+def enabled_keys(vault: Path) -> set[str]:
+    """Keys listed under ``connectors.enabled`` in ``<vault>/scout-config.yaml``.
+
+    Read tolerantly: a missing file, unreadable file, malformed YAML, or any
+    wrong shape (not a mapping, ``connectors`` not a mapping, ``enabled`` not a
+    list) yields an empty set rather than raising. Callers use this to decide
+    whether a custom connector's roster row or probe should exist at all, so
+    this fails *closed* — an empty set hides every custom row/probe rather than
+    showing one Scout cannot confirm is enabled. Never raises.
+    """
+    try:
+        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    connectors = raw.get("connectors")
+    if not isinstance(connectors, dict):
+        return set()
+    enabled = connectors.get("enabled")
+    if not isinstance(enabled, list):
+        return set()
+    return {k for k in enabled if isinstance(k, str)}
 
 
 def bash_binaries(vault: Path) -> dict[str, str]:
