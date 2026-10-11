@@ -394,7 +394,7 @@ struct ActionItemsView: View {
 
     private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
         do {
-            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate, recoveryLineNumber: lineNumber)
+            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate)
             await docService.reparseCurrent()
             if case .reopen(let subject, let shortPrefix) = op {
                 revealReopened(subject: subject, shortPrefix: shortPrefix)

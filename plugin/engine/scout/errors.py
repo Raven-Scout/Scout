@@ -51,7 +51,9 @@ class KBSchemaError(KBError):
 
 
 class ActionItemError(ScoutError):
-    """Action-item operation failure (bad arguments, write error)."""
+    """Action-item operation failure: bad arguments, a write error, or a
+    comment selector that matches no comment or several. A stale comment
+    selector stays here (exit 21): backfilling prefixes can't fix it."""
 
     exit_code = 21
 

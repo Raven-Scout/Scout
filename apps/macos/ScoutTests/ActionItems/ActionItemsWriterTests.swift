@@ -256,95 +256,46 @@ struct ActionItemsWriterTests {
         }
     }
 
-    @Test func withShortPrefixReplacesPrefixPreservingPayload() {
-        let op = WriteOp.addComment(subject: "Subj", shortPrefix: nil, text: "hi", author: "alex")
-        let promoted = op.withShortPrefix("AB12")
-        #expect(promoted.shortPrefix == "AB12")
-        #expect(promoted.subject == "Subj")
-        if case .addComment(_, _, let text, let author) = promoted {
-            #expect(text == "hi")
-            #expect(author == "alex")
-        } else {
-            Issue.record("case changed unexpectedly")
-        }
-    }
-
-    @Test func backfillsThenRetriesByIdOnNoMatchForUnprefixedOp() async throws {
+    /// A failed write is reported and never retried on another line. The
+    /// list the user clicked can be stale: an outside write may have removed
+    /// the task, so the line it was on can now hold a different one.
+    @Test(arguments: [
+        (Int32(22), "no open task matched subject: 'Book flights for the offsite'",
+         ActionItemsWriterError.Classification.noMatch),
+        (2, "Error: No such option: --author", .environment),
+    ])
+    func aFailedWriteIsReportedWithoutARetry(
+        exit: Int32, stderr: String, expected: ActionItemsWriterError.Classification
+    ) async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("Scout-\(UUID().uuidString)")
         let ai = dir.appendingPathComponent("action-items")
         try FileManager.default.createDirectory(at: ai, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
         let date = Calendar(identifier: .iso8601).date(from: DateComponents(
             timeZone: TimeZone.current, year: 2026, month: 4, day: 20))!
         let daily = ai.appendingPathComponent("action-items-2026-04-20.md")
-        try "- [ ] **Ship it** — now".write(to: daily, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        // "Book flights for the offsite" was removed by an outside write after
+        // the list loaded; another task now sits on its old line.
+        let content = "- [ ] Reply to Priya about pricing\n- [ ] Call Sam about the contract\n"
+        try content.write(to: daily, atomically: true, encoding: .utf8)
 
         let recorder = RecordingRunner()
-        recorder.scripted = [
-            ProcessResult(exitCode: 22, stdout: Data(), stderr: Data("no open task matched subject".utf8)),
-            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // backfill
-            ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),  // retry
-        ]
-        recorder.onCall = { call in
-            if call.arguments.contains("backfill-prefixes") {
-                try? "- [ ] [#QW34] **Ship it** — now".write(to: daily, atomically: true, encoding: .utf8)
-            }
-        }
-
+        recorder.scripted = [ProcessResult(exitCode: exit, stdout: Data(), stderr: Data(stderr.utf8))]
         let writer = ActionItemsWriter(
             scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
             actionItemsDirectory: ai, scoutDirectory: dir, runner: recorder, gitService: nil)
 
-        _ = try await writer.submit(
-            .markDone(subject: "Ship it", shortPrefix: nil),
-            displayedDate: date, recoveryLineNumber: 1)
-
-        let calls = await recorder.calls
-        #expect(calls.count == 3)
-        #expect(calls[1].arguments.contains("backfill-prefixes"))
-        #expect(calls[2].arguments.contains("--by-id"))
-        #expect(calls[2].arguments.contains("QW34"))
-    }
-
-    /// An engine older than the app rejects a new flag with Click's usage
-    /// error (exit 2). That is not a missing task, so the writer must not
-    /// backfill prefixes and retry.
-    @Test func doesNotBackfillOnAUsageError() async throws {
-        let recorder = RecordingRunner()
-        recorder.scripted = [
-            ProcessResult(exitCode: 2, stdout: Data(), stderr: Data("Error: No such option: --author".utf8)),
-        ]
-        let writer = ActionItemsWriter(
-            scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
-            actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
-            scoutDirectory: URL(fileURLWithPath: "/tmp"),
-            runner: recorder, gitService: nil)
-
-        await #expect(throws: ActionItemsWriterError.self) {
+        do {
             _ = try await writer.submit(
-                .addComment(subject: "Ship it", shortPrefix: nil, text: "hi", author: "alex"),
-                displayedDate: Date(), recoveryLineNumber: 1)
+                .markDone(subject: "Book flights for the offsite", shortPrefix: nil), displayedDate: date)
+            Issue.record("expected the write to throw")
+        } catch let ActionItemsWriterError.cliNonZeroExit(code, _, classification) {
+            #expect(code == exit)
+            #expect(classification == expected)
         }
         #expect(await recorder.calls.count == 1)
-    }
-
-    @Test func readsShortPrefixAtLineNumber() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ai-\(UUID().uuidString).md")
-        let md = """
-        # Title
-
-        ## 🔴 Urgent
-
-        - [ ] [#AB12] **First** — body
-        - [ ] **Unprefixed** — body
-        """
-        try md.write(to: tmp, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 5) == "AB12")
-        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 6) == nil)
-        #expect(ActionItemsWriter.shortPrefix(inFile: tmp, atLine: 999) == nil)
+        #expect(try String(contentsOf: daily, encoding: .utf8) == content)
     }
 
     @Test func commitsScopedToDailyFileNotAddAll() async throws {
