@@ -126,13 +126,25 @@ def _key_of(raw_def: Any) -> str:
 # released by _under_lock's `finally` before the exception reaches the catch-all.
 
 
-def validate(raw_def: Any, *, plugin_root: Path) -> Outcome:
+def _input_issues(key: str, connector: cc.CustomConnector | None, inputs: dict[str, str]) -> list[cc.Issue]:
+    """Issues for ``--input`` values: names the connector doesn't declare (when it parsed),
+    then each value's own problems (multi-line, heading, credential), which need no connector."""
+    issues = []
+    if connector is not None:
+        needs_path = f"connectors.{key}.needs_user_input"
+        for name in sorted(set(inputs) - set(connector.needs_user_input)):
+            issues.append(cc.Issue(needs_path, f"{name!r} is not an input this connector declares"))
+    return issues + cc.input_issues(key, inputs)
+
+
+def validate(raw_def: Any, *, plugin_root: Path, inputs: dict[str, str] | None = None) -> Outcome:
     try:
         key, body, issues = _split(raw_def)
         if not issues:
-            _, issues = cc.parse_connector(
+            connector, issues = cc.parse_connector(
                 key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
             )
+            issues += _input_issues(key, connector, inputs or {})
         return Outcome("invalid" if issues else "valid", key, issues)
     except Exception as e:  # noqa: BLE001 — see the contract note above
         return Outcome("error", _key_of(raw_def), message=_unexpected(e))
@@ -294,16 +306,7 @@ def _add(
     connector, issues = cc.parse_connector(
         key, body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
     )
-    if connector is not None:
-        needs_path = f"connectors.{key}.needs_user_input"
-        for name in sorted(set(inputs) - set(connector.needs_user_input)):
-            issues.append(cc.Issue(needs_path, f"{name!r} is not an input this connector declares"))
-        for name in sorted(n for n, value in inputs.items() if cc.CREDENTIAL_RE.search(value)):
-            msg = (
-                f"the value for {name!r} looks like a credential; inputs are written into SKILL.md "
-                "and must not be secrets — sign the tool in through its own MCP connector or CLI instead"
-            )
-            issues.append(cc.Issue(needs_path, msg))
+    issues += _input_issues(key, connector, inputs)
     if issues or connector is None:
         return Outcome("invalid", key, issues)
 
@@ -444,6 +447,7 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
         else:
             assert cfg is not None
             enabled = cfg.enabled_connectors
+            issues += cc.stored_input_issues(current.connectors, cfg.connector_inputs)
     valid_rows = [
         {
             "key": c.key,

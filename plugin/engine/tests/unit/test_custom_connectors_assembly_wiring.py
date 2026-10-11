@@ -109,6 +109,26 @@ def test_doctor_warns_on_custom_file_issues(tmp_path: Path):
     assert any(cc.CUSTOM_FILE in w and "connectors.broken" in w for w in report.warnings)
 
 
+def test_doctor_warns_on_a_stored_input_that_would_break_skill_md(tmp_path: Path):
+    """#344: a hand-edited connectors.inputs value is reported like an invalid entry."""
+    vault = tmp_path / "Scout"
+    tix = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "needs_user_input": ["team"],
+        "inbound": {"tools": [{"bash": "tix list --team {{INPUT_TEAM}}"}], "focus": "Open tickets."},
+    }
+    cfg = replace(_cfg(vault, {"tix"}), connector_inputs={"tix__team": "ops\n# Injected"})
+    install(cfg)
+    cc.write(vault, {"tix": tix})
+    report = run_doctor(vault=vault, check_jobs=False)
+    hits = [w for w in report.warnings if "connectors.inputs.tix__team" in w]
+    assert len(hits) == 2 and all("skipped until fixed" in w for w in hits)
+    assert not any("Injected" in w for w in report.warnings)
+    assert "Tickets Inbound Scan" not in _assemble(cfg, "SKILL")
+    assert "Tickets Inbound Scan" in _assemble(replace(cfg, connector_inputs={"tix__team": "ops"}), "SKILL")
+
+
 def test_one_malformed_entry_leaves_the_valid_one_working_everywhere(tmp_path: Path):
     """F1: `preset: [mail]` on one entry raised TypeError (unhashable) out of the
     parser and took down assembly, the roster, the probe registry and doctor."""

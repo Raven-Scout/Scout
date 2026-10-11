@@ -141,10 +141,13 @@ def first_binary(cmd: str) -> str | None:
     option tokens (``-x``), the duration argument right after ``timeout``, and
     the numeric argument right after ``nice -n``.
 
+    Shell comment lines are skipped too, so a multi-line command that opens
+    with ``# fetch open tickets`` reads as the command under it (#344).
+
     Known limit: an option's own value is not otherwise skipped — ``sudo -u
     alex tix x`` reads ``alex``, not ``tix``.
     """
-    tokens = cmd.split()
+    tokens = [t for line in cmd.splitlines() if not line.lstrip().startswith("#") for t in line.split()]
     idx = 0
     while idx < len(tokens):
         tok = tokens[idx]
@@ -210,6 +213,53 @@ def _has_markdown_heading(text: str) -> bool:
     another ``#`` — a markdown heading. A ``#`` elsewhere on the line (mid-line, or a
     bare trailing ``#`` with nothing after it) is not a heading."""
     return any(_HEADING_LINE_RE.match(line.lstrip()) for line in text.splitlines())
+
+
+def _input_value_problems(value: str) -> list[str]:
+    """What is wrong with one input value. Never quotes the value: it may be a secret."""
+    problems = []
+    if "\n" in value or "\r" in value:
+        problems.append("must be a single line")
+    if _has_markdown_heading(value):
+        problems.append(_HEADING_MESSAGE)
+    if CREDENTIAL_RE.search(value):
+        problems.append(
+            "looks like a credential; inputs are written into SKILL.md and must not be secrets — "
+            "sign the tool in through its own MCP connector or CLI instead"
+        )
+    return problems
+
+
+def input_issues(key: str, inputs: dict[str, Any], *, where: dict[str, str] | None = None) -> list[Issue]:
+    """Issues for ``needs_user_input`` values, by input name: one per problem.
+
+    Values are substituted for ``{{INPUT_X}}`` in SKILL.md/RESEARCH.md, so they get
+    the rules ``display_name`` and ``notes`` get — one line, no markdown heading —
+    plus the credential check. ``where`` maps a name to a phrase saying where the
+    value is stored, for values read back from scout-config.yaml. Shared by
+    ``connectors custom add``/``validate``, assembly and ``bootstrap doctor`` (#344).
+    """
+    path = f"connectors.{key}.needs_user_input"
+    issues = []
+    for name in sorted(inputs):
+        value = inputs[name]
+        if value is None:
+            continue
+        stored = f" {where[name]}" if where and name in where else ""
+        for problem in _input_value_problems(value if isinstance(value, str) else str(value)):
+            issues.append(Issue(path, f"the value for {name!r}{stored} {problem}"))
+    return issues
+
+
+def stored_input_issues(connectors: dict[str, CustomConnector], inputs: dict[str, Any]) -> list[Issue]:
+    """``input_issues`` for each connector's declared inputs as stored in
+    scout-config.yaml ``connectors.inputs`` (``<key>__<name>``), where hand edits land."""
+    issues = []
+    for key in sorted(connectors):
+        values = {n: inputs[f"{key}__{n}"] for n in connectors[key].needs_user_input if f"{key}__{n}" in inputs}
+        where = {n: f"stored in scout-config.yaml (connectors.inputs.{key}__{n})" for n in values}
+        issues += input_issues(key, values, where=where)
+    return issues
 
 
 def parse_connector(
