@@ -13,6 +13,7 @@ struct TopicBoardView: View {
     var search: String = ""
 
     @State private var topics: [TopicMeta] = []
+    @State private var doneDates: [String: Date] = [:]
     @AppStorage("topicBoard.open") private var openRaw: String = ""
     @AppStorage("topicBoard.filter") private var filterRaw: String = ""
     @AppStorage("topicBoard.doneRange") private var doneRange: DoneRange = .week
@@ -42,7 +43,7 @@ struct TopicBoardView: View {
                     HoldGroupView(steps: board.onHold, scoutDirectory: scoutDirectory, expanded: isOpen(Self.holdKey))
                 }
                 BoardSideListsView(
-                    done: DoneEntry.entries(sections: sections, fileDate: fileDate, range: doneRange, today: .now),
+                    done: DoneEntry.entries(sections: sections, fileDate: fileDate, doneDates: doneDates, range: doneRange, today: .now),
                     doneRange: $doneRange
                 )
                 .padding(.top, 10)
@@ -51,7 +52,12 @@ struct TopicBoardView: View {
             .padding(16)
             .frame(maxWidth: .infinity)
         }
-        .task(id: sections) { topics = TopicsFileLoader.load(from: actionItemsDirectory) }
+        .task(id: sections) {
+            topics = TopicsFileLoader.load(from: actionItemsDirectory)
+            let directory = actionItemsDirectory
+            let day = fileDate
+            doneDates = await Task.detached { DoneHistory.load(from: directory, upTo: day) }.value
+        }
     }
 
     private func isOpen(_ key: String) -> Binding<Bool> {

@@ -19,6 +19,10 @@ struct SessionReferenceTests {
         "-p hello",
         "https://evil.example/claude.ai",
         "http://claude.ai/code/session_0123",
+        "https://claude.ai:8443/code/session_0123",
+        "https://user@claude.ai/code/session_0123",
+        "https://claude.ai/settings",
+        "0f8fad5b-d9cb-469f-a165-70867728950e\n--resume",
         "0f8fad5b-d9cb-469f-a165-70867728950e; rm -rf ~",
         "",
     ])

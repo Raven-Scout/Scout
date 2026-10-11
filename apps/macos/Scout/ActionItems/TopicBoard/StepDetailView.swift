@@ -10,6 +10,8 @@ struct StepDetailView: View {
 
     let task: ActionTask
     let rootSession: String?
+    /// The board's prompt for this step, the same one the inline box sends.
+    let prompt: () -> String
     let scoutDirectory: URL
 
     @State private var launchError: String?
@@ -35,7 +37,13 @@ struct StepDetailView: View {
                     Text("Carried in \(carried.formatted(.dateTime.day().month(.abbreviated)))")
                 }
                 Spacer(minLength: 0)
-                LaunchClaudeMenu(task: task, scoutDirectory: scoutDirectory, style: .split, launchError: $launchError)
+                LaunchClaudeMenu(
+                    prompt: prompt,
+                    scoutDirectory: scoutDirectory,
+                    style: .split,
+                    session: task.fields.session,
+                    launchError: $launchError
+                )
             }
             .font(DS.sans(11.5))
             .foregroundStyle(DS.Ink.p3)

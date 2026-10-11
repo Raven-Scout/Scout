@@ -47,4 +47,17 @@ struct BoardSideListsTests {
         let yesterday = DoneEntry.entries(sections: s, fileDate: fileDate, range: .yesterday, today: day(2026, 10, 10), calendar: calendar)
         #expect(yesterday.map(\.task.shortPrefix) == ["CCCC"])
     }
+
+    @Test func doneDateIsTheFirstDayATaskShowsUpTicked() throws {
+        let earlier = try sections(["## 🔴 Urgent", "- [x] [#AAAA] **Ticked on the 8th**", "- [ ] [#BBBB] **Still open**"])
+        let later = try sections(["## ✅ Done", "- [x] [#AAAA] **Ticked on the 8th**", "- [x] [#BBBB] **Ticked on the 10th**"])
+        let dates = DoneHistory.firstDoneDates([(day(2026, 10, 10, hour: 0), later), (day(2026, 10, 8, hour: 0), earlier)])
+        #expect(dates == ["AAAA": day(2026, 10, 8, hour: 0), "BBBB": day(2026, 10, 10, hour: 0)])
+
+        let yesterday = DoneEntry.entries(
+            sections: later, fileDate: day(2026, 10, 10, hour: 0), doneDates: dates,
+            range: .yesterday, today: day(2026, 10, 11), calendar: calendar
+        )
+        #expect(yesterday.map(\.task.shortPrefix) == ["BBBB"])
+    }
 }

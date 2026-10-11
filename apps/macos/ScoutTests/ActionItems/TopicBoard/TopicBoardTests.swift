@@ -316,4 +316,18 @@ struct TopicBoardTests {
         #expect(tags(b.onHold) == ["PARK"])
         #expect(tags(b.topics.flatMap(\.steps)) == ["TODO"])
     }
+
+    @Test func stepHangingOffACycleShowsOnceWhenTheCycleSortsFirst() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#WWWW] **Waits on the cycle**",
+            "  - Depends: #XXXX",
+            "- [ ] [#XXXX] **In the cycle, has a ticket** — PROJ-7",
+            "  - Depends: #ZZZZ",
+            "- [ ] [#ZZZZ] **In the cycle**",
+            "  - Depends: #XXXX",
+        ])
+        #expect(allKeys(b).sorted() == ["WWWW", "XXXX", "ZZZZ"])
+        #expect(!b.topics.isEmpty && b.topics.allSatisfy { !$0.steps.isEmpty })
+    }
 }
