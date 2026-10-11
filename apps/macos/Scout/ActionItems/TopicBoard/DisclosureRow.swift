@@ -3,14 +3,17 @@ import SwiftUI
 /// A fixed-height row that toggles `expanded` on click, with an Ask Claude
 /// button on hover or keyboard focus. Not a `Button`, so the links, chips and
 /// fields inside the row keep their own clicks. Keyboard: Tab to the row,
-/// Space expands, Return asks Claude — only while the row itself has focus,
-/// so a field inside it (the topic rename) still gets its spaces and Return.
-/// VoiceOver gets both as named actions.
+/// Space expands, Return asks Claude, unless `handlesKeys` is off. VoiceOver
+/// gets both as named actions.
 struct DisclosureRow<Content: View>: View {
     let height: CGFloat
     let label: String
     @Binding var expanded: Bool
     let onAsk: () -> Void
+    /// Off while a field inside the row is being edited: an ancestor's key
+    /// handler sees Space and Return before the field does, and FocusState
+    /// still reports the row as focused.
+    var handlesKeys = true
     /// Gets whether the row is hovered, for controls that show on hover.
     @ViewBuilder let content: (_ hovered: Bool) -> Content
 
@@ -39,12 +42,12 @@ struct DisclosureRow<Content: View>: View {
         .focused($focused)
         .focusEffectDisabled()
         .onKeyPress(.space) {
-            guard focused else { return .ignored }
+            guard handlesKeys else { return .ignored }
             expanded.toggle()
             return .handled
         }
         .onKeyPress(.return) {
-            guard focused else { return .ignored }
+            guard handlesKeys else { return .ignored }
             onAsk()
             return .handled
         }
