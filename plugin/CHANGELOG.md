@@ -14,6 +14,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`bootstrap doctor` reports run health separately** (`engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/scripts/bootstrap_auto.py`, `engine/scout/cli.py`). `--json` gains a `run_health` block and the text output a "run health" section. An expired Claude login is now a red run-health finding instead of a red install error, so it no longer fails an engine upgrade's post-upgrade check, and the doctor's exit code reflects install health only.
 
 ### Fixed
+- **`scoutctl notify telegram` refuses to re-send a byte-identical message** (`engine/scout/scripts/notify_telegram.py`, `engine/scout/cli.py`). It refuses to re-send a byte-identical message to the same chat within 10 minutes (`--allow-duplicate` overrides), and prints the receipt as `id=<id>` on the first line of stderr, so a caller never re-sends to find the id. The secrets directory is resolved per call, not at import (#241).
 - **A wrong-shaped `schedule.yaml` is a config error, not a crash** (`engine/scout/schedule.py`). `slots: [1, 2]`, a slot written as a plain string, or a field of the wrong type (`weekdays: 5`) raised a Python `TypeError` out of every command that loads the schedule; each now reports which slot is malformed.
 
 ## [0.16.0] - 2026-10-11

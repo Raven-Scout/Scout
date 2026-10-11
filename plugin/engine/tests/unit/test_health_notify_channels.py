@@ -111,6 +111,14 @@ def test_telegram_not_configured_is_none():
     assert hn.telegram_channel(_push(), send=boom) is None
 
 
+def test_telegram_duplicate_is_a_recorded_noop():
+    def dup(tier, body):
+        raise notify_telegram.DuplicateSendError("01ORIGINAL", "2026-10-11T12:00:00+00:00")
+
+    res = hn.telegram_channel(_push(), send=dup)
+    assert res == {"channel": "telegram", "ok": True, "detail": "duplicate"}
+
+
 def test_telegram_http_error_never_leaks_url():
     def boom(tier, body):
         raise requests.HTTPError("403 for https://api.telegram.org/bot123:SECRET/sendMessage")

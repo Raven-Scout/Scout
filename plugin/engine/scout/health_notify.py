@@ -78,6 +78,9 @@ def telegram_channel(push: Push, *, send: Callable | None = None) -> ChannelResu
         send(tier, f"{push.title}\n{push.body}")
     except ConfigError:
         return None
+    except notify_telegram.DuplicateSendError:
+        # The identical push already reached the chat: a recorded no-op.
+        return _result("telegram", True, "duplicate")
     except Exception as e:  # noqa: BLE001 - class name only; str(e) may embed the bot token
         return _result("telegram", False, type(e).__name__)
     return _result("telegram", True, "sent")
