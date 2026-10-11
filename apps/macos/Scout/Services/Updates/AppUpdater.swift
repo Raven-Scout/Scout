@@ -105,14 +105,23 @@ final class AppUpdater: AppUpdateController {
         }
     }
 
-    // `nonisolated`: plain Sendable values (a String, three Ints) read only
-    // from the `nonisolated static func` above — without this, the
+    /// Sparkle-free mapping for `updater(_:userDidMake:forUpdate:state:)`,
+    /// taking `SPUUserUpdateChoice.rawValue`. Only "Skip This Version"
+    /// changes what the app track shows: Install carries on to relaunch, and
+    /// Dismiss ("Remind Me Later") leaves the update available.
+    nonisolated static func userChoiceEvent(choice: Int) -> AppUpdateEvent? {
+        choice == skipChoiceRawValue ? .skipped : nil
+    }
+
+    // `nonisolated`: plain Sendable values (a String, four Ints) read only
+    // from the `nonisolated static func`s above — without this, the
     // MainActor isolation this class defaults to would make them
     // inaccessible from that nonisolated context.
     private nonisolated static let sparkleErrorDomain = SUSparkleErrorDomain as String
     private nonisolated static let noUpdateErrorCode = Int(SUError.noUpdateError.rawValue)
     private nonisolated static let installationCanceledErrorCode = Int(SUError.installationCanceledError.rawValue)
     private nonisolated static let installationAuthorizeLaterErrorCode = Int(SUError.installationAuthorizeLaterError.rawValue)
+    private nonisolated static let skipChoiceRawValue = SPUUserUpdateChoice.skip.rawValue
 }
 
 /// Sparkle calls its delegate on the main thread; we assert that and hop the
@@ -139,6 +148,16 @@ final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate {
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
         emit(.upToDate)
+    }
+
+    /// `updater:userDidMakeChoice:forUpdate:state:` — pinned by a
+    /// `responds(to:)` test, since a mis-spelled optional method compiles and
+    /// silently never fires. Only "Skip This Version" emits anything.
+    nonisolated func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,
+                             forUpdate updateItem: SUAppcastItem, state: SPUUserUpdateState) {
+        if let event = AppUpdater.userChoiceEvent(choice: choice.rawValue) {
+            emit(event)
+        }
     }
 
     /// Fires for *every* completed update cycle, found-or-not, error-or-not

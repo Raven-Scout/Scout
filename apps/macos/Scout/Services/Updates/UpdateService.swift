@@ -32,6 +32,10 @@ enum AppUpdateEvent: Equatable, Sendable {
     /// reliable terminal signal for a check that didn't find (or install)
     /// anything.
     case cycleEnded
+    /// The user chose "Skip This Version" for the found update. Sparkle won't
+    /// remind them of it again (unless they check themselves), so the app
+    /// track stops advertising it: back to up to date.
+    case skipped
     case failed(String)
 }
 
@@ -205,7 +209,9 @@ final class UpdateService: ObservableObject {
         case .found(let version):
             appUpdate.latestVersion = version
             appUpdate.state = .available
-        case .upToDate:
+        case .upToDate, .skipped:
+            // A skipped version is, from the badge's point of view, no
+            // update: the row, badge, menu-bar dot and footer item clear.
             appUpdate.latestVersion = appUpdate.currentVersion
             appUpdate.state = .upToDate
         case .cycleEnded:

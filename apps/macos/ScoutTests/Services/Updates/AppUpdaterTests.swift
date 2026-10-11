@@ -75,3 +75,40 @@ struct AppUpdaterCycleEndEventTests {
         #expect(event == .failed("Unrelated error."))
     }
 }
+
+/// `AppUpdater.userChoiceEvent` is the Sparkle-free mapping from
+/// `updater:userDidMakeChoice:forUpdate:state:` onto `AppUpdateEvent`. Raw
+/// values pinned from `SPUUserUpdateState.h` (2.10.0):
+/// `SPUUserUpdateChoiceSkip` = 0, `…Install` = 1, `…Dismiss` = 2.
+@Suite("AppUpdater.userChoiceEvent")
+struct AppUpdaterUserChoiceEventTests {
+    @Test func skipThisVersionMapsToSkipped() {
+        #expect(AppUpdater.userChoiceEvent(choice: 0) == .skipped)
+    }
+
+    @Test func installAndDismissMapToNothing() {
+        // Install: Sparkle carries on and relaunches. Dismiss ("Remind Me
+        // Later"): the update is still available, so the badge stays.
+        #expect(AppUpdater.userChoiceEvent(choice: 1) == nil)
+        #expect(AppUpdater.userChoiceEvent(choice: 2) == nil)
+    }
+}
+
+/// Sparkle calls optional delegate methods only if the delegate responds to
+/// their exact Objective-C selectors; a Swift spelling that doesn't import
+/// to that selector compiles fine and silently never fires.
+@Suite("AppUpdaterDelegate selectors")
+@MainActor
+struct AppUpdaterDelegateSelectorTests {
+    @Test(arguments: [
+        "updater:userDidMakeChoice:forUpdate:state:",
+        "updater:didFinishUpdateCycleForUpdateCheck:error:",
+        "updater:didFindValidUpdate:",
+        "updaterDidNotFindUpdate:error:",
+        "feedURLStringForUpdater:",
+    ])
+    func delegateRespondsTo(selector: String) {
+        let delegate = AppUpdaterDelegate(onEvent: { _ in })
+        #expect(delegate.responds(to: NSSelectorFromString(selector)))
+    }
+}

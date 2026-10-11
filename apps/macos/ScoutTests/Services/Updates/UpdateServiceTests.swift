@@ -237,6 +237,23 @@ struct UpdateServiceTests {
         #expect(service.appUpdate.state == .upToDate)
     }
 
+    /// "Skip This Version" in Sparkle's alert: Sparkle won't remind the user
+    /// of this update again, so the row, badge, menu-bar dot and footer item
+    /// must clear instead of advertising it until the next check.
+    @Test func skippedClearsTheAvailableUpdate() {
+        let (service, controller, _) = make()
+        service.checkApp()
+        controller.emit?(.found(version: "0.12.0"))
+        #expect(service.anyUpdateAvailable)
+        controller.emit?(.skipped)
+        #expect(service.appUpdate.state == .upToDate)
+        #expect(service.appUpdate.latestVersion == "0.11.2")
+        #expect(service.anyUpdateAvailable == false)
+        #expect(service.availableCount == 0)
+        controller.emit?(.cycleEnded)                  // the cycle then ends; nothing to restore
+        #expect(service.appUpdate.state == .upToDate)
+    }
+
     /// With no prior check in this service's lifetime, there is nothing to
     /// restore to, so `.cycleEnded` falls back to `.idle`.
     @Test func cycleEndedWhileCheckingWithNoPriorStateFallsBackToIdle() {
