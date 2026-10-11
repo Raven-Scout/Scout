@@ -21,6 +21,16 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   its own, and the app was never released as 0.15.0; v0.16.0 is the first
   release of both.
 
+### Fixed
+- An action on a task that changed after the list loaded now says so ("Task
+  may have been edited externally") and the list reparses. The writer expected
+  exit codes 2 and 3 for no match and ambiguous, which the engine never sent.
+  It now reads the engine's 22 and 23. An engine older than the app that
+  rejects a flag (exit 2, "No such option") shows as an environment problem,
+  not a missing task. The writer's backfill-and-retry on a no-match is removed:
+  it read the prefix at the task's old line number, which after an outside
+  write can hold a different task.
+
 ## Releases before the monorepo
 
 Up to v0.14.0 the app was released from its own repository, now
