@@ -106,8 +106,15 @@ def test_freshness_hours_frontmatter_key_beats_a_body_marker(tmp_path):
 
 def test_freshness_hours_reads_a_prose_priority_marker(tmp_path):
     f = tmp_path / "proj.md"
-    f.write_text("# Project\n\n> **Priority:** 🔴 launch week\n")
-    assert freshness_hours_for(f) == 72
+    for marker in ("> **Priority:** 🔴 launch week", "- **Priority:** 🔴", "Priority: 🔴"):
+        f.write_text(f"# Project\n\n{marker}\n")
+        assert freshness_hours_for(f) == 72, marker
+
+
+def test_freshness_hours_ignores_an_emoji_in_the_keys_trailing_comment(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\npriority: 🟡  # was 🔴 until the launch\n---\n")
+    assert freshness_hours_for(f) == 168
 
 
 def test_freshness_hours_reads_the_key_past_the_head_window_in_long_frontmatter(tmp_path):

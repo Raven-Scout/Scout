@@ -69,7 +69,13 @@ ENTITY_HOURS = 720
 
 ARCHIVE_DIRS = {"archive", "archived"}
 ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
-PRIORITY_RE = re.compile(r"priority:\s*(.*)", re.IGNORECASE)
+# The frontmatter `priority:` key, then a prose marker in the head. Both are
+# anchored at line start so a comment or value naming the key never wins.
+PRIORITY_KEY_RE = re.compile(r"^priority:\s*(.*)$", re.IGNORECASE)
+PRIORITY_PROSE_RE = re.compile(
+    r"^\s*(?:>\s*)?(?:[-*]\s+)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE
+)
+FRONTMATTER_SCAN_LINES = 200
 
 # Claimed-date divergence: compare the date a file claims on its "Last verified"
 # / "Last updated" line with its last commit.
@@ -112,14 +118,27 @@ def freshness_hours(path: Path, vault: Path) -> int:
     rel = path.relative_to(vault / "knowledge-base").as_posix()
     if any(rel.startswith(d + "/") for d in ENTITY_DIRS):
         return ENTITY_HOURS
-    for line in _head(path, HEAD_SCAN_LINES):
-        m = PRIORITY_RE.search(line)
+    head = _head(path, FRONTMATTER_SCAN_LINES)
+    body_start = 0
+    if head and head[0].rstrip() == "---":
+        # Fences are lines that are exactly `---`; the window may stop inside a long block.
+        end = next((i for i, raw in enumerate(head[1:], 1) if raw.rstrip() == "---"), len(head))
+        for line in head[1:end]:
+            m = PRIORITY_KEY_RE.match(line)
+            if m:
+                return _priority_hours(re.sub(r"\s+#.*$", "", m.group(1)))
+        body_start = end + 1
+    for line in head[body_start:HEAD_SCAN_LINES]:
+        m = PRIORITY_PROSE_RE.match(line)
         if m:
-            value = m.group(1).replace('"', "")
-            for emoji, hours in PRIORITY_HOURS.items():
-                if emoji in value:
-                    return hours
-            return DEFAULT_HOURS
+            return _priority_hours(m.group(1))
+    return DEFAULT_HOURS
+
+
+def _priority_hours(value: str) -> int:
+    for emoji, hours in PRIORITY_HOURS.items():
+        if emoji in value:
+            return hours
     return DEFAULT_HOURS
 
 

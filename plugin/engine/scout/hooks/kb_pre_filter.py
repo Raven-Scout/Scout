@@ -129,10 +129,11 @@ _DATE_RE = re.compile(
 _FRONTMATTER_KEY_RE = re.compile(r"^(last_updated|last_verified):\s*(.*)$")
 
 # The frontmatter `priority:` key, and the older prose marker a file without it
-# may carry in its head (`Priority: 🔴`, `**Priority:** 🔴`, `> **Priority:** 🔴`).
+# may carry in its head (`Priority: 🔴`, `**Priority:** 🔴`, `> **Priority:** 🔴`,
+# `- **Priority:** 🔴`).
 # Both anchored at the start of the line (#240).
 _PRIORITY_KEY_RE = re.compile(r"^priority:\s*(.*)$", re.IGNORECASE)
-_PRIORITY_PROSE_RE = re.compile(r"^\s*(?:>\s*)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
+_PRIORITY_PROSE_RE = re.compile(r"^\s*(?:>\s*)?(?:[-*]\s+)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
 
 
 # -- helpers -----------------------------------------------------------------
