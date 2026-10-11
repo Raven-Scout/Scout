@@ -54,22 +54,16 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 ## 🔴 Urgent
 
-- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [Description with specific details, not vague summaries]
-  - Source: [Which connector(s) confirmed this]
-  - Context: [[wikilink-to-relevant-kb-file]]
-  - Refs: [[people/slug]] · [[PROJ-1234]] · example-org/repo#1234 · #XREF
+- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
+  - [Optional: the one blocker, or {{USER_NAME}}'s comment thread]
 
 ## 🟡 To Do
 
-- [ ] [#XXXX] **[Item title]** — [Description]
-  - Source: [connector evidence]
-  - Context: [[wikilink]]
+- [ ] [#XXXX] **[Item title]** — [one-line status] · → [[<note>]]
 
 ## 🟢 Watching
 
-- [ ] [#XXXX] **[Item title]** — [What you're tracking and why]
-  - Source: [connector evidence]
-  - Context: [[wikilink]]
+- [ ] [#XXXX] **[Item title]** — [what you're tracking] · → [[<note>]]
 
 ## ✅ Done
 
@@ -81,9 +75,7 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 Items carried forward from previous days that are still open.
 
-- [ ] [#XXXX] **[Item title]** — [Status update since last check]
-  - Originally from: action-items-YYYY-MM-DD
-  - Current status: [what's changed]
+- [ ] [#XXXX] **[Item title]** — [one-line status since last check] · → [[<note>]]
 
 ## 🪵 Run notes & connector availability
 
@@ -91,6 +83,8 @@ _Always the LAST section of the file — run metadata is a footer for review, ne
 
 - **YYYY-MM-DD HH:MM [timezone]** ([mode]) — X new / Y completed / Z carried forward. Connectors: [available, or "degraded: <name>"].
 ```
+
+An open item's sources, evidence, quotes, history and links go in its note, `action-items/context/<TAG>.md` (see **Item line format**), never in sub-bullets.
 
 All action items files must include `[[wikilinks]]` to any KB files referenced by action items.
 
@@ -154,7 +148,7 @@ The bold title MUST NOT contain any of:
 - emoji of any kind (including priority 🔴🟡🟢);
 - an internal ` — ` / ` – ` separator (that dash separates title from body).
 
-The **body** (after the ` — ` separator, plus `- Source:` / `- Context:` sub-bullets) is human prose: status, dates, quotes, context. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
+The **body** (after the ` — ` separator) is short human prose: status and dates. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
 
 **All machine refs go in ONE `- Refs:` sub-bullet** directly under the task line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks, cross-reference hashtags, and entity wikilinks that are pure references (not part of a sentence). Omit the sub-bullet when a task has no refs.
 
@@ -405,9 +399,9 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 
 ### 5. Write with full context and evidence
 - If completed: mark ✅ with evidence (link to the message, calendar change, PR, commit, etc.)
-- If partially done: describe what's done and what specifically remains
-- If not started: write the full context from all sources into the item's note (`action-items/context/<TAG>.md`), not just the one that surfaced it
-- Always include source citations showing which connectors confirmed the item
+- If partially done: describe what's done and what specifically remains in the item's note (`action-items/context/<TAG>.md`); the line keeps a one-line status
+- If not started: write the full context from all sources into the item's note, not just the one that surfaced it
+- Always include source citations showing which connectors confirmed the item — in the note
 
 After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
 

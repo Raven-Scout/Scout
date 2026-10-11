@@ -201,3 +201,73 @@ def test_cli_missing_snapshot_exits_nonzero(tmp_path: Path) -> None:
     vault, _, daily = _vault(tmp_path)
     result = runner.invoke(app, ["backfill-context", "--from", str(vault / "nope.md"), "--daily", str(daily)])
     assert result.exit_code == 2
+
+
+def test_cli_missing_daily_exits_nonzero(tmp_path: Path) -> None:
+    _, snap, daily = _vault(tmp_path)
+    result = runner.invoke(app, ["backfill-context", "--from", str(snap), "--daily", str(daily.with_name("typo.md"))])
+    assert result.exit_code == 2
+
+
+def _collision_vault(tmp_path: Path, daily_line: str) -> tuple[Path, Path, Path]:
+    vault = tmp_path / "vault"
+    ai = vault / "action-items"
+    (ai / "archive").mkdir(parents=True)
+    snap = ai / "archive" / "action-items-2026-10-05-pre-restructure.md"
+    snap.write_text(SNAPSHOT, encoding="utf-8")
+    daily = ai / "action-items-2026-10-06.md"
+    daily.write_text(f"# Action Items\n\n{daily_line}\n", encoding="utf-8")
+    return vault, snap, daily
+
+
+def test_retag_after_collision_takes_the_title_matched_occurrence(tmp_path: Path) -> None:
+    # The second DETX row was re-tagged NEWTG to fix the collision: it must get
+    # its own block, not the first DETX row's.
+    vault, snap, daily = _collision_vault(
+        tmp_path, "- [ ] [#NEWTG] **A second row that reused the tag** _(re-tagged from `[#DETX]`)_"
+    )
+    report = backfill_context(data_dir=vault, snapshot=snap, daily=daily, write=True)
+    assert report.to_write == ["NEWTG"]
+    note = (vault / context_note_rel("NEWTG")).read_text(encoding="utf-8")
+    assert "  - must not win" in note
+    assert "Due Tuesday" not in note
+
+
+def test_retag_from_a_reused_tag_with_no_title_match_is_ambiguous(tmp_path: Path) -> None:
+    vault, snap, daily = _collision_vault(tmp_path, "- [ ] [#NEWTG] **Reworded item** _(re-tagged from `[#DETX]`)_")
+    report = backfill_context(data_dir=vault, snapshot=snap, daily=daily, write=True)
+    assert report.to_write == []
+    assert report.ambiguous == ["NEWTG"]
+    assert not (vault / context_note_rel("NEWTG")).exists()
+
+
+def test_own_tag_prefers_the_title_match_then_the_first_occurrence(tmp_path: Path) -> None:
+    vault, snap, daily = _collision_vault(tmp_path / "a", "- [ ] [#DETX] **A second row that reused the tag**")
+    backfill_context(data_dir=vault, snapshot=snap, daily=daily, write=True)
+    assert "  - must not win" in (vault / context_note_rel("DETX")).read_text(encoding="utf-8")
+    vault, snap, daily = _collision_vault(tmp_path / "b", "- [ ] [#DETX] **Reworded since**")
+    backfill_context(data_dir=vault, snapshot=snap, daily=daily, write=True)
+    assert "Due Tuesday" in (vault / context_note_rel("DETX")).read_text(encoding="utf-8")
+
+
+def test_long_lines_are_reported(tmp_path: Path) -> None:
+    vault, snap, daily = _vault(tmp_path, config="kb_lint:\n  max_line_chars: 100\n")
+    long_line = "  - " + "x" * 120
+    # An untagged task row in the snapshot opens no block of its own.
+    snap.write_text(
+        snap.read_text(encoding="utf-8").replace("  - backlog context", long_line) + "- [ ] untagged row\n",
+        encoding="utf-8",
+    )
+    report = backfill_context(data_dir=vault, snapshot=snap, daily=daily, write=False)
+    assert report.long_lines == [("PLN2", len(long_line))]
+
+
+def test_cli_prints_long_line_and_ambiguous_hints(tmp_path: Path) -> None:
+    _, snap, daily = _vault(tmp_path, config="kb_lint:\n  max_line_chars: 50\n")
+    with daily.open("a", encoding="utf-8") as f:
+        f.write("- [ ] [#SAM1] **Reworded** _(re-tagged from `[#DETX]`)_\n")
+    result = runner.invoke(app, ["backfill-context", "--from", str(snap), "--daily", str(daily)])
+    assert result.exit_code == 0, result.output
+    assert "line(s) over the kb-lint limit" in result.stdout
+    assert "SCOUT_LINT_OVERRIDE" in result.stdout
+    assert "ambiguous (several snapshot rows, none with this title): SAM1" in result.stdout

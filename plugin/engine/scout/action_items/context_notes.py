@@ -36,31 +36,55 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
 
-def snapshot_blocks(text: str) -> dict[str, list[str]]:
-    """Each tagged task's block: its line plus every following blank or
-    more-indented line. Nested tagged tasks get their own sub-block and stay
-    in their parent's. First occurrence of a tag wins."""
-    blocks: dict[str, list[str]] = {}
-    active: list[tuple[str, int]] = []
+def snapshot_occurrences(text: str) -> dict[str, list[list[str]]]:
+    """Every block of each tag, in file order. A block is the task's line plus
+    every following blank or more-indented line. Nested tagged tasks get their
+    own sub-block and stay in their parent's."""
+    occurrences: dict[str, list[list[str]]] = {}
+    active: list[tuple[list[str], int]] = []
     for line in text.split("\n"):
         if not line.strip():
-            for tag, _ in active:
-                blocks[tag].append(line)
+            for block, _ in active:
+                block.append(line)
             continue
         ind = _indent(line)
-        active = [(t, i) for t, i in active if i < ind]
-        for tag, _ in active:
-            blocks[tag].append(line)
+        active = [(b, i) for b, i in active if i < ind]
+        for block, _ in active:
+            block.append(line)
         m = _TASK.match(line)
         if m:
             new_tag = _tag_of(m.group(3))
-            if new_tag is not None and new_tag not in blocks:
-                blocks[new_tag] = [line]
-                active.append((new_tag, ind))
-    for lines in blocks.values():
-        while lines and not lines[-1].strip():
-            lines.pop()
-    return blocks
+            if new_tag is not None:
+                block = [line]
+                occurrences.setdefault(new_tag, []).append(block)
+                active.append((block, ind))
+    for blocks in occurrences.values():
+        for lines in blocks:
+            while lines and not lines[-1].strip():
+                lines.pop()
+    return occurrences
+
+
+def snapshot_blocks(text: str) -> dict[str, list[str]]:
+    """Each tag's first block — the converter's rule: first occurrence wins."""
+    return {tag: blocks[0] for tag, blocks in snapshot_occurrences(text).items()}
+
+
+def _block_title(block: list[str]) -> str:
+    return _plain_title(_TASK.sub(r"\3", block[0]))  # block[0] is always a task line
+
+
+def _pick(blocks: list[list[str]], title: str, *, own_tag: bool) -> list[str] | None:
+    """The block for an item titled `title`. One occurrence: that one. A reused
+    tag: the one with the same title; else, under the item's own tag, the first
+    (the row the converter kept), and under a re-tag source, none — the re-tag
+    usually split a collision, so guessing would copy another item's context."""
+    if len(blocks) == 1:
+        return blocks[0]
+    for block in blocks:
+        if _block_title(block) == title:
+            return block
+    return blocks[0] if own_tag else None
 
 
 def render_note(tag: str, title: str, day: str, block: list[str]) -> str:
@@ -76,7 +100,11 @@ class BackfillContextReport:
     to_write: list[str] = field(default_factory=list)
     existing: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    ambiguous: list[str] = field(default_factory=list)
     over_budget: list[tuple[str, int]] = field(default_factory=list)
+    # (tag, longest line) for notes with a line over kb-lint's `mega-line`
+    # limit — a blocking finding when the backfill is committed in block mode.
+    long_lines: list[tuple[str, int]] = field(default_factory=list)
 
 
 def _plain_title(rest: str) -> str:
@@ -104,7 +132,7 @@ def _open_items(path: Path) -> list[tuple[str, str, str]]:
 
 
 def backfill_context(*, data_dir: Path, snapshot: Path, daily: Path, write: bool) -> BackfillContextReport:
-    blocks = snapshot_blocks(snapshot.read_text(encoding="utf-8"))
+    occurrences = snapshot_occurrences(snapshot.read_text(encoding="utf-8"))
     m = _DATE.search(snapshot.name)
     day = m.group(1) if m else ""
     cfg = load_lint_config(data_dir)
@@ -119,9 +147,14 @@ def backfill_context(*, data_dir: Path, snapshot: Path, daily: Path, write: bool
         if path.exists():
             report.existing.append(tag)
             continue
-        block = blocks.get(tag)
-        if block is None and (rt := _RETAG.search(raw)):
-            block = blocks.get(rt.group(1))
+        block = None
+        if tag in occurrences:
+            block = _pick(occurrences[tag], title, own_tag=True)
+        elif (rt := _RETAG.search(raw)) and rt.group(1) in occurrences:
+            block = _pick(occurrences[rt.group(1)], title, own_tag=False)
+            if block is None:
+                report.ambiguous.append(tag)
+                continue
         if block is None:
             report.missing.append(tag)
             continue
@@ -130,6 +163,9 @@ def backfill_context(*, data_dir: Path, snapshot: Path, daily: Path, write: bool
         budget = cfg.budget_for(rel)
         if budget is not None and size > budget:
             report.over_budget.append((tag, size))
+        longest = max(len(line) for line in text.split("\n"))
+        if longest > cfg.line_limit(rel):
+            report.long_lines.append((tag, longest))
         report.to_write.append(tag)
         if write:
             path.parent.mkdir(parents=True, exist_ok=True)

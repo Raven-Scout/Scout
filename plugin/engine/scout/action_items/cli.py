@@ -547,16 +547,26 @@ def cli_backfill_context(
         sys.stderr.write(f"snapshot not found: {snapshot}\n")
         raise typer.Exit(code=2)
     target = daily or paths.action_items_daily_path()
+    if not target.exists():
+        sys.stderr.write(f"daily file not found: {target}\n")
+        raise typer.Exit(code=2)
     data_dir = daily.parent.parent if daily is not None else paths.data_dir()
     report = backfill_context(data_dir=data_dir, snapshot=snapshot, daily=target, write=write)
     verb = "wrote" if write else "would write"
     sys.stdout.write(f"{verb} {len(report.to_write)} note(s); {len(report.existing)} already had one\n")
     if report.missing:
         sys.stdout.write(f"no snapshot entry: {', '.join(report.missing)}\n")
+    if report.ambiguous:
+        sys.stdout.write(f"ambiguous (several snapshot rows, none with this title): {', '.join(report.ambiguous)}\n")
     if report.over_budget:
         sys.stdout.write("over budget (written in full) — add to scout-config.yaml kb_budgets:\n")
         for tag, size in report.over_budget:
             sys.stdout.write(f"  'action-items/context/{tag}.md': null   # {size} bytes\n")
+    if report.long_lines:
+        sys.stdout.write(
+            f"{len(report.long_lines)} note(s) have line(s) over the kb-lint limit (blocking `mega-line` "
+            "in block mode) — commit the backfill with SCOUT_LINT_OVERRIDE='restore pre-restructure context'\n"
+        )
 
 
 @app.command("watch")
