@@ -71,6 +71,55 @@ def test_freshness_hours_priority_only_in_first_25_lines(tmp_path):
     assert freshness_hours_for(f) == 168
 
 
+def test_freshness_hours_comment_naming_the_key_does_not_shadow_it(tmp_path):
+    """#240: a comment that mentions `priority:` used to win over the key."""
+    f = tmp_path / "proj.md"
+    f.write_text(
+        "---\n"
+        "# the `priority:` key is hoisted above the provenance log so it stays\n"
+        "# inside HEAD_SCAN_LINES\n"
+        'name: "example-suite"\n'
+        "last_updated: 2026-09-16\n"
+        'priority: "high 🔴"\n'
+        "---\n"
+    )
+    assert freshness_hours_for(f) == 72
+
+
+def test_freshness_hours_value_mentioning_the_key_does_not_shadow_it(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\nsummary: Sam set priority: low on the old ticket\npriority: 🔴\n---\n")
+    assert freshness_hours_for(f) == 72
+
+
+def test_freshness_hours_body_mention_does_not_count(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\nname: x\n---\n# Project\n\n| rule | sort by `priority: 🔴` first |\n")
+    assert freshness_hours_for(f) == 168
+
+
+def test_freshness_hours_frontmatter_key_beats_a_body_marker(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("---\npriority: 🟢\n---\n> **Priority:** 🔴 for this week only\n")
+    assert freshness_hours_for(f) == 336
+
+
+def test_freshness_hours_reads_a_prose_priority_marker(tmp_path):
+    f = tmp_path / "proj.md"
+    f.write_text("# Project\n\n> **Priority:** 🔴 launch week\n")
+    assert freshness_hours_for(f) == 72
+
+
+def test_freshness_hours_reads_the_key_past_the_head_window_in_long_frontmatter(tmp_path):
+    """#230's long-frontmatter case, for priority: the whole block is read."""
+    f = tmp_path / "proj.md"
+    filler = [f"# provenance {i}" for i in range(40)]
+    f.write_text("\n".join(["---", "last_updated: 2026-09-10", *filler, "priority: 🔴", "---", "# Project"]) + "\n")
+    assert freshness_hours_for(f) == 72
+    label, details = classify(f, datetime(2026, 9, 17, tzinfo=ZoneInfo("UTC")), tmp_path, tz=ZoneInfo("UTC"))
+    assert (label, details["budget_hours"]) == ("STALE", 72)
+
+
 # -- extract_date_string ------------------------------------------------------
 
 
