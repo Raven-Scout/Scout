@@ -177,10 +177,16 @@ def is_generic_binary(name: str | None) -> bool:
     return name is None or name in _GENERIC_BINARIES
 
 
+# One MCP tool, exactly: `--allowedTools` splits on commas and spaces, so a name
+# carrying either (or a `*`) would allow more than the tool it names. Hyphens
+# stay legal: plugin servers list as `mcp__plugin_<plugin>_<server>__<tool>`.
+# `\Z`, not `$`, so a trailing newline doesn't match.
+MCP_TOOL_RE = re.compile(r"^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+\Z")
+
+
 def _tool_ref(value: Any, path: str, issues: list[Issue]) -> ToolRef | None:
     if isinstance(value, str):
-        parts = value.split("__")
-        if value.startswith("mcp__") and len(parts) >= 3 and all(parts[1:]):
+        if MCP_TOOL_RE.match(value):
             return ToolRef("mcp", value)
         issues.append(
             Issue(path, f"{value!r} is not an MCP tool name (mcp__<server>__<tool>); write a command as {{bash: ...}}")
