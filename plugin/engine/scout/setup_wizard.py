@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -153,7 +154,7 @@ class SetupDeps:
     host_zone: Callable[[], str | None]
     detect_connectors: Callable[[], dict[str, Detection]]
     list_uncovered: Callable[[], dict[str, Any]]
-    draft: Callable[[str], dict[str, Any]]
+    draft: Callable[[str, set[str]], dict[str, Any]]  # (server name, keys kept earlier in this setup)
     invoke: Callable[[list[str]], int]
     add_custom: Callable[[dict[str, Any], dict[str, str]], dict[str, Any]]
     first_briefing_slot: Callable[[], str | None]
@@ -217,11 +218,13 @@ def default_deps(claude_bin: str = "") -> SetupDeps:
 
     def list_uncovered() -> dict[str, Any]:
         return connector_uncovered.find_uncovered(
-            connector_detect.run_claude_mcp_list(claude), registry=connector_probes.resolve_registry()
+            connector_detect.run_claude_mcp_list(claude),
+            registry=connector_probes.resolve_registry(),
+            custom_servers=connector_uncovered.custom_connector_servers(vault()),
         )
 
-    def draft(server: str) -> dict[str, Any]:
-        return connector_draft.draft(server, plugin_root=plugin_root, vault=vault(), claude_bin=claude)
+    def draft(server: str, taken: set[str]) -> dict[str, Any]:
+        return connector_draft.draft(server, plugin_root=plugin_root, vault=vault(), claude_bin=claude, taken=taken)
 
     def add_custom(definition: dict[str, Any], inputs: dict[str, str]) -> dict[str, Any]:
         return add(
@@ -408,6 +411,26 @@ _SIGN_IN = (
 )
 
 
+_RETRY = "Retry with `scoutctl connectors setup`."
+# Fixed copy per failed draft status. The draft's `message` (claude's stderr, or
+# text a model wrote) is never echoed: it could carry a dead end to the user.
+# Spec §4.2: `no_read_tools` and `invalid` both read as "couldn't find anything to read".
+_DRAFT_FAILED = {
+    "no_read_tools": "Scout couldn't find anything to read in {name} yet. " + _RETRY,
+    "invalid": "Scout couldn't find anything to read in {name} yet. " + _RETRY,
+    "timeout": "Drafting {name} took too long. " + _RETRY,
+}
+_DRAFT_DIDNT_FINISH = "Drafting {name} didn't finish. " + _RETRY
+# C0 and C1 control characters (ESC, BEL, CR, CSI …): model-written text must not
+# drive the terminal (colours, cursor moves, OSC title or hyperlink sequences).
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def strip_controls(text: object) -> str:
+    """``text`` as a string with every C0/C1 control character removed."""
+    return _CONTROL_RE.sub("", str(text))
+
+
 def offer_uncovered(p: Prompter, deps: SetupDeps) -> list[KeptDraft]:
     """Offer every connected server no connector reads; return the drafts the user keeps."""
     listing = deps.list_uncovered()
@@ -419,6 +442,7 @@ def offer_uncovered(p: Prompter, deps: SetupDeps) -> list[KeptDraft]:
         return []
     p.say("Also connected: " + ", ".join(s["name"] for s in servers) + ".")
     kept: list[KeptDraft] = []
+    kept_keys: set[str] = set()  # not in the vault until apply_drafts, so each draft is told
     for s in servers:
         name = s["name"]
         if s["status"] != "connected":
@@ -427,27 +451,29 @@ def offer_uncovered(p: Prompter, deps: SetupDeps) -> list[KeptDraft]:
         if not p.confirm(f"  Add {name}?", True):
             continue
         p.say("    drafting (about 30 s)…")
-        result = deps.draft(name)
+        result = deps.draft(name, set(kept_keys))
         status = result.get("status")
         if status == "needs_auth":
             p.say(f"    {name}: {_SIGN_IN}")
             continue
         if status != "drafted":
-            reason = result.get("message") or status
-            p.say(
-                f"    Scout couldn't find anything to read in {name} yet ({reason}). "
-                "Retry with `scoutctl connectors setup`."
-            )
+            p.say("    " + _DRAFT_FAILED.get(str(status), _DRAFT_DIDNT_FINISH).format(name=name))
             continue
         summary = {x["key"]: x for x in result.get("summary", [])}
         for d in result.get("definitions", []):
+            label = strip_controls(d["display_name"])
+            if d["key"] in kept_keys:
+                p.say(
+                    f"    {label}: a connector named {d['key']} is already in this setup. "
+                    "Retry with `scoutctl connectors setup` after setup."
+                )
+                continue
             line = summary.get(d["key"], {})
-            p.say(f"    {d['display_name']} · {line.get('scans', '')} · {line.get('looks_up', '')}")
-            inputs = {
-                n: p.ask(f"    {n.replace('_', ' ')} for {d['display_name']}") for n in d.get("needs_user_input", [])
-            }
+            p.say(f"    {label} · {strip_controls(line.get('scans', ''))} · {strip_controls(line.get('looks_up', ''))}")
+            inputs = {n: p.ask(f"    {n.replace('_', ' ')} for {label}") for n in d.get("needs_user_input", [])}
             if p.confirm("    Keep it?", True):
                 kept.append(KeptDraft(d, inputs))
+                kept_keys.add(d["key"])
     return kept
 
 
@@ -456,7 +482,7 @@ def apply_drafts(drafts: list[KeptDraft], p: Prompter, deps: SetupDeps) -> int:
     applied = 0
     for k in drafts:
         out = deps.add_custom(k.definition, k.inputs)
-        label = k.definition.get("display_name", k.definition.get("key", ""))
+        label = strip_controls(k.definition.get("display_name", k.definition.get("key", "")))
         status = out.get("status")
         if status in ("applied", "unchanged"):
             applied += 1

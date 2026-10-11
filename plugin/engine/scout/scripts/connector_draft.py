@@ -12,7 +12,7 @@ import json
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -423,9 +423,14 @@ def draft(
     model: str = "sonnet",
     timeout: float = 120.0,
     runner: ClaudeRunner | None = None,
+    taken: Collection[str] = (),
 ) -> dict[str, Any]:
+    """``taken``: keys the caller already holds that aren't in the vault yet (drafts
+    kept earlier in the same setup); the vault's own custom keys are added here."""
     run = runner or run_claude
-    taken = set(cc.load(vault, plugin_root=plugin_root).raw) if (vault / cc.CUSTOM_FILE).exists() else set()
+    taken = set(taken)
+    if (vault / cc.CUSTOM_FILE).exists():
+        taken |= set(cc.load(vault, plugin_root=plugin_root).raw)
     schema = draft_schema(list(cc.load_presets(plugin_root)))
     prompt = render_prompt(server_name, plugin_root=plugin_root, taken=taken)
     feedback = ""

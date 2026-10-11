@@ -537,12 +537,17 @@ def _register_connectors() -> None:
         """Connected MCP servers that no connector reads yet (no LLM)."""
         import json as _json
 
+        from scout import paths as _paths
         from scout.scripts import connector_detect, connector_probes
         from scout.scripts.bootstrap import resolve_claude_bin
-        from scout.scripts.connector_uncovered import find_uncovered
+        from scout.scripts.connector_uncovered import custom_connector_servers, find_uncovered
 
         listing = connector_detect.run_claude_mcp_list(resolve_claude_bin(claude_bin), timeout=timeout)
-        payload = find_uncovered(listing, registry=connector_probes.resolve_registry())
+        payload = find_uncovered(
+            listing,
+            registry=connector_probes.resolve_registry(),
+            custom_servers=custom_connector_servers(_paths.data_dir()),
+        )
         if json_out:
             typer.echo(_json.dumps(payload, indent=2))
         else:
@@ -761,8 +766,11 @@ def _register_connectors() -> None:
         claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
         model: str = typer.Option("sonnet", "--model", help="Model for the drafting call."),
         timeout: float = typer.Option(120.0, "--timeout", help="Seconds per headless call."),
+        taken: list[str] = typer.Option(
+            [], "--taken", help="A key already used in this setup but not yet in the vault. Repeatable."
+        ),
     ) -> None:
-        """Draft custom-connector definitions for one connected server (headless claude -p, read-only)."""
+        """Draft custom-connector definitions for one connected server (headless claude -p; the engine checks them)."""
         from scout import paths as _paths
         from scout.scripts import connector_draft
         from scout.scripts.bootstrap import resolve_claude_bin
@@ -774,6 +782,7 @@ def _register_connectors() -> None:
             claude_bin=resolve_claude_bin(claude_bin),
             model=model,
             timeout=timeout,
+            taken=set(taken),
         )
         _emit(payload, connector_draft.EXIT_CODES[payload["status"]])
 

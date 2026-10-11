@@ -68,8 +68,60 @@ def test_hyphenated_plugin_server_is_covered_by_its_tool_slug():
 def test_tooling_names():
     for name in ("Claude_Browser", "plugin:playwright:playwright", "ccd_session", "claude-in-chrome", "Terminal"):
         assert cu.is_tooling(name), name
-    for name in ("claude.ai Example Suite", "claude.ai Gmail", "plugin:linear:linear"):
+    for name in ("claude.ai Example Suite", "claude.ai Example Mail", "plugin:example-kit:example-tracker"):
         assert not cu.is_tooling(name), name
+
+
+CUSTOM_FILE = """\
+schema_version: 1
+connectors:
+  suite_mail:
+    display_name: Mail suite
+    server: claude_ai_Example_Suite
+    probe: mcp__claude_ai_Example_Suite__list_folders
+    preset: mail
+    inbound: {tools: [mcp__claude_ai_Example_Suite__search_messages]}
+  broken:
+    server: plugin_example-kit_search-tool
+  tickets:
+    display_name: Tickets
+    probe: {bash: tix whoami}
+    inbound: {tools: [{bash: tix list}], focus: Tickets that changed.}
+  odd: not a mapping
+"""
+
+
+def test_custom_connector_servers_counts_every_entry_enabled_or_not(tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "connectors.custom.yaml").write_text(CUSTOM_FILE)
+    # No scout-config.yaml: nothing is enabled, and both servers still count.
+    assert cu.custom_connector_servers(vault) == {"claude_ai_Example_Suite", "plugin_example-kit_search-tool"}
+    assert cu.custom_connector_servers(tmp_path / "missing") == set()
+
+
+def test_a_disabled_custom_connectors_server_is_not_offered(tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "connectors.custom.yaml").write_text(CUSTOM_FILE)
+    (vault / "scout-config.yaml").write_text("connectors:\n  enabled: [slack]\n")  # suite_mail is disabled
+    out = cu.find_uncovered(MCP_LIST, registry=REGISTRY, custom_servers=cu.custom_connector_servers(vault))
+    names = [s["name"] for s in out["servers"]]
+    assert "claude.ai Example Suite" not in names
+    assert "plugin:example-kit:search-tool" not in names
+    assert names == ["claude.ai Example CRM"]
+
+
+def test_cli_drops_servers_custom_connectors_name(monkeypatch, tmp_path):
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    (vault / "connectors.custom.yaml").write_text(CUSTOM_FILE)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
+    monkeypatch.setattr("scout.scripts.connector_detect.run_claude_mcp_list", lambda *a, **k: MCP_LIST)
+    monkeypatch.setattr("scout.scripts.connector_probes.resolve_registry", lambda **k: REGISTRY)
+    result = CliRunner().invoke(app, ["connectors", "uncovered", "--json", "--claude-bin", "/bin/echo"])
+    assert result.exit_code == 0, result.output
+    assert [s["name"] for s in json.loads(result.output)["servers"]] == ["claude.ai Example CRM"]
 
 
 def test_covered_server_keys_skips_a_tool_chain_entry_with_no_server_slug():

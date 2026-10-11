@@ -18,9 +18,10 @@ from scout.scripts.connector_detect import Detection, DetectStatus
 class Scripted:
     """A Prompter that answers from a list; '' takes the default. Records everything said."""
 
-    def __init__(self, answers):
+    def __init__(self, answers, end=EOFError):
         self.answers = list(answers)
         self.said: list[str] = []
+        self.end = end  # raised once the answers run out: Ctrl-D (EOFError) or Ctrl-C (KeyboardInterrupt)
 
     def say(self, text):
         self.said.append(text)
@@ -28,7 +29,7 @@ class Scripted:
     def ask(self, question, default=""):
         self.said.append(question)
         if not self.answers:
-            raise EOFError("no more scripted answers")
+            raise self.end("no more scripted answers")
         return self.answers.pop(0) or default
 
     def confirm(self, question, default):
@@ -58,7 +59,7 @@ def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None):
         host_zone=lambda: "America/New_York",
         detect_connectors=lambda: DETECTIONS,
         list_uncovered=lambda: {"schema_version": 1, "servers": [], "error": None},
-        draft=lambda server: {"status": "error", "message": "unused"},
+        draft=lambda server, taken: {"status": "error", "message": "unused"},
         invoke=invoke,
         add_custom=lambda definition, inputs: {"status": "applied", "message": "Live"},
         first_briefing_slot=lambda: "briefing-am",
@@ -171,12 +172,38 @@ def test_yes_without_an_explicit_first_run_flag_skips_the_first_run(tmp_path):
     assert not any(c[0] == "schedule" for c in calls)
 
 
-def test_end_of_input_cancels_before_anything_is_written(tmp_path):
+@pytest.mark.parametrize("end", [EOFError, KeyboardInterrupt])
+def test_end_of_input_cancels_before_anything_is_written(tmp_path, end):
     deps, calls = _deps(tmp_path)
-    p = Scripted(["", "Alex"])  # runs out at the email question
+    p = Scripted(["", "Alex"], end=end)  # runs out at the email question
     assert sw.run_setup(_opts(tmp_path), p, deps) == 1
     assert calls == []
     assert sw.CANCELLED in p.said
+
+
+@pytest.mark.parametrize("end", [EOFError, KeyboardInterrupt])
+def test_end_of_input_at_an_add_server_prompt_cancels_before_anything_is_written(tmp_path, end):
+    listing = {
+        "schema_version": 1,
+        "error": None,
+        "servers": [
+            {
+                "name": "claude.ai Example Suite",
+                "slug": "claude_ai_Example_Suite",
+                "status": "connected",
+                "evidence": "",
+            }
+        ],
+    }
+    drafted: list[str] = []
+    deps, calls = _deps(tmp_path)
+    deps = replace(deps, list_uncovered=lambda: listing, draft=lambda s, taken: drafted.append(s) or {})
+    # instance, name, email, keep tz, toggle (enter), slack id -- then ends at "Add claude.ai Example Suite?"
+    p = Scripted(["", "", "", "", "", "U1"], end=end)
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 1
+    assert p.said[-2] == "  Add claude.ai Example Suite?"
+    assert p.said[-1] == sw.CANCELLED
+    assert calls == [] and drafted == []
 
 
 def test_a_red_bootstrap_stops_before_budget_and_first_run(tmp_path):
@@ -591,21 +618,27 @@ def test_default_deps_detect_connectors_wires_detect_and_probes(monkeypatch):
     assert captured["run_bash"] is connector_detect.run_bash_probe
 
 
-def test_default_deps_list_uncovered_wires_find_uncovered(monkeypatch):
+def test_default_deps_list_uncovered_wires_find_uncovered(monkeypatch, tmp_path):
     from scout.scripts import connector_detect, connector_probes, connector_uncovered
 
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Scout"))
     monkeypatch.setattr(connector_detect, "run_claude_mcp_list", lambda claude: "fake mcp list output")
     monkeypatch.setattr(connector_probes, "resolve_registry", lambda: {"r": 1})
+    monkeypatch.setattr(connector_uncovered, "custom_connector_servers", lambda vault: {"servers of": vault})
     captured: dict[str, object] = {}
 
-    def fake_find_uncovered(mcp_list_output, *, registry):
-        captured.update(mcp_list_output=mcp_list_output, registry=registry)
+    def fake_find_uncovered(mcp_list_output, *, registry, custom_servers):
+        captured.update(mcp_list_output=mcp_list_output, registry=registry, custom_servers=custom_servers)
         return {"schema_version": 1, "servers": [], "error": None}
 
     monkeypatch.setattr(connector_uncovered, "find_uncovered", fake_find_uncovered)
     deps = sw.default_deps()
     assert deps.list_uncovered() == {"schema_version": 1, "servers": [], "error": None}
-    assert captured == {"mcp_list_output": "fake mcp list output", "registry": {"r": 1}}
+    assert captured == {
+        "mcp_list_output": "fake mcp list output",
+        "registry": {"r": 1},
+        "custom_servers": {"servers of": tmp_path / "Scout"},
+    }
 
 
 def test_default_deps_draft_wires_connector_draft(monkeypatch, tmp_path):
@@ -614,16 +647,19 @@ def test_default_deps_draft_wires_connector_draft(monkeypatch, tmp_path):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Scout"))
     captured: dict[str, object] = {}
 
-    def fake_draft(server_name, *, plugin_root, vault, claude_bin):
-        captured.update(server_name=server_name, plugin_root=plugin_root, vault=vault, claude_bin=claude_bin)
+    def fake_draft(server_name, *, plugin_root, vault, claude_bin, taken):
+        captured.update(server_name=server_name, vault=vault, claude_bin=claude_bin, taken=taken)
         return {"status": "drafted"}
 
     monkeypatch.setattr(connector_draft, "draft", fake_draft)
     deps = sw.default_deps(claude_bin="/usr/bin/claude")
-    assert deps.draft("example_suite") == {"status": "drafted"}
-    assert captured["server_name"] == "example_suite"
-    assert captured["vault"] == tmp_path / "Scout"
-    assert captured["claude_bin"] == "/usr/bin/claude"
+    assert deps.draft("example_suite", {"suite_mail"}) == {"status": "drafted"}
+    assert captured == {
+        "server_name": "example_suite",
+        "vault": tmp_path / "Scout",
+        "claude_bin": "/usr/bin/claude",
+        "taken": {"suite_mail"},
+    }
 
 
 def test_default_deps_add_custom_wires_custom_connector_ops(monkeypatch, tmp_path):

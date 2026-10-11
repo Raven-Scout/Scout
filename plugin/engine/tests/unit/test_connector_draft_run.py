@@ -132,6 +132,29 @@ def test_keys_already_in_the_vault_are_taken(tmp_path):
     assert "suite_mail" in fake.calls[0][1]  # the prompt lists taken keys
 
 
+def test_keys_passed_as_taken_are_taken_too(tmp_path):
+    """Keys kept earlier in the same setup aren't in the vault yet; the caller passes them."""
+    fake = FakeClaude([GOOD, GOOD])
+    out = cd.draft(
+        SERVER, plugin_root=PLUGIN, vault=tmp_path / "Scout", claude_bin="claude", runner=fake, taken={"suite_mail"}
+    )
+    assert out["status"] == "invalid"
+    assert any("already taken" in i["message"] for i in out["issues"])
+    assert "suite_mail" in fake.calls[0][1]
+
+
+def test_cli_passes_repeated_taken_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Scout"))
+    seen = {}
+    monkeypatch.setattr(cd, "draft", lambda server, **kw: seen.update(kw) or cd._out("no_read_tools", server))
+    result = CliRunner().invoke(
+        app,
+        ["connectors", "custom", "draft", "--server", SERVER, "--taken", "suite_mail", "--taken", "suite_cal"],
+    )
+    assert result.exit_code == 3, result.output
+    assert seen["taken"] == {"suite_mail", "suite_cal"}
+
+
 def test_prompt_template_carries_the_rules():
     text = cd.render_prompt(SERVER, plugin_root=PLUGIN, taken={"slack"})
     assert "+claude_ai_Example_Suite" in text and "1–4 read tools per activity" in text and "slack" in text
