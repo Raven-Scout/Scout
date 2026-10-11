@@ -1,5 +1,7 @@
 # In-App Updates (Sparkle app track + plugin detect/hand-off) Implementation Plan
 
+> **Superseded (2026-10-05)** by [`2026-10-05-in-app-updates.md`](2026-10-05-in-app-updates.md), which re-bases this plan on the monorepo and the unified release (Raven-Scout/Scout#314). That plan reuses code blocks from this one by task number, so this file stays as their source. Its paths, feed URL, Sparkle version and release steps are out of date.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One in-app update surface: Scout.app updates itself through Sparkle (detect → download → install → relaunch) from a checked-in `appcast.xml`, and the app detects when the scout-plugin is behind and hands you `/scout-update`; both tracks feed a Settings ▸ Updates section plus a badge on the sidebar and menu-bar icon.

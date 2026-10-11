@@ -21,6 +21,14 @@ struct StepRowView: View {
         return step.item.task.fields.action ?? ActionChip.fallback
     }
 
+    private func prompt() -> String {
+        BoardPrompt.step(
+            step.item,
+            topic: topic?.title,
+            contextNote: TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+        )
+    }
+
     static func expansionKey(_ key: String) -> String { "step:\(key)" }
 
     private var expanded: Binding<Bool> {
@@ -43,7 +51,7 @@ struct StepRowView: View {
             }
             if asking {
                 PromptBox(
-                    context: { BoardPrompt.step(step.item, topic: topic?.title) },
+                    context: prompt,
                     session: task.fields.session,
                     scoutDirectory: scoutDirectory,
                     isOpen: $asking
@@ -53,7 +61,7 @@ struct StepRowView: View {
                 StepDetailView(
                     task: task,
                     rootSession: rootSession,
-                    prompt: { BoardPrompt.step(step.item, topic: topic?.title) },
+                    prompt: prompt,
                     scoutDirectory: scoutDirectory
                 )
                 if !step.nested.isEmpty {

@@ -3,8 +3,8 @@ import Foundation
 /// Ask-Claude prompts for the topic board: the item's own context plus where
 /// it sits on the board — its topic, its state and what it waits on.
 enum BoardPrompt {
-    static func step(_ item: BoardItem, topic: String?) -> String {
-        var out = ClaudeLauncher.prompt(for: item.task)
+    static func step(_ item: BoardItem, topic: String?, contextNote: String? = nil) -> String {
+        var out = ClaudeLauncher.prompt(for: item.task, contextNote: contextNote)
         out += "\n\nOn the board:\n" + boardLines(item, topic: topic).joined(separator: "\n")
         return out
     }

@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Materialize the engine payload Scout.app ships (unified-release spec §5):
+#
+#   <out>/scout-engine-<version>.tar.gz   `git archive HEAD:plugin` of the repo
+#                                          containing $SRCROOT, so the archive
+#                                          ROOT holds .claude-plugin/plugin.json,
+#                                          plus a GENERATED
+#                                          .claude-plugin/marketplace.json (below)
+#   <out>/engine-release.json             generated: top-level "version" and
+#                                          engine.version (both plugin.json's),
+#                                          the build commit (diagnostics only)
+#                                          and the checked-in uv pin
+#                                          (Scout/Resources/uv-release.json)
+#
+# The app registers the unpacked engine as a Claude Code DIRECTORY marketplace
+# (`claude plugin marketplace add ~/.local/share/scout/engine/current`), which
+# needs <dir>/.claude-plugin/marketplace.json. In the monorepo that manifest
+# lives at the repo root (source "./plugin"), outside plugin/, so this script
+# derives one from HEAD:.claude-plugin/marketplace.json and adds it to the
+# archive with `git archive --add-virtual-file` (git >= 2.39): same name
+# ("scout-plugin" — the app's foreign-source check keys on it), same
+# owner/metadata, exactly one plugin "scout" with source "./" and version =
+# plugin.json's. Nothing extra is checked in under plugin/.
+#
+# Deterministic: the payload is the COMMITTED plugin/ tree at HEAD — no pinned
+# repo or commit, no sibling checkout, no network. Uncommitted or untracked
+# changes under plugin/ are not shipped; the script says so with a warning.
+# `<version>` is plugin.json's "version" at HEAD (one version for Scout, D2);
+# when Xcode passes MARKETING_VERSION it must be the same string.
+#
+# <out> is the built product's Resources folder when run as an Xcode phase,
+# else $SCOUT_ENGINE_OUT (default <app>/build/engine). Every run rewrites both
+# files (archiving plugin/ takes ~0.1 s) and removes any other
+# scout-engine-*.tar.gz there, so a version bump never leaves a stale tarball.
+#
+# Env (all optional): SRCROOT (Xcode; else this script's app dir),
+# SCOUT_UV_PIN (default $SRCROOT/Scout/Resources/uv-release.json),
+# SCOUT_ENGINE_OUT, MARKETING_VERSION, CONFIGURATION / SCOUT_BUNDLE_STRICT=1
+# (Release or strict: a MARKETING_VERSION mismatch is an error, not a warning).
+# Exit: 0 with both files written; 1 on any failure (no git repo, no
+# plugin.json at HEAD, non-SemVer version, strict version mismatch,
+# missing or malformed uv pin, missing or unusable root marketplace.json,
+# a git too old for --add-virtual-file).
+set -euo pipefail
+
+APP_ROOT="${SRCROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+UV_PIN="${SCOUT_UV_PIN:-$APP_ROOT/Scout/Resources/uv-release.json}"
+MANIFEST="plugin/.claude-plugin/plugin.json"
+ROOT_MARKETPLACE=".claude-plugin/marketplace.json"    # repo root, source ./plugin
+BUNDLED_MARKETPLACE=".claude-plugin/marketplace.json"  # archive root, source ./
+
+fail() { echo "error: bundle-engine: $*" >&2; exit 1; }
+
+TOP="$(git -C "$APP_ROOT" rev-parse --show-toplevel 2>/dev/null)" \
+  || fail "$APP_ROOT is not inside a git repository; the engine is archived from the repo's committed plugin/ tree"
+COMMIT="$(git -C "$TOP" rev-parse --verify -q 'HEAD^{commit}')" \
+  || fail "$TOP has no HEAD commit to archive plugin/ from"
+MANIFEST_JSON="$(git -C "$TOP" show "HEAD:$MANIFEST" 2>/dev/null)" \
+  || fail "HEAD has no $MANIFEST in $TOP"
+VERSION="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$MANIFEST_JSON" 2>/dev/null)" \
+  || fail "HEAD:$MANIFEST has no readable \"version\""
+
+# The version becomes a file name here and a directory name on the user's Mac
+# (engine/<version>), so hold it to SemVer's shape: no "/", no "..". The
+# pre-release identifier grammar mirrors EngineVersion's §9 validation
+# (EngineVersion.swift's `validatedPreRelease`): each dot-separated identifier
+# is either "0", a numeral with no leading zero, or contains a non-digit
+# (letter/hyphen) — never a bare leading-zero numeral like "01" — so a
+# version this script accepts always also parses as an EngineVersion
+# (EngineReleaseTests.everyBuildBundlesTheEngine asserts the agreement).
+IDENT='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-$IDENT(\.$IDENT)*)?$ ]] \
+  || fail "HEAD:$MANIFEST version \"$VERSION\" is not a SemVer X.Y.Z[-pre]"
+if [[ -n "${MARKETING_VERSION:-}" && "$MARKETING_VERSION" != "$VERSION" ]]; then
+  DRIFT="MARKETING_VERSION $MARKETING_VERSION != $MANIFEST version $VERSION: plugin/.claude-plugin/plugin.json and MARKETING_VERSION (apps/macos/Scout.xcodeproj) must move together (spec D2): bump both, e.g. \`versioning set X.Y.Z\` plus MARKETING_VERSION"
+  # A Release can never ship drift; a Debug build warns and still builds (the
+  # D2 test in EngineReleaseTests fails it in CI).
+  if [[ "${CONFIGURATION:-}" == "Release" || "${SCOUT_BUNDLE_STRICT:-0}" == 1 ]]; then fail "$DRIFT"; fi
+  echo "warning: bundle-engine: $DRIFT" >&2
+fi
+
+[[ -f "$UV_PIN" ]] || fail "uv pin $UV_PIN not found"
+
+# The bundled directory-marketplace manifest, derived from the committed root
+# one (see the header). Key order follows the root file; json.dumps is stable,
+# so the same commit always yields the same bytes.
+ROOT_MP_JSON="$(git -C "$TOP" show "HEAD:$ROOT_MARKETPLACE" 2>/dev/null)" \
+  || fail "HEAD has no $ROOT_MARKETPLACE in $TOP: the bundled engine's directory-marketplace manifest is generated from it, and without one \`claude plugin marketplace add\` refuses the unpacked engine"
+if git -C "$TOP" cat-file -e "HEAD:plugin/$BUNDLED_MARKETPLACE" 2>/dev/null; then
+  fail "plugin/$BUNDLED_MARKETPLACE is committed, but the bundle generates that file from the root $ROOT_MARKETPLACE; remove plugin/$BUNDLED_MARKETPLACE"
+fi
+GEN_MARKETPLACE='
+import json, sys
+version = sys.argv[1]
+try:
+    root = json.loads(sys.stdin.read())
+except ValueError as e:
+    sys.exit(f"is not valid JSON ({e})")
+if not isinstance(root, dict) or root.get("name") != "scout-plugin":
+    sys.exit("must be named \"scout-plugin\": Scout.app registers the bundled engine under that marketplace name")
+plugins = root.get("plugins")
+scout = [p for p in plugins if isinstance(p, dict) and p.get("name") == "scout"] if isinstance(plugins, list) else []
+if len(scout) != 1:
+    sys.exit("needs exactly one plugin named \"scout\" in \"plugins\" (found %d)" % len(scout))
+entry = dict(scout[0])
+entry["source"] = "./"        # the archive root IS the plugin
+entry["version"] = version    # plugin.json is the one version (D2)
+print(json.dumps({k: ([entry] if k == "plugins" else v) for k, v in root.items()}, indent=2))
+'
+MARKETPLACE_JSON="$(python3 -c "$GEN_MARKETPLACE" "$VERSION" <<<"$ROOT_MP_JSON" 2>&1)" \
+  || fail "HEAD:$ROOT_MARKETPLACE ${MARKETPLACE_JSON##*$'\n'}"
+
+# --no-optional-locks: a plain `git status` takes index.lock and rewrites
+# .git/index to persist refreshed stat info for racily-clean files, even
+# though this script only reads the result — every build would otherwise
+# race a concurrent `git commit`. See bundle-engine.test.sh's index-untouched
+# case.
+if [[ -n "$(git --no-optional-locks -C "$TOP" status --porcelain -- plugin)" ]]; then
+  echo "warning: bundle-engine: plugin/ has uncommitted changes; bundling the committed tree at HEAD (${COMMIT:0:12}) without them" >&2
+fi
+
+if [[ -n "${BUILT_PRODUCTS_DIR:-}" && -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]]; then
+  OUT_DIR="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+else
+  OUT_DIR="${SCOUT_ENGINE_OUT:-$APP_ROOT/build/engine}"
+fi
+mkdir -p "$OUT_DIR"
+TARBALL="$OUT_DIR/scout-engine-$VERSION.tar.gz"
+RELEASE_JSON="$OUT_DIR/engine-release.json"
+
+# Entry mtimes come from the commit, not the clock (a tree-ish archive
+# otherwise stamps "now"), so the same commit yields the same bytes.
+# The virtual marketplace.json entry takes the same --mtime, so it is just as
+# reproducible as the tree's entries.
+MTIME_ARGS=()
+ARCHIVE_HELP="$(git -C "$TOP" archive -h 2>&1 || true)"   # `-h` exits 129
+if [[ "$ARCHIVE_HELP" == *--mtime* ]]; then
+  MTIME_ARGS=(--mtime="@$(git -C "$TOP" show -s --format=%ct "$COMMIT")")
+fi
+# Newer gits print the option as `--[no-]add-virtual-file`.
+[[ "$ARCHIVE_HELP" == *add-virtual-file* ]] \
+  || fail "$(git --version) has no \`git archive --add-virtual-file\` (git 2.39 or newer), which the bundle needs to add the generated $BUNDLED_MARKETPLACE; select a newer Xcode (xcode-select) or put a newer git first on PATH"
+
+TMP_TARBALL="$TARBALL.tmp.$$"; TMP_JSON="$RELEASE_JSON.tmp.$$"
+trap 'rm -f "$TMP_TARBALL" "$TMP_JSON"' EXIT
+git -C "$TOP" archive --format=tar.gz ${MTIME_ARGS[@]+"${MTIME_ARGS[@]}"} \
+  --add-virtual-file="$BUNDLED_MARKETPLACE:$MARKETPLACE_JSON"$'\n' \
+  -o "$TMP_TARBALL" "$COMMIT:plugin"
+
+GOT="$(tar -xzOf "$TMP_TARBALL" .claude-plugin/plugin.json 2>/dev/null \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true)"
+[[ "$GOT" == "$VERSION" ]] || fail "archived .claude-plugin/plugin.json version \"$GOT\" != \"$VERSION\""
+
+# The archive must hold exactly one marketplace manifest that Claude Code will
+# register as "scout-plugin" and that offers scout at this version from "./".
+[[ "$(tar -tzf "$TMP_TARBALL" | grep -cx "$BUNDLED_MARKETPLACE" || true)" == 1 ]] \
+  || fail "archive does not hold exactly one $BUNDLED_MARKETPLACE"
+GOT_MP="$(tar -xzOf "$TMP_TARBALL" "$BUNDLED_MARKETPLACE" 2>/dev/null | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+p = [e for e in m.get("plugins", []) if e.get("name") == "scout"]
+print(m.get("name"), len(m.get("plugins", [])), p[0].get("source") if p else None, p[0].get("version") if p else None)
+' 2>/dev/null || true)"
+[[ "$GOT_MP" == "scout-plugin 1 ./ $VERSION" ]] \
+  || fail "archived $BUNDLED_MARKETPLACE is \"$GOT_MP\" (name, plugin count, scout source, scout version), expected \"scout-plugin 1 ./ $VERSION\""
+
+python3 - "$UV_PIN" "$VERSION" "$COMMIT" "$TMP_JSON" <<'PY' || fail "could not generate engine-release.json from $UV_PIN"
+import json, re, sys
+uv_pin, version, commit, out = sys.argv[1:5]
+uv = json.load(open(uv_pin))
+sha = uv.get("sha256")
+if not isinstance(uv.get("version"), str) or not isinstance(sha, dict) or not sha:
+    sys.exit("uv pin needs a string \"version\" and a non-empty \"sha256\" map")
+# Both Mac architectures must be pinned at build time: a UvInstaller running
+# on the arch missing from the map would otherwise fail (or silently fetch
+# unpinned) only on whichever Mac lacks it, long after this build shipped.
+REQUIRED_ARCHES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
+missing = [arch for arch in REQUIRED_ARCHES if arch not in sha]
+if missing:
+    sys.exit(f"uv pin sha256 is missing required key(s): {', '.join(missing)}")
+if not all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in sha.values()):
+    sys.exit("uv pin sha256 values must be 64 lowercase hex characters")
+release = {
+    "schema_version": 2,
+    # Top-level `version` is Scout's one version (D2); `release.sh finalize`
+    # requires it to equal the app's version. `engine.version` is the same
+    # string, kept for EngineRelease's engine-shaped consumers.
+    "version": version,
+    "engine": {"version": version, "commit": commit},
+    "uv": {"version": uv["version"], "sha256": sha},
+}
+with open(out, "w") as f:
+    json.dump(release, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+
+for old in "$OUT_DIR"/scout-engine-*.tar.gz; do
+  if [[ -e "$old" && "$old" != "$TARBALL" ]]; then rm -f "$old"; fi
+done
+mv -f "$TMP_TARBALL" "$TARBALL"
+mv -f "$TMP_JSON" "$RELEASE_JSON"
+echo "→ bundled engine $VERSION (plugin/ @ ${COMMIT:0:12}) → $TARBALL"

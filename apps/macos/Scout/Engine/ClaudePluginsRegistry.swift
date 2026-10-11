@@ -9,6 +9,9 @@ nonisolated struct InstalledPlugin: Equatable, Sendable {
     let id: String
     let version: String
     let installPath: String
+    /// Claude Code's install scope (`user`, `project`, `local`, …); nil when
+    /// the entry doesn't say.
+    var scope: String? = nil
 }
 
 nonisolated enum MarketplaceSource: Equatable, Sendable {
@@ -29,7 +32,7 @@ nonisolated enum ClaudePluginsRegistry {
     static let scoutMarketplaceName = "scout-plugin"
 
     private struct InstalledFile: Decodable {
-        struct Entry: Decodable { let version: String; let installPath: String }
+        struct Entry: Decodable { let version: String; let installPath: String; let scope: String? }
         let plugins: [String: [Entry]]
     }
 
@@ -42,7 +45,7 @@ nonisolated enum ClaudePluginsRegistry {
     static func installedPlugins(from data: Data) throws -> [InstalledPlugin] {
         let file = try JSONDecoder().decode(InstalledFile.self, from: data)
         return file.plugins.flatMap { id, entries in
-            entries.map { InstalledPlugin(id: id, version: $0.version, installPath: $0.installPath) }
+            entries.map { InstalledPlugin(id: id, version: $0.version, installPath: $0.installPath, scope: $0.scope) }
         }.sorted { $0.id < $1.id }
     }
 
@@ -60,10 +63,15 @@ nonisolated enum ClaudePluginsRegistry {
         }.sorted { $0.name < $1.name }
     }
 
+    /// The installed `scout@scout-plugin`, preferring the `user`-scope entry
+    /// — the one the app installs, and the one `hasUnfinishedSwitch` and the
+    /// register step's postcondition must compare — over a project/local
+    /// install of the same plugin; else any entry.
     static func scoutPlugin(pluginsDir: URL) -> InstalledPlugin? {
         guard let data = try? Data(contentsOf: pluginsDir.appending(path: "installed_plugins.json")),
               let plugins = try? installedPlugins(from: data) else { return nil }
-        return plugins.first { $0.id == scoutPluginID }
+        let scout = plugins.filter { $0.id == scoutPluginID }
+        return scout.first { $0.scope == "user" } ?? scout.first
     }
 
     static func scoutMarketplace(pluginsDir: URL) -> KnownMarketplace? {

@@ -26,7 +26,17 @@ struct LaunchClaudeMenu: View {
     }
 
     init(task: ActionTask, scoutDirectory: URL, style: Style = .split, launchError: Binding<String?>) {
-        self.init(prompt: { ClaudeLauncher.prompt(for: task) }, scoutDirectory: scoutDirectory, style: style, launchError: launchError)
+        self.init(
+            prompt: {
+                ClaudeLauncher.prompt(
+                    for: task,
+                    contextNote: TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+                )
+            },
+            scoutDirectory: scoutDirectory,
+            style: style,
+            launchError: launchError
+        )
     }
 
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""

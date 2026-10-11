@@ -307,6 +307,11 @@ extension GitService: GitServiceProtocol {}
 
 /// Production `ProcessRunner`. Spawns a real child process.
 struct SystemProcessRunner: ProcessRunner {
+    /// Explicitly `@MainActor`, as it always was by default: `ProcessRunner`
+    /// is `nonisolated`, and a witness infers that from the requirement
+    /// (SE-0449). Off the main thread, the blocking `waitUntilExit()` below can
+    /// hang a cooperative-pool thread for good (Raven-Scout/Scout#337).
+    @MainActor
     func run(
         executable: URL,
         arguments: [String],

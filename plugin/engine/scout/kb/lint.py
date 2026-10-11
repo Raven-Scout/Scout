@@ -24,6 +24,8 @@ from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 from scout import paths
+from scout.action_items.context_notes import context_note_rel
+from scout.ids import leading_prefix_pattern
 from scout.kb.git_io import (
     changed_lines,
     head_files,
@@ -179,6 +181,66 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
     return out
 
 
+_FM_ALIASES_RE = re.compile(r"^aliases:[ \t]*(.*?)\s*$")
+_FM_LIST_ITEM_RE = re.compile(r"^\s*-\s+(.*?)\s*$")
+_FM_INLINE_ITEM_RE = re.compile(r"""\s*(?:"([^"]*)"|'([^']*)'|([^,]*))\s*(?:,|$)""")
+_FM_NON_NAMES = {"", "null", "~", "|", ">", "[]"}
+
+
+def _fm_scalar(raw: str) -> str:
+    """One YAML scalar: quotes stripped, or an unquoted value's ` #` comment."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1].strip()
+    return raw.split(" #", 1)[0].strip()
+
+
+def _frontmatter_aliases(path: Path) -> list[str]:
+    """The `aliases:` a file's YAML frontmatter declares.
+
+    Obsidian resolves a wikilink to a filename or to one of the target's
+    `aliases`, and to nothing else in frontmatter — `name:` and `title:` are
+    not link targets there, so indexing them would silence links that are
+    broken for the reader. All three forms Obsidian reads or writes are
+    handled: a scalar, an inline list, and a block list (what its Properties
+    editor saves).
+
+    Deliberately a line scanner, not a YAML parse: lint runs over every tracked
+    file on every commit, frontmatter is the first few lines, and a malformed
+    document must not raise.
+    """
+    names: list[str] = []
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as fh:
+            if fh.readline().strip() != "---":
+                return names
+            in_block = False
+            for _ in range(60):
+                line = fh.readline()
+                if not line or line.strip() == "---":
+                    break
+                if in_block:
+                    item = _FM_LIST_ITEM_RE.match(line)
+                    if item:
+                        names.append(_fm_scalar(item.group(1)))
+                        continue
+                    in_block = False
+                m = _FM_ALIASES_RE.match(line)
+                if not m:
+                    continue
+                val = m.group(1)
+                if not val or val.startswith("#"):  # block list follows
+                    in_block = True
+                elif val.startswith("[") and val.endswith("]"):  # inline list
+                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(val[1:-1]):
+                        names.append(dq or sq or bare.strip())
+                else:
+                    names.append(_fm_scalar(val))
+    except OSError:
+        return names
+    return [n for n in names if n.lower() not in _FM_NON_NAMES]
+
+
 def _link_targets(repo: Path) -> set[str]:
     known: set[str] = set()
     for p in tracked_files(repo):
@@ -189,6 +251,9 @@ def _link_targets(repo: Path) -> set[str]:
             kbrel = PurePosixPath(p[len("knowledge-base/") :])
             known.add(str(kbrel).lower())
             known.add(str(kbrel.with_suffix("")).lower())
+        if p.endswith(".md"):
+            for nm in _frontmatter_aliases(repo / p):
+                known.add(nm.lower())
     return known
 
 
@@ -235,10 +300,33 @@ def _new_lines(repo: Path, rel: str, head_rel: str | None, baseline_text: str | 
     return [(n, t) for n, t in added if normalize_line(t) not in gone]
 
 
+_OPEN_TASK = re.compile(r"^\s*- \[ \] (.*)$")
+
+
+def _check_context_notes(repo: Path, rel: str, added: list[tuple[int, str]], staged: set[str]) -> list[Finding]:
+    """Warn (never block) when a newly added open item in a daily file has no
+    `action-items/context/<TAG>.md` note in the working tree or staged set."""
+    if not _DAILY.match(rel):
+        return []
+    out: list[Finding] = []
+    for n, text in added:
+        m = _OPEN_TASK.match(text)
+        tm = leading_prefix_pattern().match(m.group(1)) if m else None
+        if tm is None:
+            continue
+        note = context_note_rel(tm.group(1))
+        if note in staged or (repo / note).exists():
+            continue
+        out.append(Finding(rel, "missing-context-note", False, f"line {n}: [#{tm.group(1)}] has no {note}", n))
+    return out
+
+
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
-    for sp in staged_paths(repo):
+    staged_list = staged_paths(repo)
+    staged_rels = {sp.rel for sp in staged_list}
+    for sp in staged_list:
         if not cfg.in_scope(sp.rel):
             continue
         size_base = sp.head_rel
@@ -251,6 +339,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
         result.findings += _check_size(repo, sp.rel, size_base, cfg)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         result.findings += _check_lines(sp.rel, added, cfg)
+        result.findings += _check_context_notes(repo, sp.rel, added, staged_rels)
         if cfg.is_topic(sp.rel):
             result.findings += _check_citations(sp.rel, staged_text(repo, sp.rel), {n for n, _ in added})
         if known is None:
