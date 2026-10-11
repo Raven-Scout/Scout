@@ -46,6 +46,10 @@ nonisolated struct PluginUpdateChecker: PluginUpdateChecking {
         PluginUpdateChecker(pluginsDir: EngineLayout.live.claudePluginsDir, fetcher: fetcher)
     }
 
+    /// `@concurrent`: with approachable concurrency a plain `nonisolated async`
+    /// func runs on the caller's actor (the main actor, from `UpdateService`),
+    /// which would put the JSON reads under `~/.claude` on the main thread.
+    @concurrent
     func check(engine: EngineState) async -> PluginUpdateResult {
         guard case .external(let install, _) = engine else { return .notApplicable }
 
