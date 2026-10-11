@@ -126,15 +126,18 @@ enum ClaudeLauncher {
     }
 
     /// Build the prompt text for a task — subject, plus body, recent
-    /// comments, and any deep links.
-    static func prompt(for task: ActionTask) -> String {
-        prompt(for: task, format: .fullContext)
+    /// comments, and any deep links. `contextNote` is the body of the item's
+    /// `action-items/context/<TAG>.md` note, loaded by the caller at the
+    /// moment of the action (see `TaskContextNote`).
+    static func prompt(for task: ActionTask, contextNote: String? = nil) -> String {
+        prompt(for: task, format: .fullContext, contextNote: contextNote)
     }
 
-    static func prompt(for task: ActionTask, format: CopyFormat) -> String {
+    static func prompt(for task: ActionTask, format: CopyFormat, contextNote: String? = nil) -> String {
         switch format {
         case .fullContext:
-            return "Help me make progress on this action item:\n\n" + fullContextBody(for: task)
+            return "Help me make progress on this action item:\n\n"
+                + fullContextBody(for: task, contextNote: contextNote)
         case .concise:
             return conciseBody(for: task)
         case .markdownChecklist:
@@ -142,14 +145,18 @@ enum ClaudeLauncher {
         }
     }
 
-    static func prompt(for tasks: [ActionTask], format: CopyFormat) -> String {
+    static func prompt(
+        for tasks: [ActionTask], format: CopyFormat, contextNotes: [UUID: String] = [:]
+    ) -> String {
         guard let first = tasks.first else { return "" }
-        guard tasks.count > 1 else { return prompt(for: first, format: format) }
+        guard tasks.count > 1 else {
+            return prompt(for: first, format: format, contextNote: contextNotes[first.id])
+        }
 
         switch format {
         case .fullContext:
             let items = tasks.enumerated().map { index, task in
-                "## \(index + 1). \(fullContextBody(for: task))"
+                "## \(index + 1). \(fullContextBody(for: task, contextNote: contextNotes[task.id]))"
             }
             return "Help me make progress on these \(tasks.count) action items:\n\n"
                 + items.joined(separator: "\n\n---\n\n")
@@ -173,13 +180,16 @@ enum ClaudeLauncher {
         task.done ? "\(task.plainSubject) (completed)" : task.plainSubject
     }
 
-    private static func fullContextBody(for task: ActionTask) -> String {
+    private static func fullContextBody(for task: ActionTask, contextNote: String?) -> String {
         var out = subjectLine(for: task)
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
         if !task.details.isEmpty {
             out += "\n\nContext:\n" + detailLines(task.details).joined(separator: "\n")
+        }
+        if let note = contextNote?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            out += "\n\nContext note:\n\(note)"
         }
         if !task.comments.isEmpty {
             let block = task.comments

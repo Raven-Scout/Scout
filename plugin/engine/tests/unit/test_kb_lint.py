@@ -313,3 +313,56 @@ def test_over_budget_skips_report_excluded_dated_records(kb_repo) -> None:
     kb_repo.write("knowledge-base/a.md", "x" * 150)
     rows = over_budget(kb_repo.root, load_lint_config(kb_repo.root))
     assert rows == [("knowledge-base/a.md", 150, 100)]
+
+
+DAILY_REL = "action-items/action-items-2026-10-06.md"
+DAILY_HEAD = "# Action Items\n\n## 🔴 Urgent\n\n"
+
+
+def _ctx_findings(kb_repo) -> list[tuple[str, int | None]]:
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    return [(f.check, f.line) for f in res.findings if f.check == "missing-context-note"]
+
+
+def test_new_open_item_without_note_warns(kb_repo) -> None:
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    found = [f for f in res.findings if f.check == "missing-context-note"]
+    assert len(found) == 1 and found[0].blocking is False and "action-items/context/DETX.md" in found[0].message
+
+
+def test_staged_note_silences_warning(kb_repo) -> None:
+    kb_repo.stage("action-items/context/DETX.md", "---\ntag: DETX\n---\n\nctx\n")
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_committed_note_silences_warning(kb_repo) -> None:
+    kb_repo.stage("action-items/context/DETX.md", "ctx\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_untagged_and_done_lines_are_ignored(kb_repo) -> None:
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] **No tag**\n- [x] [#PLN] **Done**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_carried_forward_line_is_not_rechecked(kb_repo) -> None:
+    kb_repo.stage("action-items/action-items-2026-10-05.md", DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_missing_note_never_blocks_in_block_mode(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_lint:\n  mode: block\n")
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    assert all(f.check != "missing-context-note" for f in res.blocking)
+
+
+def test_non_daily_files_are_not_checked(kb_repo) -> None:
+    kb_repo.stage("action-items/backlog.md", "- [ ] [#DETX] **Backlog item**\n")
+    assert _ctx_findings(kb_repo) == []
