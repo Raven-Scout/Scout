@@ -221,7 +221,7 @@ struct MenuBarExtraContent: View {
                         NSApp.activate(ignoringOtherApps: true)
                         updates.check(.app)
                     }
-                    .disabled(updates.appUpdate.state == .checking)
+                    .disabled(!updates.appCheckAvailable)
                 }
                 if updates.anyUpdateAvailable {
                     footerButton("Update available", systemImage: "arrow.down.circle") {

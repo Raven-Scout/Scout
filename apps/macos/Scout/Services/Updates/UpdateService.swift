@@ -42,6 +42,11 @@ protocol AppUpdateController: AnyObject {
     /// False in Debug builds — the updater never starts there.
     var isEnabled: Bool { get }
     var currentVersion: String? { get }
+    /// Sparkle's `canCheckForUpdates` (KVO), delivered on the main thread:
+    /// false while a session is already running or a permission prompt is
+    /// showing, when a user-initiated check would be silently declined.
+    /// Always false for a disabled (Debug) controller.
+    var canCheckForUpdates: AnyPublisher<Bool, Never> { get }
     /// User-initiated check. Returns whether a check actually started —
     /// false when disabled, or when Sparkle reports a session is already in
     /// progress or a permission prompt is showing (in which case it has
@@ -95,6 +100,9 @@ final class UpdateService: ObservableObject {
     @Published private(set) var pluginUpdate = UpdateStatus()
     @Published private(set) var pluginRowVisible = false
     @Published private(set) var pluginReleasesURL: URL?
+    /// Mirrors the app controller's `canCheckForUpdates`. False until the
+    /// controller's first value arrives.
+    @Published private(set) var appCanCheck = false
 
     private var appController: (any AppUpdateController)?
     private let pluginChecker: any PluginUpdateChecking
@@ -154,6 +162,12 @@ final class UpdateService: ObservableObject {
         }
         self.appController = controller
         self.appUpdate.currentVersion = controller.currentVersion
+        controller.canCheckForUpdates
+            .sink { [weak self] canCheck in
+                guard let self else { return }
+                MainActor.assumeIsolated { self.appCanCheck = canCheck }
+            }
+            .store(in: &cancellables)
 
         // Every emission already arrives on the main actor in production
         // (EngineHealthService.state is set from @MainActor code, and
@@ -173,6 +187,12 @@ final class UpdateService: ObservableObject {
     }
 
     var appUpdatesEnabled: Bool { appController?.isEnabled ?? false }
+    /// Whether "Check for Updates…" should be enabled: the updater runs
+    /// (never in Debug), Sparkle can start a check right now, and no check
+    /// this service started is still in flight.
+    var appCheckAvailable: Bool {
+        appUpdatesEnabled && appCanCheck && appUpdate.state != .checking
+    }
     var anyUpdateAvailable: Bool { availableCount > 0 }
     var availableCount: Int {
         (appUpdate.isAvailable ? 1 : 0) + (pluginRowVisible && pluginUpdate.isAvailable ? 1 : 0)

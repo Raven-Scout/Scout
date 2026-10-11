@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Sparkle
 
 /// Thin adapter around Sparkle's standard updater controller. The only file
@@ -43,6 +44,17 @@ final class AppUpdater: AppUpdateController {
 
     var currentVersion: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    /// Sparkle's standard SwiftUI pattern: KVO on `SPUUpdater.canCheckForUpdates`
+    /// (initial value included), hopped to the main queue because
+    /// `UpdateService` consumes it on the main actor. A disabled (Debug)
+    /// updater is never started, so it publishes a constant false.
+    var canCheckForUpdates: AnyPublisher<Bool, Never> {
+        guard isEnabled else { return Just(false).eraseToAnyPublisher() }
+        return controller.updater.publisher(for: \.canCheckForUpdates)
+            .receive(on: DispatchQueue.main)
+            .eraseToAnyPublisher()
     }
 
     /// User-initiated: Sparkle shows "checking…", then found / up to date /

@@ -56,6 +56,7 @@ enum ViewHost {
 private final class SmokeAppUpdateController: AppUpdateController {
     let isEnabled = false
     let currentVersion: String? = "0.1.0"
+    var canCheckForUpdates: AnyPublisher<Bool, Never> { Just(true).eraseToAnyPublisher() }
     func checkForUpdates() -> Bool { false }
 }
 

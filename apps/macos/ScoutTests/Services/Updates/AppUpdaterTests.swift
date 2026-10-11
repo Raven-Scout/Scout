@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Combine
 @testable import Scout
 
 /// Runs in the Debug test host, where the updater must never start. The
@@ -19,6 +20,16 @@ struct AppUpdaterTests {
         let started = updater.checkForUpdates()   // must not start Sparkle, show UI, emit, or crash
         #expect(started == false)
         #expect(events.isEmpty)
+    }
+
+    /// A disabled (Debug) updater is never started, so "Check for Updates…"
+    /// must read as unavailable regardless of Sparkle's own flag.
+    @Test func disabledUpdaterPublishesCannotCheck() {
+        let updater = AppUpdater(enabled: false) { _ in }
+        var values: [Bool] = []
+        let cancellable = updater.canCheckForUpdates.sink { values.append($0) }
+        cancellable.cancel()
+        #expect(values == [false])
     }
 }
 

@@ -14,6 +14,9 @@ private final class FakeAppController: AppUpdateController {
     /// showing.
     var startsCheck = true
     var emit: (@MainActor (AppUpdateEvent) -> Void)?
+    /// Stands in for Sparkle's KVO `canCheckForUpdates`; true by default.
+    let canCheck = CurrentValueSubject<Bool, Never>(true)
+    var canCheckForUpdates: AnyPublisher<Bool, Never> { canCheck.eraseToAnyPublisher() }
     init(isEnabled: Bool) { self.isEnabled = isEnabled }
     @discardableResult
     func checkForUpdates() -> Bool {
@@ -150,6 +153,28 @@ struct UpdateServiceTests {
         #expect(service.appUpdatesEnabled == false)
         #expect(service.appUpdate.state == .idle)
         #expect(controller.checkCalls == 0)
+    }
+
+    /// "Check for Updates…" follows Sparkle's `canCheckForUpdates`: while a
+    /// scheduled background check or a permission prompt is running, a click
+    /// would be a silent no-op, so the item is disabled instead.
+    @Test func appCheckAvailabilityFollowsTheControllersCanCheckForUpdates() {
+        let (service, controller, _) = make()
+        #expect(service.appCheckAvailable)
+        controller.canCheck.send(false)
+        #expect(service.appCheckAvailable == false)
+        controller.canCheck.send(true)
+        #expect(service.appCheckAvailable)
+    }
+
+    @Test func appCheckIsUnavailableWhileCheckingOrWhenDisabled() {
+        let (service, _, _) = make()
+        service.checkApp()
+        #expect(service.appUpdate.state == .checking)
+        #expect(service.appCheckAvailable == false)
+
+        let (disabled, _, _) = make(appEnabled: false)
+        #expect(disabled.appCheckAvailable == false)   // Debug: the updater never starts
     }
 
     @Test func appEventsDriveTheAppTrack() {
