@@ -326,3 +326,43 @@ def test_dump_keeping_comments_removed_key_does_not_absorb_into_the_previous_sca
 
     assert "# About gamma" in result
     assert yaml.safe_load(result) == data
+
+
+# --- Fix round 4 --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "comment"),
+    [
+        (
+            "user:\n  email: alex@example.com\n  signature: |+\n    Alex\n\n"
+            "# About plugin\n\nplugin:\n  version_at_last_update: 0.3.0\n",
+            "# About plugin",
+        ),
+        (
+            "plugin:\n  version_at_last_update: 0.3.0\nuser:\n  email: alex@example.com\n  signature: |+\n    Alex\n\n"
+            "# closing\n\n",
+            "# closing",
+        ),
+        (
+            "user:\n  email: alex@example.com\n  bio: |\n    Steps:\n    #2 is the escalation path\n"
+            "# About plugin\n  # (indented note)\nplugin:\n  version_at_last_update: 0.3.0\n",
+            "# About plugin",
+        ),
+    ],
+    ids=["B1-keep-tail-gap-comment+blank", "B2-keep-tail-trailer+blank", "B3-hash-tail-col0+indented-comment"],
+)
+def test_dump_keeping_comments_keeps_a_comment_after_a_significant_tail(text: str, comment: str) -> None:
+    """N1 on the bootstrap side, the real upgrade shape: `user:` ends in a
+    `|+` signature (or a `|` bio whose last line starts with `#`) and is
+    rewritten with a new email. The column-0 comment after it ends that
+    scalar, so it belongs to the next key (or the trailer), not to `user:`'s
+    own block -- where it used to be deleted along with the old `user:` text
+    whenever a blank line (or an indented comment) followed it."""
+    data = yaml.safe_load(text)
+    data["user"] = dict(data["user"], email="sam@example.com")
+
+    result = _dump_keeping_comments(text, data)
+
+    assert result.count(comment) == 1
+    assert yaml.safe_load(result) == data

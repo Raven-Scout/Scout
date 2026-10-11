@@ -54,12 +54,10 @@ def _is_filler(line: str) -> bool:
 def _is_shallow_comment(line: str, indent: int) -> bool:
     """A comment indented no deeper than ``indent`` -- never part of a
     ``|``/``>`` scalar's content (which always sits deeper than its
-    announcing key, itself deeper than ``indent``). Blank lines are
-    deliberately excluded: whether a blank line is safe to move can depend on
-    a ``|+``/``>+`` keep-tail elsewhere in the same run, which this cheap,
-    line-only check can't tell -- so this candidate never trims a blank line,
-    leaving it (and anything earlier in the run) with the current block when
-    the whole-run check doesn't already cover it."""
+    announcing key, itself deeper than ``indent``), so it ends any such
+    scalar above it. Blank lines are deliberately excluded: a blank line
+    *before* that point may be a significant ``|+``/``>+`` keep-tail line,
+    which this cheap, line-only check can't tell."""
     stripped = line.lstrip(" ")
     return stripped.startswith("#") and (len(line) - len(stripped)) <= indent
 
@@ -204,14 +202,16 @@ def split_blocks(
         #
         # (a) Try the whole run first -- cheap, and the common case (nothing
         #     in the run is scalar content) needs only this one comparison.
-        # (b) If that changes the value, try the longest trailing run of
-        #     *comments* indented no deeper than entry level instead (never
-        #     including a blank line: a `|+`/`>+` keep-tail's significant
-        #     blank lines could be anywhere earlier in the run, and this
-        #     cheap check can't tell, so it leaves every blank line, and
-        #     anything before it, with the current block). This recovers a
-        #     trailing gap comment even when deep `#`-led content, or
-        #     significant blank lines, sit further back in the same run.
+        # (b) If that changes the value, cut at the run's FIRST comment
+        #     indented no deeper than entry level instead. Such a comment
+        #     ends any `|`/`>` scalar above it (its content always sits
+        #     deeper), so every line from it on -- blank lines and deeper
+        #     comments included -- is a comment or a gap, never scalar
+        #     content. The lines before it stay with this block: they may be
+        #     deep `#`-led content or a `|+`/`>+` keep-tail's significant
+        #     blank lines, which this cheap check can't tell apart. (Cutting
+        #     only at a trailing run of such comments, as before, recovered
+        #     nothing as soon as a blank line followed the comment.)
         # (c) If even that changes the value, trim nothing -- leave the whole
         #     run with this segment. Trimming nothing is always a match (it's
         #     the same text), so (b) or (c) always ends this.
@@ -221,9 +221,7 @@ def split_blocks(
         if _parses_to("".join(lines[start:run_start]), full_value):
             cut = run_start
         else:
-            shallow_cut = end
-            while shallow_cut > run_start and _is_shallow_comment(lines[shallow_cut - 1], indent):
-                shallow_cut -= 1
+            shallow_cut = next((i for i in range(run_start, end) if _is_shallow_comment(lines[i], indent)), end)
             if shallow_cut < end and _parses_to("".join(lines[start:shallow_cut]), full_value):
                 cut = shallow_cut
 

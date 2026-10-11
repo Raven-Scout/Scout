@@ -1405,6 +1405,40 @@ def test_split_blocks_cost_is_bounded_not_quadratic(monkeypatch: pytest.MonkeyPa
     assert calls[0] <= 15, f"expected a bounded call count, got {calls[0]}"
     assert elapsed2 < 1.0, f"expected well under 1s, took {elapsed2}s"
 
+    # Per segment, the trim itself (the full-block parse plus the candidate
+    # cuts, all through `_safe_load_or_sentinel`) costs at most 3 loads, and
+    # the same number at two very different run lengths.
+    trim_loads = [0]
+    real_load_or_sentinel = yaml_blocks._safe_load_or_sentinel
+
+    def counting_load_or_sentinel(text: str):
+        trim_loads[0] += 1
+        return real_load_or_sentinel(text)
+
+    monkeypatch.setattr(yaml_blocks, "_safe_load_or_sentinel", counting_load_or_sentinel)
+    alpha = "  # About alpha\n\n  alpha:\n    display_name: A\n    probe: p\n"
+    shapes = {
+        "hash-tail scalar": lambda n: (
+            "    notes: |\n" + "".join(f"      # step {i}\n" for i in range(n)) + "\n" + alpha
+        ),
+        "keep-tail scalar": lambda n: "    notes: |+\n      Watch.\n" + "\n" * n + alpha,
+        "unloadable block": lambda n: "    probe: *dn\n" + "".join(f"  # note {i}\n" for i in range(n)) + alpha,
+    }
+    for name, tail in shapes.items():
+        per_n = {}
+        for n in (500, 4000):
+            text3 = (
+                "schema_version: 1\nconnectors:\n  base:\n    display_name: &dn B\n"
+                "  tickets:\n    display_name: T\n" + tail(n)
+            )
+            trim_loads[0] = 0
+            split = yaml_blocks.split_blocks(text3, indent=2, after_key="connectors")
+            assert split is not None
+            segments = len(split[1])
+            assert trim_loads[0] <= 3 * segments, f"{name}, n={n}: {trim_loads[0]} loads for {segments} segments"
+            per_n[n] = trim_loads[0]
+        assert per_n[500] == per_n[4000], f"{name}: load count grew with the run length: {per_n}"
+
 
 def test_boundary_absorption_deep_comment_after_removed_entry(tmp_path: Path):
     """Item 2 (reviewer's `exp_absorb.py` case): beta's own trailing comment
@@ -1459,3 +1493,82 @@ def test_boundary_absorption_keep_tail_after_removed_entry(tmp_path: Path):
         "schema_version": 1,
         "connectors": {"alpha": loaded["alpha"], "gamma": loaded["gamma"]},
     }
+
+
+# --- Fix round 4 --------------------------------------------------------------------
+
+# Two entry tails that the whole-run trim can't move past, because dropping the
+# run changes the value: a `|+` scalar whose trailing blank line belongs to it,
+# and a `|` scalar whose last content line starts with `#`.
+_SIGNIFICANT_TAILS = {
+    "keep-tail": "  tickets:\n    display_name: Tickets\n    notes: |+\n      Watch the queue.\n\n",
+    "hash-tail": "  tickets:\n    display_name: Tickets\n    notes: |\n      Steps:\n      # step 3 is manual\n",
+}
+_ALPHA_TEXT = (
+    "  alpha:\n"
+    "    display_name: Alpha\n"
+    "    probe: mcp__dataplat__info\n"
+    "    lookup:\n"
+    "      tools:\n"
+    "      - mcp__dataplat__search\n"
+    "      when: x\n"
+)
+
+
+def _change_tickets(conns: dict) -> dict:
+    return {"tickets": dict(conns["tickets"], display_name="Tix"), "alpha": conns["alpha"]}
+
+
+def _remove_tickets(conns: dict) -> dict:
+    return {"alpha": conns["alpha"]}
+
+
+@pytest.mark.parametrize("tail", sorted(_SIGNIFICANT_TAILS))
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "  # About alpha\n\n",
+        "\n  # About alpha\n\n",
+        "  # About alpha\n\n      # (see the runbook)\n\n",
+    ],
+    ids=["comment+blank", "blank+comment+blank", "comment+blank+deep-comment+blank"],
+)
+@pytest.mark.parametrize("op", [_change_tickets, _remove_tickets], ids=["change-prev", "remove-prev"])
+def test_gap_comment_after_a_significant_tail_survives(tmp_path: Path, tail: str, gap: str, op) -> None:
+    """N1: when the entry above ends in a significant tail, the whole-run trim
+    fails, and the fallback candidate used to be only the run's *trailing*
+    shallow comments -- so one blank line after the comment left nothing to
+    recover, the comment stayed in tickets' own block, and it was deleted when
+    tickets changed or was removed. A comment at entry level ends any scalar
+    above it, so it and everything after it can move to alpha's leading run."""
+    text = _HDR + _SIGNIFICANT_TAILS[tail] + gap + _ALPHA_TEXT
+    conns = yaml.safe_load(text)["connectors"]
+    new = op(conns)
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, new)
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# my header")  # the fast path, not the plain-dump fallback
+    for comment in ("# About alpha", "# (see the runbook)"):
+        assert result.count(comment) == gap.count(comment)
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": new}
+
+
+@pytest.mark.parametrize("tail", sorted(_SIGNIFICANT_TAILS))
+@pytest.mark.parametrize("op", [_change_tickets, _remove_tickets], ids=["change-last", "remove-last"])
+def test_trailer_after_a_significant_tail_survives(tmp_path: Path, tail: str, op) -> None:
+    """N1, trailer form: a closing comment followed by a blank line at EOF, after
+    a last entry with a significant tail, must survive that entry changing or
+    being removed."""
+    text = _HDR + _ALPHA_TEXT + _SIGNIFICANT_TAILS[tail] + "\n# Closing note.\n\n"
+    conns = yaml.safe_load(text)["connectors"]
+    new = op(conns)
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+
+    cc.write(tmp_path, new)
+    result = (tmp_path / cc.CUSTOM_FILE).read_text()
+
+    assert result.startswith("# my header")
+    assert result.count("# Closing note.") == 1
+    assert yaml.safe_load(result) == {"schema_version": 1, "connectors": new}
