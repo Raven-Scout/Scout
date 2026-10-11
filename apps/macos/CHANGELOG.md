@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-11
+
 ### Added
 - In-app updates through Sparkle: **Scout → Check for Updates…**, a daily
   background check, and a **Settings ▸ Updates** pane. An update badge shows
