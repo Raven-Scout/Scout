@@ -4,7 +4,7 @@
 
 **Goal:** Make `scoutctl setup` (run by `install.sh`) and three new engine commands (`connectors uncovered`, `connectors custom draft`, `connectors setup`) do everything `/scout-setup` did, add `/scout-connect`, then retire `/scout-setup` to a stub and put a **Download for Mac** button on the website.
 
-**Architecture:** All setup logic lives in the engine (Python). `connectors uncovered` lists connected MCP servers no connector reads. `connectors custom draft` drafts definitions for one server through a locked-down headless `claude -p`, then validates them in the engine. `scoutctl setup` is a terminal wizard (`scout/setup_wizard.py`) that asks the questions, then calls the existing `bootstrap auto` in-process and applies kept drafts with `custom add`. `install.sh`, `/scout-connect` and (later, in the app plan) Scout.app are front ends over those commands.
+**Architecture:** All setup logic lives in the engine (Python). `connectors uncovered` lists connected MCP servers no connector reads. `connectors custom draft` drafts definitions for one server through a headless `claude -p`, then validates them in the engine. `scoutctl setup` is a terminal wizard (`scout/setup_wizard.py`) that asks the questions, then calls the existing `bootstrap auto` in-process and applies kept drafts with `custom add`. `install.sh`, `/scout-connect` and (later, in the app plan) Scout.app are front ends over those commands.
 
 **Tech Stack:** Python 3.12 + Typer (engine), pytest, bash (`install.sh`, `release.sh`), Markdown slash commands, static HTML (`docs/index.html`).
 
@@ -2465,7 +2465,7 @@ Scout reads more than the tools it ships instructions for. Anything you have con
 - During setup, `scoutctl setup` (and Scout.app's onboarding) offers every connected server no connector reads yet.
 - Later, run `/scout-connect` in Claude Code, `scoutctl connectors setup` in a terminal, or use Scout.app's Settings ▸ Connectors.
 
-Scout drafts each definition for you through a read-only headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The engine rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. Tools that need you to sign in first say so, and pick up where they left off once you have.
+Scout drafts each definition for you through a headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The engine rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. Tools that need you to sign in first say so, and pick up where they left off once you have.
 ```
 
 - [ ] **Step 4: Changelog, then commit and open the phase-2 PR**

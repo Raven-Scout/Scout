@@ -192,8 +192,10 @@ functions the CLI subcommands call (in-process, not by shelling out to
 itself).
 
 - **Where it reads answers from.** It reads prompts from `/dev/tty`, because
-  under `curl | bash` stdin is the pipe. With no `/dev/tty` and no `--yes`, it
-  exits 2 with a message listing the headless flags.
+  under `curl | bash` stdin is the pipe. With no `/dev/tty` and no `--yes`, a
+  first install exits 2 with a message listing the headless flags (if every
+  answer came as a flag it asks nothing, and the closing "first briefing now?"
+  reads as no). An upgrade asks no questions, so it proceeds.
 - **Dispatching on `bootstrap auto`'s plan** (`bootstrap_auto.detect`):
   - **upgrade**: it says "Found your vault at <path>, upgrading", runs `auto`,
     reports the doctor result and stops. It asks no questions. That makes
@@ -202,7 +204,15 @@ itself).
     **migrate-legacy**: it runs the full wizard.
   - **refused**: it prints the reason and exits 2.
 - **Engine pointer.** If the pointer says `managed_by: scout-app`, it refuses:
-  "Scout.app manages this engine — open Scout.app."
+  "Scout.app manages this engine — open Scout.app." On an upgrade, a manager
+  the pointer records (anything but `unknown`) is kept: `--managed-by` applies
+  only to a fresh install or an unrecorded pointer. From another engine than
+  the pointer's, it runs nothing and prints the two explicit commands
+  (upgrade that engine, or `bootstrap upgrade --managed-by` to move here).
+- **Fresh-install pointers.** The `scoutctl` shim on `PATH` is written by
+  `bootstrap`, so a machine with no vault usually has no `scoutctl`. Prose that
+  sends a user without a vault somewhere (`/scout-update`, `/scout-connect`)
+  gives the `install.sh` one-liner, not `scoutctl setup`.
 - **Headless flags**, which mirror `bootstrap auto`:
   - `--vault PATH` (sets `SCOUT_DATA_DIR`), `--instance-name`, `--name`,
     `--email`, `--timezone`;
