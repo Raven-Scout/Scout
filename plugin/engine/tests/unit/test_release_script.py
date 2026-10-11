@@ -340,6 +340,49 @@ def test_bundled_engine_must_match_and_exist(tmp_path):
     assert not any(c.startswith("gh release create") for c in r.calls())
 
 
+def _add_engine_bundler(r):
+    """Ship Part C's bundler in the commits built from here on (its content is never run: xcodebuild is a stub)."""
+    bundler = r.root / "apps/macos/scripts/bundle-engine.sh"
+    bundler.parent.mkdir(parents=True, exist_ok=True)
+    bundler.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    bundler.chmod(0o755)
+    _git(r.root, "add", "apps/macos/scripts/bundle-engine.sh")
+    _git(r.root, "commit", "-q", "-m", "build(app): bundle the engine")
+    _git(r.root, "push", "-q", "origin", "main")
+
+
+def test_with_the_bundler_a_missing_engine_is_fatal_for_rcs_and_dry_runs_too(tmp_path):
+    r = make_repo(tmp_path)
+    _add_engine_bundler(r)
+    assert r.run("prepare", "0.15.0").returncode == 0  # leaves HEAD on release/v0.15.0, pushed, carrying 0.15.0
+    no_engine = {"FAKE_NO_ENGINE": "1"}
+    rc = r.run("rc", "v0.15.0-rc.1", extra_env=no_engine)
+    assert rc.returncode != 0 and "although this commit ships apps/macos/scripts/bundle-engine.sh" in rc.stderr
+    dry = r.run("rc", "v0.15.0-rc.1", extra_env={**no_engine, "SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"})
+    assert dry.returncode != 0 and "although this commit ships" in dry.stderr
+    wrong = r.run("rc", "v0.15.0-rc.1", extra_env={"FAKE_ENGINE_VERSION": "0.14.0"})
+    assert wrong.returncode != 0 and "bundled engine is 0.14.0, the app is 0.15.0" in wrong.stderr
+    assert not any(c.startswith(("codesign", "gh release create")) for c in r.calls())
+    ok = r.run("rc", "v0.15.0-rc.1")
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_with_the_bundler_a_missing_engine_is_fatal_for_a_dry_run_finalize(tmp_path):
+    r = make_repo(tmp_path)
+    _add_engine_bundler(r)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"FAKE_NO_ENGINE": "1", "SKIP_RELEASE": "1"})
+    assert done.returncode != 0 and "although this commit ships" in done.stderr
+
+
+def test_without_the_bundler_an_rc_may_skip_the_engine(tmp_path):
+    r = make_repo(tmp_path)  # an older commit: no apps/macos/scripts/bundle-engine.sh
+    assert r.run("prepare", "0.15.0").returncode == 0
+    done = r.run("rc", "v0.15.0-rc.1", extra_env={"FAKE_NO_ENGINE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "no bundled engine" in done.stdout
+
+
 def test_rc_is_a_prerelease_never_latest(tmp_path):
     r = make_repo(tmp_path)
     assert r.run("prepare", "0.15.0").returncode == 0  # leaves HEAD on release/v0.15.0, pushed, carrying 0.15.0
