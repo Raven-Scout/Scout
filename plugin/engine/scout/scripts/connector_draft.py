@@ -366,10 +366,11 @@ def isolated_session(server_name: str) -> Iterator[Isolation]:
     that can't be resolved) gets neither, and ToolSearch finds what it can.
     """
     entry = user_mcp_server(server_name)
-    tmp = tempfile.mkdtemp(prefix="scout-draft-") if entry is not None else None
+    tmp = None
     try:
         path = None
-        if tmp is not None:
+        if entry is not None:
+            tmp = tempfile.mkdtemp(prefix="scout-draft-")
             path = Path(tmp) / "mcp.json"
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
