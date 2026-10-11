@@ -7,6 +7,10 @@ nonisolated struct EngineInstall: Equatable, Sendable {
     let python: URL?
     let version: String?
     let vault: URL?
+    /// The pointer's `managed_by`, carried only on a `.broken` pointer so the
+    /// app can tell its own broken install (offer Repair) from someone
+    /// else's (hand off, never modify — Ruling 69 I6). nil everywhere else.
+    var managedBy: String? = nil
 }
 
 /// Who owns an engine the app did not install (spec §4.4 / §10).
@@ -30,10 +34,20 @@ nonisolated enum EngineState: Equatable, Sendable {
     }
     var scoutctl: URL? { install?.scoutctl }
     var isManaged: Bool { if case .managed = self { return true }; return false }
-    /// True when the tabs have nothing trustworthy to show (spec §5).
+    /// A broken pointer some other installer wrote (`managed_by` ≠
+    /// `scout-app`): an external engine the app must never modify (spec
+    /// §10), so it gets the `/scout-update` hand-off — no onboarding gate,
+    /// no Set up / Repair (Ruling 69 I6).
+    var isBrokenOutsideApp: Bool {
+        if case .broken(let install?, _) = self, let owner = install.managedBy, owner != "scout-app" { return true }
+        return false
+    }
+    /// True when the tabs have nothing trustworthy to show and the app can
+    /// set the engine up itself (spec §5) — the onboarding gate.
     var gatesTabs: Bool {
         switch self {
-        case .notInstalled, .broken: return true
+        case .notInstalled: return true
+        case .broken: return !isBrokenOutsideApp
         case .managed(_, let bootstrapped): return !bootstrapped
         case .external: return false
         }
@@ -55,7 +69,9 @@ nonisolated struct EngineLocator: Sendable {
                                         python: URL(fileURLWithPath: p.python), version: p.version,
                                         vault: URL(fileURLWithPath: p.vault))
             guard FileManager.default.isExecutableFile(atPath: scoutctl.path) else {
-                return .broken(install, reason: "engine pointer names a missing scoutctl: \(p.scoutctl)")
+                let owned = EngineInstall(root: install.root, scoutctl: scoutctl, python: install.python, version: p.version,
+                                          vault: install.vault, managedBy: p.managedBy)
+                return .broken(owned, reason: "engine pointer names a missing scoutctl: \(p.scoutctl)")
             }
             return p.managedBy == "scout-app"
                 ? .managed(install, vaultBootstrapped: true)
@@ -74,7 +90,14 @@ nonisolated struct EngineLocator: Sendable {
     /// before `bootstrap` (which writes the pointer), or a user deleted state.
     private func conventionalLayout() -> EngineInstall? {
         guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: layout.currentEngineLink.path) else { return nil }
-        let root = URL(fileURLWithPath: dest, relativeTo: layout.engineDir).standardizedFileURL
+        // `URL(fileURLWithPath:relativeTo:)` treats a non-directory base (no
+        // trailing slash) as a FILE, so the relative component REPLACES its
+        // last path segment instead of being appended under it — the same
+        // bug `EngineInstaller.repointCurrent` had (Ruling 54). `current`'s
+        // target is normally absolute (the installer always writes one), but
+        // tolerate a relative one by resolving it against the engine
+        // directory the way `appending(path:)` does everywhere else.
+        let root = (dest.hasPrefix("/") ? URL(fileURLWithPath: dest) : layout.engineDir.appending(path: dest)).standardizedFileURL
         let version = root.lastPathComponent
         let scoutctl = layout.scoutctl(version: version)
         guard FileManager.default.isExecutableFile(atPath: scoutctl.path) else { return nil }
@@ -94,6 +117,14 @@ nonisolated struct EngineLocator: Sendable {
         var root = scoutctl.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         if Self.version(atRoot: root) == nil && root.lastPathComponent == "engine" {
             root = root.deletingLastPathComponent()
+        }
+        // A shim into a Raven-Scout/Scout monorepo's own root (`.venv` or
+        // `engine/.venv`) names the stale pre-monorepo venv that
+        // `installIfCheckout` refuses to adopt; the plugin and its venv live
+        // under `plugin/`. Don't adopt it here either: fall through, so the
+        // dev-checkout candidate picks up `plugin/` when it has a venv.
+        if FileManager.default.fileExists(atPath: EngineLayout.monorepoPlugin(in: root).appending(path: ".claude-plugin/plugin.json").path) {
+            return nil
         }
         return EngineInstall(root: root, scoutctl: scoutctl, python: scoutctl.deletingLastPathComponent().appending(path: "python"),
                              version: Self.version(atRoot: root), vault: nil)

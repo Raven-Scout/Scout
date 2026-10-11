@@ -26,13 +26,31 @@ struct MainWindowView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             Group {
-                if Self.showsEngineGate(state: appState.engineHealth.state, selection: selection) {
-                    EngineUnavailableView(state: appState.engineHealth.state) { selection = .settings }
+                if Self.showsOnboarding(state: appState.engineHealth.state, selection: selection,
+                                        onboardingActive: appState.onboarding != nil) {
+                    if let onboarding = appState.onboarding {
+                        // Identity per flow, so a new flow's `.task` runs `start()`.
+                        OnboardingView(model: onboarding).id(ObjectIdentifier(onboarding))
+                    } else {
+                        // The gate's model lands one main-queue hop after the
+                        // engine state changes.
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 } else {
                     detail
                 }
             }
             .background(PaperBackdrop())
+            .sheet(isPresented: upgradeSheetPresented) {
+                EngineUpgradeSheet(
+                    progress: appState.engineUpgradeProgress ?? [:],
+                    error: appState.engineUpgradeError,
+                    targetVersion: appState.engineRelease?.engine.version ?? "",
+                    isRepair: appState.engineUpgradeIsRepair,
+                    isRunning: appState.isUpgradingEngine,
+                    retry: { Task { await appState.runEngineUpgrade() } },
+                    dismiss: { appState.dismissEngineUpgrade() })
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
@@ -44,12 +62,18 @@ struct MainWindowView: View {
         }
     }
 
-    /// Pure gate decision (spec §5): the detail pane shows `EngineUnavailableView`
-    /// whenever the engine can't back the tabs, unless the user is already on
-    /// Settings ▸ Engine, which shows the next step. Static + pure so it can be
-    /// unit-tested over every `EngineState` case without rendering a view.
-    nonisolated static func showsEngineGate(state: EngineState, selection: SidebarItem) -> Bool {
-        state.gatesTabs && selection != .settings
+    private var upgradeSheetPresented: Binding<Bool> {
+        Binding(get: { appState.engineUpgradeProgress != nil },
+                set: { if !$0 { appState.dismissEngineUpgrade() } })
+    }
+
+    /// Pure gate decision (spec §5, Ruling 41): the detail pane shows the
+    /// onboarding flow whenever the engine can't back the tabs — or while a
+    /// flow `AppState` keeps is still finishing — except on Settings, which
+    /// stays reachable and offers the same flow in a sheet. Static + pure so
+    /// it can be unit-tested over every `EngineState` without a view.
+    nonisolated static func showsOnboarding(state: EngineState, selection: SidebarItem, onboardingActive: Bool) -> Bool {
+        selection != .settings && (state.gatesTabs || onboardingActive)
     }
 
     @ViewBuilder
@@ -94,7 +118,7 @@ struct MainWindowView: View {
 }
 
 /// `nonisolated`: a plain value the pure gate/dimming rules
-/// (`showsEngineGate`, `SidebarView.isDimmed`) compare off the main actor.
+/// (`showsOnboarding`, `SidebarView.isDimmed`) compare off the main actor.
 nonisolated enum SidebarItem: Hashable, CaseIterable {
     case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
 

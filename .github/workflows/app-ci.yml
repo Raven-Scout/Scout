@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "apps/macos/**"
+      # The app bundles plugin/ and must carry plugin.json's version (D2).
+      - "plugin/.claude-plugin/plugin.json"
       - ".github/workflows/app-ci.yml"
   pull_request:
     branches: [main]
@@ -33,7 +35,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(apps/macos/|\.github/workflows/app-ci\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(apps/macos/|plugin/\.claude-plugin/plugin\.json$|\.github/workflows/app-ci\.yml$|\.github/scripts/changed-paths\.sh$)'
 
   test:
     name: ScoutTests
@@ -64,6 +66,14 @@ jobs:
           xcodebuild -version
           echo "--- macOS SDKs ---"
           xcodebuild -showsdks | grep -i macos || true
+
+      # The "Bundle Engine" build phase runs scripts/bundle-engine.sh; this
+      # tests its contract (git archive of HEAD:plugin + the generated
+      # marketplace.json inside it + the generated engine-release.json)
+      # against a throwaway repo.
+      - name: Bundle-engine script tests
+        working-directory: apps/macos
+        run: bash scripts/tests/bundle-engine.test.sh
 
       # Coverage comes from the shared scheme's Test action, which gathers it
       # for Scout.app only — `-enableCodeCoverage YES` here would also

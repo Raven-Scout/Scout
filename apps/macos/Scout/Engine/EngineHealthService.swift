@@ -37,6 +37,7 @@ final class EngineHealthService: ObservableObject {
     /// otherwise leave the sidebar dot off with health stuck at "Unknown".
     var needsAttention: Bool {
         if state.gatesTabs { return true }
+        if case .broken = state { return true }   // incl. a broken install someone else manages (no gate)
         if let doctor { return doctor.severity == .red }
         return lastError != nil
     }
@@ -64,7 +65,10 @@ final class EngineHealthService: ObservableObject {
         guard myGeneration == generation else { return }
         state = located
         lastChecked = Date()
-        guard let scoutctl = located.scoutctl, !located.gatesTabs || located.isManaged else {
+        // A broken pointer names a scoutctl that isn't there — including one
+        // another installer manages, which no longer gates (Ruling 69 I6).
+        let isBroken: Bool = { if case .broken = located { return true }; return false }()
+        guard let scoutctl = located.scoutctl, !located.gatesTabs || located.isManaged, !isBroken else {
             // No doctor runs for this state, so an earlier doctor failure no
             // longer describes anything — don't leave it on screen.
             doctor = nil
