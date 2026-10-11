@@ -272,8 +272,8 @@ one line, no markdown heading — and must not look like a credential (#344).
 `connectors.<key>.needs_user_input` that names the input but never echoes its
 value. A bad value already stored in `scout-config.yaml` (a hand edit) skips that
 connector at assembly with a warning, as an invalid entry in
-`connectors.custom.yaml` is; `bootstrap doctor` warns on it and `list` adds it to
-the top-level `issues`.
+`connectors.custom.yaml` is; `bootstrap doctor` warns on it, `list` adds it to
+the top-level `issues`, and `add` returns `invalid` until an `--input` replaces it.
 
 **Verification boundary.** `scoutctl` can execute bash probes but cannot call MCP
 tools — only a Claude session can. The wizard therefore calls the MCP probe tool

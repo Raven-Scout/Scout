@@ -243,7 +243,8 @@ def _commit(
 def _inputs_after(
     before: BootstrapConfig, connector: cc.CustomConnector, inputs: dict[str, str]
 ) -> tuple[dict[str, str], list[cc.Issue]]:
-    """The connector inputs with ``inputs`` namespaced in, plus an issue per declared input still empty."""
+    """The connector inputs with ``inputs`` namespaced in, plus an issue per declared input still
+    empty, or still holding a stored value assembly would skip the connector for (#344)."""
     key = connector.key
     new_inputs = dict(before.connector_inputs)
     for name, value in inputs.items():
@@ -254,7 +255,7 @@ def _inputs_after(
         for name in connector.needs_user_input
         if not new_inputs.get(f"{key}__{name}")
     ]
-    return new_inputs, issues
+    return new_inputs, issues + cc.stored_input_issues({key: connector}, new_inputs)
 
 
 def add(

@@ -640,7 +640,8 @@ def _register_connectors() -> None:
         for item in items:
             name, sep, value = item.partition("=")
             if not sep or not name:
-                bad = Outcome("invalid", issues=[Issue("--input", f"{item!r} is not NAME=VALUE")])
+                # Not echoed: a bare value with no NAME= may be a secret pasted by mistake.
+                bad = Outcome("invalid", issues=[Issue("--input", "every --input must be NAME=VALUE")])
                 _emit(bad.to_json(), bad.exit_code)
             inputs[name] = value
         return inputs

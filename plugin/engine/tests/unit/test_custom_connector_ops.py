@@ -159,6 +159,23 @@ def test_add_multi_line_bash_tool_renders_fenced_in_skill(vault: Path):
     assert "\n# open tickets" not in skill
 
 
+def test_add_without_input_rejects_a_bad_stored_value_instead_of_reporting_success(vault: Path):
+    """Review of #344: assembly would skip the connector, so add/dry-run must not say it is live."""
+    _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    cfg_path = vault / "scout-config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("tickets__team: ops", "tickets__team: '# Ops'"))
+    for dry_run in (True, False):
+        out = _add(vault, TICKETS, probe_runner=lambda cmd: 0, dry_run=dry_run)
+        assert (out.status, out.exit_code) == ("invalid", 2)
+        assert [i.path for i in out.issues] == ["connectors.tickets.needs_user_input"]
+        assert "connectors.inputs.tickets__team" in out.issues[0].message
+    # A good --input overwrites the bad stored value. The hand edit already moved the
+    # assembly off its snapshot, so this lands at the next upgrade (drift → deferred).
+    out = _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    assert (out.status, out.exit_code) == ("deferred", 3)
+    assert _config(vault)["connectors"]["inputs"]["tickets__team"] == "ops"
+
+
 def test_list_custom_reports_stored_input_issues(vault: Path):
     _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
     cfg_path = vault / "scout-config.yaml"

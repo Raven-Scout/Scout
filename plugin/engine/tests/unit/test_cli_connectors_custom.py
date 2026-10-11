@@ -104,6 +104,7 @@ def test_validate_and_add_check_input_values(vault: Path, value: str):
 def test_validate_malformed_input_flag_exits_2():
     result = runner.invoke(app, ["connectors", "custom", "validate", "--file", "-", "--input", "novalue"], input=DEF)
     assert result.exit_code == 2 and json.loads(result.stdout)["issues"][0]["path"] == "--input"
+    assert "novalue" not in result.stdout  # a bare secret passed without NAME= is never echoed
 
 
 def test_validate_list_remove_round_trip(vault: Path):
