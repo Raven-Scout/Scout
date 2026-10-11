@@ -151,9 +151,15 @@ Then run \`scripts/release.sh finalize v$new\`."
 }
 
 check_bundled_engine() {
-  local app="$1" v="$2" kind="$3" pin got
+  local app="$1" v="$2" kind="$3" wt="$4" pin got
   pin="$app/Contents/Resources/engine-release.json"
   if [ ! -f "$pin" ]; then
+    # A commit that ships Part C's bundler (#319) always bundles the engine, so a missing pin there is a broken
+    # build, whatever is being cut. Only an older commit, without the bundler, may skip it for a dry run or an rc.
+    if [ -e "$wt/apps/macos/scripts/bundle-engine.sh" ]; then
+      die "Scout.app has no bundled engine (Contents/Resources/engine-release.json), although this commit ships" \
+        "apps/macos/scripts/bundle-engine.sh: its Bundle Engine build phase did not run (see $wt/xcodebuild.log)"
+    fi
     if [ "${SKIP_RELEASE:-0}" = 1 ] || [ "$kind" = rc ]; then
       echo "⚠ no bundled engine in Scout.app (Contents/Resources/engine-release.json): fine for a dry run or an rc"
       return 0
@@ -227,7 +233,7 @@ build_and_publish() {
   fi
   app="$build/Build/Products/Release/Scout.app"
   [ -d "$app" ] || die "Scout.app not found at $app"
-  check_bundled_engine "$app" "$v" "$kind"
+  check_bundled_engine "$app" "$v" "$kind" "$wt"
 
   export SPARKLE_BIN="$build/SourcePackages/artifacts/sparkle/Sparkle/bin"
   if [ -x "$hook" ]; then

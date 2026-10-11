@@ -291,6 +291,89 @@ struct UpdateServiceTests {
         #expect(service.appUpdate.state == .upToDate)
     }
 
+    // MARK: A failed check never hides a known update
+
+    /// Offline is the common failure. The badge, menu-bar dot and footer item
+    /// must survive it: the known update is still real.
+    @Test func failedAppCheckKeepsAKnownUpdateAvailable() {
+        let (service, controller, _) = make()
+        controller.emit?(.found(version: "0.12.0"))
+        #expect(service.availableCount == 1)
+
+        service.checkApp()
+        controller.emit?(.failed("offline"))
+        #expect(service.appUpdate.state == .available)
+        #expect(service.appUpdate.latestVersion == "0.12.0")
+        #expect(service.availableCount == 1)
+        #expect(service.anyUpdateAvailable)
+
+        // A failure Sparkle reports without us having started a check (a
+        // background check) is covered too.
+        controller.emit?(.failed("offline"))
+        #expect(service.appUpdate.state == .available)
+        #expect(service.availableCount == 1)
+    }
+
+    @Test func failedAppCheckFromUpToDateShowsTheError() {
+        let (service, controller, _) = make()
+        controller.emit?(.upToDate)
+        service.checkApp()
+        controller.emit?(.failed("offline"))
+        #expect(service.appUpdate.state == .error("offline"))
+        #expect(service.availableCount == 0)
+    }
+
+    @Test func failedPluginCheckKeepsAKnownUpdateAvailable() async {
+        let releases = URL(string: "https://github.com/example-org/scout-plugin/releases")
+        let subject = CurrentValueSubject<EngineState, Never>(.external(defaultInstall, .marketplaceCache))
+        let checker = FakePluginChecker(results: [
+            PluginUpdateResult(applicable: true, installed: "0.7.2", latest: "0.8.0", isUpdateAvailable: true,
+                               releasesURL: releases, error: nil),
+            PluginUpdateResult(applicable: true, installed: "0.7.2", latest: nil, isUpdateAvailable: false,
+                               releasesURL: nil, error: "offline"),
+        ])
+        let (service, _) = makeService(checker: checker, engineStates: subject.eraseToAnyPublisher())
+        await service.pluginTask?.value
+        #expect(service.availableCount == 1)
+
+        await service.checkPlugin()
+        #expect(service.pluginUpdate == UpdateStatus(currentVersion: "0.7.2", latestVersion: "0.8.0", state: .available))
+        #expect(service.pluginReleasesURL == releases)
+        #expect(service.pluginRowVisible)
+        #expect(service.availableCount == 1)
+    }
+
+    @Test func failedPluginCheckFromUpToDateShowsTheError() async {
+        let subject = CurrentValueSubject<EngineState, Never>(.external(defaultInstall, .marketplaceCache))
+        let checker = FakePluginChecker(results: [
+            PluginUpdateResult(applicable: true, installed: "0.7.2", latest: "0.7.2", isUpdateAvailable: false,
+                               releasesURL: nil, error: nil),
+            PluginUpdateResult(applicable: true, installed: "0.7.2", latest: nil, isUpdateAvailable: false,
+                               releasesURL: nil, error: "offline"),
+        ])
+        let (service, _) = makeService(checker: checker, engineStates: subject.eraseToAnyPublisher())
+        await service.pluginTask?.value
+        #expect(service.pluginUpdate.state == .upToDate)
+
+        await service.checkPlugin()
+        #expect(service.pluginUpdate.state == .error("offline"))
+        #expect(service.availableCount == 0)
+    }
+
+    /// Settings ▸ Updates binds the app row's "Check now" to
+    /// `appCheckAvailable` (the view itself isn't unit-testable): a settled
+    /// state must not enable it while Sparkle can't start a check.
+    @Test func appCheckAvailabilityIgnoresSettledStateWhenSparkleCannotCheck() {
+        let (service, controller, _) = make()
+        controller.emit?(.found(version: "0.12.0"))
+        controller.canCheck.send(false)
+        #expect(service.appCheckAvailable == false)
+        controller.emit?(.upToDate)
+        #expect(service.appCheckAvailable == false)
+        controller.canCheck.send(true)
+        #expect(service.appCheckAvailable)
+    }
+
     // MARK: Plugin track results (ported; `applicable`/`releasesURL` renamed)
 
     @Test func pluginCheckAvailable() async {

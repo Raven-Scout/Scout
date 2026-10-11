@@ -288,10 +288,11 @@ small enough to reject individually in review.
    sanctioned `feedURLString(for:)` delegate hook — points an installed rc at
    that asset. This cannot weaken security: a hostile feed still cannot
    produce a valid EdDSA signature or a Developer-ID-matching bundle.
-   **Rollout:** rc.1 → rc.2 must update end-to-end before 0.12.0 ships,
-   because 0.12.0 is the one release where a broken updater cannot be fixed
-   *through* the updater. Copies older than 0.12.0 have no updater and are
-   told to download once more.
+   **Rollout:** rc.1 → rc.2 must update end-to-end before 0.16.0 ships
+   (the first unified release and the first Sparkle build), because 0.16.0 is
+   the one release where a broken updater cannot be fixed *through* the
+   updater. Copies older than 0.16.0 have no updater and are told to
+   download once more.
 6. **One-item feed, regenerated per release.** Sparkle only needs the newest
    item (it compares `sparkle:version` with the running app), older DMGs stay
    on GitHub Releases, and it avoids merging XML in bash. An **empty but valid

@@ -22,6 +22,11 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   release of both.
 
 ### Fixed
+- A failed update check (typically offline) no longer hides an update that was
+  already found: the badge, menu-bar dot and footer item stay.
+- **Settings ▸ Updates ▸ Check now** is disabled while an update check can't
+  start (a background check or permission prompt is running), instead of
+  silently doing nothing.
 - An action on a task that changed after the list loaded now says so ("Task
   may have been edited externally") and the list reparses. The writer expected
   exit codes 2 and 3 for no match and ambiguous, which the engine never sent.
