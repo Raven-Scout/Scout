@@ -13,6 +13,8 @@ DEAD_ENDS = (
     "does not come with",
     "no probe for it",
     "can't read",
+    "can't be read",
+    "has no probe",
 )
 
 
@@ -52,6 +54,23 @@ def test_scout_connect_never_shows_raw_engine_messages_on_a_failed_draft():
 
 def test_scout_connect_handles_the_probe_failed_status():
     assert "probe-failed" in _text("scout-connect.md")
+
+
+def test_scout_connect_shell_quotes_what_it_passes_to_the_shell():
+    text = _text("scout-connect.md")
+    assert "--server '<server name exactly as listed>'" in text
+    assert "--input '<name>=<value>'" in text
+    assert "custom remove '<key>'" in text and "--remove '<key>'" in text
+    assert "<<'SCOUT_DEFINITION_EOF'" in text and "\nSCOUT_DEFINITION_EOF\n" in text
+    assert "'\\''" in text
+    assert '--server "' not in text and "<<'EOF'" not in text
+
+
+def test_scout_connect_summary_wording_and_every_unconnected_status():
+    text = _text("scout-connect.md")
+    assert "from `definitions[]`" in text and "same `key`" in text
+    for status in ("needs_auth", "unavailable", "unknown"):
+        assert f"`{status}`" in text
 
 
 def test_scout_update_points_at_scout_connect_and_has_no_nudge():

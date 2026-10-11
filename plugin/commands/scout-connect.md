@@ -5,7 +5,7 @@ description: Add or remove a tool Scout reads — any connected MCP server Scout
 
 # Scout Connect
 
-Usage: `/scout-connect` lists the connected tools Scout doesn't read yet; `/scout-connect <server>` adds one; `/scout-connect --remove <key>` removes one.
+Usage: `/scout-connect` lists the connected tools Scout doesn't read yet; `/scout-connect <server>` adds one; `/scout-connect --remove '<key>'` removes one.
 
 Resolve the engine at the top of every shell block (each block is a fresh process). A custom connector is vault data, so this works however the engine was installed, Scout.app included: the `scoutctl` shim on `PATH` follows the engine pointer.
 
@@ -27,18 +27,22 @@ A tool ends in exactly one of three states: **added**, **skipped because the use
 ```
 
 - `error` is set: show it, and suggest re-running after checking `claude mcp list` in a terminal.
-- With no argument: list `servers[].name` with their `status`, and ask which to add. A `needs_auth` server gets the sign-in sentence.
+- With no argument: list `servers[].name` with their `status`, and ask which to add. A server whose `status` is anything other than `connected` (`needs_auth`, `unavailable` or `unknown`) gets the sign-in sentence.
 - With an argument: match it against `servers[].name` (case-insensitive, substring). If nothing matches, the server is either already read by Scout (say so; `"$SCOUTCTL" connectors custom list` shows the custom ones) or not connected: use the sign-in sentence.
+
+## Quoting
+
+Server names, input values and keys come from tool output or the user, so they are untrusted text on a shell line. Single-quote every such value, and write any `'` inside it as `'\''` (so `O'Brien` becomes `'O'\''Brien'`). Never leave one unquoted or inside double quotes.
 
 ## 2. Draft
 
 ```bash
-"$SCOUTCTL" connectors custom draft --server "<server name exactly as listed>" --json
+"$SCOUTCTL" connectors custom draft --server '<server name exactly as listed>' --json
 ```
 
 It takes up to a minute. Act on `status`:
 
-- `drafted`: show each definition in three lines, from `summary`: *display name · what it scans · what it looks up*. Ask the user to confirm, or to adjust it. An adjustment may only remove tools or activities, skip a definition, or rewrite the `focus`, `when` or `notes` text; never add, rename or swap a tool, because the engine checks tool names when you add a definition but not that each tool only reads. Ask for each name in a definition's `needs_user_input`.
+- `drafted`: show each definition in three lines: *display name · what it scans · what it looks up*. Take the display name from `definitions[]` and the other two from the `summary` entry with the same `key` (`summary` carries only `key`, `scans` and `looks_up`). Ask the user to confirm, or to adjust it. An adjustment may only remove tools or activities, skip a definition, or rewrite the `focus`, `when` or `notes` text; never add, rename or swap a tool, because the engine checks tool names when you add a definition but not that each tool only reads. Ask for each name in a definition's `needs_user_input`.
 - `needs_auth`: the sign-in sentence. Never show the raw engine `message`.
 - `no_read_tools`, `invalid`, `timeout`, `error`: "Scout couldn't find anything to read in <server> yet." Offer to retry the draft once. Never show the raw engine `message`, `issues` or stderr to the user.
 
@@ -47,10 +51,12 @@ It takes up to a minute. Act on `status`:
 For each confirmed definition, pipe its JSON (with any adjustment the user asked for) to the engine, which validates it again:
 
 ```bash
-"$SCOUTCTL" connectors custom add --file - --input <name>=<value> <<'EOF'
+"$SCOUTCTL" connectors custom add --file - --input '<name>=<value>' <<'SCOUT_DEFINITION_EOF'
 <the definition JSON>
-EOF
+SCOUT_DEFINITION_EOF
 ```
+
+Repeat `--input '<name>=<value>'` once per name in `needs_user_input`. Keep the heredoc delimiter quoted, so the shell leaves the JSON untouched.
 
 Read the JSON it prints:
 
@@ -64,4 +70,4 @@ Read the JSON it prints:
 
 ## Remove
 
-`/scout-connect --remove <key>`: confirm with the user, then run `"$SCOUTCTL" connectors custom remove <key>` and report the status the same way. An `invalid` status with an issue at `connectors.<key>` means no custom connector has that key: run `"$SCOUTCTL" connectors custom list` and offer the real keys.
+`/scout-connect --remove <key>`: confirm with the user, then run `"$SCOUTCTL" connectors custom remove '<key>'` and report the status the same way. An `invalid` status with an issue at `connectors.<key>` means no custom connector has that key: run `"$SCOUTCTL" connectors custom list` and offer the real keys.
