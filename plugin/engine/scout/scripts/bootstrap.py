@@ -441,7 +441,8 @@ def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConne
 def _assemble(
     cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
 ) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files, then append custom-connector sections.
+    """Assemble SKILL/DREAMING/RESEARCH from phase files, then add custom-connector sections
+    (appended; in RESEARCH, just before the first ``deep-research`` section).
 
     ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
     apply path passes explicit before/after sets. ``plugin/phases/custom/`` is never globbed
@@ -450,6 +451,8 @@ def _assemble(
     vars_ = _template_vars(cfg)
     phases_root = cfg.plugin_root / "phases"
     bodies: list[str] = [brain_merge.assembly_header(kind, cfg.vault)]
+    # Index in `bodies` of the first shipped section whose slot is `deep-research`.
+    deep_research_at: int | None = None
     # Map assembly target → which modes this assembly is consumed by.
     # SKILL.md is read by BOTH briefing- and consolidation-type runs (run-scout.sh
     # auto-detects which); DREAMING.md by dreaming runs only; RESEARCH.md by
@@ -489,13 +492,23 @@ def _assemble(
                 modes=target_modes,
             )
             for s in kept:
+                if deep_research_at is None and s.slot == "deep-research":
+                    deep_research_at = len(bodies)
                 bodies.append(render_template(s.body, vars_))
     if custom is None:
         custom = load_custom(cfg)
-    for section in render_custom_sections(
-        cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
-    ):
-        bodies.append(section.rendered_body)
+    custom_bodies = [
+        section.rendered_body
+        for section in render_custom_sections(
+            cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
+        )
+    ]
+    # RESEARCH: lookups go just before Deep Research, where queries happen (commit-notify sorts
+    # first alphabetically). With no such section, and for SKILL/DREAMING, they are appended.
+    if kind == "RESEARCH" and deep_research_at is not None:
+        bodies[deep_research_at:deep_research_at] = custom_bodies
+    else:
+        bodies.extend(custom_bodies)
     return "\n\n".join(bodies)
 
 

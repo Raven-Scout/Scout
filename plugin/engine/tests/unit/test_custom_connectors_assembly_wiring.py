@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from scout import custom_connectors as cc
@@ -19,6 +21,14 @@ SUITE = {
     "probe": "mcp__example_suite__list_folders",
     "preset": "mail",
     "inbound": {"tools": ["mcp__example_suite__search_messages"]},
+}
+
+LOOKUP = {
+    "display_name": "Mail suite",
+    "server": "example_suite",
+    "probe": "mcp__example_suite__list_folders",
+    "preset": "mail",
+    "lookup": {"tools": ["mcp__example_suite__search_messages"]},
 }
 
 
@@ -130,3 +140,41 @@ def test_custom_file_warnings_print_once_per_install(tmp_path: Path, capsys):
     ]
     assert warning_lines
     assert len(warning_lines) == len(set(warning_lines))
+
+
+def test_research_places_custom_lookups_before_deep_research(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": LOOKUP})
+    research = _assemble(_cfg(tmp_path, {"suite_mail"}), "RESEARCH")
+    custom_at = research.index("## Mail suite Lookup")
+    assert custom_at < research.index("# PHASE 2: DEEP RESEARCH")
+    # commit-notify sorts first alphabetically, so it stays above the lookups.
+    assert custom_at > research.index("# PHASE 4: COMMIT & NOTIFY")
+    for later in ("# PHASE 3: KNOWLEDGE INTEGRATION", "# PHASE 1: SELECT RESEARCH TARGETS"):
+        assert custom_at < research.index(later)
+
+
+def test_research_with_no_enabled_custom_connector_is_unchanged(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": LOOKUP})
+    cfg = _cfg(tmp_path, {"slack"})
+    # suite_mail is not enabled, so nothing is inserted: byte-identical to no custom set at all.
+    assert _assemble(cfg, "RESEARCH") == _assemble(cfg, "RESEARCH", custom={})
+
+
+def test_skill_still_appends_custom_sections_last_and_dreaming_is_untouched(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": {**SUITE, **LOOKUP}})
+    cfg = _cfg(tmp_path, {"suite_mail"})
+    plain = _assemble(cfg, "SKILL", custom={})
+    assert _assemble(cfg, "SKILL").startswith(plain + "\n\n")
+    # Dreaming renders no custom sections, so it is byte-identical to the no-custom assembly.
+    assert _assemble(cfg, "DREAMING") == _assemble(cfg, "DREAMING", custom={})
+
+
+def test_research_without_a_deep_research_section_appends(tmp_path: Path):
+    plugin = tmp_path / "plugin"
+    shutil.copytree(PLUGIN / "phases", plugin / "phases")
+    (plugin / "phases" / "research" / "deep-research.md").unlink()
+    (tmp_path / "vault").mkdir()
+    cc.write(tmp_path / "vault", {"suite_mail": LOOKUP})
+    cfg = replace(_cfg(tmp_path / "vault", {"suite_mail"}), plugin_root=plugin)
+    plain = _assemble(cfg, "RESEARCH", custom={})
+    assert _assemble(cfg, "RESEARCH").startswith(plain + "\n\n")
