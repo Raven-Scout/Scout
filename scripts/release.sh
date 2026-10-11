@@ -22,6 +22,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_SLUG="Raven-Scout/Scout"
+# The branch marketplace installs read (#362): .claude-plugin/marketplace.json pins the plugin to it with a
+# git-subdir `ref`. finalize fast-forwards it to the release commit after publishing; nothing else moves it.
+STABLE_BRANCH="stable"
 DEV_VENV_CMD="(cd plugin/engine && uv venv --python 3.12 && uv pip install -e '.[dev]')"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -285,6 +288,12 @@ build_and_publish() {
   if [ "$kind" = release ]; then
     gh release create "$tag" "$@" --repo "$slug" --target "$sha" --title "Scout $v" --notes-file "$notes" --latest
     echo "✓ Published $tag"
+    # Marketplace installs follow $STABLE_BRANCH, so they get $tag's tree from here on. A plain push only
+    # fast-forwards; cmd_finalize already checked that it can.
+    git -C "$REPO_ROOT" push -q origin "$sha:refs/heads/$STABLE_BRANCH" \
+      || die "published $tag, but could not move $STABLE_BRANCH to it, so marketplace installs stay on the" \
+        "previous release (the release is live). Run: git push origin $sha:refs/heads/$STABLE_BRANCH"
+    echo "✓ $STABLE_BRANCH → $sha"
     latest="$(gh api "repos/$slug/releases/latest" --jq .tag_name)"
     [ "$latest" = "$tag" ] \
       || die "published $tag, but /releases/latest is $latest; fix it on GitHub (the release is live)"
@@ -317,7 +326,7 @@ release_commit() {
 }
 
 cmd_finalize() {
-  local tag="${1:-}" v slug sha after pj tip
+  local tag="${1:-}" v slug sha after pj tip stable
   slug="$(require_slug)"
   if [[ $tag =~ $RC_TAG_RE ]]; then
     die "finalize is for releases; use 'rc' for $tag"
@@ -336,6 +345,12 @@ cmd_finalize() {
     || die "cannot read plugin/.claude-plugin/plugin.json at origin/main"
   tip="$("$PY" -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$pj")"
   [ "$tip" = "$v" ] || die "origin/main now carries version $tip, not $v (was the release PR reverted, or a later release merged?). Not publishing."
+  # Publishing ends by fast-forwarding stable to $sha; refuse now, before any build, if it could not.
+  if stable="$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/remotes/origin/$STABLE_BRANCH")"; then
+    git -C "$REPO_ROOT" merge-base --is-ancestor "$stable" "$sha" \
+      || die "origin's $STABLE_BRANCH ($stable) is not an ancestor of the release commit $sha, so it cannot" \
+        "fast-forward to $tag. Point it at the previous release's commit, then re-run."
+  fi
   after="$(git -C "$REPO_ROOT" rev-list --count "$sha..origin/main")"
   [ "$after" = 0 ] || echo "note: $after commit(s) on origin/main after the release commit are not in $tag"
   build_and_publish "$tag" "$v" "$sha" "$slug" release

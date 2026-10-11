@@ -37,6 +37,11 @@ curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh |
 
 It installs the plugin and engine, then walks you through setup (your details, connectors, budget) and creates `~/Scout/`.
 
+`install.sh`, `/scout-update` and `claude plugin install|update scout@scout-plugin`
+all get the latest release's plugin, never unreleased work on `main`: the
+marketplace pins the plugin to the `stable` branch, which moves only when a
+release is published.
+
 > **Installed from `Raven-Scout/scout-plugin`?** Nothing to do. This repo *is*
 > scout-plugin, renamed to `Raven-Scout/Scout` when the macOS app moved in, and
 > GitHub redirects the old name, so `/scout-update` keeps working. The app's
@@ -45,10 +50,11 @@ It installs the plugin and engine, then walks you through setup (your details, c
 
 ## Releases
 
-The two artifacts version independently, behind prefixed tags:
-`plugin/vX.Y.Z` and `app/vX.Y.Z`. A release build of the app records the plugin
-version it was built against as its minimum (`SCScoutPluginFloor`); the app
-does not yet warn when your engine is older than that.
+Since v0.16.0 the app and the plugin share one version and ship as one GitHub
+release, tagged `vX.Y.Z` and cut with `scripts/release.sh`. Publishing a
+release also fast-forwards the `stable` branch to the release commit, which is
+what marketplace installs read. Release candidates (`vX.Y.Z-rc.N`) never move it.
+The earlier `plugin/vX.Y.Z` and `app/vX.Y.Z` tags are history.
 
 ## Legal
 

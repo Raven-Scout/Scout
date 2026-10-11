@@ -295,15 +295,15 @@ Results:
 
 ### 7.4 What "available" means (D8)
 
-`self_update.check()` keeps reading `main`'s `marketplace.json`. `self-update run` additionally
+`self_update.check()` reads `marketplace.json` on the `stable` branch, which `finalize` moves to each
+published release ([#362](https://github.com/Raven-Scout/Scout/issues/362)). `self-update run` additionally
 requires `GET https://api.github.com/repos/Raven-Scout/Scout/releases/tags/v<target>` (unauthenticated,
 one call a day) to return a release that is not a draft, not a prerelease, and whose `published_at`
 is at least `auto_update.soak_hours` (default 24) old.
 
-One known gap remains. A marketplace engine installs whatever `main` holds under that version
-number, not the tagged tree. Commits that land on `main` after a release are installed under the
-same version. This design narrows the risk (it acts only after a published release has soaked), but
-pinning marketplace installs to the tag is a separate change, tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362) (Q5).
+The marketplace engine installs the release's own tree: since [#362](https://github.com/Raven-Scout/Scout/issues/362)
+the marketplace pins the plugin to `stable`, so commits that land on `main` after a release never
+reach an install. The soak still gates *when* an update applies.
 
 ### 7.5 Rate limits and backoff
 

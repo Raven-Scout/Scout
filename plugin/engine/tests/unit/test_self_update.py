@@ -24,12 +24,14 @@ def test_marketplace_url_is_the_monorepo_root_manifest():
     moved in). Name it directly rather than lean on GitHub's rename redirect,
     and point at the repo-root path where the marketplace manifest actually
     lives now that the plugin sits under plugin/ (versioning keeps it in sync
-    with plugin.json)."""
+    with plugin.json). Read it on `stable`, the branch marketplace installs
+    follow (#362): main's manifest carries a release's version as soon as the
+    release PR merges, before `finalize` publishes it."""
     import json
 
     from scout.scripts import versioning
 
-    prefix = "https://raw.githubusercontent.com/Raven-Scout/Scout/main/"
+    prefix = "https://raw.githubusercontent.com/Raven-Scout/Scout/stable/"
     assert self_update.RAW_MARKETPLACE_URL.startswith(prefix)
     manifest = versioning.PLUGIN_ROOT.parent / self_update.RAW_MARKETPLACE_URL.removeprefix(prefix)
     assert manifest.is_file(), f"{manifest} is not the repo-root marketplace manifest"

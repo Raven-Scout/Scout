@@ -77,7 +77,19 @@ nonisolated struct PluginUpdateChecker: PluginUpdateChecking {
                                        releasesURL: releasesURL, error: "Couldn't check the latest plugin version: \(error.localizedDescription)")
         }
 
-        guard let latest = PluginRelease.scoutVersion(fromMarketplaceManifest: manifestData) else {
+        // A scout entry pinned to a ref (#362) installs that ref's tree, whose
+        // plugin.json is the version `claude plugin update` would move to.
+        var pinnedVersion: String?
+        if let pinned = PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: manifestData) {
+            do {
+                pinnedVersion = PluginRelease.version(fromPluginManifest: try await fetcher.data(from: pinned))
+            } catch {
+                return PluginUpdateResult(applicable: true, installed: installed, latest: nil, isUpdateAvailable: false,
+                                           releasesURL: releasesURL, error: "Couldn't check the latest plugin version: \(error.localizedDescription)")
+            }
+        }
+
+        guard let latest = pinnedVersion ?? PluginRelease.scoutVersion(fromMarketplaceManifest: manifestData) else {
             return PluginUpdateResult(applicable: true, installed: installed, latest: nil, isUpdateAvailable: false,
                                        releasesURL: releasesURL, error: "The latest plugin manifest has no scout version.")
         }

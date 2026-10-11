@@ -124,6 +124,40 @@ struct PluginUpdateCheckerTests {
         #expect(result.releasesURL == URL(string: "https://github.com/example-org/scout-plugin/releases"))
     }
 
+    // MARK: a source pinned to a ref (#362)
+
+    private let stablePluginJSON = URL(string: "https://raw.githubusercontent.com/example-org/Scout/stable/plugin/.claude-plugin/plugin.json")!
+
+    private func pinnedManifest(entryVersion: String) -> Data {
+        Data(#"""
+        {"plugins":[{"name":"scout","source":{"source":"git-subdir","url":"https://github.com/example-org/Scout.git","path":"plugin","ref":"stable"},"version":"\#(entryVersion)"}]}
+        """#.utf8)
+    }
+
+    /// main's manifest carries 0.9.0 once the release PR merges, but installs
+    /// follow `stable`, which still holds 0.8.0 until finalize moves it.
+    @Test func pinnedSourceReportsTheVersionAtTheRefNotTheManifestEntry() async throws {
+        let dir = try pluginsDir(marketplace: githubMarketplace)
+        let recorder = CallRecorder()
+        let fetcher = StubFetcher(responses: [rawManifestURL: pinnedManifest(entryVersion: "0.9.0"),
+                                              stablePluginJSON: Data(#"{"name":"scout","version":"0.8.0"}"#.utf8)],
+                                  recorder: recorder)
+        let result = await PluginUpdateChecker(pluginsDir: dir, fetcher: fetcher).check(engine: externalEngine())
+        #expect(result.latest == "0.8.0")
+        #expect(result.isUpdateAvailable)
+        #expect(result.error == nil)
+        #expect(await recorder.urls == [rawManifestURL, stablePluginJSON])
+    }
+
+    @Test func pinnedSourceFetchFailureIsAnErrorNotTheEntryVersion() async throws {
+        let dir = try pluginsDir(marketplace: githubMarketplace)
+        let fetcher = StubFetcher(responses: [rawManifestURL: pinnedManifest(entryVersion: "0.9.0")])
+        let result = await PluginUpdateChecker(pluginsDir: dir, fetcher: fetcher).check(engine: externalEngine())
+        #expect(result.latest == nil)
+        #expect(result.isUpdateAvailable == false)
+        #expect(result.error?.contains("Couldn't check the latest plugin version") == true)
+    }
+
     // MARK: directory source
 
     @Test func directorySourceReadsWorkingCopyAndNeverFetches() async throws {

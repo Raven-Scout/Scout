@@ -224,6 +224,92 @@ def test_finalize_builds_the_release_commit_not_what_merged_after_it(tmp_path):
     assert f"CURRENT_PROJECT_VERSION={count}" in next(c for c in calls if c.startswith("xcodebuild"))
 
 
+def _stable(r) -> str:
+    """origin's `stable`: what marketplace installs and `claude plugin update` read (#362). '' when absent."""
+    out = _git(r.origin, "for-each-ref", "--format=%(objectname)", "refs/heads/stable")
+    return out
+
+
+def test_finalize_moves_stable_to_the_release_commit_not_mains_tip(tmp_path):
+    r = make_repo(tmp_path)
+    release = _merge_release(r)
+    _git(r.root, "commit", "-q", "--allow-empty", "-m", "feat: merged after the release PR")
+    _git(r.root, "push", "-q", "origin", "main")
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode == 0, done.stderr
+    assert _stable(r) == release
+    assert "✓ stable → " in done.stdout
+
+
+def test_finalize_creates_stable_when_origin_has_none(tmp_path):
+    r = make_repo(tmp_path)
+    _git(r.root, "push", "-q", "origin", ":refs/heads/stable")
+    release = _merge_release(r)
+    assert r.run("finalize", "v0.15.0").returncode == 0
+    assert _stable(r) == release
+
+
+def test_stable_moves_only_after_publishing(tmp_path):
+    r = make_repo(tmp_path)
+    before = _stable(r)
+    _merge_release(r)
+    assert r.run("finalize", "v0.15.0", extra_env={"FAKE_GH_EXIT": "1"}).returncode != 0
+    assert _stable(r) == before
+    assert r.run("finalize", "v0.15.0", extra_env={"FAKE_NOTARY_EXIT": "1"}).returncode != 0
+    assert _stable(r) == before
+    assert r.run("finalize", "v0.15.0", extra_env={"SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"}).returncode == 0
+    assert _stable(r) == before
+
+
+def test_rc_never_moves_stable(tmp_path):
+    r = make_repo(tmp_path)
+    before = _stable(r)
+    assert r.run("prepare", "0.15.0").returncode == 0
+    assert r.run("rc", "v0.15.0-rc.1").returncode == 0
+    assert _stable(r) == before
+
+
+def test_finalize_refuses_before_building_when_stable_cannot_fast_forward(tmp_path):
+    r = make_repo(tmp_path)
+    _git(r.root, "switch", "-q", "-c", "elsewhere", "plugin/v0.14.0")
+    _git(r.root, "commit", "-q", "--allow-empty", "-m", "not on main")
+    _git(r.root, "push", "-q", "-f", "origin", "HEAD:refs/heads/stable")
+    _git(r.root, "switch", "-q", "main")
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode != 0
+    assert "origin's stable" in done.stderr and "is not an ancestor of" in done.stderr
+    assert not any(c.startswith(("xcodebuild", "gh release")) for c in r.calls())
+
+
+def test_a_rejected_stable_push_says_the_release_is_live_and_how_to_finish(tmp_path):
+    r = make_repo(tmp_path)
+    release = _merge_release(r)
+    hook = r.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'stable is locked' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode != 0
+    assert "✓ Published v0.15.0" in done.stdout
+    assert f"git push origin {release}:refs/heads/stable" in done.stderr
+    assert "the release is live" in done.stderr
+
+
+def test_release_script_moves_the_branch_the_marketplace_pins():
+    """marketplace.json's git-subdir `ref` and release.sh's STABLE_BRANCH must name the same branch."""
+    import json
+
+    entry = json.loads((REAL_REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"][0]
+    assert entry["source"] == {
+        "source": "git-subdir",
+        "url": "https://github.com/Raven-Scout/Scout.git",
+        "path": "plugin",
+        "ref": "stable",
+    }
+    script = (REAL_REPO / "scripts/release.sh").read_text(encoding="utf-8")
+    assert re.search(r'(?m)^STABLE_BRANCH="stable"$', script)
+
+
 def test_finalize_targets_the_release_pr_merge_commit(tmp_path):
     r = make_repo(tmp_path)
     assert r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"}).returncode == 0
