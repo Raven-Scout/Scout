@@ -79,6 +79,8 @@ struct PluginUpdateResult: Equatable, Sendable {
 }
 
 protocol PluginUpdateChecking: Sendable {
+    /// Conformers do file reads and a network fetch: they should run off the
+    /// main actor (`@concurrent` on `PluginUpdateChecker`).
     func check(engine: EngineState) async -> PluginUpdateResult
 }
 
@@ -118,6 +120,10 @@ final class UpdateService: ObservableObject {
     /// leaving the row stuck on `.checking`. Nil means "no check in flight
     /// from this state" — `.cycleEnded` then falls back to `.idle`.
     private var appStateBeforeChecking: UpdateStatus.State?
+
+    /// `pluginUpdate.state` as it was just before the in-flight check set
+    /// `.checking`, so a failed check can fall back to `.available`.
+    private var pluginStateBeforeChecking: UpdateStatus.State?
 
     /// The most recent engine state received from `engineStates`, nil until
     /// the first one arrives. `checkPlugin()` uses this; with none received
@@ -223,7 +229,13 @@ final class UpdateService: ObservableObject {
             appUpdate.state = appStateBeforeChecking ?? .idle
             appStateBeforeChecking = nil
         case .failed(let message):
-            appUpdate.state = .error(message)
+            // A failed check (offline is the common case) says nothing about
+            // an update already known: keep it so the badge, menu-bar dot and
+            // footer item stay. Sparkle shows its own error UI for checks the
+            // user started.
+            let settled = appUpdate.state == .checking ? appStateBeforeChecking : appUpdate.state
+            appStateBeforeChecking = nil
+            appUpdate.state = settled == .available ? .available : .error(message)
         }
     }
 
@@ -257,6 +269,11 @@ final class UpdateService: ObservableObject {
         guard let engineState = latestEngineState else { return }
         pluginCheckGeneration += 1
         let myGeneration = pluginCheckGeneration
+        // Overlapping checks keep the first one's prior state (see
+        // `appStateBeforeChecking`).
+        if pluginUpdate.state != .checking {
+            pluginStateBeforeChecking = pluginUpdate.state
+        }
         pluginUpdate.state = .checking
         let result = await pluginChecker.check(engine: engineState)
         guard myGeneration == pluginCheckGeneration, !Task.isCancelled else { return }
@@ -264,6 +281,14 @@ final class UpdateService: ObservableObject {
     }
 
     private func applyPluginResult(_ result: PluginUpdateResult) {
+        let priorState = pluginStateBeforeChecking
+        pluginStateBeforeChecking = nil
+        if result.applicable, result.error != nil, priorState == .available {
+            // A failed check doesn't retract a known update: keep the version,
+            // URL and state so the badge stays.
+            pluginUpdate.state = .available
+            return
+        }
         guard result.applicable else {
             pluginRowVisible = false
             pluginUpdate = UpdateStatus()
