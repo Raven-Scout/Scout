@@ -1,6 +1,6 @@
 # Run health and headless updates — design
 
-**Status:** draft for review. Docs only; no code lands from this PR.
+**Status:** approved 2026-10-11 (§12 records the decisions). Docs only; no code lands from this PR.
 **Date:** 2026-10-11 (against `origin/main` @ `157db11`, v0.16.0).
 **Issues:** #233, #199, #267 (remaining items), #210, #237, #218, #231 (Track 3, "Scout stopped
 running and nobody knew") and #360 (scheduled self-update for engines Scout.app doesn't manage).
@@ -155,7 +155,7 @@ an accepted limit: the heartbeat is the second job and could cross-check, but se
 **Push channels**, tried in order and recorded per push in the notifier state:
 1. **Desktop**: `osascript` (macOS) or `notify-send` with the user bus (Linux), moved from the wrapper into `scout/notify_desktop.py`. It skips `auth.expired` when the wrapper's `.auth-alert-sent` marker is less than 24 h old, so a dead login doesn't ping twice.
 2. **Telegram**: through `scoutctl notify telegram` when configured. Red uses `action_required`; recovery and informational pushes use `info`.
-3. **Nothing else today.** A headless Linux host without a desktop session or Telegram has no push channel. It sees run health only through doctor and status. That is Open question Q4.
+3. **`notify.command`** (Q4): an optional `notify.command` in `scout-config.yaml`. It runs the user's command with `SCOUT_NOTIFY_TITLE`, `SCOUT_NOTIFY_BODY`, `SCOUT_NOTIFY_SEVERITY` and `SCOUT_NOTIFY_FINDING` in its environment, with a 30 s timeout. Its exit status is recorded but never changes the caller's. It is how an always-on Linux host without a desktop or Telegram pages someone, for example through `mail` or a webhook `curl`.
 
 ### 4.4 Notifier state machine
 
@@ -303,7 +303,7 @@ is at least `auto_update.soak_hours` (default 24) old.
 One known gap remains. A marketplace engine installs whatever `main` holds under that version
 number, not the tagged tree. Commits that land on `main` after a release are installed under the
 same version. This design narrows the risk (it acts only after a published release has soaked), but
-pinning marketplace installs to the tag is a separate change. That is Q5.
+pinning marketplace installs to the tag is a separate change, tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362) (Q5).
 
 ### 7.5 Rate limits and backoff
 
@@ -318,7 +318,7 @@ pinning marketplace installs to the tag is a separate change. That is Q5.
 - **Before `vault`:** nothing has been re-pointed, so the old venv, plist, shim and pointer stay
   live. The leftover state is that Claude Code's plugin registry now names V. Interactive sessions
   load V's commands, while scheduled runs and the shim use the old engine. The finding says so, and
-  the next successful attempt converges it. (Q5 also covers whether to re-pin the registry.)
+  the next successful attempt converges it. (Re-pinning the registry belongs to the tag-pinning issue, Q5.)
 - **At or after `vault`:** no automatic downgrade. `update.failed` is red and names the step. The
   fix line is `scoutctl bootstrap upgrade` (idempotent), with the log path. The previous version's
   cache directory is left in place. The updater never deletes engine directories; Claude Code's
@@ -381,7 +381,7 @@ Each PR is independently shippable and leaves `main` releasable.
    - Doctor's `run_health` block and text section. The auth check moves out of install severity (D2).
    - Engine only. The doctor JSON change is additive, so the app is unaffected until P3.
 2. **P2: notifier.**
-   - `scoutctl health notify`, `notify_desktop.py`, `health-notify.json`.
+   - `scoutctl health notify`, `notify_desktop.py`, the `notify.command` channel (Q4), `health-notify.json`.
    - `run-outcome.sh` drops its streak and Telegram code and gains the notify call plus the bash
      floor.
    - The lane rules are ported into `health.py`. `heartbeat.sh` runs the daily sweep instead of
@@ -419,7 +419,7 @@ needs P1 (findings) and P2 (pushes).
 - A scheduled `meta-review` slot (#199's third ask). Run health makes it unnecessary for liveness.
 - The heartbeat cross-checking a dead tick job. `scheduler.stalled` is visible on demand. A second
   watchdog is not justified until a dead tick job is observed in the field.
-- Pinning marketplace engines to release tags (Q5).
+- Pinning marketplace engines to release tags ([#362](https://github.com/Raven-Scout/Scout/issues/362), Q5).
 - Updating `dev` checkouts (D7).
 - iOS app consumption of run health.
 
@@ -439,7 +439,8 @@ needs P1 (findings) and P2 (pushes).
   test covers `run_health`, and the Swift `DoctorReportTests` decode it with and without the block.
 - **Notifier (P2):** a table-driven state machine (new red → push; 23 h → none; 25 h → reminder;
   red → green → one recovery; yellow → none; wrapper marker fresh → no desktop for `auth.expired`).
-  Channels are injected; no real `osascript`.
+  Channels are injected; no real `osascript`. `notify.command` gets its env vars, and a hanging
+  or failing command is timed out and recorded without changing the exit code.
 - **Bash templates (P2, P4):** follow the existing pattern of tests rendering a template and running
   it with stub binaries on `PATH`. Cover:
   - `run-outcome.sh` with an unreachable `scoutctl` → one floor alert, rate-limited;
@@ -467,15 +468,17 @@ needs P1 (findings) and P2 (pushes).
     a conflicting brain edit gives `applied_with_sidecars`.
   - The same on macOS, with an app-managed engine present: the updater refuses.
 
-## 12. Open questions for Jordan
+## 12. Decisions on the review questions (2026-10-11)
 
-| # | Question | Recommendation |
+Jordan accepted every recommendation on 2026-10-11. The table keeps each question with its decision.
+
+| # | Question | Decision |
 |---|---|---|
-| Q1 | For non-app engines, should auto-update default **on** when `scoutctl setup` / `install.sh` asks (and under `--yes`), or off? | **On.** A headless host has no other path to fixes, and D8's soak plus D10's hold limit the blast radius. |
-| Q2 | #360 says to hold updates on any brain-file sidecar. This design (D11) holds only on the blocking parser sidecar or a red doctor, because #266 made brain sidecars skip just their own file. Which? | **D11.** Holding on a brain sidecar would freeze a headless engine indefinitely over a file nobody is looking at. |
-| Q3 | Confirm dropping the scheduler pre-flight skip on a dead login (#267, D12)? | **Drop it** and close the checkbox. |
-| Q4 | Headless hosts with no desktop and no Telegram get no push. Add a generic `notify.command` hook (runs a user command with title/body in env, e.g. `mail` or a webhook), or accept doctor/status only? | **Add `notify.command`** in P2. It is small, and it is the only way an always-on Linux box can page anyone. |
-| Q5 | Marketplace engines install `main`'s tree under the released version number, not the tag. Is "published release + 24 h soak" enough, or should marketplace installs (and rollback re-pinning) be pinned to the tag? | Ship D8 now; file tag pinning as its own issue. |
-| Q6 | Store the setup token as a 0600 file under `~/.config/scout/`, or in the macOS Keychain (with the file only on Linux)? And offer it on macOS at all, given Scout.app? | **File on both, offered only to non-app engines.** Keychain access from a launchd job brings its own prompts. |
-| Q7 | Confirm `dev` engines are excluded and only get `update.behind` as a note? | **Yes** (D7). |
-| Q8 | Doctor exit code: keep install-only (D2), or let red run health turn the doctor red as #199 literally asks? | **Keep install-only.** `scoutctl health` carries the run verdict, and the app's upgrade must not fail on an expired login. |
+| Q1 | Auto-update default for non-app engines when `scoutctl setup` / `install.sh` asks, and under `--yes`. | **On** (§7.9). A headless host has no other path to fixes, and D8's soak plus D10's hold limit the blast radius. |
+| Q2 | Hold updates on any brain-file sidecar (#360's text), or only on the blocking parser sidecar or a red install doctor? | **Parser sidecar or red install doctor only** (D11), consistent with #266. |
+| Q3 | Scheduler pre-flight skip on a dead login (#267). | **Dropped** (D12). Close that checkbox on #267. |
+| Q4 | Push channel for headless hosts with no desktop and no Telegram. | **Add `notify.command`** in P2 (§4.3, channel 3). |
+| Q5 | Is "published release + 24 h soak" enough, or pin marketplace installs to the tag? | **Ship D8 now.** Tag pinning, including re-pinning the registry on rollback, is tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362). |
+| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
+| Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
+| Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
