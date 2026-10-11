@@ -351,6 +351,10 @@ struct TaskCardView: View {
                 TaskDetailsView(details: task.details)
             }
 
+            // Keyed by tag so a re-tagged item drops the old note's cached text.
+            TaskContextNoteSection(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+                .id(task.shortPrefix)
+
             if !task.comments.isEmpty {
                 // Editing and deleting reach the task the same way adding does,
                 // so they follow the same rule.

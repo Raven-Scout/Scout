@@ -1,0 +1,38 @@
+{
+  "name": "scout-plugin",
+  "owner": {
+    "name": "Alex"
+  },
+  "description": "Marketplace for the Scout autonomous knowledge management plugin",
+  "plugins": [
+    {
+      "name": "other",
+      "source": "./other",
+      "description": "Example unrelated plugin used by PluginReleaseTests.",
+      "version": "1.2.3",
+      "author": {
+        "name": "Alex"
+      },
+      "homepage": "https://github.com/example-org/other",
+      "repository": "https://github.com/example-org/other"
+    },
+    {
+      "name": "scout",
+      "source": "./plugin",
+      "description": "Autonomous knowledge management and daily briefing system for Claude Code",
+      "version": "0.15.0",
+      "author": {
+        "name": "Alex"
+      },
+      "homepage": "https://github.com/example-org/scout",
+      "repository": "https://github.com/example-org/scout",
+      "keywords": [
+        "knowledge-management",
+        "briefing",
+        "automation",
+        "scheduling",
+        "obsidian"
+      ]
+    }
+  ]
+}

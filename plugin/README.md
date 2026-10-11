@@ -53,6 +53,8 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
+**The primary install is Scout.app** (starting with Scout 0.16): download it from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
+
 ### Before you start
 
 | You need | Why | How |
@@ -67,7 +69,7 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 You do **not** need Homebrew or Python — the installer gets everything else (including a private Python for the engine, via [uv](https://docs.astral.sh/uv)). On a brand-new Mac it will first ask you to install Apple's Command Line Tools (one dialog, a few minutes); re-run it afterwards.
 
-### 1. Install the plugin + engine
+### 1. Install Scout
 
 In Terminal:
 
@@ -75,21 +77,19 @@ In Terminal:
 curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash
 ```
 
-It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin, and builds the engine. It ends with `✅ Scout plugin + engine installed.` — if anything fails it stops with the exact command to retry instead.
+It checks prerequisites, installs [uv](https://docs.astral.sh/uv) if needed, adds the Scout marketplace to Claude Code, installs the plugin and builds the engine. Then it asks a few questions: a name for this Scout instance, your name and email, your timezone (Scout follows your computer's; you can pin another), which detected tools to use, your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), your GitHub username and repos if GitHub is on, and a budget per session and per day. Every other tool you have connected is offered as a custom connector. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
 
-### 2. Create your vault
+To install without questions (a provisioning script, CI):
 
-Open Claude Code and run:
-
-```
-/scout-setup
+```bash
+curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash -s -- --yes --name "Alex" --email alex@example.com
 ```
 
-The wizard asks for your name and email (Scout follows your computer's timezone; you can pin another), detects which tools are connected, asks for your Slack member ID if Slack is on (Slack → your profile → ⋮ → *Copy member ID*), and whether Scout should keep itself updated. It then creates `~/Scout/`, installs the schedule, and offers to run your first briefing.
+`scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it, and keeps the engine the vault already records as its manager (a dev checkout, say).
 
-### 3. (Optional) Install the Mac app
+### 2. Add the Mac app later (optional)
 
-Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it. It's signed and notarized, so it opens normally. It shows your action items, upcoming runs, costs and schedule on top of `~/Scout/`.
+Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.
 
 **Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
@@ -102,7 +102,7 @@ The one-line installer above is the recommended path. Under the hood, Scout is d
 /plugin install scout@scout-plugin
 ```
 
-The first command registers this repo as a plugin marketplace; the second installs the `scout` plugin from it. After installing, the `/scout-*` commands and skills are available in every Claude Code session. Installed this way, the engine is built the first time you run `/scout-setup` (about a minute).
+The first command registers this repo as a plugin marketplace; the second installs the `scout` plugin from it. After installing, the `/scout-*` commands and skills are available in every Claude Code session. Installed this way, run the one-line installer above to build the engine and set Scout up — it finds the plugin you just installed.
 
 > **Other ways to install**
 >
@@ -111,7 +111,7 @@ The first command registers this repo as a plugin marketplace; the second instal
 >
 > See [Discover and install plugins](https://code.claude.com/docs/en/discover-plugins) for the full Claude Code plugin documentation.
 
-Then run `/scout-setup` in any Claude Code session. The setup wizard detects your connected tools (MCP connectors, `gh` CLI, local directories), collects your details (name, Slack ID, email), scaffolds the Scout directory with a knowledge graph ontology, assembles personalized skill files from phase modules matching your connectors, sets up budget tracking scripts, and configures scheduling. Done in under 5 minutes. `/scout-setup` is for fresh installs only — on an existing vault it refuses and points you at `/scout-update`.
+`scoutctl setup` detects your connected tools (MCP connectors, `gh` CLI), collects your details (name, Slack ID, email), scaffolds the Scout directory with a knowledge graph ontology, assembles personalized skill files from phase modules matching your connectors, and configures scheduling. On an existing vault it upgrades instead.
 
 Check your installation at any time:
 
@@ -233,6 +233,15 @@ The `.scout-cache/` directory is gitignored — everything in it is recomputed o
 
 Scout works with any subset of connectors. More connectors means richer cross-checking, but even a Calendar-only Scout is useful. The setup wizard detects what you have and assembles skill files accordingly. Connect claude.ai connectors at [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — scheduled runs use these. You can also add your own connector to detection via `~/Scout/connector-probes.local.yaml` (see `/scout-setup`).
 
+### Custom connectors
+
+Scout reads more than the tools it ships instructions for. Anything you have connected to Claude Code (a mail suite, a chat tool, a CRM, a support desk) can become a **custom connector**:
+
+- During setup, `scoutctl setup` offers every connected server no connector reads yet.
+- Later, run `/scout-connect` in Claude Code, or `scoutctl connectors setup` in a terminal.
+
+Scout drafts each definition for you through a headless Claude call: it reads the server's tool list and picks a few **read** tools for what's new (inbound), what you did (outbound) and what to look up on demand. The drafting check rejects any tool that sends, posts, creates, updates or deletes. You confirm the draft; it's saved in `~/Scout/connectors.custom.yaml` and survives upgrades. A tool that needs you to sign in first says so: sign in, then run `/scout-connect <server>` again.
+
 ## Knowledge Graph
 
 Scout maintains a formal knowledge graph alongside the traditional markdown KB files. The ontology defines entity types (person, project, task, organization, technology, pet) with typed properties and relationships.
@@ -316,6 +325,7 @@ scout-plugin/
   commands/
     scout-setup.md          -- Interactive setup wizard (fresh installs)
     scout-update.md         -- Upgrade plugin + vault (existing installs)
+    scout-connect.md        -- Add or remove a custom connector (any connected MCP server)
     scout-status.md         -- Dashboard command
     scout-work.md           -- Interactive work session (in-conversation)
     scout-plan.md           -- Interactive day planning with calendar blocks (in-conversation)

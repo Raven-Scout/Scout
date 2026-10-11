@@ -1,13 +1,13 @@
 ---
 name: scout-update
-description: Upgrade an existing Scout vault to the current plugin version. Idempotent — re-runs converge to the same state. For first-time install, run /scout-setup.
+description: Upgrade an existing Scout vault to the current plugin version. Idempotent — re-runs converge to the same state. For a first-time install, run the one-line installer in a terminal (curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash).
 ---
 
 # Scout Update
 
 You are the Scout updater. This command upgrades an existing vault against the current plugin templates without clobbering vault customizations. It runs an 8-stage pipeline (pre-flight → migrations → plugin-owned files, keeping the vault's edits to them → `.gitignore` merge → cat-4 3-way merge → job lifecycle → version stamp → doctor).
 
-This command is for **existing vaults only**. If no vault exists, refuse and tell the user to run `/scout-setup`.
+This command is for **existing vaults only**. If no vault exists, refuse and tell the user to run the one-line installer in a terminal: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash`.
 
 ---
 
@@ -190,8 +190,8 @@ echo "READY"
 EOF
 ```
 
-- `INSTALL_INCOMPLETE`: "The Scout install at `~/Scout/` was interrupted before it finished, so there is nothing to upgrade yet. Run `/scout-setup` to finish it — it resumes the interrupted install rather than starting over." Stop here (`bootstrap upgrade` refuses a vault in this state).
-- `NO_VAULT`: "No Scout vault found at `~/Scout/`. Run `/scout-setup` for a fresh install."
+- `INSTALL_INCOMPLETE`: "The Scout install at `~/Scout/` was interrupted before it finished, so there is nothing to upgrade yet. Run the one-line installer in a terminal to finish it: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash` — it resumes the interrupted install rather than starting over." Stop here (`bootstrap upgrade` refuses a vault in this state).
+- `NO_VAULT`: "No Scout vault found at `~/Scout/`. For a fresh install, run the one-line installer in a terminal: `curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash` (safe to re-run)."
 - `BLOCKING_SIDECAR`: "`knowledge-base/ontology/parser.py.proposed-merge` was left by an older engine, and it blocks the upgrade. The vault's `parser.py` is the one running, so either merge the sidecar into it (remove the conflict markers `<<<<<<<`, `=======`, `>>>>>>>`, then `mv knowledge-base/ontology/parser.py.proposed-merge knowledge-base/ontology/parser.py`), or delete the sidecar: the upgrade then retries the merge itself and parks any conflict under `.scout-state/drift/` without blocking. Then re-run `/scout-update`."
 - `PENDING_SIDECAR:<file>` (zero or more lines): informational, not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then act on the line that follows, `READY` or one of the refusals below.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:
@@ -287,32 +287,12 @@ Then report every `vault edit <outcome>: <file> — …` line. These are the vau
 
 If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`), tell the user that the plugin's change was merged into `X.md` on the strength of its assembly header alone (a vault last upgraded before Scout recorded which snapshots it wrote), so the copy from before the merge was parked there. This happens at most once per file. Compare with `diff .scout-state/drift/X.md.vault X.md`, then dismiss it with `scoutctl bootstrap drift --resolve X.md`.
 
-- `~/Scout/connector-probes.local.yaml` (custom connector probes) is a user
-  file, never templated, so it is preserved untouched across upgrades.
+- `~/Scout/connectors.custom.yaml` (custom connectors) and
+  `~/Scout/connector-probes.local.yaml` (custom probes) are user files, never
+  templated, so upgrades leave them untouched — and every upgrade re-renders the
+  custom connectors' sections from the current templates.
 
----
-
-## Auto-update nudge
-
-After reporting the upgrade result, check whether the user has auto-updates enabled. Use the engine venv's Python (it ships PyYAML; the system `python3` on stock macOS does not), with `$NEW_ROOT` from the canonical resolver:
-
-```bash
-"$NEW_ROOT/.venv/bin/python" - <<'EOF'
-import pathlib, yaml
-p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
-if p.exists():
-    cfg = yaml.safe_load(p.read_text()) or {}
-    enabled = cfg.get("auto_update", {}).get("enabled", False)
-    print("AUTO_UPDATE_ON" if enabled else "AUTO_UPDATE_OFF")
-else:
-    print("AUTO_UPDATE_OFF")
-EOF
-```
-
-- If `AUTO_UPDATE_ON`: nothing to say — auto-updates are already configured.
-- If `AUTO_UPDATE_OFF`: tell the user once: "Auto-updates are off — I can turn them on so Scout keeps itself current (a skill file with a conflict is left as it is and you'll be pinged; everything else still updates, and your own edits to Scout's scripts are kept). Want me to enable it?"
-
-If the user agrees, turn it on with `scoutctl config set-auto-update`. It rewrites only the `auto_update` block of `~/Scout/scout-config.yaml` (adding it if absent, keeping an existing channel) and leaves every other line and comment as it was. Do **not** write this file with a pyyaml load-and-dump — that deletes every comment in it.
+## Step 4: Offer the tools Scout doesn't read yet
 
 ```bash
 NEW_ROOT=""
@@ -327,9 +307,7 @@ fi
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
-"$SCOUTCTL" config set-auto-update --enabled
+"$SCOUTCTL" connectors uncovered --json || true
 ```
 
-It prints `auto_update: enabled (channel: stable) — …`. If it exits 1, show the user its `error:` line and suggest setting `auto_update.enabled: true` in the file by hand; don't fall back to rewriting the file yourself.
-
-If the user declines, acknowledge and move on — don't ask again in this session.
+For each entry in `servers`, say once: "You also have <name> connected — run `/scout-connect <name>` to have Scout read it." Skip this when `servers` is empty or `error` is set.

@@ -7,7 +7,9 @@ import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 
-from scout.kb.lint import OVERRIDE_ENV, lint_staged, override_count, run_hook
+import pytest
+
+from scout.kb.lint import OVERRIDE_ENV, _frontmatter_aliases, lint_staged, override_count, run_hook
 from scout.kb.lint_config import load_lint_config
 
 TOPIC = "knowledge-base/topics/widget/retrieval.md"
@@ -193,6 +195,67 @@ def test_topic_citation_and_dangling_link_are_warnings(kb_repo) -> None:
     assert sorted((f.check, f.line) for f in result.warnings) == [("citation", 3), ("dangling-link", 7)]
 
 
+def test_frontmatter_alias_target_is_not_dangling(kb_repo) -> None:
+    """Obsidian resolves a wikilink to a frontmatter alias, not just a filename."""
+    kb_repo.stage(
+        "knowledge-base/people/sam-example.md",
+        '---\nname: Sam Example\naliases: [Sam Example, "Example, Sam"]\ntype: person\n---\n\n# Sam\n',
+    )
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "Owner is [[Sam Example]], also [[sam example#Role|Sam]] and [[Example, Sam]].\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
+
+
+def test_frontmatter_block_list_alias_is_not_dangling(kb_repo) -> None:
+    """The block-list form is what Obsidian's Properties editor writes."""
+    kb_repo.stage(
+        "knowledge-base/people/zoe-example.md",
+        "---\naliases:\n  - Zoë Example\n  - 'Z. Example'\ntags: [person]\n---\n\n# Zoë\n",
+    )
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "Reviewed by [[Zoë Example]] and [[Z. Example]].\n")
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings == []
+
+
+def test_frontmatter_name_or_title_alone_is_still_dangling(kb_repo) -> None:
+    """`name:` / `title:` are not link targets in Obsidian, so a link that only
+    matches one is broken for the reader and must keep warning."""
+    kb_repo.stage("knowledge-base/people/sam.md", "---\nname: Sam Smith\ntitle: Weekly sync\n---\n\n# Sam\n")
+    kb_repo.commit()
+    kb_repo.stage(PROJECT, "See [[Sam Smith]] and [[Weekly sync]] and [[Nobody At All]].\n")
+    warnings = lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).warnings
+    assert [f.check for f in warnings] == ["dangling-link"] * 3
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "expected"),
+    [
+        ("aliases: Solo Name\n", ["Solo Name"]),
+        ("aliases: Solo Name # trailing comment\n", ["Solo Name"]),
+        ("aliases: ['A, B', C]\n", ["A, B", "C"]),
+        ('aliases:\n- One\n- "Two"\nname: X\n', ["One", "Two"]),
+        ("aliases: []\n", []),
+        ("aliases: null\n", []),
+        ("aliases: ~\n", []),
+        ("aliases:\nname: X\n", []),
+        ("meta:\n  aliases: [Nested]\n", []),
+    ],
+)
+def test_frontmatter_aliases_forms(tmp_path, frontmatter, expected) -> None:
+    f = tmp_path / "note.md"
+    f.write_text(f"---\n{frontmatter}---\n\n# Note\n", encoding="utf-8")
+    assert _frontmatter_aliases(f) == expected
+
+
+def test_frontmatter_aliases_bom_crlf_and_late_frontmatter(tmp_path) -> None:
+    bom = tmp_path / "bom.md"
+    bom.write_bytes("\ufeff---\r\naliases: [Bom Name]\r\n---\r\n".encode())
+    assert _frontmatter_aliases(bom) == ["Bom Name"]
+    late = tmp_path / "late.md"
+    late.write_text("# Title\n\n---\naliases: [Not Frontmatter]\n---\n", encoding="utf-8")
+    assert _frontmatter_aliases(late) == []
+
+
 def test_escaped_pipe_wikilink_in_table_is_not_dangling(kb_repo) -> None:
     kb_repo.stage("knowledge-base/people/sam.md", "# Sam\n")
     kb_repo.commit()
@@ -313,3 +376,56 @@ def test_over_budget_skips_report_excluded_dated_records(kb_repo) -> None:
     kb_repo.write("knowledge-base/a.md", "x" * 150)
     rows = over_budget(kb_repo.root, load_lint_config(kb_repo.root))
     assert rows == [("knowledge-base/a.md", 150, 100)]
+
+
+DAILY_REL = "action-items/action-items-2026-10-06.md"
+DAILY_HEAD = "# Action Items\n\n## 🔴 Urgent\n\n"
+
+
+def _ctx_findings(kb_repo) -> list[tuple[str, int | None]]:
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    return [(f.check, f.line) for f in res.findings if f.check == "missing-context-note"]
+
+
+def test_new_open_item_without_note_warns(kb_repo) -> None:
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    found = [f for f in res.findings if f.check == "missing-context-note"]
+    assert len(found) == 1 and found[0].blocking is False and "action-items/context/DETX.md" in found[0].message
+
+
+def test_staged_note_silences_warning(kb_repo) -> None:
+    kb_repo.stage("action-items/context/DETX.md", "---\ntag: DETX\n---\n\nctx\n")
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_committed_note_silences_warning(kb_repo) -> None:
+    kb_repo.stage("action-items/context/DETX.md", "ctx\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_untagged_and_done_lines_are_ignored(kb_repo) -> None:
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] **No tag**\n- [x] [#PLN] **Done**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_carried_forward_line_is_not_rechecked(kb_repo) -> None:
+    kb_repo.stage("action-items/action-items-2026-10-05.md", DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    kb_repo.commit()
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    assert _ctx_findings(kb_repo) == []
+
+
+def test_missing_note_never_blocks_in_block_mode(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_lint:\n  mode: block\n")
+    kb_repo.stage(DAILY_REL, DAILY_HEAD + "- [ ] [#DETX] **Order the items**\n")
+    res = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    assert all(f.check != "missing-context-note" for f in res.blocking)
+
+
+def test_non_daily_files_are_not_checked(kb_repo) -> None:
+    kb_repo.stage("action-items/backlog.md", "- [ ] [#DETX] **Backlog item**\n")
+    assert _ctx_findings(kb_repo) == []

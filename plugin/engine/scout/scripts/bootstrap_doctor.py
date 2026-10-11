@@ -387,10 +387,21 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
 
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
-    """One warning per problem in connectors.custom.yaml; that connector is skipped until fixed."""
-    from scout.custom_connectors import CUSTOM_FILE, load
+    """One warning per problem in connectors.custom.yaml, or in a custom connector's input
+    stored in scout-config.yaml (#344); that connector is skipped until fixed."""
+    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues
 
-    return [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in load(vault).issues]
+    custom = load(vault)
+    warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
+    try:
+        cfg = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        inputs = cfg["connectors"]["inputs"]
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
+        inputs = None  # a missing or malformed scout-config.yaml is not this check's to report
+    if isinstance(inputs, dict):
+        issues = stored_input_issues(custom.connectors, inputs)
+        warnings += [f"scout-config.yaml: {i.path}: {i.message} (skipped until fixed)" for i in issues]
+    return warnings
 
 
 def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:

@@ -54,22 +54,16 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 ## 🔴 Urgent
 
-- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [Description with specific details, not vague summaries]
-  - Source: [Which connector(s) confirmed this]
-  - Context: [[wikilink-to-relevant-kb-file]]
-  - Refs: [[people/slug]] · [[PROJ-1234]] · example-org/repo#1234 · #XREF
+- [ ] [#XXXX] **[Short natural imperative title — no ids/status/emoji/dates]** — [due/waiting-on, specific not vague] · → [[<project, topic or source note>]]
+  - [Optional: the one blocker, or {{USER_NAME}}'s comment thread]
 
 ## 🟡 To Do
 
-- [ ] [#XXXX] **[Item title]** — [Description]
-  - Source: [connector evidence]
-  - Context: [[wikilink]]
+- [ ] [#XXXX] **[Item title]** — [one-line status] · → [[<note>]]
 
 ## 🟢 Watching
 
-- [ ] [#XXXX] **[Item title]** — [What you're tracking and why]
-  - Source: [connector evidence]
-  - Context: [[wikilink]]
+- [ ] [#XXXX] **[Item title]** — [what you're tracking] · → [[<note>]]
 
 ## ✅ Done
 
@@ -81,9 +75,7 @@ Create `action-items/action-items-YYYY-MM-DD.md` using today's date. Include:
 
 Items carried forward from previous days that are still open.
 
-- [ ] [#XXXX] **[Item title]** — [Status update since last check]
-  - Originally from: action-items-YYYY-MM-DD
-  - Current status: [what's changed]
+- [ ] [#XXXX] **[Item title]** — [one-line status since last check] · → [[<note>]]
 
 ## 🪵 Run notes & connector availability
 
@@ -91,6 +83,8 @@ _Always the LAST section of the file — run metadata is a footer for review, ne
 
 - **YYYY-MM-DD HH:MM [timezone]** ([mode]) — X new / Y completed / Z carried forward. Connectors: [available, or "degraded: <name>"].
 ```
+
+An open item's sources, evidence, quotes and history go in its note, `action-items/context/<TAG>.md` (see **Item line format**), never in prose sub-bullets. Machine lines (plan markers, `- Refs:`) still go under the item.
 
 All action items files must include `[[wikilinks]]` to any KB files referenced by action items.
 
@@ -154,7 +148,7 @@ The bold title MUST NOT contain any of:
 - emoji of any kind (including priority 🔴🟡🟢);
 - an internal ` — ` / ` – ` separator (that dash separates title from body).
 
-The **body** (after the ` — ` separator, plus `- Source:` / `- Context:` sub-bullets) is human prose: status, dates, quotes, context. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
+The **body** (after the ` — ` separator) is short human prose: status and dates. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
 
 **All machine refs go in ONE `- Refs:` sub-bullet** directly under the task line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks, cross-reference hashtags, and entity wikilinks that are pure references (not part of a sentence). Omit the sub-bullet when a task has no refs.
 
@@ -194,7 +188,7 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
       - Cycle: current
 
 - `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
-- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and remove the parent; with none left, remove the parent.
+- `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and close the parent; with none left, close it too. Closing means ticking it and moving it to ✅ Recently Completed with its children as the evidence, so the Continuity-Dropoff Audit sees a closure.
 - `State:` is written only as `doing` or `blocked`; everything else comes from where the task sits. Write `doing` only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. An agent drafting while it works is `doing`; a related session merely running is not. Write `blocked` only for a blocker that is not a task (an outage, a decision outside this board). A task waiting on another task gets `Depends:` instead, and the board derives blocked from it.
 - `Action:` names the next step on a 🔴 Urgent or 🟡 To Do task, 1–3 words ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"), when the title doesn't already say it. Never on a parent.
 - `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Find that from this PR's body and the other PRs fetched this run.
@@ -209,10 +203,6 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
 4. `State: doing` or `State: blocked` applies.
 5. Otherwise the section decides: 🔴 Urgent and 🟡 To Do are {{USER_NAME}}'s move, 🟢 Watching is waiting on someone else, 🅿️ Parked is on hold.
 
-So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} alone can take the next step and can take it now: an open question to them (verified still open), a review requested from them by name, or their own PR that is approved, green, unblocked and only needs merging. Anything waiting on a person goes to 🟢 Watching, including a bot-only approval while a human reviewer is still requested. **Re-check every task on every run** against these rules, not only the ones that changed.
-
-**The body is the next step.** Keep it to at most two short sentences (about 25 words): what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
-
 **Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
 
     # Topics
@@ -222,7 +212,7 @@ So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} 
     - Summary: Two PRs, the second needs the first
 
 - Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
-- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte: a `- Renamed:` line is the user's own name for the topic, and you never write, change or remove it.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte.
 - Remove a topic once none of its tasks has been open for 14 days.
 
 ### Hard Rule — Trim by Demotion, Never by Omission
@@ -451,9 +441,9 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 
 ### 5. Write with full context and evidence
 - If completed: mark ✅ with evidence (link to the message, calendar change, PR, commit, etc.)
-- If partially done: describe what's done and what specifically remains
-- If not started: include the full context from all sources, not just the one that surfaced it
-- Always include source citations showing which connectors confirmed the item
+- If partially done: describe what's done and what specifically remains in the item's note (`action-items/context/<TAG>.md`); the line keeps a one-line status
+- If not started: write the full context from all sources into the item's note, not just the one that surfaced it
+- Always include source citations showing which connectors confirmed the item — in the note
 
 After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
 
@@ -463,7 +453,7 @@ Each item is **one line of up to 300 characters**, plus **at most one sub-bullet
 
 `- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
 
-Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it. The only other lines under an item are machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
+**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
 **Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 

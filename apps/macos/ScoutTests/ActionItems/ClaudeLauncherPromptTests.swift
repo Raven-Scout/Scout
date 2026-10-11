@@ -167,6 +167,51 @@ struct ClaudeLauncherPromptTests {
         """)
     }
 
+    @Test func fullContextPlacesNoteAfterDetailsBeforeComments() throws {
+        let task = makeTask(
+            plainSubject: "Order the roadmap items",
+            comments: [TaskComment(author: "alex", timestamp: "", text: "Agreed.")],
+            deepLinks: [.linear(id: "PROJ-1234")],
+            details: [TaskDetail(depth: 0, text: "Due Tuesday.")]
+        )
+        let out = ClaudeLauncher.prompt(for: task, contextNote: "Waiting on Priya.\n\n- Ticket never left Todo.")
+        #expect(out.contains("Context note:\nWaiting on Priya.\n\n- Ticket never left Todo."))
+        let details = try #require(out.range(of: "Context:\n"))
+        let note = try #require(out.range(of: "Context note:"))
+        let comments = try #require(out.range(of: "Prior comments:"))
+        let links = try #require(out.range(of: "Links:"))
+        #expect(details.lowerBound < note.lowerBound)
+        #expect(note.lowerBound < comments.lowerBound)
+        #expect(comments.lowerBound < links.lowerBound)
+    }
+
+    @Test func nilOrBlankNoteLeavesPromptUnchanged() {
+        let task = makeTask(plainSubject: "Cut release", body: "Tag by EOD.",
+                            details: [TaskDetail(depth: 0, text: "Mobile team waits.")])
+        let baseline = ClaudeLauncher.prompt(for: task)
+        #expect(ClaudeLauncher.prompt(for: task, contextNote: nil) == baseline)
+        #expect(ClaudeLauncher.prompt(for: task, contextNote: "  \n") == baseline)
+        #expect(!baseline.contains("Context note:"))
+    }
+
+    @Test func conciseAndChecklistIgnoreTheNote() {
+        let task = makeTask(plainSubject: "Order the items", body: "Due Tuesday.")
+        #expect(ClaudeLauncher.prompt(for: task, format: .concise, contextNote: "long note")
+                == ClaudeLauncher.prompt(for: task, format: .concise))
+        #expect(ClaudeLauncher.prompt(for: task, format: .markdownChecklist, contextNote: "long note")
+                == ClaudeLauncher.prompt(for: task, format: .markdownChecklist))
+    }
+
+    @Test func multiTaskMapsNotesPerTask() {
+        let a = makeTask(plainSubject: "First item")
+        let b = makeTask(plainSubject: "Second item")
+        let out = ClaudeLauncher.prompt(for: [a, b], format: .fullContext, contextNotes: [b.id: "Only for B."])
+        let first = out.components(separatedBy: "\n\n---\n\n")
+        #expect(first.count == 2)
+        #expect(!first[0].contains("Context note:"))
+        #expect(first[1].contains("Context note:\nOnly for B."))
+    }
+
     private func makeTask(
         plainSubject: String,
         body: String = "",
