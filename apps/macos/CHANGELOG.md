@@ -6,6 +6,12 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- Action Items search matches a task's `[#TAG]` (typed with or without the
+  `#`). Before, searching a tag found nothing, so a task beyond a section's
+  first 20 rows could only be found with **Show more** or by searching its
+  title (Raven-Scout/Scout#356).
+
 ## [0.16.0] - 2026-10-11
 
 ### Added

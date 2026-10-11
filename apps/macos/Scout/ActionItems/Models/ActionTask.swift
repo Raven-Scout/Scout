@@ -110,9 +110,15 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// Search filter. `lowercasedNeedle` must already be lowercased; an empty
-    /// needle matches everything.
+    /// needle matches everything. The `[#TAG]` short prefix is searchable with
+    /// or without its `#`: it's what the card shows, and a task past its
+    /// section's window is only reachable through search (#356).
     func matchesSearch(_ lowercasedNeedle: String) -> Bool {
         guard !lowercasedNeedle.isEmpty else { return true }
+        let tagNeedle = lowercasedNeedle.hasPrefix("#") ? lowercasedNeedle.dropFirst() : Substring(lowercasedNeedle)
+        if let shortPrefix, !tagNeedle.isEmpty, shortPrefix.lowercased().contains(tagNeedle) {
+            return true
+        }
         return plainSubject.lowercased().contains(lowercasedNeedle)
             || body.lowercased().contains(lowercasedNeedle)
             || comments.contains { $0.text.lowercased().contains(lowercasedNeedle) }
