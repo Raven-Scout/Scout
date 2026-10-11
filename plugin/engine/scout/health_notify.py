@@ -304,15 +304,24 @@ def notify(
         with lock:
             now = now or datetime.now(UTC)
             report = report or health.evaluate(vault, now=now)
-            pushes, state = plan(report, load_state(vault), now=now)
+            prior = load_state(vault)
+            pushes, state = plan(report, prior, now=now)
             sent: list[tuple[Push, list[ChannelResult]]] = []
             for push in pushes:
                 results = fan_out(push, vault=vault, now=now, channels=channels)
                 sent.append((push, results))
                 if push.kind == "recovered":
                     state["last_recovered"] = results
-                else:
-                    state["findings"][push.finding_id]["last_results"] = results
+                    continue
+                entry = state["findings"][push.finding_id]
+                entry["last_results"] = results
+                if not any(r.get("ok") for r in results):
+                    # Nothing was delivered: restore the prior stamp so the next call retries.
+                    prior_findings = prior.get("findings")
+                    old = prior_findings.get(push.finding_id) if isinstance(prior_findings, dict) else None
+                    old = old if isinstance(old, dict) else {}
+                    entry["last_pushed"] = old.get("last_pushed")
+                    entry["pushes"] = old["pushes"] if isinstance(old.get("pushes"), int) else 0
             save_state(vault, state)
             return sent
     except Exception:  # noqa: BLE001 - a notifier fault must never fail the run that called it

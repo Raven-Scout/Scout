@@ -347,6 +347,65 @@ def test_cli_notify_failing_fan_out_still_exits_zero(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
+def _failing_channel(push):
+    return {"channel": "bad", "ok": False, "detail": "error"}
+
+
+@pytest.mark.parametrize("channels", [[_failing_channel], []], ids=["all-fail", "no-channels"])
+def test_undelivered_new_push_is_retried(tmp_path, channels):
+    rep = _report(_finding("a"))
+    first = health_notify.notify(tmp_path, now=NOW, channels=channels, report=rep)
+    assert [p.kind for p, _ in first] == ["new"]
+    entry = health_notify.load_state(tmp_path)["findings"]["a"]
+    assert entry["last_pushed"] is None
+    assert entry["pushes"] == 0
+    again = health_notify.notify(tmp_path, now=NOW + timedelta(hours=1), channels=[_fake_channel("ok")], report=rep)
+    assert [p.kind for p, _ in again] == ["new"]
+    assert health_notify.load_state(tmp_path)["findings"]["a"]["pushes"] == 1
+
+
+def test_undelivered_reminder_keeps_prior_stamp(tmp_path):
+    rep = _report(_finding("a"))
+    health_notify.notify(tmp_path, now=NOW, channels=[_fake_channel("ok")], report=rep)
+    later = NOW + timedelta(hours=25)
+    out = health_notify.notify(tmp_path, now=later, channels=[_failing_channel], report=rep)
+    assert [p.kind for p, _ in out] == ["reminder"]
+    entry = health_notify.load_state(tmp_path)["findings"]["a"]
+    assert entry["last_pushed"] == health.iso_z(NOW)
+    assert entry["pushes"] == 1
+    retry = health_notify.notify(tmp_path, now=later + timedelta(hours=1), channels=[_fake_channel("ok")], report=rep)
+    assert [p.kind for p, _ in retry] == ["reminder"]
+
+
+def test_duplicate_telegram_result_counts_as_delivered(tmp_path):
+    def dup(push):
+        return {"channel": "telegram", "ok": True, "detail": "duplicate"}
+
+    health_notify.notify(tmp_path, now=NOW, channels=[dup], report=_report(_finding("a")))
+    entry = health_notify.load_state(tmp_path)["findings"]["a"]
+    assert entry["last_pushed"] == health.iso_z(NOW)
+    assert entry["pushes"] == 1
+
+
+def test_undelivered_with_malformed_prior_state(tmp_path):
+    (tmp_path / ".scout-state").mkdir()
+    (tmp_path / health_notify.STATE_FILE).write_text(json.dumps({"findings": "bad"}))
+    health_notify.notify(tmp_path, now=NOW, channels=[_failing_channel], report=_report(_finding("a")))
+    assert health_notify.load_state(tmp_path)["findings"]["a"]["pushes"] == 0
+
+
+def test_cli_notify_unresolvable_vault_exits_zero(monkeypatch):
+    from scout import paths
+
+    def boom(explicit=None):
+        raise OSError("no home")
+
+    monkeypatch.setattr(paths, "data_dir", boom)
+    result = runner.invoke(app, ["health", "notify"])
+    assert result.exit_code == 0, result.output
+    assert "cannot resolve the vault" in result.output
+
+
 def test_last_recovered_is_carried_forward():
     state = {"last_overall": "green", "last_recovered": [{"channel": "x", "ok": True, "detail": "sent"}]}
     _, new = health_notify.plan(_report(), state, now=NOW)

@@ -1674,7 +1674,12 @@ def _register_health() -> None:
         from scout import health_notify as _hn
         from scout import paths as _paths
 
-        sent = _hn.notify(_paths.data_dir())
+        try:
+            vault = _paths.data_dir()
+        except Exception as e:  # noqa: BLE001 - pushes are best-effort; this command always exits 0
+            typer.echo(f"health notify: cannot resolve the vault ({type(e).__name__}); nothing pushed", err=True)
+            return
+        sent = _hn.notify(vault)
         for push, results in sent:
             ok = ",".join(r["channel"] for r in results if r.get("ok")) or "none"
             typer.echo(f"pushed {push.kind} {push.finding_id}: {ok}")
