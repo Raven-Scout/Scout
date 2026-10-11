@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scout.scripts.bootstrap_auto import AutoAction, Plan
 from scout.scripts.connector_detect import Detection, DetectStatus
+from scout.scripts.engine_pointer import EnginePointer
 
 CANCELLED = "Setup cancelled; nothing was written."
 HEADLESS_FLAGS = (
@@ -167,7 +169,7 @@ class Answers:
 @dataclass
 class SetupDeps:
     plan: Callable[[Path], Plan]
-    pointer_manager: Callable[[], str | None]
+    pointer: Callable[[], EnginePointer | None]  # the engine pointer, if any
     git_identity: Callable[[], tuple[str, str]]
     host_zone: Callable[[], str | None]
     detect_connectors: Callable[[], dict[str, Detection]]
@@ -223,9 +225,8 @@ def default_deps(claude_bin: str = "") -> SetupDeps:
 
         return paths.data_dir()
 
-    def pointer_manager() -> str | None:
-        p = read_pointer(home=Path.home())
-        return p.managed_by if p else None
+    def pointer() -> EnginePointer | None:
+        return read_pointer(home=Path.home())
 
     def detect_connectors() -> dict[str, Detection]:
         return connector_detect.detect(
@@ -258,7 +259,7 @@ def default_deps(claude_bin: str = "") -> SetupDeps:
 
     return SetupDeps(
         plan=detect,
-        pointer_manager=pointer_manager,
+        pointer=pointer,
         git_identity=_git_identity,
         host_zone=host_timezone_name,
         detect_connectors=detect_connectors,
@@ -527,9 +528,26 @@ def run_connectors_setup(vault: Path, p: Prompter, deps: SetupDeps) -> int:
     return 0
 
 
+def _say_engine_kept(p: Prompter, opts: SetupOptions, ptr: EnginePointer) -> None:
+    """The vault's recorded engine is another one: leave it, and say how to change that."""
+    from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
+
+    env = f"SCOUT_DATA_DIR={shlex.quote(str(opts.vault))}"
+    p.say(
+        f"Found your vault at {opts.vault}. Its engine is managed by {ptr.managed_by} ({ptr.engine_root}), "
+        "so this run leaves it and the scheduled runs as they are."
+    )
+    p.say(f"  To upgrade that engine: {env} {shlex.quote(ptr.scoutctl)} bootstrap upgrade")
+    p.say(
+        f"  To move the vault to this engine instead: {env} {shlex.quote(str(resolve_scoutctl_bin()))} "
+        f"bootstrap upgrade --managed-by {opts.managed_by or 'claude-code'}"
+    )
+
+
 def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
     p = prompter
-    if deps.pointer_manager() == "scout-app":
+    ptr = deps.pointer()
+    if ptr is not None and ptr.managed_by == "scout-app":
         p.say("Scout.app manages this engine — open Scout.app to set up or change Scout.")
         return 2
     plan = deps.plan(opts.vault)
@@ -537,8 +555,16 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         p.say(f"Can't set up Scout in {opts.vault}: {plan.reason}")
         return 2
     if plan.action is AutoAction.UPGRADE:
+        managed_by = opts.managed_by or "preserve"
+        if ptr is not None and ptr.managed_by != "unknown":
+            # A recorded manager owns this engine: --managed-by (install.sh
+            # passes it on every re-run) must not take it over.
+            if ptr.python != str(Path(sys.executable).absolute()):
+                _say_engine_kept(p, opts, ptr)
+                return 0
+            managed_by = "preserve"
         p.say(f"Found your vault at {opts.vault}, upgrading.")
-        upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", opts.managed_by or "preserve"]
+        upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", managed_by]
         if opts.claude_bin:
             upgrade_argv += ["--claude-bin", opts.claude_bin]
         return deps.invoke(upgrade_argv)

@@ -2486,7 +2486,12 @@ def setup_cmd(
     max_budget: str = typer.Option("", "--max-budget", help="USD per session. Default 5.00."),
     daily_budget: str = typer.Option("", "--daily-budget", help="USD per day. Default: none."),
     first_run: bool | None = typer.Option(None, "--first-run/--no-first-run"),
-    managed_by: str = typer.Option("", "--managed-by", help="install.sh passes install.sh."),
+    managed_by: str = typer.Option(
+        "",
+        "--managed-by",
+        help="install.sh passes install.sh. Recorded on a fresh install or a vault with no recorded manager; "
+        "an existing vault keeps its own (change it with `scoutctl bootstrap upgrade --managed-by`).",
+    ),
     claude_bin: str = typer.Option("", "--claude-bin"),
     yes: bool = typer.Option(False, "--yes", help="Ask nothing; take the flags and defaults."),
 ) -> None:
