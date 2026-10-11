@@ -222,7 +222,7 @@ So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} 
     - Summary: Two PRs, the second needs the first
 
 - Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
-- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte: a `- Renamed:` line is the user's own name for the topic, written only by `scoutctl action-items rename-topic` from the app, and you never write, change or remove it.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte. The user's own names for topics live in `action-items/topic-names.md`, written only by `scoutctl action-items rename-topic` from the app; never write that file.
 - Remove a topic once none of its tasks has been open for 14 days.
 
 **Inbox and Loose ends** are two optional sections after 🟢 Watching, one bullet each, `Source · date — [what](url)` (the link is optional):
@@ -233,10 +233,11 @@ So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} 
 
     ## 🧹 Loose ends
 
-    - [Delete the merged reattach branch](https://github.com/example-org/web/pull/42)
+    - [Delete the merged reattach branch](https://github.com/example-org/web/tree/reattach)
 
-- Inbox holds new mentions, DMs and notifications not yet turned into tasks. Loose ends holds cleanup: stale branches, drafts, finished threads to close.
-- `action-items/dismissed.md` lists the entries the user closed, by URL or else by text. Never re-add a listed entry, and never write that file yourself. A listed PR URL means the PR was dropped or handed to another team: never create a task for it either.
+- Inbox holds new mentions, DMs and notifications not yet turned into tasks. Loose ends holds cleanup: stale branches, drafts, finished threads to close. This `## 📥 Inbox` section is not `inbox.md`, the user's own capture file that inbox processing empties.
+- Give every entry the link to the thing itself whenever one exists. The link is how the entry is recognised: an entry without one is keyed by its exact text, so rewording it brings a dismissed entry back.
+- `action-items/dismissed.md` lists the entries the user closed, by link or else by text. Never re-add a listed entry, and never write that file yourself. It closes only that Inbox or Loose ends entry: it says nothing about tasks, so keep tracking any task for the same link as usual. `scoutctl action-items materialize` also drops listed entries when it carries a day forward.
 
 ### Hard Rule — Trim by Demotion, Never by Omission
 

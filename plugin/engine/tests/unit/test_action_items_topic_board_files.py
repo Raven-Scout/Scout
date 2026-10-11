@@ -1,7 +1,8 @@
-"""Unit tests for topics.md renames and dismissed.md — the topic board's own files."""
+"""Unit tests for topic-names.md and dismissed.md — the topic board's own files."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,8 @@ from typer.testing import CliRunner
 
 from scout.action_items.cli import app
 from scout.action_items.dismissed import dismiss, dismissed_keys, dismissed_path
-from scout.action_items.topics import rename_topic, topics_path
+from scout.action_items.topic_names import parse_topic_names, rename_topic, topic_names_path
+from scout.action_items.topics import topics_path
 from scout.errors import ActionItemError
 
 runner = CliRunner()
@@ -22,7 +24,6 @@ _TOPICS = (
     "- Summary: API, UI and flag land in order\n"
     "\n"
     "## [#QBLK] Tracing job\n"
-    "- Renamed: Old name\n"
     "- Summary: Retention question\n"
 )
 
@@ -34,34 +35,38 @@ def topics(fake_data_dir: Path) -> Path:
     return path
 
 
-def test_rename_adds_the_line_after_the_topic_fields(topics: Path, fake_data_dir: Path) -> None:
+def test_rename_writes_topic_names_and_leaves_topics_alone(topics: Path, fake_data_dir: Path) -> None:
     event = rename_topic("strm", "  Reattach  ", data_dir=fake_data_dir)
-    assert topics.read_text(encoding="utf-8") == _TOPICS.replace(
-        "- Summary: API, UI and flag land in order\n",
-        "- Summary: API, UI and flag land in order\n- Renamed: Reattach\n",
+    assert topics.read_text(encoding="utf-8") == _TOPICS
+    assert topic_names_path(fake_data_dir).read_text(encoding="utf-8") == (
+        "# Topic names\n\nYour own names for topics, set in the app. Scout runs never write this file.\n\n"
+        "- [#STRM] Reattach\n"
     )
     assert event.kind == "action_item.topic_renamed"
     assert event.payload == {"tag": "STRM", "name": "Reattach"}
 
 
-def test_rename_replaces_an_earlier_rename(topics: Path, fake_data_dir: Path) -> None:
+def test_rename_replaces_an_earlier_name(topics: Path, fake_data_dir: Path) -> None:
     rename_topic("QBLK", "Tracing", data_dir=fake_data_dir)
-    assert topics.read_text(encoding="utf-8").endswith(
-        "## [#QBLK] Tracing job\n- Summary: Retention question\n- Renamed: Tracing\n"
-    )
+    rename_topic("STRM", "Reattach", data_dir=fake_data_dir)
+    rename_topic("QBLK", "Tracing job v2", data_dir=fake_data_dir)
+    text = topic_names_path(fake_data_dir).read_text(encoding="utf-8")
+    assert text.endswith("- [#STRM] Reattach\n- [#QBLK] Tracing job v2\n")
+    assert parse_topic_names(text) == {"STRM": "Reattach", "QBLK": "Tracing job v2"}
 
 
-def test_empty_name_clears_the_rename(topics: Path, fake_data_dir: Path) -> None:
+def test_empty_name_clears_the_name(topics: Path, fake_data_dir: Path) -> None:
+    rename_topic("QBLK", "Tracing", data_dir=fake_data_dir)
     event = rename_topic("QBLK", " ", data_dir=fake_data_dir)
-    assert "Renamed" not in topics.read_text(encoding="utf-8")
+    assert "QBLK" not in topic_names_path(fake_data_dir).read_text(encoding="utf-8")
     assert event.payload["name"] is None
 
 
-def test_rename_keeps_crlf(fake_data_dir: Path) -> None:
-    path = topics_path(fake_data_dir)
-    path.write_bytes(b"## [#STRM] Stream reattach\r\n- Summary: x\r\n")
+def test_rename_keeps_crlf(topics: Path, fake_data_dir: Path) -> None:
+    path = topic_names_path(fake_data_dir)
+    path.write_bytes(b"# Topic names\r\n- [#QBLK] Old\r\n")
     rename_topic("STRM", "Reattach", data_dir=fake_data_dir)
-    assert path.read_bytes() == b"## [#STRM] Stream reattach\r\n- Summary: x\r\n- Renamed: Reattach\r\n"
+    assert path.read_bytes() == b"# Topic names\r\n- [#QBLK] Old\r\n- [#STRM] Reattach\r\n"
 
 
 @pytest.mark.parametrize(
@@ -71,11 +76,11 @@ def test_rename_keeps_crlf(fake_data_dir: Path) -> None:
 def test_rename_rejects_bad_input(topics: Path, fake_data_dir: Path, tag: str, name: str, message: str) -> None:
     with pytest.raises(ActionItemError, match=message.replace("[", r"\[")):
         rename_topic(tag, name, data_dir=fake_data_dir)
-    assert topics.read_text(encoding="utf-8") == _TOPICS
+    assert not topic_names_path(fake_data_dir).exists()
 
 
 def test_rename_without_a_topics_file(fake_data_dir: Path) -> None:
-    with pytest.raises(ActionItemError, match="does not exist"):
+    with pytest.raises(ActionItemError, match="no topic"):
         rename_topic("STRM", "x", data_dir=fake_data_dir)
 
 
@@ -103,7 +108,9 @@ def test_cli_rename_topic_and_dismiss(topics: Path, fake_data_dir: Path) -> None
     dismissed = runner.invoke(app, ["dismiss", "--key", "Delete the stale branch"])
     assert renamed.exit_code == 0, renamed.output
     assert dismissed.exit_code == 0, dismissed.output
-    assert "- Renamed: Reattach" in topics.read_text(encoding="utf-8")
+    assert json.loads(renamed.stdout)["payload"] == {"tag": "STRM", "name": "Reattach"}
+    assert json.loads(dismissed.stdout)["payload"] == {"key": "Delete the stale branch", "added": True}
+    assert parse_topic_names(topic_names_path(fake_data_dir).read_text(encoding="utf-8")) == {"STRM": "Reattach"}
     assert dismissed_keys(fake_data_dir) == ["Delete the stale branch"]
 
 

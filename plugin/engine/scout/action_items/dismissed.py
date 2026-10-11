@@ -1,7 +1,8 @@
 """`action-items/dismissed.md`: Inbox and Loose ends entries the user closed.
 
 One `- <key>` bullet per entry, where the key is the entry's URL or else its
-text. Runs read it and never re-add a listed entry; only `dismiss` writes it.
+text (`side_entries.side_entry_key`). Only `dismiss` writes it. `materialize`
+drops listed entries when it carries a day forward, and runs never re-add one.
 """
 
 from __future__ import annotations
@@ -22,12 +23,16 @@ def dismissed_path(data_dir: Path | None = None) -> Path:
     return paths.action_items_dir(data_dir) / DISMISSED_FILE
 
 
+def parse_dismissed(lines: list[str]) -> list[str]:
+    return [line[2:].strip() for line in lines if line.startswith("- ") and line[2:].strip()]
+
+
 def dismissed_keys(data_dir: Path | None = None) -> list[str]:
     path = dismissed_path(data_dir)
     if not path.exists():
         return []
     lines, _newline, _trailing = _read_lines_with_style(path)
-    return [line[2:].strip() for line in lines if line.startswith("- ") and line[2:].strip()]
+    return parse_dismissed(lines)
 
 
 def dismiss(key: str, *, data_dir: Path | None = None) -> Event:
