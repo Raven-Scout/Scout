@@ -164,7 +164,7 @@ Then check `[ -e "$SCOUTCTL_BIN" ]` and `[ -x "$SCOUTCTL_BIN" ]`. (TCC restricti
 
 ### 3f. Update status
 
-Check the installed plugin version against the latest available, and read the auto-update preference:
+Check the installed plugin version against the latest available:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
@@ -175,21 +175,6 @@ if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/
 
 Capture the output. The command prints the installed version, the available version, and whether an update is available (e.g. `up to date (<version>)` or `update available: <installed> -> <available>`). If the command exits non-zero or the output contains `SELF_UPDATE_UNAVAILABLE`, treat the update status as unavailable (network or other error).
 
-Then read `auto_update.enabled` from `~/Scout/scout-config.yaml` (absent ⇒ treat as `false`):
-
-```bash
-"$PLUGIN_ROOT/.venv/bin/python" - <<'EOF'
-import pathlib, yaml
-p = pathlib.Path.home() / "Scout" / "scout-config.yaml"
-if p.exists():
-    cfg = yaml.safe_load(p.read_text()) or {}
-    enabled = cfg.get("auto_update", {}).get("enabled", False)
-    print("AUTO_UPDATE_ON" if enabled else "AUTO_UPDATE_OFF")
-else:
-    print("AUTO_UPDATE_OFF")
-EOF
-```
-
 Then list vault edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`):
 
 ```bash
@@ -199,7 +184,7 @@ if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/
 "$PLUGIN_ROOT/.venv/bin/scoutctl" bootstrap drift --json || echo "DRIFT_UNAVAILABLE"
 ```
 
-Store all three results for rendering in the dashboard below.
+Store both results for rendering in the dashboard below.
 
 ### 3g. Run health
 
@@ -431,18 +416,16 @@ If bin-path validation passes, no extra output — the launchctl table alone is 
 
 ### Update status
 
-Using the version info and auto-update flag collected in step 3f, display:
+Using the version info collected in step 3f, display:
 
 ```
   Plugin:       <installed-version>  (up to date (<version>) or update available: <installed> -> <available>)
-  Auto-update:  on  /  off
 ```
 
 If the update check was unavailable (network error or non-zero exit), display:
 
 ```
   Plugin:       <installed-version>  (update status: unavailable (couldn't reach marketplace))
-  Auto-update:  on  /  off
 ```
 
 If an update is available, add: "Run `/scout-update` to apply it."

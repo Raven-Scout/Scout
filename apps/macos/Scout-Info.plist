@@ -4,5 +4,13 @@
 <dict>
 	<key>SCScoutPluginFloor</key>
 	<string>$(SCOUT_PLUGIN_FLOOR)</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Raven-Scout/Scout/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>WqoRm9cvtzFl+T/30Yehudq9bPios4KCc7d5R7zJWQU=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

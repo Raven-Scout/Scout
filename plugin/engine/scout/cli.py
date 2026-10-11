@@ -528,6 +528,50 @@ def _register_connectors() -> None:
             for name, d in dets.items():
                 typer.echo(f"{name}\t{d.status.value}\t{d.evidence}")
 
+    @connectors_app.command("uncovered")
+    def cli_connectors_uncovered(
+        json_out: bool = typer.Option(False, "--json", help="Emit JSON (consumed by Scout.app and scoutctl setup)."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        timeout: float = typer.Option(60.0, "--timeout", help="Seconds to wait for `claude mcp list`."),
+    ) -> None:
+        """Connected MCP servers that no connector reads yet (no LLM)."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.scripts import connector_detect, connector_probes
+        from scout.scripts.bootstrap import resolve_claude_bin
+        from scout.scripts.connector_uncovered import custom_connector_servers, find_uncovered
+
+        listing = connector_detect.run_claude_mcp_list(resolve_claude_bin(claude_bin), timeout=timeout)
+        payload = find_uncovered(
+            listing,
+            registry=connector_probes.resolve_registry(),
+            custom_servers=custom_connector_servers(_paths.data_dir()),
+        )
+        if json_out:
+            typer.echo(_json.dumps(payload, indent=2))
+        else:
+            for s in payload["servers"]:
+                typer.echo(f"{s['name']}\t{s['status']}")
+        if payload["error"]:
+            if not json_out:
+                typer.echo(f"error: {payload['error']}", err=True)
+            raise typer.Exit(code=1)
+
+    @connectors_app.command("setup")
+    def cli_connectors_setup(
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+    ) -> None:
+        """Offer every connected tool Scout doesn't read yet, draft it, and add the ones you keep."""
+        from scout import paths as _paths
+        from scout.setup_wizard import TtyPrompter, default_deps, run_connectors_setup
+
+        prompter = TtyPrompter.open()
+        if prompter is None:
+            typer.echo("error: needs a terminal. In Claude Code, run /scout-connect instead.", err=True)
+            raise typer.Exit(code=2)
+        raise typer.Exit(code=run_connectors_setup(_paths.data_dir(), prompter, default_deps(claude_bin)))
+
     @connectors_app.command("snapshot")
     def cli_connectors_snapshot(
         target: Path | None = typer.Option(
@@ -614,7 +658,8 @@ def _register_connectors() -> None:
     def _emit(payload: dict, code: int = 0) -> None:
         import json as _json
 
-        typer.echo(_json.dumps(payload, indent=2))
+        # default=str: a value JSON cannot encode must never cost the one-JSON-object contract.
+        typer.echo(_json.dumps(payload, indent=2, default=str))
         raise typer.Exit(code=code)
 
     def _read_definition(file: str):
@@ -630,29 +675,40 @@ def _register_connectors() -> None:
         except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
             return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
 
+    def _read_inputs(items: list[str]) -> dict[str, str]:
+        """``--input NAME=VALUE`` flags as a mapping; a malformed one emits ``invalid`` and exits."""
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome
+
+        inputs: dict[str, str] = {}
+        for item in items:
+            name, sep, value = item.partition("=")
+            if not sep or not name:
+                # Not echoed: a bare value with no NAME= may be a secret pasted by mistake.
+                bad = Outcome("invalid", issues=[Issue("--input", "every --input must be NAME=VALUE")])
+                _emit(bad.to_json(), bad.exit_code)
+            inputs[name] = value
+        return inputs
+
     @custom_app.command("add")
     def cli_custom_add(
         file: str = typer.Option(..., "--file", help="Definition (YAML or JSON) with a `key` field; '-' reads stdin."),
         input_: list[str] = typer.Option([], "--input", help="NAME=VALUE for a needs_user_input entry (repeatable)."),
         dry_run: bool = typer.Option(False, "--dry-run", help="Show the sections it would render; write nothing."),
         unverified: bool = typer.Option(False, "--unverified", help="Skip the bash probe (the app path)."),
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
     ) -> None:
         """Add or replace a custom connector and apply it to the live brain files."""
         from scout import __version__
         from scout import paths as _paths
-        from scout.custom_connectors import Issue
-        from scout.scripts.custom_connector_ops import Outcome, add
+        from scout.scripts.custom_connector_ops import add
 
         data, failed = _read_definition(file)
         if failed is not None:
             _emit(failed.to_json(), failed.exit_code)
-        inputs: dict[str, str] = {}
-        for item in input_:
-            name, sep, value = item.partition("=")
-            if not sep or not name:
-                bad = Outcome("invalid", issues=[Issue("--input", f"{item!r} is not NAME=VALUE")])
-                _emit(bad.to_json(), bad.exit_code)
-            inputs[name] = value
+        inputs = _read_inputs(input_)
         outcome = add(
             _paths.data_dir(),
             data,
@@ -661,26 +717,38 @@ def _register_connectors() -> None:
             inputs=inputs,
             dry_run=dry_run,
             unverified=unverified,
+            wait=not no_wait,
         )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("remove")
-    def cli_custom_remove(key: str) -> None:
+    def cli_custom_remove(
+        key: str,
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
+    ) -> None:
         """Remove a custom connector and apply the removal."""
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.custom_connector_ops import remove
 
-        outcome = remove(_paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__)
+        outcome = remove(
+            _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
+        )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("validate")
-    def cli_custom_validate(file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin.")) -> None:
-        """Validate one definition without writing anything."""
+    def cli_custom_validate(
+        file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin."),
+        input_: list[str] = typer.Option([], "--input", help="NAME=VALUE to check as `add` would (repeatable)."),
+    ) -> None:
+        """Validate one definition (and any --input values) without writing anything."""
         from scout.scripts.custom_connector_ops import validate
 
         data, failed = _read_definition(file)
-        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root())
+        inputs = _read_inputs(input_)
+        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root(), inputs=inputs)
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("list")
@@ -690,6 +758,33 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import list_custom
 
         _emit(list_custom(_paths.data_dir(), plugin_root=_plugin_root()))
+
+    @custom_app.command("draft")
+    def cli_custom_draft(
+        server: str = typer.Option(..., "--server", help="The server's name as `claude mcp list` shows it."),
+        json_out: bool = typer.Option(True, "--json", hidden=True, help="Always JSON; accepted for symmetry."),
+        claude_bin: str = typer.Option("", "--claude-bin", help="Claude Code binary. Default: auto-detect."),
+        model: str = typer.Option("sonnet", "--model", help="Model for the drafting call."),
+        timeout: float = typer.Option(120.0, "--timeout", help="Seconds per headless call."),
+        taken: list[str] = typer.Option(
+            [], "--taken", help="A key already used in this setup but not yet in the vault. Repeatable."
+        ),
+    ) -> None:
+        """Draft custom-connector definitions for one connected server (headless claude -p; the engine checks them)."""
+        from scout import paths as _paths
+        from scout.scripts import connector_draft
+        from scout.scripts.bootstrap import resolve_claude_bin
+
+        payload = connector_draft.draft(
+            server,
+            plugin_root=_plugin_root(),
+            vault=_paths.data_dir(),
+            claude_bin=resolve_claude_bin(claude_bin),
+            model=model,
+            timeout=timeout,
+            taken=set(taken),
+        )
+        _emit(payload, connector_draft.EXIT_CODES[payload["status"]])
 
     @connectors_app.command("presets")
     def cli_connectors_presets() -> None:
@@ -2175,36 +2270,20 @@ def _register_bootstrap() -> None:
 
 
 def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
-    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent)."""
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed)."""
     import yaml as _yaml
 
     from scout import __version__
-    from scout.scripts.bootstrap import BootstrapConfig
+    from scout.scripts.bootstrap import config_from_vault
 
-    cfg_path = vault / "scout-config.yaml"
-    if not cfg_path.exists():
+    if not (vault / "scout-config.yaml").exists():
         typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
         raise typer.Exit(code=2)
     try:
-        existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    except (_yaml.YAMLError, UnicodeDecodeError) as e:
+        return config_from_vault(vault, plugin_root=Path(__file__).parent.parent.parent, plugin_version=__version__)
+    except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
         typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
         raise typer.Exit(code=ConfigError.exit_code) from e
-    instance = existing.get("instance", {})
-    user = existing.get("user", {})
-    return BootstrapConfig(
-        vault=vault,
-        plugin_root=Path(__file__).parent.parent.parent,
-        instance_name=instance.get("name", "Scout"),
-        instance_name_lower=instance.get("name_lower", "scout"),
-        user_name=user.get("name", ""),
-        user_email=user.get("email", ""),
-        timezone=existing.get("timezone") or "",  # "" = follow the host
-        platform=existing.get("platform", "macos"),
-        plugin_version=__version__,
-        enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-        connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-    )
 
 
 _register_bootstrap()
@@ -2231,11 +2310,8 @@ def _register_phases() -> None:
         sidecaring. Default is a read-only report; --apply writes the ✓ hunks.
         Never commits, pushes, or opens a PR — the operator does that.
         """
-        import yaml as _yaml
-
-        from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, _template_vars, load_custom
+        from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
             apply_to_phase_text,
@@ -2244,31 +2320,7 @@ def _register_phases() -> None:
         )
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
-        cfg_path = vault / "scout-config.yaml"
-        if not cfg_path.exists():
-            typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
-            raise typer.Exit(code=2)
-        try:
-            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except (_yaml.YAMLError, UnicodeDecodeError) as e:
-            typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
-            raise typer.Exit(code=ConfigError.exit_code) from e
-
-        instance = existing.get("instance", {})
-        user = existing.get("user", {})
-        cfg = BootstrapConfig(
-            vault=vault,
-            plugin_root=Path(__file__).parent.parent.parent,
-            instance_name=instance.get("name", "Scout"),
-            instance_name_lower=instance.get("name_lower", "scout"),
-            user_name=user.get("name", ""),
-            user_email=user.get("email", ""),
-            timezone=existing.get("timezone") or "",  # "" = follow the host
-            platform=existing.get("platform", "macos"),
-            plugin_version=__version__,
-            enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-        )
+        cfg = _vault_bootstrap_config(vault)
         vars_ = _template_vars(cfg)
         phases_root = cfg.plugin_root / "phases"
         snapshot_dir = vault / ".scout-state" / "last-assembled"
@@ -2418,6 +2470,65 @@ def tui() -> None:
 
         raise ActionItemError('Textual is not installed. Install with: uv pip install -e ".[full]"') from e
     ScoutApp().run()
+
+
+@app.command("setup")
+def setup_cmd(
+    vault: Path | None = typer.Option(None, "--vault", help="Vault folder. Default: $SCOUT_DATA_DIR or ~/Scout."),
+    instance_name: str = typer.Option("", "--instance-name"),
+    name: str = typer.Option("", "--name", help="Your name (commits, the KB)."),
+    email: str = typer.Option("", "--email", help="Your email (git config)."),
+    timezone: str = typer.Option("", "--timezone", help="IANA zone to pin. Default: follow the computer."),
+    connectors: str | None = typer.Option(None, "--connectors", help="Comma-separated. Default: detect."),
+    slack_id: str = typer.Option("", "--slack-id"),
+    github_username: str = typer.Option("", "--github-username"),
+    github_repos: str = typer.Option("", "--github-repos"),
+    max_budget: str = typer.Option("", "--max-budget", help="USD per session. Default 5.00."),
+    daily_budget: str = typer.Option("", "--daily-budget", help="USD per day. Default: none."),
+    first_run: bool | None = typer.Option(None, "--first-run/--no-first-run"),
+    managed_by: str = typer.Option(
+        "",
+        "--managed-by",
+        help="install.sh passes install.sh. Recorded on a fresh install or a vault with no recorded manager; "
+        "an existing vault keeps its own (change it with `scoutctl bootstrap upgrade --managed-by`).",
+    ),
+    claude_bin: str = typer.Option("", "--claude-bin"),
+    yes: bool = typer.Option(False, "--yes", help="Ask nothing; take the flags and defaults."),
+) -> None:
+    """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
+    import os
+
+    from scout import paths as _paths
+    from scout.setup_wizard import (
+        HeadlessPrompter,
+        NoTerminalPrompter,
+        SetupOptions,
+        TtyPrompter,
+        default_deps,
+        run_setup,
+    )
+
+    if vault is not None:
+        os.environ["SCOUT_DATA_DIR"] = str(vault.expanduser())
+    prompter = HeadlessPrompter() if yes else (TtyPrompter.open() or NoTerminalPrompter())
+    opts = SetupOptions(
+        vault=_paths.data_dir(),
+        instance_name=instance_name,
+        name=name,
+        email=email,
+        timezone=timezone,
+        connectors=connectors,
+        slack_id=slack_id,
+        github_username=github_username,
+        github_repos=github_repos,
+        max_budget=max_budget,
+        daily_budget=daily_budget,
+        first_run=first_run,
+        managed_by=managed_by,
+        claude_bin=claude_bin,
+        yes=yes,
+    )
+    raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
 
 
 def main() -> None:

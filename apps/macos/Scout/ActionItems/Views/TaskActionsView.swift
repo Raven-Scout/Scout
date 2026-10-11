@@ -110,7 +110,10 @@ struct TaskActionsView: View {
     private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(
-            ClaudeLauncher.prompt(for: task, format: format),
+            ClaudeLauncher.prompt(
+                for: task, format: format,
+                contextNote: TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+            ),
             forType: .string
         )
         didCopy = true

@@ -24,6 +24,9 @@ Packages/
 Package.pins
 Package.resolved
 
+# Release staging (scripts/release.sh finalize/rc build+sign scratch space)
+.release/
+
 # Editor
 .vscode/
 .idea/

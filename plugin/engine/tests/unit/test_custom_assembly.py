@@ -108,6 +108,61 @@ def test_inputs_are_namespaced_per_connector_and_bash_tools_render_as_commands()
     assert "{{INPUT_PROJECT_ID}}" in skill[0].raw_body  # raw keeps placeholders for backport
 
 
+TIX = _connector(
+    "tix",
+    display_name="Tickets",
+    probe={"bash": "tix whoami"},
+    needs_user_input=["team"],
+    inbound={
+        "tools": [{"bash": "# fetch open tickets\ntix list --open --team {{INPUT_TEAM}}"}, {"bash": "tix whoami"}],
+        "focus": "Open tickets.",
+    },
+)
+
+
+def _template_headings(kind: str = "inbound") -> list[str]:
+    text = (ROOT / "phases" / "custom" / f"{kind}.md").read_text(encoding="utf-8")
+    return [line for line in text.splitlines() if line.startswith("#")]
+
+
+def test_multi_line_bash_tool_renders_in_a_fenced_block_so_a_shell_comment_is_no_heading():
+    """#344: a column-0 shell comment used to land in SKILL.md as a markdown H1."""
+    body = render_custom_sections(ROOT, "SKILL", {"tix": TIX}, {"tix"}, VARS, {"tix__team": "ops"})[0].rendered_body
+    assert "- run with Bash:\n  ```bash\n  # fetch open tickets\n  tix list --open --team ops\n  ```" in body
+    # Single-line commands keep the 0.15.0 inline form, so their sections don't drift.
+    assert "- `tix whoami` — run with Bash" in body
+    headings = [line for line in body.splitlines() if line.startswith("#")]
+    assert len(headings) == len(_template_headings())
+
+
+def test_fence_outgrows_any_backtick_run_and_blank_lines_carry_no_indent():
+    c = _connector(
+        "tix",
+        display_name="Tickets",
+        probe={"bash": "tix whoami"},
+        inbound={"tools": [{"bash": "tix list \\\n  --format '````'\n\ntix done"}], "focus": "Open tickets."},
+    )
+    body = render_custom_sections(ROOT, "SKILL", {"tix": c}, {"tix"}, VARS, {})[0].rendered_body
+    assert "  `````bash\n  tix list \\\n    --format '````'\n\n  tix done\n  `````" in body
+
+
+def test_a_stored_input_that_breaks_structure_skips_the_connector_with_a_warning(capsys: pytest.CaptureFixture[str]):
+    """#344: scout-config.yaml connectors.inputs is hand-editable; a bad value never reaches SKILL.md."""
+    enabled = {"tix", "suite_mail"}
+    inputs = {"tix__team": "ops\n# Injected heading"}
+    out = render_custom_sections(ROOT, "SKILL", {"tix": TIX, "suite_mail": SUITE}, enabled, VARS, inputs)
+    assert [s.connector_key for s in out] == ["suite_mail", "suite_mail"]
+    err = capsys.readouterr().err
+    assert "warning: connectors.tix.needs_user_input: the value for 'team' stored in scout-config.yaml" in err
+    assert "skipped until fixed" in err
+    assert "Injected" not in err
+
+
+def test_a_non_string_stored_input_renders_as_text():
+    out = render_custom_sections(ROOT, "SKILL", CONNECTORS, {"dataplat"}, VARS, {"dataplat__project_id": 42})
+    assert "`dp jobs --project 42` — run with Bash" in out[0].rendered_body
+
+
 def test_raw_body_keeps_template_vars_and_rendered_has_none():
     out = render_custom_sections(ROOT, "SKILL", CONNECTORS, {"suite_mail"}, VARS, {})
     assert "{{USER_NAME}}" in out[0].raw_body
