@@ -30,27 +30,37 @@ def side_entry_key(bullet: str) -> str:
 
 
 def is_side_section(heading: str) -> bool:
+    """An Inbox or Loose ends `##` heading, with or without a leading emoji
+    or a trailing note such as `(3)`. The app's `SideEntry` agrees."""
     m = _H2_RE.match(heading)
     if m is None:
         return False
     title = _TRAILING_NOTE_RE.sub("", m.group("title")).lower()
     words = title.split(maxsplit=1)
-    return title in SIDE_SECTION_TITLES or (len(words) == 2 and words[1] in SIDE_SECTION_TITLES)
+    after_emoji = words[1] if len(words) == 2 and not words[0][0].isalnum() else None
+    return title in SIDE_SECTION_TITLES or after_emoji in SIDE_SECTION_TITLES
 
 
 def drop_dismissed(lines: list[str], dismissed: set[str]) -> list[str]:
-    """`lines` without the Inbox and Loose ends bullets whose key is dismissed."""
+    """`lines` without the Inbox and Loose ends bullets whose key is dismissed,
+    and without the lines indented under them."""
     if not dismissed:
         return lines
     out: list[str] = []
     in_side = False
+    dropped_indent: int | None = None
     for line in lines:
+        indent = len(line) - len(line.lstrip())
+        if dropped_indent is not None and line.strip() and indent > dropped_indent:
+            continue
+        dropped_indent = None
         if line.startswith("## "):
             in_side = is_side_section(line)
         elif line.startswith("# "):
             in_side = False
         elif in_side and not _TASK_RE.match(line) and (m := _BULLET_RE.match(line)):
             if side_entry_key(m.group("rest")) in dismissed:
+                dropped_indent = indent
                 continue
         out.append(line)
     return out

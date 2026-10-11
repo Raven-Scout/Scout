@@ -1,5 +1,5 @@
 {
-  "_note": "Topic board files, read by the engine (side_entries.py, dismissed.py, topic_names.py) and the app (SideEntry, DismissedFileLoader, TopicNamesParser). Edit this canonical copy, then cp it to apps/macos/ScoutTests/Fixtures/topic-board-files.json; contract.yml fails on drift.",
+  "_note": "Topic board files, read by the engine (side_entries.py, dismissed.py, topic_names.py) and the app (SideEntry, DismissedFileLoader, TopicNamesParser). Keys are links exactly as written, never percent-encoded. Edit this canonical copy, then cp it to apps/macos/ScoutTests/Fixtures/topic-board-files.json; contract.yml fails on drift.",
   "side_entries": [
     {
       "bullet": "Slack · Oct 10 — [Priya asked about the retention window](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)",
@@ -30,6 +30,18 @@
       "key": "PROJ-1234 moved to Done — nothing left",
       "text": "PROJ-1234 moved to Done — nothing left",
       "source": "Linear · Oct 8"
+    },
+    {
+      "bullet": "Notion · Oct 9 — [Café plan review](https://www.notion.so/acme/Café-plan-0123456789abcdef)",
+      "key": "https://www.notion.so/acme/Café-plan-0123456789abcdef",
+      "text": "Café plan review",
+      "source": "Notion · Oct 9"
+    },
+    {
+      "bullet": "Grafana · Oct 9 — Error spike https://grafana.example.com/explore?q=errors|warnings&from=now-1h",
+      "key": "https://grafana.example.com/explore?q=errors|warnings&from=now-1h",
+      "text": "Error spike",
+      "source": "Grafana · Oct 9"
     }
   ],
   "dismissed_md": {
@@ -44,5 +56,35 @@
     "names": {
       "STRM": "Reattach, renamed again"
     }
-  }
+  },
+  "side_sections": [
+    {
+      "heading": "## 📥 Inbox",
+      "side": true
+    },
+    {
+      "heading": "## 🧹 Loose ends (2)",
+      "side": true
+    },
+    {
+      "heading": "## Inbox (3)",
+      "side": true
+    },
+    {
+      "heading": "## Loose ends",
+      "side": true
+    },
+    {
+      "heading": "## My Inbox",
+      "side": false
+    },
+    {
+      "heading": "## Inbox zero tips",
+      "side": false
+    },
+    {
+      "heading": "## 🟢 Watching",
+      "side": false
+    }
+  ]
 }

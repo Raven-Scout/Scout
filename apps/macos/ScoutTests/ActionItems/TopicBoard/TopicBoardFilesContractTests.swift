@@ -23,8 +23,14 @@ struct TopicBoardFilesContractTests {
         let names: [String: String]
     }
 
+    struct SectionCase: Decodable {
+        let heading: String
+        let side: Bool
+    }
+
     struct Fixture: Decodable {
         let side_entries: [SideCase]
+        let side_sections: [SectionCase]
         let dismissed_md: DismissedCase
         let topic_names_md: NamesCase
     }
@@ -44,6 +50,16 @@ struct TopicBoardFilesContractTests {
             #expect(entry.key == c.key, "\(c.bullet)")
             #expect(entry.text == c.text, "\(c.bullet)")
             #expect(entry.source == c.source, "\(c.bullet)")
+        }
+    }
+
+    @Test func sideSectionsMatch() throws {
+        for c in try Self.fixture().side_sections {
+            let text = "# Action Items — 2026-10-10\n\n\(c.heading)\n- An entry\n"
+            let doc = try ActionItemsParser.parse(text: text, sourceURL: URL(fileURLWithPath: "/tmp/action-items-2026-10-10.md"), sourceBytes: text.utf8.count)
+            let titles = doc.sections.map(\.title)
+            let side = titles.contains { title in ["Inbox", "Loose ends"].contains { SideEntry.section(title, isTitled: $0) } }
+            #expect(side == c.side, "\(c.heading) → \(titles)")
         }
     }
 

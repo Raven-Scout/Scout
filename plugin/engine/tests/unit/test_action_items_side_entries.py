@@ -37,20 +37,26 @@ def test_topic_names_md_matches_the_fixture() -> None:
     assert parse_topic_names(case["text"]) == case["names"]
 
 
-@pytest.mark.parametrize(
-    ("heading", "expected"),
-    [
-        ("## 📥 Inbox", True),
-        ("## 🧹 Loose ends (2)", True),
-        ("## Inbox", True),
-        ("## Loose ends", True),
-        ("## 🟢 Watching", False),
-        ("## Inbox zero tips", False),
-        ("### 📥 Inbox", False),
-    ],
-)
-def test_is_side_section(heading: str, expected: bool) -> None:
-    assert is_side_section(heading) is expected
+@pytest.mark.parametrize("case", FIXTURE["side_sections"], ids=lambda c: c["heading"])
+def test_is_side_section_matches_the_fixture(case: dict[str, object]) -> None:
+    assert is_side_section(str(case["heading"])) is case["side"]
+
+
+def test_a_level_three_heading_is_not_a_side_section() -> None:
+    assert is_side_section("### 📥 Inbox") is False
+
+
+def test_drop_dismissed_takes_the_lines_under_an_entry_too() -> None:
+    lines = [
+        "## 🧹 Loose ends",
+        "- Close the stale draft",
+        "  - it was superseded",
+        "",
+        "- Keep this one",
+        "  - and its note",
+    ]
+    kept = drop_dismissed(lines, {"Close the stale draft"})
+    assert kept == ["## 🧹 Loose ends", "", "- Keep this one", "  - and its note"]
 
 
 def test_drop_dismissed_keeps_tasks_and_other_sections() -> None:

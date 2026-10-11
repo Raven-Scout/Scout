@@ -36,15 +36,17 @@ def parse_topic_names(text: str) -> dict[str, str]:
 
 
 def rename_topic(tag: str, name: str, *, data_dir: Path | None = None) -> Event:
-    """Set the user's name for topic `tag`; an empty `name` clears it."""
+    """Set the user's name for topic `tag`; an empty `name` clears it. Names
+    of topics no longer in `topics.md` are dropped on the way."""
     if "\n" in name or "\r" in name:
         raise ActionItemError("rename-topic: the name must be one line")
     tag = tag.upper()
-    if tag not in topic_tags(data_dir):
+    live = topic_tags(data_dir)
+    if tag not in live:
         raise ActionItemError(f"rename-topic: no topic [#{tag}] in {TOPICS_FILE}")
     path = topic_names_path(data_dir)
     lines, newline, trailing = _read_lines_with_style(path) if path.exists() else (list(_HEADER), "\n", True)
-    kept = [line for line in lines if not _names_tag(line, tag)]
+    kept = [line for line in lines if (named := _named_tag(line)) is None or (named in live and named != tag)]
     clean = name.strip()
     if clean:
         kept.append(f"- [#{tag}] {clean}")
@@ -58,6 +60,6 @@ def rename_topic(tag: str, name: str, *, data_dir: Path | None = None) -> Event:
     )
 
 
-def _names_tag(line: str, tag: str) -> bool:
+def _named_tag(line: str) -> str | None:
     m = _LINE_RE.match(line)
-    return m is not None and m.group("tag") == tag
+    return m.group("tag") if m is not None else None

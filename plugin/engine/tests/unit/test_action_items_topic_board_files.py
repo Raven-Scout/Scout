@@ -62,6 +62,15 @@ def test_empty_name_clears_the_name(topics: Path, fake_data_dir: Path) -> None:
     assert event.payload["name"] is None
 
 
+def test_rename_drops_names_of_removed_topics(topics: Path, fake_data_dir: Path) -> None:
+    names = topic_names_path(fake_data_dir)
+    names.write_text("# Topic names\n- [#GONE] Old topic\n- [#QBLK] Tracing\n", encoding="utf-8")
+    rename_topic("STRM", "Reattach", data_dir=fake_data_dir)
+    assert topic_names_path(fake_data_dir).read_text(encoding="utf-8") == (
+        "# Topic names\n- [#QBLK] Tracing\n- [#STRM] Reattach\n"
+    )
+
+
 def test_rename_keeps_crlf(topics: Path, fake_data_dir: Path) -> None:
     path = topic_names_path(fake_data_dir)
     path.write_bytes(b"# Topic names\r\n- [#QBLK] Old\r\n")
