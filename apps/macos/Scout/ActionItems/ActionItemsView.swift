@@ -34,7 +34,11 @@ struct ActionItemsView: View {
                 environmentBanner
             }
             HStack(spacing: 10) {
-                FilterChipsView(filter: $filter)
+                if viewMode == .topics {
+                    Spacer(minLength: 0)
+                } else {
+                    FilterChipsView(filter: $filter)
+                }
                 EditorialSegmentedControl(
                     selection: $viewMode,
                     options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
@@ -121,6 +125,14 @@ struct ActionItemsView: View {
         // uses the editorial reading page below.
         if case .loaded(let doc) = docService.state, viewMode == .board {
             BoardView(sections: boardSections(doc), scoutDirectory: scoutDirectory)
+        } else if case .loaded(let doc) = docService.state, viewMode == .topics {
+            TopicBoardView(
+                sections: doc.sections,
+                fileDate: doc.date,
+                actionItemsDirectory: actionItemsDirectory,
+                scoutDirectory: scoutDirectory,
+                search: filter.searchText
+            )
         } else {
             listContent
         }

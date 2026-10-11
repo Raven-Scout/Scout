@@ -5,6 +5,15 @@ Versions are tagged `app/vX.Y.Z`. The plugin has its own changelog at
 
 ## [Unreleased]
 
+### Added
+- **Topics view mode for Action Items** (#340). A third mode next to List and
+  Board groups tasks by workstream (`- Topic:`, then the topic's root session),
+  nests blocked steps under the step that blocks them, orders by Linear
+  priority and cycle, and parks on-hold work in one group. The state legend
+  filters the board. Each row offers Ask Claude with the item's place on the
+  board in the prompt. Done shows this week, today or yesterday. Read-only:
+  writes stay in List.
+
 ### Changed
 - The app now lives at `apps/macos/` in the Scout monorepo (was
   `Raven-Scout/Scout` repo root). No behavior change.
