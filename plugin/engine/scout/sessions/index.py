@@ -8,7 +8,6 @@ index and both caches are written atomically.
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -46,6 +45,9 @@ from scout.sessions.transcript import (
 INDEX_FILENAME = "sessions-index.json"
 LEGACY_CACHE_FILENAME = "cc-sessions.cache.json"  # pre-plan-1 cache; deleted on first run
 _CUSTOM_TITLE_HEAD_LINES = 5
+# How far into a transcript to look for the record whose `cwd` the project dir encodes.
+# Claude Code writes `cwd` on almost every row, so the first few lines nearly always do.
+_CWD_HEAD_LINES = 200
 
 
 @dataclass
@@ -152,16 +154,59 @@ def _custom_title(path: Path) -> str | None:
     return None
 
 
+def _recorded_cwd(path: Path) -> str | None:
+    """The directory a transcript's own records name (#212): the first ``cwd`` whose encoding
+    is the transcript's project-dir name, else the first ``cwd`` at all, else None.
+
+    The rows carry the real path; the dir name is a lossy encoding of it. A session that
+    moved into a worktree records more than one, and only the launch directory encodes to
+    the dir name. Reads only the head.
+    """
+    first: str | None = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= _CWD_HEAD_LINES:
+                    break
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = obj.get("cwd") if isinstance(obj, dict) else None
+                if not isinstance(cwd, str) or not cwd:
+                    continue
+                if _encode_dirname(cwd) == path.parent.name:
+                    return cwd
+                first = first or cwd
+    except OSError:
+        return None
+    return first
+
+
+def _latest(*isos: str | None) -> str | None:
+    """The latest of some ISO timestamps, unchanged; None when none parses."""
+    dated = [(dt, iso) for iso in isos if iso is not None and (dt := parse_iso(iso)) is not None]
+    return max(dated)[1] if dated else None
+
+
 def _encode_dirname(path: str) -> str:
     """Claude Code's project-dir encoding: every non-alphanumeric character (``/``, ``.``,
     ``_``, space, …) becomes ``-``. Lossy, so it is only ever compared, never decoded."""
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
-def _cli_only_session(uuid: str, path: Path, st: os.stat_result, known_dirs: dict[str, str]) -> AgentSession:
-    # Exact match against directories we know (the vault, every desktop cwd) beats
-    # the lossy decode — hyphens and dots in real folder names round-trip only this way.
-    cwd = known_dirs.get(path.parent.name) or cli_home.project_path_from_dirname(path.parent.name)
+def _cli_only_session(uuid: str, path: Path, known_dirs: dict[str, str]) -> AgentSession:
+    # The records' own cwd, then an exact match against directories we know (the vault,
+    # every desktop cwd): hyphens, dots and underscores in real folder names round-trip
+    # only this way. The lossy decode is the last resort (#212).
+    recorded = _recorded_cwd(path)
+    name = path.parent.name
+    if recorded is not None and _encode_dirname(recorded) == name:
+        cwd = recorded
+    else:
+        cwd = known_dirs.get(name) or recorded or cli_home.project_path_from_dirname(name)
     title = _custom_title(path)
     return AgentSession(
         id=f"cli:{uuid}",
@@ -174,7 +219,7 @@ def _cli_only_session(uuid: str, path: Path, st: os.stat_result, known_dirs: dic
         origin_cwd=cwd,
         worktree=None,
         created_at=None,
-        last_activity_at=ns_to_iso(st.st_mtime_ns),
+        last_activity_at=None,  # set from the transcript in build_index step 3
         model=None,
         effort=None,
         turns=None,
@@ -269,7 +314,7 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
             st = path.stat()
             if opts.now - datetime.fromtimestamp(st.st_mtime_ns / 1e9, tz=UTC) > window:
                 continue
-            sessions.append(_cli_only_session(uuid, path, st, known_dirs))
+            sessions.append(_cli_only_session(uuid, path, known_dirs))
         except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
             errors.append(SourceError(source="transcript", message=f"{path.name}: {exc}"))
             continue
@@ -282,13 +327,18 @@ def build_index(opts: BuildOptions, *, stats: BuildStats | None = None) -> Index
         tpath = tpaths.get(cli_uuid) if cli_uuid else None
         if tpath is not None:
             try:
-                mtime_iso = ns_to_iso(tpath.stat().st_mtime_ns)
-                if sess.last_activity_at is None or mtime_iso > sess.last_activity_at:
-                    sess.last_activity_at = mtime_iso
-                last = parse_iso(sess.last_activity_at)
+                own = sess.last_activity_at  # the desktop record's; None for a CLI-only session
+                # Anything that touches the file moves its mtime, so the mtime never trails the
+                # last record: an upper bound that decides cheaply whether to read it at all.
+                bound = _latest(own, ns_to_iso(tpath.stat().st_mtime_ns))
+                last = parse_iso(bound)
+                sess.last_activity_at = bound
                 if sess.id not in no_transcript and last is not None and opts.now - last <= window:
                     looked_up.add(str(tpath))
                     sess.transcript = transcript_info(tpath, cache=tcache, stats=stats)
+                    # "Last active" is the last record's time when it has one, not the mtime (#211).
+                    if sess.transcript.last_turn.at is not None:
+                        sess.last_activity_at = _latest(own, sess.transcript.last_turn.at)
             except Exception as exc:  # spec §4.12: one bad transcript never aborts the build
                 errors.append(SourceError(source="transcript", message=f"{tpath.name}: {exc}"))
         if cli_uuid is not None and cli_uuid in live:
