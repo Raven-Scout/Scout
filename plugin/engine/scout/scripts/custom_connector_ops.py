@@ -7,7 +7,9 @@ docs/superpowers/specs/2026-10-02-custom-connectors-design.md §3.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import datetime
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +40,7 @@ _EXIT_CODES = {
     "probe-failed": 2,
     "deferred": 3,
     "conflict": 3,
+    "busy": 4,
 }
 
 ProbeRunner = Callable[[str], int]  # command -> exit code
@@ -60,10 +63,12 @@ def _message(result: CustomApplyResult) -> str:
             f"Saved. {files} has a pending review (a .proposed-merge sidecar or unresolved conflict markers); "
             "this change lands after you resolve it and run /scout-update."
         )
-    # `before` no longer re-assembles to the snapshot: the plugin changed, or
+    # `before` no longer re-assembles to a snapshot: the plugin changed, or
     # connectors.custom.yaml was hand-edited, since the last install/upgrade.
+    files = ", ".join(result.drifted)
+    verb = "were" if len(result.drifted) > 1 else "was"
     return (
-        "Saved. SKILL.md was last assembled from a different plugin version or connector file, "
+        f"Saved. {files} {verb} last assembled from a different plugin version or connector file, "
         "so this takes effect at the next `scoutctl bootstrap upgrade` (or /scout-update)."
     )
 
@@ -168,20 +173,27 @@ def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: st
     return cfg
 
 
-def _under_lock(vault: Path, key: str, change: Callable[[], Outcome]) -> Outcome:
+def _under_lock(vault: Path, key: str, change: Callable[[], Outcome], *, wait: bool = True) -> Outcome:
     """Run ``change`` holding the session lock.
 
     ``change`` must do every read of vault state (scout-config.yaml,
     connectors.custom.yaml, the snapshot) itself: a read made before the lock
     is stale by the time a concurrent add/remove has committed, and writing
     whole-file replacements from it would erase that other change.
+
+    ``wait=False`` tries to acquire the lock exactly once (``timeout_s=0``)
+    instead of polling for the default window; either way a held lock comes
+    back as a ``busy`` Outcome, never ``error``.
     """
     lock = vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        acquire_lock_with_wait(lock)
+        if wait:
+            acquire_lock_with_wait(lock)
+        else:
+            acquire_lock_with_wait(lock, timeout_s=0)
     except LockBusyError:
-        return Outcome("error", key, message="A Scout session is running; try again when it finishes.")
+        return Outcome("busy", key, message="A Scout session is running; try again when it finishes.")
     try:
         return change()
     finally:
@@ -243,6 +255,7 @@ def add(
     dry_run: bool = False,
     unverified: bool = False,
     probe_runner: ProbeRunner = run_bash_probe,
+    wait: bool = True,
 ) -> Outcome:
     try:
         return _add(
@@ -254,6 +267,7 @@ def add(
             dry_run=dry_run,
             unverified=unverified,
             probe_runner=probe_runner,
+            wait=wait,
         )
     except Exception as e:  # noqa: BLE001 — see the contract note above validate()
         return Outcome("error", _key_of(raw_def), message=_unexpected(e))
@@ -269,6 +283,7 @@ def _add(
     dry_run: bool,
     unverified: bool,
     probe_runner: ProbeRunner,
+    wait: bool = True,
 ) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
@@ -338,17 +353,17 @@ def _add(
             {**current.raw, key: body},
         )
 
-    return _under_lock(vault, key, change)
+    return _under_lock(vault, key, change, wait=wait)
 
 
-def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wait: bool = True) -> Outcome:
     try:
-        return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version, wait=wait)
     except Exception as e:  # noqa: BLE001 — see the contract note above validate()
         return Outcome("error", key, message=_unexpected(e))
 
 
-def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) -> Outcome:
+def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wait: bool = True) -> Outcome:
     if (missing := _no_vault(vault)) is not None:
         return missing
     unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
@@ -377,7 +392,32 @@ def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str) ->
             {k: v for k, v in current.raw.items() if k != key},
         )
 
-    return _under_lock(vault, key, change)
+    return _under_lock(vault, key, change, wait=wait)
+
+
+def _jsonable(value: Any) -> Any:
+    """``value`` with everything JSON cannot encode made encodable.
+
+    ``yaml.safe_load`` yields dates, datetimes, sets and bytes for plain YAML
+    scalars (``notes: 2026-10-01``); ``list`` echoes definitions as written, so
+    it must convert them rather than crash the one-JSON-object contract."""
+    if isinstance(value, dict):
+        return {k if isinstance(k, str) else str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        try:
+            ordered = sorted(value)
+        except TypeError:
+            ordered = list(value)
+        return [_jsonable(v) for v in ordered]
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
@@ -385,6 +425,12 @@ def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
         return _list_custom(vault, plugin_root=plugin_root)
     except Exception as e:  # noqa: BLE001 — see the contract note above validate()
         return {"connectors": [], "issues": [{"path": "", "message": _unexpected(e)}]}
+
+
+def _issues_for_key(issues: list[cc.Issue], key: str) -> list[dict[str, str]]:
+    """This key's own issues: path equal to ``connectors.<key>`` or nested under it."""
+    base = f"connectors.{key}"
+    return [{"path": i.path, "message": i.message} for i in issues if i.path == base or i.path.startswith(f"{base}.")]
 
 
 def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
@@ -398,7 +444,7 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
         else:
             assert cfg is not None
             enabled = cfg.enabled_connectors
-    rows = [
+    valid_rows = [
         {
             "key": c.key,
             "display_name": c.display_name,
@@ -407,9 +453,27 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
             "health_key": c.health_key,
             "preset": c.preset,
             "activities": [a for a in cc.ACTIVITIES if a in c.activities],
+            "valid": True,
+            "definition": _jsonable(current.raw[c.key]),
         }
-        for c in sorted(current.connectors.values(), key=lambda c: c.key)
+        for c in current.connectors.values()
     ]
+    invalid_rows = [
+        {
+            "key": key,
+            "valid": False,
+            "enabled": key in enabled,
+            "display_name": raw_def.get("display_name") if isinstance(raw_def, dict) else None,
+            "definition": _jsonable(raw_def),
+            "issues": _issues_for_key(current.issues, key),
+        }
+        for key, raw_def in current.raw.items()
+        if key not in current.connectors
+    ]
+    for row in invalid_rows:
+        if not isinstance(row["display_name"], str):
+            row["display_name"] = None
+    rows = sorted([*valid_rows, *invalid_rows], key=lambda r: r["key"])
     return {"connectors": rows, "issues": [{"path": i.path, "message": i.message} for i in issues]}
 
 

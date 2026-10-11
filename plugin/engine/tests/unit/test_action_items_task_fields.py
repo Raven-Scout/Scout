@@ -73,7 +73,8 @@ def test_parse_state(value: str, expected: str | None) -> None:
     [
         ("#XREF", ("XREF",)),
         ("[#XREF], #QBLK", ("XREF", "QBLK")),
-        ("xref · 7391K  QBLK", ("XREF", "7391K", "QBLK")),
+        ("#xref · #7391K  #QBLK", ("XREF", "7391K", "QBLK")),
+        ("xref and QBLK", ()),
         ("#X, not-a-tag, #TOOLONGTAG, #1234", ()),
         ("", ()),
     ],
@@ -139,7 +140,18 @@ def test_apply_field_rejects_an_unknown_key() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"), [("#STRM", "STRM"), ("[#STRM] #QBLK", "STRM"), ("strm", "STRM"), ("#1", None)]
+    ("value", "expected"),
+    [("#STRM", "STRM"), ("[#STRM] #QBLK", "STRM"), ("#strm", "STRM"), ("strm", None), ("#1", None)],
 )
 def test_parse_topic_takes_the_first_tag(value: str, expected: str | None) -> None:
     assert parse_topic(value) == expected
+
+
+def test_topic_tags_reads_topic_headings(fake_data_dir: Path) -> None:
+    from scout.action_items.topics import topic_tags, topics_path
+
+    assert topic_tags(fake_data_dir) == set()
+    topics_path(fake_data_dir).write_text(
+        "# Topics\n\n## [#STRM] Stream reattach\n- Summary: x\n\n## [#555] Not a tag\n## Notes\n", encoding="utf-8"
+    )
+    assert topic_tags(fake_data_dir) == {"STRM"}

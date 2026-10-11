@@ -35,6 +35,7 @@ Parser API note (discovered during M3.2):
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -52,24 +53,25 @@ def _load() -> list[dict]:
 _ENTRIES = _load()
 
 
-def _write(tmp_path: Path, line: str) -> Path:
-    text = "# T\n\n## 🔴 Urgent\n\n" + line + "\n"
+def _write(tmp_path: Path, entry: dict) -> Path:
+    text = "# T\n\n## 🔴 Urgent\n\n" + "\n".join([entry["line"], *entry.get("sub_lines", [])]) + "\n"
     f = tmp_path / "action-items-2026-06-04.md"
     f.write_text(text, encoding="utf-8")
     return f
 
 
-def _only_task(f: Path) -> render.Task:
+def _top_task(f: Path) -> render.Task:
+    """The entry's own task. A nested task in `sub_lines` comes after it."""
     _, _, sections = render.parse(f)
     tasks = [t for s in sections for t in s.tasks]
-    assert len(tasks) == 1, f"expected one render Task, got {len(tasks)}"
+    assert tasks, "expected a render Task"
     return tasks[0]
 
 
 @pytest.mark.parametrize("entry", _ENTRIES, ids=lambda e: e["name"])
 def test_short_prefix(entry: dict, tmp_path: Path) -> None:
     """short_prefix comes from parser.parse_file (the stable-ID parser)."""
-    f = _write(tmp_path, entry["line"])
+    f = _write(tmp_path, entry)
     items = parse_file(f)
     assert len(items) == 1, f"{entry['name']}: expected one item, got {len(items)}"
     assert (items[0].short_prefix or None) == entry["expected"]["short_prefix"], f"{entry['name']}: short_prefix"
@@ -78,19 +80,38 @@ def test_short_prefix(entry: dict, tmp_path: Path) -> None:
 @pytest.mark.parametrize("entry", _ENTRIES, ids=lambda e: e["name"])
 def test_body(entry: dict, tmp_path: Path) -> None:
     """body comes from render.parse (token-aware subject/body split)."""
-    task = _only_task(_write(tmp_path, entry["line"]))
+    task = _top_task(_write(tmp_path, entry))
     assert task.body == entry["expected"]["body"], f"{entry['name']}: body"
 
 
 @pytest.mark.parametrize("entry", _ENTRIES, ids=lambda e: e["name"])
 def test_subject(entry: dict, tmp_path: Path) -> None:
     """subject (markdown-retaining title) comes from render.parse."""
-    task = _only_task(_write(tmp_path, entry["line"]))
+    task = _top_task(_write(tmp_path, entry))
     assert task.subject == entry["expected"]["subject"], f"{entry['name']}: subject"
 
 
 @pytest.mark.parametrize("entry", _ENTRIES, ids=lambda e: e["name"])
 def test_plain_subject(entry: dict, tmp_path: Path) -> None:
     """plain_subject = render._plain_subject(subject); the --subject match form."""
-    task = _only_task(_write(tmp_path, entry["line"]))
+    task = _top_task(_write(tmp_path, entry))
     assert render._plain_subject(task.subject) == entry["expected"]["plain_subject"], f"{entry['name']}: plain_subject"
+
+
+_FIELD_ENTRIES = [e for e in _ENTRIES if "fields" in e["expected"]]
+
+
+@pytest.mark.parametrize("entry", _FIELD_ENTRIES, ids=lambda e: e["name"])
+def test_fields(entry: dict, tmp_path: Path) -> None:
+    """Board fields come from parser.parse_file, bound by the owner rule."""
+    [item] = parse_file(_write(tmp_path, entry))
+    fields = asdict(item.fields)
+    fields["depends"] = list(fields["depends"])
+    assert fields == entry["expected"]["fields"], f"{entry['name']}: fields"
+
+
+@pytest.mark.parametrize("entry", _FIELD_ENTRIES, ids=lambda e: e["name"])
+def test_comment_authors(entry: dict, tmp_path: Path) -> None:
+    """Field lines never become comments; real comments still do."""
+    task = _top_task(_write(tmp_path, entry))
+    assert [c.author for c in task.comments] == entry["expected"]["comment_authors"], f"{entry['name']}: comments"
