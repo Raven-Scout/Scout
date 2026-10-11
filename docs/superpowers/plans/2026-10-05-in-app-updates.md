@@ -447,8 +447,8 @@ Both asks below were accepted into #317, recorded here for context:
 **Files:** none. An agent runs this only with Jordan's go-ahead for that specific run.
 
 Recommended before `finalize v0.16.0`, because v0.16.0 is the one release where a broken updater can't be fixed through the updater:
-1. Run `scripts/release.sh rc v0.16.0-rc.1`. Copy the DMG's app to `~/scout-e2e/Scout.app`.
-2. Land any commit on `main`, then run `scripts/release.sh rc v0.16.0-rc.2` from that **later** commit. `CFBundleVersion` is the commit count, and Sparkle never offers an equal build, so rc.2's `sparkle:version` must be higher than rc.1's.
+1. From `release/v0.16.0` (#317's spec §6 cuts the rehearsal tags from that branch), run `scripts/release.sh rc v0.16.0-rc.1`. Copy the DMG's app to `~/scout-e2e/Scout.app`.
+2. Land a commit on `release/v0.16.0`, then run `scripts/release.sh rc v0.16.0-rc.2` from that **later** commit on `release/v0.16.0`. `CFBundleVersion` is the commit count, and Sparkle never offers an equal build, so rc.2's `sparkle:version` must be higher than rc.1's.
 3. Run `open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.16.0-rc.2/appcast.xml`, then **Check for Updates…**. Sparkle's sheet shows rc.2, and Settings ▸ Updates shows the badge. **Install and Relaunch**: About reads rc.2's build, and `codesign -dv` shows the team ID. On an error sheet, run `log show --last 10m --predicate 'process == "Scout" AND eventMessage CONTAINS[c] "sparkle"' --info`.
 4. Delete both pre-releases and their tags.
 
