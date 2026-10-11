@@ -97,8 +97,13 @@ jobs:
                   if key not in entry:
                       sys.exit(f"marketplace.json plugins[{i}] missing required key: {key!r}")
 
-          if plugins[0]["source"] != "./plugin":
-              sys.exit(f"marketplace.json source must be './plugin', got {plugins[0]['source']!r}")
+          # Marketplace installs follow the `stable` branch, which only
+          # `scripts/release.sh finalize` moves (#362). "./plugin" would serve
+          # main's tip under the last release's version.
+          pinned = {"source": "git-subdir", "url": "https://github.com/Raven-Scout/Scout.git",
+                    "path": "plugin", "ref": "stable"}
+          if plugins[0]["source"] != pinned:
+              sys.exit(f"marketplace.json source must be {pinned!r}, got {plugins[0]['source']!r}")
 
           print("plugin manifests valid")
           PY

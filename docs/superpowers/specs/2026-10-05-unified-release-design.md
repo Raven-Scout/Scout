@@ -17,6 +17,12 @@ match `plugin.json`, so `versioning check` passes and `prepare` bumps both to 0.
 released at different points (`app/v0.14.0`, `plugin/v0.15.0`), `prepare` and `finalize` look up each
 artifact's own previous release (§4 step 2). D1, D2, §3 and §6 below read with v0.16.0 for v0.15.0.
 
+**Amended 2026-10-11 (#362):** marketplace installs no longer read `main`. The root `marketplace.json` pins the
+plugin with a `git-subdir` source (`url` `https://github.com/Raven-Scout/Scout.git`, `path` `plugin`, `ref`
+`stable`). `finalize` fast-forwards `stable` to the release commit once the release is published (§4 step 6).
+Until then `main` could ship merged-but-unreleased work under the last release's version. §3's marketplace line,
+§4's marketplace timing and §9's "read the latest release" item are updated to match.
+
 ## 1. Intent
 
 Jordan, 2026-10-05: *"I don't want people to have to install two things
@@ -80,8 +86,11 @@ move some of the setup steps into the app itself."*
   - Assets: the DMG, plus `appcast.xml` once Sparkle lands (§5).
   - Marked **Latest**, so `/releases/latest` (website, READMEs, Sparkle's feed)
     is always the current Scout.
-- **Marketplace users** read the version from `main`'s root
-  `marketplace.json`. That channel doesn't change.
+- **Marketplace users** install the plugin from the `stable` branch, which
+  always holds the latest release commit (#362). `main`'s root
+  `marketplace.json` names the source; the tree and the version come from
+  `stable`, because Claude Code takes the version from the installed
+  `plugin.json`.
 
 ## 4. The release script
 
@@ -144,11 +153,18 @@ One root `scripts/release.sh` replaces `apps/macos/scripts/release-app.sh`,
 5. Publish with **one call**:
    `gh release create vX.Y.Z --target <merge sha> --latest --title "Scout X.Y.Z" --notes-file … <DMG> [appcast.xml]`.
    That creates the tag and the release together.
-6. Verify: `/releases/latest` is `vX.Y.Z` with the DMG.
+6. Fast-forward `stable` to the release commit with a plain
+   `git push origin <sha>:refs/heads/stable`. From then on marketplace
+   installs and `claude plugin update` get exactly `vX.Y.Z`'s tree. Before
+   building, `finalize` checks that `stable` can fast-forward, and refuses
+   if it can't. `rc` never moves it.
+7. Verify: `/releases/latest` is `vX.Y.Z` with the DMG.
 
 **Failure handling.** Nothing is published, and **no tag exists, until the
 notarized DMG is in hand**. A failure anywhere in steps 1–5 leaves the remote
-untouched. The fix is to re-run `finalize`.
+untouched. The fix is to re-run `finalize`. If step 6's push fails, the release
+is already live: `finalize` stops and prints the one `git push` that finishes it.
+Until then marketplace users stay on the previous release.
 
 This replaces today's `release-plugin.sh --finalize`, which pushes the tag
 first and leaves publishing to a workflow that can fail after the tag is
@@ -163,9 +179,11 @@ identity and the `scout-notary` profile.
   machine.
 - Agents never run `release.sh` for real unless Jordan asks for that run.
 
-**Marketplace timing.** Marketplace users see `X.Y.Z` as soon as the release PR
-merges, because they read `main`'s manifest. App users see it once `finalize`
-publishes. That gap is usually minutes, and it's accepted.
+**Marketplace timing.** Marketplace users get `X.Y.Z` when `finalize` moves
+`stable` (step 6), right after it publishes, at the same moment as app users.
+Merging the release PR alone changes nothing for them. In the sandbox, an
+install made between the merge and `finalize` got the previous release under
+the previous version (#362).
 
 ## 5. How the app delivers and updates everything
 
@@ -333,8 +351,6 @@ Decided here (D4), designed separately, next:
 - CI-signed releases (D3, approach B). They would need the Developer ID
   certificate and a notary key in Actions secrets. They can follow later
   without changing anything users see.
-- Making the marketplace read the latest release instead of `main`. That
-  would close the minutes-long gap in §4.
 - The iOS and Android apps. They join the monorepo in later phases (monorepo
   spec), and the version rule will apply to them then.
 - Linux packaging beyond `install.sh`.
