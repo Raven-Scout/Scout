@@ -126,9 +126,9 @@ before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fir
 | `runs.failing` | Trailing consecutive non-skip runs with `outcome=failed`: 1 is yellow, ≥2 is red. `since` is the last success. | yellow / red | ledger | #233 |
 | `slot.never_fired:<key>` | A slot in `schedule.yaml` has no `last-fire` entry, and the vault is older than that slot's longest weekday gap plus its `missed_window_hours`. | yellow | schedule × last-fire | #199 |
 | `slot.stale:<key>` | Last fire is older than 2 × the slot's largest legitimate gap (from `weekdays` + `fires_at_local`) + `missed_window_hours`. Red when **every** slot is stale. | yellow / red | schedule × last-fire | #199, #210 |
-| `slot.fired_silent:<key>` | Fired at least `missed_window_hours` ago, with no outcome row of that slot since the fire. | yellow | last-fire × ledger | #218 |
-| `scheduler.stalled` | No `schedule.tick.completed` event in the last 2 h. | red | events | #199 |
-| `lane.dark:<type>` / `lane.silent:<type>` | Ported unchanged from `session-lane-liveness.py`: the budgets, `NO DATA YET`, commit attribution. | red / yellow | git × ledger | #199 |
+| `slot.fired_silent:<key>` | Fired at least `missed_window_hours` ago, and no outcome row of that slot *finished* at or after the fire. Not judged while the session lock is held by a live PID. *(Changed in implementation, §13.1.)* | yellow | last-fire × ledger | #218 |
+| `scheduler.stalled` | No `schedule.tick.completed` event in the last 2 h. Judged only when at least one local, non-manual slot is scheduled. "Never ticked" also requires that the tick job is installed on this host. *(Changed in implementation, §13.2.)* | red | events | #199 |
+| `lane.dark:<type>` / `lane.silent:<type>` | Ported unchanged from `session-lane-liveness.py`: the budgets, `NO DATA YET`, commit attribution. | red / red *(silent changed from yellow in implementation, §13.3)* | git × ledger | #199 |
 | `lock.skips` | ≥3 `skipped_lock` rows in 24 h. | yellow | ledger | #218 |
 | `update.failed` | The newest `update-outcomes` row is `failed`. | red | update ledger | #360 |
 | `update.held` | The newest row is `held`, or `deferred` for more than 72 h. | yellow | update ledger | #360 |
@@ -144,7 +144,7 @@ an accepted limit: the heartbeat is the second job and could cross-check, but se
 
 | Consumer | How it reads | What it shows |
 |---|---|---|
-| **Push** (`scoutctl health notify`) | Called by producers after they write: `run-outcome.sh` after each run, `self-update run` after each attempt, and `heartbeat.sh` once a day as a liveness sweep, which catches slots that never fire and so never call `run-outcome.sh`. | Red transitions, a 24 h reminder ("Scout has not completed a run in 3 days — your Claude login expired"), and "recovered". Channels below. |
+| **Push** (`scoutctl health notify`) | Called by producers after they write: `run-outcome.sh` after each run, `self-update run` after each attempt, and `heartbeat.sh` on every tick (every 30 min) as a liveness sweep, which catches slots that never fire and so never call `run-outcome.sh`. *(Changed from once a day in implementation, §13.4.)* | Red transitions, a 24 h reminder ("Scout has not completed a run in 3 days — your Claude login expired"), and "recovered". Channels below. |
 | **`bootstrap doctor`** | In-process. | A "Run health" section in text output. A `run_health` block in `--json`. The exit code is unchanged (D2). |
 | **`scoutctl health`** | — | `--json` (the contract), human text, exit 0/1/2. Replaces the inline Python in `/scout-status` 3g. |
 | **`/scout-status`** | `scoutctl health --json` | Headline from the worst finding, using today's wording for `auth.expired`. Per-type "last run" lines come from `last-fire.json` and the ledger, not `git log -10` (#199 §3). |
@@ -166,6 +166,13 @@ For each finding `id` that is red now:
 When the overall severity drops from red to yellow or green, send one "recovered" push and clear
 the red ids. Findings that disappear are dropped from the state. Pushes are best-effort and never
 change a caller's exit code.
+
+As implemented, the state machine has five refinements (§13.4–§13.5):
+- one call sends at most one red push, listing every new or overdue red, plus at most one "recovered";
+- `scheduler.stalled` and `slot.stale` must persist for 20 min before they push;
+- lane findings share one state key per lane;
+- a push that no channel delivered is retried on the next call;
+- calls are serialised by a lock.
 
 `run-outcome.sh` keeps its ledger write and classifier in bash. It loses the streak and Telegram
 code and gains:
@@ -384,7 +391,7 @@ Each PR is independently shippable and leaves `main` releasable.
    - `scoutctl health notify`, `notify_desktop.py`, the `notify.command` channel (Q4), `health-notify.json`.
    - `run-outcome.sh` drops its streak and Telegram code and gains the notify call plus the bash
      floor.
-   - The lane rules are ported into `health.py`. `heartbeat.sh` runs the daily sweep instead of
+   - The lane rules are ported into `health.py`. `heartbeat.sh` runs the sweep (every tick, §13.4) instead of
      `session-lane-liveness.py --notify`; the script stays as a stdlib-only manual instrument.
 3. **P3: consumers.**
    - `/scout-status` 3g and its last-run lines; the wrap pre-flight in `phases/`.
@@ -482,3 +489,79 @@ Jordan accepted every recommendation on 2026-10-11. The table keeps each questio
 | Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
 | Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
 | Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
+
+## 13. Changes made during implementation (2026-10-11)
+
+P1 and P2 departed from the text above in the ways below. Each change came out of a whole-branch
+review that ran `scoutctl health` read-only against a mature vault, and the coordinator agreed to
+each one. The sections above point here.
+
+### 13.1 `last-fire.json` is not the dispatch time (P1)
+
+`schedule_tick` builds `last-fire.json` from the newest of two timestamps:
+- the `usage-tracker.jsonl` row the tick writes at dispatch;
+- the `session-tokens.jsonl` row the Stop hook writes when the session ends.
+
+So a slot's "last fire" is usually its last session's end. As first written, `slot.fired_silent`
+looked for an outcome row that *started* after the fire, and it flagged every healthy slot on a
+mature vault. A fire now counts as covered by any outcome row of that slot that *finished* at or
+after it, minus 120 s of slack. That reading holds whichever timestamp the file carries. A run
+still in progress, found by the session lock being held by a live PID, is not judged, because a
+research run can outlast `missed_window_hours`. `slots[].last_fire` in the JSON has the same
+meaning: the newer of the dispatch and the last session end.
+
+### 13.2 `scheduler.stalled` gating (P1)
+
+The rule as written turned a vault red forever in three cases:
+- a second machine syncing the vault, where the events are gitignored but `last-fire.json` is
+  committed;
+- a host with jobs deliberately not installed;
+- a schedule with no local slots.
+
+As implemented, the finding is judged only when at least one local, non-manual slot is scheduled.
+Its "has never recorded a tick" branch also requires two things: the tick job is installed on this
+host (a launchd plist or the scout-managed crontab line), and the later of the vault's first commit
+and the `schedule.yaml` mtime is more than 2 h old. A scheduler that ticked once and then stopped is
+still red, with no gate.
+
+### 13.3 `lane.silent` is red, not yellow (P2)
+
+`session-lane-liveness.py` treated FIRING-BUT-SILENT as 🔴 and pushed it. A lane is only "silent"
+when it has produced no commits for its whole dark budget while it still fires, so it is broken.
+As yellow it would never push, and a lane that budget-skips every run would stay quiet forever,
+which is the #233 failure. That keeps "ported unchanged" literally true.
+
+### 13.4 Sweep cadence and the wake grace (P2)
+
+After a laptop wakes, launchd fires the missed heartbeat and the missed schedule tick together, and
+`schedule.tick.completed` is written only when the tick ends. A sweep that evaluates first sees "no
+tick for more than 2 h" and pushes a false red, then a "recovered" push. The mature vault had 15
+tick gaps over 2 h in one week. As implemented:
+- `scheduler.stalled` and `slot.stale:*` push only once they have been continuously present for
+  20 min;
+- `heartbeat.sh` runs `scoutctl health notify` on every tick (30 min) instead of once a day, so a
+  real stall is confirmed by the next tick. The notifier is read-only apart from its own state, and
+  its state de-duplicates pushes, so running it every tick is cheap.
+
+The notifier's "last overall" severity is the severity it has announced, so a red still inside its
+grace window never triggers a "recovered".
+
+### 13.5 Notifier refinements (P2)
+
+- **Coalescing.** A call sends at most one red push, listing every red that is new or overdue a
+  reminder, with `auth.expired` first, plus at most one "recovered". State stays per finding. One
+  outage, such as an expired login that also darkens four lanes, is one message a day, not five.
+- **Lane key.** Lane findings share the state key `lane:<type>`, so a lane alternating between
+  silent and dark does not re-push "new" and "recovered" each cycle. `SCOUT_NOTIFY_FINDING` carries
+  that key for lanes.
+- **Undelivered pushes retry.** When no channel reports success, including the case where no
+  channel is configured, every finding the push listed keeps its previous push stamp, so the next
+  call retries. A Telegram send refused as a duplicate (#241) counts as delivered.
+- **Serialised.** `run-outcome.sh` and the heartbeat can call `health notify` at the same moment,
+  so calls take an advisory lock on `.scout-state/health-notify.lock`. If the lock can't be had
+  within 10 s, the call skips without pushing.
+- **Visible failures.** An internal error in the notifier prints one line to stderr, which lands in
+  the run log or `health-notify.log`, and still exits 0.
+- **Telegram duplicate guard (#241, folded into P2).** `scoutctl notify telegram` refuses a
+  byte-identical body to the same chat within 10 min, unless `--allow-duplicate` is passed. It
+  prints its receipt as `id=<id>` on stderr line 1.
