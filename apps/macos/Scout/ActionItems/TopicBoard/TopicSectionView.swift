@@ -11,6 +11,7 @@ struct TopicSectionView: View {
     var onRename: ((String) -> Void)?
 
     @State private var asking = false
+    @State private var renaming = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,7 +19,8 @@ struct TopicSectionView: View {
                 height: Self.headerHeight,
                 label: topic.title,
                 expanded: $expanded,
-                onAsk: { asking = true }
+                onAsk: { asking = true },
+                handlesKeys: !renaming
             ) { hovered in
                 header(hovered: hovered)
             }
@@ -52,7 +54,8 @@ struct TopicSectionView: View {
                     scoutTitle: topic.meta?.title ?? topic.title,
                     canRename: topic.meta != nil && onRename != nil,
                     rowHovered: hovered,
-                    onRename: { onRename?($0) }
+                    onRename: { onRename?($0) },
+                    editing: $renaming
                 )
                 .font(DS.sans(15, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)

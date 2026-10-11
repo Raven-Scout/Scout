@@ -233,7 +233,7 @@ So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} 
 
     ## 🧹 Loose ends
 
-    - [Delete the merged reattach branch](https://github.com/example-org/web/pull/9484)
+    - [Delete the merged reattach branch](https://github.com/example-org/web/pull/42)
 
 - Inbox holds new mentions, DMs and notifications not yet turned into tasks. Loose ends holds cleanup: stale branches, drafts, finished threads to close.
 - `action-items/dismissed.md` lists the entries the user closed, by URL or else by text. Never re-add a listed entry, and never write that file yourself. A listed PR URL means the PR was dropped or handed to another team: never create a task for it either.

@@ -11,7 +11,8 @@ struct TopicNameField: View {
     let rowHovered: Bool
     let onRename: (String) -> Void
 
-    @State private var editing = false
+    /// Whether the name is being edited; the host row stops handling keys meanwhile.
+    @Binding var editing: Bool
     @State private var draft = ""
     @FocusState private var focused: Bool
 
