@@ -136,9 +136,17 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: app releases go through the repo-root unified release script, [`scripts/release.sh`](../../scripts/release.sh) ([Raven-Scout/Scout#317](https://github.com/Raven-Scout/Scout/pull/317)). For the app it calls [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh) to sign Sparkle's nested helpers and to generate and sign the appcast. See the header of `scripts/release.sh` for usage and prerequisites.
+Maintainers: releases are cut from the repo root with one script, which builds the app with the plugin
+bundled from the same commit, signs and notarizes it, and publishes one `vX.Y.Z` release:
 
-`scripts/release-app.sh`, the old app-only release script, refuses any build that embeds Sparkle, which is every build from v0.16.0 on. #317 retires it.
+```bash
+scripts/release.sh prepare            # opens the release PR (auto-picks patch/minor)
+scripts/release.sh finalize v0.16.0   # after the PR merges
+scripts/release.sh rc v0.16.0-rc.1    # a pre-release, cut from release/v0.16.0 after prepare
+SKIP_NOTARIZE=1 SKIP_RELEASE=1 scripts/release.sh rc v0.16.0-rc.1   # dry run on the local release branch; publishes nothing
+```
+
+The script calls [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh) to sign Sparkle's nested helpers and to generate and sign the appcast ([Raven-Scout/Scout#317](https://github.com/Raven-Scout/Scout/pull/317)). The older app-only `scripts/release-app.sh` refuses any build that embeds Sparkle, so use the root script.
 
 ## Relationship to the plugin
 

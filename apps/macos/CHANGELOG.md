@@ -1,7 +1,8 @@
 # Changelog — Scout for macOS
 
-Versions are tagged `app/vX.Y.Z`. The plugin has its own changelog at
-[`plugin/CHANGELOG.md`](../../plugin/CHANGELOG.md) and its own version line.
+Scout's app and plugin share one version and one release (`vX.Y.Z`), cut with `scripts/release.sh`. Each
+release's notes combine this file's section with [`plugin/CHANGELOG.md`](../../plugin/CHANGELOG.md).
+Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promotes it.
 
 ## [Unreleased]
 
@@ -15,10 +16,13 @@ Versions are tagged `app/vX.Y.Z`. The plugin has its own changelog at
 ### Changed
 - The app now lives at `apps/macos/` in the Scout monorepo (was
   `Raven-Scout/Scout` repo root). No behavior change.
+- The app and the plugin share one version and ship as one release, cut with
+  `scripts/release.sh` (Raven-Scout/Scout#317). The plugin shipped 0.15.0 on
+  its own, and the app was never released as 0.15.0; v0.16.0 is the first
+  release of both.
 
 ## Releases before the monorepo
 
-Versions up to the latest bare `vX.Y.Z` tag were released from the standalone
-`Raven-Scout/Scout` repository, before this app moved into the monorepo. See
-[releases](https://github.com/Raven-Scout/Scout/releases) and `git log` for
-that history.
+Up to v0.14.0 the app was released from its own repository, now
+[Raven-Scout/scout-app-legacy](https://github.com/Raven-Scout/scout-app-legacy/releases). Those releases are
+re-tagged `app/vX.Y.Z` here.
