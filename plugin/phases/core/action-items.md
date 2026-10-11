@@ -179,6 +179,37 @@ Good vs bad (anonymized):
 - Never write, edit or remove them yourself. If one looks wrong, say so in the digest and leave it.
 - A past `block:` without an `actual:` is data the estimate feedback loop still needs. Keep it until the task is done and the user has logged the time with `/scout-plan review`.
 
+### Board Fields (optional)
+
+Up to six machine sub-bullets give the app's topic board what the section alone can't say. Write them directly under the task line, after any plan markers, in this order, and only when you know the value:
+
+    - [ ] [#REPLYX] **Reply to Alex about her purchase question**
+      - Topic: #STRM
+      - State: waiting
+      - Depends: #XREF, #QBLK
+      - Session: https://claude.ai/code/session_0123
+      - Priority: 2
+      - Cycle: current
+
+- `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
+- `State:` is one of `mine` (needs {{USER_NAME}}'s action or decision), `doing` ({{USER_NAME}} or an agent is working on it), `waiting` (on someone else), `blocked` (by another task) or `hold`. Omit it when the section already says it: the app reads 🔴/🟡 as `mine`, 🟢 as `waiting` and `[x]` as done. Snooze stays the way to park a task until a date, and an active snooze wins over `State:`; `hold` is for parking with no date.
+- `Depends:` lists the `[#TAG]`s of tasks this one needs first. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Read both PR bodies to find out. A task with an open dependency is `State: blocked`.
+- `Session:` is the Claude session working on it (a `claude.ai/code/session_…` link, or a local session's UUID).
+- `Priority:` is the linked Linear issue's priority (0 none, 1 urgent … 4 low). `Cycle: current` marks a Linear issue in the active cycle. Omit both without a Linear issue.
+- Carry them forward verbatim with the task, like plan markers, and update a value only when you have just verified it. Never fold them into `- Refs:`.
+
+**Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
+
+    # Topics
+
+    ## [#STRM] Make stream reattach survive a restart
+    - Session: https://claude.ai/code/session_0123
+    - Summary: Two PRs, the second needs the first
+
+- Mint the tag with `scoutctl action-items new-prefix`, like a task's. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
+- Keep the title a short noun phrase and the summary to one line. Update them freely.
+- `- Renamed:` is the user's own name for the topic. Never write, change or remove it.
+
 ### Hard Rule — Trim by Demotion, Never by Omission
 
 When the list grows long, achieve focus by **reprioritizing**, never by hiding items from view. "Don't overwhelm me" and "don't drop my items" are both real constraints — resolve the tension by demotion *within* view, not omission *from* view.

@@ -677,7 +677,8 @@ nonisolated extension ActionItemsParser {
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
-                    snoozedFromKind: last.snoozedFromKind
+                    snoozedFromKind: last.snoozedFromKind,
+                    fields: last.fields
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -713,7 +714,8 @@ nonisolated extension ActionItemsParser {
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
-                    snoozedFromKind: parsedKind ?? last.snoozedFromKind
+                    snoozedFromKind: parsedKind ?? last.snoozedFromKind,
+                    fields: last.fields
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -748,9 +750,23 @@ nonisolated extension ActionItemsParser {
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
-                    snoozedFromKind: last.snoozedFromKind
+                    snoozedFromKind: last.snoozedFromKind,
+                    fields: last.fields
                 )
                 currentTasks[currentTasks.count - 1] = updated
+                i += 1; continue
+            }
+
+            // Board field sub-bullet: `  - State: waiting`, `  - Depends: #TAG`, …
+            // (see `TaskFieldsParser`). Reserved keys are task metadata, so this
+            // must precede subBulletCommentRe, which would otherwise read the
+            // line as a comment from author "State".
+            if inSection,
+               let last = currentTasks.last,
+               let field = TaskFieldsParser.match(line) {
+                currentTasks[currentTasks.count - 1] = last.replacingFields(
+                    TaskFieldsParser.applying(key: field.key, value: field.value, to: last.fields)
+                )
                 i += 1; continue
             }
 
@@ -780,7 +796,8 @@ nonisolated extension ActionItemsParser {
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
-                    snoozedFromKind: last.snoozedFromKind
+                    snoozedFromKind: last.snoozedFromKind,
+                    fields: last.fields
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
@@ -807,7 +824,8 @@ nonisolated extension ActionItemsParser {
                     carriedInFrom: last.carriedInFrom,
                     indentLevel: last.indentLevel,
                     shortPrefix: last.shortPrefix,
-                    snoozedFromKind: last.snoozedFromKind
+                    snoozedFromKind: last.snoozedFromKind,
+                    fields: last.fields
                 )
                 currentTasks[currentTasks.count - 1] = updated
                 i += 1; continue
