@@ -81,7 +81,6 @@ When a PR becomes an action item, the line must state **what the PR does, which 
 
 A bare title + status is not enough context to act on.
 
-
 ### New Issues Assigned
 
 ```bash
@@ -216,9 +215,9 @@ gh pr view {number} --repo {owner}/{repo} --json state,reviewDecision,mergedAt,c
 
 **PR status claims.** Before an item says a PR "needs review", is "ready to merge" or "independent", or that {{USER_NAME}} should ask someone, check, this run, from the fields above:
 
-1. **Whether review is what's missing.** `reviewDecision` is set only when branch protection or a ruleset requires reviews: `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`. Empty means no approval is required, so "needs review" is wrong. `mergeStateStatus` then says what actually stops the merge: `BLOCKED` (a required review or check), `BEHIND` (needs the base merged in), `DIRTY` (conflicts), `UNSTABLE` (a failing check) or `CLEAN` (ready). Don't read branch protection endpoints for this: a repo on rulesets returns 404 from `/protection`, and that endpoint 404s for non-admins too.
+1. **Whether review is what's missing.** `reviewDecision` is set only when branch protection or a ruleset requires reviews: `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`. Empty means no approval is required, so "needs review" is wrong. `mergeStateStatus` then says what actually stops the merge: `BLOCKED` (a required review or check), `BEHIND` (needs the base merged in), `DIRTY` (conflicts), `UNSTABLE` (a failing check), `DRAFT` (a draft, not ready for review) or `CLEAN` (ready). `UNKNOWN` means GitHub hasn't computed it yet, which is common right after a push: query once more, and if it is still `UNKNOWN`, don't call the PR ready to merge. Don't read branch protection endpoints for this: a repo on rulesets returns 404 from `/protection`, and that endpoint 404s for non-admins too.
 2. **Who was asked.** `reviewRequests` lists only reviewers who haven't submitted yet. Read `latestReviews` for those who have. Name them; name a `Team` entry as the team, as in the direct-vs-team buckets above. Never write "ask X" or "no reviewer yet" without checking both.
-3. **Functional dependencies.** A PR depends on another PR, in any repo, when its feature only works once that one lands, even if it merges cleanly and does nothing alone (flag, config and chart PRs count). Look in this PR's `body` and in the bodies of the PRs already fetched this run. Never call such a PR independent or suggest merging it alone: say what it waits on.
+3. **Functional dependencies.** Apply the functional-dependency rule under `Depends:` in the action-items phase's **Board Fields**, from this PR's `body` and the bodies of the PRs already fetched this run. Never call such a PR independent or suggest merging it alone: say what it waits on.
 4. **Summaries are leads, not facts.** A claim from a session transcript, an earlier action item or another agent's summary is re-checked against these fields before it is repeated.
 
 If a check can't run, write the claim as `[unverified — not queried this run]`.
