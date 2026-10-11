@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from scout.errors import (
+    ActionItemAmbiguous,
     ActionItemError,
+    ActionItemNotFound,
     ConfigError,
     ContractViolation,
     DataDirError,
@@ -21,6 +23,8 @@ def test_exit_codes_are_stable() -> None:
     assert SchemaVersionMismatch.exit_code == 12
     assert KBError.exit_code == 20
     assert ActionItemError.exit_code == 21
+    assert ActionItemNotFound.exit_code == 22
+    assert ActionItemAmbiguous.exit_code == 23
     assert ExternalProcessError.exit_code == 30
     assert ContractViolation.exit_code == 40
 
@@ -43,3 +47,10 @@ def test_all_subclasses_inherit_from_scout_error() -> None:
         ContractViolation,
     ):
         assert issubclass(cls, ScoutError)
+
+
+def test_selector_failures_are_action_item_errors() -> None:
+    """Callers that catch ActionItemError keep catching both; only the
+    process exit code tells the app which one happened."""
+    assert issubclass(ActionItemNotFound, ActionItemError)
+    assert issubclass(ActionItemAmbiguous, ActionItemError)

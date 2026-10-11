@@ -22,7 +22,7 @@ import pytest
 from typer.testing import CliRunner
 
 from scout import __version__, cli
-from scout.errors import DataDirError
+from scout.errors import ActionItemAmbiguous, ActionItemError, ActionItemNotFound, DataDirError
 
 
 @pytest.fixture
@@ -102,6 +102,27 @@ def test_main_forwards_scouterror_exit_code_and_message(
     captured = capsys.readouterr()
     assert "missing dir" in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (ActionItemNotFound("no open task matched subject: 'x'"), 22),
+        (ActionItemAmbiguous("ambiguous subject 'x'"), 23),
+        (ActionItemError("--until: invalid date 'x'"), 21),
+    ],
+)
+def test_main_tells_action_item_selector_failures_apart(
+    monkeypatch: pytest.MonkeyPatch, exc: ActionItemError, code: int
+) -> None:
+    """Scout.app retries a no-match after backfilling prefixes, so it has to
+    tell no-match and ambiguous apart from other action-item failures."""
+    _install_raising_app(monkeypatch, exc)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == code
 
 
 def test_main_maps_unexpected_exception_to_reserved_exit_code(

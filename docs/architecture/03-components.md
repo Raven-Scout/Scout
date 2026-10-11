@@ -101,7 +101,7 @@ flowchart LR
   subgraph engine ["scoutctl engine"]
     direction LR
     cli["<b>cli.py</b><br/>[Typer app]<br/>The command tree. Lazy imports per<br/>command. Maps ScoutError subclasses to<br/>exit codes, anything else to 70"]:::component
-    errors["<b>errors.py</b><br/>[module]<br/>Exit-code contract: ConfigError 10,<br/>DataDirError 11, KBError 20,<br/>ActionItemError 21, ExternalProcessError 30,<br/>ContractViolation 40"]:::component
+    errors["<b>errors.py</b><br/>[module]<br/>Exit-code contract: ConfigError 10,<br/>DataDirError 11, KBError 20,<br/>ActionItemError 21, ActionItemNotFound 22,<br/>ActionItemAmbiguous 23, ExternalProcessError 30,<br/>ContractViolation 40"]:::component
     config["<b>config.py, paths.py</b><br/>[modules]<br/>Vault path authority: explicit,<br/>SCOUT_DATA_DIR, then ~/Scout.<br/>Three-layer config merge: packaged<br/>defaults, vault scout-config.yaml, env.<br/>Timezone and today() authority"]:::component
     bootstrap["<b>scripts/bootstrap.py</b><br/>[orchestrator]<br/>install, upgrade, migrate-legacy as<br/>ordered stages: dirs, cat-1 files, seeds,<br/>schedule, runners with backups, brain<br/>files, merge files, jobs, shim,<br/>version stamp, doctor"]:::component
     assembly["<b>scripts/phase_assembly.py</b><br/>[module]<br/>Parse multi-section phase files, select<br/>by requires and mode, render VARS.<br/>Unknown VARS become empty"]:::component
