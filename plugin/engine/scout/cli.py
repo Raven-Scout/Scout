@@ -1603,6 +1603,42 @@ def _register_notify() -> None:
 _register_notify()
 
 
+health_app = typer.Typer(
+    help="Run health: are scheduled runs happening and succeeding?",
+    invoke_without_command=True,
+)
+
+
+def _register_health() -> None:
+    """scoutctl health [--json] — run-health report; exits 0 green / 1 yellow / 2 red."""
+    app.add_typer(health_app, name="health")
+
+    @health_app.callback()
+    def cli_health(
+        ctx: typer.Context,
+        json_out: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+    ) -> None:
+        if ctx.invoked_subcommand is not None:
+            return
+        import json as _json
+
+        from scout import health as _health
+        from scout import paths as _paths
+
+        report = _health.evaluate(_paths.data_dir())
+        if json_out:
+            typer.echo(_json.dumps(report.to_dict()))
+        else:
+            typer.echo(f"run health: {report.severity}")
+            for f in report.findings:
+                typer.echo(f"{f.severity}  {f.id}: {f.summary}")
+                typer.echo(f"    fix: {f.fix}")
+        raise typer.Exit(code=report.exit_code)
+
+
+_register_health()
+
+
 def _resolve_claude_bin_or_warn(explicit: str, resolve: Callable[[str], str]) -> str:
     """Resolve ``--claude-bin`` once so the value persisted in scout-config.yaml
     is the concrete path the runners were rendered with; warn when it is not
