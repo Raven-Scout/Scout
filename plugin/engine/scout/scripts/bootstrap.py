@@ -764,6 +764,7 @@ class CustomApplyResult:
     sidecars: list[str] = field(default_factory=list)  # sidecars this change wrote
     waiting: list[str] = field(default_factory=list)  # brain files skipped: pending sidecar or conflict markers
     backups: list[str] = field(default_factory=list)  # parked copies (pre-provenance vaults)
+    drifted: list[str] = field(default_factory=list)  # brain files whose snapshot missed `before` (deferred by drift)
 
 
 def apply_custom_change(
@@ -787,14 +788,18 @@ def apply_custom_change(
     """
     snapshot_dir = _snapshot_dir(after)
     changed: list[str] = []
+    drifted: list[str] = []
     for kind in brain_merge.BRAIN_KINDS:
         old = _assemble(before, kind, custom=custom_before)
         if old == _assemble(after, kind, custom=custom_after):
             continue
         snap = snapshot_dir / f"{kind}.md"
         if not snap.exists() or snap.read_text(encoding="utf-8") != old:
-            return CustomApplyResult(status="deferred")
+            drifted.append(f"{kind}.md")
+            continue
         changed.append(kind)
+    if drifted:
+        return CustomApplyResult(status="deferred", drifted=drifted)
     if not changed:
         return CustomApplyResult(status="unchanged")
     outcome = _stage_cat4_upgrade(after, custom=custom_after, kinds=tuple(changed))

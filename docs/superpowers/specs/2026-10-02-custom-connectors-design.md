@@ -1,6 +1,6 @@
 # Custom connectors — design
 
-**Status:** proposed (design review only; no behavior change in this PR)
+**Status:** implemented — engine in #261, onboarding/install surface tracked in #321
 **Date:** 2026-10-02
 **Related:** #152 (optional-connector catalog spec), #180 (Asana/Jira/Google Chat),
 #172 (canonical-key invariant), #251 (upgrade preserves vault fixes),
@@ -159,7 +159,7 @@ activity. Each is a normal phase file (frontmatter + body) parsed by the existin
 
 Placeholders: `{{CONNECTOR_NAME}}`, `{{CONNECTOR_TOOLS}}` (rendered as a bullet list
 of tools, with a "call these as MCP tools" / "run these commands" line per tool
-type), `{{CONNECTOR_FOCUS}}`, `{{CONNECTOR_NOTES}}`, plus the usual
+type), `{{CONNECTOR_GUIDANCE}}`, `{{CONNECTOR_NOTES}}`, plus the usual
 `{{USER_NAME}}`/`{{USER_EMAIL}}` and `{{INPUT_*}}`. The template prose carries the
 cross-cutting rules every connector needs — cross-reference `people.md`, file
 uncertain items under **Watching**, never promote an item on tone alone, record the
@@ -244,7 +244,10 @@ The vault resolves like every other `scoutctl` command (`SCOUT_DATA_DIR`, else
 (`{"status": …, "key": …, "issues": [{"path", "message"}], …}`) and use stable exit
 codes: `0` applied, `2` invalid (every issue listed with a field path) or probe
 failed, `3` saved but not yet live (plugin drift → run `/scout-update`, or a merge
-conflict → resolve `SKILL.md.proposed-merge`), `1` other failure.
+conflict → resolve `SKILL.md.proposed-merge`), `4` busy (the vault session lock is
+held by another run; the call waited its bounded time and wrote nothing, or was
+given `--no-wait` for `add`/`remove`, which fail fast instead of waiting; retry
+later), `1` other failure.
 
 | Command | Behavior |
 |---|---|

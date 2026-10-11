@@ -20,6 +20,7 @@ SUITE = {
     "preset": "mail",
     "inbound": {"tools": ["mcp__example_suite__search_messages"]},
 }
+SUITE_WITH_LOOKUP = {**SUITE, "lookup": {"tools": ["mcp__example_suite__search_messages"]}}
 TICKETS = {
     "key": "tickets",
     "display_name": "Tickets",
@@ -531,3 +532,19 @@ def test_list_custom_without_a_scout_config_lists_everything_disabled(tmp_path: 
     listing = ops.list_custom(tmp_path, plugin_root=PLUGIN)
     assert [(c["key"], c["enabled"]) for c in listing["connectors"]] == [("tickets", False)]
     assert listing["issues"] == []
+
+
+def test_drift_message_names_the_drifted_file(vault: Path):
+    research = vault / ".scout-state" / "last-assembled" / "RESEARCH.md"
+    research.write_text(research.read_text() + "\nplugin changed underneath\n")
+    out = _add(vault, SUITE_WITH_LOOKUP)
+    assert (out.status, out.waiting) == ("deferred", [])
+    assert out.message.startswith("Saved. RESEARCH.md was last assembled from a different plugin version")
+
+
+def test_drift_message_pluralizes_for_several_files(vault: Path):
+    for name in ("SKILL.md", "RESEARCH.md"):
+        snap = vault / ".scout-state" / "last-assembled" / name
+        snap.write_text(snap.read_text() + "\nplugin changed underneath\n")
+    out = _add(vault, SUITE_WITH_LOOKUP)
+    assert out.message.startswith("Saved. SKILL.md, RESEARCH.md were last assembled from a different plugin version")
