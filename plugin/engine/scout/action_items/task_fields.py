@@ -2,7 +2,9 @@
 
     - [ ] [#REPLYX] **Reply to Alex about her purchase question**
       - Topic: #STRM
-      - State: waiting
+      - Parent: #RTALL
+      - State: mine
+      - Action: Reply
       - Depends: #XREF, #QBLK
       - Session: https://claude.ai/code/session_0123
       - Priority: 2
@@ -19,7 +21,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 TASK_STATES = frozenset({"mine", "doing", "waiting", "blocked", "hold"})
-TASK_FIELD_KEYS = frozenset({"topic", "state", "depends", "session", "priority", "cycle"})
+TASK_FIELD_KEYS = frozenset({"topic", "parent", "state", "action", "depends", "session", "priority", "cycle"})
 PRIORITY_RANGE = range(0, 5)
 
 _FIELD_LINE_RE = re.compile(r"^\s+-\s+(?P<key>[A-Za-z]+)\s*:\s*(?P<value>.*?)\s*$")
@@ -30,7 +32,9 @@ _DEPENDS_SPLIT_RE = re.compile(r"\s*(?:,|·|\s)\s*")
 @dataclass(frozen=True)
 class TaskFields:
     topic: str | None = None
+    parent: str | None = None
     state: str | None = None
+    action: str | None = None
     depends: tuple[str, ...] = field(default_factory=tuple)
     session: str | None = None
     priority: int | None = None
@@ -83,8 +87,12 @@ def apply_field(fields: TaskFields, key: str, value: str) -> TaskFields:
     match key:
         case "topic":
             return replace(fields, topic=parse_topic(value))
+        case "parent":
+            return replace(fields, parent=parse_topic(value))
         case "state":
             return replace(fields, state=parse_state(value))
+        case "action":
+            return replace(fields, action=parse_text(value))
         case "depends":
             return replace(fields, depends=parse_depends(value))
         case "session":

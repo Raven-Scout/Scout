@@ -10,7 +10,9 @@ nonisolated enum TaskState: String, CaseIterable, Sendable {
 ///
 ///     - [ ] [#REPLYX] **Reply to Alex about her purchase question**
 ///       - Topic: #STRM
-///       - State: waiting
+///       - Parent: #RTALL
+///       - State: mine
+///       - Action: Reply
 ///       - Depends: #XREF, #QBLK
 ///       - Session: https://claude.ai/code/session_0123
 ///       - Priority: 2
@@ -22,17 +24,21 @@ nonisolated enum TaskState: String, CaseIterable, Sendable {
 /// indexes comments for `delete-comment` / `edit-comment --index`.
 nonisolated struct TaskFields: Equatable, Hashable, Sendable {
     var topic: String?
+    /// The item this one is a separate step of; the board nests it there.
+    var parent: String?
     var state: TaskState?
+    /// 1–3 word imperative for a `mine` item, e.g. "Merge", "Review + decide".
+    var action: String?
     var depends: [String]
     var session: String?
     var priority: Int?
     var cycle: String?
 
-    static let empty = TaskFields(topic: nil, state: nil, depends: [], session: nil, priority: nil, cycle: nil)
+    static let empty = TaskFields(topic: nil, parent: nil, state: nil, action: nil, depends: [], session: nil, priority: nil, cycle: nil)
 }
 
 nonisolated enum TaskFieldsParser {
-    static let keys: Set<String> = ["topic", "state", "depends", "session", "priority", "cycle"]
+    static let keys: Set<String> = ["topic", "parent", "state", "action", "depends", "session", "priority", "cycle"]
 
     private static let lineRe = try! NSRegularExpression(pattern: #"^\s+-\s+([A-Za-z]+)\s*:\s*(.*?)\s*$"#)
     private static let dependsTokenRe = try! NSRegularExpression(
@@ -53,6 +59,8 @@ nonisolated enum TaskFieldsParser {
         var next = fields
         switch key {
         case "topic": next.topic = depends(value).first
+        case "parent": next.parent = depends(value).first
+        case "action": next.action = text(value)
         case "state": next.state = state(value)
         case "depends": next.depends = depends(value)
         case "session": next.session = text(value)

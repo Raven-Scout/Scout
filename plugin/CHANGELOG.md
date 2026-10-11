@@ -7,7 +7,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Optional board fields on action items** (`engine/scout/action_items/task_fields.py`, `phases/core/action-items.md`). A task can carry `- Topic:`, `- State:`, `- Depends:`, `- Session:`, `- Priority:` and `- Cycle:` sub-bullets for the app's upcoming topic board, and runs describe each workstream in `action-items/topics.md`. The parser reads the fields onto `ActionItem.fields`. They are metadata, never comments, so `delete-comment` / `edit-comment --index` and the HTML render skip them. Files without them parse as before (#340).
+- **Optional board fields on action items** (`engine/scout/action_items/task_fields.py`, `phases/core/action-items.md`). A task can carry `- Topic:`, `- Parent:`, `- State:`, `- Action:`, `- Depends:`, `- Session:`, `- Priority:` and `- Cycle:` sub-bullets for the app's upcoming topic board, and runs describe each workstream in `action-items/topics.md`. The phase spells out strict rules for each state, requires an `Action:` on every `mine` task, keeps a parent only while it has two or more open children, and has runs re-check every task. The parser reads the fields onto `ActionItem.fields`. They are metadata, never comments, so `delete-comment` / `edit-comment --index` and the HTML render skip them. Files without them parse as before (#340).
 
 ### Fixed
 - **The KB staleness check reads the dates runs actually write** (`engine/scout/hooks/kb_pre_filter.py`, `phases/core/kb-management.md`). On a vault outside US Eastern almost nothing parsed, and `.scout-cache/kb-filter.md` reported `Stale: 0` exactly as a perfectly fresh KB would, so dreaming's freshness audit never selected most files. The pre-filter now:
