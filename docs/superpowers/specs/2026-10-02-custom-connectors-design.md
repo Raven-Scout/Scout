@@ -160,7 +160,11 @@ activity. Each is a normal phase file (frontmatter + body) parsed by the existin
 Placeholders: `{{CONNECTOR_NAME}}`, `{{CONNECTOR_TOOLS}}` (rendered as a bullet list
 of tools, with a "call these as MCP tools" / "run these commands" line per tool
 type), `{{CONNECTOR_GUIDANCE}}`, `{{CONNECTOR_NOTES}}`, plus the usual
-`{{USER_NAME}}`/`{{USER_EMAIL}}` and `{{INPUT_*}}`. The template prose carries the
+`{{USER_NAME}}`/`{{USER_EMAIL}}` and `{{INPUT_*}}`. A one-line `bash:` command
+renders inline (`` - `cmd` — run with Bash ``); a multi-line one renders as a
+fenced ```` ```bash ```` block nested under its bullet, with the fence longer than
+any backtick run in the command, so a column-0 `# comment` stays shell and never
+becomes a markdown heading (#344). The template prose carries the
 cross-cutting rules every connector needs — cross-reference `people.md`, file
 uncertain items under **Watching**, never promote an item on tone alone, record the
 source link — so a connector without a preset still gets sound behavior.
@@ -253,7 +257,7 @@ later), `1` other failure.
 |---|---|
 | `connectors custom add --file F [--input NAME=VALUE …] [--dry-run] [--unverified] [--no-wait]` | `F` is one connector mapping with a `key` field (`-` = stdin; YAML or JSON). Validate; run a bash probe (fail → exit 2 unless `--unverified`); apply (§2); write/replace the entry in `connectors.custom.yaml`; add the key to `connectors.enabled`; store inputs. `--dry-run` returns the sections it would render and writes nothing. |
 | `connectors custom remove KEY [--no-wait]` | Apply the removal; drop the entry, the enabled key, and the connector's inputs. |
-| `connectors custom validate --file F` | Validate a single definition without writing. |
+| `connectors custom validate --file F [--input NAME=VALUE …]` | Validate a single definition, and any input values exactly as `add` would, without writing. |
 | `connectors custom list` | One row per entry in the file, valid or not, sorted by key, plus the file's `issues`. Every row has `key`, `valid`, `enabled`, `display_name` and `definition` (the entry as written, made JSON-safe: unquoted dates become ISO strings). A valid row (`valid: true`) adds `server`, `health_key`, `preset` and `activities`. An invalid row (`valid: false`) has none of those four, its `display_name` is null unless the entry has a text one, and it adds its own `issues`; clients branch on `valid`. |
 | `connectors list --json` | The health roster (shipped + derived custom rows): key, display name, tier, `required_in_types`. This is what the app merges over its bundled snapshot. |
 | `connectors presets` | Preset names with their default text per activity (JSON). |
@@ -261,7 +265,15 @@ later), `1` other failure.
 **Inputs** are stored in `scout-config.yaml` `connectors.inputs` as
 `<key>__<name>` (so two connectors can both ask for `workspace_id`) and rendered
 into that connector's sections as `{{INPUT_<NAME>}}`. `add` fails with exit 2 if a
-`needs_user_input` name has neither an `--input` nor a stored value.
+`needs_user_input` name has neither an `--input` nor a stored value. Because they
+land in the brain files, input values follow the `display_name`/`notes` rules —
+one line, no markdown heading — and must not look like a credential (#344).
+`add` and `validate` reject a bad value as an issue on
+`connectors.<key>.needs_user_input` that names the input but never echoes its
+value. A bad value already stored in `scout-config.yaml` (a hand edit) skips that
+connector at assembly with a warning, as an invalid entry in
+`connectors.custom.yaml` is; `bootstrap doctor` warns on it, `list` adds it to
+the top-level `issues`, and `add` returns `invalid` until an `--input` replaces it.
 
 **Verification boundary.** `scoutctl` can execute bash probes but cannot call MCP
 tools — only a Claude session can. The wizard therefore calls the MCP probe tool
@@ -323,7 +335,8 @@ the user's choice; or "sign in first, then `/scout-connect`".
   row keyed by the connector key, which is what `_bash_key` maps its binary to.
 - **Bash connectors.** `connector_log._bash_key` additionally maps the first token
   of each custom bash probe/tool to the connector key (loaded once per hook
-  process from the vault file; missing/invalid file → current behavior).
+  process from the vault file; missing/invalid file → current behavior). Shell
+  comment lines are skipped, so a multi-line command's first real word counts.
 - **Probe registry.** `connector_probes.resolve_registry` unions the derived probe
   entries after the overlay; overlay wins on key collision (existing rule).
 - **Desktop app (follow-up PR in `Raven-Scout/Scout`, not this spec's scope):**

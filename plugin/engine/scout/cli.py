@@ -631,6 +631,21 @@ def _register_connectors() -> None:
         except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
             return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
 
+    def _read_inputs(items: list[str]) -> dict[str, str]:
+        """``--input NAME=VALUE`` flags as a mapping; a malformed one emits ``invalid`` and exits."""
+        from scout.custom_connectors import Issue
+        from scout.scripts.custom_connector_ops import Outcome
+
+        inputs: dict[str, str] = {}
+        for item in items:
+            name, sep, value = item.partition("=")
+            if not sep or not name:
+                # Not echoed: a bare value with no NAME= may be a secret pasted by mistake.
+                bad = Outcome("invalid", issues=[Issue("--input", "every --input must be NAME=VALUE")])
+                _emit(bad.to_json(), bad.exit_code)
+            inputs[name] = value
+        return inputs
+
     @custom_app.command("add")
     def cli_custom_add(
         file: str = typer.Option(..., "--file", help="Definition (YAML or JSON) with a `key` field; '-' reads stdin."),
@@ -644,19 +659,12 @@ def _register_connectors() -> None:
         """Add or replace a custom connector and apply it to the live brain files."""
         from scout import __version__
         from scout import paths as _paths
-        from scout.custom_connectors import Issue
-        from scout.scripts.custom_connector_ops import Outcome, add
+        from scout.scripts.custom_connector_ops import add
 
         data, failed = _read_definition(file)
         if failed is not None:
             _emit(failed.to_json(), failed.exit_code)
-        inputs: dict[str, str] = {}
-        for item in input_:
-            name, sep, value = item.partition("=")
-            if not sep or not name:
-                bad = Outcome("invalid", issues=[Issue("--input", f"{item!r} is not NAME=VALUE")])
-                _emit(bad.to_json(), bad.exit_code)
-            inputs[name] = value
+        inputs = _read_inputs(input_)
         outcome = add(
             _paths.data_dir(),
             data,
@@ -687,12 +695,16 @@ def _register_connectors() -> None:
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("validate")
-    def cli_custom_validate(file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin.")) -> None:
-        """Validate one definition without writing anything."""
+    def cli_custom_validate(
+        file: str = typer.Option(..., "--file", help="Definition file; '-' reads stdin."),
+        input_: list[str] = typer.Option([], "--input", help="NAME=VALUE to check as `add` would (repeatable)."),
+    ) -> None:
+        """Validate one definition (and any --input values) without writing anything."""
         from scout.scripts.custom_connector_ops import validate
 
         data, failed = _read_definition(file)
-        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root())
+        inputs = _read_inputs(input_)
+        outcome = failed if failed is not None else validate(data, plugin_root=_plugin_root(), inputs=inputs)
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("list")

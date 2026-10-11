@@ -116,6 +116,75 @@ def test_credential_shaped_input_is_invalid_and_writes_nothing(vault: Path, valu
     assert "tickets__team" not in (_config(vault)["connectors"].get("inputs") or {})
 
 
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [("ops\nmore", "must be a single line"), ("# Ops", "must not contain markdown headings")],
+)
+def test_multi_line_or_heading_input_is_invalid_and_writes_nothing(vault: Path, value: str, problem: str):
+    """#344: --input values are substituted into SKILL.md; they must not add lines or headings."""
+    skill_before = (vault / "SKILL.md").read_text()
+    for dry_run in (True, False):
+        out = _add(vault, TICKETS, inputs={"team": value}, probe_runner=lambda cmd: 0, dry_run=dry_run)
+        assert (out.status, out.exit_code) == ("invalid", 2)
+        assert [(i.path, problem in i.message) for i in out.issues] == [("connectors.tickets.needs_user_input", True)]
+        assert value not in out.issues[0].message
+    assert (vault / "SKILL.md").read_text() == skill_before
+    assert not (vault / cc.CUSTOM_FILE).exists()
+
+
+def test_input_value_issues_are_reported_even_when_the_definition_is_invalid(vault: Path):
+    out = _add(vault, {**TICKETS, "display_name": ""}, inputs={"team": "a\nb"})
+    assert out.status == "invalid"
+    assert any(i.message == "the value for 'team' must be a single line" for i in out.issues)
+
+
+def test_validate_checks_inputs_the_same_way_add_does():
+    assert ops.validate(dict(TICKETS), plugin_root=PLUGIN, inputs={"team": "ops"}).status == "valid"
+    out = ops.validate(dict(TICKETS), plugin_root=PLUGIN, inputs={"team": "# Ops", "colour": "x"})
+    assert (out.status, out.exit_code) == ("invalid", 2)
+    assert [i.message for i in out.issues] == [
+        "'colour' is not an input this connector declares",
+        "the value for 'team' must not contain markdown headings; they would break the brain file's structure",
+    ]
+
+
+def test_add_multi_line_bash_tool_renders_fenced_in_skill(vault: Path):
+    """#344: shell comments in a multi-line command stay code, not headings."""
+    tools = [{"bash": "# open tickets\ntix list --team {{INPUT_TEAM}}"}]
+    multi = {**TICKETS, "inbound": {"tools": tools, "focus": "Open tickets."}}
+    out = _add(vault, multi, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    assert out.status == "applied"
+    skill = (vault / "SKILL.md").read_text()
+    assert "  ```bash\n  # open tickets\n  tix list --team ops\n  ```" in skill
+    assert "\n# open tickets" not in skill
+
+
+def test_add_without_input_rejects_a_bad_stored_value_instead_of_reporting_success(vault: Path):
+    """Review of #344: assembly would skip the connector, so add/dry-run must not say it is live."""
+    _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    cfg_path = vault / "scout-config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("tickets__team: ops", "tickets__team: '# Ops'"))
+    for dry_run in (True, False):
+        out = _add(vault, TICKETS, probe_runner=lambda cmd: 0, dry_run=dry_run)
+        assert (out.status, out.exit_code) == ("invalid", 2)
+        assert [i.path for i in out.issues] == ["connectors.tickets.needs_user_input"]
+        assert "connectors.inputs.tickets__team" in out.issues[0].message
+    # A good --input overwrites the bad stored value. The hand edit already moved the
+    # assembly off its snapshot, so this lands at the next upgrade (drift → deferred).
+    out = _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    assert (out.status, out.exit_code) == ("deferred", 3)
+    assert _config(vault)["connectors"]["inputs"]["tickets__team"] == "ops"
+
+
+def test_list_custom_reports_stored_input_issues(vault: Path):
+    _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    cfg_path = vault / "scout-config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("tickets__team: ops", "tickets__team: '# Ops'"))
+    listed = ops.list_custom(vault, plugin_root=PLUGIN)
+    assert [i["path"] for i in listed["issues"]] == ["connectors.tickets.needs_user_input"]
+    assert "connectors.inputs.tickets__team" in listed["issues"][0]["message"]
+
+
 def test_unknown_input_name_is_invalid(vault: Path):
     out = _add(vault, TICKETS, inputs={"team": "ops", "colour": "x"}, probe_runner=lambda cmd: 0)
     assert out.status == "invalid"
