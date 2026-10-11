@@ -15,7 +15,7 @@ from scout import setup_wizard as sw
 from scout.cli import app
 from scout.scripts.bootstrap_auto import AutoAction, Plan
 from scout.scripts.connector_detect import Detection, DetectStatus
-from scout.scripts.engine_pointer import EnginePointer, read_pointer, resolve_managed_by, write_pointer
+from scout.scripts.engine_pointer import EnginePointer, read_pointer, write_pointer
 
 
 class Scripted:
@@ -699,24 +699,79 @@ def test_rerun_on_a_dev_managed_vault_leaves_the_manager_and_pointer(tmp_path):
     assert f"{Path(THIS_PYTHON).parent / 'scoutctl'} bootstrap upgrade --managed-by install.sh" in said
 
 
-def test_rerun_from_the_dev_engine_itself_preserves_dev(tmp_path):
+def test_rerun_from_the_dev_engine_itself_keeps_dev_explicitly(tmp_path):
     home = _home_with_pointer(tmp_path, "dev", THIS_PYTHON)
     deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
     deps = replace(deps, pointer=lambda: read_pointer(home=home))
     assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
     argv = calls[0]
-    assert argv[argv.index("--managed-by") + 1] == "preserve"
-    # ...which bootstrap resolves to the recorded value, not install.sh:
-    assert resolve_managed_by("preserve", home=home) == "dev"
+    assert argv[argv.index("--managed-by") + 1] == "dev"
 
 
-@pytest.mark.parametrize("recorded", [None, "unknown"])
-def test_rerun_on_a_vault_with_no_recorded_manager_records_install_sh(tmp_path, recorded):
-    pointer = None if recorded is None else _pointer(recorded, DEV_PYTHON)
-    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=pointer)
+def test_rerun_from_the_same_engine_with_an_unknown_pointer_records_install_sh(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("unknown", THIS_PYTHON))
     assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
     argv = calls[0]
     assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def test_rerun_without_a_pointer_records_install_sh(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=None)
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def _cache_python(home, version):
+    return str(home / ".claude/plugins/cache/scout-plugin/scout" / version / ".venv/bin/python")
+
+
+@pytest.mark.parametrize("recorded", ["install.sh", "claude-code"])
+def test_rerun_after_a_release_upgrades_and_keeps_the_label(tmp_path, monkeypatch, recorded):
+    """install.sh runs the engine from a per-version plugin-cache venv, so after
+    a release the pointer names the old version's python. That is still the
+    same install: upgrade, and pass the recorded manager explicitly (preserve
+    across interpreters would demote it to unknown)."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    home = _home_with_pointer(tmp_path, recorded, _cache_python(home, "0.15.0"))
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[:2] == ["bootstrap", "auto"]
+    assert argv[argv.index("--managed-by") + 1] == recorded
+
+
+def test_rerun_over_an_unknown_pointer_in_the_plugin_cache_records_install_sh(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("unknown", _cache_python(home, "0.15.0")))
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), Scripted([]), deps) == 0
+    argv = calls[0]
+    assert argv[argv.index("--managed-by") + 1] == "install.sh"
+
+
+def test_rerun_over_an_unknown_pointer_on_a_dev_checkout_keeps_it(tmp_path, monkeypatch):
+    """A plain `bootstrap upgrade` from a checkout records unknown; install.sh
+    must not take that engine over."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    home = _home_with_pointer(tmp_path, "unknown", DEV_PYTHON)
+    before = (home / ".local/state/scout/engine.json").read_bytes()
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    deps = replace(deps, pointer=lambda: read_pointer(home=home))
+    p = Scripted([])
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), p, deps) == 0
+    assert calls == []
+    assert (home / ".local/state/scout/engine.json").read_bytes() == before
+    assert any("managed by unknown" in s for s in p.said)
+
+
+def test_rerun_on_an_app_managed_vault_is_still_refused(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, pointer=_pointer("scout-app", DEV_PYTHON))
+    p = Scripted([])
+    assert sw.run_setup(_opts(tmp_path, managed_by="install.sh"), p, deps) == 2
+    assert calls == [] and any("Scout.app" in s for s in p.said)
 
 
 def test_fresh_install_records_install_sh_even_over_another_engines_pointer(tmp_path):

@@ -517,7 +517,7 @@ def apply_drafts(drafts: list[KeptDraft], p: Prompter, deps: SetupDeps) -> int:
 def run_connectors_setup(vault: Path, p: Prompter, deps: SetupDeps) -> int:
     """`scoutctl connectors setup`: the "Also connected" step on its own, for an existing vault."""
     if not (vault / "scout-config.yaml").exists():
-        p.say(f"No Scout vault at {vault}. Set Scout up first: open Scout.app or run `scoutctl setup`.")
+        p.say(f"No Scout vault at {vault}. Set Scout up first: run `scoutctl setup`.")
         return 2
     try:
         kept = offer_uncovered(p, deps)
@@ -526,6 +526,33 @@ def run_connectors_setup(vault: Path, p: Prompter, deps: SetupDeps) -> int:
         return 1
     apply_drafts(kept, p, deps)
     return 0
+
+
+def _in_plugin_cache(ptr: EnginePointer) -> bool:
+    """The pointer's engine is a Claude Code plugin-cache copy (what install.sh runs)."""
+    cache = (Path.home() / ".claude" / "plugins" / "cache").resolve()
+    return any(Path(x).resolve().is_relative_to(cache) for x in (ptr.python, ptr.engine_root))
+
+
+def _upgrade_managed_by(opts: SetupOptions, ptr: EnginePointer | None) -> str | None:
+    """The --managed-by an upgrade passes, or None to leave the vault's engine alone.
+
+    A recorded manager is never taken over by --managed-by (install.sh passes
+    it on every re-run). It is passed explicitly, not as `preserve`: across
+    interpreters `preserve` resolves to unknown. install.sh and claude-code
+    engines live in a per-version plugin-cache venv, so after a release the
+    pointer names another python yet is the same install.
+    """
+    requested = opts.managed_by or "preserve"
+    if ptr is None:
+        return requested
+    if ptr.python == str(Path(sys.executable).absolute()):
+        return requested if ptr.managed_by == "unknown" else ptr.managed_by
+    if ptr.managed_by in ("install.sh", "claude-code"):
+        return ptr.managed_by
+    if ptr.managed_by == "unknown" and _in_plugin_cache(ptr):
+        return requested
+    return None
 
 
 def _say_engine_kept(p: Prompter, opts: SetupOptions, ptr: EnginePointer) -> None:
@@ -555,14 +582,11 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         p.say(f"Can't set up Scout in {opts.vault}: {plan.reason}")
         return 2
     if plan.action is AutoAction.UPGRADE:
-        managed_by = opts.managed_by or "preserve"
-        if ptr is not None and ptr.managed_by != "unknown":
-            # A recorded manager owns this engine: --managed-by (install.sh
-            # passes it on every re-run) must not take it over.
-            if ptr.python != str(Path(sys.executable).absolute()):
-                _say_engine_kept(p, opts, ptr)
-                return 0
-            managed_by = "preserve"
+        managed_by = _upgrade_managed_by(opts, ptr)
+        if managed_by is None:
+            assert ptr is not None  # only a pointer to another engine is left alone
+            _say_engine_kept(p, opts, ptr)
+            return 0
         p.say(f"Found your vault at {opts.vault}, upgrading.")
         upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", managed_by]
         if opts.claude_bin:

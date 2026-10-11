@@ -204,11 +204,19 @@ itself).
     **migrate-legacy**: it runs the full wizard.
   - **refused**: it prints the reason and exits 2.
 - **Engine pointer.** If the pointer says `managed_by: scout-app`, it refuses:
-  "Scout.app manages this engine — open Scout.app." On an upgrade, a manager
-  the pointer records (anything but `unknown`) is kept: `--managed-by` applies
-  only to a fresh install or an unrecorded pointer. From another engine than
-  the pointer's, it runs nothing and prints the two explicit commands
-  (upgrade that engine, or `bootstrap upgrade --managed-by` to move here).
+  "Scout.app manages this engine — open Scout.app." On an upgrade it never
+  lets `--managed-by` take over a recorded manager, and passes the manager
+  explicitly (`preserve` across interpreters resolves to `unknown`):
+  - no pointer: the requested `--managed-by` (install.sh's `install.sh`);
+  - the pointer is this interpreter: its manager, or the requested one if
+    `unknown`;
+  - another interpreter, manager `install.sh` or `claude-code` (the
+    per-version plugin-cache venv after a release): upgrade, keeping it;
+  - another interpreter, `unknown`, engine under `~/.claude/plugins/cache/`:
+    upgrade with the requested one;
+  - otherwise (`dev`, or `unknown` elsewhere, e.g. a checkout): run nothing
+    and print the two explicit commands (upgrade that engine, or
+    `bootstrap upgrade --managed-by` to move the vault here).
 - **Fresh-install pointers.** The `scoutctl` shim on `PATH` is written by
   `bootstrap`, so a machine with no vault usually has no `scoutctl`. Prose that
   sends a user without a vault somewhere (`/scout-update`, `/scout-connect`)
