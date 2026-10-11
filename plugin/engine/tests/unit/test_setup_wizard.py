@@ -221,6 +221,35 @@ def test_cli_without_a_terminal_and_without_yes_exits_2(monkeypatch, tmp_path):
     assert "--yes" in result.output and "--name" in result.output and "--email" in result.output
 
 
+def test_an_upgrade_needs_no_terminal(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    assert sw.run_setup(_opts(tmp_path), sw.NoTerminalPrompter(), deps) == 0
+    assert calls[0][:2] == ["bootstrap", "auto"]
+
+
+def test_a_first_install_without_a_terminal_lists_the_headless_flags(tmp_path, capsys):
+    deps, calls = _deps(tmp_path)
+    assert sw.run_setup(_opts(tmp_path), sw.NoTerminalPrompter(), deps) == 2
+    assert sw.HEADLESS_FLAGS in capsys.readouterr().out
+    assert calls == []
+
+
+def test_no_terminal_prompter_cannot_confirm(tmp_path):
+    with pytest.raises(sw.NoTerminal):
+        sw.NoTerminalPrompter().confirm("Q", True)
+
+
+def test_cli_upgrade_without_a_terminal_and_without_yes_proceeds(monkeypatch, tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Scout"))
+    monkeypatch.setattr(sw.TtyPrompter, "open", classmethod(lambda cls: None))
+    monkeypatch.setattr("scout.setup_wizard.default_deps", lambda claude_bin="": deps)
+    result = CliRunner().invoke(app, ["setup"])
+    assert result.exit_code == 0, result.output
+    assert "--name" not in result.output
+    assert calls[0][:2] == ["bootstrap", "auto"]
+
+
 def test_invoke_scoutctl_returns_the_exit_code():
     assert sw.invoke_scoutctl(["connectors", "custom", "remove", "--help"]) == 0
     assert sw.invoke_scoutctl(["no-such-command"]) == 2

@@ -106,6 +106,24 @@ class HeadlessPrompter:
         return default
 
 
+class NoTerminal(Exception):
+    """A question needed an answer and there is no terminal to ask on."""
+
+
+class NoTerminalPrompter(HeadlessPrompter):
+    """No /dev/tty and no --yes: prints, but the first question raises ``NoTerminal``.
+
+    An upgrade asks nothing, so it runs to the end; a first install fails at its
+    first question with the headless flags.
+    """
+
+    def ask(self, question: str, default: str = "") -> str:
+        raise NoTerminal(question)
+
+    def confirm(self, question: str, default: bool) -> bool:
+        raise NoTerminal(question)
+
+
 @dataclass
 class SetupOptions:
     vault: Path
@@ -526,6 +544,9 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return deps.invoke(upgrade_argv)
     try:
         answers = _gather(opts, p, deps)
+    except NoTerminal:
+        p.say(f"No terminal to ask questions on. Run it headless: scoutctl setup {HEADLESS_FLAGS}")
+        return 2
     except (EOFError, KeyboardInterrupt):
         p.say(CANCELLED)
         return 1

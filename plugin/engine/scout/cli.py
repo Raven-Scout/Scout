@@ -2494,16 +2494,18 @@ def setup_cmd(
     import os
 
     from scout import paths as _paths
-    from scout.setup_wizard import HEADLESS_FLAGS, HeadlessPrompter, SetupOptions, TtyPrompter, default_deps, run_setup
+    from scout.setup_wizard import (
+        HeadlessPrompter,
+        NoTerminalPrompter,
+        SetupOptions,
+        TtyPrompter,
+        default_deps,
+        run_setup,
+    )
 
     if vault is not None:
         os.environ["SCOUT_DATA_DIR"] = str(vault.expanduser())
-    prompter = HeadlessPrompter() if yes else TtyPrompter.open()
-    if prompter is None:
-        typer.echo(
-            f"error: no terminal to ask questions on. Run it headless: scoutctl setup {HEADLESS_FLAGS}", err=True
-        )
-        raise typer.Exit(code=2)
+    prompter = HeadlessPrompter() if yes else (TtyPrompter.open() or NoTerminalPrompter())
     opts = SetupOptions(
         vault=_paths.data_dir(),
         instance_name=instance_name,
