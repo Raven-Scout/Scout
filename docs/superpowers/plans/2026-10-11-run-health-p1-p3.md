@@ -36,7 +36,7 @@
 2. **A `schedule.yaml` that fails to load** (`ConfigError`) or a corrupt `last-fire.json`. Slot findings are skipped, and the other findings still evaluate; doctor still returns. Pinned in Task 2 (`test_unloadable_schedule_skips_slot_findings_only`).
 3. **The evaluator itself raising inside doctor.** Doctor must still return the install report, with `run_health: null` and one note saying why. Pinned in Task 4 (`test_doctor_survives_an_evaluator_crash`).
 4. **A `notify.command` that hangs, exits non-zero or isn't found.** It is timed out at 30 s, its result is recorded, the other channels still fire, and the exit code stays 0. Pinned in Task 6 (`test_command_channel_*`).
-5. **A corrupt or missing `health-notify.json`.** It is treated as empty state, which can mean one extra push but never a crash. Pinned in Task 7 (`test_corrupt_state_is_treated_as_empty`).
+5. **A corrupt or missing `health-notify.json`.** It is treated as empty state, which can mean one extra push but never a crash. Pinned in Task 8 (`test_corrupt_state_is_treated_as_empty`).
 
 ---
 
@@ -479,7 +479,7 @@ def _ids(v: Path) -> dict[str, str]:
 
 **Files:**
 - Create: `plugin/engine/scout/notify_desktop.py`
-- Create: `plugin/engine/scout/health_notify.py` (channel functions in this task; state machine in Task 7)
+- Create: `plugin/engine/scout/health_notify.py` (channel functions in this task; state machine in Task 8)
 - Create: `plugin/engine/tests/unit/test_notify_desktop.py`, `plugin/engine/tests/unit/test_health_notify_channels.py`
 
 **Interfaces:**
@@ -528,7 +528,47 @@ def _ids(v: Path) -> dict[str, str]:
 - [ ] **Step 2–4:** fail, implement, pass; ruff.
 - [ ] **Step 5: Commit** `feat(notify): desktop and notify.command channels, fan-out (Q4, Q-A)`.
 
-### Task 7: notifier state machine and `scoutctl health notify`
+### Task 7: Telegram send: a duplicate guard and a readable receipt (#241)
+
+Folded into P2 at the coordinator's request (2026-10-11). #241: a scheduled session re-sent a byte-identical 4 055-character wrap because it filtered `scoutctl notify telegram` output with `tail -6`, and the receipt `id` is on line 2 of the indented JSON. A successful send also has no duplicate guard. The guard belongs in `notify_telegram.send`, which both the session wrap (through the CLI) and Task 6's `telegram_channel` call, so one guard covers every Telegram push.
+
+**Files:**
+- Modify: `plugin/engine/scout/scripts/notify_telegram.py`
+- Modify: `plugin/engine/scout/cli.py` (`cli_notify_telegram`)
+- Modify: `plugin/engine/scout/health_notify.py` (`telegram_channel` maps the new exception)
+- Modify: `plugin/engine/tests/unit/test_scripts_notify_telegram.py`, `plugin/engine/tests/unit/test_scripts_notify_telegram_main.py`, `plugin/engine/tests/unit/test_health_notify_channels.py`
+- Modify: `plugin/CHANGELOG.md`
+
+**Interfaces:**
+- Produces:
+  ```python
+  # scout/scripts/notify_telegram.py
+  DUPLICATE_WINDOW = timedelta(minutes=10)
+  SENT_LOG = "telegram-sent.jsonl"          # under paths.state_dir(paths.data_dir()); one row per real (non-dry-run) send
+  class DuplicateSendError(ScoutError):     # exit_code = 3
+      original_id: str; sent_at: str        # the earlier send's Event id and ts
+  def secrets_dir() -> Path                 # Path.home() / ".scout-secrets", resolved per call (replaces the import-time SECRETS_DIR)
+  def send(tier, body, *, dry_run=False, timeout=DEFAULT_TIMEOUT, allow_duplicate=False, now=None) -> Event
+  ```
+- The idempotency key is `sha256(chat_id + "\x00" + body)`, hex. Before posting, read `SENT_LOG`, keep the rows younger than `DUPLICATE_WINDOW`, and if one has the same key, raise `DuplicateSendError(original_id, sent_at)` without posting, unless `allow_duplicate`. After a successful real send, append `{"key", "id", "ts"}` and rewrite the file with only the rows still inside the window (atomic tmp + `os.replace`; an `OSError` is swallowed, because the guard must never block a send). An unreadable or corrupt log reads as empty. Dry runs neither check nor record. When the vault can't be resolved, skip the guard; a send never fails for want of a log.
+- CLI `scoutctl notify telegram`: adds `--allow-duplicate`. It prints `id=<ulid>` as the **first line on stderr** for every send, dry runs included; stdout stays the unchanged pure JSON. On `DuplicateSendError` it prints `id=<original_id>` first on stderr, then `scoutctl notify telegram: refused — byte-identical message sent at <sent_at> (id <original_id>); pass --allow-duplicate to send it again`, and exits 3.
+- `telegram_channel`: `DuplicateSendError` → `{"channel": "telegram", "ok": True, "detail": "duplicate"}`, a recorded no-op, because the message already reached the chat.
+
+- [ ] **Step 1: Failing tests:**
+  - `test_identical_body_within_window_is_refused`: two sends with a patched `requests.post` → the first posts, and the second raises `DuplicateSendError` whose `original_id` equals the first Event's id. `post` is called once.
+  - `test_different_body_within_window_is_sent` (the negative control #241 asks for).
+  - `test_identical_body_after_window_is_sent` (`now` = first + 10 min 1 s).
+  - `test_allow_duplicate_sends_again`.
+  - `test_dry_run_neither_checks_nor_records`.
+  - `test_corrupt_sent_log_reads_as_empty`.
+  - `test_secrets_dir_follows_home_per_call`: monkeypatch `HOME` after import → `secrets_dir()` follows it (the import-time-binding bug #241 reports).
+  - CLI: a send → `json.loads(stdout)` parses, and `stderr.splitlines()[0] == f"id={json.loads(stdout)['id']}"`. A refused duplicate → exit 3, the stderr first line is `id=<original>`, and stdout is empty. Use `CliRunner(mix_stderr=False)`, or whatever the existing CLI tests use to split streams.
+  - `telegram_channel` with a `send` raising `DuplicateSendError` → `ok True, detail "duplicate"`.
+- [ ] **Step 2–4:** fail, implement, pass. Run every test that imports `notify_telegram` (`grep -rln notify_telegram tests`); ruff.
+- [ ] **Step 5: CHANGELOG** `### Fixed` under `## [Unreleased]`: "`scoutctl notify telegram` refuses to re-send a byte-identical message to the same chat within 10 minutes (`--allow-duplicate` overrides), and prints the receipt as `id=<id>` on the first line of stderr, so a caller never re-sends to find the id. The secrets directory is resolved per call, not at import (#241)."
+- [ ] **Step 6: Commit** `fix(notify): duplicate guard and stderr receipt for telegram sends (#241)`.
+
+### Task 8: notifier state machine and `scoutctl health notify`
 
 **Files:**
 - Modify: `plugin/engine/scout/health_notify.py`
@@ -571,7 +611,7 @@ def _ids(v: Path) -> dict[str, str]:
 - [ ] **Step 2–4:** fail, implement, pass; ruff.
 - [ ] **Step 5: Commit** `feat(health): scoutctl health notify — red/reminder/recovered state machine (D4)`.
 
-### Task 8: run-outcome.sh and heartbeat.sh switch to the notifier, with the bash floor (D5)
+### Task 9: run-outcome.sh and heartbeat.sh switch to the notifier, with the bash floor (D5)
 
 **Files:**
 - Modify: `plugin/templates/scripts/run-outcome.sh.tmpl`
@@ -610,13 +650,13 @@ def _ids(v: Path) -> dict[str, str]:
   - `### Changed`: "`run-outcome.sh` no longer sends its own Telegram streak notices (once at the first failure, again at the second, then silence). It calls `scoutctl health notify` after every run instead, and raises a local desktop alert, at most once a day, when `scoutctl` itself can't run. `heartbeat.sh` runs a daily health sweep in place of `session-lane-liveness.py --notify`; the script stays as a manual instrument. Vaults pick this up on the next `/scout-update`."
 - [ ] **Step 6: Commit** `feat(runner): run-outcome and heartbeat call scoutctl health notify; engine-unreachable floor (D4, D5)`.
 
-**P2 PR:** base `run-health/p1`. Title `feat(health): one notifier — scoutctl health notify, desktop/Telegram/notify.command (P2)`. Body: closes #233 (with P1, once all three merge, the permanent-failure notifier with reminders and the engine floor), advances #199 (lane findings); the merge-order note; test plan.
+**P2 PR:** base `run-health/p1`. Title `feat(health): one notifier — scoutctl health notify, desktop/Telegram/notify.command (P2)`. Body: closes #233 (with P1, once all three merge, the permanent-failure notifier with reminders and the engine floor), closes #241 (Telegram duplicate guard + stderr receipt), advances #199 (lane findings); the merge-order note; test plan.
 
 ---
 
 # PR P3 — consumers (branch `run-health/p3`, from `run-health/p2`; ONE commit)
 
-### Task 9: shared fixture, `/scout-status`, session wrap phase
+### Task 10: shared fixture, `/scout-status`, session wrap phase
 
 **Files:**
 - Create: `plugin/engine/tests/fixtures/contract/doctor-run-health.json` (generated; see below)
@@ -649,9 +689,9 @@ def _ids(v: Path) -> dict[str, str]:
   - `### Changed`: "`/scout-status` reads `scoutctl health --json`. Its headline is the worst run-health finding, and its per-type last-run lines come from the scheduler's fires and the run ledger instead of commit messages (#199)."
   - `### Added`: "A run-health phase: every scheduled session writes `scoutctl health --json` to `.scout-cache/run-health.json` at start, and its wrap notification leads with red findings."
   - `### Upgrade notes`: "The new run-health phase reaches existing vaults through `bootstrap upgrade` as a change to SKILL.md / DREAMING.md / RESEARCH.md. A vault with local edits to those files gets a brain-file merge or sidecar: resolve it with `scoutctl bootstrap resolve`."
-- [ ] **Step 6: Commit (WIP)**, which is squashed with Task 10 into the single P3 commit.
+- [ ] **Step 6: Commit (WIP)**, which is squashed with Task 11 into the single P3 commit.
 
-### Task 10: Scout.app decodes `run_health`; Settings ▸ Engine "Runs" row; the sidebar dot
+### Task 11: Scout.app decodes `run_health`; Settings ▸ Engine "Runs" row; the sidebar dot
 
 **Files:**
 - Modify: `apps/macos/Scout/Engine/DoctorReport.swift`
@@ -659,7 +699,7 @@ def _ids(v: Path) -> dict[str, str]:
 - Modify: `apps/macos/Scout/Engine/EngineSettingsModel.swift` (`runsLabel`, `runsHelp`, `runsIsOK`)
 - Modify: `apps/macos/Scout/Shell/EngineSettingsSection.swift` (a "Runs" `SettingsRow` under "Health")
 - Modify: `apps/macos/ScoutTests/Engine/DoctorReportTests.swift`, `apps/macos/ScoutTests/Engine/EngineSettingsModelTests.swift`, and a test for `needsAttention` (find the existing one: `grep -rn needsAttention apps/macos/ScoutTests`)
-- The fixture from Task 9 must be in the test bundle. Check how `connectors.snapshot.json` in `ScoutTests/Fixtures` is included (a folder reference in `Scout.xcodeproj` means new files are picked up automatically; otherwise add a file reference to the test target's resources).
+- The fixture from Task 10 must be in the test bundle. Check how `connectors.snapshot.json` in `ScoutTests/Fixtures` is included (a folder reference in `Scout.xcodeproj` means new files are picked up automatically; otherwise add a file reference to the test target's resources).
 
 **Interfaces:**
 ```swift
@@ -691,7 +731,7 @@ nonisolated struct RunHealth: Equatable, Sendable, Decodable {
 - [ ] **Step 2: Run, expect failure:** `xcodebuild test -project apps/macos/Scout.xcodeproj -scheme Scout -destination 'platform=macOS' -only-testing:ScoutTests/DoctorReportTests` (check `apps/macos/CLAUDE.md` or the CI workflow `.github/workflows/*.yml` for the exact scheme and flags used in CI, and use those).
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the full `ScoutTests` target (CI's invocation) → pass.
-- [ ] **Step 5: Squash** Tasks 9 and 10 into one commit: `git reset --soft run-health/p2 && git commit`, titled `feat(health): run-health consumers — /scout-status, wrap phase, Scout.app Runs row (P3)`, with a body that lists both subtrees and the contract fixture.
+- [ ] **Step 5: Squash** Tasks 10 and 11 into one commit: `git reset --soft run-health/p2 && git commit`, titled `feat(health): run-health consumers — /scout-status, wrap phase, Scout.app Runs row (P3)`, with a body that lists both subtrees and the contract fixture.
 
 **P3 PR:** base `run-health/p2`. Title as the commit. Body: closes #199 (with P1/P2: slot/scheduler/lane findings in doctor, status and the app; status re-sourced from last-fire + ledger; the `update.behind` part of the #199 comment lands with P7), advances #233 (app surface); the merge-order note ("merge P1 → P2 → P3 back to back once this is approved"); test plan with the xcodebuild line.
 
