@@ -22,21 +22,20 @@ Read every `*.md` file in `knowledge-base/research-queue/` (the thin `knowledge-
 
 This does NOT stop the opportunistic lane (a good incidental find is still worth pursuing) — it fixes the **ordering** (`urgent` first). A "this is the top priority" intention stays inert until the picker mechanically honors it.
 
-**Second source of preemption — declarative coverage mandates.** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. So ALSO run:
+**Second source of preemption — declarative coverage mandates (optional vault helper).** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. Some vaults close that gap with a local `scripts/coverage-mandates.py` helper. The plugin does not ship it, so check for it first — **if the script is absent, skip this paragraph entirely; that is not an error**:
 
 ```bash
-python3 scripts/coverage-mandates.py --session research   # exit 3 = live mandate(s); exit 4 = review_at reached or expired window
+[ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
+# absent → skip; 0 = no live mandate; 3 = live mandate(s) listed; 4 = a mandate's review_at reached or its window expired
 ```
 
-Any file it reports **synthesises the equivalent of a `priority: urgent` queue hit** — take it in **slot 1**, then fall through to the normal rotation. It is **bounded to the first slot**: a mandate running unbounded for weeks would starve every other lane, which is worse than under-covering. The overdue alarm in ¶3 above applies to mandates identically (two consecutive no-change passes = a **finding**, not a footnote). **On exit 4**, surface the `review_at` / expiry in the wrap notification and **do not extend the dates autonomously** — that is a governance change.
+Any mandate it reports **counts as a `priority: urgent` queue hit** — take it as the **first research target** (Step 1c), then fall through to the normal ordering. It is **bounded to that first target**: a mandate running unbounded for weeks would starve every other lane, which is worse than under-covering. The overdue rule (item 3 above) applies to mandates identically: one still live across **>1 research run** with no new findings is called out as **overdue** in the wrap notification. **On exit 4**, surface the `review_at` / expiry in the wrap notification and **do not extend the dates autonomously** — that is a governance change for {{USER_NAME}}.
 
-**Hard Rule — Rank substantive research above the KG-gap-closure / graph-completeness lane** (applies *after* the `urgent` preemption scan above, *before* the Step 1b rotation / opportunistic pick). When no `urgent` directive is outstanding, the remaining queue is a flat field of `priority: medium` items and the picker has no signal to prefer real research over the internal graph-completeness lane. So, among non-urgent items:
+**Hard Rule — Rank substantive research above the graph-completeness lane** (applies *after* the `urgent` preemption above, *before* the Step 1b rotation / opportunistic pick). Once no `urgent` item is outstanding, priority alone often gives the picker no signal to prefer real research over internal knowledge-graph upkeep. So, among non-urgent items:
 
-1. **Rank by user value:** substantive research (customer / competitive / product / user-directed) **outranks** the **KG-gap-closure / graph-completeness lane** — the `area: comprehensive-knowledge-graph-gap-analysis` items (the `G#` gaps) and anything `priority: low`.
-2. **Treat `priority: low` / the graph-completeness area as the lowest tier:** run it **only when no substantive `medium`+ item is outstanding**.
-3. **Never spend a whole research run closing a graph gap (`G#`) while a substantive item is open.** "Close gap G#" is an internal completeness objective, not a user research priority — its satisfying ✅ must not be mistaken for value (the execution can be fine; it's the *selection ordering* that's the bug).
-
-This completes the preemption fix: the rules above it let a flagged top item jump the queue; this one orders the flat `medium` field underneath.
+1. **Rank by user value:** substantive research (customer / competitive / product / user-directed) **outranks** the **graph-completeness lane** — items whose goal is closing internal KG gaps (missing links, orphan entities, thin coverage of the graph itself) rather than answering a question {{USER_NAME}} cares about — and anything `priority: low`.
+2. **Treat `priority: low` and the graph-completeness lane as the lowest tier:** run them **only when no substantive `medium`+ item is outstanding**.
+3. **Never spend a whole research run on a graph-completeness item while a substantive item is open.** Closing an internal gap is a completeness objective, not a user research priority; finishing one must not be mistaken for value.
 
 After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last verified …" continuity note to `knowledge-base/research-queue.md` (the run log).
 
