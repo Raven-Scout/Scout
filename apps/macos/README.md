@@ -80,7 +80,7 @@ Cmd+, opens Settings. A few fields are worth filling in:
 
 From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks daily and shows a badge when a new version is ready (see **Settings ▸ Updates**). Debug builds never check for updates.
 
-The plugin row in **Settings ▸ Updates** appears only for engines Scout.app doesn't manage (a dev checkout, a Claude Code marketplace install, and similar). When Scout.app manages the engine, it upgrades it for you after an app update.
+The plugin row in **Settings ▸ Updates** appears only for engines Scout.app doesn't manage (a dev checkout, a Claude Code marketplace install, and similar). Engines that Scout.app manages don't show the row.
 
 To test a release candidate, point an installed build at the candidate's appcast:
 
