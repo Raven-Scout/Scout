@@ -46,7 +46,7 @@ through a download button on `https://raven-scout.github.io/Scout/`.
 | S5 | Custom connectors | The engine owns drafting through one headless `claude -p` per server (`connectors custom draft`). The app, `scoutctl setup` and `/scout-connect` all use it. Drafts are applied with `custom add` **after** the vault exists. #321 Task 7's install flags are dropped. |
 | S6 | `/scout-update` | Stays, for engines the app doesn't manage. It loses the auto-update nudge and gains the `/scout-connect` pointer. |
 | S7 | `/scout-connect` | New. A thin chat front end over `connectors uncovered`, `custom draft` and `custom add`/`remove`. It never drafts on its own. |
-| S8 | Website download | `release.sh finalize` uploads the DMG under two names, `Scout-X.Y.Z.dmg` and `Scout.dmg`. The site's button links to `/releases/latest/download/Scout.dmg`. It goes live with v0.15.0, not before. |
+| S8 | Website download | `release.sh finalize` uploads the DMG under two names, `Scout-X.Y.Z.dmg` and `Scout.dmg`. The site's button links to `/releases/latest/download/Scout.dmg`. It goes live with v0.16.0, not before. |
 
 ## 3. One flow, two front ends
 
@@ -109,7 +109,7 @@ The drafting rules are #261 Task 9's `scout-connect.md` sections 1–2. They mov
 into an engine prompt template, `plugin/engine/scout/defaults/draft-connector.md`,
 and become the **only** copy of those rules.
 
-**Two headless calls, both locked down:**
+**Two headless calls, each narrowed to the tools it needs:** built-in tools limited to ToolSearch (plus the probe tool for the probe call), `dontAsk`, no slash commands, no session persistence, and a temp-dir cwd. They are not fully isolated: user-level Claude Code settings (allow rules, hooks) still load, which is tracked as a follow-up.
 
 1. **Draft.** One call reads the server's tools and drafts definitions.
    - Command:
@@ -345,8 +345,8 @@ It runs no install itself: a Claude Code Bash call has no TTY to host the
 wizard. A prose test asserts that the stub contains no `bootstrap install` and
 no `bootstrap auto`.
 
-It is deleted in the minor after it ships. If the retirement ships in v0.15.0,
-the stub is deleted in v0.16.0.
+It is deleted in the minor after it ships. If the retirement ships in v0.16.0,
+the stub is deleted in v0.17.0.
 
 ### 7.2 `/scout-update`
 
@@ -409,15 +409,15 @@ the stub is deleted in v0.16.0.
     one-liner, with no `/scout-setup` line and no "by hand" paragraph.
   - The "Download the Mac app" link to the releases page is removed.
 - **Timing.**
-  - The site change and the `Scout.dmg` asset ship in the **v0.15.0** release
+  - The site change and the `Scout.dmg` asset ship in the **v0.16.0** release
     PR. The 0.14.0 DMG doesn't install the engine, so a button before then
     would open on "Scout needs its engine".
   - Until then, the site's current text and link stay.
   - The site publishes from `main`, so the change is merged together with the
     release PR, and `finalize` follows within minutes. A test asserts that
     `index.html` holds the exact href and doesn't mention `/scout-setup`.
-- **Acceptance** (added to C10): after `finalize v0.15.0`, the site's button
-  downloads `Scout.dmg`, and that DMG is v0.15.0's and passes `spctl`.
+- **Acceptance** (added to C10): after `finalize v0.16.0`, the site's button
+  downloads `Scout.dmg`, and that DMG is v0.16.0's and passes `spctl`.
 
 ## 9. Existing users
 
@@ -459,15 +459,15 @@ Each phase is one PR or more, merged on its own:
 3. **App.** Needs #319's C8 merged.
    - The "Also connected" section, applying drafts in the Vault step, Settings
      ▸ Connectors, the `ConnectorHealthService` merge, the strings.
-4. **Retire.** Part of, or after, the v0.15.0 release PR.
+4. **Retire.** Part of, or after, the v0.16.0 release PR.
    - The `/scout-setup` stub and every remaining string (§4.6).
    - The `Scout.dmg` asset in `release.sh`.
    - The website (§8).
    - Both READMEs lead with the app, with `install.sh` as the terminal path.
    - The changelog.
-   - If phase 3 isn't merged by v0.15.0, the retirement waits for v0.16.0, as
+   - If phase 3 isn't merged by v0.16.0, the retirement waits for v0.17.0, as
      the unified-release spec §6 already allows. The website button still
-     ships with v0.15.0, because Part C alone makes the DMG self-sufficient.
+     ships with v0.16.0, because Part C alone makes the DMG self-sufficient.
 5. **Delete the stub** in the next minor.
 
 **Owners.** The custom-connector pieces (phase 1's `uncovered`, `draft`,

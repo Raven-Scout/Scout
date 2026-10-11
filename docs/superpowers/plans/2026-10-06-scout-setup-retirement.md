@@ -2446,7 +2446,7 @@ curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh |
 `scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it.
 ````
 
-Renumber `### 3. (Optional) Install the Mac app` to `### 2. (Optional) Install the Mac app`. Leave its text and the "Updating later" paragraph as they are; Task 14 rewrites them for v0.15.0.
+Renumber `### 3. (Optional) Install the Mac app` to `### 2. (Optional) Install the Mac app`. Leave its text and the "Updating later" paragraph as they are; Task 14 rewrites them for v0.16.0.
 
 - [ ] **Step 2: Fix the Quick Start sentences**
 
@@ -2487,7 +2487,7 @@ gh pr create --repo Raven-Scout/Scout --draft --title "feat(install): install.sh
 
 ## Phase 4 — retire (gated; see each task)
 
-Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout monorepo consolidation" session. Task 14 goes in the v0.15.0 release PR. Task 15 lands when the app plan has merged (v0.15.0 if it's in time, otherwise v0.16.0). Task 16 is the minor after Task 15 ships.
+Phase 3 is the app plan. Task 13 needs #317 merged and a review by the "Scout monorepo consolidation" session. Task 14 goes in the v0.16.0 release PR. Task 15 lands when the app plan has merged (v0.16.0 if it's in time, otherwise v0.17.0). Task 16 is the minor after Task 15 ships.
 
 ### Task 13: `release.sh` attaches `Scout.dmg` (after #317 merges)
 
@@ -2582,9 +2582,9 @@ Send the diff to the "Scout monorepo consolidation" session for review before me
 
 ---
 
-### Task 14: The website's **Download for Mac** button and the READMEs (in the v0.15.0 release PR)
+### Task 14: The website's **Download for Mac** button and the READMEs (in the v0.16.0 release PR)
 
-Do this on the `release/v0.15.0` branch after `release.sh prepare`, so it merges with the release PR and `finalize` follows within minutes.
+Do this on the `release/v0.16.0` branch after `release.sh prepare`, so it merges with the release PR and `finalize` follows within minutes.
 
 **Files:**
 - Modify: `docs/index.html` (the hero's `.ctas`, the `#install` block)
@@ -2689,7 +2689,7 @@ git add ../../docs/index.html ../../README.md ../README.md tests/unit/test_site_
 git commit -m "docs(site): Download for Mac button; READMEs lead with the app"
 ```
 
-After `finalize v0.15.0`: click the button on `https://raven-scout.github.io/Scout/` and check it downloads v0.15.0's DMG, and `spctl --assess --type open --context context:primary-signature -v ~/Downloads/Scout.dmg` accepts it. That is the spec's C10 addition.
+After `finalize v0.16.0`: click the button on `https://raven-scout.github.io/Scout/` and check it downloads v0.16.0's DMG, and `spctl --assess --type open --context context:primary-signature -v ~/Downloads/Scout.dmg` accepts it. That is the spec's C10 addition.
 
 ---
 
