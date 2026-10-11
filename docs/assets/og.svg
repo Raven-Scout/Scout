@@ -33,6 +33,6 @@
   <g font-family="'JetBrains Mono',ui-monospace,Menlo,monospace" font-size="22" fill="#8a8173">
     <text x="300" y="556">open source</text>
     <circle cx="455" cy="549" r="3" fill="#b4541f"/>
-    <text x="476" y="556">raven-scout.github.io/scout-plugin</text>
+    <text x="476" y="556">raven-scout.github.io/Scout</text>
   </g>
 </svg>

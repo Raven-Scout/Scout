@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from scout.sessions.cli_home import (
     default_claude_home,
     load_live_processes,
@@ -71,6 +73,25 @@ def test_transcript_paths_maps_uuid_to_newest_file() -> None:
     paths = transcript_paths(h)
     assert paths[U1] == new and paths[U1] != old
     assert paths[U2].parent.name == "-Users-alex-code-other"
+
+
+def test_pid_alive_counts_another_users_process_as_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    def eperm(pid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")  # the process exists; we may not signal it
+
+    monkeypatch.setattr(os, "kill", eperm)
+    assert pid_alive(4242) is True
+
+
+def test_transcript_paths_picks_the_newest_copy_whatever_the_listing_order() -> None:
+    h = claude_home()
+    a = write_transcript(h, "-Users-alex-code-example-repo", U1, [{"type": "user"}])
+    b = write_transcript(h, "-Users-alex-code-example-repo--claude-worktrees-w1", U1, [{"type": "user"}])
+    # Make each copy the newest in turn; one of the two runs lists the newer copy second.
+    for newer, older in ((a, b), (b, a)):
+        os.utime(older, (1_700_000_000, 1_700_000_000))
+        os.utime(newer, (1_700_003_600, 1_700_003_600))
+        assert transcript_paths(h)[U1] == newer
 
 
 def test_project_path_from_dirname() -> None:

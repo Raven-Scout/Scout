@@ -432,6 +432,7 @@ def test_run_handles_empty_kb(tmp_path, monkeypatch):
         "stale": 0,
         "no_date": 0,
         "fresh": 0,
+        "dated_by": {"property": 0, "prose": 0},
         "session_type": "dreaming",
         "output_path": str(tmp_path / ".scout-cache" / "kb-filter.md"),
     }

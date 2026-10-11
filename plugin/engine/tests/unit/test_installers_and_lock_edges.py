@@ -366,11 +366,12 @@ def test_release_is_a_no_op_when_the_lock_is_absent(lock_path: Path) -> None:
     lock.release_lock(lock_path)  # must not raise
 
 
-def test_release_clears_an_unparseable_lock(lock_path: Path) -> None:
+def test_release_leaves_an_unparseable_lock_alone(lock_path: Path) -> None:
+    # Unparseable is most likely a competitor mid-write, not ours (#322).
     lock_path.parent.mkdir(parents=True)
     lock_path.write_text("garbage", encoding="utf-8")
     lock.release_lock(lock_path)
-    assert not lock_path.exists()
+    assert lock_path.exists()
 
 
 def test_release_leaves_another_processes_lock_alone(lock_path: Path) -> None:

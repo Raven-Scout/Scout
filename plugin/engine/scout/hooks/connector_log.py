@@ -22,6 +22,7 @@ from typing import IO, Any
 
 from scout import paths
 from scout.config import today as config_today
+from scout.custom_connectors import first_binary
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
 
@@ -69,9 +70,16 @@ def _bash_key(cmd: str, bash_connectors: dict[str, str] | None = None) -> str:
     the shell operators that start a new command (``&&``, ``||``, ``;``, ``|``,
     newline). Positions after a redirect or inside quotes are not parsed — this
     is a labeller, not a shell — but the prefix forms that actually occur in
-    Scout runs are covered.
+    Scout runs are covered. Each segment is read with
+    ``custom_connectors.first_binary``, so a wrapper in front of the real
+    command (``timeout 10 gh pr list``) still matches ``gh`` — including for
+    custom bash connectors wrapped the same way.
 
-    Falls back to ``bash:<first-token>`` so non-connector calls label as before.
+    Falls back to ``bash:<first-token>`` so non-connector calls label as
+    before. The fallback token is the segment's raw first word (only an
+    env-assignment prefix is skipped, same as before Task 4) — not
+    ``first_binary``'s wrapper-aware reading — so labels for commands that
+    don't match any known connector are unchanged.
 
     ``bash_connectors`` lets a caller that classifies many commands in a batch
     (``session_tool_log.write_records``) pass a precomputed custom-binary map
@@ -95,18 +103,17 @@ def _bash_key(cmd: str, bash_connectors: dict[str, str] | None = None) -> str:
 
     first = ""
     for segment in segments.split("\n"):
-        tokens = segment.split()
-        # Skip a leading env-assignment prefix (FOO=bar cmd …).
-        idx = 0
-        while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
-            idx += 1
-        if idx >= len(tokens):
-            continue
-        head = tokens[idx].rsplit("/", 1)[-1]  # /usr/bin/gh → gh
-        if head in known:
+        head = first_binary(segment)
+        if head is not None and head in known:
             return known[head]
         if not first:
-            first = head
+            tokens = segment.split()
+            # Skip a leading env-assignment prefix (FOO=bar cmd …).
+            idx = 0
+            while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+                idx += 1
+            if idx < len(tokens):
+                first = tokens[idx].rsplit("/", 1)[-1]  # /usr/bin/gh → gh
 
     return f"bash:{first}" if first else "bash"
 

@@ -614,7 +614,8 @@ def _register_connectors() -> None:
     def _emit(payload: dict, code: int = 0) -> None:
         import json as _json
 
-        typer.echo(_json.dumps(payload, indent=2))
+        # default=str: a value JSON cannot encode must never cost the one-JSON-object contract.
+        typer.echo(_json.dumps(payload, indent=2, default=str))
         raise typer.Exit(code=code)
 
     def _read_definition(file: str):
@@ -636,6 +637,9 @@ def _register_connectors() -> None:
         input_: list[str] = typer.Option([], "--input", help="NAME=VALUE for a needs_user_input entry (repeatable)."),
         dry_run: bool = typer.Option(False, "--dry-run", help="Show the sections it would render; write nothing."),
         unverified: bool = typer.Option(False, "--unverified", help="Skip the bash probe (the app path)."),
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
     ) -> None:
         """Add or replace a custom connector and apply it to the live brain files."""
         from scout import __version__
@@ -661,17 +665,25 @@ def _register_connectors() -> None:
             inputs=inputs,
             dry_run=dry_run,
             unverified=unverified,
+            wait=not no_wait,
         )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("remove")
-    def cli_custom_remove(key: str) -> None:
+    def cli_custom_remove(
+        key: str,
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
+    ) -> None:
         """Remove a custom connector and apply the removal."""
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.custom_connector_ops import remove
 
-        outcome = remove(_paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__)
+        outcome = remove(
+            _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
+        )
         _emit(outcome.to_json(), outcome.exit_code)
 
     @custom_app.command("validate")
@@ -2175,36 +2187,20 @@ def _register_bootstrap() -> None:
 
 
 def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
-    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent)."""
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed)."""
     import yaml as _yaml
 
     from scout import __version__
-    from scout.scripts.bootstrap import BootstrapConfig
+    from scout.scripts.bootstrap import config_from_vault
 
-    cfg_path = vault / "scout-config.yaml"
-    if not cfg_path.exists():
+    if not (vault / "scout-config.yaml").exists():
         typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
         raise typer.Exit(code=2)
     try:
-        existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    except (_yaml.YAMLError, UnicodeDecodeError) as e:
+        return config_from_vault(vault, plugin_root=Path(__file__).parent.parent.parent, plugin_version=__version__)
+    except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
         typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
         raise typer.Exit(code=ConfigError.exit_code) from e
-    instance = existing.get("instance", {})
-    user = existing.get("user", {})
-    return BootstrapConfig(
-        vault=vault,
-        plugin_root=Path(__file__).parent.parent.parent,
-        instance_name=instance.get("name", "Scout"),
-        instance_name_lower=instance.get("name_lower", "scout"),
-        user_name=user.get("name", ""),
-        user_email=user.get("email", ""),
-        timezone=existing.get("timezone") or "",  # "" = follow the host
-        platform=existing.get("platform", "macos"),
-        plugin_version=__version__,
-        enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-        connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-    )
 
 
 _register_bootstrap()
@@ -2231,11 +2227,8 @@ def _register_phases() -> None:
         sidecaring. Default is a read-only report; --apply writes the ✓ hunks.
         Never commits, pushes, or opens a PR — the operator does that.
         """
-        import yaml as _yaml
-
-        from scout import __version__
         from scout import paths as _paths
-        from scout.scripts.bootstrap import BootstrapConfig, _template_vars, load_custom
+        from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
             apply_to_phase_text,
@@ -2244,31 +2237,7 @@ def _register_phases() -> None:
         )
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
-        cfg_path = vault / "scout-config.yaml"
-        if not cfg_path.exists():
-            typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
-            raise typer.Exit(code=2)
-        try:
-            existing = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except (_yaml.YAMLError, UnicodeDecodeError) as e:
-            typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
-            raise typer.Exit(code=ConfigError.exit_code) from e
-
-        instance = existing.get("instance", {})
-        user = existing.get("user", {})
-        cfg = BootstrapConfig(
-            vault=vault,
-            plugin_root=Path(__file__).parent.parent.parent,
-            instance_name=instance.get("name", "Scout"),
-            instance_name_lower=instance.get("name_lower", "scout"),
-            user_name=user.get("name", ""),
-            user_email=user.get("email", ""),
-            timezone=existing.get("timezone") or "",  # "" = follow the host
-            platform=existing.get("platform", "macos"),
-            plugin_version=__version__,
-            enabled_connectors=set(existing.get("connectors", {}).get("enabled") or []),
-            connector_inputs=existing.get("connectors", {}).get("inputs", {}),
-        )
+        cfg = _vault_bootstrap_config(vault)
         vars_ = _template_vars(cfg)
         phases_root = cfg.plugin_root / "phases"
         snapshot_dir = vault / ".scout-state" / "last-assembled"
