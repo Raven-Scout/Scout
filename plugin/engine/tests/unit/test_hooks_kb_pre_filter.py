@@ -684,6 +684,19 @@ def test_discover_walks_the_top_level_meetings_tree(tmp_path):
     ]  # dated session files are per-meeting records, not ranked
 
 
+def test_discover_tells_session_files_from_home_files(tmp_path):
+    _make_kb(tmp_path)
+    one_off = tmp_path / "meetings" / "2026-09-14-offsite"
+    one_off.mkdir(parents=True)
+    for name in ("2026-09-14-offsite.md", "2026-09-14_notes.md", "2026-09-14.prep.md", "2026-09-14 recap.md"):
+        (one_off / name).write_text("x")
+    (tmp_path / "meetings" / "2026-09-30.md").write_text("x")
+    assert _rels(tmp_path) == [
+        "meetings/2026-09-14-offsite/2026-09-14-offsite.md",  # the home file of a date-named meeting
+        "meetings/2026-09-30.md",  # directly under meetings/, not a session file
+    ]
+
+
 def test_discover_without_a_meetings_tree_is_unchanged(tmp_path):
     kb = _make_kb(tmp_path)
     (kb / "people.md").write_text("x")

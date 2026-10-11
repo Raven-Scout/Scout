@@ -1,7 +1,7 @@
 """UserPromptSubmit hook — pre-session KB staleness scorer.
 
 Started as a port of ~/Scout/hooks/kb-pre-filter.sh:
-  - Walks $SCOUT_DATA_DIR/knowledge-base/, classifying each *.md file
+  - Walks $SCOUT_DATA_DIR/knowledge-base/ and meetings/ (#217), classifying each *.md file
     as STALE / NO_DATE / FRESH against a per-file freshness budget. The date
     comes from the frontmatter `last_updated:` key, else the prose
     "Last updated" line, read in any zone a run writes (#201).
@@ -15,7 +15,10 @@ Discovery exclusions are layered to match the bash:
     *-draft*, *-prompt*
   - per-file rel-path skip: */people/*.md (entity files)
   - per-item record folders: knowledge-base/{scout-mistake-audit,
-    research-queue,session-log,kg-audits,review-queue}/ (#201)
+    research-queue,session-log,kg-audits,review-queue}/ (#201), under
+    knowledge-base/ only
+  - a meeting's dated session files: meetings/<slug>/YYYY-MM-DD[-_. …].md,
+    but never its home file meetings/<slug>/<slug>.md
 
 Hooks must NEVER raise — main() catches all exceptions and returns 0.
 """
@@ -89,9 +92,9 @@ SKIP_KB_SUBDIRS: frozenset[str] = frozenset(
 KB_ROOTS: tuple[str, ...] = ("knowledge-base", "meetings")
 
 # A meeting's dated session file (`meetings/<slug>/YYYY-MM-DD.md`, or with a
-# suffix): a per-meeting record that moves through prep → notes → synthesis,
+# suffix after `-`, `_`, `.` or a space): a per-meeting record that moves through prep → notes → synthesis,
 # not a document with a freshness budget. Same reasoning as SKIP_KB_SUBDIRS.
-_MEETING_SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\b.*\.md$")
+_MEETING_SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[-_. ].*)?\.md$")
 
 # How many lines to scan from the file head for the prose date line and the
 # priority marker. Bash uses head -25.
@@ -386,8 +389,9 @@ def _ranked(rel_posix: str) -> bool:
     # Per-item record folders directly under knowledge-base/.
     if parts[0] == "knowledge-base" and len(parts) > 2 and parts[1] in SKIP_KB_SUBDIRS:
         return False
-    # A meeting's dated session files.
-    return not (parts[0] == "meetings" and len(parts) > 2 and _MEETING_SESSION_RE.match(name))
+    # A meeting's dated session files; a home file named for a dated slug still ranks.
+    is_home = len(parts) > 2 and name == f"{parts[-2]}.md"
+    return not (parts[0] == "meetings" and len(parts) > 2 and not is_home and _MEETING_SESSION_RE.match(name))
 
 
 def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = None) -> tuple[str, dict[str, Any]]:
