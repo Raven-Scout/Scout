@@ -127,14 +127,9 @@ The `ScoutTests/Fixtures/` directory holds synthetic plists, logs, and action-it
 
 ## Cutting a release
 
-Maintainers: `scripts/release-app.sh [<version>]` builds a universal (arm64+x86_64) DMG, signs the app with Developer ID + hardened runtime, notarizes and staples **both the app and the DMG** via Apple, tags `app/v<version>`, pushes the tag, and creates a GitHub Release with the DMG attached, marked Latest. With no version it picks the next one from the `apps/macos` commits since the last `app/v*` tag (falling back to the pre-monorepo bare `v*` tags). Requires a `Developer ID Application` cert in the keychain and a `scout-notary` notarytool credential profile (see the header of `scripts/release-app.sh`). Example:
+Maintainers: app releases go through the repo-root unified release script, [`scripts/release.sh`](../../scripts/release.sh) ([Raven-Scout/Scout#317](https://github.com/Raven-Scout/Scout/pull/317)). For the app it calls [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh) to sign Sparkle's nested helpers and to generate and sign the appcast. See the header of `scripts/release.sh` for usage and prerequisites.
 
-```bash
-scripts/release-app.sh        # auto-pick the version
-scripts/release-app.sh 0.2.0  # or pass one explicitly
-```
-
-Set `SKIP_RELEASE=1` to build the DMG locally without tagging or uploading.
+`scripts/release-app.sh`, the old app-only release script, refuses any build that embeds Sparkle, which is every build from v0.16.0 on. #317 retires it.
 
 ## Relationship to the plugin
 
