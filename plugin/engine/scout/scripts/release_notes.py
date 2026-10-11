@@ -32,14 +32,29 @@ def extract_section(text: str, version: str) -> str:
     return "\n".join(out).strip()
 
 
-def render(version: str, *, app: str, plugin: str, prev_tag: str | None, repo_slug: str, rc: str | None = None) -> str:
+def render(
+    version: str,
+    *,
+    app: str,
+    plugin: str,
+    prev_tag: str | None,
+    repo_slug: str,
+    rc: str | None = None,
+    app_prev_tag: str | None = None,
+) -> str:
+    """`prev_tag` is the previous release; `app_prev_tag` the app's own, when that is an older one
+    (plugin/v0.15.0 shipped without the app). Then each section gets its own compare link."""
+    compare = f"https://github.com/{repo_slug}/compare/{{}}...v{version}"
     parts: list[str] = []
     if rc:
         parts += [f"> **Release candidate {rc}.** For testing; not for general use.", ""]
     parts += ["## App", "", app or "_No app changes._", ""]
     parts += ["## Plugin and engine", "", plugin or "_No plugin changes._", ""]
-    if prev_tag:
-        parts += [f"**Full changelog**: https://github.com/{repo_slug}/compare/{prev_tag}...v{version}", ""]
+    if app_prev_tag and prev_tag and app_prev_tag != prev_tag:
+        parts += [f"**App changes since {app_prev_tag}**: {compare.format(app_prev_tag)}", ""]
+        parts += [f"**Plugin and engine changes since {prev_tag}**: {compare.format(prev_tag)}", ""]
+    elif prev_tag:
+        parts += [f"**Full changelog**: {compare.format(prev_tag)}", ""]
     parts += ["---", "", _INSTALL.format(dmg_version=rc.removeprefix("v") if rc else version)]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -51,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", required=True, help="owner/repo for the compare link")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--prev", default=None, help="previous release tag, for the compare link")
+    ap.add_argument("--app-prev", default=None, help="the app's previous release tag, when it differs from --prev")
     ap.add_argument("--rc", default=None, help="vX.Y.Z-rc.N: label the output as a release candidate")
     args = ap.parse_args(argv)
     plugin_path = args.repo_root / "plugin/CHANGELOG.md"
@@ -66,7 +82,15 @@ def main(argv: list[str] | None = None) -> int:
     if not plugin and not app:
         print(f"no [{args.version}] section in either changelog", file=sys.stderr)
         return 1
-    body = render(args.version, app=app, plugin=plugin, prev_tag=args.prev, repo_slug=args.repo, rc=args.rc)
+    body = render(
+        args.version,
+        app=app,
+        plugin=plugin,
+        prev_tag=args.prev,
+        repo_slug=args.repo,
+        rc=args.rc,
+        app_prev_tag=args.app_prev,
+    )
     args.out.write_text(body, encoding="utf-8")
     return 0
 

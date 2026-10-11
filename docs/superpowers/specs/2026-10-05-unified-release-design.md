@@ -8,7 +8,14 @@
 - [`2026-09-08-app-managed-engine-design.md`](2026-09-08-app-managed-engine-design.md): Parts B and C, in which Scout.app installs and owns the engine;
 - [`2026-07-07-in-app-updates-design.md`](2026-07-07-in-app-updates-design.md): Sparkle, Raven-Scout/scout-app-legacy#74.
 
-**Supersedes:** the monorepo spec's "independent, prefixed tags" decision, from v0.15.0 on.
+**Supersedes:** the monorepo spec's "independent, prefixed tags" decision, from v0.16.0 on.
+
+**Amended 2026-10-11:** plugin 0.15.0 shipped on 2026-10-09 as `plugin/v0.15.0`, marketplace only, through
+the old `release-plugin.sh`; the app was not released. So the first unified release is **v0.16.0** (Jordan,
+2026-10-11), with app and plugin bumped together. The app's `MARKETING_VERSION` moves to 0.15.0 on `main` to
+match `plugin.json`, so `versioning check` passes and `prepare` bumps both to 0.16.0. Because the two were last
+released at different points (`app/v0.14.0`, `plugin/v0.15.0`), `prepare` and `finalize` look up each
+artifact's own previous release (§4 step 2). D1, D2, §3 and §6 below read with v0.16.0 for v0.15.0.
 
 ## 1. Intent
 
@@ -37,8 +44,8 @@ move some of the setup steps into the app itself."*
 
 | # | Decision | Choice |
 |---|---|---|
-| D1 | plugin v0.14.0 | Shipped 2026-10-05 as `plugin/v0.14.0`, marketplace only, under today's scheme. It and any urgent `plugin/v0.14.x` patches before v0.15.0 are the last prefixed releases. |
-| D2 | Versioning | **One version for Scout.** App and plugin share `X.Y.Z`. The first unified release is **v0.15.0**. App and plugin both sit at 0.14.0 now, so nothing is renumbered. |
+| D1 | plugin v0.14.0 and v0.15.0 | Shipped 2026-10-05 as `plugin/v0.14.0` and 2026-10-09 as `plugin/v0.15.0`, marketplace only, under the old scheme. They and any urgent `plugin/v0.15.x` patches before v0.16.0 are the last prefixed releases. |
+| D2 | Versioning | **One version for Scout.** App and plugin share `X.Y.Z`. The first unified release is **v0.16.0** (was v0.15.0; amended 2026-10-11). The app's `MARKETING_VERSION` moves from 0.14.0 to 0.15.0 to match the plugin; the app never had a 0.15.0 release. |
 | D3 | Release pipeline | **One script, one tag, one GitHub release, signed locally** (approach A). CI-signed releases (B) stay a later option, and the outcome for users is the same either way. |
 | D4 | Setup | `/scout-setup` retires. The app's onboarding does all of setup. Without the app, `install.sh` does the whole setup as one command. This is a separate spec (§8). |
 
@@ -60,10 +67,10 @@ move some of the setup steps into the app itself."*
   d5348a4), and `main` counts 651.
 - **One tag per release: `vX.Y.Z`.** Bare `v*` tags in this repo are already
   the plugin's series, `v0.4.0`–`v0.13.0`, so they become Scout's.
-  - `plugin/v0.14.0`, plus any urgent `plugin/v0.14.x` patch before
-    v0.15.0 (D1, §6), are the last prefixed tags.
+  - `plugin/v0.14.0`, `plugin/v0.15.0`, plus any urgent `plugin/v0.15.x` patch
+    before v0.16.0 (D1, §6), are the last prefixed tags.
   - No more `app/v*` or `plugin/v*` tags. The existing ones stay as history:
-    `app/v0.1.0`–`app/v0.14.0` and `plugin/v0.14.0`.
+    `app/v0.1.0`–`app/v0.14.0`, `plugin/v0.14.0` and `plugin/v0.15.0`.
   - The root `CLAUDE.md` rule changes from "never push a bare `v*`" to "every
     release is one `vX.Y.Z`; never add prefixed tags".
 - **One GitHub release per version.**
@@ -85,13 +92,20 @@ One root `scripts/release.sh` replaces `apps/macos/scripts/release-app.sh`,
 1. Refuse unless the tree is clean, on `main`, and in sync with `origin/main`.
 2. Read the current version from `plugin.json` through `versioning check`,
    **not from tags**, so the mixed tag history above is never consulted.
-   - Default level: `minor` if any `feat:` subject landed since the previous
-     release's commit (any path), otherwise `patch`.
-   - The "previous release commit" is the commit of the **highest-versioned**
-     tag matching `vX.Y.Z`, `app/vX.Y.Z` or `plugin/vX.Y.Z` (prefix stripped,
-     semver order) whose commit is an ancestor of `HEAD`. Pre-release tags
-     (`-rc.N`) are ignored. For v0.15.0 that is `plugin/v0.14.0`, or the
-     latest `plugin/v0.14.x`.
+   - Default level: `minor` if any `feat:` subject landed since the plugin's
+     previous release (any path), or under `apps/macos/` since the app's,
+     otherwise `patch`.
+   - Each artifact's "previous release" is the **highest-versioned** tag that
+     released it (prefix stripped, semver order) whose commit is an ancestor
+     of `HEAD`; pre-release tags (`-rc.N`) are ignored. The plugin's: a
+     `plugin/vX.Y.Z` or any bare `vX.Y.Z`. The app's: an `app/vX.Y.Z`, or a
+     bare `vX.Y.Z` whose commit contains `apps/macos/` (the pre-monorepo bare
+     tags are plugin-only). For v0.16.0 that is `plugin/v0.15.0` (or the latest
+     `plugin/v0.15.x`) and `app/v0.14.0`; from v0.16.0 on both are the last
+     `vX.Y.Z` (`versioning previous-release --for app|plugin`).
+   - When the two differ, the release notes carry one compare link per
+     section, each from that artifact's previous release; otherwise one
+     "Full changelog" link.
 3. `versioning set NEW`: the four plugin files plus the project file's
    `MARKETING_VERSION`.
 4. Promote `## [Unreleased]` to `## [NEW] - <date>` in **both** changelogs,
@@ -210,7 +224,7 @@ publishes. That gap is usually minutes, and it's accepted.
     to rc installs. A squash or rebase merge loses that: the final's number
     can be lower than or equal to the last rc's, and an rc install then needs
     the DMG. The acceptance test's update checks (rc.1 → rc.2 on the release
-    branch, then the final → `v0.15.1-rc.1`) aren't affected either way.
+    branch, then the final → `v0.16.1-rc.1`) aren't affected either way.
 - **One-time setup only Jordan can do:** generate the EdDSA key pair (Sparkle's
   `generate_keys`). The public key goes into the app's `SUPublicEDKey`, and the
   private key stays in his login keychain beside the Developer ID.
@@ -228,7 +242,7 @@ unchanged.
 GitHub-marketplace and dev-checkout installs keep updating through the
 marketplace, on the same version numbers (D2).
 
-## 6. Order of work, and the bar for v0.15.0
+## 6. Order of work, and the bar for v0.16.0
 
 **These can start now, in parallel:**
 
@@ -251,33 +265,33 @@ marketplace, on the same version numbers (D2).
 4. **The setup-retirement spec (§8).** It also unblocks #261's paused
    connector-setup step.
 
-**The bar for v0.15.0, the first one-download release:**
+**The bar for v0.16.0, the first one-download release:**
 - Parts B and C merged, Sparkle merged, `release.sh` merged.
 - A dry run passes on `main`: `SKIP_RELEASE=1 release.sh prepare minor`, then
   `SKIP_NOTARIZE=1 SKIP_RELEASE=1 release.sh rc vX.Y.Z-rc.1` on that local
   release branch. Nothing is pushed or published.
 - **Acceptance test (Part C's C10).** `finalize` has no draft mode, so it's
   rehearsed with release candidates (agreed with #318):
-  - publish `rc v0.15.0-rc.1` from `release/v0.15.0` (after `prepare`);
+  - publish `rc v0.16.0-rc.1` from `release/v0.16.0` (after `prepare`);
   - on a fresh macOS user account, install its DMG and complete onboarding
     through a first briefing, with no terminal;
-  - publish `rc v0.15.0-rc.2` from a **later commit** on `release/v0.15.0`,
+  - publish `rc v0.16.0-rc.2` from a **later commit** on `release/v0.16.0`,
     so its build number, which Sparkle compares, is higher;
   - point the rc.1 install at rc.2's appcast through `SCOUT_APPCAST_URL`, and
     check that Sparkle updates the app and the engine upgrades itself;
   - check that the vault's runs keep working;
-  - then `finalize v0.15.0`, and repeat the update check with
-    `v0.15.1-rc.1` afterwards, cut from `release/v0.15.1` after
+  - then `finalize v0.16.0`, and repeat the update check with
+    `v0.16.1-rc.1` afterwards, cut from `release/v0.16.1` after
     `prepare patch`.
 - Retiring `/scout-setup` is **not** required. The app's onboarding already
   makes the app the only step for new Mac users. The retirement ships in
-  v0.15.0 if it's ready, otherwise v0.16.0.
+  v0.16.0 if it's ready, otherwise v0.17.0.
 
-**Between now and v0.15.0:**
-- `release-plugin.sh` stays, only for urgent v0.14.x plugin patches to the
+**Between now and v0.16.0:**
+- `release-plugin.sh` stays, only for urgent v0.15.x plugin patches to the
   marketplace.
 - No app build ships until Part B merges. That rule already exists.
-- From v0.15.0 on, `release.sh` is the only way to release.
+- From v0.16.0 on, `release.sh` is the only way to release.
 
 ## 7. Testing
 

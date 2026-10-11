@@ -36,6 +36,26 @@ def test_render_release_matches_golden():
     assert out == _read("expected-release.md")
 
 
+def test_render_after_a_plugin_only_release_links_each_artifacts_previous_release():
+    """plugin/v0.15.0 shipped without the app, so v0.16.0's app section spans back to app/v0.14.0."""
+    out = release_notes.render(
+        "0.16.0",
+        app=release_notes.extract_section(_read("app-CHANGELOG.md"), "0.15.0"),
+        plugin=release_notes.extract_section(_read("plugin-CHANGELOG.md"), "0.15.0"),
+        prev_tag="plugin/v0.15.0",
+        repo_slug="Raven-Scout/Scout",
+        app_prev_tag="app/v0.14.0",
+    )
+    assert out == _read("expected-split-release.md")
+
+
+def test_render_same_previous_release_for_both_keeps_one_link():
+    kwargs = dict(app="- a", plugin="- p", prev_tag="v0.16.0", repo_slug="Raven-Scout/Scout")
+    out = release_notes.render("0.17.0", **kwargs, app_prev_tag="v0.16.0")  # type: ignore[arg-type]
+    assert out == release_notes.render("0.17.0", **kwargs)  # type: ignore[arg-type]
+    assert "**Full changelog**: https://github.com/Raven-Scout/Scout/compare/v0.16.0...v0.17.0" in out
+
+
 def test_extract_section_stops_at_any_level_two_heading():
     """The app changelog ends with `## Releases before the monorepo`: not a version, still a boundary."""
     body = release_notes.extract_section(_read("app-CHANGELOG-trailing-section.md"), "0.15.0")

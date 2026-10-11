@@ -308,3 +308,66 @@ def test_recommend_level(tmp_path):
     since = _git(repo, "rev-list", "-n", "1", "plugin/v0.14.0")
     assert versioning.recommend_level(repo, since) == "minor"  # "feat: four" landed after it
     assert versioning.recommend_level(repo, since, ref="v0.15.1-rc.1") == "patch"
+
+
+def _split_repo(tmp_path: Path) -> Path:
+    """A bare pre-monorepo plugin tag, app/v0.14.0, an unshipped app feat:, plugin/v0.15.0, then a fix:."""
+    repo = tmp_path / "split"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    for msg, path, tag in [
+        ("feat: pre-monorepo plugin", "SKILL.md", "v0.13.0"),  # bare, no app in the tree: the plugin only
+        ("chore: monorepo", "apps/macos/CHANGELOG.md", "app/v0.14.0"),
+        ("feat(app): unshipped", "apps/macos/New.swift", None),
+        ("feat: plugin feature", "plugin/x.py", "plugin/v0.15.0"),
+        ("fix: plugin fix", "plugin/y.py", None),
+    ]:
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(msg, encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", msg)
+        if tag:
+            _git(repo, "tag", tag)
+    return repo
+
+
+def test_previous_release_per_artifact_after_a_plugin_only_release(tmp_path):
+    repo = _split_repo(tmp_path)
+    assert versioning.previous_release(repo)[0] == "plugin/v0.15.0"
+    assert versioning.previous_release(repo, artifact="plugin")[0] == "plugin/v0.15.0"
+    assert versioning.previous_release(repo, artifact="app")[0] == "app/v0.14.0"
+    # A bare pre-monorepo tag released the plugin, never the app.
+    assert versioning.previous_release(repo, ref="app/v0.14.0", artifact="plugin")[0] == "v0.13.0"
+    assert versioning.previous_release(repo, ref="v0.13.0", artifact="app") is None
+
+
+def test_a_unified_bare_tag_is_both_artifacts_previous_release(tmp_path):
+    repo = _split_repo(tmp_path)
+    _git(repo, "tag", "v0.16.0")
+    for artifact in ("app", "plugin", None):
+        assert versioning.previous_release(repo, artifact=artifact)[0] == "v0.16.0"
+
+
+def test_recommend_level_counts_the_apps_unshipped_feats_only(tmp_path):
+    repo = _split_repo(tmp_path)
+    since = _git(repo, "rev-list", "-n", "1", "plugin/v0.15.0")
+    assert versioning.recommend_level(repo, since) == "patch"
+    app_since = _git(repo, "rev-list", "-n", "1", "app/v0.14.0")
+    assert versioning.recommend_level(repo, since, app_since=app_since) == "minor"
+    # From the app's feat: on, only "feat: plugin feature" is left, and it shipped in plugin/v0.15.0.
+    after_app_feat = _git(repo, "rev-parse", "plugin/v0.15.0~1")
+    assert versioning.recommend_level(repo, since, app_since=after_app_feat) == "patch"
+
+
+def test_previous_release_cli_for_an_artifact(tmp_path, capsys):
+    repo = _split_repo(tmp_path)
+    assert versioning.main(["--repo-root", str(repo), "previous-release", "--for", "app"]) == 0
+    assert capsys.readouterr().out.startswith("app/v0.14.0 ")
+    assert versioning.main(["--repo-root", str(repo), "previous-release", "--for", "ios"]) == 2
+    assert "--for takes one of app|plugin" in capsys.readouterr().err
+    since = _git(repo, "rev-list", "-n", "1", "plugin/v0.15.0")
+    app_since = _git(repo, "rev-list", "-n", "1", "app/v0.14.0")
+    assert versioning.main(["--repo-root", str(repo), "recommend", "--since", since, "--app-since", app_since]) == 0
+    assert capsys.readouterr().out.strip() == "minor"

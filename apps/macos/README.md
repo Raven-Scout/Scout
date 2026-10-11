@@ -123,9 +123,9 @@ bundled from the same commit, signs and notarizes it, and publishes one `vX.Y.Z`
 
 ```bash
 scripts/release.sh prepare            # opens the release PR (auto-picks patch/minor)
-scripts/release.sh finalize v0.15.0   # after the PR merges
-scripts/release.sh rc v0.15.0-rc.1    # a pre-release, cut from release/v0.15.0 after prepare
-SKIP_NOTARIZE=1 SKIP_RELEASE=1 scripts/release.sh rc v0.15.0-rc.1   # dry run on the local release branch; publishes nothing
+scripts/release.sh finalize v0.16.0   # after the PR merges
+scripts/release.sh rc v0.16.0-rc.1    # a pre-release, cut from release/v0.16.0 after prepare
+SKIP_NOTARIZE=1 SKIP_RELEASE=1 scripts/release.sh rc v0.16.0-rc.1   # dry run on the local release branch; publishes nothing
 ```
 
 ## Relationship to the plugin

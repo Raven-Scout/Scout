@@ -15,6 +15,8 @@
 
 **Spec:** [`docs/superpowers/specs/2026-10-05-unified-release-design.md`](../specs/2026-10-05-unified-release-design.md). This plan covers the spec's §6 item 1, the pipeline. Parts B and C, Sparkle (#74) and the retirement of `/scout-setup` are out of scope.
 
+**Amended 2026-10-11 (spec amendment of the same date):** plugin 0.15.0 shipped alone as `plugin/v0.15.0`, so the first unified release is **v0.16.0**, and the interim patch path is `plugin/v0.15.x`. Tasks 1–6 shipped as written, plus a follow-up on the rebased branch: the app's `MARKETING_VERSION` moves to 0.15.0 to match; `versioning previous-release --for app|plugin` finds each artifact's own previous release (`app/v0.14.0`, `plugin/v0.15.0`); `recommend --app-since` also counts `feat:` commits under `apps/macos/` since the app's; `release_notes --app-prev` gives each section its own compare link when the two differ; and `prepare` refuses a version that any `vX.Y.Z`, `app/vX.Y.Z` or `plugin/vX.Y.Z` tag already has. The version numbers in the tasks' test code below are fixtures; the docs text quoted in Task 6 is superseded by the files as merged.
+
 ## Global Constraints
 
 - **Never run the real release.** Agents never invoke `scripts/release.sh finalize|rc`, `apps/macos/scripts/release-app.sh`, `plugin/scripts/release-plugin.sh`, `xcrun notarytool`, `codesign` on a release build, `gh release create`, or `git push` of a tag. The exception is when Jordan explicitly asks for that specific run. Tests use only the stub harness from Task 3.
@@ -68,7 +70,7 @@
 | `.gitignore` | `.release/` (finalize's build worktrees) | 3 |
 | `.github/workflows/{plugin-test,plugin-lint,contract}.yml` | Path filters, shellcheck, version-match step | 5 |
 | `CLAUDE.md`, `apps/macos/CHANGELOG.md`, `apps/macos/README.md`, `apps/macos/Scout/Shell/PluginVersion.swift`, runbook | Docs for the new flow | 6 |
-| `apps/macos/scripts/release-app.sh`, `plugin/scripts/release-plugin.sh`, `.github/workflows/release-plugin.yml` | Deleted in a **separate PR**, merged when v0.15.0 is cut | 7 |
+| `apps/macos/scripts/release-app.sh`, `plugin/scripts/release-plugin.sh`, `.github/workflows/release-plugin.yml` | Deleted in a **separate PR**, merged when v0.16.0 is cut | 7 |
 
 ---
 
@@ -1598,7 +1600,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 7: Retire the old release scripts (a SEPARATE PR, merged when v0.15.0 is cut)
 
-Keep this out of the Task 1–6 PR. The spec keeps `release-plugin.sh` for urgent v0.14.x plugin patches until v0.15.0, so this PR lands as part of cutting v0.15.0. Open it as a draft from a branch based on `main` after Tasks 1–6 merge.
+Keep this out of the Task 1–6 PR. The spec keeps `release-plugin.sh` for urgent v0.15.x plugin patches until v0.16.0, so this PR lands as part of cutting v0.16.0. Open it as a draft from a branch based on `main` after Tasks 1–6 merge.
 
 **Files:**
 - Delete: `apps/macos/scripts/release-app.sh`, `plugin/scripts/release-plugin.sh`, `.github/workflows/release-plugin.yml`
@@ -1616,7 +1618,7 @@ Expected: only the files being deleted or edited in this task.
 Run: `cd plugin/engine && .venv/bin/pytest tests/ -q && cd ../.. && for f in .github/workflows/*.yml; do plugin/engine/.venv/bin/python -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$f" || echo "BAD $f"; done`
 Expected: the suite passes (the known flakes are quarantined separately). No `BAD` lines.
 
-- [ ] **Step 3: Commit, and open the PR as a draft titled "chore(release): retire release-app.sh, release-plugin.sh and release-plugin.yml (merge with v0.15.0)".**
+- [ ] **Step 3: Commit, and open the PR as a draft titled "chore(release): retire release-app.sh, release-plugin.sh and release-plugin.yml (merge with v0.16.0)".**
 
 ```bash
 git rm apps/macos/scripts/release-app.sh plugin/scripts/release-plugin.sh .github/workflows/release-plugin.yml

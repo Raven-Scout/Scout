@@ -126,7 +126,19 @@ class Repo:
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
 
 
-def make_repo(tmp_path: Path, *, origin_url: str | None = None, version: str = "0.14.0") -> Repo:
+def make_repo(
+    tmp_path: Path,
+    *,
+    origin_url: str | None = None,
+    version: str = "0.14.0",
+    app_release: str | None = None,
+    after_release: str = "feat: a feature after the last release",
+) -> Repo:
+    """A throwaway Scout repo whose last release is plugin/v{version}, followed by one `after_release` commit.
+
+    `app_release` puts an older app/vX.Y.Z before it, then an app-only feat: commit that no release shipped:
+    the state after plugin/v0.15.0 shipped without the app.
+    """
     stubs, realbin = tmp_path / "stubs", tmp_path / "realbin"
     stubs.mkdir()
     realbin.mkdir()
@@ -144,11 +156,19 @@ def make_repo(tmp_path: Path, *, origin_url: str | None = None, version: str = "
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
+    if app_release:
+        _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "chore: the app's last release")
+        _git(root, "tag", f"app/v{app_release}")
+        _write(root, "apps/macos/Scout/Unshipped.swift", "// shipped by no release yet\n")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "feat(app): an app feature no release has shipped")
     _seed(root, version)
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "chore: seed")
     _git(root, "tag", f"plugin/v{version}")
-    _git(root, "commit", "-q", "--allow-empty", "-m", "feat: a feature after the last release")
+    _git(root, "commit", "-q", "--allow-empty", "-m", after_release)
     _git(root, "remote", "add", "origin", str(origin))
     _git(root, "push", "-q", "origin", "main", "--tags")
     _git(root, "branch", "-q", "--set-upstream-to=origin/main", "main")

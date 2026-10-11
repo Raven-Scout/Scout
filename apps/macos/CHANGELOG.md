@@ -9,6 +9,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ### Changed
 - The app now lives at `apps/macos/` in the Scout monorepo (was
   `Raven-Scout/Scout` repo root). No behavior change.
+- The app and the plugin share one version and ship as one release, cut with
+  `scripts/release.sh` (Raven-Scout/Scout#317). The plugin shipped 0.15.0 on
+  its own, and the app was never released as 0.15.0; v0.16.0 is the first
+  release of both.
 
 ## Releases before the monorepo
 

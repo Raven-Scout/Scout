@@ -1017,9 +1017,10 @@ something".**
 
 - [x] **7.1 Plugin v0.14.0.** Released 2026-10-05 as `plugin/v0.14.0` (#306) with the old
   `release-plugin.sh`, marketplace only. The 2.2 sandbox upgraded 0.13.0 → 0.14.0 through the rename redirect.
-  It is the last prefixed release, apart from an urgent `plugin/v0.14.x` patch.
-- [ ] **7.2 From v0.15.0: one release.** See `docs/superpowers/specs/2026-10-05-unified-release-design.md` and
-  `scripts/release.sh`. v0.15.0 is the first one-download release, and it needs Parts B and C, Sparkle (#74), and the
+- [x] **7.1b Plugin v0.15.0.** Released 2026-10-09 as `plugin/v0.15.0` (#334), the same way, marketplace only;
+  the app was not released. It is the last prefixed release, apart from an urgent `plugin/v0.15.x` patch.
+- [ ] **7.2 From v0.16.0: one release.** See `docs/superpowers/specs/2026-10-05-unified-release-design.md` and
+  `scripts/release.sh`. v0.16.0 is the first one-download release, and it needs Parts B and C, Sparkle (#74), and the
   spec §6 acceptance test. Jordan runs `prepare` and `finalize`; agents never run them for real. If `finalize`
   fails during `gh release create`, check `gh release view vX.Y.Z --repo Raven-Scout/Scout` before re-running,
   and delete any leftover draft first.

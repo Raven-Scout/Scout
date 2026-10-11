@@ -90,21 +90,28 @@ require_clean_synced_main() {
 }
 
 cmd_prepare() {
-  local level="${1:-}" slug prev since new branch rel today notes body
+  local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t
   slug="$(require_slug)"
   require_clean_synced_main
   vers check >/dev/null || die "versions drift across the manifests; run: versioning check"
-  prev="$(vers previous-release)"
+  # Each artifact's own previous release: plugin/v0.15.0 shipped without the app (last: app/v0.14.0).
+  prev="$(vers previous-release --for plugin)"
+  app_prev="$(vers previous-release --for app)"
+  [ "${app_prev%% *}" != "${prev%% *}" ] || app_prev=""
   if [ -z "$level" ]; then
     since=""
+    app_since=""
     [ -z "$prev" ] || since="${prev#* }"
+    [ -z "$app_prev" ] || app_since="${app_prev#* }"
     # shellcheck disable=SC2086
-    level="$(vers recommend ${since:+--since "$since"})"
-    echo "→ $level (feat→minor, else→patch) since ${prev%% *}"
+    level="$(vers recommend ${since:+--since "$since"} ${app_since:+--app-since "$app_since"})"
+    echo "→ $level (feat→minor, else→patch) since ${prev%% *}${app_prev:+ (app: since ${app_prev%% *})}"
   fi
   new="$(vers next "$level")"
   branch="release/v$new"
-  ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/v$new" >/dev/null || die "tag v$new already exists"
+  for t in "v$new" "app/v$new" "plugin/v$new"; do
+    ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$t" >/dev/null || die "tag $t already exists"
+  done
   if git -C "$REPO_ROOT" rev-parse -q --verify "refs/heads/$branch" >/dev/null \
     || [ -n "$(git -C "$REPO_ROOT" ls-remote --heads origin "refs/heads/$branch")" ]; then
     die "$branch already exists (locally or on origin). Delete it or finish that release first."
@@ -125,7 +132,7 @@ cmd_prepare() {
   mkdir -p "$REPO_ROOT/.release"
   notes="$REPO_ROOT/.release/notes-v$new.md"
   "$PY" -m scout.scripts.release_notes --repo-root "$REPO_ROOT" "$new" --repo "$slug" --out "$notes" \
-    ${prev:+--prev "${prev%% *}"}
+    ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then
     echo "→ SKIP_RELEASE=1: committed 'release: v$new' on $branch locally. Not pushing, no PR."
     echo "→ Release notes: $notes"
@@ -160,7 +167,7 @@ check_bundled_engine() {
 # build_and_publish TAG APP_VERSION SHA SLUG KIND   (KIND: release | rc)
 build_and_publish() {
   local tag="$1" v="$2" sha="$3" slug="$4" kind="$5"
-  local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev latest at hook
+  local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev app_prev latest at hook
   [ "${SKIP_NOTARIZE:-0}" != 1 ] || [ "${SKIP_RELEASE:-0}" = 1 ] \
     || die "SKIP_NOTARIZE=1 would publish an app Gatekeeper blocks; add SKIP_RELEASE=1 for a dry run"
   ident="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
@@ -194,9 +201,12 @@ build_and_publish() {
   notes="$wt/release-notes.md"
   if [ "$kind" = release ]; then
     prev="$("$PY" -m scout.scripts.versioning --repo-root "$REPO_ROOT" previous-release \
-      --ref "$sha" --exclude "$tag")"
+      --ref "$sha" --exclude "$tag" --for plugin)"
+    app_prev="$("$PY" -m scout.scripts.versioning --repo-root "$REPO_ROOT" previous-release \
+      --ref "$sha" --exclude "$tag" --for app)"
+    [ "${app_prev%% *}" != "${prev%% *}" ] || app_prev=""
     "$PY" -m scout.scripts.release_notes --repo-root "$wt" "$v" --repo "$slug" --out "$notes" \
-      ${prev:+--prev "${prev%% *}"}
+      ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
   else
     "$PY" -m scout.scripts.release_notes --repo-root "$wt" "$v" --repo "$slug" --out "$notes" --rc "$tag"
   fi

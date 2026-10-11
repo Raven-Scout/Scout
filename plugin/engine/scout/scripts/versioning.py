@@ -58,7 +58,9 @@ _TARGETS = [
 
 _CHANGELOGS = ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md")
 _UNRELEASED_HEADING = re.compile(r"(?m)^## \[Unreleased\][^\n]*$")
-_RELEASE_TAG = re.compile(r"^(?:app/|plugin/)?v(\d+)\.(\d+)\.(\d+)$")
+_RELEASE_TAG = re.compile(r"^(?P<prefix>app/|plugin/)?v(\d+)\.(\d+)\.(\d+)$")
+_APP_DIR = "apps/macos"
+ARTIFACTS = ("app", "plugin")
 _FEAT = re.compile(r"^feat(\([^)]*\))?!?:")
 
 
@@ -158,8 +160,27 @@ def _git(repo_root: Path, *args: str) -> str:
     return done.stdout
 
 
-def previous_release(repo_root: Path, ref: str = "HEAD", exclude: str | None = None) -> tuple[str, str] | None:
+def _released(repo_root: Path, prefix: str | None, sha: str, artifact: str | None) -> bool:
+    """Whether a release tag of this prefix at sha released `artifact` (None: either one)."""
+    if artifact is None or prefix == f"{artifact}/":
+        return True
+    if prefix:  # the other artifact's prefixed tag
+        return False
+    if artifact == "plugin":  # every bare tag carried the plugin: pre-monorepo plugin releases, then unified ones
+        return True
+    # A bare tag released the app only if its commit has the app in it; the pre-monorepo bare tags don't.
+    done = subprocess.run(["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}:{_APP_DIR}"], capture_output=True)
+    return done.returncode == 0
+
+
+def previous_release(
+    repo_root: Path, ref: str = "HEAD", exclude: str | None = None, artifact: str | None = None
+) -> tuple[str, str] | None:
     """The highest-versioned vX.Y.Z / app/vX.Y.Z / plugin/vX.Y.Z tag reachable from ref.
+
+    With `artifact` ("app" or "plugin"), only tags that released that artifact count: its own prefixed
+    tags and the bare vX.Y.Z tags that carried it. The two can differ: plugin/v0.15.0 shipped without the
+    app, whose last release before the unified ones is app/v0.14.0.
 
     Pre-releases (-rc.N) are never a "previous release". Equal versions (app/v0.14.0 and
     plugin/v0.14.0) tie-break to the later commit, i.e. the one with more ancestors.
@@ -170,17 +191,26 @@ def previous_release(repo_root: Path, ref: str = "HEAD", exclude: str | None = N
         if tag == exclude or not m:
             continue
         sha = _git(repo_root, "rev-list", "-n", "1", tag).strip()
+        if not _released(repo_root, m.group("prefix"), sha, artifact):
+            continue
         depth = int(_git(repo_root, "rev-list", "--count", sha).strip())
-        key = (int(m.group(1)), int(m.group(2)), int(m.group(3)), depth)
+        key = (int(m.group(2)), int(m.group(3)), int(m.group(4)), depth)
         if best is None or key > best[0]:
             best = (key, tag, sha)
     return None if best is None else (best[1], best[2])
 
 
-def recommend_level(repo_root: Path, since: str | None, ref: str = "HEAD") -> str:
-    """minor if any non-merge commit subject since `since` is a feat:, else patch."""
+def recommend_level(repo_root: Path, since: str | None, ref: str = "HEAD", app_since: str | None = None) -> str:
+    """minor if any non-merge commit subject since `since` is a feat:, else patch.
+
+    `app_since`, the app's own previous release when it is older than `since`, also counts the feat:
+    commits under apps/macos/ since then: they never shipped, since only the plugin was released after them.
+    """
     span = f"{since}..{ref}" if since else ref
     subjects = _git(repo_root, "log", span, "--no-merges", "--format=%s").splitlines()
+    if app_since:
+        app_span = f"{app_since}..{ref}"
+        subjects += _git(repo_root, "log", app_span, "--no-merges", "--format=%s", "--", _APP_DIR).splitlines()
     return "minor" if any(_FEAT.match(s) for s in subjects) else "patch"
 
 
@@ -235,12 +265,16 @@ def main(argv: list[str] | None = None) -> int:
         promote_changelogs(repo, version=rest[0], date=rest[1])
         return 0
     if cmd == "previous-release":
-        found = previous_release(repo, ref=opt("--ref") or "HEAD", exclude=opt("--exclude"))
+        artifact = opt("--for")
+        if "--for" in rest and artifact not in ARTIFACTS:
+            print(f"--for takes one of {'|'.join(ARTIFACTS)}, got {artifact!r}", file=sys.stderr)
+            return 2
+        found = previous_release(repo, ref=opt("--ref") or "HEAD", exclude=opt("--exclude"), artifact=artifact)
         if found:
             print(f"{found[0]} {found[1]}")
         return 0
     if cmd == "recommend":
-        print(recommend_level(repo, opt("--since"), ref=opt("--ref") or "HEAD"))
+        print(recommend_level(repo, opt("--since"), ref=opt("--ref") or "HEAD", app_since=opt("--app-since")))
         return 0
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2

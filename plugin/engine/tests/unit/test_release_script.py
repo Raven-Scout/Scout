@@ -37,7 +37,7 @@ def test_release_scripts_stage_every_file_versioning_rewrites():
     }
     assert "apps/macos/Scout.xcodeproj/project.pbxproj" in rewritten
     scripts = [REAL_REPO / "scripts/release.sh"]
-    interim = REAL_REPO / "plugin/scripts/release-plugin.sh"  # the plugin/v0.14.x patch path, until it is retired
+    interim = REAL_REPO / "plugin/scripts/release-plugin.sh"  # the plugin/v0.15.x patch path, until it is retired
     if interim.exists():
         scripts.append(interim)
     for script in scripts:
@@ -494,3 +494,51 @@ def test_finalize_refuses_a_reverted_release(tmp_path):
     assert done.returncode != 0
     assert "origin/main now carries version 0.14.0, not 0.15.0" in done.stderr
     assert not any(c.startswith(("xcodebuild", "gh release")) for c in r.calls())
+
+
+# The state after plugin/v0.15.0 shipped without the app (2026-10-09): main carries 0.15.0 everywhere, the
+# plugin's last release is plugin/v0.15.0, the app's is app/v0.14.0. The first unified release is v0.16.0.
+def _split_release_repo(tmp_path):
+    return make_repo(tmp_path, version="0.15.0", app_release="0.14.0", after_release="fix: after plugin/v0.15.0")
+
+
+def test_prepare_after_a_plugin_only_release_proposes_the_next_minor_for_both(tmp_path):
+    # Only a fix: since plugin/v0.15.0, but the app's feat: since app/v0.14.0 never shipped, so it's minor.
+    r = _split_release_repo(tmp_path)
+    done = r.run("prepare", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "→ minor (feat→minor, else→patch) since plugin/v0.15.0 (app: since app/v0.14.0)" in done.stdout
+    assert _git(r.root, "rev-parse", "--abbrev-ref", "HEAD") == "release/v0.16.0"
+    assert versioning.assert_in_sync(r.root / "plugin", r.root) == "0.16.0"
+    notes = (r.root / ".release" / "notes-v0.16.0.md").read_text(encoding="utf-8")
+    compare = "https://github.com/Raven-Scout/Scout/compare"
+    assert f"**App changes since app/v0.14.0**: {compare}/app/v0.14.0...v0.16.0" in notes
+    assert f"**Plugin and engine changes since plugin/v0.15.0**: {compare}/plugin/v0.15.0...v0.16.0" in notes
+    assert "**Full changelog**" not in notes
+
+
+def test_prepare_after_a_plugin_only_release_counts_no_plugin_commits_before_it(tmp_path):
+    # No unshipped app feat:, and only a fix: since plugin/v0.15.0, so it's a patch.
+    r = make_repo(tmp_path, version="0.15.0", after_release="fix: after plugin/v0.15.0")
+    _git(r.root, "tag", "app/v0.14.0", "plugin/v0.15.0")
+    done = r.run("prepare", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert _git(r.root, "rev-parse", "--abbrev-ref", "HEAD") == "release/v0.15.1"
+
+
+def test_prepare_refuses_a_version_a_prefixed_tag_already_released(tmp_path):
+    r = _split_release_repo(tmp_path)
+    _git(r.root, "tag", "plugin/v0.16.0")  # e.g. an urgent patch cut with the old release-plugin.sh
+    done = r.run("prepare", "0.16.0", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode != 0 and "tag plugin/v0.16.0 already exists" in done.stderr
+    assert _git(r.root, "branch", "--list", "release/*") == ""
+
+
+def test_finalize_after_a_plugin_only_release_links_each_artifacts_own_previous_release(tmp_path):
+    r = _split_release_repo(tmp_path)
+    _merge_release(r, "0.16.0")
+    done = r.run("finalize", "v0.16.0", extra_env={"SKIP_RELEASE": "1", "SKIP_NOTARIZE": "1"})
+    assert done.returncode == 0, done.stderr
+    notes = (r.root / ".release" / "v0.16.0" / "release-notes.md").read_text(encoding="utf-8")
+    assert "compare/app/v0.14.0...v0.16.0" in notes and "compare/plugin/v0.15.0...v0.16.0" in notes
+    assert "an app thing" in notes and "a plugin thing" in notes
