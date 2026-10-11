@@ -84,7 +84,7 @@ _Always the LAST section of the file — run metadata is a footer for review, ne
 - **YYYY-MM-DD HH:MM [timezone]** ([mode]) — X new / Y completed / Z carried forward. Connectors: [available, or "degraded: <name>"].
 ```
 
-An open item's sources, evidence, quotes, history and links go in its note, `action-items/context/<TAG>.md` (see **Item line format**), never in sub-bullets.
+An open item's sources, evidence, quotes and history go in its note, `action-items/context/<TAG>.md` (see **Item line format**), never in prose sub-bullets. Machine lines (plan markers, `- Refs:`) still go under the item.
 
 All action items files must include `[[wikilinks]]` to any KB files referenced by action items.
 
