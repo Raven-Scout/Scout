@@ -1,7 +1,7 @@
 """UserPromptSubmit hook — pre-session KB staleness scorer.
 
 Started as a port of ~/Scout/hooks/kb-pre-filter.sh:
-  - Walks $SCOUT_DATA_DIR/knowledge-base/, classifying each *.md file
+  - Walks $SCOUT_DATA_DIR/knowledge-base/ and meetings/ (#217), classifying each *.md file
     as STALE / NO_DATE / FRESH against a per-file freshness budget. The date
     comes from the frontmatter `last_updated:` key, else the prose
     "Last updated" line, read in any zone a run writes (#201).
@@ -15,7 +15,10 @@ Discovery exclusions are layered to match the bash:
     *-draft*, *-prompt*
   - per-file rel-path skip: */people/*.md (entity files)
   - per-item record folders: knowledge-base/{scout-mistake-audit,
-    research-queue,session-log,kg-audits,review-queue}/ (#201)
+    research-queue,session-log,kg-audits,review-queue}/ (#201), under
+    knowledge-base/ only
+  - a meeting's dated session files: meetings/<slug>/YYYY-MM-DD[-_. …].md,
+    but never its home file meetings/<slug>/<slug>.md
 
 Hooks must NEVER raise — main() catches all exceptions and returns 0.
 """
@@ -83,6 +86,15 @@ SKIP_PATH_FRAGMENTS: tuple[str, ...] = ("/ontology/", "archive", "/personal/")
 SKIP_KB_SUBDIRS: frozenset[str] = frozenset(
     {"scout-mistake-audit", "research-queue", "session-log", "kg-audits", "review-queue"}
 )
+
+# The vault's content roots, walked in this order. meetings/ holds the home
+# file of every recurring meeting, which SKILL.md treats as canonical (#217).
+KB_ROOTS: tuple[str, ...] = ("knowledge-base", "meetings")
+
+# A meeting's dated session file (`meetings/<slug>/YYYY-MM-DD.md`, or with a
+# suffix after `-`, `_`, `.` or a space): a per-meeting record that moves through prep → notes → synthesis,
+# not a document with a freshness budget. Same reasoning as SKIP_KB_SUBDIRS.
+_MEETING_SESSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[-_. ].*)?\.md$")
 
 # How many lines to scan from the file head for the prose date line and the
 # priority marker. Bash uses head -25.
@@ -337,53 +349,49 @@ def resolve_date(lines: list[str], tz: ZoneInfo) -> tuple[datetime | None, str, 
 
 
 def discover_kb_files(scout_dir: Path) -> list[Path]:
-    """Walk knowledge-base/ and return the sorted list of *.md files to evaluate.
+    """Walk every root in KB_ROOTS and return the sorted list of *.md files to evaluate.
 
     Replicates bash find filters + per-file skip rules. Output is sorted
     alphabetically by full path (matches `find ... | sort` in bash line 131).
+    A root that does not exist is skipped.
     """
-    kb_root = scout_dir / "knowledge-base"
-    if not kb_root.is_dir():
-        return []
-
     candidates: list[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(kb_root, followlinks=False):
-        for fname in filenames:
-            if not fname.endswith(".md"):
-                continue
-            p = Path(dirpath) / fname
-            if not p.is_file():
-                continue
-            rel_posix = p.relative_to(scout_dir).as_posix()
-
-            # Find-level exclusions: */ontology/*, *archive*, */personal/*
-            if "/ontology/" in rel_posix:
-                continue
-            if "archive" in rel_posix:
-                continue
-            if "/personal/" in rel_posix:
-                continue
-
-            # Per-file basename exact-match skip
-            name = p.name
-            if name in SKIP_BASENAMES:
-                continue
-            # Per-file basename glob skip
-            if any(fnmatch.fnmatchcase(name, g) for g in SKIP_BASENAME_GLOBS):
-                continue
-            # Per-file rel-path skip: */people/*.md (entity files; top-level
-            # people.md is allowed because there's no subdir segment)
-            if "/people/" in rel_posix:
-                continue
-            # Per-item record folders directly under knowledge-base/.
-            parts = rel_posix.split("/")
-            if len(parts) > 2 and parts[1] in SKIP_KB_SUBDIRS:
-                continue
-
-            candidates.append(p)
+    for root_name in KB_ROOTS:
+        root = scout_dir / root_name
+        if not root.is_dir():
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            for fname in filenames:
+                if not fname.endswith(".md"):
+                    continue
+                p = Path(dirpath) / fname
+                if p.is_file() and _ranked(p.relative_to(scout_dir).as_posix()):
+                    candidates.append(p)
 
     candidates.sort()
     return candidates
+
+
+def _ranked(rel_posix: str) -> bool:
+    """Whether a file under one of KB_ROOTS gets a freshness ranking."""
+    # Find-level exclusions: */ontology/*, *archive*, */personal/*
+    if "/ontology/" in rel_posix or "archive" in rel_posix or "/personal/" in rel_posix:
+        return False
+    parts = rel_posix.split("/")
+    name = parts[-1]
+    # Per-file basename exact-match and glob skips
+    if name in SKIP_BASENAMES or any(fnmatch.fnmatchcase(name, g) for g in SKIP_BASENAME_GLOBS):
+        return False
+    # */people/*.md are entity files; top-level people.md is allowed because
+    # there's no subdir segment.
+    if "/people/" in rel_posix:
+        return False
+    # Per-item record folders directly under knowledge-base/.
+    if parts[0] == "knowledge-base" and len(parts) > 2 and parts[1] in SKIP_KB_SUBDIRS:
+        return False
+    # A meeting's dated session files; a home file named for a dated slug still ranks.
+    is_home = len(parts) > 2 and name == f"{parts[-2]}.md"
+    return not (parts[0] == "meetings" and len(parts) > 2 and not is_home and _MEETING_SESSION_RE.match(name))
 
 
 def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = None) -> tuple[str, dict[str, Any]]:
@@ -443,13 +451,16 @@ def render_output(
     *,
     session_type: str,
     now_et: str,
+    roots: list[str] | None = None,
 ) -> str:
     """Render the kb-filter.md content. Mirrors bash lines 134-164.
 
     Adds two lines the bash never had (#201): a warning when no file has a
     readable date, so a staleness check that read nothing can't look like a
     healthy KB, and where the dates came from, so the prose fallback is
-    visible as files move to the ``last_updated:`` property.
+    visible as files move to the ``last_updated:`` property. With ``roots``,
+    it also says how many files were scanned across which roots, so a
+    narrowed population shows in the report (#217).
     """
     lines: list[str] = [f"# KB Pre-Filter — {now_et} ({session_type})", ""]
     dated = stale + fresh
@@ -484,6 +495,9 @@ def render_output(
     lines.append("")
     lines.append("---")
     lines.append(f"Stale: {len(stale)} | No date: {len(no_date)} | Fresh: {len(fresh)}")
+    if roots is not None:
+        total = len(stale) + len(no_date) + len(fresh)
+        lines.append(f"Scanned: {total} files across {', '.join(f'{r}/' for r in roots)}")
     if dated:
         by = _count_sources(dated)
         lines.append(f"Dates read from: {by['property']} last_updated property, {by['prose']} prose line")
@@ -515,6 +529,7 @@ def run(
     now_et = now.strftime("%Y-%m-%d %H:%M %Z")
 
     files = discover_kb_files(scout_dir)
+    roots = [r for r in KB_ROOTS if (scout_dir / r).is_dir()]
     stale: list[dict[str, Any]] = []
     no_date: list[dict[str, Any]] = []
     fresh: list[dict[str, Any]] = []
@@ -533,7 +548,7 @@ def run(
         else:
             no_date.append(details)
 
-    content = render_output(stale, no_date, fresh, session_type=session_type, now_et=now_et)
+    content = render_output(stale, no_date, fresh, session_type=session_type, now_et=now_et, roots=roots)
     cache_dir = scout_dir / ".scout-cache"
     out_path = cache_dir / "kb-filter.md"
     try:
@@ -547,6 +562,8 @@ def run(
         "stale": len(stale),
         "no_date": len(no_date),
         "fresh": len(fresh),
+        "scanned": len(files),
+        "roots": roots,
         "dated_by": _count_sources(stale + fresh),
         "session_type": session_type,
         "output_path": str(out_path),
