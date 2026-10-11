@@ -176,6 +176,7 @@ struct ActionItemsView: View {
                 selection: isSelecting ? $selectedTaskIDs : nil,
                 window: window(for: section),
                 onShowMore: { showMore(in: section) },
+                onShowAll: { showAll(in: filtered(section)) },
                 onOp: handleOp
             )
         }
@@ -187,6 +188,14 @@ struct ActionItemsView: View {
 
     private func showMore(in section: ActionSection) {
         windows[section.id, default: TaskWindow()].showMore()
+        reconcileSelection()
+    }
+
+    /// Pass the *filtered* section, the one the row counted. Under a search the
+    /// unfiltered section can hold hundreds more rows, which would all be built
+    /// once the search clears (`TaskWindow.showAll` caps that as well).
+    private func showAll(in section: ActionSection) {
+        windows[section.id, default: TaskWindow()].showAll(in: section.tasks)
         reconcileSelection()
     }
 

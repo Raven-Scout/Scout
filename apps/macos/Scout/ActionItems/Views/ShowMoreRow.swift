@@ -6,6 +6,8 @@ struct ShowMoreRow: View {
     let window: TaskWindow
     let tasks: [ActionTask]
     let action: () -> Void
+    /// Builds every remaining row. Offered only when ``TaskWindow/canShowAll(in:)``.
+    var showAll: (() -> Void)? = nil
 
     var body: some View {
         let hidden = window.hiddenCount(in: tasks)
@@ -16,6 +18,11 @@ struct ShowMoreRow: View {
                         .font(DS.sans(11.5, weight: .medium))
                 }
                 .buttonStyle(.borderless)
+                if let showAll, window.canShowAll(in: tasks) {
+                    Button("Show all", action: showAll)
+                        .font(DS.sans(11.5, weight: .medium))
+                        .buttonStyle(.borderless)
+                }
                 Text("\(hidden) not shown · ⌘F searches all of them")
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Ink.p4)
