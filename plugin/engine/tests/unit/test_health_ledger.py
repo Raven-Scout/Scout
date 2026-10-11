@@ -143,10 +143,25 @@ def test_a_session_quoting_an_error_mid_line_is_not_an_auth_failure(tmp_path):
     assert health.evaluate(v, now=NOW).severity == "green"
 
 
+def test_a_bare_401_in_a_run_log_is_not_an_auth_failure(tmp_path):
+    """Ported from the doctor's log check: a session that merely *writes about*
+    HTTP 401 can't trip the detector (M8)."""
+    v = _vault(tmp_path)
+    (v / ".scout-logs" / "scout-2026-05-28.log").write_text(
+        "The vendor API returned 401 for the old token; noted in the KB.\n", encoding="utf-8"
+    )
+    assert health.evaluate(v, now=NOW).findings == ()
+
+
 def test_three_lock_skips_in_a_day_are_yellow(tmp_path):
     v = _vault(tmp_path)
     _ledger(v, [_row(NOW - timedelta(hours=h), outcome="skipped_lock") for h in (20, 10, 1)])
-    assert _ids(health.evaluate(v, now=NOW)) == {"lock.skips": "yellow"}
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"lock.skips": "yellow"}
+    assert report.findings[0].fix == (
+        "A long-running session is holding the vault lock; check .scout-logs/ for a run that took hours."
+    )
+    assert "#218" not in report.findings[0].fix
 
 
 def test_two_lock_skips_are_fine(tmp_path):

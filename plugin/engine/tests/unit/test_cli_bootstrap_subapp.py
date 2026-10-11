@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -94,11 +95,12 @@ def test_doctor_text_has_a_run_health_section_and_no_auth_error(tmp_path, monkey
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     logs = vault / ".scout-logs"
     logs.mkdir(exist_ok=True)
+    now = int(time.time())
     row = {
         "slot": "morning-briefing",
         "mode": "scout",
-        "started_at": 1,
-        "finished_at": 2**31,
+        "started_at": now - 360,
+        "finished_at": now - 300,
         "duration_s": 1,
         "exit_code": 1,
         "failure_class": "oauth_expired",

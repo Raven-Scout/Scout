@@ -1625,7 +1625,14 @@ def _register_health() -> None:
         from scout import health as _health
         from scout import paths as _paths
 
-        report = _health.evaluate(_paths.data_dir())
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            error = f"vault directory missing: {vault}"
+            typer.echo(f"run health: unknown — {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"severity": "unknown", "error": error}))
+            raise typer.Exit(code=2)
+        report = _health.evaluate(vault)
         if json_out:
             typer.echo(_json.dumps(report.to_dict()))
         else:

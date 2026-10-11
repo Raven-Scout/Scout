@@ -21,7 +21,7 @@ def _vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return v
 
 
-def _fail_rows(v: Path) -> None:
+def _fail_rows(v: Path, count: int = 2) -> None:
     now = int(time.time())
     rows = [
         {
@@ -34,7 +34,7 @@ def _fail_rows(v: Path) -> None:
             "failure_class": "unknown",
             "log": f"scout-{i}.log",
         }
-        for i in range(2)
+        for i in range(count)
     ]
     (v / ".scout-logs" / "run-outcomes.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
@@ -60,3 +60,31 @@ def test_health_red_text_lists_finding_and_fix(tmp_path, monkeypatch):
     assert "run health: red" in result.stdout
     assert "red  runs.failing:" in result.stdout
     assert "    fix: " in result.stdout
+
+
+def test_health_yellow_text_exits_one(tmp_path, monkeypatch):
+    """M7: one failed run is yellow, exit 1."""
+    _fail_rows(_vault(tmp_path, monkeypatch), count=1)
+    result = runner.invoke(app, ["health"])
+    assert result.exit_code == 1, result.output
+    assert "run health: yellow" in result.stdout
+    assert "yellow  runs.failing:" in result.stdout
+
+
+def test_health_missing_vault_text_is_unknown_exit_two(tmp_path, monkeypatch):
+    """M4: a missing vault directory is not "green"."""
+    missing = tmp_path / "nowhere"
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(missing))
+    result = runner.invoke(app, ["health"])
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ""
+    assert result.stderr.strip() == f"run health: unknown — vault directory missing: {missing}"
+
+
+def test_health_missing_vault_json_is_unknown_exit_two(tmp_path, monkeypatch):
+    missing = tmp_path / "nowhere"
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(missing))
+    result = runner.invoke(app, ["health", "--json"])
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.stdout) == {"severity": "unknown", "error": f"vault directory missing: {missing}"}
+    assert "run health: unknown — vault directory missing:" in result.stderr

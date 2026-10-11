@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import subprocess
 from dataclasses import dataclass, replace
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from scout.errors import ConfigError
 from scout.schedule import SlotRuntime, SlotType, load_schedule
+from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
 SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"})
@@ -98,6 +100,9 @@ class Finding:
 class SlotStatus:
     key: str
     type: str
+    # The newer of the slot's dispatch and its last session end, as
+    # .scout-state/last-fire.json records it (schedule_tick folds the Stop
+    # hook's session-end rows into it), so usually just before a run's finish.
     last_fire: datetime | None
     last_outcome: OutcomeRow | None
 
@@ -301,7 +306,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                 severity="yellow",
                 since=None,
                 summary=f"{len(lock_skips)} runs skipped in the last 24 h because another session held the vault lock.",
-                fix="See #218; a long-running session is blocking scheduled ones.",
+                fix="A long-running session is holding the vault lock; check .scout-logs/ for a run that took hours.",
                 source="ledger",
             )
         )
@@ -325,6 +330,7 @@ def build_report(
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 TICK_STALL = timedelta(hours=2)
 FIRE_MATCH_SLACK = timedelta(seconds=120)
+_MIN_SANE_EPOCH = 1_000_000_000
 _STALE_FIX = "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor"
 _SILENT_FIX = "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log"
 _STALLED_FIX = (
@@ -392,8 +398,16 @@ def last_tick_completed(vault: Path) -> datetime | None:
     return newest
 
 
+# Repository-selecting variables an outer git process (a hook, a worktree
+# shell) may export; inherited, they would point git at some other repo.
+_GIT_ENV_DROP = frozenset(
+    {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
+)
+
+
 def vault_birth(vault: Path) -> datetime | None:
     """Root-commit time when the vault itself is a git repo, else scout-config.yaml mtime, else None."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
     try:
         top = subprocess.run(
             ["git", "-C", str(vault), "rev-parse", "--show-toplevel"],
@@ -401,14 +415,16 @@ def vault_birth(vault: Path) -> datetime | None:
             text=True,
             timeout=10,
             check=False,
+            env=env,
         )
-        if top.returncode == 0 and Path(top.stdout.strip()).resolve() == vault.resolve():
+        if top.returncode == 0 and os.path.samefile(top.stdout.strip(), vault):
             log = subprocess.run(
                 ["git", "-C", str(vault), "log", "--max-parents=0", "--format=%ct", "HEAD"],
                 capture_output=True,
                 text=True,
                 timeout=10,
                 check=False,
+                env=env,
             )
             stamps = [int(x) for x in log.stdout.split() if x.isdigit()] if log.returncode == 0 else []
             if stamps:
@@ -421,6 +437,44 @@ def vault_birth(vault: Path) -> datetime | None:
         return None
 
 
+_CRON_BLOCK_BEGIN = "# >>> scout-managed >>>"
+_CRON_BLOCK_END = "# <<< scout-managed <<<"
+
+
+def _cron_has_tick() -> bool:
+    try:
+        proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    in_block = False
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if stripped == _CRON_BLOCK_BEGIN:
+            in_block = True
+        elif stripped == _CRON_BLOCK_END:
+            in_block = False
+        elif in_block and "scoutctl schedule tick" in line:
+            return True
+    return False
+
+
+def tick_job_installed(home: Path | None = None) -> bool:
+    """Is the schedule-tick job installed on THIS host (launchd agent / managed cron line)?
+
+    A vault synced from another Mac, or set up with ``--no-jobs``, never ticks
+    here, and that is not a stalled scheduler.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        base = home if home is not None else Path.home()
+        return (base / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist").exists()
+    if system == "Linux":
+        return _cron_has_tick()
+    return False
+
+
 def _age(delta: timedelta) -> str:
     hours = int(delta.total_seconds() // 3600)
     return f"{hours // 24} d" if hours >= 72 else f"{hours} h"
@@ -430,46 +484,24 @@ def schedule_findings(
     vault: Path, rows: list[OutcomeRow], *, now: datetime
 ) -> tuple[list[Finding], tuple[SlotStatus, ...]]:
     """Slot, fire and scheduler-liveness findings, plus per-slot status."""
-    findings: list[Finding] = []
     statuses: list[SlotStatus] = []
-    birth = vault_birth(vault)
-
-    tick = last_tick_completed(vault)
-    if tick is not None and now - tick > TICK_STALL:
-        findings.append(
-            Finding(
-                id="scheduler.stalled",
-                severity="red",
-                since=tick,
-                summary=f"The scheduler has not completed a tick since {iso_z(tick)}.",
-                fix=_STALLED_FIX,
-                source="events",
-            )
-        )
-    elif tick is None and birth is not None and now - birth > TICK_STALL:
-        findings.append(
-            Finding(
-                id="scheduler.stalled",
-                severity="red",
-                since=None,
-                summary="The scheduler has never recorded a tick.",
-                fix=_STALLED_FIX,
-                source="events",
-            )
-        )
-
     schedule_path = vault / ".scout-state" / "schedule.yaml"
     try:
         schedule = load_schedule(schedule_path)
         schedule_mtime = datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
     except (ConfigError, OSError):
-        return findings, ()
+        return [], ()
 
+    birth = vault_birth(vault)
     fires = read_last_fires(vault)
-    first_row = min((r.started_at for r in rows), default=None)
+    # run-outcome.sh records started_at 0 for a run whose start it couldn't read.
+    first_row = min((r.started_at for r in rows if r.started_at.timestamp() >= _MIN_SANE_EPOCH), default=None)
     ref = max(birth, schedule_mtime) if birth is not None else None
+    # A run longer than its missed window has no ledger row until it ends.
+    session_live = is_lock_held_by_live_pid(vault / ".scout-logs" / ".scout-session.lock")
     slot_findings: list[Finding] = []
     stale: list[Finding] = []
+    never_fired = 0
     judged = 0
     for slot in schedule.values():
         if slot.type is SlotType.MANUAL or slot.runtime is not SlotRuntime.LOCAL:
@@ -485,6 +517,7 @@ def schedule_findings(
         )
         if fire is None:
             if ref is not None and now - ref > timedelta(hours=gap + mw):
+                never_fired += 1
                 slot_findings.append(
                     Finding(
                         id=f"slot.never_fired:{key}",
@@ -507,11 +540,15 @@ def schedule_findings(
                     source="schedule",
                 )
             )
+        # last-fire.json holds the dispatch or, usually, the session end (a
+        # second or two before finished_at); a row that ended at or after the
+        # fire (less the slack) covers either.
         if (
-            first_row is not None
+            not session_live
+            and first_row is not None
             and fire > first_row
             and now - fire >= timedelta(hours=mw)
-            and not any(r.started_at >= fire - FIRE_MATCH_SLACK for r in mine)
+            and not any(r.finished_at >= fire - FIRE_MATCH_SLACK for r in mine)
         ):
             slot_findings.append(
                 Finding(
@@ -523,9 +560,37 @@ def schedule_findings(
                     source="ledger",
                 )
             )
-    if stale and len(stale) == judged:
+    # Every judged slot not running (stale or never fired), at least one stale: red.
+    if stale and len(stale) + never_fired == judged:
         stale = [replace(f, severity="red") for f in stale]
-    return findings + slot_findings + stale, tuple(statuses)
+    stalled = _scheduler_stalled(vault, now=now, ref=ref) if judged else None
+    return ([stalled] if stalled else []) + slot_findings + stale, tuple(statuses)
+
+
+def _scheduler_stalled(vault: Path, *, now: datetime, ref: datetime | None) -> Finding | None:
+    """Liveness of the tick itself (#199); only asked when some local slot is judged."""
+    tick = last_tick_completed(vault)
+    if tick is not None:
+        if now - tick <= TICK_STALL:
+            return None
+        return Finding(
+            id="scheduler.stalled",
+            severity="red",
+            since=tick,
+            summary=f"The scheduler has not completed a tick since {iso_z(tick)}.",
+            fix=_STALLED_FIX,
+            source="events",
+        )
+    if ref is None or now - ref <= TICK_STALL or not tick_job_installed():
+        return None
+    return Finding(
+        id="scheduler.stalled",
+        severity="red",
+        since=None,
+        summary="The scheduler has never recorded a tick.",
+        fix=_STALLED_FIX,
+        source="events",
+    )
 
 
 def evaluate(vault: Path, *, now: datetime | None = None) -> RunHealth:

@@ -52,6 +52,7 @@ def vault(tmp_path, monkeypatch):
     old = (NOW - timedelta(days=60)).timestamp()
     os.utime(v / ".scout-state" / "schedule.yaml", (old, old))
     monkeypatch.setattr(health, "vault_birth", lambda _v: NOW - timedelta(days=60))
+    monkeypatch.setattr(health, "tick_job_installed", lambda home=None: True, raising=False)
     _tick(v, NOW - timedelta(minutes=5))
     return v
 
@@ -283,8 +284,16 @@ def test_last_tick_completed_none_without_logs(tmp_path):
     assert health.last_tick_completed(tmp_path) is None
 
 
-def test_unloadable_schedule_skips_slot_findings_only(vault):
-    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {bad: {type: nope}}\n")
+@pytest.mark.parametrize(
+    "body",
+    [
+        "schema_version: 1\nslots: {bad: {type: nope}}\n",
+        "schema_version: 1\nslots: [1, 2]\n",
+        "schema_version: 1\nslots: {a: hello}\n",
+    ],
+)
+def test_unloadable_schedule_skips_slot_findings_only(vault, body):
+    (vault / ".scout-state" / "schedule.yaml").write_text(body)
     _ledger_failing = vault / ".scout-logs" / "run-outcomes.jsonl"
     with _ledger_failing.open("a") as fh:
         for i in range(2):
@@ -398,3 +407,275 @@ def test_vault_birth_empty_repo_falls_back_to_config(tmp_path):
     cfg.write_text("x: 1\n")
     os.utime(cfg, (1600000000, 1600000000))
     assert REAL_BIRTH(tmp_path) == datetime.fromtimestamp(1600000000, UTC)
+
+
+# ----- P1 final review fixes -------------------------------------------------
+
+
+def _row(v: Path, slot: str, start: datetime, finish: datetime, *, raw_start: int | None = None) -> None:
+    with (v / ".scout-logs" / "run-outcomes.jsonl").open("a") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "slot": slot,
+                    "mode": "scout",
+                    "started_at": int(start.timestamp()) if raw_start is None else raw_start,
+                    "finished_at": int(finish.timestamp()),
+                    "exit_code": 0,
+                    "failure_class": "ok",
+                    "log": None,
+                }
+            )
+            + "\n"
+        )
+
+
+def _no_ticks(v: Path) -> None:
+    for p in (v / ".scout-logs").glob("schedule-events-*"):
+        p.unlink()
+
+
+def test_a_session_end_fire_is_covered_by_the_run_that_ended(vault):
+    """F1: last-fire.json records the Stop hook's session-end row, ~2 s before finished_at."""
+    start = NOW - _h(6)
+    finish = start + timedelta(minutes=20)
+    _row(vault, "weekly-research", NOW - timedelta(days=1), NOW - timedelta(days=1) + timedelta(minutes=5))
+    _row(vault, "morning-briefing", start, finish)
+    _fires(vault, morning_briefing=finish - timedelta(seconds=2), weekly_research=NOW - timedelta(days=1))
+    assert "slot.fired_silent:morning-briefing" not in _ids(vault)
+
+
+def test_a_row_that_finished_long_before_the_fire_does_not_cover_it(vault):
+    _row(vault, "morning-briefing", NOW - _h(30), NOW - _h(29))
+    _row(vault, "weekly-research", NOW - timedelta(days=1), NOW - timedelta(days=1) + timedelta(minutes=5))
+    _fires(vault, morning_briefing=NOW - _h(5), weekly_research=NOW - timedelta(days=1))
+    assert _ids(vault)["slot.fired_silent:morning-briefing"] == "yellow"
+
+
+def _silent_shape(v: Path) -> None:
+    _fires(v, morning_briefing=NOW - _h(5), weekly_research=NOW - timedelta(days=1))
+    _ledger(v, ("morning-briefing", NOW - _h(30)), ("weekly-research", NOW - timedelta(days=1)))
+
+
+def test_a_live_session_lock_defers_fired_silent(vault):
+    """F2: a run longer than the missed window has no ledger row until it ends."""
+    _silent_shape(vault)
+    (vault / ".scout-logs" / ".scout-session.lock").write_text(f"{os.getpid()}\n")
+    assert "slot.fired_silent:morning-briefing" not in _ids(vault)
+    assert (vault / ".scout-logs" / ".scout-session.lock").read_text() == f"{os.getpid()}\n"  # read-only
+
+
+def test_a_dead_session_lock_does_not_defer_fired_silent(vault):
+    _silent_shape(vault)
+    child = subprocess.Popen(["true"])
+    child.wait()
+    (vault / ".scout-logs" / ".scout-session.lock").write_text(f"{child.pid}\n")
+    assert "slot.fired_silent:morning-briefing" in _ids(vault)
+    assert (vault / ".scout-logs" / ".scout-session.lock").exists()
+
+
+MANUAL_ONLY = """\
+schema_version: 1
+slots:
+  ad-hoc:
+    type: manual
+    runner: run-scout.sh
+    fires_at_local: "00:00"
+    weekdays: [Mon]
+    missed_window_hours: 1
+    on_miss: skip
+    cooldown_minutes: 0
+"""
+
+
+@pytest.mark.parametrize("body", [MANUAL_ONLY, "schema_version: 1\nslots: {}\n"])
+def test_no_judged_slots_means_no_scheduler_verdict(vault, body):
+    """F4: a manual-only (or empty) schedule has nothing the tick must fire."""
+    (vault / ".scout-state" / "schedule.yaml").write_text(body)
+    old = (NOW - timedelta(days=60)).timestamp()
+    os.utime(vault / ".scout-state" / "schedule.yaml", (old, old))
+    _no_ticks(vault)
+    assert "scheduler.stalled" not in _ids(vault)
+    _tick(vault, NOW - _h(5))
+    assert "scheduler.stalled" not in _ids(vault)
+
+
+def test_unloadable_schedule_means_no_scheduler_verdict(vault):
+    (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: [1]\n")
+    _no_ticks(vault)
+    assert "scheduler.stalled" not in _ids(vault)
+
+
+def test_never_ticked_without_a_tick_job_on_this_host_is_not_stalled(vault, monkeypatch):
+    """F4: a second Mac syncing the vault, or a --no-jobs host."""
+    _healthy(vault)
+    _no_ticks(vault)
+    monkeypatch.setattr(health, "tick_job_installed", lambda home=None: False)
+    assert "scheduler.stalled" not in _ids(vault)
+
+
+def test_never_ticked_with_a_recently_edited_schedule_is_not_stalled(vault):
+    _healthy(vault)
+    _no_ticks(vault)
+    recent = (NOW - _h(1)).timestamp()
+    os.utime(vault / ".scout-state" / "schedule.yaml", (recent, recent))
+    assert "scheduler.stalled" not in _ids(vault)
+
+
+def test_a_stopped_tick_is_red_even_without_a_tick_job(vault, monkeypatch):
+    """F4: the has-ticked-before branch is #199 itself, never gated on the job check."""
+    _healthy(vault)
+    _no_ticks(vault)
+    _tick(vault, NOW - _h(3))
+    monkeypatch.setattr(health, "tick_job_installed", lambda home=None: False)
+    assert _ids(vault) == {"scheduler.stalled": "red"}
+
+
+THREE_SLOTS = (
+    SCHEDULE
+    + """\
+  evening-consolidation:
+    type: consolidation
+    runner: run-scout.sh
+    fires_at_local: "18:00"
+    weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+    missed_window_hours: 2
+    on_miss: skip
+    cooldown_minutes: 0
+"""
+)
+
+
+def test_stale_plus_never_fired_slots_are_red(vault):
+    """M1: a never-fired slot is not running either."""
+    (vault / ".scout-state" / "schedule.yaml").write_text(THREE_SLOTS)
+    old = (NOW - timedelta(days=60)).timestamp()
+    os.utime(vault / ".scout-state" / "schedule.yaml", (old, old))
+    _fires(vault, morning_briefing=NOW - timedelta(days=3), weekly_research=NOW - timedelta(days=30))
+    ids = _ids(vault)
+    assert ids["slot.never_fired:evening-consolidation"] == "yellow"
+    assert ids["slot.stale:morning-briefing"] == "red"
+    assert ids["slot.stale:weekly-research"] == "red"
+
+
+def test_stale_plus_a_running_slot_stays_yellow(vault):
+    (vault / ".scout-state" / "schedule.yaml").write_text(THREE_SLOTS)
+    old = (NOW - timedelta(days=60)).timestamp()
+    os.utime(vault / ".scout-state" / "schedule.yaml", (old, old))
+    _fires(
+        vault,
+        morning_briefing=NOW - timedelta(days=3),
+        weekly_research=NOW - timedelta(days=30),
+        evening_consolidation=NOW - _h(18),
+    )
+    _ledger(vault, ("evening-consolidation", NOW - _h(18)))
+    ids = _ids(vault)
+    assert ids["slot.stale:morning-briefing"] == "yellow"
+
+
+def test_a_zero_started_at_row_does_not_open_the_fired_silent_window(vault):
+    """M3: run-outcome.sh records started_at 0 for a bad start; it is not the ledger's first row."""
+    _row(vault, "weekly-research", NOW, NOW - _h(2), raw_start=0)
+    _row(vault, "weekly-research", NOW - _h(1), NOW - _h(1) + timedelta(minutes=5))
+    _fires(vault, morning_briefing=NOW - _h(5), weekly_research=NOW - _h(1))
+    assert "slot.fired_silent:morning-briefing" not in _ids(vault)
+
+
+def _git_repo(path: Path, stamp: int) -> None:
+    env = {
+        **os.environ,
+        "GIT_COMMITTER_DATE": f"@{stamp} +0000",
+        "GIT_AUTHOR_DATE": f"@{stamp} +0000",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
+    path.mkdir(parents=True, exist_ok=True)
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "-c", "user.name=A", "-c", "user.email=a@example.com", "commit", "-q", "--allow-empty", "-m", "x"],
+    ):
+        subprocess.run(cmd, cwd=path, env=env, check=True)
+
+
+def test_vault_birth_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
+    """M2: a GIT_DIR / GIT_WORK_TREE in the caller's env must not point git at another repo."""
+    other = tmp_path / "other"
+    _git_repo(other, 1700000000)
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(vault))
+    assert REAL_BIRTH(vault) is None
+
+
+def test_vault_birth_matches_a_differently_spelled_vault_path(tmp_path):
+    """M2: macOS paths are case-insensitive; a symlinked path is the same vault too."""
+    repo = tmp_path / "repo"
+    _git_repo(repo, 1700000000)
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    assert REAL_BIRTH(link) == datetime.fromtimestamp(1700000000, UTC)
+    upper = tmp_path / "REPO"
+    if not upper.exists():
+        pytest.skip("case-sensitive filesystem")
+    assert REAL_BIRTH(upper) == datetime.fromtimestamp(1700000000, UTC)
+
+
+REAL_TICK_JOB = health.tick_job_installed if hasattr(health, "tick_job_installed") else None
+
+
+def test_tick_job_installed_on_macos_is_the_launch_agent(tmp_path, monkeypatch):
+    monkeypatch.setattr(health.platform, "system", lambda: "Darwin")
+    assert REAL_TICK_JOB(tmp_path) is False
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.scout.schedule-tick.plist").write_text("<plist/>")
+    assert REAL_TICK_JOB(tmp_path) is True
+    monkeypatch.setattr(health.Path, "home", classmethod(lambda cls: tmp_path))
+    assert REAL_TICK_JOB() is True
+
+
+_CRON = """\
+MAILTO=""
+# >>> scout-managed >>>
+*/5 * * * * /home/alex/.venv/bin/scoutctl schedule tick
+# <<< scout-managed <<<
+"""
+
+
+@pytest.mark.parametrize(
+    ("stdout", "code", "expected"),
+    [
+        (_CRON, 0, True),
+        (_CRON.replace("schedule tick", "heartbeat"), 0, False),
+        ("*/5 * * * * scoutctl schedule tick\n# >>> scout-managed >>>\n# <<< scout-managed <<<\n", 0, False),
+        (_CRON, 1, False),
+    ],
+)
+def test_tick_job_installed_on_linux_reads_the_managed_cron_block(tmp_path, monkeypatch, stdout, code, expected):
+    monkeypatch.setattr(health.platform, "system", lambda: "Linux")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["timeout"] = cmd, kw.get("timeout")
+        return subprocess.CompletedProcess(cmd, code, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(health.subprocess, "run", fake_run)
+    assert REAL_TICK_JOB(tmp_path) is expected
+    assert seen == {"cmd": ["crontab", "-l"], "timeout": 5}
+
+
+@pytest.mark.parametrize("exc", [FileNotFoundError("crontab"), subprocess.TimeoutExpired("crontab", 5)])
+def test_tick_job_installed_on_linux_survives_crontab_errors(tmp_path, monkeypatch, exc):
+    monkeypatch.setattr(health.platform, "system", lambda: "Linux")
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(health.subprocess, "run", boom)
+    assert REAL_TICK_JOB(tmp_path) is False
+
+
+def test_tick_job_installed_elsewhere_is_false(tmp_path, monkeypatch):
+    monkeypatch.setattr(health.platform, "system", lambda: "Windows")
+    assert REAL_TICK_JOB(tmp_path) is False

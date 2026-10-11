@@ -163,13 +163,13 @@ def load_schedule(
     version = seed.get("schema_version", 1)
     if version != 1:
         raise ConfigError(f"schedule.yaml at {canonical_path} has schema_version {version}; engine supports 1")
-    merged: dict[str, Any] = dict(seed.get("slots", {}))
+    merged: dict[str, Any] = _slot_entries(seed, canonical_path)
     if overlay is not None and overlay.exists():
         ov = _load_yaml(overlay)
         ov_version = ov.get("schema_version", 1)
         if ov_version != 1:
             raise ConfigError(f"schedule.yaml at {overlay} has schema_version {ov_version}; engine supports 1")
-        for key, override in ov.get("slots", {}).items():
+        for key, override in _slot_entries(ov, overlay).items():
             if key in merged:
                 merged[key] = {**merged[key], **override}
             else:
@@ -191,6 +191,19 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ConfigError(f"schedule yaml at {path} is not a mapping")
     return data
+
+
+def _slot_entries(data: dict[str, Any], path: Path) -> dict[str, dict[str, Any]]:
+    """The file's ``slots`` block (absent or empty → {}); a wrong shape is a ConfigError."""
+    slots = data.get("slots")
+    if slots is None:
+        return {}
+    if not isinstance(slots, dict):
+        raise ConfigError(f"schedule yaml at {path}: slots must be a mapping of slot key to slot")
+    for key, raw in slots.items():
+        if not isinstance(raw, dict):
+            raise ConfigError(f"schedule yaml at {path}: slot {key} must be a mapping, got {type(raw).__name__}")
+    return dict(slots)
 
 
 def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
@@ -246,7 +259,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             tz=tz,
             runtime=runtime,
         )
-    except (KeyError, ValueError) as e:
+    except (KeyError, ValueError, TypeError) as e:
         raise ConfigError(f"slot {key}: malformed entry: {e}") from e
 
 
