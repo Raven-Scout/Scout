@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +28,12 @@ def _world(tmp_path: Path) -> tuple[dict[str, str], Path]:
     _stub(
         root / "scripts" / "install-venv.sh",
         f'd="$(cd "$(dirname "$0")/.." && pwd)/.venv/bin"; mkdir -p "$d"\n'
-        f'printf \'#!/bin/bash\\n[ "$1" = --help ] && exit 0\\necho "$*" >> {log}\\n\' > "$d/scoutctl"\n'
+        "cat > \"$d/scoutctl\" <<'STUB'\n"
+        "#!/bin/bash\n"
+        '[ "$1" = --help ] && exit 0\n'
+        # One argument per line, so a split argument shows up as two lines.
+        f"printf '%s\\n' \"$@\" >> '{log}'\n"
+        "STUB\n"
         'chmod +x "$d/scoutctl"\n',
     )
     listing = json.dumps([{"id": "scout@scout-plugin", "installPath": str(root)}])
@@ -49,7 +55,16 @@ def test_install_sh_hands_every_argument_to_setup(tmp_path):
         timeout=60,
     )
     assert done.returncode == 0, done.stderr
-    assert log.read_text().strip() == "setup --managed-by install.sh --yes --name Alex Example --email alex@example.com"
+    assert log.read_text().splitlines() == [
+        "setup",
+        "--managed-by",
+        "install.sh",
+        "--yes",
+        "--name",
+        "Alex Example",  # one argument, not two
+        "--email",
+        "alex@example.com",
+    ]
     assert "/scout-setup" not in done.stdout + done.stderr
 
 
@@ -64,3 +79,7 @@ def test_the_closing_text_mentions_the_app_only_on_macos():
     text = INSTALL_SH.read_text(encoding="utf-8")
     assert 'exec "$ROOT/.venv/bin/scoutctl" setup --managed-by install.sh "$@"' in text
     assert "/scout-setup" not in text
+    guard = re.search(r'\nif \[ "\$\(uname -s\)" = "Darwin" \]; then\n(.*?)\nfi\n', text, re.S)
+    assert guard is not None, "no Darwin-only block"
+    assert "Scout.app" in guard.group(1)
+    assert text.count("Scout.app") == guard.group(1).count("Scout.app"), "an app hint outside the Darwin guard"
