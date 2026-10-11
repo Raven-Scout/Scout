@@ -1,6 +1,6 @@
 # Custom connectors — design
 
-**Status:** proposed (design review only; no behavior change in this PR)
+**Status:** implemented — engine in #261, onboarding/install surface tracked in #321
 **Date:** 2026-10-02
 **Related:** #152 (optional-connector catalog spec), #180 (Asana/Jira/Google Chat),
 #172 (canonical-key invariant), #251 (upgrade preserves vault fixes),
@@ -159,7 +159,7 @@ activity. Each is a normal phase file (frontmatter + body) parsed by the existin
 
 Placeholders: `{{CONNECTOR_NAME}}`, `{{CONNECTOR_TOOLS}}` (rendered as a bullet list
 of tools, with a "call these as MCP tools" / "run these commands" line per tool
-type), `{{CONNECTOR_FOCUS}}`, `{{CONNECTOR_NOTES}}`, plus the usual
+type), `{{CONNECTOR_GUIDANCE}}`, `{{CONNECTOR_NOTES}}`, plus the usual
 `{{USER_NAME}}`/`{{USER_EMAIL}}` and `{{INPUT_*}}`. The template prose carries the
 cross-cutting rules every connector needs — cross-reference `people.md`, file
 uncertain items under **Watching**, never promote an item on tone alone, record the
@@ -244,14 +244,17 @@ The vault resolves like every other `scoutctl` command (`SCOUT_DATA_DIR`, else
 (`{"status": …, "key": …, "issues": [{"path", "message"}], …}`) and use stable exit
 codes: `0` applied, `2` invalid (every issue listed with a field path) or probe
 failed, `3` saved but not yet live (plugin drift → run `/scout-update`, or a merge
-conflict → resolve `SKILL.md.proposed-merge`), `1` other failure.
+conflict → resolve `SKILL.md.proposed-merge`), `4` busy (the vault session lock is
+held by another run; the call waited its bounded time and wrote nothing, or was
+given `--no-wait` for `add`/`remove`, which fail fast instead of waiting; retry
+later), `1` other failure.
 
 | Command | Behavior |
 |---|---|
-| `connectors custom add --file F [--input NAME=VALUE …] [--dry-run] [--unverified]` | `F` is one connector mapping with a `key` field (`-` = stdin; YAML or JSON). Validate; run a bash probe (fail → exit 2 unless `--unverified`); apply (§2); write/replace the entry in `connectors.custom.yaml`; add the key to `connectors.enabled`; store inputs. `--dry-run` returns the sections it would render and writes nothing. |
-| `connectors custom remove KEY` | Apply the removal; drop the entry, the enabled key, and the connector's inputs. |
+| `connectors custom add --file F [--input NAME=VALUE …] [--dry-run] [--unverified] [--no-wait]` | `F` is one connector mapping with a `key` field (`-` = stdin; YAML or JSON). Validate; run a bash probe (fail → exit 2 unless `--unverified`); apply (§2); write/replace the entry in `connectors.custom.yaml`; add the key to `connectors.enabled`; store inputs. `--dry-run` returns the sections it would render and writes nothing. |
+| `connectors custom remove KEY [--no-wait]` | Apply the removal; drop the entry, the enabled key, and the connector's inputs. |
 | `connectors custom validate --file F` | Validate a single definition without writing. |
-| `connectors custom list` | Definitions: key, display name, enabled, server, health key, preset, declared activities, plus any issues in the file. |
+| `connectors custom list` | One row per entry in the file, valid or not, sorted by key, plus the file's `issues`. Every row has `key`, `valid`, `enabled`, `display_name` and `definition` (the entry as written, made JSON-safe: unquoted dates become ISO strings). A valid row (`valid: true`) adds `server`, `health_key`, `preset` and `activities`. An invalid row (`valid: false`) has none of those four, its `display_name` is null unless the entry has a text one, and it adds its own `issues`; clients branch on `valid`. |
 | `connectors list --json` | The health roster (shipped + derived custom rows): key, display name, tier, `required_in_types`. This is what the app merges over its bundled snapshot. |
 | `connectors presets` | Preset names with their default text per activity (JSON). |
 

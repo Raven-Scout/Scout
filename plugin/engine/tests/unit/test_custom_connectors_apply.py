@@ -51,9 +51,13 @@ def _installed(tmp_path: Path) -> BootstrapConfig:
     return config_from_vault(vault, plugin_root=PLUGIN, plugin_version="0.0.0", skip_jobs=True, skip_claude=True)
 
 
-def _add_suite(before: BootstrapConfig):
+# Inbound + lookup: the change reaches both SKILL.md and RESEARCH.md.
+SUITE_WITH_LOOKUP = {**SUITE, "lookup": {"tools": ["mcp__example_suite__search_messages"]}}
+
+
+def _add_suite(before: BootstrapConfig, definition: dict = SUITE):
     custom_after = cc.parse_file(
-        {"schema_version": 1, "connectors": {"suite_mail": SUITE}},
+        {"schema_version": 1, "connectors": {"suite_mail": definition}},
         reserved=set(),
         presets=cc.load_presets(PLUGIN),
     ).connectors
@@ -146,8 +150,23 @@ def test_plugin_drift_defers_and_writes_nothing(tmp_path: Path):
     live_before = (before.vault / "SKILL.md").read_text()
     result, _, _ = _add_suite(before)
     assert result.status == "deferred"
+    assert result.drifted == ["SKILL.md"]
     assert (before.vault / "SKILL.md").read_text() == live_before
     assert not (before.vault / "SKILL.md.proposed-merge").exists()
+
+
+def test_drift_names_every_drifted_brain_file(tmp_path: Path):
+    """RESEARCH-only drift is named as RESEARCH.md; two drifted files are both collected."""
+    before = _installed(tmp_path)
+    research = _snap(before) / "RESEARCH.md"
+    research.write_text(research.read_text() + "\nplugin changed underneath\n")
+    result, _, _ = _add_suite(before, SUITE_WITH_LOOKUP)
+    assert (result.status, result.drifted) == ("deferred", ["RESEARCH.md"])
+    skill = _snap(before) / "SKILL.md"
+    skill.write_text(skill.read_text() + "\nplugin changed underneath\n")
+    result, _, _ = _add_suite(before, SUITE_WITH_LOOKUP)
+    assert result.drifted == ["SKILL.md", "RESEARCH.md"]
+    assert result.updated == []
 
 
 def test_overlapping_user_edit_goes_to_sidecar_with_recorded_proposal(tmp_path: Path):
