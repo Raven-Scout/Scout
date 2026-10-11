@@ -295,6 +295,18 @@ def test_a_rejected_stable_push_says_the_release_is_live_and_how_to_finish(tmp_p
     assert "the release is live" in done.stderr
 
 
+def test_an_already_published_tag_says_how_to_finish_moving_stable(tmp_path):
+    """gh can fail after the release went live; the re-run then stops here and must still say how to move stable."""
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    _git(r.root, "tag", "v0.15.0")
+    _git(r.root, "push", "-q", "origin", "v0.15.0")
+    _git(r.root, "tag", "-d", "v0.15.0")
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode != 0 and "already exists" in done.stderr
+    assert "git push origin v0.15.0^{commit}:refs/heads/stable" in done.stderr
+
+
 def test_release_script_moves_the_branch_the_marketplace_pins():
     """marketplace.json's git-subdir `ref` and release.sh's STABLE_BRANCH must name the same branch."""
     import json

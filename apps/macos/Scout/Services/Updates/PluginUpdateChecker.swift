@@ -35,7 +35,10 @@ nonisolated struct URLSessionFetcher: RemoteDataFetcher {
 /// `installed_plugins.json` entry for it. Latest version: source-aware, via
 /// `PluginRelease` — the marketplace's working copy on disk for a `directory`
 /// source (dev checkouts), the raw GitHub manifest at `HEAD` for `github`/
-/// `git` sources (end users). Never throws; every failure becomes
+/// `git` sources (end users). When that manifest's scout entry pins a
+/// GitHub ref (#362: `git-subdir` at `stable`), the version is read from the
+/// `plugin.json` at that ref instead, whatever the marketplace's own source,
+/// because that is the tree Claude Code installs. Never throws; every failure becomes
 /// `PluginUpdateResult.error` and is shown only in Settings ▸ Updates.
 nonisolated struct PluginUpdateChecker: PluginUpdateChecking {
     let pluginsDir: URL

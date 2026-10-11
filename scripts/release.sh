@@ -326,7 +326,7 @@ release_commit() {
 }
 
 cmd_finalize() {
-  local tag="${1:-}" v slug sha after pj tip stable
+  local tag="${1:-}" v slug sha after pj tip stable hint
   slug="$(require_slug)"
   if [[ $tag =~ $RC_TAG_RE ]]; then
     die "finalize is for releases; use 'rc' for $tag"
@@ -335,8 +335,10 @@ cmd_finalize() {
   fi
   v="${tag#v}"
   git -C "$REPO_ROOT" fetch -q --tags origin
-  ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists locally"
-  [ -z "$(git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/$tag")" ] || die "tag $tag already exists on origin"
+  # gh can fail after the release went live, before $STABLE_BRANCH moved; a re-run stops here, so say how to finish.
+  hint="If its release is published but $STABLE_BRANCH was not moved to it, run: git push origin $tag^{commit}:refs/heads/$STABLE_BRANCH"
+  ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists locally. $hint"
+  [ -z "$(git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/$tag")" ] || die "tag $tag already exists on origin. $hint"
   # Build the release commit, not origin/main's tip: anything merged after it is not part of $tag.
   sha="$(release_commit "$v")"
   [ -n "$sha" ] || die "no release commit for v$v on origin/main. Merge the release PR first."

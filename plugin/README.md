@@ -106,8 +106,8 @@ The first command registers this repo as a plugin marketplace; the second instal
 
 > **Other ways to install**
 >
-> - **One-off (no install):** `claude --plugin-dir /path/to/Scout/plugin` (the `plugin/` folder of a Raven-Scout/Scout clone) loads the plugin for a single session without persisting it.
-> - **From a local clone via marketplace:** `/plugin marketplace add /path/to/Scout` (the clone's root — the directory containing `.claude-plugin/marketplace.json`).
+> - **One-off (no install):** `claude --plugin-dir /path/to/Scout/plugin` (the `plugin/` folder of a Raven-Scout/Scout clone) loads the plugin for a single session without persisting it. This is how to try local changes.
+> - **From a local clone via marketplace:** `/plugin marketplace add /path/to/Scout` (the clone's root, the directory containing `.claude-plugin/marketplace.json`). The manifest pins the plugin to the `stable` branch on GitHub, so this installs the latest release, not the clone's `plugin/` folder.
 >
 > See [Discover and install plugins](https://code.claude.com/docs/en/discover-plugins) for the full Claude Code plugin documentation.
 
