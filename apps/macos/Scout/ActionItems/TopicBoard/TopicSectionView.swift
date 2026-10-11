@@ -68,10 +68,13 @@ struct TopicSectionView: View {
 
     @ViewBuilder
     private var subtitle: some View {
-        if let session = topic.meta?.session {
-            SessionLink(session: session)
-        } else if let summary = topic.meta?.summary {
-            Text(summary)
+        HStack(spacing: 6) {
+            if let session = topic.meta?.session {
+                SessionLink(session: session)
+            }
+            if let summary = topic.meta?.summary {
+                Text(summary)
+            }
         }
     }
 }

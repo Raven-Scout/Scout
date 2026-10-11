@@ -14,6 +14,7 @@ struct TopicBoardView: View {
 
     @EnvironmentObject private var writerBox: ActionItemsWriterBox
     @State private var topics: [TopicMeta] = []
+    @State private var doneDates: [String: Date] = [:]
     @State private var dismissed: Set<String> = []
     @State private var canWrite = false
     @State private var writeError: String?
@@ -58,7 +59,7 @@ struct TopicBoardView: View {
                 BoardSideListsView(
                     inbox: SideEntry.entries(inSectionTitled: "Inbox", of: sections, dismissed: dismissed),
                     looseEnds: SideEntry.entries(inSectionTitled: "Loose ends", of: sections, dismissed: dismissed),
-                    done: DoneEntry.entries(sections: sections, fileDate: fileDate, range: doneRange, today: .now),
+                    done: DoneEntry.entries(sections: sections, fileDate: fileDate, doneDates: doneDates, range: doneRange, today: .now),
                     doneRange: $doneRange,
                     onDismiss: dismissAction
                 )
@@ -68,7 +69,12 @@ struct TopicBoardView: View {
             .padding(16)
             .frame(maxWidth: .infinity)
         }
-        .task(id: sections) { reloadBoardFiles() }
+        .task(id: sections) {
+            reloadBoardFiles()
+            let directory = actionItemsDirectory
+            let day = fileDate
+            doneDates = await Task.detached { DoneHistory.load(from: directory, upTo: day) }.value
+        }
         .task { canWrite = await writerBox.boardWriter.supportsBoardWrites() }
     }
 

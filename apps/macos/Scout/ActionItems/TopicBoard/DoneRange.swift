@@ -47,17 +47,25 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
     private static let dayRe = try! NSRegularExpression(pattern: #"\d{4}-\d{2}-\d{2}"#)
 
     /// Done tasks in `range`, newest first. The date is the first `YYYY-MM-DD`
-    /// in a `- Completed:` sub-bullet, else the daily file's date.
+    /// in a `- Completed:` sub-bullet, else the day the task first showed up
+    /// ticked, else the daily file's date.
+    /// - Parameter doneDates: the day each tag first showed up ticked in an
+    ///   earlier daily file (`DoneHistory`), used when a task has no
+    ///   `- Completed:` date.
     static func entries(
         sections: [ActionSection],
         fileDate: Date,
+        doneDates: [String: Date] = [:],
         range: DoneRange,
         today: Date,
         calendar: Calendar = .current
     ) -> [DoneEntry] {
         sections
             .flatMap { section in section.tasks.filter { $0.indentLevel == 0 && ($0.done || section.kind == .done) } }
-            .map { DoneEntry(task: $0, date: completedDate($0, calendar: calendar) ?? fileDate) }
+            .map { task in
+                let date = completedDate(task, calendar: calendar) ?? task.shortPrefix.flatMap { doneDates[$0] } ?? fileDate
+                return DoneEntry(task: task, date: date)
+            }
             .filter { range.contains($0.date, today: today, calendar: calendar) }
             .sorted { $0.date > $1.date }
     }

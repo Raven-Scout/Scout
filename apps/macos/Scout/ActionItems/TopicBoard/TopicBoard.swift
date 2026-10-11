@@ -59,13 +59,10 @@ nonisolated struct TopicBoard: Equatable, Sendable {
             }
 
         var seen = Set<String>()
-        let topics = groups.map { key, rows in
-            BoardTopic(
-                key: key,
-                meta: metaByTag[key],
-                steps: layout.steps(rows, seen: &seen),
-                counts: counts(items.filter { $0.topicKey == key })
-            )
+        let topics = groups.compactMap { key, rows -> BoardTopic? in
+            let steps = layout.steps(rows, seen: &seen)
+            guard !steps.isEmpty else { return nil }
+            return BoardTopic(key: key, meta: metaByTag[key], steps: steps, counts: counts(items.filter { $0.topicKey == key }))
         }
         let heldRows = held.filter { !seen.contains($0.key) }
         return TopicBoard(topics: topics, onHold: layout.steps(heldRows, seen: &seen))
@@ -100,12 +97,21 @@ private nonisolated struct Layout {
     let filter: Set<BoardState>
     let openKeys: Set<String>
     let stateByKey: [String: BoardState]
+    /// Built once: sub-steps by parent, blocked steps by what they depend on.
+    private let childrenByParent: [String: [BoardItem]]
+    private let dependentsByKey: [String: [BoardItem]]
 
     init(items: [BoardItem], filter: Set<BoardState>) {
         self.items = items
         self.filter = filter
         openKeys = Set(items.filter { $0.state.isOpen }.map(\.key))
         stateByKey = Dictionary(items.map { ($0.key, $0.state) }, uniquingKeysWith: { first, _ in first })
+        childrenByParent = Dictionary(grouping: items.filter { $0.task.fields.parent != nil }) { $0.task.fields.parent ?? "" }
+        var dependents: [String: [BoardItem]] = [:]
+        for item in items where item.state == .blocked {
+            for key in Set(item.task.fields.depends) { dependents[key, default: []].append(item) }
+        }
+        dependentsByKey = dependents
     }
 
     var filtering: Bool { !filter.isEmpty }
@@ -138,8 +144,14 @@ private nonisolated struct Layout {
         return extra
     }
 
+    /// Rows already placed (nested under an earlier root) are skipped, so a
+    /// step reachable from two roots still shows once.
     func steps(_ rows: [BoardItem], seen: inout Set<String>) -> [BoardStep] {
-        rows.map { step($0, seen: &seen) }
+        var steps: [BoardStep] = []
+        for row in rows where !seen.contains(row.key) {
+            steps.append(step(row, seen: &seen))
+        }
+        return steps
     }
 
     private func reachable(from roots: [BoardItem]) -> Set<String> {
@@ -169,16 +181,14 @@ private nonisolated struct Layout {
     /// Sub-steps of `key` (`- Parent:`) in a state the board shows; on-hold
     /// ones only while unfiltered.
     private func children(of key: String) -> [BoardItem] {
-        items
-            .filter { $0.task.fields.parent == key && shown($0.state) && ($0.state != .hold || !filtering) }
+        (childrenByParent[key] ?? [])
+            .filter { shown($0.state) && ($0.state != .hold || !filtering) }
             .sorted { $0.order < $1.order }
     }
 
     /// Blocked steps that nest under `key`: never ones already at a top level.
     private func blocked(by key: String) -> [BoardItem] {
         guard shown(.blocked) else { return [] }
-        return items
-            .filter { $0.state == .blocked && $0.task.fields.depends.contains(key) && !isTopLevel($0) }
-            .sorted { $0.order < $1.order }
+        return (dependentsByKey[key] ?? []).filter { !isTopLevel($0) }.sorted { $0.order < $1.order }
     }
 }

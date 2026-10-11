@@ -50,7 +50,12 @@ struct StepRowView: View {
                 )
             }
             if expanded.wrappedValue {
-                StepDetailView(task: task, rootSession: rootSession, scoutDirectory: scoutDirectory)
+                StepDetailView(
+                    task: task,
+                    rootSession: rootSession,
+                    prompt: { BoardPrompt.step(step.item, topic: topic?.title) },
+                    scoutDirectory: scoutDirectory
+                )
                 if !step.nested.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(step.nested) { kid in
