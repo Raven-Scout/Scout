@@ -10,8 +10,11 @@ Versions are tagged `app/vX.Y.Z`. The plugin has its own changelog at
   Board groups tasks by workstream (`- Topic:`, then the topic's root session),
   nests blocked steps under the step that blocks them, orders by Linear
   priority and cycle, and parks on-hold work in one group. The state legend
-  filters the board. Each row offers Ask Claude with the item's place on the
-  board in the prompt. Done shows this week, today or yesterday. Read-only:
+  filters the board. Sub-steps (`- Parent:`) nest under their parent. A Mine
+  step shows its next action as a chip; the chip or the hover bubble opens an
+  inline "What should Claude do?" box that sends the note to the item's own
+  session (resume a local one, open a cloud one, or start a new one). Done
+  shows this week, today or yesterday. Open rows are remembered. Read-only:
   writes stay in List.
 
 ### Changed

@@ -5,6 +5,8 @@ import SwiftUI
 struct StepDetailView: View {
     /// A body this short already reads in full on the row's second line.
     static let rowLineLength = 80
+    /// Lines the detail up with the row's title: leading padding, chevron, gap.
+    static let titleInset: CGFloat = 7 + 12 + 4
 
     let task: ActionTask
     let rootSession: String?
@@ -43,7 +45,7 @@ struct StepDetailView: View {
                     .foregroundStyle(DS.Status.err)
             }
         }
-        .padding(.leading, 46)
+        .padding(.leading, Self.titleInset)
         .padding(.trailing, 14)
         .padding(.bottom, 10)
         .frame(maxWidth: .infinity, alignment: .leading)

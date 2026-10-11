@@ -1,11 +1,14 @@
 import Foundation
 
-/// A board row plus the blocked steps nested under it.
+/// A board row plus what nests under it: its own sub-steps (`- Parent:`),
+/// then the steps it blocks.
 nonisolated struct BoardStep: Identifiable, Equatable, Sendable {
     let item: BoardItem
+    let children: [BoardStep]
     let blocked: [BoardStep]
 
     var id: UUID { item.id }
+    var nested: [BoardStep] { children + blocked }
     var blockedCount: Int { blocked.reduce(0) { $0 + 1 + $1.blockedCount } }
 }
 
@@ -42,7 +45,10 @@ nonisolated struct TopicBoard: Equatable, Sendable {
         let topicOrder = Dictionary(metas.enumerated().map { ($1.tag, $0) }, uniquingKeysWith: { first, _ in first })
 
         let held = layout.filtering ? [] : items.filter { $0.state == .hold }.sorted(by: BoardItem.byPriority)
-        let roots = items.filter(layout.isTopLevel) + layout.unreachable(from: items.filter(layout.isTopLevel) + held)
+        let base = items.filter(layout.isTopLevel)
+        let baseKeys = Set(base.map(\.key))
+        let tops = base.filter { item in !(item.task.fields.parent.map(baseKeys.contains) ?? false) }
+        let roots = tops + layout.unreachable(from: tops + held)
         let groups = Dictionary(grouping: roots, by: \.topicKey)
             .mapValues { $0.sorted(by: BoardItem.byPriority) }
             .sorted { a, b in
@@ -61,7 +67,8 @@ nonisolated struct TopicBoard: Equatable, Sendable {
                 counts: counts(items.filter { $0.topicKey == key })
             )
         }
-        return TopicBoard(topics: topics, onHold: layout.steps(held, seen: &seen))
+        let heldRows = held.filter { !seen.contains($0.key) }
+        return TopicBoard(topics: topics, onHold: layout.steps(heldRows, seen: &seen))
     }
 
     static func boardItems(sections: [ActionSection], metas: [TopicMeta], today: Date) -> [BoardItem] {
@@ -85,7 +92,7 @@ nonisolated struct TopicBoard: Equatable, Sendable {
     }
 }
 
-/// Which items sit at a topic's top level and which nest under a blocker.
+/// Which items sit at a topic's top level and which nest under a parent or blocker.
 private nonisolated struct Layout {
     let items: [BoardItem]
     let filter: Set<BoardState>
@@ -137,7 +144,7 @@ private nonisolated struct Layout {
         var placed = Set(roots.map(\.key))
         var queue = roots
         while let next = queue.popLast() {
-            for kid in nested(under: next.key) where placed.insert(kid.key).inserted {
+            for kid in children(of: next.key) + blocked(by: next.key) where placed.insert(kid.key).inserted {
                 queue.append(kid)
             }
         }
@@ -146,15 +153,27 @@ private nonisolated struct Layout {
 
     private func step(_ item: BoardItem, seen: inout Set<String>) -> BoardStep {
         seen.insert(item.key)
-        var kids: [BoardStep] = []
-        for kid in nested(under: item.key) where !seen.contains(kid.key) {
-            kids.append(step(kid, seen: &seen))
+        var children: [BoardStep] = []
+        for kid in self.children(of: item.key) where !seen.contains(kid.key) {
+            children.append(step(kid, seen: &seen))
         }
-        return BoardStep(item: item, blocked: kids)
+        var blocked: [BoardStep] = []
+        for kid in self.blocked(by: item.key) where !seen.contains(kid.key) {
+            blocked.append(step(kid, seen: &seen))
+        }
+        return BoardStep(item: item, children: children, blocked: blocked)
+    }
+
+    /// Sub-steps of `key` (`- Parent:`) in a state the board shows; on-hold
+    /// ones only while unfiltered.
+    private func children(of key: String) -> [BoardItem] {
+        items
+            .filter { $0.task.fields.parent == key && shown($0.state) && ($0.state != .hold || !filtering) }
+            .sorted { $0.order < $1.order }
     }
 
     /// Blocked steps that nest under `key`: never ones already at a top level.
-    private func nested(under key: String) -> [BoardItem] {
+    private func blocked(by key: String) -> [BoardItem] {
         guard shown(.blocked) else { return [] }
         return items
             .filter { $0.state == .blocked && $0.task.fields.depends.contains(key) && !isTopLevel($0) }

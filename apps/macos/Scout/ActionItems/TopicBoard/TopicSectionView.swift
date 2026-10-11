@@ -8,17 +8,25 @@ struct TopicSectionView: View {
     let scoutDirectory: URL
     @Binding var expanded: Bool
 
+    @State private var asking = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DisclosureRow(
                 height: Self.headerHeight,
                 label: topic.title,
                 expanded: $expanded,
-                prompt: { BoardPrompt.topic(topic) },
-                session: topic.meta?.session,
-                scoutDirectory: scoutDirectory
+                onAsk: { asking = true }
             ) { _ in
                 header
+            }
+            if asking {
+                PromptBox(
+                    context: { BoardPrompt.topic(topic) },
+                    session: topic.meta?.session,
+                    scoutDirectory: scoutDirectory,
+                    isOpen: $asking
+                )
             }
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
