@@ -32,6 +32,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
   `kb-management.md` now asks every run to set `last_updated:` in ISO 8601 with an offset whenever it writes a KB file (#201).
 - **`scoutctl action-items` tells a missing task and an ambiguous one apart by exit code** (`engine/scout/errors.py`, `engine/scout/action_items/_common.py`). No match now exits 22 (`ActionItemNotFound`) and more than one match exits 23 (`ActionItemAmbiguous`). Both subclass `ActionItemError`, and every other action-item failure still exits 21. Scout.app reads these codes to tell the user what happened. It expected 2 and 3, which the engine never sent, so every no-match showed as an unexplained error.
+- **Research target selection keeps its mandate check and its ranking rule across upgrades** (`phases/research/research-targets.md`). Two Step 1a blocks existed only in a rendered `RESEARCH.md`, so the next `/scout-update` re-render would have deleted them. The slot now carries both: an optional coverage-mandates check, which runs only when the vault has its own `scripts/coverage-mandates.py` and is skipped otherwise, and a rule that ranks substantive research above internal knowledge-graph upkeep once no `urgent` item is outstanding (#339).
 
 ## [0.15.0] - 2026-10-09
 
