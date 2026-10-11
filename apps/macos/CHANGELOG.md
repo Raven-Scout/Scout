@@ -21,6 +21,13 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   its own, and the app was never released as 0.15.0; v0.16.0 is the first
   release of both.
 
+### Fixed
+- A failed update check (typically offline) no longer hides an update that was
+  already found: the badge, menu-bar dot and footer item stay.
+- **Settings ▸ Updates ▸ Check now** is disabled while an update check can't
+  start (a background check or permission prompt is running), instead of
+  silently doing nothing.
+
 ## Releases before the monorepo
 
 Up to v0.14.0 the app was released from its own repository, now
