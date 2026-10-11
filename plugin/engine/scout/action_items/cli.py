@@ -553,3 +553,29 @@ def cli_watch(
 
     color = not no_color and sys.stdout.isatty()
     run_watch_loop(target_path, color=color)
+
+
+_DATA_DIR_HELP = "Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."
+
+
+@app.command("rename-topic")
+def cli_rename_topic(
+    tag: str = typer.Argument(..., help="The topic's [#TAG] in action-items/topics.md."),
+    name: str = typer.Option(..., "--name", help="Your name for the topic; empty clears it."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
+) -> None:
+    """Set your own name for a topic. Scout runs never change it."""
+    from scout.action_items.topics import rename_topic
+
+    rename_topic(tag.removeprefix("#"), name, data_dir=data_dir)
+
+
+@app.command("dismiss")
+def cli_dismiss(
+    key: str = typer.Option(..., "--key", help="The entry's URL, or its text when it has none."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
+) -> None:
+    """Close an Inbox or Loose ends entry for good."""
+    from scout.action_items.dismissed import dismiss
+
+    dismiss(key, data_dir=data_dir)

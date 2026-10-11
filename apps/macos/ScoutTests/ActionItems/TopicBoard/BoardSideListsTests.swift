@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import Scout
 
-@Suite("Topic board — Done list")
+@Suite("Topic board — Inbox, Loose ends and Done")
 struct BoardSideListsTests {
     private var calendar: Calendar {
         var c = Calendar(identifier: .gregorian)
@@ -18,6 +18,43 @@ struct BoardSideListsTests {
         let text = (["# Action Items — 2026-10-10", ""] + lines).joined(separator: "\n")
         let url = URL(fileURLWithPath: "/tmp/action-items-2026-10-10.md")
         return try ActionItemsParser.parse(text: text, sourceURL: url, sourceBytes: text.utf8.count).sections
+    }
+
+    @Test(arguments: [
+        ("Slack · Oct 10 — [Priya asked about retention](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)",
+         "Priya asked about retention", "https://acme-co.slack.com/archives/C0123456789/p1700000000000000", "Slack · Oct 10"),
+        ("Delete the stale branch", "Delete the stale branch", nil, nil),
+        ("GitHub — merged branch left behind https://github.com/example-org/web/pull/1",
+         "merged branch left behind", "https://github.com/example-org/web/pull/1", "GitHub"),
+    ] as [(String, String, String?, String?)])
+    func parsesBullets(bullet: String, text: String, url: String?, source: String?) {
+        let entry = SideEntry.parse(bullet)
+        #expect(entry.text == text)
+        #expect(entry.url?.absoluteString == url)
+        #expect(entry.source == source)
+        #expect(entry.key == url ?? text)
+    }
+
+    @Test func entriesComeFromTheTitledSectionMinusDismissed() throws {
+        let s = try sections([
+            "## 📥 Inbox",
+            "- Slack · Oct 10 — [Priya asked about retention](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)",
+            "- Linear · Oct 9 — [PROJ-1234 assigned to you](https://linear.app/x/issue/PROJ-1234)",
+            "## 🧹 Loose ends",
+            "- Delete the stale branch",
+        ])
+        let inbox = SideEntry.entries(
+            inSectionTitled: "Inbox", of: s,
+            dismissed: ["https://linear.app/x/issue/PROJ-1234"]
+        )
+        #expect(inbox.map(\.text) == ["Priya asked about retention"])
+        #expect(SideEntry.entries(inSectionTitled: "loose ends", of: s, dismissed: []).map(\.text) == ["Delete the stale branch"])
+    }
+
+    @Test func dismissedFileKeys() {
+        #expect(DismissedFileLoader.parse("# Dismissed\r\n\r\nProse.\r\n\r\n- https://a.example/1\r\n-  Delete it \t\r\n- \r\n") == [
+            "https://a.example/1", "Delete it",
+        ])
     }
 
     @Test func doneRangesCycleAndCoverTheRightDays() {
@@ -46,5 +83,15 @@ struct BoardSideListsTests {
         #expect(week.map(\.task.shortPrefix) == ["AAAA", "CCCC"])
         let yesterday = DoneEntry.entries(sections: s, fileDate: fileDate, range: .yesterday, today: day(2026, 10, 10), calendar: calendar)
         #expect(yesterday.map(\.task.shortPrefix) == ["CCCC"])
+    }
+
+    @Test(arguments: [
+        ("Reattach", "Stream reattach", "Reattach"),
+        ("  Stream reattach ", "Reattach", ""),
+        ("", "Reattach", ""),
+        ("Reattach", "Reattach", nil),
+    ] as [(String, String, String?)])
+    func renameSendsOnlyChanges(draft: String, current: String, expected: String?) {
+        #expect(TopicNameField.nameToSave(draft: draft, current: current, scoutTitle: "Stream reattach") == expected)
     }
 }

@@ -7,6 +7,8 @@ struct TopicSectionView: View {
     let topic: BoardTopic
     let scoutDirectory: URL
     @Binding var expanded: Bool
+    /// `nil` hides the rename pencil (the engine can't save a rename).
+    var onRename: ((String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,8 +19,8 @@ struct TopicSectionView: View {
                 prompt: { BoardPrompt.topic(topic) },
                 session: topic.meta?.session,
                 scoutDirectory: scoutDirectory
-            ) { _ in
-                header
+            ) { hovered in
+                header(hovered: hovered)
             }
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
@@ -34,13 +36,18 @@ struct TopicSectionView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var header: some View {
+    private func header(hovered: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(topic.title)
-                    .font(DS.sans(15, weight: .semibold))
-                    .foregroundStyle(DS.Ink.p1)
-                    .lineLimit(1)
+                TopicNameField(
+                    title: topic.title,
+                    scoutTitle: topic.meta?.title ?? topic.title,
+                    canRename: topic.meta != nil && onRename != nil,
+                    rowHovered: hovered,
+                    onRename: { onRename?($0) }
+                )
+                .font(DS.sans(15, weight: .semibold))
+                .foregroundStyle(DS.Ink.p1)
                 subtitle
                     .font(DS.sans(11.5))
                     .foregroundStyle(DS.Ink.p3)

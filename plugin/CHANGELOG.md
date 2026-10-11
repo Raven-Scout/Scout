@@ -7,6 +7,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`scoutctl action-items rename-topic` and `scoutctl action-items dismiss`** (`engine/scout/action_items/topics.py`, `engine/scout/action_items/dismissed.py`, `phases/core/action-items.md`). The topic board saves your own name for a topic (`- Renamed:` in `topics.md`) and closes Inbox and Loose ends entries for good (`action-items/dismissed.md`). Runs never change either, and never re-add a dismissed entry. Both are advertised as the `topic_board_v1` manifest feature; the app hides them on engines without it (#340).
 - **Optional board fields on action items** (`engine/scout/action_items/task_fields.py`, `phases/core/action-items.md`). A task can carry `- Topic:`, `- State:`, `- Depends:`, `- Session:`, `- Priority:` and `- Cycle:` sub-bullets for the app's upcoming topic board, and runs describe each workstream in `action-items/topics.md`. The parser reads the fields onto `ActionItem.fields`. They are metadata, never comments, so `delete-comment` / `edit-comment --index` and the HTML render skip them. Files without them parse as before (#340).
 
 ### Fixed

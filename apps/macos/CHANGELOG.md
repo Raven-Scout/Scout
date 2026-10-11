@@ -11,8 +11,14 @@ Versions are tagged `app/vX.Y.Z`. The plugin has its own changelog at
   nests blocked steps under the step that blocks them, orders by Linear
   priority and cycle, and parks on-hold work in one group. The state legend
   filters the board. Each row offers Ask Claude with the item's place on the
-  board in the prompt. Done shows this week, today or yesterday. Read-only:
-  writes stay in List.
+  board in the prompt. Done shows this week, today or yesterday. Task edits
+  stay in List.
+- **Inbox, Loose ends, topic rename and close-for-good on the topic board**
+  (#340). The board lists the daily file's `📥 Inbox` and `🧹 Loose ends`. A
+  pencil on the topic row saves your own name through
+  `scoutctl action-items rename-topic`; a × closes an entry through
+  `scoutctl action-items dismiss`. Both are hidden when the installed engine
+  doesn't advertise `topic_board_v1`.
 
 ### Changed
 - The app now lives at `apps/macos/` in the Scout monorepo (was

@@ -74,6 +74,8 @@ def build_manifest() -> EngineManifest:
             "agent_sessions_v1": True,
             # /scout-plan: estimate/block/actual markers, `scoutctl planning`.
             "planning_v1": True,
+            # Topic board writes: `action-items rename-topic` and `action-items dismiss`.
+            "topic_board_v1": True,
             # Event triggers (docs/specs/event-triggers.md). Opt-in: flips
             # True once the polling matcher + dedup/cooldown are verified
             # across a week of live runs.

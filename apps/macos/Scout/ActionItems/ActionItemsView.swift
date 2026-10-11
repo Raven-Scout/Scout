@@ -746,7 +746,11 @@ struct ActionItemsView: View {
 /// but a class holding the actor can.
 final class ActionItemsWriterBox: ObservableObject {
     let writer: ActionItemsWriter
-    init(writer: ActionItemsWriter) { self.writer = writer }
+    let boardWriter: BoardWriter
+    init(writer: ActionItemsWriter, boardWriter: BoardWriter) {
+        self.writer = writer
+        self.boardWriter = boardWriter
+    }
 }
 
 /// Publishes the environment check result so the view's banner can react.

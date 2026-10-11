@@ -210,6 +210,19 @@ Up to six machine sub-bullets give the app's topic board what the section alone 
 - Keep the title a short noun phrase and the summary to one line. Update them freely.
 - `- Renamed:` is the user's own name for the topic. Never write, change or remove it.
 
+**Inbox and Loose ends** are two optional sections after 🟢 Watching, one bullet each, `Source · date — [what](url)` (the link is optional):
+
+    ## 📥 Inbox
+
+    - Slack · Oct 10 — [Priya asked about the retention window](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)
+
+    ## 🧹 Loose ends
+
+    - [Delete the merged reattach branch](https://github.com/example-org/web/pull/9484)
+
+- Inbox holds new mentions, DMs and notifications not yet turned into tasks. Loose ends holds cleanup: stale branches, drafts, finished threads to close.
+- `action-items/dismissed.md` lists the entries the user closed, by URL or else by text. Never re-add a listed entry, and never write that file yourself.
+
 ### Hard Rule — Trim by Demotion, Never by Omission
 
 When the list grows long, achieve focus by **reprioritizing**, never by hiding items from view. "Don't overwhelm me" and "don't drop my items" are both real constraints — resolve the tension by demotion *within* view, not omission *from* view.
