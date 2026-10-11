@@ -53,6 +53,25 @@ nonisolated struct TaskWindow: Equatable, Sendable {
         limit += Self.pageSize
     }
 
+    /// Most hidden rows "Show all" builds in one go: two pages. Past that a
+    /// single click would bring back the eager-layout freeze this type exists
+    /// to prevent.
+    static let showAllLimit = 40
+
+    /// Whether to offer "Show all": more is hidden than the next page reveals,
+    /// but no more than ``showAllLimit``. When the next page already reveals
+    /// everything, "Show N more" says the same thing.
+    func canShowAll(in tasks: [ActionTask]) -> Bool {
+        let hidden = hiddenCount(in: tasks)
+        return hidden > nextPageCount(in: tasks) && hidden <= Self.showAllLimit
+    }
+
+    /// Builds every row of `tasks`. Rows a later reparse adds past them stay
+    /// windowed.
+    mutating func showAll(in tasks: [ActionTask]) {
+        limit = max(limit, tasks.count)
+    }
+
     /// Grows the window a page at a time until row `index` is built.
     mutating func reveal(_ index: Int) {
         while limit <= index { showMore() }

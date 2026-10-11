@@ -9,8 +9,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ### Changed
 - When a section or board column has more rows than it shows, a
   "Showing 20 of 53 · Show 20 more" line now sits right under its header, not
-  only at the bottom of the list. The 20-row page size is unchanged
-  (Raven-Scout/Scout#356).
+  only at the bottom of the list. When 21–40 rows are hidden, both lines also
+  offer **Show all**. The 20-row page size is unchanged (Raven-Scout/Scout#356).
 
 ### Fixed
 - Action Items search matches a task's `[#TAG]` (typed with or without the

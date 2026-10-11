@@ -9,6 +9,8 @@ struct SectionView: View {
     /// also needs it to keep Select all to the rows actually on screen.
     let window: TaskWindow
     let onShowMore: () -> Void
+    /// Builds every remaining row; offered only for a small remainder.
+    var onShowAll: () -> Void = {}
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
 
     /// Per-archive windows. Local: archive rows are never selectable, so
@@ -50,7 +52,7 @@ struct SectionView: View {
                 // Eager means every row costs layout time, so only a window of
                 // them is built — see `TaskWindow`.
                 VStack(alignment: .leading, spacing: 0) {
-                    WindowSummaryRow(window: window, tasks: section.tasks, action: onShowMore)
+                    WindowSummaryRow(window: window, tasks: section.tasks, action: onShowMore, showAll: onShowAll)
                     ForEach(window.visible(section.tasks)) { task in
                         TaskCardView(
                             task: task,
@@ -61,7 +63,7 @@ struct SectionView: View {
                             onOp: onOp
                         )
                     }
-                    ShowMoreRow(window: window, tasks: section.tasks, action: onShowMore)
+                    ShowMoreRow(window: window, tasks: section.tasks, action: onShowMore, showAll: onShowAll)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(.top, 12)
@@ -111,9 +113,12 @@ struct SectionView: View {
                         onOp: onOp
                     )
                 }
-                ShowMoreRow(window: groupWindow, tasks: group.tasks) {
-                    archiveWindows[group.id, default: TaskWindow()].showMore()
-                }
+                ShowMoreRow(
+                    window: groupWindow,
+                    tasks: group.tasks,
+                    action: { archiveWindows[group.id, default: TaskWindow()].showMore() },
+                    showAll: { archiveWindows[group.id, default: TaskWindow()].showAll(in: group.tasks) }
+                )
                 ForEach(Array(group.bullets.enumerated()), id: \.offset) { _, bullet in
                     InlineMarkdownText(bullet)
                         .font(DS.serif(13))

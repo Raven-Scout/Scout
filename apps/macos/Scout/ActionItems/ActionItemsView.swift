@@ -176,6 +176,7 @@ struct ActionItemsView: View {
                 selection: isSelecting ? $selectedTaskIDs : nil,
                 window: window(for: section),
                 onShowMore: { showMore(in: section) },
+                onShowAll: { showAll(in: section) },
                 onOp: handleOp
             )
         }
@@ -187,6 +188,13 @@ struct ActionItemsView: View {
 
     private func showMore(in section: ActionSection) {
         windows[section.id, default: TaskWindow()].showMore()
+        reconcileSelection()
+    }
+
+    /// `section` must be the filtered section the row counted, so "all" means
+    /// the rows the reader was told about.
+    private func showAll(in section: ActionSection) {
+        windows[section.id, default: TaskWindow()].showAll(in: section.tasks)
         reconcileSelection()
     }
 
