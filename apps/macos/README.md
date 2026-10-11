@@ -76,6 +76,20 @@ Cmd+, opens Settings. A few fields are worth filling in:
 - **Your name** — shown next to comments you add to action items. Defaults to `user`.
 - **Notify on failed runs / rate-limit** — macOS notifications when a scheduled run fails, times out, or is rate-limited.
 
+## Updates
+
+From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks daily and shows a badge when a new version is ready (see **Settings ▸ Updates**). Debug builds never check for updates.
+
+The plugin row in **Settings ▸ Updates** appears only for engines Scout.app doesn't manage (a dev checkout, a Claude Code marketplace install, and similar). When Scout.app manages the engine, it upgrades it for you after an app update.
+
+To test a release candidate, point an installed build at the candidate's appcast:
+
+```bash
+open -a /path/to/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/vX.Y.Z-rc.N/appcast.xml
+```
+
+The Sparkle signing and appcast steps live in [`scripts/sparkle-release.sh`](scripts/sparkle-release.sh); see [Cutting a release](#cutting-a-release) for the release flow.
+
 ## Repo layout
 
 ```

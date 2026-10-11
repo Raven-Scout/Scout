@@ -1,10 +1,10 @@
-# In-App Updates (Sparkle) for v0.15.0 Implementation Plan
+# In-App Updates (Sparkle) for v0.16.0 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Supersedes:** `docs/superpowers/plans/2026-09-02-in-app-updates.md` (the "old plan"). Where a task below says "old plan Task N, verbatim", copy that code from the old plan and apply only the edits listed. Every path, URL and identifier in this file wins over the old plan.
 
-**Goal:** Scout.app updates itself through Sparkle 2.10.0. It reads a release-asset feed at `releases/latest/download/appcast.xml`, which `release.sh finalize` builds and attaches. For engines the app doesn't manage, the app also detects when the plugin is behind and hands over `/scout-update`. Both tracks feed Settings ▸ Updates and an update badge. This is a hard prerequisite of v0.15.0.
+**Goal:** Scout.app updates itself through Sparkle 2.10.0. It reads a release-asset feed at `releases/latest/download/appcast.xml`, which `release.sh finalize` builds and attaches. For engines the app doesn't manage, the app also detects when the plugin is behind and hands over `/scout-update`. Both tracks feed Settings ▸ Updates and an update badge. This is a hard prerequisite of v0.16.0.
 
 **Architecture:** The old plan's Sparkle-free `UpdateService` state machine, unchanged in shape. The app track is a thin `AppUpdater` adapter around `SPUStandardUpdaterController`, which never starts in Debug builds. The plugin track is now gated on Part B's `EngineState`: `.managed` engines never show a plugin row, and `.external` ones get the old design's detect-and-hand-off. It reuses Part B's `EngineVersion` and `ClaudePluginsRegistry`. Release-time Sparkle work lives in `apps/macos/scripts/sparkle-release.sh` (`preflight`, `sign`, `appcast`), and the root `release.sh` (Raven-Scout/Scout#317, owned by the "Scout monorepo consolidation" session; it carries #314's spec and plan) calls it at three fixed points.
 
@@ -398,7 +398,7 @@ Keeping the rows in their own file keeps the `SettingsView` diff to two lines. P
 
 Both asks below were accepted into #317, recorded here for context:
 - (a) For `kind=release`, a missing `$build/appcast.xml` must be fatal once this PR is merged. Otherwise a Latest release without the asset 404s every installed copy's feed until the next release.
-- (b) #314's v0.15.0 bar installs v0.15.0 "from a draft release". `finalize` has no draft mode, so a rehearsal before v0.15.0 is public needs the `rc` path (Task 12).
+- (b) #314's first-release bar (now v0.16.0) installs v0.16.0 "from a draft release". `finalize` has no draft mode, so a rehearsal before v0.16.0 is public needs the `rc` path (Task 12).
 
 - [ ] Step 1. Confirm the `generate_appcast` flags against the built tool: `build/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast --help`. The flags above were read from Sparkle 2.10.0's source. If one differs, use the real flag and note it in the report.
 - [ ] Step 2. Write the failing tests in `scripts/tests/sparkle-release.test.sh`. Use a stub `PATH` dir with fake `codesign`, `xcrun`, `hdiutil` and `xmllint` (pass-through to the real one), plus a stub `SPARKLE_BIN` with fake `generate_keys` and `generate_appcast`. Each stub appends its argv to a log. Build a fake `Scout.app` tree with the five Sparkle paths and an `Info.plist` written with `plutil`. Assert:
@@ -431,7 +431,7 @@ Both asks below were accepted into #317, recorded here for context:
 ### Task 11: Docs, changelog, and the interface on #317
 
 - `apps/macos/README.md`: an **Updates** section saying three things.
-  - From v0.15.0 the app updates itself (**Scout → Check for Updates…**, daily checks), and Debug builds never do.
+  - From v0.16.0 the app updates itself (**Scout → Check for Updates…**, daily checks), and Debug builds never do.
   - The plugin row appears only for engines Scout.app doesn't manage.
   - To test a release candidate, run `open -a /path/to/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/vX.Y.Z-rc.N/appcast.xml`.
 
@@ -446,13 +446,13 @@ Both asks below were accepted into #317, recorded here for context:
 
 **Files:** none. An agent runs this only with Jordan's go-ahead for that specific run.
 
-Recommended before `finalize v0.15.0`, because v0.15.0 is the one release where a broken updater can't be fixed through the updater:
-1. Run `scripts/release.sh rc v0.15.0-rc.1`. Copy the DMG's app to `~/scout-e2e/Scout.app`.
-2. Land any commit on `main`, then run `scripts/release.sh rc v0.15.0-rc.2` from that **later** commit. `CFBundleVersion` is the commit count, and Sparkle never offers an equal build, so rc.2's `sparkle:version` must be higher than rc.1's.
-3. Run `open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.15.0-rc.2/appcast.xml`, then **Check for Updates…**. Sparkle's sheet shows rc.2, and Settings ▸ Updates shows the badge. **Install and Relaunch**: About reads rc.2's build, and `codesign -dv` shows the team ID. On an error sheet, run `log show --last 10m --predicate 'process == "Scout" AND eventMessage CONTAINS[c] "sparkle"' --info`.
+Recommended before `finalize v0.16.0`, because v0.16.0 is the one release where a broken updater can't be fixed through the updater:
+1. Run `scripts/release.sh rc v0.16.0-rc.1`. Copy the DMG's app to `~/scout-e2e/Scout.app`.
+2. Land any commit on `main`, then run `scripts/release.sh rc v0.16.0-rc.2` from that **later** commit. `CFBundleVersion` is the commit count, and Sparkle never offers an equal build, so rc.2's `sparkle:version` must be higher than rc.1's.
+3. Run `open -a ~/scout-e2e/Scout.app --env SCOUT_APPCAST_URL=https://github.com/Raven-Scout/Scout/releases/download/v0.16.0-rc.2/appcast.xml`, then **Check for Updates…**. Sparkle's sheet shows rc.2, and Settings ▸ Updates shows the badge. **Install and Relaunch**: About reads rc.2's build, and `codesign -dv` shows the team ID. On an error sheet, run `log show --last 10m --predicate 'process == "Scout" AND eventMessage CONTAINS[c] "sparkle"' --info`.
 4. Delete both pre-releases and their tags.
 
-Then follow #314's v0.15.0 bar as written: the C10 clean-account test, and `v0.15.1-rc.1` updating the installed v0.15.0, with the engine upgrading itself on relaunch.
+Then follow #314's first-release bar (now v0.16.0) as written: the C10 clean-account test, and `v0.16.1-rc.1` updating the installed v0.16.0, with the engine upgrading itself on relaunch.
 
 ---
 

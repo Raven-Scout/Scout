@@ -348,9 +348,9 @@ written. The plan that implements this section is
    - This replaces the checked-in feed, the empty initial `appcast.xml`, the
      `[skip ci]` feed commit and the "clean `main` checkout" guard
      (Amendments 2026-09-02, items 4, 6 and 9).
-   - It works because every release from v0.15.0 on is the Latest one and
+   - It works because every release from v0.16.0 on is the Latest one and
      carries the app (#314 D2). No installed copy reads the feed before
-     v0.15.0, so the missing asset on `app/v0.14.0` (Latest today) is
+     v0.16.0, so the missing asset on `app/v0.14.0` (Latest today) is
      harmless.
 2. **Release candidates.** `release.sh rc vX.Y.Z-rc.N` publishes a GitHub
    pre-release with its own `appcast.xml`. It is never Latest, so users'
@@ -416,10 +416,14 @@ keychain, and the public key goes in `SUPublicEDKey`.
 
 ### Rollout
 
-v0.15.0 is the first build with an updater. It is also the one release where
+v0.16.0 is the first build with an updater. It is also the one release where
 a broken updater can't be fixed *through* the updater. Copies at v0.14.x and
-earlier have no updater, and their users download v0.15.0 once by hand.
-#314's v0.15.0 bar includes a `v0.15.1-rc.1` Sparkle update test, which
-Jordan runs. The plan also recommends an earlier `v0.15.0-rc.1` → `rc.2`
+earlier have no updater, and their users download v0.16.0 once by hand.
+#314's first-release bar (now v0.16.0) includes a `v0.16.1-rc.1` Sparkle update test, which
+Jordan runs. The plan also recommends an earlier `v0.16.0-rc.1` → `rc.2`
 rehearsal through `release.sh rc`, before `finalize`, so the first public
 updater has already updated once (plan, Task 12).
+
+### Amendment note (2026-10-11)
+
+2026-10-11: first unified release renumbered 0.15.0 → 0.16.0 (plugin 0.15.0 shipped standalone)
