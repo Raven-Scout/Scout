@@ -19,7 +19,7 @@ from pathlib import Path
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "parser-corpus.json"
 
-EXPECTED_SHA256 = "2381ee1b76d446e186036e734f516e1c236ffab687ff38f6ed1a7cca9bcdd66f"
+EXPECTED_SHA256 = "c4237bc4aafd1daf84a3ffb82f254383d56b6d6f2f4460b43be89aead3794d63"
 
 
 def test_corpus_matches_canonical_checksum() -> None:

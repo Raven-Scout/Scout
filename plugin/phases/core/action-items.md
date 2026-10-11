@@ -181,12 +181,12 @@ Good vs bad (anonymized):
 
 ### Board Fields (optional)
 
-Up to eight machine sub-bullets give the app's topic board what the section alone can't say. Write them directly under the task line, after any plan markers, in this order, and only when you know the value:
+The app's topic board reads a few machine sub-bullets that a section can't express. Like plan markers and `- Refs:`, they are an exception to the one-sub-bullet rule in **Item line format**, but only because they are short and rare: write one only when it adds something the section, the title and the body don't already say. Most tasks carry none, or only `- Topic:`. They go directly under the task line, after any plan markers, in this order:
 
     - [ ] [#REPLYX] **Reply to Alex about her purchase question**
       - Topic: #STRM
       - Parent: #RTALL
-      - State: mine
+      - State: doing
       - Action: Reply
       - Depends: #XREF, #QBLK
       - Session: https://claude.ai/code/session_0123
@@ -194,20 +194,24 @@ Up to eight machine sub-bullets give the app's topic board what the section alon
       - Cycle: current
 
 - `Topic:` is the `[#TAG]` of the workstream the task belongs to, described in `action-items/topics.md` (below). Tasks without one stand alone on the board.
-- `State:` is one of `mine`, `doing`, `waiting`, `blocked` or `hold`. Omit it when the section already says it: the app reads 🔴/🟡 as `mine`, 🟢 as `waiting` and `[x]` as done. Snooze stays the way to park a task until a date, and an active snooze wins over `State:`; `hold` is for parking with no date. Apply the states strictly:
-  - **`mine`** only when {{USER_NAME}} alone can take the next step and can take it now: a question to them that you verified is still open, a review requested from them by name, or their own PR that is approved, green, unblocked and only needs merging.
-  - **`doing`** only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. A related session merely running doesn't count. An agent drafting while it works is `doing`, not `mine`.
-  - **`waiting`** for anything waiting on a person, including a bot-only approval while a human reviewer is still requested.
-  - **`blocked`** for anything with an open dependency.
-- `Action:` is required on every `mine` task: a 1–3 word imperative naming what {{USER_NAME}} does next ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"). Omit it on a parent.
 - `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and remove the parent; with none left, remove the parent.
-- `Depends:` lists the `[#TAG]`s of tasks this one needs first. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Read both PR bodies to find out. A task with an open dependency is `State: blocked`.
-- `Session:` is the Claude session working on it (a `claude.ai/code/session_…` link, or a local session's UUID).
-- `Priority:` is the linked Linear issue's priority (0 none, 1 urgent … 4 low). `Cycle: current` marks a Linear issue in the active cycle. Omit both without a Linear issue.
-- Carry them forward verbatim with the task, like plan markers, and update a value only when you have just verified it. Never fold them into `- Refs:`.
-- **Re-check every task on every run** against these rules, not only the ones that changed: a state or action that was right yesterday may not be today.
+- `State:` is written only as `doing` or `blocked`; everything else comes from where the task sits. Write `doing` only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. An agent drafting while it works is `doing`; a related session merely running is not. Write `blocked` only for a blocker that is not a task (an outage, a decision outside this board). A task waiting on another task gets `Depends:` instead, and the board derives blocked from it.
+- `Action:` names the next step on a 🔴 Urgent or 🟡 To Do task, 1–3 words ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"), when the title doesn't already say it. Never on a parent.
+- `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Find that from this PR's body and the other PRs fetched this run.
+- `Session:` is the Claude session working on it: a `claude.ai/code/session_…` link, or a local session's UUID.
+- `Priority:` is the linked Linear issue's priority, 1 urgent … 4 low; omit it for 0 (no priority). `Cycle: current` marks a Linear issue in the active cycle, on tasks someone is working. Omit both without a Linear issue, and rewrite either only when the Linear value actually changed.
+- Carry them forward verbatim with the task, like plan markers. Never fold them into `- Refs:`.
 
-**The body is the next step.** Keep a task's body to at most two short sentences (about 25 words): what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
+**How the board places a task**, first rule that applies:
+1. A ticked `[x]` task is done.
+2. An active snooze (`snoozed-until` in the future) puts it on hold until that date.
+3. A `Depends:` on a task that is still open makes it blocked. A dependency that is done or gone no longer blocks.
+4. `State: doing` or `State: blocked` applies.
+5. Otherwise the section decides: 🔴 Urgent and 🟡 To Do are {{USER_NAME}}'s move, 🟢 Watching is waiting on someone else, 🅿️ Parked is on hold.
+
+So choose the section with the board in mind. 🔴/🟡 only when {{USER_NAME}} alone can take the next step and can take it now: an open question to them (verified still open), a review requested from them by name, or their own PR that is approved, green, unblocked and only needs merging. Anything waiting on a person goes to 🟢 Watching, including a bot-only approval while a human reviewer is still requested. **Re-check every task on every run** against these rules, not only the ones that changed.
+
+**The body is the next step.** Keep it to at most two short sentences (about 25 words): what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
 
 **Topics** live in `action-items/topics.md`, one `##` heading per workstream, so they outlast the daily files:
 
@@ -217,9 +221,9 @@ Up to eight machine sub-bullets give the app's topic board what the section alon
     - Session: https://claude.ai/code/session_0123
     - Summary: Two PRs, the second needs the first
 
-- Mint the tag with `scoutctl action-items new-prefix`, like a task's. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
-- Keep the title a short noun phrase and the summary to one line. Update them freely.
-- `- Renamed:` is the user's own name for the topic. Never write, change or remove it.
+- Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte: a `- Renamed:` line is the user's own name for the topic, written only by `scoutctl action-items rename-topic` from the app, and you never write, change or remove it.
+- Remove a topic once none of its tasks has been open for 14 days.
 
 **Inbox and Loose ends** are two optional sections after 🟢 Watching, one bullet each, `Source · date — [what](url)` (the link is optional):
 
@@ -472,7 +476,7 @@ Each item is **one line of up to 300 characters**, plus **at most one sub-bullet
 
 `- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
 
-Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it.
+Context lives in the linked note, not under the item. If an item needs more than a line of explanation, write or update the topic/project note and link it. The only other lines under an item are machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
 **Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 

@@ -280,4 +280,40 @@ struct TopicBoardTests {
         #expect(parent.children.map(StepRowView.actionLabel) == ["Merge", ActionChip.fallback])
         #expect(StepRowView.actionLabel(for: try #require(steps.first { $0.item.key == "WAIT" })) == nil)
     }
+
+    @Test func openDependencyMakesAStepBlockedWithoutAStateField() throws {
+        let items = TopicBoard.boardItems(sections: try sections([
+            "## 🔴 Urgent",
+            "- [ ] [#AAAA] **Land the API**",
+            "- [ ] [#BBBB] **Ship the UI**",
+            "  - Depends: #AAAA",
+            "- [ ] [#CCCC] **Needs done work**",
+            "  - Depends: #DONE",
+            "- [ ] [#DDDD] **Needs missing work**",
+            "  - Depends: #GONE",
+            "## ✅ Done",
+            "- [x] [#DONE] **Finished**",
+        ]), metas: [], today: today)
+        #expect(items.map { "\($0.key)=\($0.state)" } == ["AAAA=mine", "BBBB=blocked", "CCCC=mine", "DDDD=mine"])
+    }
+
+    @Test func snoozeBeatsDependsAndDependsBeatsState() throws {
+        let items = TopicBoard.boardItems(sections: try sections([
+            "## 🔴 Urgent",
+            "- [ ] [#AAAA] **Blocker**",
+            "- [ ] [#BBBB] **Snoozed**",
+            "  - Depends: #AAAA",
+            "  - snoozed-until: 2026-07-25",
+            "- [ ] [#CCCC] **Says doing**",
+            "  - Depends: #AAAA",
+            "  - State: doing",
+        ]), metas: [], today: today)
+        #expect(items.map { "\($0.key)=\($0.state)" } == ["AAAA=mine", "BBBB=hold", "CCCC=blocked"])
+    }
+
+    @Test func parkedSectionIsHold() throws {
+        let b = try board(["## 🅿️ Parked", "- [ ] [#PARK] **Revisit later**", "## 🟡 To Do", "- [ ] [#TODO] **Do it**"])
+        #expect(tags(b.onHold) == ["PARK"])
+        #expect(tags(b.topics.flatMap(\.steps)) == ["TODO"])
+    }
 }

@@ -77,10 +77,12 @@ nonisolated struct TopicBoard: Equatable, Sendable {
             uniquingKeysWith: { first, _ in first }
         )
         let tasks = sections.flatMap { section in
-            section.tasks.filter { $0.indentLevel == 0 }.map { (task: $0, kind: section.kind) }
+            section.tasks.filter { $0.indentLevel == 0 }.map { (task: $0, section: section) }
         }
+        let openTags = Set(tasks.filter { !$0.task.done && $0.section.kind != .done }.compactMap(\.task.shortPrefix))
         return tasks.enumerated().compactMap { order, entry in
-            guard let state = BoardState.of(entry.task, in: entry.kind, today: today), state != .done else { return nil }
+            guard let state = BoardState.of(entry.task, in: entry.section, today: today, openTags: openTags),
+                  state != .done else { return nil }
             let fields = entry.task.fields
             let topic = fields.topic ?? fields.session.flatMap { topicBySession[$0] } ?? otherKey
             return BoardItem(task: entry.task, state: state, topicKey: topic, order: order)

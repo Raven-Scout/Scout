@@ -409,17 +409,18 @@ def cli_new_prefix(
         prefix=$(scoutctl action-items new-prefix)
         echo "- [ ] [#${prefix}] **subject** body" >> "$DAILY"
 
-    Reads existing id-map.json to avoid collision; does NOT register the new
-    prefix — registration happens when the action-items writer next sees the
-    line with the prefix attached.
+    Reads existing id-map.json and the topic tags in topics.md to avoid
+    collision; does NOT register the new prefix — registration happens when
+    the action-items writer next sees the line with the prefix attached.
     """
     from scout import paths
+    from scout.action_items.topics import topic_tags
     from scout.id_map import IdMap
     from scout.ids import new_short_prefix
 
     data_dir = path.parent.parent if path is not None else paths.data_dir()
     id_map = IdMap.load(data_dir)
-    prefix = new_short_prefix(exclude=id_map.in_use_prefixes())
+    prefix = new_short_prefix(exclude=id_map.in_use_prefixes() | topic_tags(data_dir))
     sys.stdout.write(prefix + "\n")
 
 

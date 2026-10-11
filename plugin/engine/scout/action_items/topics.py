@@ -2,7 +2,8 @@
 
 Scout runs write each topic's title, `- Session:` and `- Summary:`. The
 `- Renamed:` line is the user's own name for the topic and only
-`rename_topic` writes it, so a run never overrides it.
+`rename_topic` writes it, so a run never overrides it. Topic tags share the
+namespace of task tags, so `new-prefix` never mints one a topic uses.
 """
 
 from __future__ import annotations
@@ -25,6 +26,15 @@ _RENAMED_RE = re.compile(r"^\s*-\s+Renamed:", re.IGNORECASE)
 
 def topics_path(data_dir: Path | None = None) -> Path:
     return paths.action_items_dir(data_dir) / TOPICS_FILE
+
+
+def topic_tags(data_dir: Path | None = None) -> set[str]:
+    """Tags of the topics in `topics.md`; empty when the file is missing."""
+    path = topics_path(data_dir)
+    if not path.exists():
+        return set()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return {m.group("tag") for m in map(_HEADING_RE.match, lines) if m is not None}
 
 
 def rename_topic(tag: str, name: str, *, data_dir: Path | None = None) -> Event:

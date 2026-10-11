@@ -33,22 +33,34 @@ nonisolated enum BoardState: String, CaseIterable, Sendable {
 
     var isOpen: Bool { self != .hold && self != .done }
 
-    /// A task's state: done wins, then a current snooze, then the task's own
-    /// `- State:` field, then its section. `nil` for tasks the board doesn't
-    /// show (focus, meetings and digest sections).
-    static func of(_ task: ActionTask, in kind: ActionSection.Kind, today: Date) -> BoardState? {
-        if task.done || kind == .done { return .done }
-        guard let sectionState = sectionState(kind) else { return nil }
+    /// A task's state, first rule that applies (the order the skill's Board
+    /// Fields section documents): ticked → done; an active snooze → hold; a
+    /// `Depends:` on a task in `openTags` → blocked; its `- State:`; its
+    /// section (🔴/🟡 mine, 🟢 waiting, 🅿️ Parked hold). `nil` for tasks the
+    /// board doesn't show (focus, meetings and digest sections).
+    static func of(_ task: ActionTask, in section: ActionSection, today: Date, openTags: Set<String> = []) -> BoardState? {
+        if task.done || section.kind == .done { return .done }
+        guard let sectionState = sectionState(section) else { return nil }
         if let until = task.snoozedUntil, until > today { return .hold }
+        if task.fields.depends.contains(where: openTags.contains) { return .blocked }
         return task.fields.state.map(BoardState.init) ?? sectionState
     }
 
-    private static func sectionState(_ kind: ActionSection.Kind) -> BoardState? {
-        switch kind {
-        case .urgent, .todo, .personal, .neutral: .mine
-        case .watching: .waiting
-        case .done: .done
-        case .focus, .meetings, .digest: nil
+    /// `## 🅿️ Parked`. The parser doesn't treat 🅿️ as a section emoji, so it
+    /// can arrive in the title instead.
+    static func isParked(_ section: ActionSection) -> Bool {
+        let title = section.title.replacingOccurrences(of: "🅿️", with: "").replacingOccurrences(of: "🅿", with: "")
+        return section.emoji.hasPrefix("🅿") || section.title.hasPrefix("🅿")
+            || title.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("Parked") == .orderedSame
+    }
+
+    private static func sectionState(_ section: ActionSection) -> BoardState? {
+        if isParked(section) { return .hold }
+        switch section.kind {
+        case .urgent, .todo, .personal, .neutral: return .mine
+        case .watching: return .waiting
+        case .done: return .done
+        case .focus, .meetings, .digest: return nil
         }
     }
 

@@ -331,6 +331,23 @@ def test_new_prefix_honours_positional_path(vault: Path) -> None:
     assert result.stdout.strip() != "A3F7"
 
 
+def test_new_prefix_avoids_topic_tags(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Topic tags never enter the id-map, so new-prefix reads topics.md too."""
+    import scout.ids
+
+    (vault / "action-items" / "topics.md").write_text("# Topics\n\n## [#STRM] Stream reattach\n", encoding="utf-8")
+    seen: list[set[str]] = []
+
+    def fake(exclude: set[str] | None = None) -> str:
+        seen.append(set(exclude or ()))
+        return "ZZZZ"
+
+    monkeypatch.setattr(scout.ids, "new_short_prefix", fake)
+    result = runner.invoke(app, ["new-prefix"])
+    assert result.exit_code == 0, result.output
+    assert seen == [{"STRM"}]
+
+
 def test_materialize_creates_from_prior_day(vault: Path) -> None:
     _seed(vault, "# Action Items — Tuesday, Apr 14, 2026\n\n## To Do\n\n- [ ] carried task\n", date="2026-04-14")
 
