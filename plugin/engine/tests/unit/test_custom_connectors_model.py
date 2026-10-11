@@ -1572,3 +1572,37 @@ def test_trailer_after_a_significant_tail_survives(tmp_path: Path, tail: str, op
     assert result.startswith("# my header")
     assert result.count("# Closing note.") == 1
     assert yaml.safe_load(result) == {"schema_version": 1, "connectors": new}
+
+
+def test_input_placeholder_must_match_the_renderers_case_exactly():
+    # custom_assembly substitutes only INPUT_<NAME.upper()>, so a mixed-case
+    # placeholder would render literally and must be rejected.
+    body = {
+        **MAIL,
+        "needs_user_input": ["foo"],
+        "inbound": {"tools": [{"bash": "suite search {{INPUT_Foo}}"}]},
+    }
+    c, issues = _parse("suite_mail", body)
+    assert c is None
+    assert "uses {{INPUT_Foo}}; write it as {{INPUT_FOO}} (placeholders are upper case)" in _messages(issues)
+
+
+def test_upper_case_placeholder_for_lower_case_name_is_accepted():
+    body = {**MAIL, "needs_user_input": ["foo"], "inbound": {"tools": [{"bash": "suite search {{INPUT_FOO}}"}]}}
+    c, issues = _parse("suite_mail", body)
+    assert issues == [], _messages(issues)
+
+
+def test_undeclared_placeholder_is_reported_once():
+    body = {
+        **MAIL,
+        "inbound": {"tools": [{"bash": "suite {{INPUT_X}} {{INPUT_X}}"}, {"bash": "suite two {{INPUT_X}}"}]},
+    }
+    _, issues = _parse("suite_mail", body)
+    assert sum("INPUT_X" in i.message for i in issues) == 1
+
+
+def test_first_binary_command_presence_check_is_not_a_call():
+    assert cc.first_binary("command -v gh") is None
+    assert cc.first_binary("command -V gh") is None
+    assert cc.first_binary("command gh pr list") == "gh"

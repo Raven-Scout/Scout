@@ -202,3 +202,8 @@ def test_run_surfaces_write_failure_instead_of_swallowing(tmp_path, monkeypatch,
     err = capsys.readouterr().err
     assert "failed to append row" in err
     assert "disk full" in err
+
+
+def test_command_presence_check_is_not_a_github_call():
+    assert classify("Bash", {"command": "command -v gh"}) == "bash:command"
+    assert classify("Bash", {"command": "command gh pr list"}) == "github"

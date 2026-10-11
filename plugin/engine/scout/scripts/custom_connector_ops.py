@@ -7,7 +7,9 @@ docs/superpowers/specs/2026-10-02-custom-connectors-design.md §3.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import datetime
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -393,6 +395,31 @@ def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wa
     return _under_lock(vault, key, change, wait=wait)
 
 
+def _jsonable(value: Any) -> Any:
+    """``value`` with everything JSON cannot encode made encodable.
+
+    ``yaml.safe_load`` yields dates, datetimes, sets and bytes for plain YAML
+    scalars (``notes: 2026-10-01``); ``list`` echoes definitions as written, so
+    it must convert them rather than crash the one-JSON-object contract."""
+    if isinstance(value, dict):
+        return {k if isinstance(k, str) else str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        try:
+            ordered = sorted(value)
+        except TypeError:
+            ordered = list(value)
+        return [_jsonable(v) for v in ordered]
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
     try:
         return _list_custom(vault, plugin_root=plugin_root)
@@ -427,7 +454,7 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
             "preset": c.preset,
             "activities": [a for a in cc.ACTIVITIES if a in c.activities],
             "valid": True,
-            "definition": current.raw[c.key],
+            "definition": _jsonable(current.raw[c.key]),
         }
         for c in current.connectors.values()
     ]
@@ -437,7 +464,7 @@ def _list_custom(vault: Path, *, plugin_root: Path) -> dict[str, Any]:
             "valid": False,
             "enabled": key in enabled,
             "display_name": raw_def.get("display_name") if isinstance(raw_def, dict) else None,
-            "definition": raw_def,
+            "definition": _jsonable(raw_def),
             "issues": _issues_for_key(current.issues, key),
         }
         for key, raw_def in current.raw.items()

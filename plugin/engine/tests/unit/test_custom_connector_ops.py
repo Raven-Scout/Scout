@@ -548,3 +548,72 @@ def test_drift_message_pluralizes_for_several_files(vault: Path):
         snap.write_text(snap.read_text() + "\nplugin changed underneath\n")
     out = _add(vault, SUITE_WITH_LOOKUP)
     assert out.message.startswith("Saved. SKILL.md, RESEARCH.md were last assembled from a different plugin version")
+
+
+# --- final review: `list` must stay JSON-safe on any YAML scalar ----------------------
+
+_DATED = (
+    "schema_version: 1\nconnectors:\n  broken:\n    display_name: B\n"
+    "    notes: 2026-10-01\n    stamp: 2026-10-01 12:30:00\n"
+)
+
+
+def test_list_custom_invalid_row_with_unquoted_date_is_json_safe(vault: Path):
+    import json
+
+    (vault / cc.CUSTOM_FILE).write_text(_DATED)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    row = next(r for r in listing["connectors"] if r["key"] == "broken")
+    assert row["valid"] is False
+    assert row["definition"]["notes"] == "2026-10-01"
+    assert row["definition"]["stamp"] == "2026-10-01T12:30:00"
+    json.dumps(listing)  # must not raise
+
+
+def test_list_custom_valid_row_with_unquoted_date_is_json_safe(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    import datetime
+    import json
+
+    _add(vault, SUITE)
+    real_load = cc.load
+
+    def load_with_date(*a, **kw):
+        current = real_load(*a, **kw)
+        current.raw["suite_mail"] = {**current.raw["suite_mail"], "when": datetime.date(2026, 10, 1)}
+        return current
+
+    monkeypatch.setattr(cc, "load", load_with_date)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    row = listing["connectors"][0]
+    assert row["valid"] is True
+    assert row["definition"]["when"] == "2026-10-01"
+    json.dumps(listing)
+
+
+def test_jsonable_converts_what_yaml_can_produce():
+    import datetime
+
+    out = ops._jsonable(
+        {
+            "d": datetime.date(2026, 10, 1),
+            "t": datetime.datetime(2026, 10, 1, 12, 30),
+            "set": {"b", "a"},
+            "mixed_set": {1, "a"},
+            "bytes": b"hi",
+            "tuple": (1, 2),
+            "nested": [{"x": datetime.date(2026, 1, 2)}],
+            3: "int key",
+            "plain": [1, 2.5, True, None, "s"],
+            "other": object,
+        }
+    )
+    assert out["d"] == "2026-10-01"
+    assert out["t"] == "2026-10-01T12:30:00"
+    assert out["set"] == ["a", "b"]
+    assert sorted(map(str, out["mixed_set"])) == ["1", "a"]
+    assert out["bytes"] == "aGk="
+    assert out["tuple"] == [1, 2]
+    assert out["nested"] == [{"x": "2026-01-02"}]
+    assert out["3"] == "int key"
+    assert out["plain"] == [1, 2.5, True, None, "s"]
+    assert out["other"] == str(object)

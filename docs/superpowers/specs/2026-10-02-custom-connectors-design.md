@@ -251,10 +251,10 @@ later), `1` other failure.
 
 | Command | Behavior |
 |---|---|
-| `connectors custom add --file F [--input NAME=VALUE …] [--dry-run] [--unverified]` | `F` is one connector mapping with a `key` field (`-` = stdin; YAML or JSON). Validate; run a bash probe (fail → exit 2 unless `--unverified`); apply (§2); write/replace the entry in `connectors.custom.yaml`; add the key to `connectors.enabled`; store inputs. `--dry-run` returns the sections it would render and writes nothing. |
-| `connectors custom remove KEY` | Apply the removal; drop the entry, the enabled key, and the connector's inputs. |
+| `connectors custom add --file F [--input NAME=VALUE …] [--dry-run] [--unverified] [--no-wait]` | `F` is one connector mapping with a `key` field (`-` = stdin; YAML or JSON). Validate; run a bash probe (fail → exit 2 unless `--unverified`); apply (§2); write/replace the entry in `connectors.custom.yaml`; add the key to `connectors.enabled`; store inputs. `--dry-run` returns the sections it would render and writes nothing. |
+| `connectors custom remove KEY [--no-wait]` | Apply the removal; drop the entry, the enabled key, and the connector's inputs. |
 | `connectors custom validate --file F` | Validate a single definition without writing. |
-| `connectors custom list` | Definitions: key, display name, enabled, server, health key, preset, declared activities, plus any issues in the file. |
+| `connectors custom list` | One row per entry in the file, valid or not, sorted by key, plus the file's `issues`. Every row has `key`, `valid`, `enabled`, `display_name` and `definition` (the entry as written, made JSON-safe: unquoted dates become ISO strings). A valid row (`valid: true`) adds `server`, `health_key`, `preset` and `activities`. An invalid row (`valid: false`) has none of those four, its `display_name` is null unless the entry has a text one, and it adds its own `issues`; clients branch on `valid`. |
 | `connectors list --json` | The health roster (shipped + derived custom rows): key, display name, tier, `required_in_types`. This is what the app merges over its bundled snapshot. |
 | `connectors presets` | Preset names with their default text per activity (JSON). |
 

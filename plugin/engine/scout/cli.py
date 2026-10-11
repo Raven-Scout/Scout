@@ -614,7 +614,8 @@ def _register_connectors() -> None:
     def _emit(payload: dict, code: int = 0) -> None:
         import json as _json
 
-        typer.echo(_json.dumps(payload, indent=2))
+        # default=str: a value JSON cannot encode must never cost the one-JSON-object contract.
+        typer.echo(_json.dumps(payload, indent=2, default=str))
         raise typer.Exit(code=code)
 
     def _read_definition(file: str):

@@ -158,6 +158,8 @@ def first_binary(cmd: str) -> str | None:
         if base not in _WRAPPERS:
             return base
         idx += 1
+        if base == "command" and idx < len(tokens) and tokens[idx] in ("-v", "-V"):
+            return None  # `command -v gh` asks whether gh exists; it does not call it
         if base == "timeout" and idx < len(tokens) and _DURATION_RE.match(tokens[idx]):
             idx += 1
         elif base == "nice" and idx < len(tokens) and tokens[idx] == "-n":
@@ -330,16 +332,22 @@ def parse_connector(
     elif _has_markdown_heading(notes):
         issues.append(Issue(f"{base}.notes", _HEADING_MESSAGE))
 
-    declared_inputs = {n.lower() for n in needs}
+    # Exactly what custom_assembly substitutes: INPUT_<NAME.upper()>. Anything else
+    # (including a mixed-case spelling) would render literally, so it is rejected.
+    declared_inputs = {f"INPUT_{n.upper()}" for n in needs}
     seen_placeholders: set[str] = set()
     for s in _strings(body):
         for match in _INPUT_PLACEHOLDER_RE.finditer(s):
             placeholder = match.group(1)
-            name = placeholder[len("INPUT_") :].lower()
-            if name in declared_inputs or placeholder in seen_placeholders:
+            if placeholder in declared_inputs or placeholder in seen_placeholders:
                 continue
             seen_placeholders.add(placeholder)
-            msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
+            name = placeholder[len("INPUT_") :].lower()
+            if f"INPUT_{name.upper()}" in declared_inputs:
+                fixed = f"INPUT_{name.upper()}"
+                msg = f"uses {{{{{placeholder}}}}}; write it as {{{{{fixed}}}}} (placeholders are upper case)"
+            else:
+                msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
             issues.append(Issue(f"{base}.needs_user_input", msg))
 
     if issues or probe is None:
