@@ -177,6 +177,11 @@ publishes. That gap is usually minutes, and it's accepted.
     hand-pinned, so nothing needs bumping.
   - `EngineReleaseTests` asserts that the bundled manifest equals the app's
     version (D2).
+  - `release.sh` checks the built app's `engine-release.json` against the
+    version it is cutting. When the commit being built ships
+    `bundle-engine.sh`, a missing or mismatched one is fatal for every build,
+    rcs and dry runs included. Only an older commit without the bundler may
+    leave it out of an rc or a dry run.
 - **First launch:** onboarding runs in this order:
   - check Claude Code is installed and signed in;
   - install uv (pinned, checksum-verified) and check git;
