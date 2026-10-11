@@ -3,7 +3,9 @@ import SwiftUI
 /// A fixed-height row that toggles `expanded` on click, with an Ask Claude
 /// button on hover or keyboard focus. Not a `Button`, so the links, chips and
 /// fields inside the row keep their own clicks. Keyboard: Tab to the row,
-/// Space expands, Return asks Claude. VoiceOver gets both as named actions.
+/// Space expands, Return asks Claude — only while the row itself has focus,
+/// so a field inside it (the topic rename) still gets its spaces and Return.
+/// VoiceOver gets both as named actions.
 struct DisclosureRow<Content: View>: View {
     let height: CGFloat
     let label: String
@@ -37,10 +39,12 @@ struct DisclosureRow<Content: View>: View {
         .focused($focused)
         .focusEffectDisabled()
         .onKeyPress(.space) {
+            guard focused else { return .ignored }
             expanded.toggle()
             return .handled
         }
         .onKeyPress(.return) {
+            guard focused else { return .ignored }
             onAsk()
             return .handled
         }
