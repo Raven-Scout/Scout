@@ -12,6 +12,7 @@ import functools
 import json
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +32,12 @@ COMMAND_TIMEOUT_S = 30
 STATE_FILE = ".scout-state/health-notify.json"
 LOCK_FILE = ".scout-state/health-notify.lock"
 REMIND_AFTER = timedelta(hours=24)
+# At wake, launchd fires the missed heartbeat and schedule tick together, and the
+# tick's completion lands only at its end: a sweep that runs first sees a stalled
+# scheduler that isn't. These findings push only once present for GRACE.
+GRACE = timedelta(minutes=20)
+GRACED_PREFIXES = ("scheduler.stalled", "slot.stale:")
+TITLE_SUMMARY_MAX = 60
 LOCK_TIMEOUT_S = 10.0
 LOCK_RETRY_S = 0.2
 
@@ -39,11 +46,12 @@ ChannelResult = dict
 
 @dataclass(frozen=True)
 class Push:
-    finding_id: str  # or "recovered"
+    finding_id: str  # the first listed notifier key, or "recovered"
     kind: str  # "new" | "reminder" | "recovered" | "info"
     severity: str  # "red" | "green" | "yellow"
     title: str
     body: str
+    finding_ids: tuple[str, ...] = ()  # every notifier key this push lists; () for "recovered"
 
 
 def _result(channel: str, ok: bool, detail: str) -> ChannelResult:
@@ -65,10 +73,10 @@ def _wrapper_alert_age_s(vault: Path, now: datetime) -> float | None:
 
 
 def desktop_channel(push: Push, *, vault: Path, now: datetime, send: Callable | None = None) -> ChannelResult | None:
-    """Desktop notification; skipped when the wrapper already alerted about auth today."""
-    if push.finding_id == AUTH_FINDING_ID:
+    """Desktop notification; skipped when it is only about auth and the wrapper alerted today."""
+    if (push.finding_ids or (push.finding_id,)) == (AUTH_FINDING_ID,):
         age = _wrapper_alert_age_s(vault, now)
-        if age is not None and age < AUTH_ALERT_WINDOW_S:
+        if age is not None and 0 <= age < AUTH_ALERT_WINDOW_S:
             return None
     send = send or notify_desktop.send
     if send(push.title, push.body):
@@ -84,7 +92,7 @@ def telegram_channel(push: Push, *, send: Callable | None = None) -> ChannelResu
     send = send or notify_telegram.send
     tier = "action_required" if push.severity == "red" and push.kind in ("new", "reminder") else "info"
     try:
-        send(tier, f"{push.title}\n{push.body}")
+        send(tier, push.body)  # the body already says it all; the title is for desktop
     except ConfigError:
         return None
     except notify_telegram.DuplicateSendError:
@@ -210,55 +218,104 @@ def _elapsed_words(delta: timedelta) -> str:
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
-def _push_for(finding: health.Finding, kind: str, body: str) -> Push:
-    return Push(
-        finding_id=finding.id,
-        kind=kind,
-        severity="red",
-        title=f"Scout: {finding.summary[:60]}",
-        body=body,
-    )
+def _notify_key(finding_id: str) -> str:
+    """The state key for a finding: one per lane, so silent<->dark is one outage."""
+    for prefix in ("lane.silent:", "lane.dark:"):
+        if finding_id.startswith(prefix):
+            return "lane:" + finding_id.removeprefix(prefix)
+    return finding_id
+
+
+def _graced(finding_id: str) -> bool:
+    return finding_id.startswith(GRACED_PREFIXES)
+
+
+def _short(summary: str) -> str:
+    """``summary`` in at most TITLE_SUMMARY_MAX chars, cut at a word boundary with an ellipsis."""
+    if len(summary) <= TITLE_SUMMARY_MAX:
+        return summary
+    cut = summary[: TITLE_SUMMARY_MAX - 1]
+    head, sep, _ = cut.rpartition(" ")
+    return (head if sep and head else cut).rstrip(" ,;:") + "…"
+
+
+def _red_push(listed: list[tuple[str, health.Finding, str | None]], kind: str) -> Push:
+    """One push for every listed red: (key, finding, elapsed words when it is a reminder)."""
+    if len(listed) == 1:
+        _, f, elapsed = listed[0]
+        lead = f"Still failing after {elapsed}: " if elapsed else ""
+        title = f"Scout: {_short(f.summary)}"
+        body = f"{lead}{f.summary}\nFix: {f.fix}"
+    else:
+        title = f"Scout: {len(listed)} problems need attention"
+        body = "\n".join(
+            f"• {f'Still failing after {elapsed}: ' if elapsed else ''}{f.summary} — Fix: {f.fix}"
+            for _, f, elapsed in listed
+        )
+    keys = tuple(key for key, _, _ in listed)
+    return Push(finding_id=keys[0], kind=kind, severity="red", title=title, body=body, finding_ids=keys)
 
 
 def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], dict]:
-    """Decide which pushes the report earns, and the state that remembers them."""
+    """Decide which pushes the report earns, and the state that remembers them.
+
+    At most one red push per call (every red that is new, being retried, or due a
+    reminder, listed together) and at most one "recovered". State is per notifier
+    key. A graced red (see GRACE) that has not yet been present for GRACE is only
+    recorded, and does not count as red for the "recovered" bookkeeping.
+    """
     prior = state.get("findings")
     prior = prior if isinstance(prior, dict) else {}
     stamp = health.iso_z(now)
-    pushes: list[Push] = []
     findings: dict[str, dict] = {}
+    listed: list[tuple[str, health.Finding, str | None]] = []
+    any_new = False
+    announced = "green"
     for f in report.findings:
-        old = prior.get(f.id)
+        key = _notify_key(f.id)
+        if key in findings:
+            continue
+        old = prior.get(key)
         old = old if isinstance(old, dict) else {}
         first_seen = _parse_stamp(old.get("first_seen")) or now
         entry: dict = {"first_seen": health.iso_z(first_seen), "last_pushed": None, "pushes": 0}
-        if f.severity == "red":
-            last_pushed = _parse_stamp(old.get("last_pushed"))
-            count = old.get("pushes") if isinstance(old.get("pushes"), int) else 0
-            entry["last_pushed"] = old.get("last_pushed") if last_pushed else None
-            entry["pushes"] = count
-            if last_pushed is None:
-                pushes.append(_push_for(f, "new", f"{f.summary}\nFix: {f.fix}"))
-            elif now - last_pushed >= REMIND_AFTER:
-                elapsed = _elapsed_words(now - first_seen)
-                pushes.append(_push_for(f, "reminder", f"Still failing after {elapsed}: {f.summary}\nFix: {f.fix}"))
-            if pushes and pushes[-1].finding_id == f.id:
-                entry["last_pushed"] = stamp
-                entry["pushes"] = count + 1
-        findings[f.id] = entry
-    new_state: dict = {"findings": findings, "last_overall": report.severity}
+        findings[key] = entry
+        if f.severity == "yellow" and announced == "green":
+            announced = "yellow"
+        if f.severity != "red":
+            continue
+        last_pushed = _parse_stamp(old.get("last_pushed"))
+        count = old.get("pushes") if isinstance(old.get("pushes"), int) else 0
+        entry["last_pushed"] = old.get("last_pushed") if last_pushed else None
+        entry["pushes"] = count
+        if _graced(f.id) and now - first_seen < GRACE:
+            continue
+        announced = "red"
+        if last_pushed is None:
+            any_new = True
+            listed.append((key, f, None))
+        elif now - last_pushed >= REMIND_AFTER:
+            listed.append((key, f, _elapsed_words(now - (f.since or first_seen))))
+    pushes: list[Push] = []
+    if listed:
+        listed.sort(key=lambda item: item[0] != AUTH_FINDING_ID)  # stable: report order otherwise
+        pushes.append(_red_push(listed, "new" if any_new else "reminder"))
+        for key, _, _ in listed:
+            findings[key]["last_pushed"] = stamp
+            findings[key]["pushes"] += 1
+    new_state: dict = {"findings": findings, "last_overall": announced}
     if "last_recovered" in state:
         new_state["last_recovered"] = state["last_recovered"]
-    if state.get("last_overall") == "red" and report.severity != "red":
+    if state.get("last_overall") == "red" and announced != "red":
         warnings = sum(1 for f in report.findings if f.severity == "yellow")
         body = "Scout runs are healthy again."
-        if report.severity == "yellow":
+        if warnings:
             body = f"Scout runs are healthy again; remaining warnings: {warnings}"
         pushes.append(
             Push(
                 finding_id="recovered",
                 kind="recovered",
-                severity=report.severity,
+                severity=announced,
                 title="Scout: runs recovered",
                 body=body,
             )
@@ -269,7 +326,7 @@ def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], 
 def _acquire_lock(vault: Path, *, timeout: float, sleep: Callable[[float], None]):
     """Take the exclusive advisory lock, retrying up to ``timeout`` s; None if it stays held."""
     path = vault / LOCK_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(exist_ok=True)  # the state dir only, never the vault itself
     handle = path.open("a")
     deadline = time.monotonic() + timeout
     while True:
@@ -298,6 +355,8 @@ def notify(
     both announce the same failure. Never raises: pushes are best-effort.
     """
     try:
+        if not vault.is_dir():
+            return []  # nothing to evaluate, and nowhere to keep state: create nothing
         lock = _acquire_lock(vault, timeout=lock_timeout, sleep=sleep)
         if lock is None:
             return []
@@ -313,16 +372,22 @@ def notify(
                 if push.kind == "recovered":
                     state["last_recovered"] = results
                     continue
-                entry = state["findings"][push.finding_id]
-                entry["last_results"] = results
-                if not any(r.get("ok") for r in results):
-                    # Nothing was delivered: restore the prior stamp so the next call retries.
-                    prior_findings = prior.get("findings")
-                    old = prior_findings.get(push.finding_id) if isinstance(prior_findings, dict) else None
-                    old = old if isinstance(old, dict) else {}
-                    entry["last_pushed"] = old.get("last_pushed")
-                    entry["pushes"] = old["pushes"] if isinstance(old.get("pushes"), int) else 0
+                delivered = any(r.get("ok") for r in results)
+                prior_findings = prior.get("findings")
+                prior_findings = prior_findings if isinstance(prior_findings, dict) else {}
+                for key in push.finding_ids:
+                    entry = state["findings"][key]
+                    entry["last_results"] = results
+                    if not delivered:
+                        # Nothing was delivered: restore the prior stamp so the next call retries.
+                        old = prior_findings.get(key)
+                        old = old if isinstance(old, dict) else {}
+                        entry["last_pushed"] = old.get("last_pushed")
+                        entry["pushes"] = old["pushes"] if isinstance(old.get("pushes"), int) else 0
             save_state(vault, state)
             return sent
-    except Exception:  # noqa: BLE001 - a notifier fault must never fail the run that called it
+    except Exception as e:  # noqa: BLE001 - a notifier fault must never fail the run that called it
+        # Only the evaluate / plan / state path raises here: channels are caught in
+        # fan_out and record class names only, so no channel text (a token) lands here.
+        print(f"health notify: internal error {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
         return []

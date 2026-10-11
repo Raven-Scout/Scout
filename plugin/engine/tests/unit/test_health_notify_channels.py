@@ -17,8 +17,11 @@ from scout.scripts import notify_telegram
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
 
 
-def _push(finding="runs.failing", kind="new", severity="red"):
-    return hn.Push(finding_id=finding, kind=kind, severity=severity, title="Title", body="Body")
+def _push(finding="runs.failing", kind="new", severity="red", ids=None):
+    finding_ids = ids if ids is not None else (() if finding == "recovered" else (finding,))
+    return hn.Push(
+        finding_id=finding, kind=kind, severity=severity, title="Title", body="Body", finding_ids=finding_ids
+    )
 
 
 # ----- desktop ----------------------------------------------------------
@@ -66,6 +69,17 @@ def test_desktop_marker_garbage_falls_back_to_mtime(tmp_path):
     assert hn.desktop_channel(_push("auth.expired"), vault=tmp_path, now=NOW, send=lambda t, b: True)["ok"]
 
 
+def test_desktop_future_dated_marker_does_not_suppress(tmp_path):
+    _marker(tmp_path, str(int(NOW.timestamp()) + 3600))
+    assert hn.desktop_channel(_push("auth.expired"), vault=tmp_path, now=NOW, send=lambda t, b: True)["ok"]
+
+
+def test_desktop_marker_skips_only_a_push_listing_auth_alone(tmp_path):
+    _marker(tmp_path, str(int(NOW.timestamp()) - 3600))
+    both = _push("auth.expired", ids=("auth.expired", "lane:dreaming"))
+    assert hn.desktop_channel(both, vault=tmp_path, now=NOW, send=lambda t, b: True)["ok"]
+
+
 def test_desktop_auth_without_marker_sends(tmp_path):
     assert hn.desktop_channel(_push("auth.expired"), vault=tmp_path, now=NOW, send=lambda t, b: True)["ok"]
 
@@ -88,7 +102,7 @@ def test_desktop_default_send_resolves_late(tmp_path, monkeypatch):
 def test_telegram_red_new_is_action_required():
     calls = []
     res = hn.telegram_channel(_push(), send=lambda tier, body: calls.append((tier, body)))
-    assert calls == [("action_required", "Title\nBody")]
+    assert calls == [("action_required", "Body")]  # the title is for desktop; Telegram gets the body once
     assert res == {"channel": "telegram", "ok": True, "detail": "sent"}
 
 

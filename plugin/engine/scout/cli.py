@@ -1682,7 +1682,7 @@ def _register_health() -> None:
         sent = _hn.notify(vault)
         for push, results in sent:
             ok = ",".join(r["channel"] for r in results if r.get("ok")) or "none"
-            typer.echo(f"pushed {push.kind} {push.finding_id}: {ok}")
+            typer.echo(f"pushed {push.kind} {','.join(push.finding_ids) or push.finding_id}: {ok}")
         if not sent and not quiet:
             typer.echo("nothing to push")
 

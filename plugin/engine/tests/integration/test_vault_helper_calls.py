@@ -9,7 +9,7 @@ a helper script only that vault has:
   - ``hooks/kb-pre-filter.sh`` caches the git-truth staleness ranking
     (``scripts/vault-freshness.py``) before the session starts;
   - ``scripts/heartbeat.sh`` runs a run-health sweep
-    (``scoutctl health notify``) once a day.
+    (``scoutctl health notify``) on every tick.
 
 The plugin now ships these helpers (see test_shipped_helpers_install.py), but
 every call stays guarded: a vault without the helper, or with one that fails,
@@ -233,7 +233,7 @@ def test_kb_pre_filter_reports_a_failing_ranking_and_drops_its_stale_cache(vault
     assert not stale.exists()
 
 
-# ---------- heartbeat.sh: once-a-day run-health sweep ----------
+# ---------- heartbeat.sh: a run-health sweep on every tick ----------
 
 LIVENESS_STUB = """#!/usr/bin/env python3
 import os, sys
@@ -249,7 +249,9 @@ def _heartbeat(vault: Path) -> tuple[Path, Path]:
     return beat, calls
 
 
-def test_heartbeat_sweeps_run_health_once_a_day(vault: Path) -> None:
+def test_heartbeat_sweeps_run_health_on_every_tick(vault: Path) -> None:
+    """Every tick, not once a day: a wake-graced finding needs a second look to be
+    confirmed, and the notifier's own state keeps a repeat sweep from re-pushing."""
     beat, scoutctl_calls = _heartbeat(vault)
     _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
 
@@ -261,23 +263,30 @@ def test_heartbeat_sweeps_run_health_once_a_day(vault: Path) -> None:
     assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == [
         "health notify --quiet",
         "heartbeat run",
+        "health notify --quiet",
         "heartbeat run",
     ]
-    assert list((vault / ".scout-cache").glob("health-sweep-*.done"))
+    assert not list((vault / ".scout-cache").glob("health-sweep-*.done")), "no daily marker any more"
     assert not (vault / "liveness.calls").exists(), "the lane script is no longer called"
     assert not (vault / ".scout-logs" / "lane-liveness.log").exists()
 
 
 def test_heartbeat_prunes_old_sweep_markers(vault: Path) -> None:
     beat, _ = _heartbeat(vault)
-    old = vault / ".scout-cache" / "health-sweep-2020-01-01.done"
-    old.write_text("", encoding="utf-8")
     long_ago = time.time() - 30 * 86400
-    os.utime(old, (long_ago, long_ago))
+    old = []
+    for name in ("health-sweep-2020-01-01.done", "lane-liveness-2020-01-01.done"):
+        marker = vault / ".scout-cache" / name
+        marker.write_text("", encoding="utf-8")
+        os.utime(marker, (long_ago, long_ago))
+        old.append(marker)
+    recent = vault / ".scout-cache" / "lane-liveness-2026-10-10.done"
+    recent.write_text("", encoding="utf-8")
 
     _run(beat, vault)
 
-    assert not old.exists()
+    assert not [m for m in old if m.exists()]
+    assert recent.exists()
 
 
 def test_heartbeat_dry_run_skips_the_sweep(vault: Path) -> None:

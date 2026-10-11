@@ -143,13 +143,14 @@ def test_a_dark_lane_is_red_and_says_how_long(vault, schedule):
     assert set(found) == {"lane.dark:dreaming"}
 
 
-def test_a_lane_that_fires_but_commits_nothing_is_yellow(vault, schedule):
+def test_a_lane_that_fires_but_commits_nothing_is_red(vault, schedule):
+    """Past its dark budget yet still firing: a broken lane, as the script's exit 3 said."""
     commits = [c for c in _healthy() if not c[1].startswith("dreaming")] + [(ago(30), "dreaming [22:00]: done")]
 
     found = _lanes(schedule, vault, commits, fires={"dreaming-nightly": ago(0.4)})
 
     f = found["lane.silent:dreaming"]
-    assert f.severity == "yellow"
+    assert f.severity == "red"
     assert f.summary == "dreaming has produced no commits in 30 days"
     assert "firing" in f.fix and "budget" in f.fix
 
@@ -228,6 +229,29 @@ def test_an_unscheduled_run_of_a_lane_counts_for_that_lane(vault, schedule):
     rows = [_row("dreaming-manual", days_ago=0.5), _row("dreaming-nightly", days_ago=12)]
 
     assert _lanes(schedule, vault, commits, rows=rows, fires={"dreaming-nightly": ago(5)}) == {}
+
+
+def test_a_row_without_a_real_start_opens_no_window(vault, schedule):
+    """run-outcome.sh writes started_at 0 when it can't read the start; such a row
+    must not span 1970..now and credit every unnamed commit to its lane."""
+    commits = [c for c in _healthy() if not c[1].startswith("consolidation")] + [(ago(1), "Update action items")]
+    sentinel = health.OutcomeRow(
+        slot="evening-consolidation",
+        mode="evening-consolidation",
+        started_at=datetime.fromtimestamp(0, UTC),
+        finished_at=ago(0.5),
+        exit_code=0,
+        failure_class="",
+        outcome="ok",
+        log=None,
+        commits_in_window=None,
+        newest_commit=None,
+    )
+    rows = [sentinel, _row("evening-consolidation", days_ago=12)]
+
+    found = _lanes(schedule, vault, commits, rows=rows, fires={"evening-consolidation": ago(5)})
+
+    assert set(found) == {"lane.dark:consolidation"}
 
 
 def test_a_run_of_no_known_lane_credits_nobody(vault, schedule):

@@ -738,6 +738,13 @@ def lane_findings(
     output rather than last-fire (which advances even when a run dies at the
     door). With no commit history to read (``commits`` empty, or git absent when
     ``commits`` is None) nothing can be judged, so no lane is reported.
+
+    Verdicts, as the script's: OK and DEGRADED (inside the dark budget) and NO DATA
+    YET raise nothing; DARK is ``lane.dark:<type>``, red; FIRING-BUT-SILENT (past
+    the dark budget, yet fired within ``RECENT_FIRE_DAYS``) is ``lane.silent:<type>``,
+    also red: a broken lane that still fires, which the script exited 3 on and
+    pushed. Both ids share one notifier key (``lane:<type>``), so a lane flapping
+    between them is one outage.
     """
     if schedule is None:
         return []
@@ -763,7 +770,10 @@ def lane_findings(
     for row in rows:
         lane = lane_of_slot(row.slot)
         if lane:
-            windows[lane].append((row.started_at, row.finished_at))
+            # run-outcome.sh records started_at 0 for a run whose start it
+            # couldn't read; that row's window would span 1970..now.
+            if row.started_at.timestamp() >= _MIN_SANE_EPOCH:
+                windows[lane].append((row.started_at, row.finished_at))
             if row.log:
                 ledger_logs[lane].append(row.log)
 
@@ -809,7 +819,7 @@ def lane_findings(
         findings.append(
             Finding(
                 id=f"lane.{'silent' if silent else 'dark'}:{lane}",
-                severity="yellow" if silent else "red",
+                severity="red",
                 since=commit_dt,
                 summary=summary,
                 fix=_LANE_SILENT_FIX if silent else _LANE_DARK_FIX,
