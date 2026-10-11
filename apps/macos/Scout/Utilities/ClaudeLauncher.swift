@@ -126,15 +126,18 @@ enum ClaudeLauncher {
     }
 
     /// Build the prompt text for a task — subject, plus body, recent
-    /// comments, and any deep links.
-    static func prompt(for task: ActionTask) -> String {
-        prompt(for: task, format: .fullContext)
+    /// comments, and any deep links. `contextNote` is the body of the item's
+    /// `action-items/context/<TAG>.md` note, loaded by the caller at the
+    /// moment of the action (see `TaskContextNote`).
+    static func prompt(for task: ActionTask, contextNote: String? = nil) -> String {
+        prompt(for: task, format: .fullContext, contextNote: contextNote)
     }
 
-    static func prompt(for task: ActionTask, format: CopyFormat) -> String {
+    static func prompt(for task: ActionTask, format: CopyFormat, contextNote: String? = nil) -> String {
         switch format {
         case .fullContext:
-            return "Help me make progress on this action item:\n\n" + fullContextBody(for: task)
+            return "Help me make progress on this action item:\n\n"
+                + fullContextBody(for: task, contextNote: contextNote)
         case .concise:
             return conciseBody(for: task)
         case .markdownChecklist:
@@ -142,14 +145,18 @@ enum ClaudeLauncher {
         }
     }
 
-    static func prompt(for tasks: [ActionTask], format: CopyFormat) -> String {
+    static func prompt(
+        for tasks: [ActionTask], format: CopyFormat, contextNotes: [UUID: String] = [:]
+    ) -> String {
         guard let first = tasks.first else { return "" }
-        guard tasks.count > 1 else { return prompt(for: first, format: format) }
+        guard tasks.count > 1 else {
+            return prompt(for: first, format: format, contextNote: contextNotes[first.id])
+        }
 
         switch format {
         case .fullContext:
             let items = tasks.enumerated().map { index, task in
-                "## \(index + 1). \(fullContextBody(for: task))"
+                "## \(index + 1). \(fullContextBody(for: task, contextNote: contextNotes[task.id]))"
             }
             return "Help me make progress on these \(tasks.count) action items:\n\n"
                 + items.joined(separator: "\n\n---\n\n")
@@ -173,13 +180,16 @@ enum ClaudeLauncher {
         task.done ? "\(task.plainSubject) (completed)" : task.plainSubject
     }
 
-    private static func fullContextBody(for task: ActionTask) -> String {
+    private static func fullContextBody(for task: ActionTask, contextNote: String?) -> String {
         var out = subjectLine(for: task)
         if !task.body.isEmpty {
             out += "\n\n\(task.body)"
         }
         if !task.details.isEmpty {
             out += "\n\nContext:\n" + detailLines(task.details).joined(separator: "\n")
+        }
+        if let note = contextNote?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            out += "\n\nContext note:\n\(note)"
         }
         if !task.comments.isEmpty {
             let block = task.comments
@@ -266,7 +276,8 @@ enum ClaudeLauncher {
     /// macOS, even though they aren't in the AppleScript Language Guide. To
     /// embed a literal newline/tab, use AppleScript string concatenation
     /// instead — those escapes are not defined for AppleScript strings.
-    static func appleScriptEscape(_ s: String) -> String {
+    /// `nonisolated`: pure string work, also called by `TerminalHandoff`.
+    nonisolated static func appleScriptEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
     }
@@ -366,7 +377,7 @@ enum ClaudeLauncher {
     /// Common install locations for the `claude` CLI. Probed in order so
     /// Anthropic's `~/.local/bin` installer default wins over a Homebrew
     /// path that might be stale.
-    private static let claudePaths: [String] = [
+    private nonisolated static let claudePaths: [String] = [
         (NSString(string: "~/.local/bin/claude") as NSString).expandingTildeInPath,
         "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude",
@@ -379,7 +390,14 @@ enum ClaudeLauncher {
     ///   "not found" error instead of being masked by the probe fallback).
     /// - If `override` is empty, probe well-known locations, then ask the
     ///   user's login shell (picks up mise/asdf/nvm-style installs).
-    static func resolveClaudePath(override: String) -> String? {
+    ///
+    /// `nonisolated`: touches only `FileManager`/`ProcessInfo`/`Process`/
+    /// `Pipe`, never main-actor state, so it's safe to call off the main
+    /// thread — PrerequisiteChecker's default resolver does exactly that via
+    /// `Task.detached`, since the login-shell spawn below can block for the
+    /// length of a full shell startup and must never do that on the main
+    /// thread (e.g. a prerequisites screen polling every few seconds).
+    nonisolated static func resolveClaudePath(override: String) -> String? {
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             return FileManager.default.isExecutableFile(atPath: trimmed) ? trimmed : nil
@@ -601,7 +619,8 @@ enum ClaudeLauncher {
 
     /// Run an AppleScript source string. Surfaces compile and execution errors
     /// (including Automation-permission denial) as `terminalLaunchFailed`.
-    private static func runAppleScript(_ source: String) throws {
+    /// Internal (not private) so `TerminalHandoff.run` reuses it.
+    static func runAppleScript(_ source: String) throws {
         guard let script = NSAppleScript(source: source) else {
             throw LaunchError.terminalLaunchFailed("Could not compile the launch AppleScript.")
         }

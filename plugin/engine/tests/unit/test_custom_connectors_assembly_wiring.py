@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from scout import custom_connectors as cc
@@ -19,6 +21,14 @@ SUITE = {
     "probe": "mcp__example_suite__list_folders",
     "preset": "mail",
     "inbound": {"tools": ["mcp__example_suite__search_messages"]},
+}
+
+LOOKUP = {
+    "display_name": "Mail suite",
+    "server": "example_suite",
+    "probe": "mcp__example_suite__list_folders",
+    "preset": "mail",
+    "lookup": {"tools": ["mcp__example_suite__search_messages"]},
 }
 
 
@@ -99,11 +109,34 @@ def test_doctor_warns_on_custom_file_issues(tmp_path: Path):
     assert any(cc.CUSTOM_FILE in w and "connectors.broken" in w for w in report.warnings)
 
 
+def test_doctor_warns_on_a_stored_input_that_would_break_skill_md(tmp_path: Path):
+    """#344: a hand-edited connectors.inputs value is reported like an invalid entry."""
+    vault = tmp_path / "Scout"
+    tix = {
+        "display_name": "Tickets",
+        "probe": {"bash": "tix whoami"},
+        "needs_user_input": ["team"],
+        "inbound": {"tools": [{"bash": "tix list --team {{INPUT_TEAM}}"}], "focus": "Open tickets."},
+    }
+    cfg = replace(_cfg(vault, {"tix"}), connector_inputs={"tix__team": "ops\n# Injected"})
+    install(cfg)
+    cc.write(vault, {"tix": tix})
+    report = run_doctor(vault=vault, check_jobs=False)
+    hits = [w for w in report.warnings if "connectors.inputs.tix__team" in w]
+    assert len(hits) == 2 and all("skipped until fixed" in w for w in hits)
+    assert not any("Injected" in w for w in report.warnings)
+    assert "Tickets Inbound Scan" not in _assemble(cfg, "SKILL")
+    assert "Tickets Inbound Scan" in _assemble(replace(cfg, connector_inputs={"tix__team": "ops"}), "SKILL")
+
+
 def test_one_malformed_entry_leaves_the_valid_one_working_everywhere(tmp_path: Path):
     """F1: `preset: [mail]` on one entry raised TypeError (unhashable) out of the
     parser and took down assembly, the roster, the probe registry and doctor."""
     vault = tmp_path / "Scout"
-    install(_cfg(vault, set()))
+    # suite_mail must be in the persisted scout-config.yaml's connectors.enabled for
+    # load_registry/resolve_registry (which read it from disk) to surface its row;
+    # bad_one need not be — it never parses into a CustomConnector either way.
+    install(_cfg(vault, {"suite_mail"}))
     cc.write(vault, {"bad_one": {**SUITE, "preset": ["mail"]}, "suite_mail": SUITE})
 
     assert "## Mail suite Inbound Scan" in _assemble(_cfg(vault, {"suite_mail", "bad_one"}), "SKILL")
@@ -127,3 +160,41 @@ def test_custom_file_warnings_print_once_per_install(tmp_path: Path, capsys):
     ]
     assert warning_lines
     assert len(warning_lines) == len(set(warning_lines))
+
+
+def test_research_places_custom_lookups_before_deep_research(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": LOOKUP})
+    research = _assemble(_cfg(tmp_path, {"suite_mail"}), "RESEARCH")
+    custom_at = research.index("## Mail suite Lookup")
+    assert custom_at < research.index("# PHASE 2: DEEP RESEARCH")
+    # commit-notify sorts first alphabetically, so it stays above the lookups.
+    assert custom_at > research.index("# PHASE 4: COMMIT & NOTIFY")
+    for later in ("# PHASE 3: KNOWLEDGE INTEGRATION", "# PHASE 1: SELECT RESEARCH TARGETS"):
+        assert custom_at < research.index(later)
+
+
+def test_research_with_no_enabled_custom_connector_is_unchanged(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": LOOKUP})
+    cfg = _cfg(tmp_path, {"slack"})
+    # suite_mail is not enabled, so nothing is inserted: byte-identical to no custom set at all.
+    assert _assemble(cfg, "RESEARCH") == _assemble(cfg, "RESEARCH", custom={})
+
+
+def test_skill_still_appends_custom_sections_last_and_dreaming_is_untouched(tmp_path: Path):
+    cc.write(tmp_path, {"suite_mail": {**SUITE, **LOOKUP}})
+    cfg = _cfg(tmp_path, {"suite_mail"})
+    plain = _assemble(cfg, "SKILL", custom={})
+    assert _assemble(cfg, "SKILL").startswith(plain + "\n\n")
+    # Dreaming renders no custom sections, so it is byte-identical to the no-custom assembly.
+    assert _assemble(cfg, "DREAMING") == _assemble(cfg, "DREAMING", custom={})
+
+
+def test_research_without_a_deep_research_section_appends(tmp_path: Path):
+    plugin = tmp_path / "plugin"
+    shutil.copytree(PLUGIN / "phases", plugin / "phases")
+    (plugin / "phases" / "research" / "deep-research.md").unlink()
+    (tmp_path / "vault").mkdir()
+    cc.write(tmp_path / "vault", {"suite_mail": LOOKUP})
+    cfg = replace(_cfg(tmp_path / "vault", {"suite_mail"}), plugin_root=plugin)
+    plain = _assemble(cfg, "RESEARCH", custom={})
+    assert _assemble(cfg, "RESEARCH").startswith(plain + "\n\n")

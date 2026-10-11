@@ -20,6 +20,7 @@ SUITE = {
     "preset": "mail",
     "inbound": {"tools": ["mcp__example_suite__search_messages"]},
 }
+SUITE_WITH_LOOKUP = {**SUITE, "lookup": {"tools": ["mcp__example_suite__search_messages"]}}
 TICKETS = {
     "key": "tickets",
     "display_name": "Tickets",
@@ -115,6 +116,75 @@ def test_credential_shaped_input_is_invalid_and_writes_nothing(vault: Path, valu
     assert "tickets__team" not in (_config(vault)["connectors"].get("inputs") or {})
 
 
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [("ops\nmore", "must be a single line"), ("# Ops", "must not contain markdown headings")],
+)
+def test_multi_line_or_heading_input_is_invalid_and_writes_nothing(vault: Path, value: str, problem: str):
+    """#344: --input values are substituted into SKILL.md; they must not add lines or headings."""
+    skill_before = (vault / "SKILL.md").read_text()
+    for dry_run in (True, False):
+        out = _add(vault, TICKETS, inputs={"team": value}, probe_runner=lambda cmd: 0, dry_run=dry_run)
+        assert (out.status, out.exit_code) == ("invalid", 2)
+        assert [(i.path, problem in i.message) for i in out.issues] == [("connectors.tickets.needs_user_input", True)]
+        assert value not in out.issues[0].message
+    assert (vault / "SKILL.md").read_text() == skill_before
+    assert not (vault / cc.CUSTOM_FILE).exists()
+
+
+def test_input_value_issues_are_reported_even_when_the_definition_is_invalid(vault: Path):
+    out = _add(vault, {**TICKETS, "display_name": ""}, inputs={"team": "a\nb"})
+    assert out.status == "invalid"
+    assert any(i.message == "the value for 'team' must be a single line" for i in out.issues)
+
+
+def test_validate_checks_inputs_the_same_way_add_does():
+    assert ops.validate(dict(TICKETS), plugin_root=PLUGIN, inputs={"team": "ops"}).status == "valid"
+    out = ops.validate(dict(TICKETS), plugin_root=PLUGIN, inputs={"team": "# Ops", "colour": "x"})
+    assert (out.status, out.exit_code) == ("invalid", 2)
+    assert [i.message for i in out.issues] == [
+        "'colour' is not an input this connector declares",
+        "the value for 'team' must not contain markdown headings; they would break the brain file's structure",
+    ]
+
+
+def test_add_multi_line_bash_tool_renders_fenced_in_skill(vault: Path):
+    """#344: shell comments in a multi-line command stay code, not headings."""
+    tools = [{"bash": "# open tickets\ntix list --team {{INPUT_TEAM}}"}]
+    multi = {**TICKETS, "inbound": {"tools": tools, "focus": "Open tickets."}}
+    out = _add(vault, multi, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    assert out.status == "applied"
+    skill = (vault / "SKILL.md").read_text()
+    assert "  ```bash\n  # open tickets\n  tix list --team ops\n  ```" in skill
+    assert "\n# open tickets" not in skill
+
+
+def test_add_without_input_rejects_a_bad_stored_value_instead_of_reporting_success(vault: Path):
+    """Review of #344: assembly would skip the connector, so add/dry-run must not say it is live."""
+    _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    cfg_path = vault / "scout-config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("tickets__team: ops", "tickets__team: '# Ops'"))
+    for dry_run in (True, False):
+        out = _add(vault, TICKETS, probe_runner=lambda cmd: 0, dry_run=dry_run)
+        assert (out.status, out.exit_code) == ("invalid", 2)
+        assert [i.path for i in out.issues] == ["connectors.tickets.needs_user_input"]
+        assert "connectors.inputs.tickets__team" in out.issues[0].message
+    # A good --input overwrites the bad stored value. The hand edit already moved the
+    # assembly off its snapshot, so this lands at the next upgrade (drift → deferred).
+    out = _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    assert (out.status, out.exit_code) == ("deferred", 3)
+    assert _config(vault)["connectors"]["inputs"]["tickets__team"] == "ops"
+
+
+def test_list_custom_reports_stored_input_issues(vault: Path):
+    _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
+    cfg_path = vault / "scout-config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("tickets__team: ops", "tickets__team: '# Ops'"))
+    listed = ops.list_custom(vault, plugin_root=PLUGIN)
+    assert [i["path"] for i in listed["issues"]] == ["connectors.tickets.needs_user_input"]
+    assert "connectors.inputs.tickets__team" in listed["issues"][0]["message"]
+
+
 def test_unknown_input_name_is_invalid(vault: Path):
     out = _add(vault, TICKETS, inputs={"team": "ops", "colour": "x"}, probe_runner=lambda cmd: 0)
     assert out.status == "invalid"
@@ -192,14 +262,59 @@ def test_add_without_vault_is_an_error(tmp_path: Path):
     )
 
 
+def _fake_acquire_busy(calls: list[int]):
+    def fake(lock: Path, *, timeout_s: int = 300, poll_s: int = 10) -> None:
+        calls.append(timeout_s)
+        raise ops.LockBusyError(lock, 12345)
+
+    return fake
+
+
+def test_add_no_wait_is_busy_tries_once_and_writes_nothing(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = _add(vault, SUITE, wait=False)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [0]
+    assert not (vault / cc.CUSTOM_FILE).exists()
+    assert "suite_mail" not in _config(vault)["connectors"]["enabled"]
+
+
+def test_add_wait_is_busy_after_default_timeout(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = _add(vault, SUITE, wait=True)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [300]
+
+
+def test_remove_no_wait_is_busy_tries_once(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    _add(vault, SUITE)
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0", wait=False)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [0]
+
+
+def test_remove_wait_is_busy_after_default_timeout(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    _add(vault, SUITE)
+    calls: list[int] = []
+    monkeypatch.setattr(ops, "acquire_lock_with_wait", _fake_acquire_busy(calls))
+    out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0", wait=True)
+    assert (out.status, out.exit_code) == ("busy", 4)
+    assert calls == [300]
+
+
 def test_list_custom_reports_definitions_and_issues(vault: Path):
     _add(vault, SUITE)
     raw = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
     raw["broken"] = {"display_name": "B"}
     cc.write(vault, raw)
     listing = ops.list_custom(vault, plugin_root=PLUGIN)
-    row = listing["connectors"][0]
-    assert row == {
+    assert [r["key"] for r in listing["connectors"]] == ["broken", "suite_mail"]
+    valid_row = listing["connectors"][1]
+    assert valid_row == {
         "key": "suite_mail",
         "display_name": "Mail suite",
         "enabled": True,
@@ -207,8 +322,47 @@ def test_list_custom_reports_definitions_and_issues(vault: Path):
         "health_key": "mcp:example_suite",
         "preset": "mail",
         "activities": ["inbound"],
+        "valid": True,
+        "definition": raw["suite_mail"],
     }
     assert any(i["path"].startswith("connectors.broken") for i in listing["issues"])
+
+
+def test_list_custom_includes_invalid_rows(vault: Path):
+    """A broken entry survives in CustomLoad.raw but not .connectors; it must still
+    appear in the listing as an invalid row carrying its own issues and raw definition."""
+    _add(vault, SUITE)
+    raw = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
+    raw["broken"] = {"display_name": "B"}  # no probe, no activity: several issues
+    cc.write(vault, raw)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    invalid_row = next(r for r in listing["connectors"] if r["key"] == "broken")
+    assert invalid_row["valid"] is False
+    assert invalid_row["enabled"] is False
+    assert invalid_row["display_name"] == "B"
+    assert invalid_row["definition"] == {"display_name": "B"}
+    assert invalid_row["issues"]
+    assert all(i["path"].startswith("connectors.broken") for i in invalid_row["issues"])
+    # every one of this key's issues also shows up at the top level
+    top_level_broken = [i for i in listing["issues"] if i["path"].startswith("connectors.broken")]
+    assert len(top_level_broken) == len(invalid_row["issues"])
+
+
+def test_list_custom_invalid_row_display_name_is_null_when_absent_or_not_a_string(vault: Path):
+    raw = {"no_name": {"probe": "mcp__example_suite__whoami"}, "bad_name": {"display_name": 5}}
+    cc.write(vault, raw)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    by_key = {r["key"]: r for r in listing["connectors"]}
+    assert by_key["no_name"]["display_name"] is None
+    assert by_key["bad_name"]["display_name"] is None
+
+
+def test_list_custom_file_level_issue_yields_no_rows(vault: Path):
+    (vault / cc.CUSTOM_FILE).write_text("not: [valid\n")
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    assert listing["connectors"] == []
+    assert len(listing["issues"]) == 1
+    assert listing["issues"][0]["path"] == cc.CUSTOM_FILE
 
 
 def test_presets_json_lists_shipped_presets():
@@ -395,7 +549,7 @@ def test_validate_a_definition_that_is_not_a_mapping(definition: object):
 
 
 @pytest.mark.parametrize("op", ["add", "remove"])
-def test_a_running_session_holding_the_lock_is_an_error_and_writes_nothing(
+def test_a_running_session_holding_the_lock_is_busy_and_writes_nothing(
     vault: Path, monkeypatch: pytest.MonkeyPatch, op: str
 ):
     if op == "remove":
@@ -410,7 +564,7 @@ def test_a_running_session_holding_the_lock_is_an_error_and_writes_nothing(
         out = _add(vault, SUITE)
     else:
         out = ops.remove(vault, "suite_mail", plugin_root=PLUGIN, plugin_version="0.0.0")
-    assert (out.status, out.exit_code) == ("error", 1)
+    assert (out.status, out.exit_code) == ("busy", 4)
     assert out.message == "A Scout session is running; try again when it finishes."
     custom = vault / cc.CUSTOM_FILE
     assert (custom.read_text() if custom.exists() else None) == custom_before
@@ -447,3 +601,88 @@ def test_list_custom_without_a_scout_config_lists_everything_disabled(tmp_path: 
     listing = ops.list_custom(tmp_path, plugin_root=PLUGIN)
     assert [(c["key"], c["enabled"]) for c in listing["connectors"]] == [("tickets", False)]
     assert listing["issues"] == []
+
+
+def test_drift_message_names_the_drifted_file(vault: Path):
+    research = vault / ".scout-state" / "last-assembled" / "RESEARCH.md"
+    research.write_text(research.read_text() + "\nplugin changed underneath\n")
+    out = _add(vault, SUITE_WITH_LOOKUP)
+    assert (out.status, out.waiting) == ("deferred", [])
+    assert out.message.startswith("Saved. RESEARCH.md was last assembled from a different plugin version")
+
+
+def test_drift_message_pluralizes_for_several_files(vault: Path):
+    for name in ("SKILL.md", "RESEARCH.md"):
+        snap = vault / ".scout-state" / "last-assembled" / name
+        snap.write_text(snap.read_text() + "\nplugin changed underneath\n")
+    out = _add(vault, SUITE_WITH_LOOKUP)
+    assert out.message.startswith("Saved. SKILL.md, RESEARCH.md were last assembled from a different plugin version")
+
+
+# --- final review: `list` must stay JSON-safe on any YAML scalar ----------------------
+
+_DATED = (
+    "schema_version: 1\nconnectors:\n  broken:\n    display_name: B\n"
+    "    notes: 2026-10-01\n    stamp: 2026-10-01 12:30:00\n"
+)
+
+
+def test_list_custom_invalid_row_with_unquoted_date_is_json_safe(vault: Path):
+    import json
+
+    (vault / cc.CUSTOM_FILE).write_text(_DATED)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    row = next(r for r in listing["connectors"] if r["key"] == "broken")
+    assert row["valid"] is False
+    assert row["definition"]["notes"] == "2026-10-01"
+    assert row["definition"]["stamp"] == "2026-10-01T12:30:00"
+    json.dumps(listing)  # must not raise
+
+
+def test_list_custom_valid_row_with_unquoted_date_is_json_safe(vault: Path, monkeypatch: pytest.MonkeyPatch):
+    import datetime
+    import json
+
+    _add(vault, SUITE)
+    real_load = cc.load
+
+    def load_with_date(*a, **kw):
+        current = real_load(*a, **kw)
+        current.raw["suite_mail"] = {**current.raw["suite_mail"], "when": datetime.date(2026, 10, 1)}
+        return current
+
+    monkeypatch.setattr(cc, "load", load_with_date)
+    listing = ops.list_custom(vault, plugin_root=PLUGIN)
+    row = listing["connectors"][0]
+    assert row["valid"] is True
+    assert row["definition"]["when"] == "2026-10-01"
+    json.dumps(listing)
+
+
+def test_jsonable_converts_what_yaml_can_produce():
+    import datetime
+
+    out = ops._jsonable(
+        {
+            "d": datetime.date(2026, 10, 1),
+            "t": datetime.datetime(2026, 10, 1, 12, 30),
+            "set": {"b", "a"},
+            "mixed_set": {1, "a"},
+            "bytes": b"hi",
+            "tuple": (1, 2),
+            "nested": [{"x": datetime.date(2026, 1, 2)}],
+            3: "int key",
+            "plain": [1, 2.5, True, None, "s"],
+            "other": object,
+        }
+    )
+    assert out["d"] == "2026-10-01"
+    assert out["t"] == "2026-10-01T12:30:00"
+    assert out["set"] == ["a", "b"]
+    assert sorted(map(str, out["mixed_set"])) == ["1", "a"]
+    assert out["bytes"] == "aGk="
+    assert out["tuple"] == [1, 2]
+    assert out["nested"] == [{"x": "2026-01-02"}]
+    assert out["3"] == "int key"
+    assert out["plain"] == [1, 2.5, True, None, "s"]
+    assert out["other"] == str(object)

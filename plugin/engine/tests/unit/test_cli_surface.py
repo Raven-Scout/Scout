@@ -1099,6 +1099,26 @@ def test_phases_backport_malformed_config_exits_configerror(vault: Path) -> None
     assert "scout-config.yaml is malformed" in result.output
 
 
+def test_phases_backport_non_mapping_config_exits_configerror(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_text("- just\n- a list\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["phases", "backport"])
+    assert result.exit_code == ConfigError.exit_code
+    assert "scout-config.yaml is malformed" in result.output
+
+
+def test_bootstrap_drift_non_mapping_config_exits_configerror(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_text("- just\n- a list\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["bootstrap", "drift"])
+    assert result.exit_code == ConfigError.exit_code
+    assert "scout-config.yaml is malformed" in result.output
+
+
+def test_bootstrap_drift_without_a_vault_exits_two(vault: Path) -> None:
+    result = runner.invoke(cli.app, ["bootstrap", "drift"])
+    assert result.exit_code == 2
+    assert "run /scout-setup" in result.output
+
+
 def test_phases_backport_skips_kinds_with_no_snapshot(vault: Path) -> None:
     _write_vault_config(vault)
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL"])
