@@ -130,3 +130,10 @@ One
 Field
 Connectors
 Not
+
+# --- Claude Code tool and brain-file names ---
+Bash
+Edit
+Glob
+Grep
+SKILL
