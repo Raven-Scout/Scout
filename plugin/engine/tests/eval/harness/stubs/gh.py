@@ -42,8 +42,10 @@ def main(argv: list[str]) -> int:
     today = date.fromisoformat(os.environ["SCOUT_EVAL_TODAY"])
     log = CallsLog(Path(os.environ["SCOUT_EVAL_CALLS"]))
     args = {"argv": " ".join(argv)}
-    reply = Script.load(script_path, today=today).reply("gh", "*", args, prior_hits=log.hits)
-    log.append(persona="gh", tool="gh", args=args, reply=reply)
+    script = Script.load(script_path, today=today)
+    reply = log.record(
+        persona="gh", tool="gh", args=args, decide=lambda hits: script.reply("gh", "*", args, prior_hits=hits)
+    )
     if reply.kind != "ok":
         print(f"gh: {reply.payload}", file=sys.stderr)
         return 1

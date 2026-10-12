@@ -84,3 +84,33 @@ def test_mcp_config_has_one_stdio_server_per_persona(tmp_path: Path) -> None:
     assert slack["cwd"] == str(ENGINE)
     assert all(os.path.isabs(a) for a in slack["args"] if a.endswith((".yaml", ".jsonl")))
     assert PERSONA_SERVERS["calendar"] == "claude_ai_Google_Calendar"
+
+
+def test_times_holds_when_gh_calls_overlap(tmp_path: Path) -> None:
+    """Hold the calls-log lock while four gh calls start, so all of them are in flight at once."""
+    import fcntl
+    import time
+
+    (tmp_path / "connectors.yaml").write_text(
+        "gh:\n  '*':\n    - times: 1\n      error: unavailable\n    - respond: {stdout: ok}\n"
+    )
+    calls = tmp_path / "calls.jsonl"
+    calls.touch()
+    env = {
+        "PATH": f"{GH_BIN_DIR}:/usr/bin:/bin",
+        "SCOUT_EVAL_PYTHON": sys.executable,
+        "SCOUT_EVAL_ENGINE": str(ENGINE),
+        "SCOUT_EVAL_SCRIPT": str(tmp_path / "connectors.yaml"),
+        "SCOUT_EVAL_CALLS": str(calls),
+        "SCOUT_EVAL_TODAY": "2026-10-14",
+        "HOME": str(tmp_path),
+    }
+    with open(calls, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        procs = [subprocess.Popen(["gh", "pr", "list"], env=env, cwd=tmp_path) for _ in range(4)]
+        time.sleep(1.5)
+        fcntl.flock(held, fcntl.LOCK_UN)
+    codes = [p.wait(timeout=60) for p in procs]
+    assert sorted(codes) == [0, 0, 0, 1]
+    kinds = [json.loads(line)["kind"] for line in calls.read_text().splitlines()]
+    assert sorted(kinds) == ["error", "ok", "ok", "ok"]

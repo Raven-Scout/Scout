@@ -94,3 +94,10 @@ def test_ping_unknown_method_and_garbage(server) -> None:
     assert _rpc(proc, {"jsonrpc": "2.0", "id": 7, "method": "resources/list"})["error"]["code"] == -32601
     assert _rpc(proc, "{not json")["error"]["code"] == -32700
     assert _rpc(proc, {"jsonrpc": "2.0", "id": 8, "method": "ping"})["id"] == 8
+
+
+def test_a_request_that_breaks_the_handler_gets_an_error_and_the_server_keeps_serving(server) -> None:
+    proc, _ = server
+    r = _rpc(proc, {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": [1]})
+    assert r["error"]["code"] == -32603
+    assert _rpc(proc, {"jsonrpc": "2.0", "id": 10, "method": "ping"})["result"] == {}

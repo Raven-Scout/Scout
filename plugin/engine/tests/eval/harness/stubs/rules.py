@@ -32,6 +32,7 @@ import yaml
 
 from ..dates import render_dates
 
+RULE_KEYS = {"match", "respond", "error", "capture", "times"}
 ERRORS = {
     "auth_expired": "Authentication required: the connection's OAuth token has expired. Reconnect it in Settings.",
     "unavailable": "Service unavailable: the server did not respond (503).",
@@ -83,6 +84,14 @@ class Script:
 
     @staticmethod
     def _rule(rule_id: str, entry: dict[str, Any], base: Path, today: date) -> _Rule:
+        # Every scenario, every gh call and every persona loads the script, so a typo must
+        # fail here, loudly: `macth:` would otherwise match every call, `time: 1` never stop.
+        unknown = set(entry) - RULE_KEYS
+        if unknown:
+            raise ScriptError(f"rule {rule_id}: unknown key(s) {', '.join(sorted(unknown))}")
+        times = entry.get("times")
+        if times is not None and (not isinstance(times, int) or isinstance(times, bool) or times < 1):
+            raise ScriptError(f"rule {rule_id}: times must be a positive integer, got {times!r}")
         # An error stands alone; otherwise respond, capture, or a capture that also responds.
         has_error = "error" in entry
         if has_error == ("respond" in entry or "capture" in entry):
@@ -92,7 +101,10 @@ class Script:
             file = base / respond
             if not file.is_file():
                 raise ScriptError(f"rule {rule_id}: response file not found: {respond}")
-            respond = json.loads(render_dates(file.read_text(encoding="utf-8"), today))
+            try:
+                respond = json.loads(render_dates(file.read_text(encoding="utf-8"), today))
+            except json.JSONDecodeError as exc:
+                raise ScriptError(f"rule {rule_id}: response file {respond} is not JSON: {exc}") from exc
         error = entry.get("error")
         return _Rule(
             rule_id=rule_id,

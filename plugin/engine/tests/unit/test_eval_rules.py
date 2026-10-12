@@ -114,3 +114,19 @@ def test_a_rule_without_an_outcome_is_rejected_at_load(tmp_path: Path) -> None:
 def test_a_missing_response_file_is_rejected_at_load(tmp_path: Path) -> None:
     with pytest.raises(ScriptError, match="missing.json"):
         _script(tmp_path, "slack:\n  x:\n    - respond: missing.json\n")
+
+
+def test_an_unknown_rule_key_is_rejected_at_load(tmp_path: Path) -> None:
+    with pytest.raises(ScriptError, match=r"slack:x:0.*macth"):
+        _script(tmp_path, "slack:\n  x:\n    - macth: {a: b}\n      respond: {}\n")
+
+
+@pytest.mark.parametrize("bad", ["'1'", "0", "-2", "1.5"])
+def test_times_must_be_a_positive_integer(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ScriptError, match="times"):
+        _script(tmp_path, f"slack:\n  x:\n    - times: {bad}\n      respond: {{}}\n")
+
+
+def test_a_response_file_that_is_not_json_is_a_script_error(tmp_path: Path) -> None:
+    with pytest.raises(ScriptError, match="bad.json"):
+        _script(tmp_path, "slack:\n  x:\n    - respond: bad.json\n", files={"bad.json": "{nope"})

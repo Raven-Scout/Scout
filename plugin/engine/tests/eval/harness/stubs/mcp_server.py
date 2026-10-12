@@ -63,12 +63,26 @@ class StubServer:
         return _error(msg_id, -32601, f"method not found: {method}")
 
     def _call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        reply = self.script.reply(self.persona, tool, args, prior_hits=self.log.hits)
-        self.log.append(persona=self.persona, tool=tool, args=args, reply=reply)
+        reply = self.log.record(
+            persona=self.persona,
+            tool=tool,
+            args=args,
+            decide=lambda hits: self.script.reply(self.persona, tool, args, prior_hits=hits),
+        )
         if reply.kind == "ok":
             text = reply.payload if isinstance(reply.payload, str) else json.dumps(reply.payload)
             return {"content": [{"type": "text", "text": text}], "isError": False}
         return {"content": [{"type": "text", "text": str(reply.payload)}], "isError": True}
+
+
+def _safe_handle(server: StubServer, msg: Any) -> dict[str, Any] | None:
+    """One bad request gets a JSON-RPC error; it must never take the persona down for the session."""
+    if not isinstance(msg, dict):
+        return _error(None, -32600, "invalid request")
+    try:
+        return server.handle(msg)
+    except Exception as exc:  # noqa: BLE001 - any handler bug becomes an error reply
+        return _error(msg.get("id"), -32603, f"internal error: {type(exc).__name__}: {exc}")
 
 
 def serve(server: StubServer, stdin: Any = sys.stdin, stdout: Any = sys.stdout) -> None:
@@ -80,7 +94,7 @@ def serve(server: StubServer, stdin: Any = sys.stdin, stdout: Any = sys.stdout) 
         except json.JSONDecodeError as exc:
             response: dict[str, Any] | None = _error(None, -32700, f"parse error: {exc}")
         else:
-            response = server.handle(msg) if isinstance(msg, dict) else _error(None, -32600, "invalid request")
+            response = _safe_handle(server, msg)
         if response is not None:
             stdout.write(json.dumps(response) + "\n")
             stdout.flush()
