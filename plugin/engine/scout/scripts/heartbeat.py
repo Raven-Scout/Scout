@@ -61,7 +61,7 @@ _CONFIG_KEYS = {
     "off_peak_end": "off_peak_end",
 }
 
-# The shape /scout-setup actually writes (templates/scout-config.yaml.tmpl):
+# The shape the packaged default (engine/scout/defaults/scout-config.yaml) uses:
 #   off_peak:
 #     start: 23
 #     end: 6

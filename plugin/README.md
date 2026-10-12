@@ -343,15 +343,13 @@ scout-plugin/
   templates/
     hooks/                  -- Pre-session hooks (kb-pre-filter)
     scripts/                -- Budget tracking + pre-session data gathering
-    action-items/           -- MD-to-HTML dashboard renderer + file watcher
-    docs/wishlist/          -- Wishlist item directory seed (per-file)
-    knowledge-base/         -- KB scaffold and ontology
+    action-items/           -- MD-to-HTML dashboard renderer
+    knowledge-base/         -- KB index seeds and ontology parser
     inbox.md.tmpl           -- Quick-capture template
     meetings/               -- Meeting registry template
     run-scout.sh.tmpl
     run-dreaming.sh.tmpl
     run-research.sh.tmpl
-    scout-config.yaml.tmpl
     connector-probes.yaml   -- How /scout-setup detects each connector
   engine/scout/defaults/    -- launchd plists (schedule-tick, heartbeat), default schedule + config
 ```
@@ -386,13 +384,16 @@ scout-plugin/
     pre-session-data.sh     -- Pre-session: gather git log, PRs, KB dates, tasks
     cc-session-cache.sh     -- Pre-session: summarize non-Scout CC sessions
   knowledge-base/           -- Your persistent knowledge base (Obsidian vault)
+    knowledge-base.md       -- KB index
+    people.md               -- People directory
+    channels.md             -- Channels Scout monitors
     ontology/
-      schema.yaml           -- Knowledge graph schema
+      schema.yaml           -- Your schema override (optional; absent = the packaged schema)
       parser.py             -- Query engine for the knowledge graph
       entities/             -- Organization entity files
     people/                 -- Person entity files
     personal/               -- Personal task and family entity files
-    projects/               -- Project files
+    projects/               -- Project files (index: projects/projects.md)
     research-queue/         -- Queued research topics (one file per topic)
     research-queue.md       -- Research run log (thin)
     scout-mistake-audit.md  -- Error-pattern log written by dreaming
@@ -401,7 +402,6 @@ scout-plugin/
     archive/                -- Older-than-7-days action items
     meeting-prep/           -- Auto-generated meeting prep docs
     render.py               -- Optional MD → HTML dashboard
-    watch.sh                -- Auto-re-render HTML on MD change (fswatch)
   docs/
     wishlist/               -- One file per wishlist item (state in frontmatter status:)
   .scout-cache/             -- Hook outputs (gitignored, regenerated every run)

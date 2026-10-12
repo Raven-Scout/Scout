@@ -120,10 +120,13 @@ _CAT1_DIR_LAYOUT = (
     "knowledge-base/topics",
     "knowledge-base/sources",
     "knowledge-base/session-log",
+    # Per-file items: one research topic, or one wishlist item, per file.
+    "knowledge-base/research-queue",
     "action-items/archive",
     "action-items/meeting-prep",
     "meetings",
     "docs",
+    "docs/wishlist",
     "scripts",
     "hooks",
     ".scout-logs",
@@ -194,6 +197,13 @@ _INSTALL_ONLY_TEMPLATES = (
     ("knowledge-base/topics/topics.md", "templates/knowledge-base/topics/topics.md.tmpl"),
     ("knowledge-base/sources/sources.md", "templates/knowledge-base/sources/sources.md.tmpl"),
     ("knowledge-base/session-log.md", "templates/knowledge-base/session-log.md.tmpl"),
+    # The KB index and the directories it links, which every session reads.
+    ("knowledge-base/knowledge-base.md", "templates/knowledge-base/knowledge-base.md.tmpl"),
+    ("knowledge-base/people.md", "templates/knowledge-base/people.md.tmpl"),
+    ("knowledge-base/channels.md", "templates/knowledge-base/channels.md.tmpl"),
+    ("knowledge-base/projects/projects.md", "templates/knowledge-base/projects/projects.md.tmpl"),
+    # The research run log (its items are files in knowledge-base/research-queue/).
+    ("knowledge-base/research-queue.md", "templates/knowledge-base/research-queue.md.tmpl"),
 )
 
 _CAT1B_RUNNERS = (
