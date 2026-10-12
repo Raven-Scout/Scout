@@ -98,7 +98,5 @@ def scan_fixture(eval_root: Path = EVAL_ROOT) -> list[Finding]:
     for name in DATA_DIRS:
         d = eval_root / name
         if d.is_dir():
-            findings += [
-                Finding(f"{name}/{f.path}", f.line, f.token, f.kind) for f in scan(d, allow)
-            ]
+            findings += [Finding(f"{name}/{f.path}", f.line, f.token, f.kind) for f in scan(d, allow)]
     return findings

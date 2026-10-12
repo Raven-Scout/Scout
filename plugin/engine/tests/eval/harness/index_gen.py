@@ -11,19 +11,20 @@ from __future__ import annotations
 import random
 
 HEADINGS = ("Projects", "Topics", "Sources", "Meetings", "Decisions", "Glossary")
-_NOUNS = (
-    "ledger", "pipeline", "gateway", "widget", "cache", "queue", "schema", "report", "budget",
-    "rollout", "migration", "dashboard", "contract", "runbook", "backlog", "roadmap", "audit",
-    "billing", "export", "import", "sync", "index", "archive", "review", "release", "metric",
-    "alert", "handoff", "template", "checklist", "survey", "forecast", "invoice", "catalog",
+_NOUNS = tuple(
+    (
+        "ledger pipeline gateway widget cache queue schema report budget rollout migration dashboard "
+        "contract runbook backlog roadmap audit billing export import sync index archive review "
+        "release metric alert handoff template checklist survey forecast invoice catalog"
+    ).split()
 )
-_ADJECTIVES = (
-    "quarterly", "legacy", "shared", "internal", "weekly", "regional", "draft", "pending",
-    "stable", "nightly", "manual", "partial", "upstream", "downstream", "optional", "core",
+_ADJECTIVES = tuple(
+    (
+        "quarterly legacy shared internal weekly regional draft pending stable nightly manual "
+        "partial upstream downstream optional core"
+    ).split()
 )
-_VERBS = (
-    "tracks", "covers", "summarises", "lists", "explains", "records", "compares", "outlines",
-)
+_VERBS = tuple(("tracks covers summarises lists explains records compares outlines").split())
 
 
 def generate_index(*, seed: int = 196, entries: int = 600) -> str:
