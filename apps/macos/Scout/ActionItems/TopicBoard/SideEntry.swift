@@ -44,6 +44,11 @@ nonisolated struct SideEntry: Identifiable, Equatable, Sendable {
             .caseInsensitiveCompare(title) == .orderedSame
     }
 
+    /// Whether the daily file has a section titled `title`, even an empty one.
+    static func hasSection(titled title: String, in sections: [ActionSection]) -> Bool {
+        sections.contains { section($0.title, isTitled: title) }
+    }
+
     /// The open bullets of the section titled `title` (Inbox, Loose ends).
     static func entries(inSectionTitled title: String, of sections: [ActionSection], dismissed: Set<String>) -> [SideEntry] {
         sections

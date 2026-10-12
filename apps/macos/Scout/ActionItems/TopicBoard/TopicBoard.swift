@@ -20,16 +20,27 @@ nonisolated struct BoardTopic: Identifiable, Equatable, Sendable {
     let counts: [BoardState: Int]
 
     var id: String { key }
-    var title: String { meta?.displayTitle ?? (key == TopicBoard.otherKey ? "Other" : key) }
+    var title: String { meta?.displayTitle ?? key }
+    /// One task without a topic, shown as its own row rather than under a header.
+    var isStandalone: Bool { key.hasPrefix(TopicBoard.standalonePrefix) }
 }
 
 /// The topic board for one daily file: tasks grouped by workstream, blocked
 /// steps nested under what blocks them, on-hold work in one group at the end.
+/// A task without a topic stands alone: its own entry, ordered among the
+/// topics by priority (the reference board falls back to the task's own tag).
 nonisolated struct TopicBoard: Equatable, Sendable {
+    /// `BoardItem.topicKey` of a task that names no topic.
     static let otherKey = "__other"
+    static let standalonePrefix = "__step:"
+
+    static func standaloneKey(_ key: String) -> String { standalonePrefix + key }
 
     let topics: [BoardTopic]
     let onHold: [BoardStep]
+    /// Whether any task on the board names a topic. A vault whose runs don't
+    /// write `- Topic:` yet has none, and every task stands alone.
+    let hasTopicGroups: Bool
 
     static func build(
         sections: [ActionSection],
@@ -39,7 +50,8 @@ nonisolated struct TopicBoard: Equatable, Sendable {
         today: Date
     ) -> TopicBoard {
         let needle = search.trimmingCharacters(in: .whitespaces).lowercased()
-        let items = boardItems(sections: sections, metas: metas, today: today).filter { $0.task.matchesSearch(needle) }
+        let all = boardItems(sections: sections, metas: metas, today: today)
+        let items = all.filter { $0.task.matchesSearch(needle) }
         let layout = Layout(items: items, filter: filter)
         let metaByTag = Dictionary(metas.map { ($0.tag, $0) }, uniquingKeysWith: { first, _ in first })
         let topicOrder = Dictionary(metas.enumerated().map { ($1.tag, $0) }, uniquingKeysWith: { first, _ in first })
@@ -49,7 +61,10 @@ nonisolated struct TopicBoard: Equatable, Sendable {
         let baseKeys = Set(base.map(\.key))
         let tops = base.filter { item in !(layout.parent(of: item.key).map(baseKeys.contains) ?? false) }
         let roots = tops + layout.unreachable(from: tops + held)
-        let groups = Dictionary(grouping: roots, by: \.topicKey)
+        func groupKey(_ item: BoardItem) -> String {
+            item.topicKey == otherKey ? standaloneKey(item.key) : item.topicKey
+        }
+        let groups = Dictionary(grouping: roots, by: groupKey)
             .mapValues { $0.sorted(by: BoardItem.byPriority) }
             .sorted { a, b in
                 let ka = a.value.first?.priorityKey ?? []
@@ -62,10 +77,14 @@ nonisolated struct TopicBoard: Equatable, Sendable {
         let topics = groups.compactMap { key, rows -> BoardTopic? in
             let steps = layout.steps(rows, seen: &seen)
             guard !steps.isEmpty else { return nil }
-            return BoardTopic(key: key, meta: metaByTag[key], steps: steps, counts: counts(items.filter { $0.topicKey == key }))
+            return BoardTopic(key: key, meta: metaByTag[key], steps: steps, counts: counts(items.filter { groupKey($0) == key }))
         }
         let heldRows = held.filter { !seen.contains($0.key) }
-        return TopicBoard(topics: topics, onHold: layout.steps(heldRows, seen: &seen))
+        return TopicBoard(
+            topics: topics,
+            onHold: layout.steps(heldRows, seen: &seen),
+            hasTopicGroups: all.contains { $0.topicKey != otherKey }
+        )
     }
 
     static func boardItems(sections: [ActionSection], metas: [TopicMeta], today: Date) -> [BoardItem] {
