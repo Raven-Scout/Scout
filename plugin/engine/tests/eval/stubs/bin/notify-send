@@ -1,0 +1,5 @@
+#!/bin/sh
+# eval stub: no eval run may raise a real desktop notification (it lands on the user's screen).
+echo "notify-send is blocked in eval runs (tests/eval/stubs/bin/notify-send)" >&2
+cat > /dev/null
+exit 99

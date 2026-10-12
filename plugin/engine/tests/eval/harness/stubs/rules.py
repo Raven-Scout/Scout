@@ -65,6 +65,16 @@ def _as_text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
 
 
+def _render_tree(value: Any, today: date) -> Any:
+    if isinstance(value, str):
+        return render_dates(value, today)
+    if isinstance(value, dict):
+        return {k: _render_tree(v, today) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render_tree(v, today) for v in value]
+    return value
+
+
 class Script:
     def __init__(self, rules: dict[str, dict[str, list[_Rule]]]) -> None:
         self._rules = rules
@@ -105,6 +115,8 @@ class Script:
                 respond = json.loads(render_dates(file.read_text(encoding="utf-8"), today))
             except json.JSONDecodeError as exc:
                 raise ScriptError(f"rule {rule_id}: response file {respond} is not JSON: {exc}") from exc
+        else:
+            respond = _render_tree(respond, today)  # inline replies get date macros too
         error = entry.get("error")
         return _Rule(
             rule_id=rule_id,
