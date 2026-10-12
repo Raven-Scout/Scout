@@ -200,9 +200,10 @@ def test_a_wait_that_runs_out_records_skipped_lock(vault: Path) -> None:
     try:
         started = time.monotonic()
 
-        result = _run(vault, "run-dreaming.sh.tmpl", SCOUT_LOCK_WAIT_SECS="2")
+        result = _run(vault, "run-dreaming.sh.tmpl", SCOUT_LOCK_WAIT_SECS="3")
 
         assert result.returncode == 0, result.stderr
+        # The wait counts whole seconds (`date +%s`), so it can end up to 1 s short.
         assert time.monotonic() - started >= 2, "the runner gave up before its wait ran out"
         assert not (vault / "session-ran").exists()
         (row,) = _ledger(vault)
