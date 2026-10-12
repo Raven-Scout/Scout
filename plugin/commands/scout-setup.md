@@ -130,7 +130,7 @@ Confirm with the user: "Proceed with these connectors? Or pause to enable more f
 
 Ask the user:
 
-> "Keep Scout up to date automatically? Each stable release installs about a day after it's published, and Scout tells you if an update needs your attention. (Yes is the default. Change it later with `scoutctl config set-auto-update`.)"
+> "Keep Scout up to date automatically? Each stable release installs about a day after it's published, and Scout tells you if an update needs your attention. (Yes is the default. You can change it later under `auto_update:` in `scout-config.yaml`.)"
 
 Wait for a yes/no answer; a blank answer means yes. Pass it to the install in Step 4 as `--auto-update` (yes) or `--no-auto-update` (no). `bootstrap install` writes it into `~/Scout/scout-config.yaml` as `auto_update.enabled` (channel `stable`), and the heartbeat's `scoutctl self-update run` acts on it. Scout.app updates the engines it manages and ignores this setting. Do NOT edit the config file by hand or with an inline `python3` script — the system `python3` on stock macOS has no PyYAML.
 
