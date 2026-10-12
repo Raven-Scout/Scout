@@ -580,6 +580,8 @@ run depends on someone's local subscription (§13 Q2).
 - **"Changed since"** counts commits to `plugin/phases` after that time.
 - **`compare --base <last tag>` is suggested** when `plugin/phases` differs from the previous
   release.
+- **"Link the report" became "paste the summary".** `run` and `compare` print their report and
+  write no report file.
 - **The release PR body gains an unticked eval checkbox.** Nothing reads that checkbox.
 
 ## 10. Error handling

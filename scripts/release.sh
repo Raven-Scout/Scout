@@ -118,7 +118,7 @@ eval_reminder() {
   fi
   echo "  Before merging the release PR, on your own Claude login (Sonnet, no API key):"
   echo "    plugin/scripts/eval.sh $verb    (scenarios: ls plugin/engine/tests/eval/scenarios)"
-  echo "  then link the report in the release PR."
+  echo "  then paste the summary it prints into the release PR."
 }
 
 cmd_prepare() {
@@ -177,7 +177,7 @@ cmd_prepare() {
 **Create a merge commit** (not squash), so the final build's number is above every release candidate's. \
 Then run \`scripts/release.sh finalize v$new\`." \
       "- [ ] Eval (local, not a gate): ran \`plugin/scripts/eval.sh\` on my own Claude login \
-(\`compare --base ${prev%% *}\` if \`plugin/phases/\` changed) and linked the report here, or said why not."
+(\`compare --base <last tag>\` if \`plugin/phases/\` changed) and pasted its summary here, or said why not."
     cat "$notes"
   } >"$body"
   git -C "$REPO_ROOT" push -q -u origin "$branch"

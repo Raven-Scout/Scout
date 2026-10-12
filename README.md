@@ -60,7 +60,7 @@ Before merging a release PR, the maintainer runs the agent-behaviour eval
 locally, on their own Claude login (Sonnet, no API key):
 `plugin/scripts/eval.sh run <scenarios>`, or
 `plugin/scripts/eval.sh compare <scenarios> --base <last tag>` when
-`plugin/phases/` changed. Then they link the report in the release PR.
+`plugin/phases/` changed. Then they paste the summary it prints into the release PR.
 `release.sh prepare` prints this step with the date of the newest local result.
 It is a reminder, never a gate. CI runs no model-backed evals.
 
