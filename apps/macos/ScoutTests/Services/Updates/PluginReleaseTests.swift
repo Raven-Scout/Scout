@@ -35,6 +35,44 @@ struct PluginReleaseTests {
         #expect(PluginRelease.scoutVersion(fromMarketplaceManifest: Data("not json".utf8)) == nil)
     }
 
+    // MARK: pinnedPluginManifestURL(fromMarketplaceManifest:)  (#362)
+
+    private func entry(source: String) -> Data {
+        Data(#"{"plugins":[{"name":"other","source":"./x"},{"name":"scout","source":\#(source),"version":"0.9.0"}]}"#.utf8)
+    }
+
+    @Test func gitSubdirPinnedToABranchReadsPluginJSONAtThatRef() {
+        let data = entry(source: #"{"source":"git-subdir","url":"https://github.com/example-org/Scout.git","path":"plugin","ref":"stable"}"#)
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: data)?.absoluteString
+                == "https://raw.githubusercontent.com/example-org/Scout/stable/plugin/.claude-plugin/plugin.json")
+    }
+
+    @Test func gitSubdirTakesOwnerRepoShorthandAndPrefersTheSHA() {
+        let sha = String(repeating: "a1", count: 20)
+        let data = entry(source: #"{"source":"git-subdir","url":"example-org/Scout","path":"/plugin/","ref":"stable","sha":"\#(sha)"}"#)
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: data)?.absoluteString
+                == "https://raw.githubusercontent.com/example-org/Scout/\(sha)/plugin/.claude-plugin/plugin.json")
+    }
+
+    @Test func githubSourceWithoutARefReadsTheDefaultBranch() {
+        let data = entry(source: #"{"source":"github","repo":"example-org/scout"}"#)
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: data)?.absoluteString
+                == "https://raw.githubusercontent.com/example-org/scout/HEAD/.claude-plugin/plugin.json")
+    }
+
+    @Test func noPinnedURLForARelativePathOrANonGitHubSource() {
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: entry(source: #""./plugin""#)) == nil)
+        let gitlab = entry(source: #"{"source":"url","url":"https://gitlab.com/example-org/scout.git","ref":"stable"}"#)
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: gitlab) == nil)
+        let npm = entry(source: #"{"source":"npm","package":"scout"}"#)
+        #expect(PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: npm) == nil)
+    }
+
+    @Test func readsThePluginManifestVersion() {
+        #expect(PluginRelease.version(fromPluginManifest: Data(#"{"name":"scout","version":"0.16.0"}"#.utf8)) == "0.16.0")
+        #expect(PluginRelease.version(fromPluginManifest: Data(#"{"name":"scout"}"#.utf8)) == nil)
+    }
+
     // MARK: latestManifestURL(for:)
 
     @Test func latestManifestURLForGitHubSource() {

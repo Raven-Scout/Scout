@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 
 from scout.errors import KBSchemaError
+from scout.kb.frontmatter import frontmatter_block
 
 
 class KnowledgeGraph:
@@ -78,15 +79,12 @@ class KnowledgeGraph:
         except (OSError, UnicodeDecodeError):
             return None
 
-        if not text.startswith("---"):
-            return None
-
-        end = text.find("\n---", 3)
-        if end == -1:
+        block = frontmatter_block(text.split("\n"))
+        if block is None:
             return None
 
         try:
-            return yaml.safe_load(text[3:end])
+            return yaml.safe_load("\n".join(block))
         except yaml.YAMLError:
             return None
 

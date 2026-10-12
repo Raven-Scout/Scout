@@ -35,7 +35,10 @@ nonisolated struct URLSessionFetcher: RemoteDataFetcher {
 /// `installed_plugins.json` entry for it. Latest version: source-aware, via
 /// `PluginRelease` — the marketplace's working copy on disk for a `directory`
 /// source (dev checkouts), the raw GitHub manifest at `HEAD` for `github`/
-/// `git` sources (end users). Never throws; every failure becomes
+/// `git` sources (end users). When that manifest's scout entry pins a
+/// GitHub ref (#362: `git-subdir` at `stable`), the version is read from the
+/// `plugin.json` at that ref instead, whatever the marketplace's own source,
+/// because that is the tree Claude Code installs. Never throws; every failure becomes
 /// `PluginUpdateResult.error` and is shown only in Settings ▸ Updates.
 nonisolated struct PluginUpdateChecker: PluginUpdateChecking {
     let pluginsDir: URL
@@ -77,7 +80,19 @@ nonisolated struct PluginUpdateChecker: PluginUpdateChecking {
                                        releasesURL: releasesURL, error: "Couldn't check the latest plugin version: \(error.localizedDescription)")
         }
 
-        guard let latest = PluginRelease.scoutVersion(fromMarketplaceManifest: manifestData) else {
+        // A scout entry pinned to a ref (#362) installs that ref's tree, whose
+        // plugin.json is the version `claude plugin update` would move to.
+        var pinnedVersion: String?
+        if let pinned = PluginRelease.pinnedPluginManifestURL(fromMarketplaceManifest: manifestData) {
+            do {
+                pinnedVersion = PluginRelease.version(fromPluginManifest: try await fetcher.data(from: pinned))
+            } catch {
+                return PluginUpdateResult(applicable: true, installed: installed, latest: nil, isUpdateAvailable: false,
+                                           releasesURL: releasesURL, error: "Couldn't check the latest plugin version: \(error.localizedDescription)")
+            }
+        }
+
+        guard let latest = pinnedVersion ?? PluginRelease.scoutVersion(fromMarketplaceManifest: manifestData) else {
             return PluginUpdateResult(applicable: true, installed: installed, latest: nil, isUpdateAvailable: false,
                                        releasesURL: releasesURL, error: "The latest plugin manifest has no scout version.")
         }

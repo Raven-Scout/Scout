@@ -7,7 +7,12 @@
   "plugins": [
     {
       "name": "scout",
-      "source": "./plugin",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Raven-Scout/Scout.git",
+        "path": "plugin",
+        "ref": "stable"
+      },
       "description": "Autonomous knowledge management and daily briefing system for Claude Code",
       "version": "0.16.0",
       "author": {

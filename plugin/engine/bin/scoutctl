@@ -99,7 +99,7 @@ fi
 # clone under plugins/marketplaces/<marketplace>/ (where install-venv.sh
 # typically lands). Cross-jump when the launcher fires from cache/. A legacy
 # scout-plugin clone has the plugin at the clone root; a Raven-Scout/Scout
-# monorepo clone has it under plugin/ (the marketplace's "source": "./plugin").
+# monorepo clone has it under plugin/.
 if [[ "$PLUGIN_ROOT" == */plugins/cache/* ]]; then
     PLUGINS_DIR="${PLUGIN_ROOT%%/cache/*}"
     REST="${PLUGIN_ROOT#*/cache/}"
