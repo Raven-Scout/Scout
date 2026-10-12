@@ -260,10 +260,13 @@ def test_heartbeat_sweeps_run_health_on_every_tick(vault: Path) -> None:
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
+    # The stub writes no self-update marker, so each tick also starts the (detached) update (#360).
     assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == [
         "health notify --quiet",
+        "self-update run --scheduled --detach",
         "heartbeat run",
         "health notify --quiet",
+        "self-update run --scheduled --detach",
         "heartbeat run",
     ]
     assert not list((vault / ".scout-cache").glob("health-sweep-*.done")), "no daily marker any more"
@@ -310,6 +313,7 @@ def test_a_failing_sweep_does_not_stop_the_heartbeat(vault: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert (vault / "scoutctl.calls").read_text(encoding="utf-8").splitlines() == [
         "health notify --quiet",
+        "self-update run --scheduled --detach",
         "heartbeat run",
     ]
 

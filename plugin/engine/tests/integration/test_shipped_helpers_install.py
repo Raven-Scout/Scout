@@ -216,5 +216,9 @@ def test_the_installed_heartbeat_sweeps_run_health(vault: Path, bindir: Path, ca
     result = _run(vault / "scripts" / "heartbeat.sh", vault, bindir)
 
     assert result.returncode == 0, result.stderr
-    assert _calls(calls) == [["health", "notify", "--quiet"], ["heartbeat", "run"]]
+    assert _calls(calls) == [
+        ["health", "notify", "--quiet"],
+        ["self-update", "run", "--scheduled", "--detach"],
+        ["heartbeat", "run"],
+    ]
     assert (vault / ".scout-logs" / "health-notify.log").exists()
