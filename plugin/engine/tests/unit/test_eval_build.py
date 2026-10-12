@@ -73,6 +73,15 @@ def test_vault_is_a_git_repo_with_one_commit(tmp_path: Path) -> None:
     assert status.stdout == ""
 
 
+def test_the_fixture_repo_never_runs_background_maintenance(tmp_path: Path) -> None:
+    # A detached `git maintenance run --auto` after a commit creates and removes .git/maintenance.lock
+    # under a caller's rmtree (CI: FileNotFoundError 'maintenance.lock'). The vault's own config turns it off.
+    vault = build_vault(tmp_path / "v", today=TODAY)
+    for key, want in (("maintenance.auto", "false"), ("gc.auto", "0")):
+        got = subprocess.run(["git", "-C", str(vault), "config", "--local", key], capture_output=True, text=True)
+        assert got.stdout.strip() == want, key
+
+
 def test_two_builds_on_the_same_day_are_identical(tmp_path: Path) -> None:
     # Same path both times: brain files embed the vault path, and provenance.json hashes them.
     dest = tmp_path / "v"

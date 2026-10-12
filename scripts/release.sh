@@ -92,6 +92,35 @@ require_clean_synced_main() {
     || die "local main is not in sync with origin/main"
 }
 
+# eval_reminder PREV_TAG: print the pre-release eval step (eval-harness spec §9). Print only, never refuse:
+# callers run it as `eval_reminder … || true`. Result dirs are named <scenario>-<arm>-<YYYYMMDD-HHMMSS>-<rep>.
+eval_reminder() {
+  local prev_tag="$1" newest="" d stamp when n verb
+  for d in "$REPO_ROOT"/.eval-results/*/; do
+    stamp="$(basename "$d" | sed -nE 's/.*-([0-9]{8}-[0-9]{6})-[0-9]+$/\1/p')"
+    [ -z "$stamp" ] || [[ "$stamp" < "$newest" ]] || newest="$stamp"
+  done
+  verb="run <scenarios>"
+  if [ -n "$prev_tag" ] && ! git -C "$REPO_ROOT" diff --quiet "$prev_tag" HEAD -- plugin/phases; then
+    verb="compare <scenarios> --base $prev_tag"
+  fi
+  if [ -z "$newest" ]; then
+    echo "→ Eval (a local step, not a gate): no local eval result yet."
+  else
+    when="${newest:0:4}-${newest:4:2}-${newest:6:2} ${newest:9:2}:${newest:11:2}"
+    n="$(git -C "$REPO_ROOT" rev-list --count --since="$when:${newest:13:2}" HEAD -- plugin/phases)"
+    if [ "$n" = 0 ]; then
+      echo "→ Eval (a local step, not a gate): newest local eval result $when; plugin/phases unchanged since it."
+    else
+      echo "→ Eval (a local step, not a gate): newest local eval result $when;" \
+        "plugin/phases changed since it ($n commit$([ "$n" = 1 ] || echo s))."
+    fi
+  fi
+  echo "  Before merging the release PR, on your own Claude login (Sonnet, no API key):"
+  echo "    plugin/scripts/eval.sh $verb    (scenarios: ls plugin/engine/tests/eval/scenarios)"
+  echo "  then link the report in the release PR."
+}
+
 cmd_prepare() {
   local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t
   slug="$(require_slug)"
@@ -136,6 +165,7 @@ cmd_prepare() {
   notes="$REPO_ROOT/.release/notes-v$new.md"
   "$PY" -m scout.scripts.release_notes --repo-root "$REPO_ROOT" "$new" --repo "$slug" --out "$notes" \
     ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
+  eval_reminder "${prev%% *}" || true
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then
     echo "→ SKIP_RELEASE=1: committed 'release: v$new' on $branch locally. Not pushing, no PR."
     echo "→ Release notes: $notes"
@@ -143,9 +173,11 @@ cmd_prepare() {
   fi
   body="$REPO_ROOT/.release/pr-body-v$new.md"
   {
-    printf '%s\n\n---\n\n' "Release prep for Scout v$new. Once the four required checks pass, merge it with \
+    printf '%s\n\n%s\n\n---\n\n' "Release prep for Scout v$new. Once the four required checks pass, merge it with \
 **Create a merge commit** (not squash), so the final build's number is above every release candidate's. \
-Then run \`scripts/release.sh finalize v$new\`."
+Then run \`scripts/release.sh finalize v$new\`." \
+      "- [ ] Eval (local, not a gate): ran \`plugin/scripts/eval.sh\` on my own Claude login \
+(\`compare --base ${prev%% *}\` if \`plugin/phases/\` changed) and linked the report here, or said why not."
     cat "$notes"
   } >"$body"
   git -C "$REPO_ROOT" push -q -u origin "$branch"
