@@ -44,6 +44,13 @@ struct EngineSettingsSection: View {
                         .font(DS.sans(12))
                 }
             }
+            if model.showsRuns {
+                SettingsRow(title: "Runs", help: model.runsHelp) {
+                    Text(model.runsLabel)
+                        .font(DS.sans(12, weight: .medium))
+                        .foregroundStyle(model.runsIsOK ? DS.Status.ok : DS.Status.warn)
+                }
+            }
             if model.messages.count > 1 {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(model.messages.dropFirst(), id: \.self) { Text($0).font(DS.mono(11)).foregroundStyle(DS.Ink.p3) }

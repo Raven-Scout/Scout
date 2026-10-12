@@ -186,6 +186,47 @@ jobs:
 
           exit $status
 
+      # 4. The doctor run-health fixture follows the same rule: one canonical
+      #    file under the engine's contract fixtures, a byte copy in every
+      #    client's Fixtures dir, and no tracked copy left unchecked.
+      - name: Doctor run-health fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/doctor-run-health.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/doctor-run-health.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::doctor-run-health.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_doctor_run_health_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of doctor-run-health.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*doctor-run-health.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked doctor-run-health.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+
+          exit $status
+
   contract:
     name: contract
     needs: [changes, verify]

@@ -32,13 +32,13 @@ final class EngineHealthService: ObservableObject {
         self.state = initialState
     }
 
-    /// Gated tabs, a red doctor, or a doctor that could not run at all (it
+    /// Gated tabs, a red doctor (install or run health), or a doctor that could not run at all (it
     /// threw, or printed something that isn't a report) — the last one would
     /// otherwise leave the sidebar dot off with health stuck at "Unknown".
     var needsAttention: Bool {
         if state.gatesTabs { return true }
         if case .broken = state { return true }   // incl. a broken install someone else manages (no gate)
-        if let doctor { return doctor.severity == .red }
+        if let doctor { return doctor.severity == .red || doctor.runHealth?.severity == .red }
         return lastError != nil
     }
 

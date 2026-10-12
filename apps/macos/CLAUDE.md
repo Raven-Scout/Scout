@@ -84,3 +84,5 @@ differs from the canonical one — so you cannot edit just one copy. On any chan
 5. Land the plugin and app changes as **one commit** in this repo (the two checksum
    guards fail the moment the corpus changes without them), and merge the
    scout-iOS-app PR alongside it.
+
+`ScoutTests/Fixtures/doctor-run-health.json` is likewise a byte copy of a generated plugin fixture — never edit it here; see the root `CLAUDE.md` for how to regenerate and copy it.
