@@ -52,7 +52,9 @@ chmod +x "$ROOT/.venv/bin/scoutctl"
 echo "ok: venv ready"
 VENV
     ;;
-  "plugin list --json") printf '{"plugins": {"scout@scout-plugin": [{"id": "scout@scout-plugin", "installPath": "%s"}]}}\n' "$ROOT" ;;
+  "plugin list --json")
+    ENTRY='{"id": "scout@scout-plugin", "installPath": "%s"}'
+    printf "{\"plugins\": {\"scout@scout-plugin\": [$ENTRY]}}\n" "$ROOT" ;;
   *) echo "unexpected: $*" >&2; exit 64 ;;
 esac
 """

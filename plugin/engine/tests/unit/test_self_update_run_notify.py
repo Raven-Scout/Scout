@@ -51,7 +51,9 @@ def test_other_results_push_nothing_themselves():
 
 def test_default_notify_fans_out_info_then_runs_the_health_notifier(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(health_notify, "fan_out", lambda push, *, vault, now: calls.append(("fan_out", push.finding_id)))
+    monkeypatch.setattr(
+        health_notify, "fan_out", lambda push, *, vault, now: calls.append(("fan_out", push.finding_id))
+    )
     monkeypatch.setattr(health_notify, "notify", lambda vault: calls.append(("notify", vault)))
     sur.default_notify(tmp_path)(_row("applied"), [])
     assert calls == [("fan_out", "update.applied"), ("notify", tmp_path)]

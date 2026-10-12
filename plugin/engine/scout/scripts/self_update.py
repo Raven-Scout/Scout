@@ -135,5 +135,7 @@ def release_status(
     if release.get("prerelease") is True:
         return ReleaseStatus(False, published_at, "prerelease")
     if now - published_at < timedelta(hours=soak_hours):
-        return ReleaseStatus(False, published_at, f"soaking until {(published_at + timedelta(hours=soak_hours)).isoformat()}")
+        return ReleaseStatus(
+            False, published_at, f"soaking until {(published_at + timedelta(hours=soak_hours)).isoformat()}"
+        )
     return ReleaseStatus(True, published_at, "")

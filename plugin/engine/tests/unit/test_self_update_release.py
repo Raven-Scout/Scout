@@ -46,7 +46,9 @@ def test_soak_boundary(hours, ok):
 
 
 def test_naive_published_at_is_utc():
-    status = su.release_status("0.17.0", now=NOW, soak_hours=0, fetch=lambda v: _rel(published_at="2026-10-10T12:00:00"))
+    status = su.release_status(
+        "0.17.0", now=NOW, soak_hours=0, fetch=lambda v: _rel(published_at="2026-10-10T12:00:00")
+    )
     assert status.published_at == datetime(2026, 10, 10, 12, tzinfo=UTC)
 
 

@@ -264,7 +264,12 @@ def test_output_is_echoed_to_the_log(tmp_path):
     [
         [{"id": "scout@scout-plugin", "installPath": "/c/scout/0.17.0"}],
         {"plugins": {"scout@scout-plugin": [{"id": "scout@scout-plugin", "installPath": "/c/scout/0.17.0"}]}},
-        {"plugins": {"x": "bad", "scout@scout-plugin": [7, {"id": "scout@scout-plugin", "installPath": "/c/scout/0.17.0"}]}},
+        {
+            "plugins": {
+                "x": "bad",
+                "scout@scout-plugin": [7, {"id": "scout@scout-plugin", "installPath": "/c/scout/0.17.0"}],
+            }
+        },
     ],
 )
 def test_resolve_install_path_both_shapes(payload):
@@ -326,3 +331,56 @@ def test_in_off_peak_reads_the_vault_config(tmp_path, monkeypatch):
     assert sur._in_off_peak(vault) is True
     monkeypatch.setattr(scout_config, "now", lambda data_dir=None: datetime(2026, 10, 12, 12, 0))
     assert sur._in_off_peak(vault) is False
+
+
+def test_slot_due_within_survives_a_bad_zone(tmp_path, monkeypatch):
+    import shutil
+    from datetime import timedelta
+
+    from scout import schedule as sched_mod
+    from scout.scripts import schedule_tick
+
+    vault = tmp_path / "v"
+    (vault / ".scout-state").mkdir(parents=True)
+    shutil.copy(
+        Path(sched_mod.__file__).parent / "defaults" / "schedule.yaml", vault / ".scout-state" / "schedule.yaml"
+    )
+    monkeypatch.setattr(schedule_tick, "_local_tz_name", lambda: "Not/AZone")
+    assert sur._slot_due_within(vault, timedelta(hours=24 * 7)) is True
+
+
+def test_unparseable_target_is_up_to_date(tmp_path):
+    from scout.scripts.self_update import UpdateStatus
+
+    deps, world, _ = make_deps(tmp_path, check=lambda: UpdateStatus("0.16.0", "next", True))
+    assert sur.run_update(deps, scheduled=True).row.result == "up_to_date"
+    assert world.calls == []
+
+
+def test_default_deps_wires_read_only_probes(tmp_path, capsys):
+    """The real Deps, exercised only through its read-only probes (no network, no subprocess)."""
+    import sys
+
+    from scout.scripts import self_update
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    home = tmp_path / "home"
+    deps = sur.default_deps(vault, home=home, log_name="x.log")
+    assert deps.vault == vault and deps.log_name == "x.log"
+    assert deps.read_pointer() is None
+    assert deps.interpreter == str(Path(sys.executable).absolute())
+    assert isinstance(deps.load_config(), dict)
+    assert deps.check is self_update.check and deps.fetch_release is self_update.fetch_release
+    assert deps.run is sur._subprocess_runner
+    assert deps.lock_busy() is False
+    assert deps.slot_due_within(sur.SLOT_LOOKAHEAD) is False
+    assert deps.in_off_peak() in (True, False)
+    assert deps.doctor_severity() == "red"  # an empty folder is not a set-up vault
+    assert deps.blocking_sidecars() == []
+    assert isinstance(deps.claude_bin(), str)
+    assert deps.now().tzinfo is not None
+    deps.say("hello")
+    assert capsys.readouterr().out == "hello\n"
+    sur.default_deps(vault, home=home, quiet=True).say("silent")
+    assert capsys.readouterr().out == ""

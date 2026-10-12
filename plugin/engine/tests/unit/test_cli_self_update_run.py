@@ -71,8 +71,9 @@ def test_not_now_text(tmp_path, wired):
     (tmp_path / "vault" / ".scout-logs").mkdir(parents=True)
     uo.append(
         tmp_path / "vault",
-        uo.UpdateOutcome(at=NOW, from_version="0.16.0", target="0.16.0", managed_by="install.sh",
-                         result="up_to_date", step="check"),
+        uo.UpdateOutcome(
+            at=NOW, from_version="0.16.0", target="0.16.0", managed_by="install.sh", result="up_to_date", step="check"
+        ),
     )
     result = runner.invoke(app, ["self-update", "run", "--scheduled"])
     assert result.exit_code == 0 and "not now (outside the off-peak window)" in result.output

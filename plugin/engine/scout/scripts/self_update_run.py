@@ -378,7 +378,10 @@ def _verify(att: _Attempt, scoutctl: Path, conflicts: list[str]) -> UpdateOutcom
         raise att.stop("failed", "verify", f"install doctor is {severity} after the upgrade. {errors}", doctor=severity)
     if conflicts:
         return att.row(
-            "applied_with_sidecars", "verify", f"left {len(conflicts)} file(s) to merge", doctor=severity,
+            "applied_with_sidecars",
+            "verify",
+            f"left {len(conflicts)} file(s) to merge",
+            doctor=severity,
             sidecars=tuple(conflicts),
         )
     return att.row("applied", "verify", doctor=severity)

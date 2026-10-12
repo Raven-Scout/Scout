@@ -899,9 +899,7 @@ def update_findings(vault: Path, rows: list[UpdateOutcome], *, now: datetime) ->
     findings: list[Finding] = []
     if newest.result == "failed":
         engine = (
-            "the current engine still runs"
-            if newest.step in _PRE_SWITCH_STEPS
-            else "the vault may be partly upgraded"
+            "the current engine still runs" if newest.step in _PRE_SWITCH_STEPS else "the vault may be partly upgraded"
         )
         findings.append(
             Finding(
