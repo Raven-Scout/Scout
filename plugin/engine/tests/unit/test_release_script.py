@@ -94,6 +94,62 @@ def test_prepare_pushes_the_branch_and_opens_the_pr(tmp_path):
     assert "compare/plugin/v0.14.0...v0.14.1" in notes  # --prev from previous-release
 
 
+def _touch_phases(r, msg="feat: a phase rule changes"):
+    rule = r.root / "plugin/phases/core/rule.md"
+    rule.parent.mkdir(parents=True, exist_ok=True)
+    rule.write_text(msg + "\n", encoding="utf-8")
+    _git(r.root, "add", "-A")
+    _git(r.root, "commit", "-q", "-m", msg)
+    _git(r.root, "push", "-q", "origin", "main")
+
+
+def _eval_result(r, stamp):
+    """A local eval result dir as `eval.sh run` names it: <scenario>-<arm>-<YYYYMMDD-HHMMSS>-<rep>."""
+    d = r.root / ".eval-results" / f"busy-weekday-head-{stamp}-1"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text("{}", encoding="utf-8")
+
+
+def test_prepare_reminds_to_run_the_eval_when_no_local_result_exists(tmp_path):
+    r = make_repo(tmp_path)
+    _touch_phases(r)
+    done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "Eval (a local step, not a gate): no local eval result yet" in done.stdout
+    assert "plugin/scripts/eval.sh compare <scenarios> --base plugin/v0.14.0" in done.stdout  # phases/ changed
+
+
+def test_prepare_says_phases_changed_since_the_newest_eval_result(tmp_path):
+    r = make_repo(tmp_path)
+    _eval_result(r, "20200101-000000")
+    _eval_result(r, "20200102-093000")
+    _touch_phases(r)
+    done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "newest local eval result 2020-01-02 09:30; plugin/phases changed since it (1 commit)" in done.stdout
+
+
+def test_prepare_says_phases_unchanged_and_suggests_a_plain_run(tmp_path):
+    r = make_repo(tmp_path)
+    _eval_result(r, "20990101-000000")
+    done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "newest local eval result 2099-01-01 00:00; plugin/phases unchanged since it" in done.stdout
+    assert "plugin/scripts/eval.sh run <scenarios>" in done.stdout and "compare" not in done.stdout
+
+
+def test_the_eval_reminder_never_stops_a_release(tmp_path):
+    r = make_repo(tmp_path)
+    (r.root / ".eval-results" / "not-a-result-dir").mkdir(parents=True)
+    (r.root / ".eval-results" / "busy-weekday-head-2026x-1").mkdir()
+    done = r.run("prepare", "patch")
+    assert done.returncode == 0, done.stderr
+    assert "no local eval result yet" in done.stdout
+    pr = [c for c in r.calls() if c.startswith("gh pr create")]
+    body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
+    assert "- [ ] Eval (local, not a gate): ran `plugin/scripts/eval.sh` on my own Claude login" in body
+
+
 def test_prepare_refuses_an_existing_release_branch(tmp_path):
     r = make_repo(tmp_path)
     head = _git(r.root, "rev-parse", "HEAD")

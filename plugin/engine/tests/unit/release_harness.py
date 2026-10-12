@@ -103,7 +103,7 @@ def _seed(root: Path, version: str) -> None:
     )
     _write(root, "plugin/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n- a plugin thing\n")
     _write(root, "apps/macos/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n- an app thing\n")
-    _write(root, ".gitignore", ".release/\n")
+    _write(root, ".gitignore", ".release/\n.eval-results/\n")
     (root / "scripts").mkdir(exist_ok=True)
     shutil.copy2(SCRIPT, root / "scripts" / "release.sh")
 

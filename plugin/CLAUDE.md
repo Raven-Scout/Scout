@@ -51,3 +51,13 @@ edit just one copy. On any change (anonymizing counts):
    corpus changes without it.
 
 `engine/tests/fixtures/contract/doctor-run-health.json` is a generated contract fixture with an app byte copy too — regenerate it with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
+
+## A behavioural rule in `phases/` gets an eval seed
+
+A PR that adds or changes a behavioural rule in `phases/` should also add or
+update a seed in an eval scenario (`engine/tests/eval/scenarios/`) and the check
+that scores it (`engine/tests/eval/harness/checks/`), or say in the PR why not.
+This is a nudge (the PR template asks), not a gate. Model-backed runs are local
+only, on your own Claude login: `scripts/eval.sh run|compare` (spec:
+`docs/superpowers/specs/2026-10-12-eval-harness-design.md`). CI runs the
+harness's tier-0 tests and never starts a model.

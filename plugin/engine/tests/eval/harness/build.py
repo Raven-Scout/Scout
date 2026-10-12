@@ -131,6 +131,9 @@ def build_vault(
     cache.chmod(0o755)
     env = _git_env(today)
     _git(dest, env, "init", "-q", "-b", "main")
+    # No detached auto-maintenance: its .git/maintenance.lock outlives the commit and races a caller's rmtree.
+    _git(dest, env, "config", "maintenance.auto", "false")
+    _git(dest, env, "config", "gc.auto", "0")
     _git(dest, env, "add", "-A")
     _git(dest, env, "commit", "-q", "-m", "fixture")
     return dest
