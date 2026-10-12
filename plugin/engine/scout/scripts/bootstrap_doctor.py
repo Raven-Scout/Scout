@@ -10,6 +10,7 @@ import os
 import platform
 import plistlib
 import re
+import shlex
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
@@ -65,7 +66,7 @@ _REQUIRED_CAT1_FILES = (
 _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 
 
-def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]]:
+def _check_macos_plist_scoutctl_bin(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Inspect the installed schedule-tick plist's scoutctl path.
 
     Reports as error if the file doesn't exist or isn't executable. Reports
@@ -86,9 +87,12 @@ def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]
         # launchd's parser is laxer than plistlib, so the job may still run. A
         # common cause is a plist from before #221 with a `--` path in its XML
         # comment (#249); reinstalling writes one without it.
+        # install-plist takes its vault from SCOUT_DATA_DIR (else ~/Scout), so the
+        # fix names the vault being checked; the app runs the doctor with it set.
+        env = f"SCOUT_DATA_DIR={shlex.quote(str(vault))} " if vault is not None else ""
         warnings.append(
             f"could not parse {plist_path.name}: {e}. "
-            "Fix: scoutctl schedule install-plist --force (rewrites it from the current template)"
+            f"Fix: {env}scoutctl schedule install-plist --force (rewrites it from the current template)"
         )
         return errors, warnings
     args = data.get("ProgramArguments") or []
@@ -170,11 +174,11 @@ def _check_linux_cron_scoutctl_bin() -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
-def _check_scheduler_bin_path(*, home: Path) -> tuple[list[str], list[str]]:
+def _check_scheduler_bin_path(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Dispatch to the platform-specific scoutctl-bin-path check."""
     system = platform.system()
     if system == "Darwin":
-        return _check_macos_plist_scoutctl_bin(home=home)
+        return _check_macos_plist_scoutctl_bin(home=home, vault=vault)
     if system == "Linux":
         return _check_linux_cron_scoutctl_bin()
     return [], []
@@ -219,15 +223,17 @@ def _same_path(a: Path, b: Path) -> bool:
         return a == b
 
 
-def _path_scoutctl(home: Path) -> Path | None:
-    """What bare ``scoutctl`` from ``~/.local/bin`` runs: our shim's target, or a
-    symlink's. None when there is nothing there, or a file we can't read through."""
+def _shim_target(home: Path) -> Path | None:
+    """What our ``~/.local/bin/scoutctl`` shim execs, or None.
+
+    Only the shim bootstrap writes (it carries SHIM_MARKER) counts: a symlink or
+    a foreign file there is the user's, bootstrap never rewrites it, so a
+    warning about it could not be cleared by re-running bootstrap.
+    """
     from scout.scripts.install_scoutctl_shim import SHIM_MARKER
 
     shim = home / ".local" / "bin" / "scoutctl"
-    if shim.is_symlink():
-        return Path(os.path.realpath(shim))
-    if not shim.is_file():
+    if shim.is_symlink() or not shim.is_file():
         return None
     try:
         body = shim.read_text(encoding="utf-8")
@@ -259,10 +265,10 @@ def _check_engine_pointer(*, home: Path, vault: Path | None = None) -> tuple[lis
         warnings.append(
             f"engine pointer names a missing scoutctl ({pointer.scoutctl}) — re-run `scoutctl bootstrap upgrade`."
         )
-    on_path = _path_scoutctl(home)
-    if on_path is not None and not _same_path(on_path, Path(pointer.scoutctl)):
+    shim_target = _shim_target(home)
+    if shim_target is not None and not _same_path(shim_target, Path(pointer.scoutctl)):
         warnings.append(
-            f"~/.local/bin/scoutctl runs {on_path} but the engine pointer names {pointer.scoutctl} — {fix}."
+            f"~/.local/bin/scoutctl runs {shim_target} but the engine pointer names {pointer.scoutctl} — {fix}."
         )
     pointer_vault = Path(pointer.vault) if pointer.vault else None
     if pointer_vault is not None and vault is not None and not _same_path(pointer_vault, vault):
@@ -536,7 +542,7 @@ def run_doctor(
     # (macOS) or cron block (Linux) actually points to an executable scoutctl
     # and isn't trapped in a TCC-protected directory.
     if check_jobs:
-        bin_errors, bin_warnings = _check_scheduler_bin_path(home=home)
+        bin_errors, bin_warnings = _check_scheduler_bin_path(home=home, vault=vault)
         errors.extend(bin_errors)
         warnings.extend(bin_warnings)
         # Interactive/session scoutctl reachability (separate from the plist).

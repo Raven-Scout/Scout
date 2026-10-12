@@ -757,11 +757,13 @@ def test_plist_with_double_hyphen_in_its_comment_warns_with_the_fix(tmp_path):
     plist = install_plist(home=home)
     plist.write_text(plist.read_text().replace("<!--", f"<!-- installed for {home} ", 1))
 
-    errors, warnings = _check_macos_plist_scoutctl_bin(home=home)
+    vault = tmp_path / "Vaults" / "My Scout"
+    errors, warnings = _check_macos_plist_scoutctl_bin(home=home, vault=vault)
     assert errors == []
     assert len(warnings) == 1
     assert "could not parse com.scout.schedule-tick.plist" in warnings[0]
-    assert "scoutctl schedule install-plist --force" in warnings[0]
+    # The fix names the vault: install-plist alone would aim the plist at ~/Scout.
+    assert f"SCOUT_DATA_DIR='{vault}' scoutctl schedule install-plist --force" in warnings[0]
 
 
 def _real_scoutctl(home: Path) -> Path:
@@ -804,21 +806,20 @@ def test_doctor_silent_when_the_shim_runs_the_pointer_scoutctl(tmp_path):
     assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
 
 
-def test_doctor_follows_a_symlinked_scoutctl_on_path(tmp_path):
-    """A user-made symlink at ~/.local/bin/scoutctl is compared by what it resolves to."""
+def test_doctor_ignores_a_scoutctl_on_path_it_did_not_write(tmp_path):
+    """A symlink or a foreign file at ~/.local/bin/scoutctl is the user's: bootstrap
+    never rewrites it, so a warning there could never be cleared by its fix."""
     from scout.scripts.bootstrap_doctor import _check_engine_pointer
 
     home = tmp_path / "home"
-    scoutctl = _real_scoutctl(home)
-    _write_pointer(home, scoutctl)
+    _write_pointer(home, _real_scoutctl(home))
     (home / ".local" / "bin").mkdir(parents=True)
-    (home / ".local" / "bin" / "scoutctl").symlink_to(scoutctl)
+    on_path = home / ".local" / "bin" / "scoutctl"
+    on_path.symlink_to(_real_scoutctl(home / "elsewhere"))
     assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
-    other = _real_scoutctl(home / "elsewhere")
-    (home / ".local" / "bin" / "scoutctl").unlink()
-    (home / ".local" / "bin" / "scoutctl").symlink_to(other)
-    _, warnings = _check_engine_pointer(home=home, vault=home / "Scout")
-    assert len(warnings) == 1 and "~/.local/bin/scoutctl" in warnings[0]
+    on_path.unlink()
+    on_path.write_text('#!/bin/sh\nexec "/opt/pipx/scoutctl" "$@"\n')
+    assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
 
 
 def test_doctor_warns_when_the_pointer_is_for_another_vault(tmp_path):
