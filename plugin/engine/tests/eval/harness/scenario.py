@@ -14,6 +14,10 @@ from pathlib import Path
 import yaml
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
+KNOWN_CHECKS = {
+    "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget",
+    "outage_reported", "no_false_outage", "dropoff_caught",
+}  # fmt: skip
 PERSONA_CONNECTORS = {"slack": "slack", "linear": "linear", "calendar": "calendar", "email": "email"}
 
 
@@ -27,6 +31,9 @@ class Scenario:
     checks: tuple[str, ...]
     expected_placement: dict[str, set[str]]
     expected_closures: set[str]
+    expected_waiting: tuple[str, ...] = ()
+    personas_down: tuple[str, ...] = ()
+    dropped_tags: tuple[str, ...] = ()
 
     @property
     def script(self) -> Path:
@@ -43,6 +50,9 @@ def load_scenario(name: str) -> Scenario:
     if not (path / "scenario.yaml").is_file():
         raise FileNotFoundError(f"no scenario {name!r} in {SCENARIOS_DIR}")
     raw = yaml.safe_load((path / "scenario.yaml").read_text(encoding="utf-8")) or {}
+    unknown = [c for c in raw.get("checks", []) if c not in KNOWN_CHECKS]
+    if unknown:  # fail before a session is spent, not at scoring time
+        raise ValueError(f"scenario {name!r}: unknown check(s) {', '.join(unknown)}")
     return Scenario(
         name=name,
         path=path,
@@ -52,4 +62,7 @@ def load_scenario(name: str) -> Scenario:
         checks=tuple(raw.get("checks", [])),
         expected_placement={str(k): set(v) for k, v in (raw.get("expected_placement") or {}).items()},
         expected_closures=set(raw.get("expected_closures") or []),
+        expected_waiting=tuple(raw.get("expected_waiting") or []),
+        personas_down=tuple(raw.get("personas_down") or []),
+        dropped_tags=tuple(raw.get("dropped_tags") or []),
     )
