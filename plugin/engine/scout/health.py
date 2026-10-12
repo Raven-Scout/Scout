@@ -332,7 +332,12 @@ TICK_STALL = timedelta(hours=2)
 FIRE_MATCH_SLACK = timedelta(seconds=120)
 _MIN_SANE_EPOCH = 1_000_000_000
 _STALE_FIX = "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor"
-_SILENT_FIX = "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log"
+# Runners record their lock and budget skips (#401), so a fire with no row is a
+# run killed before it could record, or a vault whose runners predate that.
+_SILENT_FIX = (
+    "The run was killed or ended before recording an outcome; see .scout-logs/failures.log. "
+    "If this vault's runners predate skip recording, run /scout-update"
+)
 _STALLED_FIX = (
     "Reinstall the scheduler job: scoutctl schedule install-plist --force (macOS) "
     "or scoutctl schedule install-cron (Linux)"

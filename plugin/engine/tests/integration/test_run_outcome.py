@@ -73,10 +73,12 @@ def _log(vault: Path, text: str, name: str = "scout-2026-01-05_08-00.log") -> Pa
     return path
 
 
-def _record(script: Path, mode: str, exit_code: int, log: Path, **env: str) -> subprocess.CompletedProcess[str]:
+def _record(
+    script: Path, mode: str, exit_code: int, log: Path, *extra: str, **env: str
+) -> subprocess.CompletedProcess[str]:
     started = str(int(time.time()) - 90)
     return subprocess.run(
-        ["bash", str(script), "record", mode, str(exit_code), started, str(log)],
+        ["bash", str(script), "record", mode, str(exit_code), started, str(log), *extra],
         env={**os.environ, **env},
         capture_output=True,
         text=True,
@@ -210,6 +212,35 @@ def test_the_failure_class_is_named_from_the_log(vault: Path, outcome: Path, log
     _record(outcome, "dreaming-nightly", 1, log)
 
     assert _ledger(vault)[-1]["failure_class"] == klass
+
+
+@pytest.mark.parametrize(("exit_code", "expected"), [(0, "ok"), (1, "failed")])
+def test_every_row_names_its_outcome(vault: Path, outcome: Path, exit_code: int, expected: str) -> None:
+    _record(outcome, "morning-briefing", exit_code, _log(vault, ""))
+
+    assert _ledger(vault)[-1]["outcome"] == expected
+
+
+@pytest.mark.parametrize("skip", ["skipped_lock", "skipped_budget", "skipped_redundant"])
+def test_a_skip_is_recorded_with_its_outcome(
+    vault: Path, outcome: Path, calls: Path, notifier: tuple[Path, Path], skip: str
+) -> None:
+    """#401: a deliberate skip leaves a row, so health does not read the fire as silent."""
+    log = _log(vault, "=== Another Scout session running (PID 123) — skipping ===\n")
+
+    result = _record(outcome, "dreaming-nightly", 0, log, skip, **_env(notifier[0]))
+
+    assert result.returncode == 0, result.stderr
+    (row,) = _ledger(vault)
+    assert (row["outcome"], row["exit_code"], row["failure_class"]) == (skip, 0, "ok")
+    assert _notices(calls) == [["health", "notify", "--quiet"]]
+
+
+@pytest.mark.parametrize("bogus", ["", "skipped", "ok; rm -rf /", "failed"])
+def test_an_unknown_outcome_falls_back_to_the_exit_code(vault: Path, outcome: Path, bogus: str) -> None:
+    _record(outcome, "dreaming-nightly", 0, _log(vault, ""), bogus)
+
+    assert _ledger(vault)[-1]["outcome"] == "ok"
 
 
 def test_a_missing_log_is_an_unknown_failure(vault: Path, outcome: Path) -> None:
