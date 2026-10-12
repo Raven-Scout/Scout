@@ -13,11 +13,13 @@ import re
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 import yaml
 
+from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
 from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
 
@@ -35,6 +37,11 @@ class DoctorReport:
     warnings: list[str] = field(default_factory=list)
     # Worth knowing, not a health problem: never changes the severity.
     notes: list[str] = field(default_factory=list)
+    # Run health (is Scout actually running?) is reported beside install health and
+    # never changes `severity` or `exit_code` (D2): an expired login must not fail
+    # an upgrade's post-upgrade check. None when the vault is missing or the
+    # evaluator crashed.
+    run_health: RunHealth | None = None
 
     @property
     def exit_code(self) -> int:
@@ -56,81 +63,6 @@ _REQUIRED_CAT1_FILES = (
 # macOS TCC-protected directories — launchd-spawned processes cannot read files
 # inside these without Full Disk Access granted to the executable.
 _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
-
-# Runner log filename prefixes written under <vault>/.scout-logs/ by the three
-# cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
-_RUN_LOG_GLOBS = ("scout-*.log", "dreaming-*.log", "research-*.log")
-
-# The Claude CLI's own auth-error phrasing, anchored at the start of a line, so a
-# session that merely *writes about* a 401 or quotes one of these errors can't
-# trip a detector. One definition shared verbatim, as a POSIX ERE, by
-# templates/scripts/claude-with-retry.sh.tmpl (AUTH_PATTERNS) and
-# templates/scripts/run-outcome.sh.tmpl (AUTH_RE); a test keeps the three equal.
-# Written so Python's re (with MULTILINE) reads it the same way grep -E does.
-CLI_AUTH_FAILURE_ERE = (
-    "^(Failed to authenticate([.:]|$)"
-    "|Invalid authentication credentials"
-    "|API Error: 40[13]"
-    "|OAuth (session|token)( has)? expired)"
-)
-
-# Rejected-Claude-credential signatures: the retry wrapper's own banner, or the
-# CLI's raw error (pre-0.8.0 runners never wrote the banner).
-_AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
-
-
-def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
-    """Return the trailing ``max_bytes`` of ``path`` decoded as UTF-8.
-
-    Session logs can be large; we only need the end (where the failure marker
-    and the run-finished line live). Reads the last chunk so the check stays
-    cheap regardless of log size. Returns "" on any read error.
-    """
-    try:
-        with path.open("rb") as f:
-            size = path.stat().st_size
-            if size > max_bytes:
-                f.seek(-max_bytes, os.SEEK_END)
-            data = f.read()
-    except OSError:
-        return ""
-    return data.decode("utf-8", errors="replace")
-
-
-def _check_recent_auth_failure(*, vault: Path) -> tuple[list[str], list[str]]:
-    """RED if the most recent run log ended on a rejected-credential failure.
-
-    A 401/403 from Claude Code blocks *every* scheduled run until a human
-    re-authenticates, yet it leaves no on-disk vault state — so without this the
-    doctor (and the post-upgrade smoke) stay green through a total outage. We
-    look only at the single newest run log so the signal self-clears: the next
-    successful run writes a newer, clean log and the error disappears.
-    """
-    logs_dir = vault / ".scout-logs"
-    if not logs_dir.is_dir():
-        return [], []
-    candidates: list[Path] = []
-    for pat in _RUN_LOG_GLOBS:
-        candidates.extend(logs_dir.glob(pat))
-    if not candidates:
-        return [], []
-    try:
-        latest = max(candidates, key=lambda p: p.stat().st_mtime)
-    except OSError:
-        return [], []
-    if not _AUTH_FAILURE_RE.search(_tail_text(latest)):
-        return [], []
-    return (
-        [
-            f"latest scheduled run failed to authenticate (HTTP 401/403): {latest.name}. "
-            "Claude Code's API credentials were rejected — every scheduled run will fail "
-            "until this is fixed. Re-authenticate the claude binary the runner uses: "
-            "`claude setup-token` (headless, then expose CLAUDE_CODE_OAUTH_TOKEN to the "
-            "runner's environment) or run: claude auth login (interactive). Verify with "
-            f"`<claude-bin> -p 'hello'`. Full log: .scout-logs/{latest.name}."
-        ],
-        [],
-    )
 
 
 def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]]:
@@ -404,8 +336,13 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     return warnings
 
 
-def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
-    """Run all doctor checks against ``vault``. Pure read."""
+def run_doctor(
+    *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
+) -> DoctorReport:
+    """Run all doctor checks against ``vault``. Pure read.
+
+    ``now`` pins the run-health clock (tests and the contract fixture); default is the real time.
+    """
     errors: list[str] = []
     warnings: list[str] = []
     notes: list[str] = []
@@ -523,13 +460,6 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
     warnings.extend(drift_warnings)
     notes.extend(drift_notes)
 
-    # Recent Claude-CLI auth failure — scan the newest run log for a rejected
-    # credential. Read-only and offline (no API call); self-clears on the next
-    # successful run. Not gated by check_jobs — it inspects on-disk logs only.
-    auth_errors, auth_warnings = _check_recent_auth_failure(vault=vault)
-    errors.extend(auth_errors)
-    warnings.extend(auth_warnings)
-
     # Live launchd jobs.
     if check_jobs and os.name == "posix":
         try:
@@ -566,8 +496,17 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
         errors.extend(claude_errors)
         warnings.extend(claude_warnings)
 
+    # Run health sits beside the install verdict, never inside it (D2).
+    from scout import health
+
+    try:
+        run_health: RunHealth | None = health.evaluate(vault, now=now)
+    except Exception as e:  # noqa: BLE001 - a health-evaluator bug must not break the doctor
+        run_health = None
+        notes.append(f"run health could not be evaluated: {e}")
+
     if errors:
-        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes)
+        return DoctorReport(severity=Severity.RED, errors=errors, warnings=warnings, notes=notes, run_health=run_health)
     if warnings:
-        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes)
-    return DoctorReport(severity=Severity.GREEN, notes=notes)
+        return DoctorReport(severity=Severity.YELLOW, warnings=warnings, notes=notes, run_health=run_health)
+    return DoctorReport(severity=Severity.GREEN, notes=notes, run_health=run_health)

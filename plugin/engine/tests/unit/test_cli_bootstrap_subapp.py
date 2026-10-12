@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -86,7 +87,31 @@ def test_doctor_json_shape(tmp_path, monkeypatch):
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     result = runner.invoke(app, ["bootstrap", "doctor", "--no-jobs", "--json"])
     payload = json.loads(result.stdout)
-    assert set(payload) == {"severity", "errors", "warnings", "notes"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health"}
+
+
+def test_doctor_text_has_a_run_health_section_and_no_auth_error(tmp_path, monkeypatch):
+    vault = _vault(tmp_path, monkeypatch)
+    runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
+    logs = vault / ".scout-logs"
+    logs.mkdir(exist_ok=True)
+    now = int(time.time())
+    row = {
+        "slot": "morning-briefing",
+        "mode": "scout",
+        "started_at": now - 360,
+        "finished_at": now - 300,
+        "duration_s": 1,
+        "exit_code": 1,
+        "failure_class": "oauth_expired",
+        "log": "scout-1.log",
+    }
+    (logs / "run-outcomes.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    result = runner.invoke(app, ["bootstrap", "doctor", "--no-jobs"])
+    out = result.stdout + result.stderr
+    assert "run health: red" in out
+    assert "run health red: auth.expired:" in out
+    assert not any(line.startswith("error:") and "authenticat" in line.lower() for line in out.splitlines())
 
 
 def test_install_json_matches_auto_contract(tmp_path, monkeypatch):

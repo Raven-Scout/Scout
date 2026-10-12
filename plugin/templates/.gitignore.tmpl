@@ -1,6 +1,10 @@
 .scout-logs/
 .scout-cache/
 .scout-state/last-assembled/
+# Notifier bookkeeping (scoutctl health notify, scoutctl notify telegram): this
+# host's push state and lock, not vault content.
+.scout-state/health-notify.*
+.scout-state/telegram-sent.jsonl*
 .obsidian/
 .DS_Store
 __pycache__/

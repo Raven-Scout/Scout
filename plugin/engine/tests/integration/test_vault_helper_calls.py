@@ -8,8 +8,8 @@ a helper script only that vault has:
     dies before reaching its phases;
   - ``hooks/kb-pre-filter.sh`` caches the git-truth staleness ranking
     (``scripts/vault-freshness.py``) before the session starts;
-  - ``scripts/heartbeat.sh`` runs the session-lane liveness watchdog
-    (``scripts/session-lane-liveness.py``) once a day.
+  - ``scripts/heartbeat.sh`` runs a run-health sweep
+    (``scoutctl health notify``) on every tick.
 
 The plugin now ships these helpers (see test_shipped_helpers_install.py), but
 every call stays guarded: a vault without the helper, or with one that fails,
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -232,13 +233,12 @@ def test_kb_pre_filter_reports_a_failing_ranking_and_drops_its_stale_cache(vault
     assert not stale.exists()
 
 
-# ---------- heartbeat.sh: once-a-day session-lane liveness watchdog ----------
+# ---------- heartbeat.sh: a run-health sweep on every tick ----------
 
 LIVENESS_STUB = """#!/usr/bin/env python3
 import os, sys
 with open(os.path.join(os.environ["SCOUT_DATA_DIR"], "liveness.calls"), "a") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
-print("lane dreaming: DARK")
 sys.exit(2)
 """
 
@@ -249,7 +249,9 @@ def _heartbeat(vault: Path) -> tuple[Path, Path]:
     return beat, calls
 
 
-def test_heartbeat_runs_the_lane_watchdog_once_a_day(vault: Path) -> None:
+def test_heartbeat_sweeps_run_health_on_every_tick(vault: Path) -> None:
+    """Every tick, not once a day: a wake-graced finding needs a second look to be
+    confirmed, and the notifier's own state keeps a repeat sweep from re-pushing."""
     beat, scoutctl_calls = _heartbeat(vault)
     _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
 
@@ -258,36 +260,63 @@ def test_heartbeat_runs_the_lane_watchdog_once_a_day(vault: Path) -> None:
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    assert (vault / "liveness.calls").read_text(encoding="utf-8").splitlines() == ["--quiet --notify"]
-    assert "lane dreaming: DARK" in (vault / ".scout-logs" / "lane-liveness.log").read_text(encoding="utf-8")
-    assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run", "heartbeat run"]
+    assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == [
+        "health notify --quiet",
+        "heartbeat run",
+        "health notify --quiet",
+        "heartbeat run",
+    ]
+    assert not list((vault / ".scout-cache").glob("health-sweep-*.done")), "no daily marker any more"
+    assert not (vault / "liveness.calls").exists(), "the lane script is no longer called"
+    assert not (vault / ".scout-logs" / "lane-liveness.log").exists()
 
 
-def test_heartbeat_dry_run_skips_the_lane_watchdog(vault: Path) -> None:
+def test_heartbeat_prunes_old_sweep_markers(vault: Path) -> None:
+    beat, _ = _heartbeat(vault)
+    long_ago = time.time() - 30 * 86400
+    old = []
+    for name in ("health-sweep-2020-01-01.done", "lane-liveness-2020-01-01.done"):
+        marker = vault / ".scout-cache" / name
+        marker.write_text("", encoding="utf-8")
+        os.utime(marker, (long_ago, long_ago))
+        old.append(marker)
+    recent = vault / ".scout-cache" / "lane-liveness-2026-10-10.done"
+    recent.write_text("", encoding="utf-8")
+
+    _run(beat, vault)
+
+    assert not [m for m in old if m.exists()]
+    assert recent.exists()
+
+
+def test_heartbeat_dry_run_skips_the_sweep(vault: Path) -> None:
     beat, scoutctl_calls = _heartbeat(vault)
-    _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
 
     result = _run(beat, vault, "--dry-run")
 
     assert result.returncode == 0, result.stderr
-    assert not (vault / "liveness.calls").exists()
     assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run --dry-run"]
 
 
-def test_heartbeat_without_the_watchdog_runs_as_before(vault: Path) -> None:
-    beat, scoutctl_calls = _heartbeat(vault)
+def test_a_failing_sweep_does_not_stop_the_heartbeat(vault: Path) -> None:
+    scoutctl = _script(
+        vault / "bin" / "scoutctl",
+        f'#!/bin/bash\necho "$*" >> "{vault / "scoutctl.calls"}"\n[ "$1" = health ] && exit 1\nexit 0\n',
+    )
+    beat = _render("scripts/heartbeat.sh.tmpl", vault, "scripts/heartbeat.sh", SCOUTCTL_BIN=str(scoutctl))
 
     result = _run(beat, vault)
 
     assert result.returncode == 0, result.stderr
-    assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run"]
-    assert list((vault / ".scout-cache").glob("lane-liveness-*.done")) == []
+    assert (vault / "scoutctl.calls").read_text(encoding="utf-8").splitlines() == [
+        "health notify --quiet",
+        "heartbeat run",
+    ]
 
 
 def test_heartbeat_survives_an_unwritable_cache_dir(vault: Path) -> None:
-    """The watchdog block must never stop the heartbeat reaching its real work."""
+    """The sweep block must never stop the heartbeat reaching its real work."""
     beat, scoutctl_calls = _heartbeat(vault)
-    _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
     cache = vault / ".scout-cache"
     cache.chmod(0o555)
     try:
@@ -296,4 +325,4 @@ def test_heartbeat_survives_an_unwritable_cache_dir(vault: Path) -> None:
         cache.chmod(0o755)
 
     assert result.returncode == 0, result.stderr
-    assert scoutctl_calls.read_text(encoding="utf-8").splitlines() == ["heartbeat run"]
+    assert scoutctl_calls.read_text(encoding="utf-8").splitlines()[-1] == "heartbeat run"

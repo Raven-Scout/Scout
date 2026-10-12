@@ -76,7 +76,7 @@ VAULT_FIXES = [
     ),
     pytest.param(
         "scripts/heartbeat.sh",
-        ['python3 "$SCOUT_DATA_DIR/scripts/session-lane-liveness.py" --quiet --notify \\'],
+        ['"$SCOUTCTL_BIN" health notify --quiet \\'],
         id="heartbeat",
     ),
     pytest.param(

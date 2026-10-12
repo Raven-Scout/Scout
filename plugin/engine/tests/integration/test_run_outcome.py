@@ -2,10 +2,10 @@
 
 Every runner calls ``scripts/run-outcome.sh record <mode> <exit> <start> <log>``
 after the session. The script appends a row to ``.scout-logs/run-outcomes.jsonl``,
-names the failure class from the run's log, and sends a Telegram notice through
-``scoutctl notify telegram`` at one and at two consecutive failures, then stays
-quiet. It lives in the runner, not the session, because the failure it watches
-for is a run that dies before the session can report anything.
+names the failure class from the run's log, then calls ``scoutctl health notify
+--quiet`` after every run. If scoutctl cannot run, it raises one local desktop
+alert a day (the floor). It lives in the runner, not the session, because the
+failure it watches for is a run that dies before the session can report anything.
 
 The template is rendered into a temporary vault and run by the real shell, with
 a stand-in ``scoutctl`` that records each call.
@@ -95,17 +95,44 @@ def _notices(calls: Path) -> list[list[str]]:
     return [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
 
 
-def _tiers(calls: Path) -> list[str]:
-    return [argv[argv.index("--tier") + 1] for argv in _notices(calls)]
+def _notifier_bin(tmp_path: Path) -> tuple[Path, Path]:
+    """Fake `osascript` + `notify-send` that append their argv to a record file.
+
+    Every test that can reach the floor puts these first on PATH, so none ever
+    pops a real desktop notification.
+    """
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    record = tmp_path / "notifications.log"
+    for name in ("osascript", "notify-send"):
+        p = fake_bin / name
+        p.write_text(f'#!/bin/bash\necho "{name} $*" >> "{record}"\ncat > /dev/null\n', encoding="utf-8")
+        p.chmod(0o755)
+    return fake_bin, record
+
+
+def _notifications(record: Path) -> list[str]:
+    return record.read_text(encoding="utf-8").splitlines() if record.exists() else []
+
+
+@pytest.fixture
+def notifier(tmp_path: Path) -> tuple[Path, Path]:
+    return _notifier_bin(tmp_path)
+
+
+def _env(fake_bin: Path, **env: str) -> dict[str, str]:
+    return {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", **env}
 
 
 # ---------- the ledger ----------
 
 
-def test_a_successful_run_is_recorded_and_sends_nothing(vault: Path, outcome: Path, calls: Path) -> None:
+def test_a_successful_run_is_recorded_and_sends_nothing(
+    vault: Path, outcome: Path, calls: Path, notifier: tuple[Path, Path]
+) -> None:
     log = _log(vault, "=== Scout run finished (exit code: 0) ===\n")
 
-    result = _record(outcome, "morning-briefing", 0, log)
+    result = _record(outcome, "morning-briefing", 0, log, **_env(notifier[0]))
 
     assert result.returncode == 0, result.stderr
     (row,) = _ledger(vault)
@@ -116,7 +143,8 @@ def test_a_successful_run_is_recorded_and_sends_nothing(vault: Path, outcome: Pa
     assert row["log"] == log.name
     assert row["finished_at"] >= row["started_at"]
     assert 85 <= row["duration_s"] <= 120
-    assert _notices(calls) == []
+    assert not any(argv[:1] == ["notify"] for argv in _notices(calls))
+    assert _notifications(notifier[1]) == []
 
 
 def test_the_slot_is_the_dispatcher_slot_when_one_is_set(vault: Path, outcome: Path) -> None:
@@ -187,47 +215,133 @@ def test_a_missing_log_is_an_unknown_failure(vault: Path, outcome: Path) -> None
     assert _ledger(vault)[-1]["failure_class"] == "unknown"
 
 
-# ---------- escalation ----------
+# ---------- the notifier ----------
 
 
-def test_the_first_failure_is_silent_the_second_loud_then_quiet(vault: Path, outcome: Path, calls: Path) -> None:
+@pytest.mark.parametrize(("exit_code", "text"), [(0, ""), (1, "Failed to authenticate\n")], ids=["success", "failure"])
+def test_every_record_calls_health_notify(
+    vault: Path, outcome: Path, calls: Path, notifier: tuple[Path, Path], exit_code: int, text: str
+) -> None:
+    log = _log(vault, text)
+
+    _record(outcome, "morning-briefing", exit_code, log, **_env(notifier[0]))
+    _record(outcome, "morning-briefing", exit_code, log, **_env(notifier[0]))
+
+    assert _notices(calls) == [["health", "notify", "--quiet"]] * 2
+
+
+def test_no_telegram_call_from_bash(vault: Path, outcome: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
     log = _log(vault, "Failed to authenticate\n")
 
-    for _ in range(4):
-        _record(outcome, "morning-briefing", 1, log)
+    for _ in range(3):
+        _record(outcome, "morning-briefing", 1, log, **_env(notifier[0]))
 
-    assert _tiers(calls) == ["info", "action_required"]
-
-
-def test_a_success_resets_the_failure_streak(vault: Path, outcome: Path, calls: Path) -> None:
-    bad = _log(vault, "Failed to authenticate\n", "scout-bad.log")
-    good = _log(vault, "", "scout-good.log")
-
-    _record(outcome, "morning-briefing", 1, bad)
-    _record(outcome, "morning-briefing", 0, good)
-    _record(outcome, "morning-briefing", 1, bad)
-
-    assert _tiers(calls) == ["info", "info"]
+    assert [argv for argv in _notices(calls) if argv[:1] == ["notify"]] == []
 
 
-def test_the_notice_names_the_run_the_class_and_the_log(vault: Path, outcome: Path, calls: Path) -> None:
-    log = _log(vault, "Failed to authenticate\n")
+def test_the_notifier_output_lands_in_the_run_log(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
+    stub = _script(vault / "bin" / "scoutctl", "#!/bin/bash\necho 'pushed: auth.expired'\n")
+    script = _install(vault, scoutctl=stub)
+    log = _log(vault, "")
 
-    _record(outcome, "morning-briefing", 1, log)
+    _record(script, "morning-briefing", 0, log, **_env(notifier[0]))
+    _record(script, "morning-briefing", 0, vault / ".scout-logs" / "gone.log", **_env(notifier[0]))
 
-    (argv,) = _notices(calls)
-    assert argv[:2] == ["notify", "telegram"]
-    body = argv[argv.index("--body") + 1]
-    assert "morning-briefing" in body
-    assert "exit 1" in body
-    assert "oauth_expired" in body
-    assert "Re-authenticate" in body
-    assert "run: claude auth login" in body, "the Telegram notice names the same fix as the desktop alert"
-    assert str(log) in body
+    assert "pushed: auth.expired" in log.read_text(encoding="utf-8")
+    assert "pushed: auth.expired" in (vault / ".scout-logs" / "health-notify.log").read_text(encoding="utf-8")
+
+
+# ---------- the engine-unreachable floor ----------
+
+
+def _floor(vault: Path, calls: Path, exit_code: int = 1) -> Path:
+    stub = _script(vault / "bin" / "scoutctl", SCOUTCTL_STUB.format(calls=str(calls), exit_code=exit_code))
+    return _install(vault, scoutctl=stub)
+
+
+def test_an_unreachable_scoutctl_raises_one_floor_alert(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
+    fake_bin, record = notifier
+    script = _floor(vault, calls)
+    log = _log(vault, "")
+
+    for _ in range(2):
+        result = _record(script, "morning-briefing", 0, log, **_env(fake_bin))
+        assert result.returncode == 0, result.stderr
+
+    (note,) = _notifications(record)
+    assert "engine is broken" in note
+    assert "Reinstall" in note
+    marker = vault / ".scout-logs" / ".engine-alert-sent"
+    assert marker.read_text(encoding="utf-8").strip().isdigit()
+
+
+def test_the_floor_alerts_again_after_the_interval(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
+    fake_bin, record = notifier
+    script = _floor(vault, calls)
+    log = _log(vault, "")
+
+    for _ in range(2):
+        _record(script, "morning-briefing", 0, log, **_env(fake_bin, SCOUT_ENGINE_ALERT_INTERVAL_S="0"))
+
+    assert len(_notifications(record)) == 2
+
+
+def test_a_non_numeric_interval_falls_back_to_a_day(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
+    fake_bin, record = notifier
+    script = _floor(vault, calls)
+    log = _log(vault, "")
+
+    for _ in range(2):
+        _record(script, "morning-briefing", 0, log, **_env(fake_bin, SCOUT_ENGINE_ALERT_INTERVAL_S="soon"))
+
+    assert len(_notifications(record)) == 1
+
+
+def test_a_working_engine_clears_the_floor_marker(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
+    fake_bin, record = notifier
+    broken = _floor(vault, calls, exit_code=1)
+    log = _log(vault, "")
+    _record(broken, "morning-briefing", 0, log, **_env(fake_bin))
+    marker = vault / ".scout-logs" / ".engine-alert-sent"
+    assert marker.exists()
+
+    working = _floor(vault, calls, exit_code=0)
+    _record(working, "morning-briefing", 0, log, **_env(fake_bin))
+    assert not marker.exists()
+
+    broken = _floor(vault, calls, exit_code=1)  # the same script path, pointed at a broken engine again
+    _record(broken, "morning-briefing", 0, log, **_env(fake_bin))
+    assert len(_notifications(record)) == 2, "the next breakage alerts at once"
+
+
+def test_a_missing_scoutctl_raises_the_floor(vault: Path, notifier: tuple[Path, Path]) -> None:
+    fake_bin, record = notifier
+    script = _install(vault, scoutctl=vault / "bin" / "no-such-scoutctl")
+    log = _log(vault, "")
+
+    result = _record(script, "morning-briefing", 0, log, PATH=f"{fake_bin}{os.pathsep}/usr/bin:/bin")
+
+    assert result.returncode == 0, result.stderr
+    assert len(_notifications(record)) == 1
+
+
+def test_a_failed_notification_leaves_no_marker(vault: Path, calls: Path, tmp_path: Path) -> None:
+    fake_bin = tmp_path / "failbin"
+    fake_bin.mkdir()
+    for name in ("osascript", "notify-send"):
+        _script(fake_bin / name, "#!/bin/bash\ncat > /dev/null\nexit 1\n")
+    script = _floor(vault, calls)
+
+    result = _record(script, "morning-briefing", 0, _log(vault, ""), **_env(fake_bin))
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / ".scout-logs" / ".engine-alert-sent").exists()
 
 
 @pytest.mark.parametrize("scoutctl", ["missing", "failing"])
-def test_a_broken_scoutctl_never_fails_the_record(vault: Path, calls: Path, scoutctl: str) -> None:
+def test_a_broken_scoutctl_never_fails_the_record(
+    vault: Path, calls: Path, scoutctl: str, notifier: tuple[Path, Path]
+) -> None:
     if scoutctl == "missing":
         stub = vault / "bin" / "no-such-scoutctl"
     else:
@@ -235,7 +349,7 @@ def test_a_broken_scoutctl_never_fails_the_record(vault: Path, calls: Path, scou
     script = _install(vault, scoutctl=stub)
     log = _log(vault, "Failed to authenticate\n")
 
-    result = _record(script, "morning-briefing", 1, log, PATH="/usr/bin:/bin")
+    result = _record(script, "morning-briefing", 1, log, PATH=f"{notifier[0]}{os.pathsep}/usr/bin:/bin")
 
     assert result.returncode == 0, result.stderr
     assert _ledger(vault)[-1]["failure_class"] == "oauth_expired"

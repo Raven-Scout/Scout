@@ -269,7 +269,7 @@ def test_first_baseline_after_the_last_release_without_bases_is_silent(tmp_path:
     assert (vault / HEARTBEAT).read_text(encoding="utf-8") == vd.snapshot_path(vault, HEARTBEAT).read_text(
         encoding="utf-8"
     )
-    assert "session-lane-liveness.py" in (vault / HEARTBEAT).read_text(encoding="utf-8")
+    assert "health notify --quiet" in (vault / HEARTBEAT).read_text(encoding="utf-8")
 
 
 def test_first_baseline_parks_a_file_no_release_shipped(vault: Path, plugin: Path) -> None:
