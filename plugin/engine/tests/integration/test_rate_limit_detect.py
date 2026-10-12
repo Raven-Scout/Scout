@@ -54,6 +54,7 @@ def _log(vault: Path, text: str) -> Path:
 RATE_LIMITED = [
     pytest.param("You've hit your session limit · resets 3pm\n", id="session-limit"),
     pytest.param("Weekly limit reached · resets Mon 9am\n", id="limit-resets-rewording"),
+    pytest.param("You've hit your weekly limit · resets Oct 15 at 2pm (Europe/Prague)\n", id="weekly-limit-date"),
     pytest.param("You have hit your usage limit\n", id="usage-limit"),
     pytest.param("API Error: 429 Too Many Requests\n", id="http-429"),
 ]
