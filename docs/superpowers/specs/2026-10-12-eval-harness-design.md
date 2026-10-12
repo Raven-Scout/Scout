@@ -1,7 +1,9 @@
 # Agent-behaviour eval harness — design
 
-**Status:** draft for review. Docs only; no code lands from this PR. §13 lists the questions that
-need a product decision before the implementation plan.
+**Status:** draft, revision 2 (2026-10-12). Revised after the maintainer's decision on credentials:
+no API key and no paid spend, because this is a low-budget open-source project. Model-backed runs
+happen locally, on the maintainer's normal Claude Code login, and CI runs only the free tier.
+§13 records the decisions. Docs only; no code lands from this PR.
 **Date:** 2026-10-12, written against `origin/main` @ `da6e3d1` (v0.16.0 + #371).
 **Issue:** #196. Instruction changes it must be able to judge: #371, #372, #325, and run-health P3
 (#366 / #370 / #373 stack).
@@ -29,7 +31,9 @@ connectors, then scores what the session did.
    reported only when the evidence clears a stated bar (§8).
 4. No real person, project, organisation or text from any real vault appears anywhere in the
    fixture. This is enforced by a test, not by care.
-5. Spend is bounded per run, per suite and per month, and CI never spends without someone asking.
+5. Nothing costs money. There is no API key anywhere. Model-backed runs use the maintainer's own
+   subscription login, on their own machine, only when they ask, and they see how many sessions a
+   command will start before it starts them. CI makes no model calls at all.
 
 **Non-goals:** testing the Python engine (pytest already does), testing Scout.app, and evaluating
 the interactive commands (`/scout-work`, `/scout-plan`) or #196's knowledge-question tasks in the
@@ -50,6 +54,7 @@ first slices. §11 places those later.
 | Telemetry | Stop hook `session_tool_log` → `.scout-logs/connector-calls-*.jsonl` | Logs only `{tool, connector, error}`. The harness uses the stream-json transcript instead. |
 | Fixtures | `engine/tests/fixtures/kb-sample/` (2 files), `conftest.py` `fake_data_dir` / `kb_repo`, `integration/test_run_scout_mode_export.py` (renders the runner with a stub claude) | Seeds, not a vault. The runner-with-stub-claude pattern is the precedent this harness extends. |
 | `claude plugin eval` (CLI 2.1.278) | built in | Considered and rejected for the core runner (§4). |
+| Session isolation precedent | #354 (`connector_draft.py` `Isolation`, `session_settings`, `isolated_session`); setup-retirement spec §4.2 | Headless `claude -p` with `--setting-sources ""`, `--settings '{"disableAllHooks":true,…}'`, `dontAsk`, a narrow `--allowedTools` and `--no-session-persistence`. Its spike used a scratch `CLAUDE_CONFIG_DIR` with only the keychain login shared. The harness reuses this recipe; §4.1 adds what an eval needs on top. |
 
 There is no temperature or seed flag on `claude -p`. Every run is a sample, so every claim is a
 rate over N repetitions.
@@ -108,42 +113,77 @@ iteration on one rule. It is never the gate.
 because the instructions only matter to the model. A recorded transcript is useful as a stub
 *source* (connector responses), not as the thing under test.
 
-### 4.1 The claude shim and determinism levers
+### 4.1 The claude shim: isolation on a subscription login
 
 `run-scout.sh` calls `claude-with-retry.sh $LOG $CLAUDE_BIN <runner flags> -p "$PROMPT"`. The shim
-receives the runner flags and adds or replaces:
+receives the runner flags and runs the real `claude` with #354's isolation recipe plus what an
+eval needs. There is no `--bare` and no `ANTHROPIC_API_KEY`: `--bare` reads only an API key, and
+this project spends nothing (§13 Q1). Isolation comes from flags and a scratch config dir instead.
 
 | Flag / env | Why |
 |---|---|
-| `--bare` | Skips the operator's hooks, CLAUDE.md, auto-memory, plugins and keychain. Without it the operator's own setup leaks into the sample. Requires `ANTHROPIC_API_KEY` or an `apiKeyHelper` (§13 Q1). |
-| `--strict-mcp-config --mcp-config <scenario>.mcp.json` | Only the stub servers exist. Server keys match production names (`claude_ai_Slack`, `claude_ai_Linear`, `claude_ai_Google_Calendar`, …) so tool names (`mcp__claude_ai_Slack__slack_search_public_and_private`) and `connector_log.classify()` match production. |
-| `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir; the run log gets only the final result line. |
-| `--model <pinned full id>` | Replaces the runner's `--model opus` alias, so alias drift never moves a baseline. Recorded in results. |
-| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces `auto`. The allowlist: Read/Write/Edit/Glob/Grep/ToolSearch, `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up as a denial, not a hang. This is the one deliberate deviation from production (§12 R2). |
-| `--max-budget-usd` | Kept from the runner (`MAX_BUDGET` input), so a runaway sample is cut off. |
-| `--no-session-persistence`, isolated `HOME` and `CLAUDE_CONFIG_DIR` (temp dirs) | Never reads or writes the operator's `~/.claude`. |
+| `CLAUDE_CONFIG_DIR=<fresh temp dir>` | The session reads and writes no part of the operator's `~/.claude`: no settings, no `.claude.json` MCP entries, no memory, no session history. |
+| `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` | Keeps the operator's keychain login reachable from the scratch config dir. This is the only thing shared. **Required:** without it a scratch config dir runs "Not logged in" (verified, §4.3). |
+| `--setting-sources ""` and `--settings '{"disableAllHooks":true}'` | No user, project or local settings, so no global allow rule widens the tool list and no hook runs, plugin hooks included. This is #354's `Isolation.flags()`. |
+| `--strict-mcp-config --mcp-config <scenario>.mcp.json` | **Mandatory, not hygiene.** Without it the account's claude.ai connectors load even with a scratch config dir and empty setting sources. That means the maintainer's live, signed-in Slack, Linear, Calendar, Gmail and GitHub (verified, §4.3), so a sample could read or post to real accounts. With it, only the stub servers exist. Server keys match production names (`claude_ai_Slack`, `claude_ai_Linear`, `claude_ai_Google_Calendar`, …), so tool names (`mcp__claude_ai_Slack__slack_search_public_and_private`) and `connector_log.classify()` match production. |
+| **Init-event guard** | The shim reads the stream's `system/init` event before the first turn. If `mcp_servers` lists anything outside the scenario's stub set, it kills the session and marks the sample `aborted: mcp_leak`. If a CLI release changes how `--strict-mcp-config` behaves, the harness fails closed instead of quietly using real accounts. |
+| `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir. The run log gets only the final result line. |
+| `--model <alias>`; resolved model **recorded** | The CLI resolves aliases (`sonnet` → `claude-sonnet-5` on 2.1.278) and rejected the full id `claude-sonnet-5-5` as unrecognized, so the shim passes an alias. It records the resolved id from the init event plus `claude --version`. `compare` refuses to judge arms whose resolved model or CLI version differ. Default `sonnet`; `--opus` opts in (§13 Q3). |
+| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault and plugin root where the rule syntax allows, `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
+| `--no-session-persistence`, `--disable-slash-commands` | No transcript lands in any projects dir, and no skill expands by accident. |
+| `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. Slice 3 verifies the CLI enforces it on an OAuth login. If it doesn't, the harness's wall-clock timeout is the brake. |
 | `PATH` = `stubs/` (fake `gh`) + the checkout's `scoutctl` + system | Real `gh` is unreachable. The checkout's `scoutctl` is the one under test. |
-| `SCOUT_USER_TIMEZONE`, `TZ`, `GIT_AUTHOR_*` fixed | Same run, same dating, same commit authorship. |
+| `SCOUT_USER_TIMEZONE`, `TZ`, `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_CONFIG_GLOBAL=<fixture file>`, `GH_CONFIG_DIR=<temp>` | Same dating and commit identity every time. No global git or `gh` config is read. |
 
-Fixed inputs, stubbed connectors, a pinned model and CLI version, and a hermetic config are as far
+**HOME stays real**, because isolating it broke the keychain login (verified, §4.3). So the paths
+that reach through HOME are closed one by one:
+- The fixture vault's `scripts/cc-session-cache.sh` is replaced with a no-op. It reads
+  `~/.claude/projects`, the maintainer's real session history.
+- The `claude_sessions` connector is never enabled in a fixture.
+- Git and `gh` config are redirected (table above).
+- Files outside the vault and the plugin root are denied by the scoped allowlist.
+
+A Read of a HOME path outside the vault is a reported metric (`outside_reads`), so a phase that
+starts reaching into `~` is visible.
+
+Fixed inputs, stubbed connectors, a recorded model and CLI version, and a scratch config are as far
 as determinism goes. The remaining variance is the model's, so it is measured, not removed.
 
-### 4.2 Model and cost per tier
+### 4.2 Tiers, models and what a run uses
 
-Estimates for a consolidation run on the fixture: a ~45k-token SKILL.md plus 40–120 tool calls,
-3–10 minutes. #196 measured $0.40–1.40 for single question tasks. A full run is larger, so these
-are planning numbers that slice 3 replaces with measured ones.
+All model-backed tiers run **locally, on demand, on the maintainer's subscription login**. CI runs
+only tier 0, which makes no model call.
 
-| Tier | When | Model | Reps × arms | Scenarios | Est. cost | Est. wall time (concurrency 2) |
+Planning numbers for one consolidation sample on the fixture: a ~45k-token SKILL.md and 40–120
+tool calls, taking 3–10 minutes. Slice 3 replaces these with measured ones. On a subscription the
+cost is usage-limit headroom, not money, so the harness counts **sessions started** and reports
+the usage-equivalent `total_cost_usd` for scale.
+
+| Tier | Where / when | Model | Default reps | Scenarios | Sessions started | Est. wall time (concurrency 2) |
 |---|---|---|---|---|---|---|
-| 0 — static | every PR, plugin-test CI | none | — | all | $0 | < 1 min |
-| 1 — smoke | on demand; PR label `eval` | Sonnet 5.5 (§13 Q3) | 3 × 2 | 2 core | ~$10–20 | ~20–30 min |
-| 2 — full | before `release.sh prepare`; nightly once affordable | the production model (Opus) | 5 × 2 | all | ~$60–120 | ~1.5–2.5 h |
-| (later) slice probes | developer iteration | Sonnet | 5 × 2 | single rule | ~$1–3 | minutes |
+| 0 — static | CI on every PR, and locally | none | — | all | 0 | < 1 min |
+| 1 — check | locally, on demand while editing `phases/` | Sonnet | 3 head (base from cache, §8) | 1–2 named | 3 (6 on a cache miss) | ~15–30 min |
+| 2 — pre-release | locally, a release-checklist step (§9) | Sonnet; Opus with `--opus` | 5 head (base from cache) | all | ~15–20 (×2 on misses) | ~1–2 h |
+| (later) slice probes | locally, iterating on one rule | Sonnet | 5 | single rule | 5 | minutes |
 
-Tier 0 spends nothing (§9): fixture builds, the scrub test, assembly against the fixture, stub
-coverage lint, and grader self-tests. The LLM judge (§6.3) is off in tier 1 and uses Haiku in
-tier 2.
+Tier 0 (§9) covers fixture builds, the scrub test, assembly against the fixture, stub self-tests
+and coverage lint, and the checks run against golden outputs. The LLM judge (§6.3) is off by
+default. With `--judge` it adds three short Haiku calls per judged sample, through the same
+isolated `claude -p`.
+
+### 4.3 Verified on this machine (Claude Code 2.1.278, 2026-10-12)
+
+Each run below used a fresh scratch `CLAUDE_CONFIG_DIR` and the flags `claude -p --model haiku
+--tools "" --no-session-persistence --permission-mode dontAsk --setting-sources ""
+--settings '{"disableAllHooks":true}'`, reading the stream's `system/init` event:
+
+| Variant | Result |
+|---|---|
+| `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` | Logged in on the subscription (`apiKeySource: none`), `mcp_servers: []`, answered. |
+| Same, without `CLAUDE_SECURESTORAGE_CONFIG_DIR` | `Not logged in · Please run /login`, exit 1. |
+| `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, **no** `--strict-mcp-config` | About 40 of the account's claude.ai connectors in `mcp_servers`, several `connected` (Slack, Linear, Gmail, Google Calendar, Google Drive, GitHub). |
+| As the first row, plus `HOME=<temp dir>` | `Not logged in`. HOME can't be isolated. |
+| `--model sonnet` | Resolved to `claude-sonnet-5`. The full id `claude-sonnet-5-5` was rejected as `unrecognized_model`. |
 
 ## 5. The fixture vault
 
@@ -271,8 +311,9 @@ Graders read the post-run vault through the engine's own parsers (`parser.parse_
 
 ### 6.2 Process metrics (from `stream.jsonl` and `calls.jsonl`)
 
-- Tool calls (total and per tool), assistant turns, input / output / cache tokens, cost (the result
-  message's `total_cost_usd`), wall time.
+- Tool calls (total and per tool), assistant turns, input / output / cache tokens, the result
+  message's usage-equivalent `total_cost_usd`, wall time.
+- **`outside_reads`:** Reads of paths outside the vault and the plugin root (§4.1).
 - **Grep spiral:** the longest run of consecutive search calls (Grep, Glob, Bash `rg|grep|find`)
   with no Read or Edit of a returned path in between. Flagged at ≥ 6. This is the #194 regression.
 - **Whole-file read of the big index:** a Read of `knowledge-base.md` with no `offset`/`limit`.
@@ -287,13 +328,14 @@ from the first measured baseline at its median × 1.5, never guessed.
 
 ### 6.3 LLM-as-judge, only where nothing deterministic works
 
-There are two uses, both off in tier 1:
+There are two uses, both off unless `--judge` is passed:
 
 - **Wrap clarity:** does the wrap lead with what needs the user, in plain words, without
   infrastructure narration?
 - **Next-step phrasing:** for 🔴/🟡 items, is the body phrased as the user's own next step?
 
-The judge is Haiku 5.5 with three votes, majority wins. The rubric and the judge's verdicts are
+The judge is Haiku (`--model haiku`), run through the same isolated `claude -p` with no tools and
+`--json-schema` for the verdict, with three votes, majority wins. The rubric and the judge's verdicts are
 stored with the run. A judge check is advisory, never a gate, until its agreement with a human
 review is measured on ~20 samples.
 
@@ -364,7 +406,9 @@ repeats `auth.expired`), plus everything in 7.1. "The wrap names the expired log
 
 1. Two git worktrees, each with its own engine venv. Each builds its own vault, so each arm gets
    its own brain files.
-2. Samples are **interleaved** (A B A B …), so API-side drift and time of day hit both arms alike.
+2. When both arms run fresh, samples are **interleaved** (A B A B …), so API-side drift and time
+   of day hit both arms alike. A base arm served from cache (below) can't be interleaved, so the
+   report says so and shows the cached samples' age.
 3. The output is one table per check (pass k/N per arm) and per metric (median and IQR per arm),
    plus links to every sample's result dir: stream, calls, vault diff and log.
 
@@ -380,51 +424,82 @@ repeats `auth.expired`), plus everything in 7.1. "The wrap names the expired log
   Either the rule is ambiguous (a finding about the phase text) or the grader is wrong.
 - **Metrics:** "worse" only when head's median is above base's max (non-overlapping ranges). This
   is the #194 shape: 7 → 11 is visible, 13 ± 2 isn't.
-- `compare` exits 0 with no verdict when either arm had a sample abort (budget, auth, crash). A
-  harness failure never reads as a regression.
+- `compare` exits 0 with no verdict when either arm had a sample abort (budget, login, rate
+  limit, `mcp_leak`, crash). A harness failure never reads as a regression.
 
-Results are kept locally in `.eval-results/` and as CI artifacts. No baseline is committed in the
-first slices, so every comparison pays for both arms. Caching main's arm is §13 Q6.
+**The base arm is cached locally (§13 Q6).** Model-backed runs use someone's own subscription, so
+running main again on every compare is wasted usage.
+- A base sample is stored under `~/.cache/scout-eval/baselines/<key>/` with its result dir intact.
+- The key is a hash of everything that shapes the run and nothing else:
+  - the scenario's assembled SKILL.md and the rendered runner;
+  - the tree hashes of `plugin/phases/`, `plugin/templates/` and the scenario dir;
+  - the harness version;
+  - the resolved model id and `claude --version`.
+- A main commit that touches none of those reuses the cache. A phase change, a fixture change, a
+  new model or a CLI upgrade misses it.
+- When the cache holds fewer reps than asked for, only the missing reps run, and the new samples
+  join the cache.
+- `--fresh-base` ignores the cache and interleaves both arms. That's the right call when a
+  verdict is close or the cache is more than two weeks old (the report flags age).
+- Nothing is committed and nothing is shared between machines. A cache is one maintainer's
+  record, and results stay in `.eval-results/` (gitignored).
 
-## 9. When it runs, and the budget
+## 9. When it runs, and the guardrails
 
-- **Locally, on demand:** `plugin/scripts/eval.sh run|compare|build|lint`. It is a script, not a
-  `scoutctl` subcommand: `scoutctl` ships to every user, and this is a maintainer tool that needs
-  the repo checkout, the stubs and an API key. `eval.sh build <scenario>` builds a vault you can
-  open, which is useful for authoring seeds with no spend.
-- **CI, tier 0:** pytest on every PR. `tests/unit/test_eval_*.py` covers the fixture build, the
-  allowlist scrub, assembly against the fixture, stub coverage lint and grader self-tests. The live
-  harness lives outside `test_*.py` names, so plain `pytest tests/` never spends.
-- **CI, tier 1:** a new `plugin-eval.yml`. Triggers: `workflow_dispatch`, and the PR label `eval`
-  on PRs touching `plugin/phases/**`, `plugin/templates/run-*.tmpl` or `plugin/skills/**`. The
-  workflow posts the compare table as a PR comment. It is **advisory**: it never blocks a merge in
-  the first release cycle.
-- **Tier 2:** before `release.sh prepare`. `prepare` prints a reminder and links the last full
-  report; whether it should refuse is §13 Q2. Nightly only once a month of tier-2 costs is known.
+**CI runs only what makes no model call (tier 0).** pytest runs it on every PR in the existing
+`plugin-test.yml`; there is no new workflow, no secret and no paid tier. `tests/unit/test_eval_*.py`
+covers:
+- the fixture build and assembly of the brain files against it;
+- the allowlist scrub;
+- the stub server and fake `gh` self-tests: scripted responses, `times:` sequences, `unstubbed`
+  logging, and the init-event guard fed a synthetic init event that lists a non-stub server;
+- stub coverage lint;
+- every check function run against committed golden outputs: a "good" and a "bad" post-run
+  vault, `calls.jsonl` and `stream.jsonl` per check, all hand-written;
+- `metrics.py` against a committed synthetic stream.
 
-**Guardrails (all three, because each catches a different failure):**
+The live harness lives outside `test_*.py` names, so plain `pytest tests/` never starts a session.
 
-1. **Per sample:** `--max-budget-usd` (default $6 Opus, $3 Sonnet) and a wall-clock timeout (20
-   min), enforced by the harness, not trusted to the CLI.
-2. **Per suite:** `--max-cost` (default tier 1 $25, tier 2 $150). It is checked before each sample
-   launches with a running total from result messages. When the next sample would cross it, the
-   harness stops and writes a partial report.
-3. **Per month:** a dedicated API key in its own Console workspace with a hard monthly spend limit
-   (§13 Q1). This is the only guardrail that survives a bug in the first two.
+**Model-backed runs are local and on demand:** `plugin/scripts/eval.sh run|compare|build|lint|cache`.
+It is a script, not a `scoutctl` subcommand: `scoutctl` ships to every user, and this is a
+maintainer tool that needs the repo checkout, the stubs and a logged-in Claude Code.
+`eval.sh build <scenario>` builds a vault to open and author seeds against, with no session.
 
-Concurrency is 2 by default. The key's rate limit is shared, and a rate-limited sample is an
-aborted sample, never a failing one.
+**Guardrails.** Usage comes out of someone's own subscription, so the harness is conservative by
+default and loud about what it will do:
+
+1. **Small defaults.** `run` and `compare` default to N=3 head reps on Sonnet, with the base arm
+   from cache.
+2. **A printed plan before anything starts.** Every model-backed command prints, then waits for
+   Enter (or `--yes` in a script):
+   `Will start 5 sessions (3 head, 2 base cache misses) on sonnet → claude-sonnet-5 via your Claude login. Estimated 15–30 min. Cached base samples: 1 (3 days old).`
+3. **Explicit opt-in for anything larger.** A command that would start more than 10 sessions
+   refuses without `--many`. Opus refuses without `--opus`. The judge needs `--judge`.
+4. **Per sample:** a 20-minute wall-clock timeout enforced by the harness, plus the runner's
+   `--max-budget-usd` as a runaway brake if the CLI enforces it on a subscription login (§4.1).
+5. **Concurrency 1 by default**, 2 with `-j 2`, never more. A sample that hits a usage or rate
+   limit is `aborted`, never failing. The harness stops launching new samples after the first
+   one, and writes a partial report that says which samples never ran.
+
+**Pre-release (tier 2) is a documented local step, never a gate.** The release checklist gains:
+"Run `plugin/scripts/eval.sh run --all` (or `compare --base <last tag>` when `phases/` changed)
+and link the report in the release PR." `release.sh prepare` prints a reminder with the date of
+the newest local tier-2 report and whether `phases/` changed since. It never refuses, because the
+run depends on someone's local subscription (§13 Q2).
 
 ## 10. Error handling
 
-- **A sample that crashes, hits its budget or times out** is `aborted`, kept with its logs, and
-  excluded from pass rates. It counts toward the suite's spend.
-- **An auth failure on the eval key** aborts the suite on the first sample. It never produces N
-  zero scores.
+- **A sample that crashes, hits its budget brake or times out** is `aborted`, kept with its logs,
+  and excluded from pass rates.
+- **A login failure** (`Not logged in`, an expired OAuth token) aborts the whole command on the
+  first sample, with the fix: `claude auth login`, then rerun. It never produces N zero scores.
+- **A usage or rate limit** stops new launches and keeps what finished (§9).
+- **An `mcp_leak`** (a non-stub server in the init event) aborts the command, not just the sample.
+  It means isolation is broken, and nothing more should run until someone looks.
 - **A stub that receives a malformed call** returns an MCP error, as a real server would, and logs
   it. The model's handling of that error is part of the behaviour under test.
 - **A fixture build failure** (bootstrap changed shape) is a tier-0 failure. It surfaces in pytest
-  long before anyone spends.
+  long before anyone starts a session.
 
 ## 11. Sequencing into PRs
 
@@ -433,17 +508,24 @@ Each PR is small, merges on its own, and leaves main working.
 1. **Fixture vault builder + base overlay + allowlist scrub test** (tier 0). #196's step 1:
    valuable on its own, and the piece that can't be improvised later. Includes `eval.sh build`.
 2. **Stubs:** the MCP persona server, fake `gh`, `calls.jsonl`, stub coverage lint (tier 0).
-3. **Runner + metrics + the first checks:** `claude_shim.py`, `eval.sh run`, `metrics.py`, and the
-   `busy-weekday` scenario with `placement`, `no_drop`, `count_guard` and process metrics. Grader
-   self-tests. **This is the first useful slice**: a maintainer can run `eval.sh run busy-weekday
-   --reps 3` and get #371's placement rate and the tool-call profile of today's main. It also
-   replaces §4.2's estimates with measured cost and time.
-4. **`compare`** (worktrees, interleaving, verdict rules).
+3. **Runner + metrics + the first checks:**
+   - `claude_shim.py` with the §4.1 isolation and the init-event guard;
+   - `eval.sh run` with the printed plan and the opt-in flags;
+   - `metrics.py`;
+   - the `busy-weekday` scenario with `placement`, `no_drop`, `count_guard` and process metrics;
+   - golden-output tests for each check.
+
+   **This is the first useful slice.** A maintainer runs `eval.sh run busy-weekday` (3 Sonnet
+   sessions) and gets #371's placement rate and today's tool-call profile on main. The slice also
+   replaces §4.2's estimates with measured session times, and settles two §4.1 unknowns: whether
+   `--max-budget-usd` is enforced on a subscription login, and how much the vault-scoped Read rules
+   restrict.
+4. **`compare`** (worktrees, the local base cache, interleaving with `--fresh-base`, verdict rules).
 5. **More checks:** `context_note`, `waiting_format`, `no_collapse`, `body_budget`, and the
    `connector-down` scenario (`outage_reported`, `no_false_outage`, `dropoff_caught`).
 6. **`demotion` as `expect: fail, tracks: 372`.** Lands before or with #372.
-7. **`plugin-eval.yml`** (tier 1, label-triggered, advisory) and the `release.sh prepare`
-   reminder.
+7. **Release-checklist step and the `release.sh prepare` reminder** (§9). The PR template gains
+   the `phases/` nudge (§13 Q7). There is no CI workflow for model-backed runs.
 8. **Later, each its own spec-light PR:** `run-health-wrap` after #366; the LLM judge;
    DREAMING/RESEARCH scenarios; #196's knowledge-question tasks and the interactive commands,
    possibly on `claude plugin eval`; phase-slice probes.
@@ -453,11 +535,22 @@ makes that answer one command.
 
 ## 12. Risks
 
-- **R1. Cost creep.** Mitigated by §9's three guardrails and advisory-only CI.
+- **R1. Eating the maintainer's subscription.** Mitigated by small defaults, the printed plan,
+  the opt-in flags, the base cache and stopping on the first usage limit (§9). CI never calls a
+  model.
 - **R2. The eval allowlist differs from production's `--permission-mode auto`.** A behaviour that
   depends on a tool outside the list shows up as denials, which are always reported. If denials
-  dominate, widen the list. Running `auto` in a temp HOME is not an option, because the
-  classifier needs the operator's settings.
+  dominate, widen the list. Running `auto` under `--setting-sources ""` is not an option, because
+  the classifier needs the operator's settings.
+- **R2a. Isolation depends on CLI behaviour that may change.** `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+  is undocumented, and the claude.ai connectors load unless `--strict-mcp-config` is passed. A
+  login change fails loudly (§10). An MCP change is caught by the init-event guard, which a
+  tier-0 test pins. §4.3 is re-run whenever `claude --version` changes. The cache key includes
+  the version, so the first compare after an upgrade shows it.
+- **R2b. Results are one person's.** Without CI runs, a verdict is reproducible only by someone
+  with a Claude login. Every report records the model, CLI version, harness version and scenario
+  hashes, and result dirs keep full streams, so a reviewer can check the evidence without
+  rerunning.
 - **R3. Seeds teach to the test.** A phase could be tuned to the fixture's exact wording. Seeds
   are paraphrased per scenario, and the judge is never a gate.
 - **R4. The fixture drifts from what real vaults look like.** Structural properties come from
@@ -466,28 +559,34 @@ makes that answer one command.
   description, never from the vault.
 - **R5. Weekend runs.** Handled by `weekdays_only` (§5.2).
 
-## 13. Open questions (product decisions)
+## 13. Decisions (2026-10-12)
 
-1. **Credentials.** `--bare` (the hermetic option) needs `ANTHROPIC_API_KEY`. Create a dedicated
-   key in its own Console workspace with a hard monthly cap, and set what cap? Suggested: $300 per
-   month. CI needs it as a repo secret. The alternative, a subscription token via
-   `claude setup-token` in an isolated `CLAUDE_CONFIG_DIR` without `--bare`, is less hermetic and
-   has no spend cap.
-2. **Release gate.** Should `release.sh prepare` *refuse* without a tier-2 report newer than the
-   last `plugin/phases/` change, or only remind? Suggested: remind for v0.17, refuse from v0.18 if
-   the reports have proven stable.
-3. **Smoke-tier model.** Sonnet 5.5 keeps tier 1 cheap but isn't the production model, so a rule
-   can pass on Sonnet and fail on Opus or the other way round. Use Sonnet for tier 1 and Opus for
-   tier 2 (suggested), or Opus everywhere at roughly 3× tier-1 cost?
-4. **#372 sequencing.** Land `demotion` as an expected failure first, so it serves as #372's
-   acceptance test (suggested), or write it inside #372's PR?
-5. **Run-health wrap target.** Confirm the intended assertion: the wrap names an expired
-   **connector** login (Linear) and never claims the **Claude** login is expired. Should the
-   scenario wait for #366 to merge (suggested), or be written against `run-health/p1` now?
-6. **Baselines.** Pay for both arms on every compare (simple, suggested for now), or cache main's
-   arm per commit and model for a week to halve tier-1 cost?
-7. **Contribution rule.** Should a PR that changes a behavioural rule in `phases/` be expected to
-   add or update its eval seed and check, stated in `plugin/CLAUDE.md` and the PR template?
-8. **Scope of the first slices.** This spec targets briefing and consolidation runs (SKILL.md).
-   Are DREAMING/RESEARCH runs and the interactive commands (`/scout-work`, `/scout-plan`) needed
-   sooner than slice 8?
+Q1–Q3 and Q6 are the maintainer's decisions, relayed by the coordinator. Q4, Q5, Q7 and Q8 are the
+recommendations, which the maintainer didn't object to. All stand until the revised spec is
+approved.
+
+1. **Credentials: no API key and no paid spend.** This is a low-budget open-source project. There
+   is no `ANTHROPIC_API_KEY` anywhere, no `--bare`, and no CI secret. Model-backed runs use the
+   maintainer's normal Claude Code login (subscription OAuth), isolated with #354's recipe plus a
+   scratch `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` (§4.1, verified in §4.3).
+   CI runs only tier 0.
+2. **Release gate: remind only, never refuse.** A pre-release run depends on someone's local
+   subscription. `release.sh prepare` prints a reminder (§9), and the tier-2 run is a documented
+   checklist step.
+3. **Models: Sonnet by default, Opus opt-in** (`--opus`), to spare subscription usage. The report
+   names the resolved model, so a Sonnet verdict is never read as an Opus one.
+4. **#372: land `demotion` first as an expected failure** (`expect: fail, tracks: 372`), so it is
+   #372's acceptance test.
+5. **Run-health wrap: wait for #366.** The assertion is that the wrap names an expired *connector*
+   login and never says the *Claude* login is dead.
+6. **Baselines: cache main's arm locally** and reuse it until anything that shapes the run changes
+   (§8's key). `--fresh-base` reruns and interleaves both arms.
+7. **Contribution rule: yes, as a nudge.** The PR template asks a PR that changes a behavioural
+   rule in `phases/` whether it adds or updates an eval seed and check, and `plugin/CLAUDE.md` says
+   the same. The nudge is not enforced.
+8. **Scope: no.** Briefing and consolidation (SKILL.md) first. DREAMING/RESEARCH and the
+   interactive commands stay in slice 8.
+
+**Still open:** none blocking the implementation plan. Slice 3 settles two facts, not decisions:
+whether `--max-budget-usd` is enforced on a subscription login, and whether vault-scoped Read
+rules work in `--allowedTools` (§4.1).
