@@ -20,7 +20,7 @@ mkdir -p {{SCOUT_DIR}}/action-items/archive
 Before building the list, read `knowledge-base/scout-mistake-audit.md`. For every pattern with status **Open** that carries a {{USER_NAME}}-facing blocker — a setup task {{USER_NAME}} must do, an unanswered question {{INSTANCE_NAME}} asked him, or an approved-but-unapplied proposal:
 
 1. Check whether it's been resolved since last run (search messaging, verify files/state).
-2. If still unresolved and >24h old, surface it today. When {{USER_NAME}} has to act, make it a **🔴** item: "**Still blocked:** [pattern] — [what {{USER_NAME}} needs to do]". An approved-but-unapplied proposal is Scout's own move: apply it this run if possible, or else make it a 🟢 Watching item saying what stops Scout from applying it.
+2. If still unresolved and >24h old, surface it today. When {{USER_NAME}} has to act, make it a **🔴** item: "**Still blocked:** [pattern] — [what {{USER_NAME}} needs to do]". An approved-but-unapplied proposal is Scout's own move: leave it to the next dreaming run's feedback processing (`phases/modes/feedback-processing.md`), as a 🟢 Watching item until then.
 3. If stuck 48h+, call it out explicitly in the run summary/notification so it isn't lost.
 
 This makes the mistake audit an active tracker, not a passive log — {{USER_NAME}} expects every run type (not just dreaming) to keep pushing critical blocks toward resolution. Track specifically: unresolved setup/integration tasks, open questions awaiting {{USER_NAME}}'s answer, and approved proposals not yet applied.
@@ -44,13 +44,13 @@ A task goes in 🔴 or 🟡 only when its next step is {{USER_NAME}}'s to take n
 - {{USER_NAME}}'s own PR when it needs them: it is ready to merge, or it is `BEHIND`, `DIRTY`, `UNSTABLE` or has `CHANGES_REQUESTED`. Decide this by **PR status claims** in the GitHub cross-check (`phases/connectors/github.md`), not from this list.
 
 When the next step is someone else's, the task goes to 🟢 Watching:
-- **Waiting on a person**, such as {{USER_NAME}}'s PR while a requested human reviewer hasn't reviewed it (a bot approval doesn't count), or a question {{USER_NAME}} already asked. Write `waiting on <who> since <date>`. It returns to 🟡 when a nudge is due or the deadline is under 3 days out.
+- **Waiting on a person**, such as {{USER_NAME}}'s PR while a requested human reviewer hasn't reviewed it (a bot approval doesn't count), or a question {{USER_NAME}} already asked. Write `waiting on <who> since <date>`. It returns to 🟡, for {{USER_NAME}} to nudge, after 2 working days without a reply (unless its context note says otherwise) or once its deadline is under 3 days out.
 - **Someone else is doing the work:** an agent or a teammate (the board shows `State: doing` as Doing). This includes {{USER_NAME}}'s own delegated agent PRs until their merge state is `CLEAN`.
 - **A review requested only through a team:** it stays in 🟢 until nobody on the team has picked it up for 2 working days, then it moves to 🟡.
 
 A task waiting on another task stays in its section with `Depends:`. The deadline-distance ceiling below still caps how high a task can go.
 
-**Re-check each run** the 🔴 and 🟡 tasks this run has new evidence for, plus any due within 7 days, and any 🟢 task it has new evidence for (a review, a reply, a merge). Other tasks move under this rule when a later run touches them.
+**Re-check each run** the 🔴 and 🟡 tasks this run has new evidence for, plus any due within 7 days or overdue, and any 🟢 task it has new evidence for (a review, a reply, a merge). Other tasks move under this rule when a later run touches them.
 
 ### Hard Rule — Deadline-Distance Ceiling
 
@@ -336,7 +336,7 @@ For the morning briefing, focus on:
    - 7+ days out: keep existing priority
    - 3-7 days out: escalate to 🟡 if not already higher, when the next action is {{USER_NAME}}'s to take
    - <3 days out: escalate to 🔴, when the next action is {{USER_NAME}}'s to take
-   - a task waiting on someone else stays in 🟢, with the deadline in its body
+   - a task waiting on someone else stays in 🟢, with the deadline in its body, until it is under 3 days out; then it goes to 🟡 for {{USER_NAME}} to nudge
 3. **Birthday alerts** — check if any person entity has a `birthday` field matching today's month/day. If so, add a reminder to the action items.
 
 Personal tasks appear in the action items file in a **Personal** section after work items.
