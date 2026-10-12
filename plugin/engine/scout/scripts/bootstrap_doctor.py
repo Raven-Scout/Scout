@@ -10,6 +10,7 @@ import os
 import platform
 import plistlib
 import re
+import shlex
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
@@ -65,7 +66,7 @@ _REQUIRED_CAT1_FILES = (
 _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 
 
-def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]]:
+def _check_macos_plist_scoutctl_bin(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Inspect the installed schedule-tick plist's scoutctl path.
 
     Reports as error if the file doesn't exist or isn't executable. Reports
@@ -83,7 +84,16 @@ def _check_macos_plist_scoutctl_bin(*, home: Path) -> tuple[list[str], list[str]
         with plist_path.open("rb") as f:
             data = plistlib.load(f)
     except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError) as e:
-        warnings.append(f"could not parse {plist_path.name}: {e}")
+        # launchd's parser is laxer than plistlib, so the job may still run. A
+        # common cause is a plist from before #221 with a `--` path in its XML
+        # comment (#249); reinstalling writes one without it.
+        # install-plist takes its vault from SCOUT_DATA_DIR (else ~/Scout), so the
+        # fix names the vault being checked; the app runs the doctor with it set.
+        env = f"SCOUT_DATA_DIR={shlex.quote(str(vault))} " if vault is not None else ""
+        warnings.append(
+            f"could not parse {plist_path.name}: {e}. "
+            f"Fix: {env}scoutctl schedule install-plist --force (rewrites it from the current template)"
+        )
         return errors, warnings
     args = data.get("ProgramArguments") or []
     if not args:
@@ -164,11 +174,11 @@ def _check_linux_cron_scoutctl_bin() -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
-def _check_scheduler_bin_path(*, home: Path) -> tuple[list[str], list[str]]:
+def _check_scheduler_bin_path(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Dispatch to the platform-specific scoutctl-bin-path check."""
     system = platform.system()
     if system == "Darwin":
-        return _check_macos_plist_scoutctl_bin(home=home)
+        return _check_macos_plist_scoutctl_bin(home=home, vault=vault)
     if system == "Linux":
         return _check_linux_cron_scoutctl_bin()
     return [], []
@@ -206,13 +216,42 @@ def _check_scoutctl_shim(*, home: Path) -> tuple[list[str], list[str]]:
     return [], warnings
 
 
-def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
+def _same_path(a: Path, b: Path) -> bool:
+    try:
+        return a.expanduser().resolve() == b.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return a == b
+
+
+def _shim_target(home: Path) -> Path | None:
+    """What our ``~/.local/bin/scoutctl`` shim execs, or None.
+
+    Only the shim bootstrap writes (it carries SHIM_MARKER) counts: a symlink or
+    a foreign file there is the user's, bootstrap never rewrites it, so a
+    warning about it could not be cleared by re-running bootstrap.
+    """
+    from scout.scripts.install_scoutctl_shim import SHIM_MARKER
+
+    shim = home / ".local" / "bin" / "scoutctl"
+    if shim.is_symlink() or not shim.is_file():
+        return None
+    try:
+        body = shim.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    m = re.search(r'exec "([^"]+)"', body) if SHIM_MARKER in body else None
+    return Path(m.group(1)) if m else None
+
+
+def _check_engine_pointer(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Warn (never error) when the engine pointer disagrees with reality.
 
-    Both the pointer and the schedule-tick plist are rewritten by every
-    bootstrap run that installs jobs (a ``--no-jobs`` run writes neither),
-    so disagreement means they were produced by different
-    engines — exactly the drift the pointer exists to make visible. A missing
+    The pointer (~/.local/state/scout/engine.json) is how Scout.app and the
+    docs find the engine, whose venv may live outside the plugin tree (#244).
+    Bootstrap rewrites it together with the schedule-tick plist and the
+    ``~/.local/bin/scoutctl`` shim (a ``--no-jobs`` run writes none of them),
+    so any disagreement means they came from different engines or vaults —
+    exactly the drift the pointer exists to make visible (#271). A missing
     pointer is not flagged (pre-pointer engines; the next bootstrap writes it).
     """
     from scout.scripts.engine_pointer import read_pointer
@@ -221,21 +260,43 @@ def _check_engine_pointer(*, home: Path) -> tuple[list[str], list[str]]:
     if pointer is None:
         return [], []
     warnings: list[str] = []
+    fix = "re-run `scoutctl bootstrap upgrade` so both track one engine"
     if not Path(pointer.scoutctl).exists():
         warnings.append(
             f"engine pointer names a missing scoutctl ({pointer.scoutctl}) — re-run `scoutctl bootstrap upgrade`."
+        )
+    shim_target = _shim_target(home)
+    if shim_target is not None and not _same_path(shim_target, Path(pointer.scoutctl)):
+        warnings.append(
+            f"~/.local/bin/scoutctl runs {shim_target} but the engine pointer names {pointer.scoutctl} — {fix}."
+        )
+    pointer_vault = Path(pointer.vault) if pointer.vault else None
+    if pointer_vault is not None and vault is not None and not _same_path(pointer_vault, vault):
+        warnings.append(
+            f"engine pointer is for {pointer_vault}, not the vault checked here ({vault}) — Scout.app follows "
+            f"the pointer; run `scoutctl bootstrap upgrade` against the vault you use."
         )
     plist_path = home / "Library" / "LaunchAgents" / "com.scout.schedule-tick.plist"
     if plist_path.exists():
         try:
             with plist_path.open("rb") as f:
-                args = plistlib.load(f).get("ProgramArguments") or []
+                data = plistlib.load(f)
         except (plistlib.InvalidFileException, xml.parsers.expat.ExpatError, ValueError, OSError):
-            args = []
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        args = data.get("ProgramArguments") or []
         if args and args[0] != pointer.scoutctl:
             warnings.append(
                 f"engine pointer ({pointer.scoutctl}) and {plist_path.name} ({args[0]}) name different "
-                f"scoutctl binaries — re-run `scoutctl bootstrap upgrade` so both track one engine."
+                f"scoutctl binaries — {fix}."
+            )
+        env = data.get("EnvironmentVariables")
+        data_dir = env.get("SCOUT_DATA_DIR") if isinstance(env, dict) else None
+        if pointer_vault is not None and isinstance(data_dir, str) and not _same_path(Path(data_dir), pointer_vault):
+            warnings.append(
+                f"{plist_path.name} runs the vault {data_dir} (SCOUT_DATA_DIR) but the engine pointer is for "
+                f"{pointer_vault} — {fix}."
             )
     return [], warnings
 
@@ -481,14 +542,14 @@ def run_doctor(
     # (macOS) or cron block (Linux) actually points to an executable scoutctl
     # and isn't trapped in a TCC-protected directory.
     if check_jobs:
-        bin_errors, bin_warnings = _check_scheduler_bin_path(home=home)
+        bin_errors, bin_warnings = _check_scheduler_bin_path(home=home, vault=vault)
         errors.extend(bin_errors)
         warnings.extend(bin_warnings)
         # Interactive/session scoutctl reachability (separate from the plist).
         _, shim_warnings = _check_scoutctl_shim(home=home)
         warnings.extend(shim_warnings)
         # Engine pointer vs. what's actually installed (plist, on-disk scoutctl).
-        _, pointer_warnings = _check_engine_pointer(home=home)
+        _, pointer_warnings = _check_engine_pointer(home=home, vault=vault)
         warnings.extend(pointer_warnings)
         # The claude CLI the runners launch. Gated with the other host-runtime
         # checks: it inspects this machine's binaries, not the vault's content.

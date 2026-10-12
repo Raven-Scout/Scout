@@ -227,6 +227,23 @@ def test_stage_jobs_install_passes_vault_through(tmp_path, monkeypatch):
     assert calls["hb"]["vault"] == cfg.vault
 
 
+def test_stage_jobs_install_passes_vault_to_cron_on_linux(tmp_path, monkeypatch):
+    """Linux gets the same: the cron block points at cfg.vault (#271)."""
+    from scout.scripts.bootstrap import _stage_jobs_install
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Vaults" / "Work"
+    cfg = _config(vault, plugin_root=plugin)
+    cfg.platform = "linux"
+    cfg.skip_jobs = False
+    calls: list[dict] = []
+    monkeypatch.setattr("scout.scripts.install_cron.install_cron", lambda **kwargs: calls.append(kwargs))
+
+    _stage_jobs_install(cfg)
+
+    assert [c["vault"] for c in calls] == [cfg.vault]
+
+
 # ---------- #254: CLAUDE_BIN detection ----------
 
 

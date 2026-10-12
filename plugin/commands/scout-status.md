@@ -172,7 +172,10 @@ Check the installed plugin version against the latest available:
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
 # Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
 if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
-"$PLUGIN_ROOT/.venv/bin/scoutctl" self-update check || echo "SELF_UPDATE_UNAVAILABLE"
+# The venv sits in the plugin root for Claude Code and dev checkouts. An engine Scout.app manages lives
+# elsewhere (~/.local/state/scout/engine.json names it); the ~/.local/bin/scoutctl shim runs it.
+SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"; [ -x "$SCOUTCTL" ] || SCOUTCTL="$HOME/.local/bin/scoutctl"
+"$SCOUTCTL" self-update check || echo "SELF_UPDATE_UNAVAILABLE"
 ```
 
 Capture the output. The command prints the installed version, the available version, and whether an update is available (e.g. `up to date (<version>)` or `update available: <installed> -> <available>`). If the command exits non-zero or the output contains `SELF_UPDATE_UNAVAILABLE`, treat the update status as unavailable (network or other error).
@@ -183,7 +186,10 @@ Then list vault edits to plugin-owned files (scripts, hooks, runners, `render.py
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
 # Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
 if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
-"$PLUGIN_ROOT/.venv/bin/scoutctl" bootstrap drift --json || echo "DRIFT_UNAVAILABLE"
+# The venv sits in the plugin root for Claude Code and dev checkouts. An engine Scout.app manages lives
+# elsewhere (~/.local/state/scout/engine.json names it); the ~/.local/bin/scoutctl shim runs it.
+SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"; [ -x "$SCOUTCTL" ] || SCOUTCTL="$HOME/.local/bin/scoutctl"
+"$SCOUTCTL" bootstrap drift --json || echo "DRIFT_UNAVAILABLE"
 ```
 
 Store both results for rendering in the dashboard below.
@@ -196,7 +202,10 @@ The runners record how every scheduled run ended in `.scout-logs/run-outcomes.js
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
 # Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
 if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
-SCOUT_DATA_DIR="$SCOUT_DIR" "$PLUGIN_ROOT/.venv/bin/scoutctl" health --json; echo "exit=$?"
+# The venv sits in the plugin root for Claude Code and dev checkouts. An engine Scout.app manages lives
+# elsewhere (~/.local/state/scout/engine.json names it); the ~/.local/bin/scoutctl shim runs it.
+SCOUTCTL="$PLUGIN_ROOT/.venv/bin/scoutctl"; [ -x "$SCOUTCTL" ] || SCOUTCTL="$HOME/.local/bin/scoutctl"
+SCOUT_DATA_DIR="$SCOUT_DIR" "$SCOUTCTL" health --json; echo "exit=$?"
 ```
 
 Of the output, the first line is the JSON report and the last line is `exit=N`. Exit codes 0 (green), 1 (yellow) and 2 (red) are all normal. Any other exit code, a first line that is not a JSON report, or a report with `"severity": "unknown"` (a vault the command cannot find) means `RUN_HEALTH_UNAVAILABLE`: skip the run-health headline, and take the per-type last-run lines from the commit-message match instead (3a).

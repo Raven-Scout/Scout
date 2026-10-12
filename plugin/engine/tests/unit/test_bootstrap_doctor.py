@@ -745,6 +745,134 @@ def test_doctor_pointer_check_ignores_invalid_format_plist(tmp_path):
 # ---------- #254: runner CLAUDE_BIN must be executable ----------
 
 
+def test_plist_with_double_hyphen_in_its_comment_warns_with_the_fix(tmp_path):
+    """#249: a plist installed before #221 can carry a `--` path inside its XML
+    comment. launchd loads it; plistlib refuses it. The doctor warns (never
+    crashes) and says how to get a clean plist."""
+    from scout.scripts.bootstrap_doctor import _check_macos_plist_scoutctl_bin
+    from scout.scripts.install_schedule_plist import install_plist
+
+    home = tmp_path / "my--home"
+    (home / "Library" / "LaunchAgents").mkdir(parents=True)
+    plist = install_plist(home=home)
+    plist.write_text(plist.read_text().replace("<!--", f"<!-- installed for {home} ", 1))
+
+    vault = tmp_path / "Vaults" / "My Scout"
+    errors, warnings = _check_macos_plist_scoutctl_bin(home=home, vault=vault)
+    assert errors == []
+    assert len(warnings) == 1
+    assert "could not parse com.scout.schedule-tick.plist" in warnings[0]
+    # The fix names the vault: install-plist alone would aim the plist at ~/Scout.
+    assert f"SCOUT_DATA_DIR='{vault}' scoutctl schedule install-plist --force" in warnings[0]
+
+
+def _real_scoutctl(home: Path) -> Path:
+    scoutctl = home / "venv" / "bin" / "scoutctl"
+    scoutctl.parent.mkdir(parents=True, exist_ok=True)
+    scoutctl.write_text("#!/bin/sh\n")
+    return scoutctl
+
+
+def _write_live_shim(home: Path, target: Path) -> None:
+    from scout.scripts.install_scoutctl_shim import install_scoutctl_shim
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.touch()
+    assert install_scoutctl_shim(home=home, target_bin=target) is not None
+
+
+def test_doctor_warns_when_the_shim_runs_another_scoutctl(tmp_path):
+    """#271: what bare `scoutctl` runs in a session (the ~/.local/bin shim) and
+    the engine the pointer names have drifted apart."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = _real_scoutctl(home)
+    _write_pointer(home, scoutctl)
+    _write_live_shim(home, home / "old-checkout" / ".venv" / "bin" / "scoutctl")
+    errors, warnings = _check_engine_pointer(home=home, vault=home / "Scout")
+    assert errors == []
+    assert len(warnings) == 1
+    assert "~/.local/bin/scoutctl" in warnings[0] and "old-checkout" in warnings[0]
+
+
+def test_doctor_silent_when_the_shim_runs_the_pointer_scoutctl(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = _real_scoutctl(home)
+    _write_pointer(home, scoutctl)
+    _write_live_shim(home, scoutctl)
+    assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
+
+
+def test_doctor_ignores_a_scoutctl_on_path_it_did_not_write(tmp_path):
+    """A symlink or a foreign file at ~/.local/bin/scoutctl is the user's: bootstrap
+    never rewrites it, so a warning there could never be cleared by its fix."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    _write_pointer(home, _real_scoutctl(home))
+    (home / ".local" / "bin").mkdir(parents=True)
+    on_path = home / ".local" / "bin" / "scoutctl"
+    on_path.symlink_to(_real_scoutctl(home / "elsewhere"))
+    assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
+    on_path.unlink()
+    on_path.write_text('#!/bin/sh\nexec "/opt/pipx/scoutctl" "$@"\n')
+    assert _check_engine_pointer(home=home, vault=home / "Scout") == ([], [])
+
+
+def test_doctor_warns_when_the_pointer_is_for_another_vault(tmp_path):
+    """#271: the pointer (what Scout.app and scheduled runs follow) names a
+    different vault from the one being checked."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    _write_pointer(home, _real_scoutctl(home))  # vault: home/Scout
+    _, warnings = _check_engine_pointer(home=home, vault=tmp_path / "Other")
+    assert len(warnings) == 1
+    assert f"engine pointer is for {home / 'Scout'}" in warnings[0] and str(tmp_path / "Other") in warnings[0]
+
+
+def test_doctor_pointer_vault_compares_resolved_paths(tmp_path):
+    """The same folder spelled through a symlink is the same vault."""
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    _write_pointer(home, _real_scoutctl(home))
+    (home / "Scout").mkdir()
+    (tmp_path / "alias").symlink_to(home / "Scout")
+    assert _check_engine_pointer(home=home, vault=tmp_path / "alias") == ([], [])
+
+
+def test_doctor_warns_when_the_plist_runs_another_vault(tmp_path):
+    """#271: the schedule-tick plist's SCOUT_DATA_DIR and the pointer's vault differ."""
+    import plistlib
+
+    from scout.scripts.bootstrap_doctor import _check_engine_pointer
+
+    home = tmp_path / "home"
+    scoutctl = _real_scoutctl(home)
+    _write_pointer(home, scoutctl)
+    plist = _write_plist(home, scoutctl)
+    data = plistlib.loads(plist.read_bytes())
+    data["EnvironmentVariables"] = {"SCOUT_DATA_DIR": str(tmp_path / "Other")}
+    plist.write_bytes(plistlib.dumps(data))
+    _, warnings = _check_engine_pointer(home=home, vault=home / "Scout")
+    assert len(warnings) == 1
+    assert "SCOUT_DATA_DIR" in warnings[0] and str(tmp_path / "Other") in warnings[0]
+
+
+def test_run_doctor_compares_the_pointer_with_the_checked_vault(tmp_path, monkeypatch):
+    """run_doctor hands the vault it checks to the pointer check."""
+    _populate_minimal_vault(tmp_path / "vault")
+    _stub_jobs_present(monkeypatch)
+    home = tmp_path / "home"
+    _write_pointer(home, _real_scoutctl(home))  # vault: home/Scout
+    report = run_doctor(vault=tmp_path / "vault", check_jobs=True, home=home)
+    assert any("engine pointer is for" in w for w in report.warnings)
+
+
 def _write_runner(vault: Path, claude_bin: str) -> None:
     vault.mkdir(parents=True, exist_ok=True)
     (vault / "run-scout.sh").write_text(f'#!/bin/bash\nset -euo pipefail\nCLAUDE_BIN="{claude_bin}"\n')

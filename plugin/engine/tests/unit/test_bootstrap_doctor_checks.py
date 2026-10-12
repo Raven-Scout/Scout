@@ -147,7 +147,9 @@ def test_lines_outside_the_managed_block_are_ignored(monkeypatch: pytest.MonkeyP
 def test_the_scheduler_check_dispatches_to_launchd_on_darwin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     calls: list[str] = []
-    monkeypatch.setattr(doc, "_check_macos_plist_scoutctl_bin", lambda *, home: calls.append("darwin") or ([], []))
+    monkeypatch.setattr(
+        doc, "_check_macos_plist_scoutctl_bin", lambda *, home, vault: calls.append("darwin") or ([], [])
+    )
     assert doc._check_scheduler_bin_path(home=tmp_path) == ([], [])
     assert calls == ["darwin"]
 
