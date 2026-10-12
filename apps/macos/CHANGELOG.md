@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-12
+
 ### Added
 - **Topics view mode for Action Items** (#340). A third mode next to List and
   Board groups tasks by workstream (`- Topic:`, then the topic's root session),
