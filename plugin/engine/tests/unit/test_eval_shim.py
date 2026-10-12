@@ -19,7 +19,8 @@ RUNNER_ARGV = ["--permission-mode", "auto", "--model", "opus", "--max-budget-usd
 FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys, time
 open(os.environ["FAKE_ARGV"], "w").write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read(),
-    "config": os.environ.get("CLAUDE_CONFIG_DIR"), "secure": os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR")}))
+    "config": os.environ.get("CLAUDE_CONFIG_DIR"), "secure": os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+    "api_key": os.environ.get("ANTHROPIC_API_KEY"), "gh_token": os.environ.get("GH_TOKEN")}))
 for line in open(os.environ["FAKE_STREAM"]):
     print(line, end="", flush=True)
     if os.environ.get("FAKE_SLEEP"):
@@ -27,17 +28,27 @@ for line in open(os.environ["FAKE_STREAM"]):
 """
 
 
-def _init(servers: list[str]) -> str:
-    return json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5",
+def _init(servers: list[str], source: str = "none") -> str:
+    return json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "apiKeySource": source,
                        "mcp_servers": [{"name": s, "status": "connected"} for s in servers]})  # fmt: skip
 
 
 RESULT = json.dumps({"type": "result", "subtype": "success", "result": "All done.", "num_turns": 1})
 
 
-def _run(tmp_path: Path, stream: list[str], *, servers: str = "claude_ai_Slack", timeout: str = "30", sleep: str = ""):
+def _run(
+    tmp_path: Path,
+    stream: list[str],
+    *,
+    servers: str = "claude_ai_Slack",
+    timeout: str = "30",
+    sleep: str = "",
+    extra_env: dict[str, str] | None = None,
+    argv: list[str] | None = None,
+    fake_source: str = FAKE_CLAUDE,
+):
     fake = tmp_path / "fake-claude"
-    fake.write_text(FAKE_CLAUDE)
+    fake.write_text(fake_source)
     fake.chmod(0o755)
     (tmp_path / "stream.in").write_text("\n".join(stream) + "\n")
     result_dir = tmp_path / "result"
@@ -55,8 +66,9 @@ def _run(tmp_path: Path, stream: list[str], *, servers: str = "claude_ai_Slack",
         "FAKE_ARGV": str(tmp_path / "argv.json"),
         "FAKE_STREAM": str(tmp_path / "stream.in"),
         "FAKE_SLEEP": sleep,
+        **(extra_env or {}),
     }
-    proc = subprocess.run([str(SHIM), *RUNNER_ARGV], env=env, capture_output=True, text=True, timeout=60)
+    proc = subprocess.run([str(SHIM), *(argv or RUNNER_ARGV)], env=env, capture_output=True, text=True, timeout=60)
     return proc, result_dir
 
 
@@ -95,7 +107,7 @@ def test_a_non_stub_mcp_server_kills_the_session(tmp_path: Path) -> None:
 def test_an_expected_stub_that_is_not_connected_kills_the_session(tmp_path: Path) -> None:
     # A stub that crashed at start would leave the scenario silently connector-less,
     # indistinguishable from the connector-down scenario.
-    failed = json.dumps({"type": "system", "subtype": "init", "model": "m",
+    failed = json.dumps({"type": "system", "subtype": "init", "model": "m", "apiKeySource": "none",
                          "mcp_servers": [{"name": "claude_ai_Slack", "status": "connected"},
                                          {"name": "claude_ai_Linear", "status": "failed"}]})  # fmt: skip
     proc, result = _run(tmp_path, [failed, RESULT], servers="claude_ai_Linear,claude_ai_Slack")
@@ -114,7 +126,19 @@ def test_a_timeout_kills_the_session(tmp_path: Path) -> None:
 
 def test_env_isolates_path_git_and_gh(tmp_path: Path) -> None:
     env = build_env(
-        base={"HOME": "/home/x", "PATH": "/usr/local/bin:/usr/bin", "GIT_DIR": "/bad", "SCOUT_DATA_DIR": "/bad"},
+        base={
+            "HOME": "/home/x",
+            "PATH": "/usr/local/bin:/usr/bin",
+            "GIT_DIR": "/bad",
+            "SCOUT_DATA_DIR": "/bad",
+            "ANTHROPIC_API_KEY": "k",
+            "ANTHROPIC_AUTH_TOKEN": "k",
+            "ANTHROPIC_BASE_URL": "u",
+            "GH_TOKEN": "t",
+            "GITHUB_TOKEN": "t",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+        },  # fmt: skip
         mode="morning-consolidation",
         result_dir=tmp_path / "r",
         mcp_config=tmp_path / "mcp.json",
@@ -130,6 +154,9 @@ def test_env_isolates_path_git_and_gh(tmp_path: Path) -> None:
     assert path[0].endswith("tests/eval/stubs/bin") and path[1].endswith(".venv/bin")
     assert "/opt/claude/bin" in path and "/usr/local/bin" not in path
     assert "GIT_DIR" not in env and "SCOUT_DATA_DIR" not in env
+    for secret in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                   "CLAUDE_CODE_USE_VERTEX", "GH_TOKEN", "GITHUB_TOKEN"):  # fmt: skip
+        assert secret not in env
     assert env["HOME"] == "/home/x"  # isolating HOME loses the keychain login (spec §4.3)
     assert env["SCOUT_FORCE_MODE"] == "morning-consolidation"
     assert env["SCOUT_RETRY_DISABLE"] == "1"
@@ -147,3 +174,36 @@ def test_the_shim_refuses_to_run_without_its_eval_env(tmp_path: Path, missing: s
         env["SCOUT_EVAL_RESULT_DIR"] = str(tmp_path)
     proc = subprocess.run([str(SHIM), *RUNNER_ARGV], env=env, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 2 and missing in proc.stderr
+
+
+def test_an_api_key_in_the_environment_never_reaches_claude(tmp_path: Path) -> None:
+    proc, _ = _run(
+        tmp_path,
+        [_init(["claude_ai_Slack"]), RESULT],
+        extra_env={"ANTHROPIC_API_KEY": "sk-test-not-real", "GH_TOKEN": "gh-test-not-real"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    seen = json.loads((tmp_path / "argv.json").read_text())
+    assert seen["api_key"] is None and seen["gh_token"] is None
+
+
+def test_a_session_billed_to_an_api_key_is_killed(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [_init(["claude_ai_Slack"], source="ANTHROPIC_API_KEY"), RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text()) == {"reason": "api_key", "source": "ANTHROPIC_API_KEY"}
+
+
+def test_a_stream_that_does_not_start_with_init_is_killed(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text())["reason"] == "no_init"
+
+
+def test_a_child_that_dies_before_reading_the_prompt_does_not_hang_the_shim(tmp_path: Path) -> None:
+    import time
+
+    argv = [*RUNNER_ARGV[:-1], "x" * 300_000]
+    start = time.monotonic()
+    proc, _ = _run(tmp_path, [], timeout="30", argv=argv, fake_source="#!/bin/bash\nexit 1\n")
+    assert time.monotonic() - start < 15
+    assert proc.returncode != 0

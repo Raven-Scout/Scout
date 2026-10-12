@@ -551,10 +551,25 @@ makes that answer one command.
 - **R1. Eating the maintainer's subscription.** Mitigated by small defaults, the printed plan,
   the opt-in flags, the base cache and stopping on the first usage limit (§9). CI never calls a
   model.
-- **R2a′. Bash is not path-confined.** Read/Edit/Write are scoped to the vault, but an allowed
-  shell command (`git`, `sed`, `scoutctl`) can touch any path. The list therefore holds nothing
-  destructive or networked (no `rm`, `mv`, `cp` or `curl`). The first live sample's only denials
-  were missing `echo`/`mkdir` inside compound commands, which the list now has.
+- **R2a′. Bash is not confined, and the allowlist cannot make it so.** Read/Edit/Write are scoped
+  to the vault. But allowed commands can still write anywhere or reach the network, and HOME is
+  real, so the maintainer's own vault is reachable:
+  - `python3` runs arbitrary code, and the phases need it;
+  - `sed -i`, `find -delete`, `awk 'system()'` and `git -C <elsewhere>`/`push` can write outside
+    the vault;
+  - a script written in the vault can be run.
+
+  What contains this today:
+  - the stub `gh`, plus a temp `GH_CONFIG_DIR`, with `GH_TOKEN`/`GITHUB_TOKEN` dropped;
+  - only stub MCP servers;
+  - API credentials dropped from the environment, and an `apiKeySource` check in the init guard;
+  - nothing destructive or networked on the list (no `rm`, `mv`, `cp` or `curl`);
+  - the `outside_reads` metric.
+
+  None of that confines a shell. The follow-up is Claude Code's Bash sandbox: writes confined to
+  the sample's directory, network on an allowlist, set through the shim's `--settings`. Until it
+  lands, run evals as you would any agent session you've given shell access, and expect a model
+  that misbehaves to be able to touch your files.
 - **R2. The eval allowlist differs from production's `--permission-mode auto`.** A behaviour that
   depends on a tool outside the list shows up as denials, which are always reported. If denials
   dominate, widen the list. Running `auto` under `--setting-sources ""` is not an option, because

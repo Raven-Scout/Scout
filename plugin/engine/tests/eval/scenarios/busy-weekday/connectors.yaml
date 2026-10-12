@@ -6,6 +6,11 @@ gh:
   "*":
     - match: {argv: '^auth status'}
       respond: {stdout: "github.com\n  ✓ Logged in to github.com account alex-example"}
+    # Per repo first: Alex has no PRs in example-org/api; its open list holds the team-review PR #40.
+    - match: {argv: '^pr list (?=.*--author @me)(?=.*--repo example-org/api\b)'}
+      respond: {stdout: "[]"}
+    - match: {argv: '^pr list .*--repo example-org/api\b'}
+      respond: {stdout: fixtures/gh-api-prs.json}
     - match: {argv: '^pr list .*--author @me'}
       respond: {stdout: fixtures/gh-my-prs.json}
     - match: {argv: '^search prs .*--review-requested @me'}

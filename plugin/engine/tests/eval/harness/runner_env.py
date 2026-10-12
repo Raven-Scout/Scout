@@ -18,6 +18,19 @@ ENGINE = Path(__file__).resolve().parents[3]
 STUB_BIN = ENGINE / "tests" / "eval" / "stubs" / "bin"
 SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 _DROPPED_PREFIXES = ("GIT_", "SCOUT_", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE")
+# Credentials that would bill an API or reach a real account. The eval runs on the
+# maintainer's subscription login only (spec §13 Q1); an exported key must never be used.
+SECRETS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+)
 
 
 def build_env(
@@ -34,7 +47,7 @@ def build_env(
     today: str,
     timeout_s: int,
 ) -> dict[str, str]:
-    env = {k: v for k, v in base.items() if not k.startswith(_DROPPED_PREFIXES)}
+    env = {k: v for k, v in base.items() if not k.startswith(_DROPPED_PREFIXES) and k not in SECRETS}
     path = [str(STUB_BIN), str(ENGINE / ".venv" / "bin"), str(Path(real_claude).parent), *SYSTEM_PATH]
     env.update(
         PATH=":".join(dict.fromkeys(path)),

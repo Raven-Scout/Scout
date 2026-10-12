@@ -35,6 +35,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .runner_env import SECRETS
+
 SHIM = Path(__file__).resolve().parents[1] / "stubs" / "shim" / "claude-shim"
 REQUIRED_ENV = (
     "SCOUT_EVAL_RESULT_DIR",
@@ -92,6 +94,11 @@ def build_command(
 
 def guard_init(event: dict[str, Any], allowed: set[str]) -> dict[str, Any] | None:
     """Why an init event must abort the session, or None when it is safe."""
+    if event.get("type") != "system" or event.get("subtype") != "init":
+        return {"reason": "no_init", "first_event": f"{event.get('type')}/{event.get('subtype')}"}
+    source = event.get("apiKeySource")
+    if source != "none":  # anything but the subscription login would bill (spec §13 Q1)
+        return {"reason": "api_key", "source": source}
     servers = {s.get("name", ""): s.get("status") for s in event.get("mcp_servers") or []}
     leaked = sorted(set(servers) - allowed)
     if leaked:
@@ -121,7 +128,8 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         mcp_config=env["SCOUT_EVAL_MCP_CONFIG"],
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
     )
-    child_env = {**env, "CLAUDE_CONFIG_DIR": str(result_dir / "claude-config"), "CLAUDE_SECURESTORAGE_CONFIG_DIR": ""}
+    child_env = {k: v for k, v in env.items() if k not in SECRETS}
+    child_env.update(CLAUDE_CONFIG_DIR=str(result_dir / "claude-config"), CLAUDE_SECURESTORAGE_CONFIG_DIR="")
     with (result_dir / "claude.stderr").open("w", encoding="utf-8") as err:
         proc = subprocess.Popen(
             cmd,
@@ -132,12 +140,14 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
             text=True,
             start_new_session=True,
         )
+    # claude leads a process group of its own; the runner reads this to kill it on an overrun.
+    (result_dir / "claude.pgid").write_text(str(proc.pid), encoding="utf-8")
     timed_out = threading.Event()
 
     def _kill() -> None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except OSError:  # already gone (ProcessLookupError), or a reaped group (PermissionError)
             pass
 
     def _on_timeout() -> None:
@@ -145,13 +155,17 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         _kill()
 
     timer = threading.Timer(float(env["SCOUT_EVAL_TIMEOUT_S"]), _on_timeout)
+    timer.daemon = True
     timer.start()
     assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(prompt)
-    proc.stdin.close()
     result_text = ""
     checked = False
     try:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError:  # the child died before reading its prompt; its exit code says why
+            pass
         with (result_dir / "stream.jsonl").open("w", encoding="utf-8") as out:
             for line in proc.stdout:
                 out.write(line)
@@ -160,7 +174,7 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not checked and event.get("type") == "system" and event.get("subtype") == "init":
+                if not checked:  # the first event must be a clean init, or nothing runs
                     checked = True
                     why = guard_init(event, allowed)
                     if why:

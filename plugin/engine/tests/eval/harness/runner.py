@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -40,6 +41,13 @@ _BASH_TOOLS = (
 )  # fmt: skip
 
 
+def _kill_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 class LoginRequired(Exception):
     """The Claude Code login is missing or expired: no sample can run."""
 
@@ -68,13 +76,23 @@ def _items(path: Path) -> list[ActionItem] | None:
     return parse_lines(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else None
 
 
-def _archived_today(vault: Path, today: date) -> set[str]:
+def archived_today(data_dir: Path, today: date) -> set[str]:
+    """Tags the stale archive moved out today.
+
+    ``stale.write_archive`` writes each item's task line, then a
+    ``  - _auto-archived <day> …_`` sub-line, so the tag is carried from the
+    task line to its note.
+    """
     tags: set[str] = set()
-    for path in (vault / "action-items" / "archive").glob("stale-items-*.md"):
+    mark = f"_auto-archived {today.isoformat()}"
+    for path in (data_dir / "action-items" / "archive").glob("stale-items-*.md"):
+        tag = None
         for line in path.read_text(encoding="utf-8").splitlines():
-            m = re.search(r"\[#([A-Z0-9]{2,8})\]", line)
-            if m and f"auto-archived {today.isoformat()}" in line:
-                tags.add(m.group(1))
+            m = re.match(r"\s*- \[[ xX]\] \[#([A-Z0-9]{2,8})\]", line)
+            if m:
+                tag = m.group(1)
+            elif tag and line.strip().startswith(f"- {mark}"):
+                tags.add(tag)
     return tags
 
 
@@ -84,8 +102,16 @@ def _unstubbed(calls: Path) -> int:
     return sum(1 for line in calls.read_text(encoding="utf-8").splitlines() if '"kind": "unstubbed"' in line)
 
 
+CARRY_BANNER = "**Mechanical carry-forward**"  # scout/action_items/materialize.py's _BANNER
+
+
 def _score(scenario: Scenario, vault: Path, today: date, yesterday: list[ActionItem]) -> tuple[CheckResult, ...]:
-    today_items = _items(vault / "action-items" / f"action-items-{today.isoformat()}.md")
+    today_file = vault / "action-items" / f"action-items-{today.isoformat()}.md"
+    if today_file.is_file() and CARRY_BANNER in today_file.read_text(encoding="utf-8"):
+        # The runner carried yesterday's file in verbatim and the session never rewrote it:
+        # scoring that would credit the session with yesterday's placements and no drops.
+        return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
+    today_items = _items(today_file)
     results = []
     for name in scenario.checks:
         if name == "placement":
@@ -95,7 +121,7 @@ def _score(scenario: Scenario, vault: Path, today: date, yesterday: list[ActionI
                 no_drop(
                     yesterday,
                     today_items,
-                    archived_tags=_archived_today(vault, today),
+                    archived_tags=archived_today(vault, today),
                     expected_closures=scenario.expected_closures,
                 )
             )
@@ -114,6 +140,7 @@ def run_sample(
     real_claude: str,
     timeout_s: int = DEFAULT_TIMEOUT_S,
     budget: str = DEFAULT_BUDGET,
+    hook_grace_s: int = HOOK_GRACE_S,
 ) -> SampleResult:
     result_dir = results_root / f"{scenario.name}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
     vault = result_dir / "vault"
@@ -149,16 +176,29 @@ def run_sample(
         today=today.isoformat(),
         timeout_s=timeout_s,
     )
+    runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:
-        subprocess.run(
+        proc = subprocess.Popen(
             ["bash", str(vault / "run-scout.sh")],
             cwd=vault,
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
-            timeout=timeout_s + HOOK_GRACE_S,
-            check=False,
+            start_new_session=True,  # its own group, so the session under it dies with it
         )
+        try:
+            runner_exit: int | None = proc.wait(timeout=timeout_s + hook_grace_s)
+        except subprocess.TimeoutExpired:
+            runner_timed_out, runner_exit = True, None
+            _kill_group(proc.pid)
+            proc.wait()
+        except BaseException:  # Ctrl-C: take the session down with the command
+            _kill_group(proc.pid)
+            raise
+    _kill_group(proc.pid)
+    pgid = result_dir / "claude.pgid"  # the shim runs claude in a group of its own
+    if pgid.exists():
+        _kill_group(int(pgid.read_text(encoding="utf-8")))
     stream = result_dir / "stream.jsonl"
     metrics = parse_stream(stream.read_text(encoding="utf-8").splitlines()) if stream.exists() else None
     stderr = result_dir / "claude.stderr"
@@ -169,8 +209,13 @@ def run_sample(
         raise LoginRequired(f"Claude Code is not logged in (see {stderr}); run `claude auth login`, then retry.")
     aborted_file = result_dir / "aborted.json"
     aborted = json.loads(aborted_file.read_text(encoding="utf-8")) if aborted_file.exists() else None
+    if aborted is None and runner_timed_out:
+        aborted = {"reason": "runner_timeout", "seconds": timeout_s + hook_grace_s}
     if aborted is None and (metrics is None or (metrics.model is None and metrics.result_subtype is None)):
         aborted = {"reason": "no_session", "detail": "no init or result event; see runner.log and claude.stderr"}
+    if aborted is None and metrics is not None and metrics.result_subtype not in (None, "success"):
+        aborted = {"reason": metrics.result_subtype}  # e.g. error_max_budget_usd: the session didn't finish
+    (result_dir / "runner-exit.json").write_text(json.dumps({"exit": runner_exit}), encoding="utf-8")
     checks = () if aborted else _score(scenario, vault, today, yesterday)
     (result_dir / "checks.json").write_text(json.dumps([asdict(c) for c in checks], indent=2), encoding="utf-8")
     if metrics is not None:

@@ -70,16 +70,24 @@ def test_plan_uses_opus_only_when_asked(busy) -> None:
 
 
 FAKE_CLAUDE = """#!/usr/bin/env python3
-import json, os, sys
+import glob, json, os, sys, time
+if os.environ.get("EVAL_FAKE_ENRICH"):  # rewrite today's file the way a session would: drop the carry banner
+    path = sorted(glob.glob("action-items/action-items-*.md"))[-1]
+    lines = [ln for ln in open(path) if "Mechanical carry-forward" not in ln]
+    open(path, "w").writelines(lines)
+if os.environ.get("EVAL_FAKE_SLEEP"):
+    open(os.environ["EVAL_FAKE_PIDFILE"], "w").write(str(os.getpid()))
+    time.sleep(float(os.environ["EVAL_FAKE_SLEEP"]))
 servers = [s for s in os.environ["EVAL_FAKE_SERVERS"].split(",") if s]
-print(json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5",
+print(json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "apiKeySource": "none",
                   "mcp_servers": [{"name": s, "status": "connected"} for s in servers]}), flush=True)
 print(json.dumps({"type": "assistant", "message": {"id": "m1", "content": [
     {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": os.getcwd() + "/SKILL.md"}}]}}), flush=True)
 result = {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
 print(json.dumps({"type": "user", "message": {"content": [result]}}))
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "duration_ms": 1000,
-                  "total_cost_usd": 0.01, "result": "Nothing to do.",
+subtype = os.environ.get("EVAL_FAKE_SUBTYPE", "success")
+print(json.dumps({"type": "result", "subtype": subtype, "is_error": subtype != "success", "num_turns": 1,
+                  "duration_ms": 1000, "total_cost_usd": 0.01, "result": "Nothing to do.",
                   "usage": {"input_tokens": 1, "output_tokens": 1}}))
 """
 
@@ -89,13 +97,14 @@ def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypa
     fake.write_text(FAKE_CLAUDE)
     fake.chmod(0o755)
     monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
+    monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
     result = run_sample(
         busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
     )
     assert result.aborted is None
     assert result.metrics.tool_call_count == 1 and result.metrics.model == "claude-sonnet-5"
-    # The runner's pre-session step carried yesterday's file into today verbatim, and the
-    # fake session changed nothing: nothing dropped, but no item was re-placed.
+    # The runner's pre-session step carried yesterday's file into today; the fake session
+    # only dropped the carry banner: nothing dropped, but no item was re-placed.
     by_name = {c.name: c for c in result.checks}
     assert by_name["no_drop"].passed is True
     assert by_name["placement"].passed is False
@@ -153,6 +162,7 @@ def test_cli_run_with_a_fake_claude_prints_the_plan_and_the_report(
     fake.write_text(FAKE_CLAUDE)
     fake.chmod(0o755)
     monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
+    monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
     code = main(
         ["run", "busy-weekday", "--reps", "1", "--yes", "--today", "2026-10-12",
          "--claude", str(fake), "--results", str(tmp_path / "results")]
@@ -179,3 +189,90 @@ def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tm
         assert needed in tools
     assert f"Read(/{tmp_path / 'vault'}/**)" in tools
     assert not any(t.startswith(("Bash(rm", "Bash(mv", "Bash(cp", "Bash(curl")) for t in tools)
+
+
+def _fake(tmp_path: Path) -> Path:
+    fake = tmp_path / "fake-claude"
+    fake.write_text(FAKE_CLAUDE)
+    fake.chmod(0o755)
+    return fake
+
+
+SERVERS = "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack"
+
+
+def test_a_session_that_ends_in_an_error_is_aborted_not_scored(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
+    monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
+    result = run_sample(
+        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
+    )
+    assert result.aborted == {"reason": "error_max_budget_usd"}
+    assert result.checks == ()
+
+
+def test_a_session_that_never_rewrote_todays_file_is_not_scored_as_a_pass(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
+    result = run_sample(
+        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
+    )
+    assert result.aborted is None
+    assert {(c.name, c.passed, c.details) for c in result.checks} == {
+        ("placement", None, ("not_enriched",)),
+        ("no_drop", None, ("not_enriched",)),
+    }
+
+
+def test_items_archived_today_in_the_real_archive_format_are_not_drops(tmp_path: Path) -> None:
+    from scout.action_items.stale import ArchivedItem, write_archive
+    from tests.eval.harness.runner import archived_today
+
+    write_archive(
+        tmp_path,
+        MONDAY,
+        [ArchivedItem("OLD", date(2026, 8, 1), ["- [ ] [#OLD] **Tidy the runbook** — no news", "  - Refs: OPS-1"])],
+    )
+    write_archive(
+        tmp_path,
+        date(2026, 10, 1),
+        [ArchivedItem("PREV", date(2026, 7, 1), ["- [ ] [#PREV] **Older thing** — no news"])],
+    )
+    assert archived_today(tmp_path, MONDAY) == {"OLD"}
+
+
+def test_a_runner_that_overruns_is_killed_with_its_session_and_not_scored(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
+    monkeypatch.setenv("EVAL_FAKE_SLEEP", "60")
+    monkeypatch.setenv("EVAL_FAKE_PIDFILE", str(tmp_path / "fake.pid"))
+    result = run_sample(
+        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path)),
+        timeout_s=60, hook_grace_s=-50,
+    )  # fmt: skip
+    assert result.aborted is not None and result.aborted["reason"] == "runner_timeout"
+    assert result.checks == ()
+    pid = int((tmp_path / "fake.pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_the_gh_stub_answers_per_repo(busy) -> None:
+    from tests.eval.harness.stubs.rules import Script
+
+    script = Script.load(busy.script, today=MONDAY)
+
+    def stdout(argv: str) -> str:
+        return script.reply("gh", "*", {"argv": argv}, prior_hits=lambda _: 0).payload["stdout"]
+
+    assert stdout("pr list --author @me --state open --repo example-org/api --json number") == "[]"
+    assert stdout("pr list --repo example-org/api --author @me --state all") == "[]"
+    assert stdout("pr list --repo example-org/api --state all --json number,title") == "fixtures/gh-api-prs.json"
+    assert stdout("pr list --author @me --state open --json number,title") == "fixtures/gh-my-prs.json"
+    assert stdout("pr list --author @me --repo example-org/widgets --json number") == "fixtures/gh-my-prs.json"
