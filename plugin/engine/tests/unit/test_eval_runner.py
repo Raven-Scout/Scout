@@ -28,7 +28,7 @@ def test_busy_weekday_loads(busy) -> None:
     assert busy.mode == "morning-consolidation"
     assert busy.weekdays_only is True
     assert busy.personas == ("slack", "linear", "calendar")
-    assert busy.checks == ("placement", "no_drop")
+    assert busy.checks[:2] == ("placement", "no_drop")
     assert busy.expected_placement["QUOTA"] == {"🔴", "🟡"}
     assert busy.expected_closures == {"LCHK"}
 
@@ -111,7 +111,7 @@ def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypa
     assert by_name["no_drop"].passed is True
     assert by_name["placement"].passed is False
     saved = json.loads((result.result_dir / "checks.json").read_text())
-    assert {c["name"] for c in saved} == {"placement", "no_drop"}
+    assert {c["name"] for c in saved} == set(busy.checks)
     assert json.loads((result.result_dir / "metrics.json").read_text())["tool_call_count"] == 1
     assert (result.result_dir / "vault" / "action-items" / "action-items-2026-10-12.md").exists()
 
@@ -246,8 +246,7 @@ def test_a_session_that_never_rewrote_todays_file_is_not_scored_as_a_pass(
     )
     assert result.aborted is None
     assert {(c.name, c.passed, c.details) for c in result.checks} == {
-        ("placement", None, ("not_enriched",)),
-        ("no_drop", None, ("not_enriched",)),
+        (name, None, ("not_enriched",)) for name in busy.checks
     }
 
 

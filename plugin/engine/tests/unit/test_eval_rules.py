@@ -130,3 +130,14 @@ def test_times_must_be_a_positive_integer(tmp_path: Path, bad: str) -> None:
 def test_a_response_file_that_is_not_json_is_a_script_error(tmp_path: Path) -> None:
     with pytest.raises(ScriptError, match="bad.json"):
         _script(tmp_path, "slack:\n  x:\n    - respond: bad.json\n", files={"bad.json": "{nope"})
+
+
+def test_inline_responses_are_date_rendered_too(tmp_path: Path) -> None:
+    s = _script(
+        tmp_path,
+        "calendar:\n  gcal_list_events:\n"
+        "    - respond: {events: [{start: {dateTime: '{{today}}T09:30:00Z'}}], note: '{{d-1}}'}\n",
+    )
+    r = s.reply("calendar", "gcal_list_events", {}, prior_hits=_never)
+    assert r.payload == {"events": [{"start": {"dateTime": "2026-10-14T09:30:00Z"}}], "note": "2026-10-13"}
+    assert "{{" not in json.dumps(r.payload)

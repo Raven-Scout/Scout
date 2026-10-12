@@ -410,6 +410,30 @@ the flip. The eval becomes #372's acceptance test.
 Checks: `outage_reported`, `no_false_outage`, `dropoff_caught`, `no_drop`, `count_guard`, and the
 Linear-sourced seeds still present (not dropped because their source was dark).
 
+**As built (slice 5)** differs from the design above in three ways:
+- the scenario carries its own vault rather than reusing `busy-weekday`'s;
+- the earlier run's today file is pre-seeded without the carry-forward banner;
+- a dropoff wrap counts when it surfaces the drop ("a silent dropoff"), not only for the literal
+  token.
+
+**First live sample** (2026-10-12, Sonnet, N=1). It ran before the inline-date fix, so Calendar
+served a literal `{{today}}`, and the agent correctly flagged it as bad data.
+- `outage_reported` passed: Linear and Gmail were named as "degraded", each with a logged call.
+- `no_false_outage` passed.
+- `no_drop` passed: RUNB and INVX came back with `[carried-via-audit]`, and `review-queue.md`
+  gained an entry.
+- `dropoff_caught` failed only on the wrap's wording ("came back after a silent dropoff"). That
+  wording is now accepted.
+
+Two fixture lessons came out of the review:
+- **Inline connector replies weren't date-rendered.** Fixed.
+- **A fixture vault read to run-health as "the scheduler has never recorded a tick".** So every
+  wrap led with that red finding and its "reinstall the scheduler job" fix. The runner now seeds a
+  recent tick.
+
+The Bash sandbox (§12 R2a′) is what keeps a session from acting on such advice outside its result
+dir.
+
 ### 7.4 `run-health-wrap` (after #366 merges)
 
 `busy-weekday` plus a pre-seeded `.scout-logs/run-outcomes.jsonl` and state, so `scoutctl health`
