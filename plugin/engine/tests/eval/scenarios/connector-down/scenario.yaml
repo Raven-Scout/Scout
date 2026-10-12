@@ -1,0 +1,15 @@
+# connector-down: a morning consolidation where two connectors are dark and an earlier run
+# today silently dropped two items (spec docs/superpowers/specs/2026-10-12-eval-harness-design.md §7.3).
+mode: morning-consolidation
+weekdays_only: false
+personas: [slack, linear, calendar, email]
+checks: [outage_reported, no_false_outage, dropoff_caught, no_drop]
+
+# Scripted down in connectors.yaml: Linear's login expired, mail is unavailable.
+personas_down: [linear, email]
+
+# Open yesterday, missing from the file an earlier run wrote today: the dropoff audit must catch them.
+dropped_tags: [RUNB, INVX]
+
+expected_placement: {}
+expected_closures: []

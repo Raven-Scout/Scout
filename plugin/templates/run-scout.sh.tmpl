@@ -33,6 +33,12 @@ if ! grep -q '.scout-logs' "$SCOUT_DIR/.gitignore" 2>/dev/null; then
     echo '.scout-logs/' >> "$SCOUT_DIR/.gitignore"
 fi
 
+# Mode is set by the dispatcher (SCOUT_FORCE_MODE). For manual invocations
+# without SCOUT_FORCE_MODE set, default to "manual" — operators can still
+# fire the runner directly for debugging, and the Run Modes table tells the
+# model to fall back to a day-of-week + hour derivation in that case.
+MODE="${SCOUT_FORCE_MODE:-manual}"
+
 # Concurrency guard — only one {{INSTANCE_NAME}} session at a time.
 # scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
 # custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this block
@@ -59,6 +65,19 @@ LOCK_GUARD="$LOCK_FILE.takeover"
 # A guard older than this was left by a process that died inside the guarded
 # section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
 LOCK_GUARD_ABANDONED_SECS=30
+
+# A deliberate skip still records how the run ended (#401). Without a row in
+# .scout-logs/run-outcomes.jsonl, `scoutctl health` reads the fired slot as
+# silent (slot.fired_silent) for a run that was skipped on purpose. MODE is set
+# above, before the lock, so the skip is filed under the dispatcher's slot.
+# scripts/run-outcome.sh is an optional vault helper, as at the end of the run.
+RUN_START=$(date +%s)
+_scout_record_skip() {
+    local outcome_sh="$SCOUT_DIR/scripts/run-outcome.sh"
+    if [ -x "$outcome_sh" ]; then
+        "$outcome_sh" record "$MODE" 0 "$RUN_START" "$LOG_FILE" "$1" >> "$LOG_FILE" 2>&1 || true
+    fi
+}
 
 _scout_mtime() {
     # GNU stat first (errors on BSD), BSD stat second; nothing if unknown.
@@ -164,15 +183,11 @@ for _lock_attempt in 1 2; do
 done
 if [ -z "$LOCK_ACQUIRED" ]; then
     echo "=== Another {{INSTANCE_NAME}} session running (PID ${LOCK_PID:-unknown}) — skipping ===" >> "$LOG_FILE"
+    _scout_record_skip skipped_lock
     exit 0
 fi
 trap _scout_release_lock EXIT
 
-# Mode is set by the dispatcher (SCOUT_FORCE_MODE). For manual invocations
-# without SCOUT_FORCE_MODE set, default to "manual" — operators can still
-# fire the runner directly for debugging, and the Run Modes table tells the
-# model to fall back to a day-of-week + hour derivation in that case.
-MODE="${SCOUT_FORCE_MODE:-manual}"
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
 # session-tokens — see hooks/hooks.json) see it inside the claude child
 # process. When it is unset, session-tool-log deliberately writes nothing (so
@@ -226,6 +241,7 @@ BUDGET_CHECK="$SCOUT_DIR/scripts/budget-check.sh"
 if [ -x "$BUDGET_CHECK" ]; then
     if ! "$BUDGET_CHECK" --verbose >> "$LOG_FILE" 2>&1; then
         echo "=== Budget check: skipping this run ===" >> "$LOG_FILE"
+        _scout_record_skip skipped_budget
         exit 0
     fi
 fi

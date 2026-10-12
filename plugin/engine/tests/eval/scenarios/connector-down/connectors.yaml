@@ -1,0 +1,35 @@
+# connector-down: Linear's login expired, mail is unavailable; Slack, Calendar and GitHub answer.
+# Every working persona ends in a quiet default, so only the scripted outages read as outages.
+
+gh:
+  "*":
+    - match: {argv: '^auth status'}
+      respond: {stdout: "github.com\n  ✓ Logged in to github.com account alex-example"}
+    - respond: {stdout: "[]"}
+
+slack:
+  slack_read_user_profile:
+    - respond: {user: {id: U0123456789, name: alex-example, real_name: Alex Example, tz: UTC}}
+  slack_send_message:
+    - capture: wrap
+  "*":
+    - respond: {messages: []}
+
+linear:
+  "*":
+    - error: auth_expired
+
+email:
+  "*":
+    - error: unavailable
+
+calendar:
+  list_calendars:
+    - respond: {calendars: [{id: primary, summary: Alex Example}]}
+  "*":
+    - respond:
+        events:
+          - id: evt-standup
+            summary: Widgets launch standup
+            start: {dateTime: "{{today}}T09:30:00Z"}
+            end: {dateTime: "{{today}}T09:45:00Z"}

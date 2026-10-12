@@ -114,6 +114,35 @@ def _block_real_launchctl(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
+_RECORDING_NOTIFIER = """#!/bin/sh
+# A stand-in desktop notifier (tests/conftest.py): records its argv, never reaches the desktop.
+{{ printf '%s' "$(basename "$0")"; printf ' %s' "$@"; printf '\\n'; }} >> "{record}"
+cat > /dev/null
+exit 0
+"""
+
+
+@pytest.fixture(autouse=True)
+def desktop_notifications(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No test may raise a real desktop notification from a shell script, in this process or a child.
+
+    The shell helpers (run-outcome.sh's engine-unreachable floor, claude-with-retry.sh's auth
+    alert, session-lane-liveness.py) call `osascript` / `notify-send` through PATH. A test that
+    forgot its own fake once popped a real "Scout engine is broken" banner on the maintainer's
+    Mac on every run. So a recording `osascript` and `notify-send` go first on PATH for every
+    test; each call appends one line, `<name> <argv…>`, to the returned file (absent until the
+    first call). A test that puts its own fake first on PATH still wins.
+    """
+    bin_dir = tmp_path_factory.mktemp("no-desktop-notify")
+    record = bin_dir / "desktop-notifications.log"
+    for name in ("osascript", "notify-send"):
+        script = bin_dir / name
+        script.write_text(_RECORDING_NOTIFIER.format(record=record))
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return record
+
+
 @pytest.fixture(autouse=True)
 def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may reach the real ``gh`` (Agent Sessions spec §7).

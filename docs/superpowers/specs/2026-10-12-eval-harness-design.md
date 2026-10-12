@@ -399,6 +399,24 @@ Seeds: a task due 10 working days ago with no new evidence, one due 2 days ago, 
 regression. On main it should fail, and that is the point: #372's PR flips it, and `compare` shows
 the flip. The eval becomes #372's acceptance test.
 
+**As built (slice 6).** #372 landed before this check did, so `demotion` is a normal check. It
+has one `busy-weekday` seed per branch:
+- `OVRD`: `step_down`, 10 working days past due with no news;
+- `LATE`: `hold`, 2 days past due, Alex's move, with its own tracker issue;
+- `PARK`: `park`, stepped down 16 days ago per its seeded context note.
+
+`hold` fails only on what the rule forbids: moving sections, asking "still want this?", or a body
+stating its age. `park` requires the text unchanged, which is literal in the rule.
+
+The recurring-`overdue` seed is left for later.
+
+**First live sample** (2026-10-12, Sonnet, N=1):
+- **`LATE` held** and **`PARK` parked**, both as the rule says.
+- **`OVRD`** stepped down to 🟡 with `due 2026-09-28; still want this?`.
+- **The miss:** its context note paraphrased the required line as "stepped down to 🟡, 14 quiet
+  days with no news" instead of the literal `stepped down, past due with no news`. A later run
+  must find that exact line to park the item, so the check counts the paraphrase as a miss.
+
 ### 7.3 `connector-down` (mode `morning-consolidation`)
 
 `busy-weekday`'s vault with:
@@ -409,6 +427,30 @@ the flip. The eval becomes #372's acceptance test.
 
 Checks: `outage_reported`, `no_false_outage`, `dropoff_caught`, `no_drop`, `count_guard`, and the
 Linear-sourced seeds still present (not dropped because their source was dark).
+
+**As built (slice 5)** differs from the design above in three ways:
+- the scenario carries its own vault rather than reusing `busy-weekday`'s;
+- the earlier run's today file is pre-seeded without the carry-forward banner;
+- a dropoff wrap counts when it surfaces the drop ("a silent dropoff"), not only for the literal
+  token.
+
+**First live sample** (2026-10-12, Sonnet, N=1). It ran before the inline-date fix, so Calendar
+served a literal `{{today}}`, and the agent correctly flagged it as bad data.
+- `outage_reported` passed: Linear and Gmail were named as "degraded", each with a logged call.
+- `no_false_outage` passed.
+- `no_drop` passed: RUNB and INVX came back with `[carried-via-audit]`, and `review-queue.md`
+  gained an entry.
+- `dropoff_caught` failed only on the wrap's wording ("came back after a silent dropoff"). That
+  wording is now accepted.
+
+Two fixture lessons came out of the review:
+- **Inline connector replies weren't date-rendered.** Fixed.
+- **A fixture vault read to run-health as "the scheduler has never recorded a tick".** So every
+  wrap led with that red finding and its "reinstall the scheduler job" fix. The runner now seeds a
+  recent tick.
+
+The Bash sandbox (§12 R2a′) is what keeps a session from acting on such advice outside its result
+dir.
 
 ### 7.4 `run-health-wrap` (after #366 merges)
 
@@ -529,6 +571,18 @@ default and loud about what it will do:
 and link the report in the release PR." `release.sh prepare` prints a reminder with the date of
 the newest local tier-2 report and whether `phases/` changed since. It never refuses, because the
 run depends on someone's local subscription (§13 Q2).
+
+*As built (slice 7):*
+- **There is no `--all` flag.** The checklist (README "Releases") names the scenarios, or points
+  at `ls plugin/engine/tests/eval/scenarios`.
+- **"Newest report" means the newest result dir under `.eval-results/`.** The date comes from the
+  dir's `<YYYYMMDD-HHMMSS>` name.
+- **"Changed since"** counts commits to `plugin/phases` after that time.
+- **`compare --base <last tag>` is suggested** when `plugin/phases` differs from the previous
+  release.
+- **"Link the report" became "paste the summary".** `run` and `compare` print their report and
+  write no report file.
+- **The release PR body gains an unticked eval checkbox.** Nothing reads that checkbox.
 
 ## 10. Error handling
 

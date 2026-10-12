@@ -13,11 +13,12 @@ components. The result is committed as a one-commit git repo.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import scout
@@ -102,6 +103,7 @@ def build_vault(
     connectors: frozenset[str] = DEFAULT_CONNECTORS,
     max_budget: str = "5",
     checkout: Checkout | None = None,
+    scheduler_tick: datetime | None = None,
 ) -> Path:
     """Build the fixture vault. ``checkout`` (a comparison's base arm) installs from that
     checkout's own engine and phases instead of this one's."""
@@ -122,11 +124,16 @@ def build_vault(
     if scenario_dir is not None and (scenario_dir / "vault").is_dir():
         _overlay(scenario_dir / "vault", dest, today)
     (dest / "knowledge-base.md").write_text(render_dates(generate_index(), today), encoding="utf-8")
+    if scheduler_tick is not None:
+        _seed_scheduler_tick(dest, scheduler_tick)
     cache = dest / "scripts" / "cc-session-cache.sh"
     cache.write_text(NOOP_SCRIPT, encoding="utf-8")
     cache.chmod(0o755)
     env = _git_env(today)
     _git(dest, env, "init", "-q", "-b", "main")
+    # No detached auto-maintenance: its .git/maintenance.lock outlives the commit and races a caller's rmtree.
+    _git(dest, env, "config", "maintenance.auto", "false")
+    _git(dest, env, "config", "gc.auto", "0")
     _git(dest, env, "add", "-A")
     _git(dest, env, "commit", "-q", "-m", "fixture")
     return dest
@@ -179,6 +186,17 @@ def _refuse_jobs(cfg: BootstrapConfig) -> None:
     needs it), so jobs must be off: they'd replace the user's real scheduler jobs."""
     if not (cfg.skip_jobs and cfg.skip_claude):
         raise RuntimeError("refusing a fixture install without skip_jobs/skip_claude")
+
+
+def _seed_scheduler_tick(vault: Path, at: datetime) -> None:
+    """A recent completed tick, as a live install has: otherwise run-health reads a fixture vault
+    as "the scheduler has never recorded a tick", and every wrap leads with that red finding
+    (and its "reinstall the scheduler job" fix)."""
+    stamp = at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log = vault / ".scout-logs" / f"schedule-events-{at.astimezone(UTC):%Y-%m-%d}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": stamp, "kind": "schedule.tick.completed"}) + "\n")
 
 
 def _install_here(dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:

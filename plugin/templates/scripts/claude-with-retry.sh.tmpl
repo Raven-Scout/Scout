@@ -16,6 +16,11 @@
 # Does NOT retry on:
 #   - 401 / 403 auth failures   (need user intervention)
 #   - "Exceeded USD budget"     (intentional budget gate)
+#   - Claude usage limits       ("You've hit your session limit · resets 6:50pm"):
+#                                 they lift hours later, so a backoff of seconds would
+#                                 retry into the same limit. scripts/rate-limit-detect.sh
+#                                 records the reset and the budget gate holds later
+#                                 slots until then (#407).
 #   - Any non-zero exit whose log tail doesn't match the transient list
 #
 # IMPORTANT: each retry re-runs `claude -p` from scratch with the full prompt.
@@ -64,6 +69,10 @@ TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect 
 # run-outcome.sh's AUTH_RE and bootstrap_doctor.CLI_AUTH_FAILURE_ERE; a test keeps
 # the three equal.
 AUTH_PATTERNS='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
+
+# Claude Code's quota message names its own reset. Same anchor as
+# rate-limit-detect.sh and run-outcome.sh use for it.
+USAGE_LIMIT_PATTERN='limit.{0,20}resets'
 
 # The one command that fixes an expired login. A bare `claude` opens a session
 # that still needs /login; this goes straight to the sign-in.
@@ -173,6 +182,19 @@ while :; do
             echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model opus"
         } >> "$LOG_FILE"
         notify_auth_failure || true
+        exit "$exit_code"
+    fi
+
+    # Not retried, whatever the attempts left: see the header. Named, so the log
+    # says why instead of "not classified".
+    if [ "$is_transient" -eq 0 ] \
+        && limit_line="$(grep -iE "$USAGE_LIMIT_PATTERN" <<<"$ATTEMPT_TAIL" | tail -n 1)" \
+        && [ -n "$limit_line" ]; then
+        {
+            echo "=== Claude usage limit — no retry (exit $exit_code) ==="
+            echo "    $limit_line"
+            echo "    The next scheduled run after the reset picks up."
+        } >> "$LOG_FILE"
         exit "$exit_code"
     fi
 

@@ -63,11 +63,14 @@ C4Dynamic
 5. **Budget is a gate, backoff is a memory.** `budget check` exits 1 when the
    rolling-window spend crosses `daily_budget × window/24 × skip_pct`, and 2
    when a `rate_limit` row or a non-zero exit sits inside the backoff window.
+   A `rate_limit` row with `resets_at` (Claude Code named when its usage limit
+   lifts) backs off until exactly then instead of for the window.
    Either non-zero result ends the runner with exit 0 and a log line.
 6. **One `claude -p`, retried whole.** `claude-with-retry.sh` re-runs the entire
    invocation when the tail of the log matches a known transient signature
    (connection reset, stream idle timeout, 529 overloaded, lid-close sleep).
-   401 and 403 stop immediately with remediation text. The prompt is a literal
+   401 and 403 stop immediately with remediation text, and so does a usage
+   limit ("… limit · resets <time>"), which lifts hours later. The prompt is a literal
    string: read `SKILL.md`, run mode `morning-briefing`, commit, send the DM.
 7. **The session reads and writes the vault.** It reads the assembled brain
    file, the knowledge base, `inbox.md`, meetings and the `.scout-cache` files,
@@ -86,8 +89,10 @@ C4Dynamic
     every new action item a stable `[#XXXX]` prefix from
     `.scout-state/id-map.json` and commits it separately, so the companion apps
     can key on IDs. On a non-zero exit, `rate-limit-detect.sh` scans the log
-    and may append a `rate_limit` row. `run-outcome.sh` records how the run
-    ended in `run-outcomes.jsonl` (with a failure class read from the log) and
+    and may append a `rate_limit` row, with `resets_at` when the log names the
+    reset (`scoutctl budget resets-at`). `run-outcome.sh` records how the run
+    ended in `run-outcomes.jsonl` (with a failure class read from the log, and
+    the same reset as `resets_at` for a `rate_limited` run) and
     sends a Telegram notice at the first and second consecutive failure. The
     runner calls `scoutctl connector-health-report`, so `connector-health.md`
     refreshes even after a run that died before its phases. The runner then

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +22,11 @@ from scout.action_items.parser import ActionItem, parse_lines
 from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
+from .checks.daily import body_budget, context_note, no_collapse, waiting_format
+from .checks.demotion import demotion
 from .checks.no_drop import no_drop
 from .checks.placement import placement
+from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
 from .mcp_config import write_mcp_config
 from .metrics import SampleMetrics, metrics_from_dict, parse_stream
@@ -147,18 +150,84 @@ def _unstubbed(calls: Path) -> int:
 
 
 CARRY_BANNER = "**Mechanical carry-forward**"  # scout/action_items/materialize.py's _BANNER
+RUN_NOTES_HEADING = "## 🪵"
 
 
-def _score(scenario: Scenario, vault: Path, today: date, yesterday: list[ActionItem]) -> tuple[CheckResult, ...]:
+@dataclass(frozen=True)
+class RunOutputs:
+    notes: dict[str, str]  # tag → action-items/context/<TAG>.md
+    wrap: str | None  # the captured Slack DM(s)
+    run_notes: str | None  # today's 🪵 section
+    review_added: str  # what review-queue.md gained since the fixture commit
+    calls: dict[str, int]  # stubbed calls per persona
+
+
+def _fixture_version(vault: Path, rel: str) -> str:
+    root = subprocess.run(
+        ["git", "-C", str(vault), "rev-list", "--max-parents=0", "HEAD"], capture_output=True, text=True
+    ).stdout.split()
+    if not root:
+        return ""
+    shown = subprocess.run(["git", "-C", str(vault), "show", f"{root[0]}:{rel}"], capture_output=True, text=True)
+    return shown.stdout if shown.returncode == 0 else ""
+
+
+def read_outputs(vault: Path, calls_log: Path, today: date) -> RunOutputs:
+    ctx = vault / "action-items" / "context"
+    notes = {p.stem: p.read_text(encoding="utf-8") for p in sorted(ctx.glob("*.md"))} if ctx.is_dir() else {}
+    wraps, calls = [], {}
+    if calls_log.exists():
+        for line in calls_log.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            calls[row["persona"]] = calls.get(row["persona"], 0) + 1
+            if row.get("capture") == "wrap":
+                args = row.get("args") or {}
+                wraps.append(str(args.get("message") or args.get("text") or ""))
+    today_file = vault / "action-items" / f"action-items-{today.isoformat()}.md"
+    run_notes = None
+    if today_file.is_file():
+        text = today_file.read_text(encoding="utf-8")
+        if RUN_NOTES_HEADING in text:
+            section = text.split(RUN_NOTES_HEADING, 1)[1]
+            run_notes = section.split("\n", 1)[1].split("\n## ", 1)[0] if "\n" in section else ""
+    rel = "knowledge-base/review-queue.md"
+    before = set(_fixture_version(vault, rel).splitlines())
+    now = (vault / rel).read_text(encoding="utf-8").splitlines() if (vault / rel).exists() else []
+    review_added = "\n".join(ln for ln in now if ln.strip() and ln not in before)
+    return RunOutputs(notes, "\n".join(wraps) if wraps else None, run_notes, review_added, calls)
+
+
+def _score(
+    scenario: Scenario, vault: Path, today: date, yesterday: list[ActionItem], calls_log: Path
+) -> tuple[CheckResult, ...]:
     today_file = vault / "action-items" / f"action-items-{today.isoformat()}.md"
     if today_file.is_file() and CARRY_BANNER in today_file.read_text(encoding="utf-8"):
         # The runner carried yesterday's file in verbatim and the session never rewrote it:
         # scoring that would credit the session with yesterday's placements and no drops.
         return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
     today_items = _items(today_file)
+    out = read_outputs(vault, calls_log, today)
+    up = [p for p in scenario.personas if p not in scenario.personas_down]
+    simple = {
+        "context_note": lambda: context_note(today_items, yesterday, out.notes),
+        "waiting_format": lambda: waiting_format(today_items, scenario.expected_waiting),
+        "no_collapse": lambda: no_collapse(today_items),
+        "body_budget": lambda: body_budget(today_items),
+        "outage_reported": lambda: outage_reported(scenario.personas_down, out.wrap, out.run_notes, out.calls),
+        "no_false_outage": lambda: no_false_outage(up, out.wrap, out.run_notes),
+        "demotion": lambda: demotion(today_items, yesterday, out.notes, scenario.expected_demotion),
+        "dropoff_caught": lambda: dropoff_caught(
+            scenario.dropped_tags, today_items, out.wrap, review_added=out.review_added
+        ),
+    }
     results = []
     for name in scenario.checks:
-        if name == "placement":
+        if name in simple:
+            results.append(simple[name]())
+        elif name == "placement":
             results.append(placement(today_items, scenario.expected_placement))
         elif name == "no_drop":
             results.append(
@@ -201,6 +270,7 @@ def run_sample(
         connectors=scenario.connectors,
         max_budget=budget,
         checkout=checkout,
+        scheduler_tick=datetime.now(UTC),
     )
     yesterday_file = vault / "action-items" / f"action-items-{(today - timedelta(days=1)).isoformat()}.md"
     yesterday = _items(yesterday_file) or []
@@ -265,7 +335,7 @@ def run_sample(
     if aborted is None and metrics is not None and metrics.result_subtype not in (None, "success"):
         aborted = {"reason": metrics.result_subtype}  # e.g. error_max_budget_usd: the session didn't finish
     (result_dir / "runner-exit.json").write_text(json.dumps({"exit": runner_exit}), encoding="utf-8")
-    checks = () if aborted else _score(scenario, vault, today, yesterday)
+    checks = () if aborted else _score(scenario, vault, today, yesterday, result_dir / "calls.jsonl")
     (result_dir / "checks.json").write_text(json.dumps([asdict(c) for c in checks], indent=2), encoding="utf-8")
     if metrics is not None:
         (result_dir / "metrics.json").write_text(json.dumps(asdict(metrics), indent=2), encoding="utf-8")

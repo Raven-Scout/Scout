@@ -218,3 +218,21 @@ Watching
 Write
 Per
 PRs
+
+# --- connector-down scenario ---
+MAIL
+MIGR
+RATE
+Reply
+Review
+Ship
+
+# --- demotion seeds (#372) ---
+Down
+Due
+LATE
+PARK
+Past
+Renew
+Step
+Tasks

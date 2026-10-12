@@ -74,6 +74,8 @@ class OutcomeRow:
     log: str | None
     commits_in_window: int | None
     newest_commit: str | None
+    # When a `rate_limited` run's usage limit lifts, as the log named it (#407).
+    resets_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +153,16 @@ def _opt_int(value: object) -> int | None:
         return None
 
 
+def _opt_epoch(value: object) -> datetime | None:
+    seconds = _opt_int(value)
+    if seconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _parse_row(obj: object) -> OutcomeRow | None:
     if not isinstance(obj, dict):
         return None
@@ -179,6 +191,7 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         log=str(log) if log else None,
         commits_in_window=_opt_int(obj.get("commits_in_window")),
         newest_commit=str(commit) if commit else None,
+        resets_at=_opt_epoch(obj.get("resets_at")),
     )
 
 
@@ -284,6 +297,21 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     source="ledger",
                 )
             )
+        elif newest.failure_class == "rate_limited" and newest.resets_at and newest.resets_at > now:
+            # It lifts on its own; say when rather than send anyone to the doctor.
+            findings.append(
+                Finding(
+                    id="runs.failing",
+                    severity="red" if streak >= 2 else "yellow",
+                    since=last_ok,
+                    summary=(
+                        f"Claude usage limit: Scout resumes after {iso_z(newest.resets_at)}. "
+                        f"The last {streak} scheduled run(s) failed (rate_limited)."
+                    ),
+                    fix="Nothing to fix: the first scheduled run after the reset picks up.",
+                    source="ledger",
+                )
+            )
         else:
             log_hint = f": .scout-logs/{newest.log}" if newest.log else ""
             findings.append(
@@ -332,7 +360,12 @@ TICK_STALL = timedelta(hours=2)
 FIRE_MATCH_SLACK = timedelta(seconds=120)
 _MIN_SANE_EPOCH = 1_000_000_000
 _STALE_FIX = "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor"
-_SILENT_FIX = "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log"
+# Runners record their lock and budget skips (#401), so a fire with no row is a
+# run killed before it could record, or a vault whose runners predate that.
+_SILENT_FIX = (
+    "The run was killed or ended before recording an outcome; see .scout-logs/failures.log. "
+    "If this vault's runners predate skip recording, run /scout-update"
+)
 _STALLED_FIX = (
     "Reinstall the scheduler job: scoutctl schedule install-plist --force (macOS) "
     "or scoutctl schedule install-cron (Linux)"

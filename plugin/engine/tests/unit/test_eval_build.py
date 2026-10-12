@@ -73,6 +73,15 @@ def test_vault_is_a_git_repo_with_one_commit(tmp_path: Path) -> None:
     assert status.stdout == ""
 
 
+def test_the_fixture_repo_never_runs_background_maintenance(tmp_path: Path) -> None:
+    # A detached `git maintenance run --auto` after a commit creates and removes .git/maintenance.lock
+    # under a caller's rmtree (CI: FileNotFoundError 'maintenance.lock'). The vault's own config turns it off.
+    vault = build_vault(tmp_path / "v", today=TODAY)
+    for key, want in (("maintenance.auto", "false"), ("gc.auto", "0")):
+        got = subprocess.run(["git", "-C", str(vault), "config", "--local", key], capture_output=True, text=True)
+        assert got.stdout.strip() == want, key
+
+
 def test_two_builds_on_the_same_day_are_identical(tmp_path: Path) -> None:
     # Same path both times: brain files embed the vault path, and provenance.json hashes them.
     dest = tmp_path / "v"
@@ -148,3 +157,17 @@ def test_refuses_an_existing_destination(tmp_path: Path) -> None:
     (dest / "keep.txt").write_text("x")
     with pytest.raises(FileExistsError):
         build_vault(dest, today=TODAY)
+
+
+def test_a_scheduler_tick_can_be_seeded_so_run_health_sees_a_live_scheduler(tmp_path: Path) -> None:
+    import json as _json
+    from datetime import UTC, datetime
+
+    tick = datetime(2026, 10, 14, 8, 59, tzinfo=UTC)
+    vault = build_vault(tmp_path / "v", today=TODAY, scheduler_tick=tick)
+    [log] = (vault / ".scout-logs").glob("schedule-events-*.jsonl")
+    row = _json.loads(log.read_text().splitlines()[-1])
+    assert row["kind"] == "schedule.tick.completed" and row["ts"] == "2026-10-14T08:59:00Z"
+    from scout.health import last_tick_completed
+
+    assert last_tick_completed(vault) == tick

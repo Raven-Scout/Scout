@@ -13,7 +13,7 @@
         "summary": "Scout can't run: your Claude login expired. 2 failed run(s) since the last success (2026-10-07T08:01:00Z)."
       },
       {
-        "fix": "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log",
+        "fix": "The run was killed or ended before recording an outcome; see .scout-logs/failures.log. If this vault's runners predate skip recording, run /scout-update",
         "id": "slot.fired_silent:weekly-research",
         "severity": "yellow",
         "since": "2026-10-07T14:00:00Z",

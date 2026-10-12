@@ -225,6 +225,24 @@ def budget_check_cmd(
     raise typer.Exit(budget_run(verbose=verbose))
 
 
+@budget_app.command("resets-at")
+def budget_resets_at_cmd(
+    log: Path = typer.Argument(..., help="A run log that ended on a Claude usage limit."),
+    now: int | None = typer.Option(None, "--now", help="Reference time, epoch seconds (default: the clock)."),
+    iso: bool = typer.Option(False, "--iso", help="Print 2026-01-05T13:10:00Z instead of epoch seconds."),
+) -> None:
+    """Print when the log's usage limit lifts (epoch seconds). Exit 1, silently, if it names no readable time."""
+    from datetime import UTC, datetime
+
+    from scout.scripts.rate_limit_reset import reset_from_log
+
+    ref = datetime.fromtimestamp(now, UTC) if now is not None else datetime.now(UTC)
+    reset = reset_from_log(log, now=ref)
+    if reset is None:
+        raise typer.Exit(1)
+    typer.echo(reset.strftime("%Y-%m-%dT%H:%M:%SZ") if iso else int(reset.timestamp()))
+
+
 @budget_app.command("show")
 def budget_show_cmd(
     as_json: bool = typer.Option(False, "--json", help="Emit the effective config as JSON."),
