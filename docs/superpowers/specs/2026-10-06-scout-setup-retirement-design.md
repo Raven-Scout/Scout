@@ -163,8 +163,11 @@ Gmail, Calendar, Drive and GitHub connected. The isolation above does not narrow
 that, since a claude.ai connector gets "nothing extra" rather than "nothing
 else". The protection is the permission decision itself:
 - `dontAsk` denies every tool that no rule allows, instead of prompting;
-- the only rules are `--allowedTools ToolSearch` (plus one exact read tool for
-  the probe), with no setting sources, so no user allow rule can add a write tool;
+- the only rules Scout passes are `--allowedTools ToolSearch` (plus one exact
+  read tool for the probe), with no setting sources, so no user, project or
+  local allow rule can add a write tool. Admin-managed (policy) settings still
+  apply, as noted above: an allow rule there for a connector's write tool would
+  widen this, and nothing in Scout can pin it;
 - `--tools ToolSearch` leaves no built-in tool, Bash included, to route around a
   denial.
 

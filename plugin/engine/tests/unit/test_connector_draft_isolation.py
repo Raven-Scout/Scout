@@ -187,7 +187,9 @@ def test_run_claude_env_turns_off_nonblocking_mcp_startup(monkeypatch):
 # and GitHub among them, write tools included). What keeps those tools from being
 # called is `--permission-mode dontAsk` with an allowlist of ToolSearch plus, for
 # the probe, one exact read tool: every other call is denied, not prompted.
-# Checked live on 2026-10-12 against Claude Code 2.1.278 (spec §4.2): an
+# Admin-managed (policy) settings still apply and sit outside this; an allow
+# rule there would widen it. Checked live on 2026-10-12 against Claude Code
+# 2.1.278 (spec §4.2): an
 # adversarial prompt made both sessions call `create_draft` on a connected
 # claude.ai Gmail; each call was denied and listed in `permission_denials`, and
 # no draft was created. These tests pin every input that decision depends on,
@@ -197,16 +199,29 @@ _BYPASS_FLAGS = (
     "--dangerously-skip-permissions",
     "--allow-dangerously-skip-permissions",
     "--permission-prompt-tool",
-    "--disallowedTools",  # a denylist would mean the allowlist stopped being the whole story
+    "--permission-prompts",
+    # The kebab aliases would add rules beside the pinned `--allowedTools`.
+    "--allowed-tools",
+    # A denylist would mean the allowlist stopped being the whole story.
+    "--disallowedTools",
+    "--disallowed-tools",
 )
+# Flags whose value the guarantee depends on: each must appear once, as two argv
+# words, never as `--flag=value`, which `argv.index` would not see.
+_GUARDED = ("--permission-mode", "--tools", "--allowedTools", "--settings", "--setting-sources")
+
+
+def _values(argv: list[str], flag: str) -> list[str]:
+    """Every word after ``flag`` up to the next flag (the CLI reads some as variadic)."""
+    i = argv.index(flag) + 1
+    j = next((k for k in range(i, len(argv)) if argv[k].startswith("--")), len(argv))
+    return argv[i:j]
 
 
 def _allowed_tools(argv: list[str]) -> list[str]:
-    i = argv.index("--allowedTools")
-    tail = argv[i + 1 :]
     # Variadic in the CLI: it must be the last flag so nothing after it is read as a rule.
-    assert not any(a.startswith("--") for a in tail), argv
-    return tail
+    assert _values(argv, "--allowedTools") == argv[argv.index("--allowedTools") + 1 :], argv
+    return _values(argv, "--allowedTools")
 
 
 @pytest.mark.parametrize("server", ["claude.ai Example Suite", "plugin:chat:chat", "example-db"])
@@ -215,17 +230,18 @@ def test_sessions_can_call_only_toolsearch_and_the_one_read_probe(home, tmp_path
     assert _draft(server, rec, tmp_path)["status"] == "drafted"
     draft_call, probe_call = rec.calls
     for argv in rec.calls:
-        assert argv.count("--permission-mode") == 1
-        assert argv[argv.index("--permission-mode") + 1] == "dontAsk", "anything else prompts or allows"
-        assert argv[argv.index("--tools") + 1] == "ToolSearch", "no built-in tool but ToolSearch"
-        assert not any(f in argv for f in _BYPASS_FLAGS), argv
+        for flag in _GUARDED:
+            assert argv.count(flag) == 1, flag
+            assert not any(a.startswith(f"{flag}=") for a in argv), flag
+        assert _values(argv, "--permission-mode") == ["dontAsk"], "anything else prompts or allows"
+        assert _values(argv, "--tools") == ["ToolSearch"], "no built-in tool but ToolSearch"
+        assert not any(a.split("=", 1)[0] in _BYPASS_FLAGS for a in argv), argv
         assert "permissions" not in _settings(argv), "--settings must never carry allow rules"
         assert argv[argv.index("--setting-sources") + 1] == "", "user allow rules stay out (#350)"
         assert not any("*" in rule or "," in rule or " " in rule for rule in _allowed_tools(argv))
     assert _allowed_tools(draft_call) == ["ToolSearch"]
     probe = _definition(server_slug(server))["definitions"][0]["probe"]
     assert _allowed_tools(probe_call) == ["ToolSearch", probe]
-    assert cd.is_read_tool(probe)
 
 
 def test_claude_ai_connectors_stay_visible_on_purpose(home, tmp_path):
@@ -239,9 +255,12 @@ def test_claude_ai_connectors_stay_visible_on_purpose(home, tmp_path):
         assert "--mcp-config" not in argv
 
 
-def test_a_write_tool_never_reaches_the_probe_allowlist():
-    """The gate rejects a write-tool probe before any call; probe_argv itself
-    refuses anything that is not one exact MCP tool name."""
+def test_the_probe_allowlist_holds_one_exact_read_tool():
+    """probe_argv refuses anything but one exact MCP tool name, so a probe can't
+    smuggle a wildcard or a second rule into `--allowedTools`. Whether that one
+    name reads is the gate's call (check_definitions, before any probe runs;
+    test_connector_draft_gate.py); its classifier rejects the write tools the
+    live check used."""
     for bad in ("mcp__claude_ai_Gmail__*", "mcp__claude_ai_Gmail__list_drafts,mcp__claude_ai_Gmail__create_draft"):
         with pytest.raises(ValueError):
             cd.probe_argv("claude", bad, cd.Isolation(settings={"disableAllHooks": True}, mcp_config=None))
