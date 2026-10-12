@@ -1,0 +1,19 @@
+[
+  {
+    "number": 40,
+    "title": "Drop the old auth header from the docs",
+    "url": "https://github.com/example-org/api/pull/40",
+    "repository": {
+      "nameWithOwner": "example-org/api",
+      "name": "api"
+    },
+    "author": {
+      "login": "priya-example"
+    },
+    "state": "OPEN",
+    "isDraft": false,
+    "createdAt": "{{today}}T06:30:00Z",
+    "updatedAt": "{{today}}T06:30:00Z",
+    "reviewDecision": "REVIEW_REQUIRED"
+  }
+]

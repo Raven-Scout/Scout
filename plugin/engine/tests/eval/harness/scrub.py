@@ -21,7 +21,7 @@ from pathlib import Path
 
 EVAL_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIRS = ("vault", "scenarios", "stubs", "golden")
-CODE_DIRS = {"bin", "__pycache__"}  # executables and caches, not fixture data
+CODE_DIRS = {"bin", "shim", "__pycache__"}  # executables and caches, not fixture data
 
 _EMAIL = re.compile(r"\b[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
 _URL = re.compile(r"\bhttps?://([\w.-]+)[^\s)\]>`'\"]*")

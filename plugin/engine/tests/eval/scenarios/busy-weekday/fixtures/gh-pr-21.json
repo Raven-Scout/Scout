@@ -1,0 +1,30 @@
+{
+  "author": {
+    "login": "alex-example"
+  },
+  "headRefName": "rename-events",
+  "isDraft": false,
+  "state": "OPEN",
+  "reviewRequests": [],
+  "latestReviews": [
+    {
+      "author": {
+        "login": "sam-example"
+      },
+      "state": "APPROVED",
+      "submittedAt": "{{d-2}}T12:00:00Z"
+    }
+  ],
+  "reviewDecision": "APPROVED",
+  "mergeStateStatus": "BEHIND",
+  "statusCheckRollup": [
+    {
+      "name": "test",
+      "conclusion": "SUCCESS"
+    }
+  ],
+  "baseRefName": "main",
+  "body": "Renames events.",
+  "mergedAt": null,
+  "closedAt": null
+}
