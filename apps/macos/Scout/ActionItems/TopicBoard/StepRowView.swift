@@ -15,10 +15,12 @@ struct StepRowView: View {
     private var task: ActionTask { step.item.task }
     private var rootSession: String? { topic?.meta?.session }
 
-    /// A Mine step without sub-steps names what to do next.
+    /// A Mine step without sub-steps shows its `- Action:`. Runs write one
+    /// only when the title doesn't already say the next step, so a step
+    /// without one gets no chip; its hover bubble still opens the prompt box.
     static func actionLabel(for step: BoardStep) -> String? {
         guard step.item.state == .mine, step.children.isEmpty else { return nil }
-        return step.item.task.fields.action ?? ActionChip.fallback
+        return step.item.task.fields.action
     }
 
     private func prompt() -> String {
@@ -97,10 +99,18 @@ struct StepRowView: View {
                 if let actionLabel = Self.actionLabel(for: step) {
                     ActionChip(label: actionLabel) { asking = true }
                 }
-                Text(task.summary.isEmpty ? step.item.state.label : task.summary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(task.summary)
+                Group {
+                    if task.summary.isEmpty {
+                        Text(step.item.state.label)
+                    } else {
+                        // Bodies carry **bold**, `code` and [[links]]; render
+                        // them as the List view's cards do.
+                        InlineMarkdownText(task.summary)
+                            .help(String(InlineMarkdownText.attributedString(for: task.summary).characters))
+                    }
+                }
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
             .font(DS.sans(11.5))
             .foregroundStyle(step.item.state == .blocked ? DS.Ink.p3 : step.item.state.color)
