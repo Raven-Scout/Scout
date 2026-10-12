@@ -49,30 +49,37 @@ _HEADING_RE = re.compile(r"^#{1,6}\s")
 _SUBHEADING_RE = re.compile(r"^###\s")
 
 _DATE_TOKEN = "\x00date\x00"
+# Word edges that treat `_` as a separator, so `_re-anchored Oct 11_` folds whole.
+_L = r"(?<![A-Za-z0-9])"
+_R = r"(?![A-Za-z0-9])"
 _MONTH = (
-    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
-    r"|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b\.?"
+    rf"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
+    rf"|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?){_R}\.?"
 )
 _ORDINAL = r"\d{1,2}(?:st|nd|rd|th)?"
+_COUNT = r"(?:\d+(?:\.\d+)?\+?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a\s+few|several)"
 _AGE_UNIT = (
     r"(?:(?:working|business)\s+)?"
-    r"(?:days?|d|weeks?|wks?|w|hours?|hrs?|h|minutes?|mins?|months?|mos?|years?|yrs?)"
+    r"(?:days?|weeks?|wks?|hours?|hrs?|minutes?|mins?|months?|mos?|years?|yrs?)"
 )
 # Applied in order; each match becomes _DATE_TOKEN. Month and weekday names are
-# case-sensitive so "may" and "sun" in prose are left alone.
+# case-sensitive so "may" and "sun" in prose are left alone. A one-letter unit
+# counts only attached to its number ("3d", "2w"), so "500 h budget" stays.
 _DATE_PATTERNS = (
-    re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?"),
-    re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?[ap]m)?\b", re.IGNORECASE),
-    re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b"),
-    re.compile(rf"(?:\b{_ORDINAL}\s+)?\b{_MONTH}(?:\s+{_ORDINAL}\b)?(?:,?\s+\d{{4}}\b)?"),
+    re.compile(rf"{_L}\d{{4}}-\d{{2}}-\d{{2}}(?:[T ]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?{_R}"),
     re.compile(
-        r"\b(?:Mon(?:day)?|Tue(?:s|sday)?|Wed(?:nesday)?|Thu(?:rs?|rsday)?|Fri(?:day)?"
-        r"|Sat(?:urday)?|Sun(?:day)?)\b\.?"
+        rf"{_L}\d{{1,2}}(?::\d{{2}}(?::\d{{2}})?)?\s?[ap]m{_R}|{_L}\d{{1,2}}:\d{{2}}(?::\d{{2}})?{_R}", re.IGNORECASE
     ),
-    re.compile(r"\b(?:today|tonight|tomorrow|yesterday)\b", re.IGNORECASE),
-    re.compile(rf"\b\d+(?:\.\d+)?\s*-?\s*{_AGE_UNIT}\b", re.IGNORECASE),
-    re.compile(r"\b(?:day|week)\s+\d+\b", re.IGNORECASE),
-    re.compile(r"\bT[-+]\d+\b"),
+    re.compile(rf"{_L}\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?{_R}"),
+    re.compile(rf"(?:{_L}{_ORDINAL}\s+)?{_L}{_MONTH}(?:\s+{_ORDINAL}{_R})?(?:,?\s+\d{{4}}{_R})?"),
+    re.compile(
+        rf"{_L}(?:Mon(?:day)?|Tue(?:s|sday)?|Wed(?:nesday)?|Thu(?:rs?|rsday)?|Fri(?:day)?"
+        rf"|Sat(?:urday)?|Sun(?:day)?){_R}\.?"
+    ),
+    re.compile(rf"{_L}(?:today|tonight|tomorrow|yesterday){_R}", re.IGNORECASE),
+    re.compile(rf"{_L}{_COUNT}\s*(?:-\s*)?{_AGE_UNIT}{_R}|{_L}\d+[dwh]{_R}", re.IGNORECASE),
+    re.compile(rf"{_L}(?:day|week)\s+\d+{_R}", re.IGNORECASE),
+    re.compile(rf"{_L}T[-+]\d+{_R}"),
 )
 # "Mon 2026-10-12 08:05" is one date, however many tokens it took.
 _DATE_RUN_RE = re.compile(rf"{_DATE_TOKEN}(?:[\s,]*{_DATE_TOKEN})+")

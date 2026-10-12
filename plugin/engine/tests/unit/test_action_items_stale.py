@@ -210,6 +210,8 @@ def test_ledger_still_counts_real_edits_on_an_aged_item(tmp_path: Path, edited: 
         "Sunil may join the sync",
         "Review example-org/app#42 and PROJ-1234",
         "3 of 5 receipts in",
+        "Step 2 w/ Alex, 500 h budget",
+        "Sam's 500 h budget, 2 hats",
     ],
 )
 def test_without_dates_leaves_words_and_other_numbers_alone(text: str) -> None:
@@ -225,6 +227,12 @@ def test_without_dates_leaves_words_and_other_numbers_alone(text: str) -> None:
         ("call at 12:00 tomorrow, 2w late", "call at <d> late"),
         ("day 12 of the wait, T-3", "<d> of the wait, <d>"),
         ("snoozed-until: 2026-10-20 · re-anchored 2026-10-12", "snoozed-until: 2026-10-20 · re-anchored <d>"),
+        # Italic stamps: `_` must not stop a date from folding whole.
+        ("_re-anchored Oct 11_", "_re-anchored <d>_"),
+        ("_due Sep 22_ · _last seen Mon_", "_due <d>_ · _last seen <d>_"),
+        # Spelled-out and open-ended ages.
+        ("a week overdue, two weeks late", "<d> overdue, <d> late"),
+        ("4+ days past, est. 3h", "<d> past, est. <d>"),
     ],
 )
 def test_without_dates_folds_dates_times_and_ages(text: str, folded: str) -> None:
@@ -478,6 +486,31 @@ def test_archive_stale_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert [a.tag for a in archived] == ["ZQOLD"]
     assert today.read_text(encoding="utf-8") == before
     assert not (vault / "action-items" / "archive" / "stale-items-2026-10.md").exists()
+
+
+def test_archive_stale_after_upgrade_retires_an_item_kept_alive_only_by_re_anchoring(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    reanchored = [
+        "- [ ] [#ZQDUE] **File the quarterly expense report** — due Sep 22, now 12 days overdue.",
+        "  - Refs: example-org/app#42 · _re-anchored 2026-10-03 09:15 by the briefing_",
+    ]
+    _daily(vault, OLD, _doc(("## 🔴 Urgent", AGED_BLOCK)), archived=True)
+    _daily(vault, RECENT, _doc(("## 🔴 Urgent", AGED_BLOCK[:1] + reanchored[1:])), archived=True)
+    today = _daily(vault, TODAY, _doc(("## 🔴 Urgent", reanchored)))
+    # The v1 ledger saw yesterday's re-anchor as a touch.
+    cache = ActivityLedger.path_for(vault)
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        '{"version": 1, "seen_through": "' + RECENT.isoformat() + '", "items": '
+        '{"ZQDUE": {"hash": "v1-raw-text-hash", "since": "' + RECENT.isoformat() + '"}}}',
+        encoding="utf-8",
+    )
+
+    archived = archive_stale(data_dir=vault, date=TODAY)
+
+    # Rebuilt without the dates, its clock goes back to OLD: it leaves on upgrade day.
+    assert [(a.tag, a.last_changed) for a in archived] == [("ZQDUE", OLD)]
+    assert "ZQDUE" not in today.read_text(encoding="utf-8")
 
 
 def test_cli_archive_stale_reports_what_it_moved(tmp_path: Path) -> None:
