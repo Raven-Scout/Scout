@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +34,16 @@ from scout.scripts.vault_drift import RENDER_HISTORY, signature  # noqa: E402
 LAST_RELEASE_WITHOUT_BASES = "v0.11.0"
 
 
+_RELEASE_TAG = re.compile(r"v\d+\.\d+\.\d+")
+
+
 def _version(tag: str) -> tuple[int, ...]:
     return tuple(int(part) for part in tag.removeprefix("v").split("."))
+
+
+def _release_tags() -> list[str]:
+    """Bare vX.Y.Z tags only: release candidates (v0.17.0-rc.1) are not releases."""
+    return [t for t in _git("tag", "--list", "v*").stdout.split() if _RELEASE_TAG.fullmatch(t)]
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -43,7 +52,7 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 def build(through: str) -> dict:
     tags = sorted(
-        (t for t in _git("tag", "--list", "v*").stdout.split() if _version(t) <= _version(through)),
+        (t for t in _release_tags() if _version(t) <= _version(through)),
         key=_version,
     )
     if not tags:
