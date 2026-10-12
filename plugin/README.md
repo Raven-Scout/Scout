@@ -305,7 +305,7 @@ Scout includes a budget tracking and rate limit detection system:
 
 - **Budget check** (`scoutctl budget check`, called by `scripts/budget-check.sh`) — runs before every session. Calculates rolling window cost, checks for recent rate limits, and skips sessions when budget is exhausted. Inspect the limits with `scoutctl budget show`; change them with `scoutctl budget set` (defaults: $50/day, 5-hour window, skip at 80%).
 - **Session cost tracker** (`scripts/write-session-cost.sh`) — logs each session's cost as JSONL for analysis.
-- **Rate limit detection** (`scripts/rate-limit-detect.sh`) — scans session logs for rate limit signals and triggers backoff.
+- **Rate limit detection** (`scripts/rate-limit-detect.sh`) — scans session logs for rate limit signals and triggers backoff. When Claude Code names when its usage limit resets, the backoff lasts exactly until then.
 - **Heartbeat** (`scripts/heartbeat.sh`) — polls every 30 minutes to trigger extra dreaming or research sessions when budget is available and work is pending.
 
 ## Architecture

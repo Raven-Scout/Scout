@@ -116,7 +116,7 @@ notify_engine_unreachable() {
 
 cmd_record() {
     local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}" outcome="${5:-}"
-    local finished duration klass
+    local finished duration klass resets_at=""
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     case "$outcome" in
         skipped_lock|skipped_budget|skipped_redundant) ;;
@@ -127,11 +127,18 @@ cmd_record() {
     duration=$(( finished - started ))
     [ "$duration" -lt 0 ] && duration=0
     klass="$(classify_failure "$log" "$code")"
+    # A usage limit that names its reset ("… limit · resets 2:10pm (Europe/Prague)")
+    # lifts on its own; record when, so run health can say when Scout resumes (#407).
+    # Optional: no engine, or no time it can read, leaves resets_at out of the row.
+    if [ "$klass" = "rate_limited" ] && [ -n "$SCOUTCTL" ] && [ -x "$SCOUTCTL" ]; then
+        resets_at="$("$SCOUTCTL" budget resets-at "$log" 2>/dev/null || true)"
+        case "$resets_at" in ''|*[!0-9]*) resets_at="" ;; esac
+    fi
 
     mkdir -p "$LOG_DIR"
-    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" <<'PY' || true
+    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" <<'PY' || true
 import json, os, sys
-ledger, mode, code, started, finished, duration, klass, log, outcome = sys.argv[1:10]
+ledger, mode, code, started, finished, duration, klass, log, outcome, resets_at = sys.argv[1:11]
 row = {
     "slot": os.environ.get("SCOUT_FORCE_MODE") or mode,
     "mode": mode,
@@ -143,6 +150,8 @@ row = {
     "outcome": outcome,
     "log": os.path.basename(log) if log else None,
 }
+if resets_at:
+    row["resets_at"] = int(resets_at)
 with open(ledger, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PY

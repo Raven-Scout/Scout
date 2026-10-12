@@ -141,6 +141,64 @@ def test_decide_does_not_backoff_on_old_rate_limit(tmp_path: Path) -> None:
     assert decide(tracker, cfg, now=_now()).exit_code == EXIT_PROCEED
 
 
+def _z(ts: datetime) -> str:
+    return ts.isoformat().replace("+00:00", "Z")
+
+
+def test_decide_waits_out_a_named_reset_past_the_backoff_window(tmp_path: Path) -> None:
+    """A session limit that resets in five hours outlasts the 2× window (#407):
+    the next slot would run straight back into it."""
+    tracker = tmp_path / "tracker.jsonl"
+    resets = _now() + timedelta(hours=2)
+    tracker.write_text(_row(_now() - timedelta(hours=3), type="rate_limit", resets_at=_z(resets)))
+
+    decision = decide(tracker, BudgetConfig(failure_backoff_min=60), now=_now())
+
+    assert decision.exit_code == EXIT_BACKOFF
+    assert f"until {_z(resets)}" in decision.reason
+
+
+def test_decide_proceeds_once_a_named_reset_has_passed(tmp_path: Path) -> None:
+    """A limit that lifted ten minutes after the run doesn't hold the next slot
+    for the whole 2× window."""
+    tracker = tmp_path / "tracker.jsonl"
+    tracker.write_text(
+        _row(_now() - timedelta(minutes=30), type="rate_limit", resets_at=_z(_now() - timedelta(minutes=20)))
+    )
+
+    assert decide(tracker, BudgetConfig(failure_backoff_min=60), now=_now()).exit_code == EXIT_PROCEED
+
+
+def test_decide_waits_for_the_latest_named_reset(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    later = _now() + timedelta(hours=30)
+    tracker.write_text(
+        _row(_now() - timedelta(hours=4), type="rate_limit", resets_at=_z(later))
+        + _row(_now() - timedelta(hours=1), type="rate_limit", resets_at=_z(_now() + timedelta(hours=1)))
+    )
+
+    assert f"until {_z(later)}" in decide(tracker, BudgetConfig(), now=_now()).reason
+
+
+def test_decide_reads_a_zoneless_resets_at_as_utc(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    resets = _now() + timedelta(hours=2)
+    naive = resets.replace(tzinfo=None).isoformat()
+    tracker.write_text(_row(_now() - timedelta(hours=3), type="rate_limit", resets_at=naive))
+
+    assert f"until {_z(resets)}" in decide(tracker, BudgetConfig(), now=_now()).reason
+
+
+def test_decide_falls_back_to_the_window_when_resets_at_is_unreadable(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    tracker.write_text(_row(_now() - timedelta(minutes=90), type="rate_limit", resets_at="later"))
+
+    decision = decide(tracker, BudgetConfig(failure_backoff_min=60), now=_now())
+
+    assert decision.exit_code == EXIT_BACKOFF
+    assert "rate_limit event in last 120m" in decision.reason
+
+
 def test_decide_backoffs_on_recent_failure(tmp_path: Path) -> None:
     tracker = tmp_path / "tracker.jsonl"
     cfg = BudgetConfig(failure_backoff_min=60)

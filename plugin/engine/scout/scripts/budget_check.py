@@ -237,7 +237,9 @@ def decide(
     Walks the tracker exactly once and computes everything the bash script
     used three separate ``python3 -c`` invocations to extract: window-cost
     sum, last exit_code + ts, and whether any rate_limit event landed within
-    the failure-backoff window (×2).
+    the failure-backoff window (×2). A rate_limit event that carries
+    ``resets_at`` (the reset time Claude Code named) backs off until then
+    instead of for the window.
     """
     if not tracker_path.exists():
         return BudgetDecision(EXIT_PROCEED, "no tracker — first run")
@@ -250,6 +252,7 @@ def decide(
     last_exit: int | None = None
     last_ts: datetime | None = None
     saw_recent_rate_limit = False
+    limit_lifts_at: datetime | None = None
 
     for row in _iter_tracker_rows(tracker_path):
         ts = _parse_ts(row.get("ts"))
@@ -258,9 +261,19 @@ def decide(
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=UTC)
 
-        # Rate-limit gate uses the wider 2× backoff window from bash:86-103.
-        if row.get("type") == "rate_limit" and ts >= rate_limit_cutoff:
-            saw_recent_rate_limit = True
+        if row.get("type") == "rate_limit":
+            # A usage limit that named its reset (#407) is waited out exactly:
+            # a session limit can outlast the window below by hours, or lift
+            # minutes after the run.
+            resets_at = _parse_ts(row.get("resets_at"))
+            if resets_at is not None:
+                if resets_at.tzinfo is None:
+                    resets_at = resets_at.replace(tzinfo=UTC)
+                if resets_at > now and (limit_lifts_at is None or resets_at > limit_lifts_at):
+                    limit_lifts_at = resets_at
+            # Otherwise the gate uses the wider 2× backoff window from bash:86-103.
+            elif ts >= rate_limit_cutoff:
+                saw_recent_rate_limit = True
 
         if ts < window_start:
             continue
@@ -274,6 +287,10 @@ def decide(
         except (TypeError, ValueError):
             pass
         last_ts = ts
+
+    if limit_lifts_at is not None:
+        lifts = limit_lifts_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return BudgetDecision(EXIT_BACKOFF, f"Claude usage limit — backing off until {lifts}")
 
     if saw_recent_rate_limit:
         return BudgetDecision(

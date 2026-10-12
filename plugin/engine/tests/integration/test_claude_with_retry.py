@@ -517,3 +517,35 @@ def test_failed_notification_is_retried_next_run(tmp_path: Path) -> None:
 
     assert len(_notifications(record)) == 2
     assert not (logs / ".auth-alert-sent").exists()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "You've hit your session limit · resets 6:50pm (Europe/Prague)",
+        "You've hit your weekly limit · resets Mon 9am",
+    ],
+)
+def test_a_usage_limit_is_not_retried_in_run(tmp_path: Path, message: str) -> None:
+    """#407: a usage limit lifts hours later, so the wrapper's seconds-long
+    backoff would only retry into the same limit and burn the attempts. It stops
+    at once and says why; the budget gate holds later slots until the reset."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=message, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = subprocess.run(
+        [str(script), str(log_file), str(fake)],
+        env={**os.environ, "SCOUT_RETRY_BACKOFF_S": "0", "SCOUT_RETRY_MAX": "3"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert _attempts(scout_dir) == 1
+    log = log_file.read_text()
+    assert "=== Claude usage limit — no retry (exit 1) ===" in log
+    assert f"    {message}" in log
+    assert "not classified as transient" not in log
