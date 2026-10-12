@@ -218,3 +218,11 @@ Watching
 Write
 Per
 PRs
+
+# --- connector-down scenario ---
+MAIL
+MIGR
+RATE
+Reply
+Review
+Ship

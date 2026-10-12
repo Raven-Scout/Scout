@@ -63,3 +63,21 @@ def test_busy_weekday_runs_the_slice_5_daily_checks() -> None:
     busy = load_scenario("busy-weekday")
     assert {"context_note", "waiting_format", "no_collapse", "body_budget"} <= set(busy.checks)
     assert busy.expected_waiting == ("BILL", "ref:example-org/widgets#22")
+
+
+def test_connector_down_scenario_is_consistent() -> None:
+    from scout.action_items.parser import parse_lines
+
+    sc = load_scenario("connector-down")
+    assert sc.mode == "morning-consolidation"
+    assert set(sc.personas_down) == {"linear", "email"} and set(sc.personas_down) < set(sc.personas)
+    assert set(sc.checks) == {"outage_reported", "no_false_outage", "dropoff_caught", "no_drop"}
+    files = sc.path / "vault" / "action-items"
+    yesterday = parse_lines((files / "action-items-{{d-1}}.md").read_text().splitlines())
+    today = parse_lines((files / "action-items-{{today}}.md").read_text().splitlines())
+    open_yesterday = {i.short_prefix for i in yesterday if i.status != "done"}
+    in_today = {i.short_prefix for i in today}
+    assert set(sc.dropped_tags) <= open_yesterday, "dropped tags must be open yesterday"
+    assert not set(sc.dropped_tags) & in_today, "dropped tags must be missing from the pre-seeded today file"
+    assert open_yesterday - set(sc.dropped_tags) <= in_today, "everything else is carried"
+    assert "Mechanical carry-forward" not in (files / "action-items-{{today}}.md").read_text()
