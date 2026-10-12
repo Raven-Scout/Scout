@@ -158,9 +158,9 @@ gh pr view N --repo R --json author,headRefName,reviewRequests,isDraft
 1. **Your own delegated work → "track to merge," NOT review.** Any of:
    - the PR's branch is an agent-delegation branch (`headRefName` starts with `devin/`, or author is a bot like `app/devin-ai-integration`), **and** it implements an issue assigned to {{USER_NAME}}; or
    - the linked issue is assigned to {{USER_NAME}} (the PR is the implementation of {{USER_NAME}}'s own in-progress issue).
-   Surface these under in-progress/track-to-merge framing, never "review requested to you."
+   Surface these under in-progress/track-to-merge framing, never "review requested to you." They are 🟢 Watching until the merge state is `CLEAN`, then {{USER_NAME}}'s to merge (see *🔴 and 🟡 Are {{USER_NAME}}'s Move* in the action-items phase).
 2. **Requested by name (direct) → real review action item.** {{USER_NAME}}'s GitHub login (`{{GITHUB_USERNAME}}`) appears as a **User** entry in `reviewRequests`. This is a personal review ask.
-3. **Requested via team only → shared queue (softer).** {{USER_NAME}} is *not* a named `reviewRequests` user but one of their **Team** entries is. Any teammate can satisfy it — present it as a team review queue item, distinct from a direct personal request, and don't escalate it as if only {{USER_NAME}} can clear it.
+3. **Requested via team only → shared queue (softer).** {{USER_NAME}} is *not* a named `reviewRequests` user but one of their **Team** entries is. Any teammate can satisfy it — present it as a team review queue item, distinct from a direct personal request, and don't escalate it as if only {{USER_NAME}} can clear it. It is 🟢 Watching until nobody on the team has picked it up for 2 working days, then 🟡 (the same rule in the action-items phase).
 
 Only buckets 2 and 3 are review action items; bucket 1 belongs with {{USER_NAME}}'s own open work. When in doubt between a direct vs team request, check whether `{{GITHUB_USERNAME}}` is a named `reviewRequests` user.
 
