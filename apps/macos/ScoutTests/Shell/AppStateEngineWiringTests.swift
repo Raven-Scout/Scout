@@ -523,8 +523,9 @@ struct AppStateEngineUpgradeTests {
     }
 
     /// A fresh AppState over the fixture's home, as a (re)launch would build.
-    func appState(_ f: Fixture, startsBackgroundWork: Bool = false) -> AppState {
-        let claude = f.claude
+    /// `claudeFound: false` is a machine where Claude Code can't be found.
+    func appState(_ f: Fixture, startsBackgroundWork: Bool = false, claudeFound: Bool = true) -> AppState {
+        let claude: String? = claudeFound ? f.claude : nil
         var configuration = AppState.Configuration.testing(scoutDirectory: f.vault, runner: f.runner, defaults: f.defaults)
         configuration.engineLayout = f.layout
         configuration.initialEngineState = EngineLocator(layout: f.layout).locate()
@@ -722,6 +723,36 @@ struct AppStateEngineUpgradeTests {
         let s = appState(f)
         await s.runEngineUpgradeIfNeeded()
         #expect(pluginVersion(f.layout) == "0.11.0" && s.engineUpgradeProgress == nil)
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
+    }
+
+    /// #346: a launch upgrade that can't find Claude Code fails before any
+    /// step runs. It shows the sheet once and is remembered, so the next
+    /// launch doesn't re-open it while Claude Code is still missing —
+    /// Settings ▸ Engine's Update still carries it. Once Claude Code is
+    /// found, the next launch upgrades on its own and clears the memo.
+    @Test(.timeLimit(.minutes(1))) func aLaunchWithoutClaudeCodeBacksOffUntilClaudeCodeIsFound() async throws {
+        let f = try await fixture()
+        defer { f.remove() }
+        let first = appState(f, claudeFound: false)
+        await first.runEngineUpgradeIfNeeded()
+        #expect(first.engineUpgradeProgress == [:])                                 // the sheet tells the user once
+        #expect(first.engineUpgradeError?.contains("Claude Code wasn't found") == true)
+        #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == .claudeCodeMissing(target: "0.11.0"))
+        first.dismissEngineUpgrade()                                                // Later
+
+        let relaunched = appState(f, claudeFound: false)
+        let callsBefore = f.runner.calls.count
+        await relaunched.runEngineUpgradeIfNeeded()
+        #expect(relaunched.engineUpgradeProgress == nil && relaunched.engineUpgradeError == nil)
+        #expect(f.runner.calls.count == callsBefore)
+        let settings = EngineSettingsModel(state: relaunched.engineHealth.state, doctor: relaunched.engineHealth.doctor, lastError: nil,
+                                           bundledVersion: f.release.engine.version, unfinishedSwitch: relaunched.engineSwitchUnfinished)
+        #expect(settings.upgradeAction == .update && settings.canUpdate)
+
+        let withClaude = appState(f)                                                // Claude Code installed since
+        await withClaude.runEngineUpgradeIfNeeded()
+        #expect(withClaude.engineUpgradeProgress == nil && pluginVersion(f.layout) == "0.11.0")
         #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
     }
 

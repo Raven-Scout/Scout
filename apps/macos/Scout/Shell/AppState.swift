@@ -491,14 +491,19 @@ final class AppState: ObservableObject {
     /// Async because finding `claude` can fall back to a login shell, which
     /// must never block the main actor — it runs detached.
     func makeInstaller(progress: @escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller? {
-        guard let engineRelease else { return nil }
-        let override = defaults.string(forKey: "claudeCLIPath") ?? ""
-        let resolve = resolveClaude
-        guard let claude = await Task.detached(operation: { resolve(override) }).value else { return nil }
+        guard let engineRelease, let claude = await findClaude() else { return nil }
         return EngineInstaller(
             layout: engineLayout, release: engineRelease, tarballURL: engineTarballURL, runner: runner,
             uv: UvInstaller(release: engineRelease.uv, layout: engineLayout, downloader: fileDownloader, runner: runner),
             claude: URL(fileURLWithPath: claude), progress: progress)
+    }
+
+    /// The `claude` the installer would use (Settings ▸ Claude Code's path
+    /// first), found off the main actor.
+    private func findClaude() async -> String? {
+        let override = defaults.string(forKey: "claudeCLIPath") ?? ""
+        let resolve = resolveClaude
+        return await Task.detached(operation: { resolve(override) }).value
     }
 
     /// A fresh onboarding flow for the current engine state. `appVault` is
@@ -570,10 +575,15 @@ final class AppState: ObservableObject {
     /// `bootstrapVault` is not retried automatically (final review I2): the
     /// sheet would re-open on every launch for a failure that needs the
     /// user. Settings ▸ Engine's Finish update / Repair… row carries it.
+    /// The same goes for a launch that couldn't find Claude Code (#346),
+    /// until Claude Code is found: then the launch upgrade runs again.
     func runEngineUpgradeIfNeeded() async {
         let unfinished = engineRelease.map { EngineUpgrader(layout: engineLayout, release: $0).hasUnfinishedSwitch(state: engineHealth.state) } ?? false
         guard let engineRelease, Self.shouldAutoUpgrade(state: engineHealth.state, release: engineRelease, switchUnfinished: unfinished) else { return }
-        if EngineUpgradeFailureMemo.load(from: defaults)?.suppressesAutoUpgrade(to: engineRelease.engine.version) == true { return }
+        if let memo = EngineUpgradeFailureMemo.load(from: defaults), memo.suppressesAutoUpgrade(to: engineRelease.engine.version) {
+            guard memo.reason == .claudeCodeMissing, await findClaude() != nil else { return }
+            EngineUpgradeFailureMemo.clear(in: defaults)   // found now; this run records its own outcome
+        }
         await runEngineUpgrade(automatic: true)
     }
 
@@ -585,7 +595,8 @@ final class AppState: ObservableObject {
     /// collected only after a fully successful run. Never downgrades.
     ///
     /// `automatic` is the launch-time run (`runEngineUpgradeIfNeeded`): its
-    /// late-step failure is remembered so the next launch backs off. A
+    /// late-step failure, or not finding Claude Code, is remembered so the
+    /// next launch backs off. A
     /// manual run clears that memo before it starts; any success clears it.
     func runEngineUpgrade(automatic: Bool = false) async {
         guard !isUpgradingEngine else { return }
@@ -614,6 +625,7 @@ final class AppState: ObservableObject {
         }
         guard let installer else {
             liveUpgradeGeneration = nil
+            if automatic { EngineUpgradeFailureMemo.claudeCodeMissing(target: engineRelease.engine.version).save(to: defaults) }
             engineUpgradeError = "Claude Code wasn't found, so the engine can't be updated. Install Claude Code (or set its path in Settings ▸ Claude Code), then Retry."
             return
         }

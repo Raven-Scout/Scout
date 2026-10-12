@@ -24,6 +24,19 @@ struct EngineUpgradeFailureMemoTests {
         #expect(!EngineUpgradeFailureMemo(targetVersion: "0.11.0", failedStep: .buildVenv).suppressesAutoUpgrade(to: "0.11.0"))
     }
 
+    /// #346: Claude Code missing fails before any step, so it is a reason
+    /// of its own. It holds back only the same target.
+    @Test func claudeCodeMissingSuppressesTheSameTarget() {
+        let memo = EngineUpgradeFailureMemo.claudeCodeMissing(target: "0.11.0")
+        #expect(memo.reason == .claudeCodeMissing && memo.failedStep == nil)
+        #expect(memo.suppressesAutoUpgrade(to: "0.11.0"))
+        #expect(!memo.suppressesAutoUpgrade(to: "0.12.0"))
+        withSuite { defaults in
+            memo.save(to: defaults)
+            #expect(EngineUpgradeFailureMemo.load(from: defaults) == memo)
+        }
+    }
+
     @Test func roundTripsThroughDefaultsAndClears() {
         withSuite { defaults in
             #expect(EngineUpgradeFailureMemo.load(from: defaults) == nil)
@@ -38,6 +51,8 @@ struct EngineUpgradeFailureMemoTests {
     @Test func anUnreadableMemoIsIgnored() {
         withSuite { defaults in
             defaults.set(["target": "0.11.0", "step": "noSuchStep"], forKey: EngineUpgradeFailureMemo.defaultsKey)
+            #expect(EngineUpgradeFailureMemo.load(from: defaults) == nil)
+            defaults.set(["target": "0.11.0", "reason": "noSuchReason"], forKey: EngineUpgradeFailureMemo.defaultsKey)
             #expect(EngineUpgradeFailureMemo.load(from: defaults) == nil)
             defaults.set("garbage", forKey: EngineUpgradeFailureMemo.defaultsKey)
             #expect(EngineUpgradeFailureMemo.load(from: defaults) == nil)
