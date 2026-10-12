@@ -20,13 +20,27 @@ struct ClaudeDesktopURLTests {
         #expect(queryItems(url) == ["q": "hello"])
     }
 
-    @Test func coworkURL_hostAndPromptQuery() throws {
+    /// Raven-Scout/Scout#292: the Cowork task opens scoped to the vault. Claude Desktop's
+    /// own "Send to Claude" service uses the same `folder` parameter.
+    @Test func coworkURL_hostPromptAndFolderQuery() throws {
+        let folder = URL(fileURLWithPath: "/Users/me/Scout")
         let url = try #require(ClaudeLauncher.makeDesktopURL(
-            prompt: "hello", mode: .cowork))
+            prompt: "hello", mode: .cowork(folder: folder)))
         #expect(url.scheme == "claude")
         #expect(url.host == "cowork")
         #expect(url.path == "/new")
-        #expect(queryItems(url) == ["q": "hello"])
+        #expect(queryItems(url) == [
+            "q": "hello",
+            "folder": "/Users/me/Scout",
+        ])
+    }
+
+    @Test func coworkURL_folderWithSpacesRoundTrips() throws {
+        let url = try #require(ClaudeLauncher.makeDesktopURL(
+            prompt: "A & B?", mode: .cowork(folder: URL(fileURLWithPath: "/tmp/with space/vault"))))
+        let items = queryItems(url)
+        #expect(items["q"] == "A & B?")
+        #expect(items["folder"] == "/tmp/with space/vault")
     }
 
     @Test func codeURL_hostPromptAndFolderQuery() throws {
