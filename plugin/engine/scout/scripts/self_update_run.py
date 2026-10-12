@@ -24,11 +24,13 @@ fakes and nothing here touches the real install.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -207,7 +209,10 @@ def scheduled_gate(deps: Deps, rows: list[UpdateOutcome]) -> str | None:
 
 
 def _target_backoff(rows: list[UpdateOutcome], target: str, *, now: datetime) -> str | None:
-    failures = [r for r in rows if r.result == "failed" and r.target == target]
+    # A network outage says nothing about the release itself, so it never counts against it.
+    failures = [
+        r for r in rows if r.result == "failed" and r.target == target and not r.detail.startswith(NETWORK_PREFIX)
+    ]
     if len(failures) >= MAX_FAILURES_PER_TARGET:
         return f"{target} failed {len(failures)} times; waiting for a newer release or --force"
     if failures and now - failures[-1].at < RETRY_AFTER_FAILURE:
@@ -458,6 +463,54 @@ def _finish(deps: Deps, row: UpdateOutcome, prior: list[UpdateOutcome], *, dry_r
     append_outcome(deps.vault, row)
     deps.notify(row, prior)
     return Attempt(row=row, settled=row.result != "deferred")
+
+
+# --- process handling ---------------------------------------------------------------------
+
+LOCK_NAME = ".scout-cache/self-update.lock"
+
+
+@contextmanager
+def run_lock(vault: Path) -> Iterator[bool]:
+    """Hold an exclusive, non-blocking lock for one attempt; yields False when another holds it.
+
+    The heartbeat may start a new attempt every 30 min while an earlier one is still
+    building its venv; two must never fetch or build into the same plugin root at once.
+    The OS drops the lock when the holder exits, however it exits.
+    """
+    path = vault / LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any] = subprocess.Popen) -> int:
+    """Start ``argv`` in its own session, appending its output to ``log_path``; return its PID.
+
+    The heartbeat's launchd job has no ``AbandonProcessGroup``, so launchd kills
+    whatever is left in the job's process group when the heartbeat exits. A
+    backgrounded ``nohup … &`` stays in that group; a new session does not. This is
+    the same pattern ``heartbeat.launch_runner`` and ``schedule_tick`` use.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log_fh:
+        proc = popen(
+            argv,
+            env=os.environ.copy(),
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+        )
+    return int(proc.pid)
 
 
 # --- real wiring --------------------------------------------------------------------------

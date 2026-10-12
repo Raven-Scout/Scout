@@ -51,15 +51,18 @@ if [[ ${#DRY_RUN_FLAG[@]} -eq 0 ]]; then
     find "$SCOUT_DATA_DIR/.scout-cache" \( -name 'health-sweep-*.done' -o -name 'lane-liveness-*.done' \) \
         -mtime +7 -delete 2>/dev/null || true
 
-    # Headless engine update (#360), started at most once per local day. It runs
-    # detached so a fetch or venv build never holds up this tick. `self-update run`
-    # decides everything else: it never touches an engine Scout.app manages or a
-    # dev checkout, and writes the marker only once the day's attempt is settled,
-    # so a deferred attempt (vault lock busy, a run due soon) retries next tick.
+    # Headless engine update (#360), started at most once per local day. --detach
+    # starts it in its own session and returns at once, so a fetch or venv build
+    # never holds up this tick, and launchd doesn't kill it when this job exits
+    # (a backgrounded `nohup … &` would stay in the job's process group and die).
+    # `self-update run` decides everything else: it never touches an engine Scout.app
+    # manages or a dev checkout, and writes the marker only once the day's attempt
+    # is settled, so a deferred attempt (vault lock busy, a run due soon) retries
+    # next tick. A lock keeps a second attempt from starting while one still runs.
     SU_DAY="$(date +%Y-%m-%d)"
     if [[ ! -e "$SCOUT_DATA_DIR/.scout-cache/self-update-$SU_DAY.done" ]]; then
-        nohup "$SCOUTCTL_BIN" self-update run --scheduled \
-            >>"$SCOUT_DATA_DIR/.scout-logs/self-update-$SU_DAY.log" 2>&1 </dev/null &
+        "$SCOUTCTL_BIN" self-update run --scheduled --detach \
+            >>"$SCOUT_DATA_DIR/.scout-logs/self-update-$SU_DAY.log" 2>&1 </dev/null || true
     fi
     find "$SCOUT_DATA_DIR/.scout-cache" -name 'self-update-*.done' -mtime +7 -delete 2>/dev/null || true
     find "$SCOUT_DATA_DIR/.scout-logs" -name 'self-update-*.log' -mtime +30 -delete 2>/dev/null || true
