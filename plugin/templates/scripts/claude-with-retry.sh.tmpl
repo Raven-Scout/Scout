@@ -68,7 +68,7 @@ TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect 
 # quotes an auth error (or another service's 403) doesn't count. Same string as
 # run-outcome.sh's AUTH_RE and bootstrap_doctor.CLI_AUTH_FAILURE_ERE; a test keeps
 # the three equal.
-AUTH_PATTERNS='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
+AUTH_PATTERNS='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired|Not logged in)'
 
 # Claude Code's quota message names its own reset. Same anchor as
 # rate-limit-detect.sh and run-outcome.sh use for it.
@@ -77,6 +77,57 @@ USAGE_LIMIT_PATTERN='limit.{0,20}resets'
 # The one command that fixes an expired login. A bare `claude` opens a session
 # that still needs /login; this goes straight to the sign-in.
 AUTH_FIX="claude auth login"
+
+# Headless login (#267): the long-lived `claude setup-token` token that
+# `scoutctl auth setup-token` stores outside the vault (the login Keychain on
+# macOS, a 0600 file elsewhere), exported for every run so scheduled runs outlive
+# the interactive login. A CLAUDE_CODE_OAUTH_TOKEN already in the environment
+# wins; no stored token, or a Keychain that won't hand it over (locked), leaves
+# the login in charge. The token is never echoed or logged. Keep the store in
+# step with scout.claude_auth.default_store.
+TOKEN_FILE="${HOME:+$HOME/.config/scout/claude-oauth-token}"
+KEYCHAIN_SERVICE="scout-claude-oauth-token"
+TOKEN_SOURCE=""       # environment | keychain | file; empty: the interactive login
+TOKEN_STORE=""        # where a stored token lives, for the banner
+TOKEN_UNREADABLE=0    # a stored token exists but couldn't be read
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    TOKEN_SOURCE="environment"
+elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+    TOKEN_STORE="the macOS Keychain (item $KEYCHAIN_SERVICE)"
+    keychain_rc=0
+    stored_token="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$(id -un)" -w 2>/dev/null)" || keychain_rc=$?
+    if [ "$keychain_rc" -eq 0 ] && [ -n "$stored_token" ]; then
+        export CLAUDE_CODE_OAUTH_TOKEN="$stored_token"
+        TOKEN_SOURCE="keychain"
+    elif [ "$keychain_rc" -ne 0 ] && [ "$keychain_rc" -ne 44 ]; then
+        # 44 is "no such item". Anything else: the item may be there, but the
+        # Keychain is locked or refused this process.
+        TOKEN_UNREADABLE=1
+        echo "=== Claude sign-in: couldn't read the stored token from $TOKEN_STORE (security exit $keychain_rc; is the Keychain locked?) — using the interactive login ===" >> "$LOG_FILE"
+    fi
+    unset stored_token keychain_rc
+elif [ -n "$TOKEN_FILE" ] && [ -e "$TOKEN_FILE" ]; then
+    TOKEN_STORE="$TOKEN_FILE"
+    if [ -r "$TOKEN_FILE" ]; then
+        stored_token="$(tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null || true)"
+        if [ -n "$stored_token" ]; then
+            export CLAUDE_CODE_OAUTH_TOKEN="$stored_token"
+            TOKEN_SOURCE="file"
+        fi
+        unset stored_token
+    else
+        TOKEN_UNREADABLE=1
+        echo "=== Claude sign-in: can't read $TOKEN_FILE — using the interactive login ===" >> "$LOG_FILE"
+    fi
+fi
+# With a token exported, `claude auth login` can't fix a rejection: the token
+# overrides the login.
+case "$TOKEN_SOURCE" in keychain|file) AUTH_FIX="scoutctl auth setup-token" ;; esac
+# How this run signed in, for `scoutctl bootstrap doctor` / `scoutctl health`.
+# Best-effort, and never the token.
+printf '{"at": %s, "source": "%s", "token_unreadable": %s}\n' \
+    "$(date +%s)" "${TOKEN_SOURCE:-login}" "$([ "$TOKEN_UNREADABLE" -eq 1 ] && echo true || echo false)" \
+    > "$(dirname "$LOG_FILE")/.claude-sign-in.json" 2>/dev/null || true
 
 # The auth banner lands in the session log, which nobody reads while scheduled
 # runs fail for weeks — so an auth failure also raises a desktop notification.
@@ -93,6 +144,9 @@ notify_auth_failure() {
     local now last=0 sent=0
     local title="{{INSTANCE_NAME}} can't run"
     local body="Your Claude login expired. Open Terminal and run: $AUTH_FIX"
+    case "$TOKEN_SOURCE" in
+        keychain|file) body="Your stored Claude token was rejected. Open Terminal and run: $AUTH_FIX" ;;
+    esac
     now="$(date +%s)"
     if [ -f "$AUTH_ALERT_MARKER" ]; then
         last="$(cat "$AUTH_ALERT_MARKER" 2>/dev/null || true)"
@@ -176,9 +230,25 @@ while :; do
         {
             echo "=== Authentication failure (HTTP 401/403) — no retry (exit $exit_code) ==="
             echo "    Claude Code's API credentials were rejected. This blocks every scheduled {{INSTANCE_NAME}} run until re-authenticated."
-            echo "    Re-authenticate the claude binary this runner uses ($CLAUDE_BIN):"
-            echo "      - interactive: run: $AUTH_FIX   (or: $CLAUDE_BIN auth login), or"
-            echo "      - headless:    run 'claude setup-token' and expose CLAUDE_CODE_OAUTH_TOKEN to this runner's environment."
+            case "$TOKEN_SOURCE" in
+                keychain|file)
+                    echo "    The stored long-lived token in $TOKEN_STORE was rejected: it expired or was revoked."
+                    echo "      - run: scoutctl auth setup-token   to store a new one, or"
+                    echo "      - run: scoutctl auth clear         to go back to your interactive Claude login."
+                    ;;
+                environment)
+                    echo "    CLAUDE_CODE_OAUTH_TOKEN from this runner's environment was rejected: replace it where it is set,"
+                    echo "    or unset it and run: scoutctl auth setup-token"
+                    ;;
+                *)
+                    if [ "$TOKEN_UNREADABLE" -eq 1 ]; then
+                        echo "    A long-lived token is stored in $TOKEN_STORE, but this run couldn't read it, so it used your login."
+                    fi
+                    echo "    Re-authenticate the claude binary this runner uses ($CLAUDE_BIN):"
+                    echo "      - interactive: run: $AUTH_FIX   (or: $CLAUDE_BIN auth login), or"
+                    echo "      - headless:    run: scoutctl auth setup-token   (stores a long-lived 'claude setup-token' token every scheduled run uses)."
+                    ;;
+            esac
             echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model opus"
         } >> "$LOG_FILE"
         notify_auth_failure || true

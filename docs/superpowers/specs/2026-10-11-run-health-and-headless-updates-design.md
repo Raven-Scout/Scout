@@ -486,7 +486,7 @@ Jordan accepted every recommendation on 2026-10-11. The table keeps each questio
 | Q3 | Scheduler pre-flight skip on a dead login (#267). | **Dropped** (D12). Close that checkbox on #267. |
 | Q4 | Push channel for headless hosts with no desktop and no Telegram. | **Add `notify.command`** in P2 (§4.3, channel 3). |
 | Q5 | Is "published release + 24 h soak" enough, or pin marketplace installs to the tag? | **Ship D8 now.** Tag pinning, including re-pinning the registry on rollback, is tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362). |
-| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
+| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). *Amended 2026-10-12: the login Keychain on macOS, the file elsewhere (§13.6).* |
 | Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
 | Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
 
@@ -565,3 +565,46 @@ grace window never triggers a "recovered".
 - **Telegram duplicate guard (#241, folded into P2).** `scoutctl notify telegram` refuses a
   byte-identical body to the same chat within 10 min, unless `--allow-duplicate` is passed. It
   prints its receipt as `id=<id>` on stderr line 1.
+
+### 13.6 Setup token (P6)
+
+**Storage changed from Q6 (Jordan, 2026-10-12).**
+- **macOS:** the token goes in the login Keychain, as a generic-password item: service
+  `scout-claude-oauth-token`, account = the user.
+  - It is written through `security -i` with the command on stdin, never in an argv that `ps` can
+    show. It is then read back to confirm the write, because `-i` can exit 0 after a failed command.
+  - It is read with `find-generic-password -w`.
+- **Linux and other hosts:** the 0600 file at `~/.config/scout/claude-oauth-token`, as Q6 says.
+- Both sit behind a `TokenStore` interface in `scout/claude_auth.py`. The wrapper picks its store
+  the same way, by `uname -s`.
+- If the Keychain is locked, or refuses a launchd process, the run falls back to the interactive
+  login. Any `security` exit other than 44 (no item) counts as that.
+
+The rest of §6 is built as written. P6 also adds:
+
+- **The wrapper exports the token.** The runner export lives in `scripts/claude-with-retry.sh`, not
+  in the three `run-*.sh`, because every runner launches Claude through it.
+- **Each run records how it signed in.** The wrapper writes `.scout-logs/.claude-sign-in.json`:
+  `{at, source, token_unreadable}`, where `source` is `keychain`, `file`, `environment` or `login`.
+  It never holds the token.
+  - Doctor notes the last run's mode.
+  - Run health adds a yellow `auth.token_unreadable` when a stored token couldn't be read.
+- **A rejected token names the token fix.** An exported token overrides the interactive login, so
+  `claude auth login` can't fix a rejected token. While a token is stored, the wrapper's banner and
+  desktop alert, and `auth.expired`'s summary and fix, name `scoutctl auth setup-token` (or
+  `scoutctl auth clear`). `auth.expired`'s default fix now says `scoutctl auth setup-token` instead
+  of a raw `claude setup-token`, which stored nothing. The contract fixture is regenerated to match.
+- **Expiry is estimated.** `claude setup-token` tokens last a year, and the CLI can't report a
+  token's expiry. So `~/.config/scout/claude-oauth-token.meta.json` records when the token was
+  stored, never the token itself.
+  - Doctor warns in the last 30 days, and when the file store is readable by others.
+  - Doctor also warns when a token is stored but the vault's wrapper predates the export.
+  - Run health adds a yellow `auth.token_expiring` (source `token`).
+- **The setup step is install-only.** `scoutctl setup` asks on a fresh install, interactive only and
+  default no. It skips the question when a token is already stored, and under `--yes` it prints the
+  command instead. An upgrade asks nothing, and app-managed engines are never offered it (Q6).
+- **"Not logged in" is an auth failure.** It is the signature of a Mac set up again (#267 comment).
+  It joins the three shared auth regexes.
+- **Tests can't reach the real Keychain.** `tests/conftest.py` puts a fake `security` first on PATH
+  for every test. It is a temp-dir store for Scout's one item, and it exits 99 on any other
+  subcommand or service. Scout calls `security` through PATH only, and a test pins that.

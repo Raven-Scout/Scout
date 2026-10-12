@@ -181,6 +181,9 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
             "oauth_expired",
             id="oauth-cli-string",
         ),
+        # A Mac set up again comes up logged out rather than expired (#267).
+        pytest.param("Not logged in · Please run /login\n", "oauth_expired", id="not-logged-in"),
+        pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.
         pytest.param(

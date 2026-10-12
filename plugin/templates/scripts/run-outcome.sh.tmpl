@@ -52,7 +52,7 @@ case "$ENGINE_ALERT_INTERVAL_S" in ''|*[!0-9]*) ENGINE_ALERT_INTERVAL_S=86400 ;;
 # case-sensitively; it is the same string as the retry wrapper's AUTH_PATTERNS and
 # bootstrap_doctor.CLI_AUTH_FAILURE_ERE (a test keeps them equal), so the ledger
 # class, the desktop alert and the doctor agree on what a rejected login is.
-AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
+AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired|Not logged in)'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to

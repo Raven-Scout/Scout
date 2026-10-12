@@ -475,6 +475,24 @@ claude auth login
 
 The next scheduled run picks it up; nothing else needs reinstalling. Scout raises a desktop notification when this happens (at most once a day), and `/scout-status` and `scoutctl bootstrap doctor` both report it. Older installs only get those alerts after `/scout-update`, so if yours never warned you, upgrade too.
 
+To stop it happening again, give scheduled runs a long-lived token instead of your login:
+
+```
+scoutctl auth setup-token
+```
+
+It runs `claude setup-token`, which signs you in through your browser and prints a token that lasts a year, then asks you to paste that token. Where Scout stores it depends on the system:
+
+- **macOS:** your login Keychain, as the item `scout-claude-oauth-token`.
+- **Linux:** `~/.config/scout/claude-oauth-token`, readable only by you.
+
+Either way it is outside your vault and never committed. Every scheduled run then passes it to Claude as `CLAUDE_CODE_OAUTH_TOKEN`, unless that variable is already set. If the Keychain is locked when a run starts, that run uses your login instead, and `scoutctl health` says so. On a host with no browser, run `claude setup-token` on another machine and pipe the token in with `scoutctl auth setup-token --stdin`.
+
+- `scoutctl auth status` shows which sign-in scheduled runs use and when the token expires. `scoutctl bootstrap doctor` and `scoutctl health` warn in the token's last 30 days.
+- `scoutctl auth clear` removes the token, and runs go back to your login.
+
+Once a token is stored, `claude auth login` no longer fixes a failed run, because the token takes precedence. If a run reports that the stored token was rejected, run `scoutctl auth setup-token` again.
+
 **My scheduled runs aren't firing.**
 Run `scoutctl bootstrap doctor` first — it checks the schedule, the launchd agents, and that the `claude` path the runners use actually exists. On macOS, `launchctl list | grep scout` should show `com.scout.schedule-tick` and `com.scout.heartbeat`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed (missed runs catch up when it wakes). Check logs in `.scout-logs/` for errors from the last attempted run. If a log mentions a 401/403, see "Scout stopped running" above.
 

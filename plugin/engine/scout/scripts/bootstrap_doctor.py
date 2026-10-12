@@ -327,6 +327,44 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) -> tuple[list[str], list[str]]:
+    """How scheduled runs sign in to Claude (#267), as (warnings, notes).
+
+    The mode is a note. A token readable by others, one about to lapse (it lasts a
+    year and the CLI can't say when it ends), or one this vault's runner predates
+    and so never exports, is a warning.
+    """
+    from scout import claude_auth
+    from scout.scripts.engine_pointer import read_pointer
+
+    st = claude_auth.status(claude_auth.default_store(home=home), now=now)
+    ptr = read_pointer(home=home)
+    # The setup token is offered to non-app engines only (run-health spec Q6).
+    notes = [st.describe(offer_setup=ptr is None or ptr.managed_by != "scout-app")]
+    last = claude_auth.last_sign_in(vault)
+    if last is not None:
+        notes.append(last.describe())
+    warnings = list(st.problems)
+    if st.mode != "token":
+        return warnings, notes
+    expiry = st.expiry_text()
+    if st.expiring and expiry:
+        warnings.append(
+            f"the long-lived Claude token scheduled runs use {expiry}; renew it: {claude_auth.SETUP_COMMAND}"
+        )
+    wrapper = vault / "scripts" / "claude-with-retry.sh"
+    try:
+        exports = "claude-oauth-token" in wrapper.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        exports = True  # a missing runner is the cat-1 check's to report
+    if not exports:
+        warnings.append(
+            "a long-lived Claude token is stored, but this vault's scripts/claude-with-retry.sh predates it "
+            "and never passes it to Claude; run /scout-update (or scoutctl bootstrap upgrade)"
+        )
+    return warnings, notes
+
+
 def _has_markers(path: Path) -> bool:
     """True if ``path`` holds a conflict-marker line. Missing or unreadable
     files don't (other checks report those)."""
@@ -556,12 +594,19 @@ def run_doctor(
         claude_errors, claude_warnings = _check_runner_claude_bin(vault=vault)
         errors.extend(claude_errors)
         warnings.extend(claude_warnings)
+        # How those runs sign in: the interactive login or a stored long-lived token.
+        try:
+            auth_warnings, auth_notes = _check_claude_auth(home=home, vault=vault, now=now)
+        except Exception as e:  # noqa: BLE001 - a bug here must not break the doctor
+            auth_warnings, auth_notes = [], [f"could not check how scheduled runs sign in to Claude: {e}"]
+        warnings.extend(auth_warnings)
+        notes.extend(auth_notes)
 
     # Run health sits beside the install verdict, never inside it (D2).
     from scout import health
 
     try:
-        run_health: RunHealth | None = health.evaluate(vault, now=now)
+        run_health: RunHealth | None = health.evaluate(vault, now=now, home=home)
     except Exception as e:  # noqa: BLE001 - a health-evaluator bug must not break the doctor
         run_health = None
         notes.append(f"run health could not be evaluated: {e}")
