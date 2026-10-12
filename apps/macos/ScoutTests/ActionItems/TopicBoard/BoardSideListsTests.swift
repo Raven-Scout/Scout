@@ -51,6 +51,14 @@ struct BoardSideListsTests {
         #expect(SideEntry.entries(inSectionTitled: "loose ends", of: s, dismissed: []).map(\.text) == ["Delete the stale branch"])
     }
 
+    /// The board shows an Inbox or Loose ends column only when the daily file
+    /// has that section; runs write them only once they adopt the 0.17 phase.
+    @Test func sideSectionPresence() throws {
+        let s = try sections(["## 📥 Inbox (0)", "## 🔴 Urgent", "- [ ] [#AAAA] **Task**"])
+        #expect(SideEntry.hasSection(titled: "Inbox", in: s))
+        #expect(!SideEntry.hasSection(titled: "Loose ends", in: s))
+    }
+
     @Test func dismissedFileKeys() {
         #expect(DismissedFileLoader.parse("# Dismissed\r\n\r\nProse.\r\n\r\n- https://a.example/1\r\n-  Delete it \t\r\n- \r\n") == [
             "https://a.example/1", "Delete it",

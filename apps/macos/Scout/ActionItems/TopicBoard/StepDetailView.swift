@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// What an expanded step shows: a body too long for the row, its links, the session when it
+/// What an expanded step shows: a body too long for the row, its sub-bullets and
+/// context note (as the List card shows them), its links, the session when it
 /// differs from the topic's, and Launch Claude.
 struct StepDetailView: View {
     /// A body this short already reads in full on the row's second line.
@@ -28,6 +29,12 @@ struct StepDetailView: View {
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if !task.details.isEmpty {
+                TaskDetailsView(details: task.details)
+            }
+            // Keyed by tag so a re-tagged item drops the old note's cached text.
+            TaskContextNoteSection(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+                .id(task.shortPrefix)
             TaskLinksView(links: task.deepLinks)
             HStack(spacing: 12) {
                 if let session {

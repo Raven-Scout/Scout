@@ -6,6 +6,17 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Changed
+- **Topics: tasks without a topic stand alone** (#397). Each is its own row,
+  ordered among the topics by priority with what it blocks nested under it,
+  instead of one collapsed "Other" group holding every untopiced task. When
+  no task names a topic yet, a line above the board says so.
+- **Topics: Inbox and Loose ends show only when the daily file has them**
+  (#398), so a vault whose runs don't write those sections has no empty
+  columns.
+- **Topics: an expanded step shows its sub-bullets and context note** (#399),
+  as the List card does.
+
 ## [0.17.0] - 2026-10-12
 
 ### Added
