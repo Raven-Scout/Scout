@@ -6,6 +6,13 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Inline `[[wikilinks]]` in Action Items open the Knowledge Base tab**
+  (#392). #380 routed only the `- Refs:` entity chips there; a wikilink in a
+  task's text still opened Obsidian. It now opens the note in the KB tab,
+  which falls back to Obsidian when it can't resolve the target. Linear keys
+  still open Linear.
+
 ## [0.17.0] - 2026-10-12
 
 ### Added
