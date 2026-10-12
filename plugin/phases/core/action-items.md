@@ -29,10 +29,21 @@ This makes the mistake audit an active tracker, not a passive log — {{USER_NAM
 
 Categorize every action item using these levels:
 
-- **🔴 Urgent**: Needs attention today
-- **🟡 To Do**: Should be done soon
-- **🟢 Watching**: Tracking but no action needed yet
+- **🔴 Urgent**: {{USER_NAME}}'s move, today
+- **🟡 To Do**: {{USER_NAME}}'s move, soon
+- **🟢 Watching**: Waiting on someone or something else
 - **✅ Done**: Completed with evidence of completion
+
+### Hard Rule — 🔴 and 🟡 Are Only {{USER_NAME}}'s Move
+
+A task goes in 🔴 or 🟡 only when {{USER_NAME}} alone can take the next step, and can take it now. That covers:
+- an open question to {{USER_NAME}}, checked this run to be still open;
+- a review requested from {{USER_NAME}} by name;
+- {{USER_NAME}}'s own PR that is approved, green, unblocked and only needs merging.
+
+Anything waiting on a person goes to 🟢 Watching. That includes {{USER_NAME}}'s PR while a requested human reviewer hasn't reviewed it yet, even if a bot approved it. Work an agent or teammate is doing goes to 🟢 Watching too (the board shows it as Doing from `State: doing`). Work waiting on another task stays in its section with `Depends:`. The deadline-distance ceiling below still caps how high a task can go.
+
+**Re-check every 🔴 and 🟡 task on every run** against this rule, not only the ones that changed: they are few, and one that is no longer {{USER_NAME}}'s move costs attention every time it's read. Re-check a 🟢 task when this run fetched new evidence about it (a review, a reply, a merge).
 
 ### Hard Rule — Deadline-Distance Ceiling
 
@@ -264,7 +275,7 @@ The count-guard catches *how many* dropped; this catches *which*. Before committ
 
 ### Hard Rule — Leave-State Compose Gate
 
-Before generating any 🔴/🟡 action item that names a specific person as the next-action owner, read that person's entity file (`knowledge-base/people/<slug>.md`). If it carries an active leave/out-of-office state (a `status:` containing `leave`/`oof`/`vacation`/`paternity`/`maternity`, a dated leave block overlapping today, or a 🚨/`### ACTIVE STATUS` body header) — do NOT assign them as the owner. Reframe to 🟢 Watching with `(on leave through <date>; auto-resume on return)`, unless the action item is itself about *responding to* that leave. This prevents assigning work to someone Scout already knows is away.
+Before generating any action item that names a specific person as the next-action owner (always a 🟢 Watching item, since 🔴 and 🟡 are only {{USER_NAME}}'s move), read that person's entity file (`knowledge-base/people/<slug>.md`). If it carries an active leave/out-of-office state (a `status:` containing `leave`/`oof`/`vacation`/`paternity`/`maternity`, a dated leave block overlapping today, or a 🚨/`### ACTIVE STATUS` body header) — do NOT assign them as the owner. Reframe to 🟢 Watching with `(on leave through <date>; auto-resume on return)`, unless the action item is itself about *responding to* that leave. This prevents assigning work to someone Scout already knows is away.
 
 Whenever you flip an item from `[ ]` to `[x]` — or process a {{USER_NAME}}-authored `[x]`, an inline `//==<<` close-out directive ("close this out", "I don't need this anymore", "move to completed"), or a close-it-out reply — you MUST, in the same write:
 
@@ -451,7 +462,9 @@ After reconciliation is complete, refresh the `## 🪵 Run notes & connector ava
 
 Each item is **one line of up to 300 characters**, plus **at most one sub-bullet** of up to 300 characters (the blocker, or {{USER_NAME}}'s comment thread):
 
-`- [ ] [#XXXX] 🔴 **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
+`- [ ] [#XXXX] **Title** — due YYYY-MM-DD · waiting on <who> · → [[<project, topic or source note>]] #TAG`
+
+**After the title, say the next step** in at most two short sentences (about 25 words): what the work does, and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…").
 
 **Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
