@@ -50,6 +50,19 @@ if [[ ${#DRY_RUN_FLAG[@]} -eq 0 ]]; then
     # Markers left by the old once-a-day sweep and lane script.
     find "$SCOUT_DATA_DIR/.scout-cache" \( -name 'health-sweep-*.done' -o -name 'lane-liveness-*.done' \) \
         -mtime +7 -delete 2>/dev/null || true
+
+    # Headless engine update (#360), started at most once per local day. It runs
+    # detached so a fetch or venv build never holds up this tick. `self-update run`
+    # decides everything else: it never touches an engine Scout.app manages or a
+    # dev checkout, and writes the marker only once the day's attempt is settled,
+    # so a deferred attempt (vault lock busy, a run due soon) retries next tick.
+    SU_DAY="$(date +%Y-%m-%d)"
+    if [[ ! -e "$SCOUT_DATA_DIR/.scout-cache/self-update-$SU_DAY.done" ]]; then
+        nohup "$SCOUTCTL_BIN" self-update run --scheduled \
+            >>"$SCOUT_DATA_DIR/.scout-logs/self-update-$SU_DAY.log" 2>&1 </dev/null &
+    fi
+    find "$SCOUT_DATA_DIR/.scout-cache" -name 'self-update-*.done' -mtime +7 -delete 2>/dev/null || true
+    find "$SCOUT_DATA_DIR/.scout-logs" -name 'self-update-*.log' -mtime +30 -delete 2>/dev/null || true
 fi
 
 exec "$SCOUTCTL_BIN" heartbeat run ${DRY_RUN_FLAG[@]+"${DRY_RUN_FLAG[@]}"}
