@@ -39,6 +39,7 @@
 #   SCOUT_AUTH_ALERT_INTERVAL_S=86400
 #                              minimum seconds between auth-failure desktop
 #                              notifications (default: one a day)
+#   SCOUT_NO_CAFFEINATE=1      hold no idle-sleep assertion (see POWER below)
 #
 # Exit code: the exit code of the final attempt.
 
@@ -129,6 +130,24 @@ notify_auth_failure() {
     fi
 }
 
+# Idle-sleep assertion (#210). An unattended host idle-sleeps mid-run, the
+# streaming response dies with it, and the run fails with what reads as an API
+# error. Every attempt AND every backoff sleep runs under the assertion: the
+# backoff is the one moment the wrapper is deliberately idle, so wrapping only
+# the attempt leaves the more exposed line bare. macOS: caffeinate (-i idle,
+# -m disk, -s system sleep on AC). Linux: systemd-inhibit, when it can actually
+# take the lock here (cron often has no logind session). Neither → no-op. A lid
+# close still sleeps the machine; this only stops idle sleep.
+POWER=()
+if [ "${SCOUT_NO_CAFFEINATE:-0}" != "1" ]; then
+    if command -v caffeinate >/dev/null 2>&1 && caffeinate -i -m -s true >/dev/null 2>&1; then
+        POWER=(caffeinate -i -m -s)
+    elif command -v systemd-inhibit >/dev/null 2>&1 \
+        && systemd-inhibit --what=idle:sleep --why="{{INSTANCE_NAME}} run" true >/dev/null 2>&1; then
+        POWER=(systemd-inhibit --what=idle:sleep --why="{{INSTANCE_NAME}} run")
+    fi
+fi
+
 # Byte size of the run log, so each attempt is classified on its own output only.
 log_size() {
     local n=0
@@ -152,7 +171,8 @@ while :; do
     # HTTP status pass for a rejected login.
     attempt_start="$(log_size)"
     exit_code=0
-    "$CLAUDE_BIN" "$@" >> "$LOG_FILE" 2>&1 || exit_code=$?
+    # ${POWER[@]+…}: bash 3.2 (macOS /bin/bash) calls an empty array unbound under set -u.
+    ${POWER[@]+"${POWER[@]}"} "$CLAUDE_BIN" "$@" >> "$LOG_FILE" 2>&1 || exit_code=$?
 
     if [ "$exit_code" -eq 0 ]; then
         rm -f "$AUTH_ALERT_MARKER" 2>/dev/null || true
@@ -210,6 +230,10 @@ while :; do
 
     sleep_s=$(( BACKOFF_S * attempt ))
     echo "=== Transient API error detected — sleeping ${sleep_s}s before retry ===" >> "$LOG_FILE"
-    sleep "$sleep_s"
+    slept_from="$(date +%s)"
+    ${POWER[@]+"${POWER[@]}"} sleep "$sleep_s"
+    # The elapsed time, not just the intent: a host that slept through the
+    # backoff anyway (lid closed) shows up here as hours, not as "${sleep_s}s".
+    echo "=== Backoff done after $(( $(date +%s) - slept_from ))s ===" >> "$LOG_FILE"
     attempt=$(( attempt + 1 ))
 done

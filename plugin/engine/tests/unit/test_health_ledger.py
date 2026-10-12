@@ -114,6 +114,33 @@ def _failing(report: health.RunHealth) -> health.Finding:
     return finding
 
 
+@pytest.mark.parametrize(
+    ("extra", "said", "unsaid"),
+    [
+        # #237: a run that committed before it died did not "produce nothing".
+        (
+            {"commits_in_window": 2, "newest_commit": "abc1234"},
+            "2 commit(s) in that run's window (newest abc1234).",
+            "No commits",
+        ),
+        ({"commits_in_window": 0, "newest_commit": None}, "No commits in that run's window.", "commit(s)"),
+        # Unmeasured: say nothing about output at all.
+        ({"commits_in_window": None}, "", "commit"),
+        ({}, "", "commit"),
+    ],
+)
+def test_a_failing_run_states_only_what_was_measured_in_its_window(tmp_path, extra, said, unsaid):
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=1), code=1, klass="network", **extra)])
+
+    summary = _failing(health.evaluate(v, now=NOW)).summary
+
+    assert summary.startswith("The last 1 scheduled run(s) failed (network).")
+    assert said in summary
+    assert unsaid not in summary
+    assert "by this run" not in summary
+
+
 def test_a_usage_limit_with_a_named_reset_says_when_scout_resumes(tmp_path):
     """#407: a session limit lifts on its own; the finding (and the push built
     from it) says when, instead of pointing at the doctor."""

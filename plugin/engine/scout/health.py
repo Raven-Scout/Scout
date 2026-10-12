@@ -264,6 +264,21 @@ def _last_ok_at(rows: list[OutcomeRow]) -> datetime | None:
     return max(oks) if oks else None
 
 
+def _window_text(row: OutcomeRow) -> str:
+    """What landed in *row*'s window, as measured (#237), or nothing when unmeasured.
+
+    A window is observable and authorship is not (a hand commit, or a concurrent
+    one, can land in it), so this never says "by this run". A failed run that
+    committed before it died is not a run that "produced nothing".
+    """
+    if row.commits_in_window is None:
+        return ""
+    if row.commits_in_window == 0:
+        return " No commits in that run's window."
+    newest = f" (newest {row.newest_commit})" if row.newest_commit else ""
+    return f" {row.commits_in_window} commit(s) in that run's window{newest}."
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -319,7 +334,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     id="runs.failing",
                     severity="red" if streak >= 2 else "yellow",
                     since=last_ok,
-                    summary=f"The last {streak} scheduled run(s) failed ({newest.failure_class}).",
+                    summary=(
+                        f"The last {streak} scheduled run(s) failed ({newest.failure_class})." + _window_text(newest)
+                    ),
                     fix=f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
                     source="ledger",
                 )

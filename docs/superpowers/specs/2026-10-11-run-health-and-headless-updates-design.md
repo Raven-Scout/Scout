@@ -565,3 +565,23 @@ grace window never triggers a "recovered".
 - **Telegram duplicate guard (#241, folded into P2).** `scoutctl notify telegram` refuses a
   byte-identical body to the same chat within 10 min, unless `--allow-duplicate` is passed. It
   prints its receipt as `id=<id>` on stderr line 1.
+
+### 13.6 The redundancy witness (P4)
+
+§5.2 reads the witness from the ledger, but a ledger row had no field naming the runner that
+wrote it: `slot` and `mode` are the dispatcher's slot key, which need not name its type. Rows now
+carry `runner` (`scout`, `dreaming` or `research`, from `SCOUT_RUNNER_KIND`, which each runner
+exports). Only rows that carry it can be a witness, so rows from older helpers never cancel a run.
+
+A waited dreaming or research run skips only when its witness finished at or after the run's own
+start, that is, during its wait. A witness that finished earlier is a serial run that the waiter
+did not wait behind (it waited behind some other holder), so it gets the note and runs. This is
+the #218 rule ("the waiter's work is provably the holder's") made exact.
+
+`SCOUT_REDUNDANT_WAIT=enforce` skips a waited run of any kind, `scout` included; it never skips an
+unwaited run. A wait that runs out records `skipped_lock`, as §5.2 says: no new outcome was needed.
+
+`commits_in_window` is measured over `[started_at, finished_at]` of the ledger row (`started_at`
+is the session's start, after the lock and the pre-session hooks). A vault with no git history
+records `null`. Of the finding texts, only `runs.failing` describes a run's output, and it states
+the measured count (§4.5).

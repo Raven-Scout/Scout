@@ -387,7 +387,9 @@ def launch_runner(runner: Path, *, vault: Path, log_path: Path) -> int:
         proc = subprocess.Popen(
             [str(runner)],
             cwd=str(vault),
-            env=os.environ.copy(),
+            # The run ledger's `trigger` field: a heartbeat launch is neither the
+            # tick's (SCOUT_FORCE_MODE) nor a person's.
+            env={**os.environ, "SCOUT_TRIGGER": "heartbeat"},
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
