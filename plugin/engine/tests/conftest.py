@@ -109,6 +109,48 @@ def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gh, "default_runner", _real_gh_blocked)
 
 
+class _GuardedModule:
+    """A stand-in for a module in ONE importer's namespace: every attribute is the
+    real module's, except the named entry points, which fail the test."""
+
+    def __init__(self, real: object, blocked: dict[str, str]) -> None:
+        self._real = real
+        for name, what in blocked.items():
+            setattr(self, name, self._blocker(what))
+
+    @staticmethod
+    def _blocker(what: str):
+        def blocked(*_a: object, **_k: object) -> None:
+            # pytest.fail raises a BaseException, so the notifier's own
+            # ``except Exception`` (fan-out, notify) cannot swallow it.
+            pytest.fail(f"{what} reached from a test; patch it")
+
+        return blocked
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
+@pytest.fixture(autouse=True)
+def _block_real_pushes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may raise a real desktop notification or send a real Telegram message.
+
+    A test once sent a real Telegram push to the developer's phone. The desktop
+    sender's ``subprocess.run`` (osascript / notify-send) and the Telegram
+    client's ``requests.post`` fail the test unless the test patches them, which
+    it does after this fixture runs and so wins. Only those two importers'
+    references are replaced; the real ``subprocess`` and ``requests`` modules are
+    untouched.
+    """
+    import scout.notify_desktop as desktop
+    import scout.scripts.notify_telegram as telegram
+
+    monkeypatch.setattr(
+        desktop, "subprocess", _GuardedModule(desktop.subprocess, {"run": "real osascript/notify-send"})
+    )
+    monkeypatch.setattr(telegram, "requests", _GuardedModule(telegram.requests, {"post": "real Telegram send"}))
+
+
 @pytest.fixture
 def fake_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A writable tmp data dir wired up via SCOUT_DATA_DIR."""

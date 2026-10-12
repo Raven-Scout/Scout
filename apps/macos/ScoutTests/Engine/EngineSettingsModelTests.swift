@@ -191,4 +191,46 @@ struct EngineSettingsModelTests {
             #expect(m.canUpdate == AppState.shouldAutoUpgrade(state: state, release: release, switchUnfinished: unfinished), "unfinished: \(unfinished)")
         }
     }
+
+    // MARK: run health (P3)
+
+    private func runHealth(_ severity: DoctorReport.Severity, findings: [RunHealth.Finding] = [], lastOkAt: String? = nil) -> RunHealth {
+        RunHealth(severity: severity, evaluatedAt: "2026-10-11T12:00:00Z", lastOkAt: lastOkAt, findings: findings, slots: [])
+    }
+    private func model(_ rh: RunHealth?) -> EngineSettingsModel {
+        EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                            doctor: DoctorReport(severity: .green, errors: [], warnings: [], runHealth: rh), lastError: nil, bundledVersion: nil)
+    }
+
+    @Test func runsRowRedShowsFirstActionableSummary() {
+        let note = RunHealth.Finding(id: "n", severity: "note", since: nil, summary: "just a note", fix: "", source: "x")
+        let red = RunHealth.Finding(id: "auth.expired", severity: "red", since: nil, summary: "Your Claude login expired.", fix: "f", source: "ledger")
+        let m = model(runHealth(.red, findings: [note, red]))
+        #expect(m.runsLabel == "Failing")
+        #expect(m.runsHelp == "Your Claude login expired.")
+        #expect(!m.runsIsOK)
+    }
+
+    @Test func runsRowYellowAndGreen() {
+        let y = model(runHealth(.yellow))
+        #expect(y.runsLabel == "Warnings")
+        #expect(!y.runsIsOK)
+        let g = model(runHealth(.green, lastOkAt: "2026-10-11T11:00:00Z"))
+        #expect(g.runsLabel == "Healthy")
+        #expect(g.runsIsOK)
+        #expect(g.runsHelp.hasPrefix("Last successful run "))
+        #expect(g.runsHelp != "Last successful run 2026-10-11T11:00:00Z")   // rendered relative, not raw
+    }
+
+    @Test func runsRowGreenWithNothingRecorded() {
+        #expect(model(runHealth(.green)).runsHelp == "No runs recorded yet")
+    }
+
+    @Test func runsRowAbsentWithoutRunHealth() {
+        let m = model(nil)
+        #expect(m.runsLabel == "Unknown")
+        #expect(!m.runsIsOK)
+        #expect(!m.showsRuns)
+        #expect(model(runHealth(.green)).showsRuns)
+    }
 }

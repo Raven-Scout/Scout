@@ -1,7 +1,7 @@
 """The doctor's host-inspection checks and its config/schedule validation.
 
 `test_bootstrap_doctor.py` covers the vault-shape checks. This file covers the
-ones that read the *host*: the auth-failure log scan, the Linux crontab
+ones that read the *host*: the Linux crontab
 scoutctl-path check, the `~/.local/bin` shim check, and the platform dispatch
 between them — plus the two YAML validations.
 
@@ -12,7 +12,6 @@ check: `/scout-status` reports green while every scheduled run fails.
 
 from __future__ import annotations
 
-import os
 import platform
 import subprocess
 from pathlib import Path
@@ -29,128 +28,6 @@ def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
     (v / ".scout-logs").mkdir(parents=True)
     return v
-
-
-# ---------------------------------------------------------------------------
-# _tail_text
-# ---------------------------------------------------------------------------
-
-
-def test_the_tail_reader_returns_only_the_trailing_bytes(tmp_path: Path) -> None:
-    """Session logs can be huge; the failure marker and the run-finished line
-    both live at the end, so the check stays cheap by reading only the tail."""
-    log = tmp_path / "run.log"
-    log.write_text("A" * 1000 + "TAIL-MARKER", encoding="utf-8")
-    out = doc._tail_text(log, max_bytes=32)
-    assert len(out) == 32
-    assert out.endswith("TAIL-MARKER")
-
-
-def test_the_tail_reader_returns_a_short_file_whole(tmp_path: Path) -> None:
-    log = tmp_path / "run.log"
-    log.write_text("short\n", encoding="utf-8")
-    assert doc._tail_text(log, max_bytes=65536) == "short\n"
-
-
-def test_the_tail_reader_replaces_undecodable_bytes(tmp_path: Path) -> None:
-    log = tmp_path / "run.log"
-    log.write_bytes(b"prefix \xff\xfe suffix")
-    out = doc._tail_text(log)
-    assert "prefix" in out and "suffix" in out
-
-
-def test_the_tail_reader_is_empty_for_an_unreadable_file(tmp_path: Path) -> None:
-    assert doc._tail_text(tmp_path / "nope.log") == ""
-
-
-# ---------------------------------------------------------------------------
-# _check_recent_auth_failure
-# ---------------------------------------------------------------------------
-
-
-def test_no_logs_dir_yields_no_auth_findings(tmp_path: Path) -> None:
-    assert doc._check_recent_auth_failure(vault=tmp_path) == ([], [])
-
-
-def test_no_run_logs_yields_no_auth_findings(vault: Path) -> None:
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
-
-
-def test_a_clean_latest_run_log_yields_no_auth_findings(vault: Path) -> None:
-    (vault / ".scout-logs" / "scout-2026-05-28.log").write_text("all good\n", encoding="utf-8")
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
-
-
-@pytest.mark.parametrize(
-    "marker",
-    [
-        "=== Authentication failure (HTTP 401/403)",
-        "Failed to authenticate. API Error: 401",
-        "Failed to authenticate. API Error: 403",
-        "Invalid authentication credentials",
-        # The CLI's raw string for an expired login (#233, #267): pre-0.8.0
-        # runners never wrote the banner, so the doctor must know it too.
-        "Failed to authenticate: OAuth session expired and could not be refreshed",
-    ],
-)
-def test_an_auth_failure_in_the_latest_run_log_is_an_error(vault: Path, marker: str) -> None:
-    """A 401/403 blocks every scheduled run and leaves no on-disk vault state,
-    so this log scan is the only signal the doctor has."""
-    (vault / ".scout-logs" / "scout-2026-05-28.log").write_text(f"...\n{marker}\n", encoding="utf-8")
-    errors, warnings = doc._check_recent_auth_failure(vault=vault)
-    assert warnings == []
-    assert len(errors) == 1
-    assert "failed to authenticate (HTTP 401/403)" in errors[0]
-    assert "claude setup-token" in errors[0]
-
-
-def test_a_bare_401_in_a_run_log_is_not_an_auth_failure(vault: Path) -> None:
-    """The markers are deliberately specific so a session that merely *writes
-    about* HTTP 401 can't trip the detector."""
-    (vault / ".scout-logs" / "scout-2026-05-28.log").write_text(
-        "The vendor API returned 401 for the old token; noted in the KB.\n", encoding="utf-8"
-    )
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
-
-
-def test_an_auth_phrase_quoted_mid_line_is_not_an_auth_failure(vault: Path) -> None:
-    """The CLI prints its auth errors at the start of a line; a session summary
-    that quotes one is not a rejected login."""
-    (vault / ".scout-logs" / "scout-2026-05-28.log").write_text(
-        "**Recap:** six runs said 'Failed to authenticate: OAuth session expired' last week.\n",
-        encoding="utf-8",
-    )
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
-
-
-def test_only_the_newest_run_log_is_inspected(vault: Path) -> None:
-    """The signal must self-clear: a later successful run writes a newer, clean
-    log and the error disappears."""
-    logs = vault / ".scout-logs"
-    old = logs / "scout-2026-05-28.log"
-    old.write_text("Invalid authentication credentials\n", encoding="utf-8")
-    new = logs / "dreaming-2026-05-28.log"
-    new.write_text("all good\n", encoding="utf-8")
-
-    base = new.stat().st_mtime
-    os.utime(old, (base - 3600, base - 3600))
-
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
-
-
-def test_an_unstattable_candidate_yields_no_auth_findings(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    log = vault / ".scout-logs" / "scout-2026-05-28.log"
-    log.write_text("Invalid authentication credentials\n", encoding="utf-8")
-
-    real_stat = Path.stat
-
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self == log:
-            raise OSError("vanished mid-scan")
-        return real_stat(self, *a, **k)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "stat", maybe_boom)
-    assert doc._check_recent_auth_failure(vault=vault) == ([], [])
 
 
 # ---------------------------------------------------------------------------

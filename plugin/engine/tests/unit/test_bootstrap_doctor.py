@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import os
+import json
+import time
 from pathlib import Path
 
+from scout import health
+from scout.scripts.bootstrap_auto import doctor_dict
 from scout.scripts.bootstrap_doctor import (
     DoctorReport,
     Severity,
@@ -167,68 +170,105 @@ def test_invalid_schedule_yaml_is_red(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Recent Claude-CLI auth failure — scan newest run log for rejected credentials
+# Run health (D2): an expired login is a run-health finding, never an install error
 # ---------------------------------------------------------------------------
 
 _AUTH_LOG_TAIL = (
     "=== Scout run starting at Tue Jun 23 13:11:28 CEST 2026 ===\n"
-    "[budget-check] budget OK — $0.00 spent (threshold: $8.34)\n"
     "Failed to authenticate. API Error: 401 Invalid authentication credentials\n"
     "=== Authentication failure (HTTP 401/403) — no retry (exit 1) ===\n"
-    "=== Scout run finished at Tue Jun 23 13:11:33 CEST 2026 (exit code: 1, duration: 3s) ===\n"
-)
-
-_CLEAN_LOG_TAIL = (
-    "=== Scout run starting at Tue Jun 23 14:00:00 CEST 2026 ===\n"
-    "[budget-check] budget OK — $0.00 spent (threshold: $8.34)\n"
-    "session complete\n"
-    "=== Scout run finished at Tue Jun 23 14:05:00 CEST 2026 (exit code: 0, duration: 300s) ===\n"
 )
 
 
-def test_recent_auth_failure_in_log_is_red(tmp_path):
-    """The newest run log showing a 401 auth failure makes the doctor RED with remediation."""
+def _expired_ledger(vault: Path) -> None:
+    logs = vault / ".scout-logs"
+    logs.mkdir(exist_ok=True)
+    now = int(time.time())
+    row = {
+        "slot": "morning-briefing",
+        "mode": "scout",
+        "started_at": now - 600,
+        "finished_at": now - 300,
+        "duration_s": 300,
+        "exit_code": 1,
+        "failure_class": "oauth_expired",
+        "log": "scout-1.log",
+    }
+    (logs / "run-outcomes.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+def test_expired_login_is_green_install_red_run_health(tmp_path):
+    _populate_minimal_vault(tmp_path)
+    _expired_ledger(tmp_path)
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.GREEN
+    assert report.exit_code == 0
+    assert report.errors == []
+    assert report.run_health is not None
+    assert report.run_health.severity == "red"
+    assert "auth.expired" in {f.id for f in report.run_health.findings}
+
+
+def test_an_auth_failure_log_without_a_ledger_is_also_run_health_only(tmp_path):
     _populate_minimal_vault(tmp_path)
     logs = tmp_path / ".scout-logs"
     logs.mkdir()
     (logs / "scout-2026-06-23_13-11.log").write_text(_AUTH_LOG_TAIL)
     report = run_doctor(vault=tmp_path, check_jobs=False)
-    assert report.severity is Severity.RED
-    assert any("authenticate" in e.lower() for e in report.errors)
-    assert any("setup-token" in e for e in report.errors)
-
-
-def test_clean_latest_log_stays_green(tmp_path):
-    """A run log with no auth-failure signature must not trip the detector (no false positives)."""
-    _populate_minimal_vault(tmp_path)
-    logs = tmp_path / ".scout-logs"
-    logs.mkdir()
-    (logs / "scout-2026-06-23_14-00.log").write_text(_CLEAN_LOG_TAIL)
-    report = run_doctor(vault=tmp_path, check_jobs=False)
     assert report.severity is Severity.GREEN
+    assert report.run_health is not None
+    assert "auth.expired" in {f.id for f in report.run_health.findings}
 
 
-def test_auth_failure_self_clears_when_newer_run_succeeds(tmp_path):
-    """An older failed-auth log is ignored once a NEWER log shows a clean run."""
-    _populate_minimal_vault(tmp_path)
-    logs = tmp_path / ".scout-logs"
-    logs.mkdir()
-    failed = logs / "scout-2026-06-23_13-11.log"
-    clean = logs / "scout-2026-06-23_14-00.log"
-    failed.write_text(_AUTH_LOG_TAIL)
-    clean.write_text(_CLEAN_LOG_TAIL)
-    # Make the clean run unambiguously the most recent.
-    os.utime(failed, (1_000_000, 1_000_000))
-    os.utime(clean, (2_000_000, 2_000_000))
-    report = run_doctor(vault=tmp_path, check_jobs=False)
-    assert report.severity is Severity.GREEN
-
-
-def test_no_logs_dir_is_green(tmp_path):
-    """A vault that has never run (no .scout-logs) must not error on the auth check."""
+def test_a_clean_vault_has_green_run_health(tmp_path):
     _populate_minimal_vault(tmp_path)
     report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.run_health is not None
+    assert report.run_health.severity == "green"
+
+
+def test_doctor_json_carries_run_health(tmp_path):
+    _populate_minimal_vault(tmp_path)
+    _expired_ledger(tmp_path)
+    payload = doctor_dict(run_doctor(vault=tmp_path, check_jobs=False))
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health"}
+    assert payload["run_health"]["findings"][0]["id"] == "auth.expired"
+
+
+def test_doctor_dict_run_health_is_null_for_a_stand_in_report():
+    class _Stub:
+        severity = Severity.GREEN
+
+    assert doctor_dict(_Stub())["run_health"] is None
+
+
+def test_missing_vault_has_null_run_health(tmp_path):
+    report = run_doctor(vault=tmp_path / "nope", check_jobs=False)
+    assert report.run_health is None
+    assert doctor_dict(report)["run_health"] is None
+
+
+def test_doctor_survives_an_evaluator_crash(tmp_path, monkeypatch):
+    _populate_minimal_vault(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+
+    monkeypatch.setattr(health, "evaluate", boom)
+    report = run_doctor(vault=tmp_path, check_jobs=False)
     assert report.severity is Severity.GREEN
+    assert report.run_health is None
+    assert any("run health could not be evaluated" in n for n in report.notes)
+
+
+def test_run_health_rides_along_on_a_red_and_a_yellow_report(tmp_path):
+    (tmp_path / "x").mkdir()
+    red = run_doctor(vault=tmp_path, check_jobs=False)
+    assert red.severity is Severity.RED and red.run_health is not None
+    _populate_minimal_vault(tmp_path / "y")
+    (tmp_path / "y" / ".scout-state" / "last-assembled" / "SKILL.md").unlink()
+    yellow = run_doctor(vault=tmp_path / "y", check_jobs=False)
+    assert yellow.severity is Severity.YELLOW and yellow.run_health is not None
 
 
 # ---------------------------------------------------------------------------

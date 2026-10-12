@@ -88,6 +88,23 @@ def test_scout_status_no_longer_reports_auto_update():
     assert "AUTO_UPDATE_ON" not in text and "Auto-update:" not in text
 
 
+def test_scout_status_reads_the_run_health_exit_code_on_every_path():
+    # `|| echo` would never print exit=1/2, so yellow and red looked like a missing exit line.
+    text = _text("scout-status.md")
+    assert 'health --json; echo "exit=$?"' in text and '|| echo "exit=$?"' not in text
+    assert "the first line is the JSON report and the last line is `exit=N`" in text
+
+
+def test_scout_status_run_health_edge_cases():
+    text = _text("scout-status.md")
+    assert "Ignore `note` findings everywhere" in text
+    assert "Green (no yellow or red finding;" in text
+    assert "No runs recorded yet" in text
+    # Per-type last-run lines fall back to the commit-message match.
+    assert "fall back to the most recent commit whose message mentions that type" in text
+    assert "(run health unavailable)" not in text
+
+
 def test_no_command_dead_ends_the_user():
     for md in sorted(COMMANDS.glob("*.md")):
         lowered = md.read_text(encoding="utf-8").lower()
