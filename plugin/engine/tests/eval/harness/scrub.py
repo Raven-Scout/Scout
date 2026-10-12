@@ -21,15 +21,19 @@ from pathlib import Path
 
 EVAL_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIRS = ("vault", "scenarios", "stubs", "golden")
-TEXT_SUFFIXES = {".md", ".yaml", ".yml", ".json", ".jsonl", ".txt", ".tmpl"}
+CODE_DIRS = {"bin", "__pycache__"}  # executables and caches, not fixture data
 
 _EMAIL = re.compile(r"\b[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
 _URL = re.compile(r"\bhttps?://([\w.-]+)[^\s)\]>`'\"]*")
+_WIKILINK = re.compile(r"\[\[[^\]]*\]\]")
 _GITHUB_REPO = re.compile(r"github\.com/([\w.-]+)/[\w.-]+")
 _REPO_REF = re.compile(r"(?<![\w/])([a-z0-9][\w.-]*)/[\w.-]+#\d+")
+_BACKTICK_REPO = re.compile(r"`([\w.-]+)/([\w.-]+)`")
+_BARE_REPO = re.compile(r"(?<![\w/.\[])([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)(?![\w/])")
+_REPO_LINE = re.compile(r"\b(?:Refs|Repo|Repos):")
 _TRACKER_ID = re.compile(r"\b([A-Z]{2,})-\d+\b")
 _HANDLE = re.compile(r"(?<![\w.@/])@([a-z0-9][\w.-]*[a-z0-9]|[a-z0-9])", re.IGNORECASE)
-_WORD = re.compile(r"\b[A-Z][a-zA-Z]+\b")
+_WORD = re.compile(r"\b[^\W\d_]+\b")
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,12 @@ def _scan_line(line: str, allow: set[str]) -> list[tuple[str, str]]:
     rest = _blank(rest, _EMAIL)
     for m in _REPO_REF.finditer(rest):
         check("repo", m.group(1))
+    no_links = _blank(rest, _WIKILINK)
+    repo_shaped = [_BACKTICK_REPO, _BARE_REPO] if _REPO_LINE.search(line) else [_BACKTICK_REPO]
+    for pattern in repo_shaped:
+        for m in pattern.finditer(no_links):
+            if not m.group(2).endswith(".md"):
+                check("repo", m.group(1))
     for m in _TRACKER_ID.finditer(rest):
         check("id", m.group(1))
     rest = _blank(_blank(rest, _REPO_REF), _TRACKER_ID)
@@ -77,17 +87,29 @@ def _scan_line(line: str, allow: set[str]) -> list[tuple[str, str]]:
         check("handle", m.group(1).lower())
     rest = _blank(rest, _HANDLE)
     for m in _WORD.finditer(rest):
-        check("word", m.group(0))
+        if m.group(0)[0].isupper():
+            check("word", m.group(0))
     return hits
 
 
 def scan(root: Path, allow: set[str]) -> list[Finding]:
+    """Scan every file under ``root``: its path (line 0, kind ``path``) and its text.
+
+    A file that isn't UTF-8 text is reported as ``binary``: the fixture has no
+    business holding one, and skipping it would stop the guard guarding.
+    """
     findings: list[Finding] = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        if path.suffix not in TEXT_SUFFIXES and path.name != "gh":
-            continue
         rel = path.relative_to(root).as_posix()
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if CODE_DIRS & set(path.relative_to(root).parts[:-1]):
+            continue
+        findings += [Finding(rel, 0, tok, "path") for tok, _ in _scan_line(rel, allow)]
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            findings.append(Finding(rel, 0, path.name, "binary"))
+            continue
+        for n, line in enumerate(text.splitlines(), start=1):
             findings += [Finding(rel, n, tok, kind) for tok, kind in _scan_line(line, allow)]
     return findings
 

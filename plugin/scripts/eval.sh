@@ -11,5 +11,5 @@ if [ ! -x "$ENGINE/.venv/bin/python" ]; then
     echo "eval.sh: no engine venv at $ENGINE/.venv — run: cd $ENGINE && uv venv && uv pip install -e '.[dev]'" >&2
     exit 2
 fi
-cd "$ENGINE"
-exec "$ENGINE/.venv/bin/python" -m tests.eval.harness "$@"
+
+PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}" exec "$ENGINE/.venv/bin/python" -m tests.eval.harness "$@"

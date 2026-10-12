@@ -52,6 +52,34 @@ def test_unknown_handle_is_reported_and_known_one_is_not(tmp_path: Path) -> None
     assert _found(scan(tmp_path, {"alex"})) == {("morgan", "handle")}
 
 
+def test_non_ascii_names_are_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "f.md", "met Ondřej, Łukasz, José and Zoë\n")
+    assert _found(scan(tmp_path, set())) == {(n, "word") for n in ("Ondřej", "Łukasz", "José", "Zoë")}
+
+
+def test_bare_repo_in_refs_or_backticks_is_reported_but_wikilinks_are_not(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "g.md",
+        "- Refs: bigco/payments · example-org/api\n"
+        "- Repo: `megacorp/billing` and see [[projects/widgets/widgets]] and `action-items/context/AB.md`\n",
+    )
+    found = _found(scan(tmp_path, {"Refs", "Repo", "example-org", "AB"}))
+    assert found == {("bigco", "repo"), ("megacorp", "repo")}
+
+
+def test_file_paths_are_scanned(tmp_path: Path) -> None:
+    _write(tmp_path, "people/Morgan-Realcorp.md", "ok\n")
+    found = scan(tmp_path, set())
+    assert {(f.token, f.kind, f.line) for f in found} == {("Morgan", "path", 0), ("Realcorp", "path", 0)}
+
+
+def test_files_of_any_suffix_are_scanned_and_binary_is_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "data.csv", "name\nMorgan\n")
+    (tmp_path / "blob.bin").write_bytes(b"\xff\xfe\x00bad")
+    assert _found(scan(tmp_path, {"name"})) == {("Morgan", "word"), ("blob.bin", "binary")}
+
+
 def test_findings_carry_path_and_line(tmp_path: Path) -> None:
     _write(tmp_path, "sub/e.md", "ok\nMorgan\n")
     [f] = scan(tmp_path, set())

@@ -35,7 +35,6 @@ FIXTURE_SLACK_ID = "U0123456789"
 FIXTURE_GITHUB_USER = "alex-example"
 FIXTURE_REPOS = "example-org/widgets,example-org/api"
 DEFAULT_CONNECTORS = frozenset({"slack", "calendar", "linear", "github"})
-RENDERED_SUFFIXES = {".md", ".yaml", ".yml", ".json", ".jsonl", ".txt"}
 NOOP_SCRIPT = "#!/bin/bash\nexit 0\n"
 
 
@@ -45,24 +44,35 @@ class FixtureError(Exception):
         self.path, self.token = path, token
 
 
+def _check_rendered(rel: str, text: str) -> None:
+    leftover = UNRENDERED.search(text)
+    if leftover:
+        raise FixtureError(rel, leftover.group(0))
+
+
 def _overlay(src: Path, dest: Path, today: date) -> None:
+    """Copy ``src`` over ``dest``, rendering date macros in every path and every text file."""
     for path in sorted(p for p in src.rglob("*") if p.is_file()):
         rel = path.relative_to(src).as_posix()
-        target = dest / render_dates(rel, today)
+        rendered_rel = render_dates(rel, today)
+        _check_rendered(rel, rendered_rel)
+        target = dest / rendered_rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if path.suffix in RENDERED_SUFFIXES:
-            text = render_dates(path.read_text(encoding="utf-8"), today)
-            leftover = UNRENDERED.search(text)
-            if leftover:
-                raise FixtureError(rel, leftover.group(0))
-            target.write_text(text, encoding="utf-8")
-        else:
-            shutil.copy2(path, target)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            shutil.copy2(path, target)  # binary: copied as is (the scrub test reports it)
+            continue
+        text = render_dates(text, today)
+        _check_rendered(rel, text)
+        target.write_text(text, encoding="utf-8")
+        shutil.copymode(path, target)
 
 
 def _git_env(today: date) -> dict[str, str]:
+    """Fixed identity and config, and no inherited GIT_* (a hook's GIT_DIR would redirect the commit)."""
     stamp = f"{today.isoformat()}T06:00:00+00:00"
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(
         GIT_AUTHOR_NAME=FIXTURE_USER,
         GIT_AUTHOR_EMAIL=FIXTURE_EMAIL,

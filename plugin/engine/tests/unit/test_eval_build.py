@@ -87,6 +87,46 @@ def test_an_unrendered_macro_fails_loudly(tmp_path: Path) -> None:
         build_vault(tmp_path / "v", today=TODAY, scenario_dir=sc)
 
 
+def test_an_unrendered_macro_in_a_path_fails_loudly(tmp_path: Path) -> None:
+    sc = _scenario(tmp_path, {"action-items/action-items-{{d-l}}.md": "typo in the macro\n"})
+    with pytest.raises(FixtureError, match=r"\{\{d-l\}\}"):
+        build_vault(tmp_path / "v", today=TODAY, scenario_dir=sc)
+
+
+def test_a_macro_in_any_text_file_is_rendered_or_fails(tmp_path: Path) -> None:
+    sc = _scenario(tmp_path, {"scripts/note.sh": "echo {{d-1}}\n", "data.csv": "x,{{bogus}}\n"})
+    with pytest.raises(FixtureError, match=r"data\.csv"):
+        build_vault(tmp_path / "v", today=TODAY, scenario_dir=sc)
+    sc2 = _scenario(tmp_path / "ok", {"scripts/note.sh": "echo {{d-1}}\n"})
+    vault = build_vault(tmp_path / "v2", today=TODAY, scenario_dir=sc2)
+    assert (vault / "scripts/note.sh").read_text() == "echo 2026-10-13\n"
+
+
+def test_an_inherited_git_dir_cannot_redirect_the_fixture_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(outer))
+    vault = build_vault(tmp_path / "v", today=TODAY)
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_WORK_TREE")
+    assert (vault / ".git").is_dir()
+    outer_log = subprocess.run(["git", "-C", str(outer), "log", "--oneline"], capture_output=True, text=True)
+    assert outer_log.stdout == ""
+
+
+def test_eval_sh_resolves_a_relative_destination_against_the_callers_cwd(tmp_path: Path) -> None:
+    eval_sh = Path(__file__).resolve().parents[3] / "scripts" / "eval.sh"
+    r = subprocess.run(
+        [str(eval_sh), "build", "rel-vault", "--today", "2026-10-14"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str((tmp_path / "rel-vault").resolve())
+    assert (tmp_path / "rel-vault" / "SKILL.md").exists()
+
+
 def test_cli_build_prints_the_vault_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from tests.eval.harness.cli import main
 
