@@ -126,13 +126,18 @@ Confirm with the user: "Proceed with these connectors? Or pause to enable more f
 
 ---
 
-## Step 3: Auto-update preference
+## Step 3: Auto-update and budgets
 
 Ask the user:
 
 > "Should Scout keep itself up to date automatically? When on, scheduled runs apply upgrades and ping you if a change needs manual review. (You can change this later via `/scout-update`.)"
 
 Wait for a yes/no answer. Pass it to the install in Step 4 as `--auto-update` (yes) or `--no-auto-update` (no); `bootstrap install` writes it into `~/Scout/scout-config.yaml` as `auto_update.enabled` (channel `stable`). Do NOT edit the config file by hand or with an inline `python3` script — the system `python3` on stock macOS has no PyYAML.
+
+Then ask for the two budgets, one at a time. They are different caps; don't merge them into one question:
+
+1. "Budget per scheduled session, in USD? (default: 5.00)" — pass it to Step 4 as `--max-budget`. It caps one run (`claude --max-budget-usd`).
+2. "Daily budget, in USD? Press enter to keep the default of $50." — the budget check skips runs once a day's spend nears this. `--max-budget` does NOT set it; Step 4 writes it with `scoutctl budget set --daily-usd`.
 
 ---
 
@@ -153,7 +158,7 @@ Omit `--claude-bin` unless the user told you a specific path: by default the eng
     --user-slack-id "<USER_SLACK_ID>" \
     --github-username "<GITHUB_USERNAME>" \
     --github-repos "<comma-separated-repos>" \
-    --max-budget "<dollars>" \
+    --max-budget "<PER_SESSION_USD>" \
     --auto-update   # or --no-auto-update, per Step 3
 ```
 
@@ -163,12 +168,21 @@ The plist + cron block installed by this step automatically reference `$SCOUTCTL
 
 Capture exit code and stdout. The command emits one line per concern: `installed: <path>`, `doctor: green`, plus warnings for sidecar files or missing snapshots.
 
+Then, if install exited 0 or 1 and the user gave a daily budget in Step 3, write it (`--max-budget` above never reaches the daily budget):
+
+```bash
+"$SCOUTCTL" budget set --daily-usd "<DAILY_USD>"
+```
+
+If that command fails, tell the user scheduled runs use the $50 default until they run it themselves. Its output is not the install result; report Step 5 from the install's output above.
+
 ---
 
 ## Step 5: Report and offer first-run
 
 Report the result to the user:
 - Vault path, enabled connectors, doctor severity.
+- Both budgets, named apart: "$<PER_SESSION_USD> per session, $<DAILY_USD> per day" (or "$50 per day (the default)").
 - If doctor severity is `green`: "Setup complete. Want to run your first morning briefing now? (yes/no)"
 - If `yellow`: list the warnings; tell the user the system will work but those items want attention.
 - If `red`: list the errors; tell the user setup did not complete cleanly and link to `scoutctl bootstrap doctor` for diagnosis.

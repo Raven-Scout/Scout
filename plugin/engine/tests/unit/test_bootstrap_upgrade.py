@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from scout.scripts.bootstrap import (
+    _INSTALL_ONLY_TEMPLATES,
     BootstrapConfig,
     UpgradeResult,
     install,
@@ -126,6 +127,53 @@ def test_upgrade_seeds_missing_schedule_yaml(tmp_path):
     upgrade(_config(vault, plugin_root=plugin))
     assert schedule.exists()
     assert "schema_version" in schedule.read_text()
+
+
+@pytest.mark.parametrize("vault_rel", [rel for rel, _ in _INSTALL_ONLY_TEMPLATES])
+def test_upgrade_seeds_a_missing_cat2_file(tmp_path, vault_rel):
+    """A vault installed before a cat-2 (vault-owned) file shipped receives it on
+    upgrade. Regression (#197): only install() seeded them, so a file added to
+    _INSTALL_ONLY_TEMPLATES never reached an existing vault."""
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    target = vault / vault_rel
+    target.unlink()  # simulate a vault that predates this file
+
+    upgrade(_config(vault, plugin_root=plugin))
+    assert target.exists()
+    assert "{{" not in target.read_text()  # rendered, not copied raw
+
+
+def test_upgrade_never_overwrites_an_edited_cat2_file(tmp_path):
+    """Cat-2 seeding is create-only: the vault's own content survives upgrade."""
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    edited = {rel: f"# mine: {rel}\n" for rel, _ in _INSTALL_ONLY_TEMPLATES}
+    for rel, text in edited.items():
+        (vault / rel).write_text(text)
+    empty = vault / "inbox.md"
+    empty.write_text("")  # emptied on purpose is still the vault's choice
+    edited["inbox.md"] = ""
+
+    upgrade(_config(vault, plugin_root=plugin))
+    assert {rel: (vault / rel).read_text() for rel in edited} == edited
+
+
+def test_upgrade_leaves_a_dangling_cat2_symlink_alone(tmp_path):
+    """A symlink at a cat-2 path is the vault's, even when its target is gone:
+    Path.exists() follows it and reads False, but seeding must not replace it."""
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    link = vault / "inbox.md"
+    link.unlink()
+    link.symlink_to(tmp_path / "elsewhere" / "inbox.md")
+
+    upgrade(_config(vault, plugin_root=plugin))
+    assert link.is_symlink()
+    assert not (tmp_path / "elsewhere").exists()
 
 
 def test_upgrade_backfills_missing_version_at_last_setup(tmp_path):

@@ -20,10 +20,12 @@ from typing import Any, Protocol, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scout.scripts.bootstrap_auto import AutoAction, Plan
+from scout.scripts.budget_check import DEFAULT_DAILY_BUDGET_USD
 from scout.scripts.connector_detect import Detection, DetectStatus
 from scout.scripts.engine_pointer import EnginePointer
 
 CANCELLED = "Setup cancelled; nothing was written."
+_DEFAULT_DAILY = f"${DEFAULT_DAILY_BUDGET_USD:g}"
 HEADLESS_FLAGS = (
     "--yes --name NAME --email EMAIL [--connectors a,b] [--slack-id ID] [--github-username U] "
     "[--github-repos owner/repo,…] [--max-budget 5.00] [--daily-budget USD] [--timezone ZONE] [--no-first-run]"
@@ -415,7 +417,7 @@ def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> Answers | None:
         if opts.yes
         else _ask_required(
             p,
-            "Daily budget, USD (blank for none)",
+            f"Daily budget, USD (blank keeps {_DEFAULT_DAILY})",
             "",
             lambda v: _float_ok(v, allow_blank=True),
             "Enter an amount above 0, or leave it blank.",
@@ -571,6 +573,25 @@ def _say_engine_kept(p: Prompter, opts: SetupOptions, ptr: EnginePointer) -> Non
     )
 
 
+def _set_daily_budget(answers: Answers, p: Prompter, deps: SetupDeps) -> None:
+    """Write the daily budget, then name both caps: they are different numbers (#229).
+
+    ``--max-budget`` caps one session (``claude --max-budget-usd``); the daily
+    budget is what the budget check gates on. A failed write is said out loud,
+    because the budget check would otherwise run on its default unannounced.
+    """
+    daily = f"{_DEFAULT_DAILY} per day (the default)"
+    if answers.daily_budget:
+        if deps.invoke(["budget", "set", "--daily-usd", answers.daily_budget]) == 0:
+            daily = f"${answers.daily_budget} per day"
+        else:
+            p.say(
+                f"Couldn't save the daily budget; scheduled runs use {_DEFAULT_DAILY} a day until you run: "
+                f"scoutctl budget set --daily-usd {answers.daily_budget}"
+            )
+    p.say(f"Budget: ${answers.max_budget} per session, {daily}.")
+
+
 def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
     p = prompter
     ptr = deps.pointer()
@@ -608,8 +629,7 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
     code = deps.invoke(install_argv)
     if code not in (0, 1):
         return code
-    if answers.daily_budget:
-        deps.invoke(["budget", "set", "--daily-usd", answers.daily_budget])
+    _set_daily_budget(answers, p, deps)
     apply_drafts(answers.drafts, p, deps)
     first = opts.first_run
     if first is None:
