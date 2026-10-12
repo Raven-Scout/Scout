@@ -186,6 +186,31 @@ jobs:
 
           exit $status
 
+      # 4. The topic board's file formats (Inbox/Loose ends keys, dismissed.md,
+      #    topic-names.md) are tested on both sides against one fixture; every
+      #    tracked copy must match the canonical one byte for byte.
+      - name: Topic board fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/topic-board-files.json
+          status=0
+          checked=0
+          while IFS= read -r copy; do
+            [ -n "$copy" ] && [ "$copy" != "$canonical" ] || continue
+            checked=$((checked + 1))
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::topic-board-files.json is not byte-identical to $canonical — edit the canonical file, then cp it over $copy"
+              status=1
+            fi
+          done <<< "$(git ls-files -- '*topic-board-files.json')"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of topic-board-files.json is tracked"
+            status=1
+          fi
+          exit $status
+
   contract:
     name: contract
     needs: [changes, verify]

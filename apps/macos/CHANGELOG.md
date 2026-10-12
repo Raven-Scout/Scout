@@ -18,7 +18,15 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   start a new one). Done shows this week, today or yesterday. Open rows are remembered. Tab walks
   the rows; Space expands one and Return asks Claude. A topic shows the
   user's own name from `action-items/topic-names.md` when there is one.
-  Read-only: writes stay in List.
+  Task edits stay in List.
+- **Inbox, Loose ends, topic rename and close-for-good on the topic board**
+  (#340). The board lists the daily file's `📥 Inbox` and `🧹 Loose ends`. A
+  pencil on the topic row saves your own name through
+  `scoutctl action-items rename-topic`; a × closes an entry through
+  `scoutctl action-items dismiss`. Names go to `action-items/topic-names.md`,
+  which runs never write. Both are hidden while the installed engine doesn't
+  advertise `topic_board_v1`, and show once it does, without a relaunch. A
+  failed save shows scoutctl's reason.
 
 ### Changed
 - When a section or board column has more rows than it shows, a

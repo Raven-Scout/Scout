@@ -88,12 +88,17 @@ kb_lint:
     - "knowledge-base/session-log/**"
   topic_globs:
     - "knowledge-base/topics/**"
-  # Dated records `kb lint --report` never ranks as dreaming shrink targets:
-  # the daily file is rewritten by the briefings, and the legacy session log
-  # is migrated by a one-time sharding step.
+  # Files `kb lint --report` never ranks as dreaming shrink targets: the daily
+  # file is rewritten by the briefings, the legacy session log is migrated by
+  # a one-time sharding step, and the topic board's files are state the app
+  # and scoutctl read line by line (a "current state + links" rewrite would
+  # lose dismissals and names).
   report_exclude_globs:
     - "action-items/action-items-*.md"
     - "knowledge-base/session-log.md"
+    - "action-items/topics.md"
+    - "action-items/topic-names.md"
+    - "action-items/dismissed.md"
   log_globs:
     - "knowledge-base/session-log.md"
     - "knowledge-base/session-log/**"
@@ -111,6 +116,10 @@ kb_lint:
     - "knowledge-base/kg-audits/**"
   budgets:
     - {glob: "action-items/action-items-*.md", bytes: 61440}
+    # The topic board's files grow with use (dismissed.md is append-only).
+    - {glob: "action-items/topics.md", bytes: null}
+    - {glob: "action-items/topic-names.md", bytes: null}
+    - {glob: "action-items/dismissed.md", bytes: null}
     - {glob: "action-items/**", bytes: 15360}
     # The legacy session-log index has no budget: an un-migrated vault's
     # multi-MB log would otherwise block every run. Rows go to the monthly

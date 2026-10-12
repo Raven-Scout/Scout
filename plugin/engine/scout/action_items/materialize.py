@@ -150,6 +150,24 @@ def _archive_stale(data_dir: Path | None, today: _dt.date, body: str) -> tuple[s
     return "\n".join(result.lines) + trailing, note
 
 
+def _drop_dismissed(data_dir: Path | None, body: str) -> str:
+    """The body without Inbox and Loose ends entries the user dismissed.
+    Best-effort, like the archive: a failure carries the body verbatim."""
+    from scout.action_items.dismissed import dismissed_keys
+    from scout.action_items.side_entries import drop_dismissed
+
+    try:
+        dismissed = set(dismissed_keys(data_dir))
+    except Exception:  # noqa: BLE001 — housekeeping must never block the copy
+        return body
+    lines = body.splitlines()
+    kept = drop_dismissed(lines, dismissed)
+    if len(kept) == len(lines):
+        return body
+    trailing = "\n" if body.endswith("\n") else ""
+    return "\n".join(kept) + trailing
+
+
 def materialize(
     data_dir: Path | None = None,
     date: _dt.date | None = None,
@@ -185,6 +203,7 @@ def materialize(
         # Archive before compacting: the ledger fingerprinted the prior file as
         # written, and compaction drops whatever headings the archive emptied.
         body, archived_note = _archive_stale(data_dir, target_date, body)
+        body = _drop_dismissed(data_dir, body)
         compacted = compact(body)
         if _signature(compacted) == _signature(body):
             body = "\n" + compacted

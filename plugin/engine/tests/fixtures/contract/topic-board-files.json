@@ -1,0 +1,90 @@
+{
+  "_note": "Topic board files, read by the engine (side_entries.py, dismissed.py, topic_names.py) and the app (SideEntry, DismissedFileLoader, TopicNamesParser). Keys are links exactly as written, never percent-encoded. Edit this canonical copy, then cp it to apps/macos/ScoutTests/Fixtures/topic-board-files.json; contract.yml fails on drift.",
+  "side_entries": [
+    {
+      "bullet": "Slack · Oct 10 — [Priya asked about the retention window](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)",
+      "key": "https://acme-co.slack.com/archives/C0123456789/p1700000000000000",
+      "text": "Priya asked about the retention window",
+      "source": "Slack · Oct 10"
+    },
+    {
+      "bullet": "[Delete the merged reattach branch](https://github.com/example-org/web/tree/reattach)",
+      "key": "https://github.com/example-org/web/tree/reattach",
+      "text": "Delete the merged reattach branch",
+      "source": null
+    },
+    {
+      "bullet": "GitHub · Oct 9 — Review requested https://github.com/example-org/web/pull/7",
+      "key": "https://github.com/example-org/web/pull/7",
+      "text": "Review requested",
+      "source": "GitHub · Oct 9"
+    },
+    {
+      "bullet": "Close the stale draft",
+      "key": "Close the stale draft",
+      "text": "Close the stale draft",
+      "source": null
+    },
+    {
+      "bullet": "Linear · Oct 8 — PROJ-1234 moved to Done — nothing left",
+      "key": "PROJ-1234 moved to Done — nothing left",
+      "text": "PROJ-1234 moved to Done — nothing left",
+      "source": "Linear · Oct 8"
+    },
+    {
+      "bullet": "Notion · Oct 9 — [Café plan review](https://www.notion.so/acme/Café-plan-0123456789abcdef)",
+      "key": "https://www.notion.so/acme/Café-plan-0123456789abcdef",
+      "text": "Café plan review",
+      "source": "Notion · Oct 9"
+    },
+    {
+      "bullet": "Grafana · Oct 9 — Error spike https://grafana.example.com/explore?q=errors|warnings&from=now-1h",
+      "key": "https://grafana.example.com/explore?q=errors|warnings&from=now-1h",
+      "text": "Error spike",
+      "source": "Grafana · Oct 9"
+    }
+  ],
+  "dismissed_md": {
+    "text": "# Dismissed\n\nInbox and Loose ends entries closed in the app. Scout never re-adds these.\n\n- https://acme-co.slack.com/archives/C0123456789/p1700000000000000\n-   Close the stale draft  \n-\n* not a key\n",
+    "keys": [
+      "https://acme-co.slack.com/archives/C0123456789/p1700000000000000",
+      "Close the stale draft"
+    ]
+  },
+  "topic_names_md": {
+    "text": "# Topic names\n\nYour own names for topics, set in the app. Scout runs never write this file.\n\n- [#STRM] Reattach\n- [#QBLK]\n- [#555] Not a tag\n- QBLK Missing brackets\n- [#STRM] Reattach, renamed again\n",
+    "names": {
+      "STRM": "Reattach, renamed again"
+    }
+  },
+  "side_sections": [
+    {
+      "heading": "## 📥 Inbox",
+      "side": true
+    },
+    {
+      "heading": "## 🧹 Loose ends (2)",
+      "side": true
+    },
+    {
+      "heading": "## Inbox (3)",
+      "side": true
+    },
+    {
+      "heading": "## Loose ends",
+      "side": true
+    },
+    {
+      "heading": "## My Inbox",
+      "side": false
+    },
+    {
+      "heading": "## Inbox zero tips",
+      "side": false
+    },
+    {
+      "heading": "## 🟢 Watching",
+      "side": false
+    }
+  ]
+}

@@ -1,12 +1,18 @@
 import SwiftUI
 
-/// The lists under the topics: what got done, for this week, today or yesterday.
+/// Inbox, Loose ends and Done, side by side under the topics.
 struct BoardSideListsView: View {
+    let inbox: [SideEntry]
+    let looseEnds: [SideEntry]
     let done: [DoneEntry]
     @Binding var doneRange: DoneRange
+    /// `nil` hides the × (the engine can't record a dismissal).
+    let onDismiss: ((SideEntry) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
+            entries("Inbox", inbox)
+            entries("Loose ends", looseEnds)
             SideListView(isEmpty: done.isEmpty) {
                 HStack(spacing: 4) {
                     Text("Done")
@@ -34,6 +40,16 @@ struct BoardSideListsView: View {
                             .foregroundStyle(DS.Ink.p2)
                     }
                 }
+            }
+        }
+    }
+
+    private func entries(_ title: String, _ rows: [SideEntry]) -> some View {
+        SideListView(isEmpty: rows.isEmpty) {
+            Text(title)
+        } rows: {
+            ForEach(rows) { entry in
+                SideEntryRow(entry: entry, onClose: onDismiss.map { dismiss in { dismiss(entry) } })
             }
         }
     }
