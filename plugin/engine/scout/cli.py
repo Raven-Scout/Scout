@@ -1718,6 +1718,13 @@ def _register_bootstrap() -> None:
         "when it describes this engine's interpreter, else unknown."
     )
 
+    # Two caps that read alike (#229): this one is per session; the daily
+    # budget the budget check gates on is `scoutctl budget set --daily-usd`.
+    _MAX_BUDGET_HELP = (
+        "USD cap for ONE scheduled session (claude --max-budget-usd). Not the daily budget: "
+        "set that with `scoutctl budget set --daily-usd`."
+    )
+
     def _resolve_managed_by(value: str) -> str:
         """`preserve` → the concrete manager (engine_pointer.resolve_managed_by);
         an explicit value outside MANAGED_BY_VALUES is a usage error (exit 2)."""
@@ -1832,7 +1839,7 @@ def _register_bootstrap() -> None:
         claude_bin: str = typer.Option(
             "", "--claude-bin", help="Path to the claude CLI. Default: auto-detect (PATH, ~/.local/bin, Homebrew)."
         ),
-        max_budget: str = typer.Option("5.00", "--max-budget"),
+        max_budget: str = typer.Option("5.00", "--max-budget", help=_MAX_BUDGET_HELP),
         auto_update: bool | None = typer.Option(
             None,
             "--auto-update/--no-auto-update",
@@ -2000,7 +2007,7 @@ def _register_bootstrap() -> None:
         timezone: str = typer.Option(
             "", "--timezone", help="IANA zone override. Default: follow the computer's own timezone."
         ),
-        max_budget: str = typer.Option("5.00", "--max-budget"),
+        max_budget: str = typer.Option("5.00", "--max-budget", help=_MAX_BUDGET_HELP),
         platform: str = typer.Option("macos", "--platform"),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
         skip_jobs: bool = typer.Option(
@@ -2090,7 +2097,7 @@ def _register_bootstrap() -> None:
         github_username: str = typer.Option("", "--github-username"),
         github_repos: str = typer.Option("", "--github-repos"),
         claude_bin: str = typer.Option("auto", "--claude-bin", help="Absolute path, or auto (`command -v claude`)"),
-        max_budget: str = typer.Option("5.00", "--max-budget"),
+        max_budget: str = typer.Option("5.00", "--max-budget", help=_MAX_BUDGET_HELP),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
         skip_claude: bool = typer.Option(False, "--skip-claude"),
         managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
@@ -2577,7 +2584,9 @@ def setup_cmd(
     github_username: str = typer.Option("", "--github-username"),
     github_repos: str = typer.Option("", "--github-repos"),
     max_budget: str = typer.Option("", "--max-budget", help="USD per session. Default 5.00."),
-    daily_budget: str = typer.Option("", "--daily-budget", help="USD per day. Default: none."),
+    daily_budget: str = typer.Option(
+        "", "--daily-budget", help="USD per day: the budget the budget check gates on. Default: $50."
+    ),
     first_run: bool | None = typer.Option(None, "--first-run/--no-first-run"),
     managed_by: str = typer.Option(
         "",

@@ -182,7 +182,9 @@ _CAT1_TEMPLATES = (
 _CAT1_APPEND_ONLY = frozenset({".gitignore"})
 
 _INSTALL_ONLY_TEMPLATES = (
-    # Vault-owned files seeded once on install (cat 2). Never overwritten on upgrade.
+    # Vault-owned files (cat 2): seeded by install, upgrade and migrate-legacy
+    # only where the vault has none, so a file added here reaches existing
+    # vaults too. Never overwritten.
     ("dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
     ("knowledge-base/scout-mistake-audit.md", "templates/scout-mistake-audit.md.tmpl"),
     ("knowledge-base/review-queue.md", "templates/review-queue.md.tmpl"),
@@ -417,11 +419,16 @@ def _stage_gitignore(cfg: BootstrapConfig) -> None:
 
 
 def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
-    """Seed cat-2 vault-owned files on install only (never overwritten)."""
+    """Seed each cat-2 vault-owned file the vault doesn't have. Create-only.
+
+    Anything already at the path is the vault's: an edited or emptied file, or
+    a symlink, even a dangling one (``exists()`` follows it and reads False).
+    The price of running on upgrade: a cat-2 file the user deleted comes back.
+    """
     vars_ = _template_vars(cfg)
     for vault_rel, tmpl_rel in _INSTALL_ONLY_TEMPLATES:
         target = cfg.vault / vault_rel
-        if target.exists():
+        if target.exists() or target.is_symlink():
             continue  # never overwrite
         src = cfg.plugin_root / tmpl_rel
         if not src.exists():
@@ -1176,6 +1183,9 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         # never get one written, and the dispatcher silently falls back
         # to the packaged default.
         _stage_seed_schedule(cfg)
+        # Same reason, per file: a cat-2 file added after this vault was
+        # installed would otherwise never reach it (#197). Create-only.
+        _stage_install_only_seeds(cfg)
         cat4 = _stage_cat4_upgrade(cfg)
         conflicts = cat4.conflicts
         _stage_jobs_install(cfg)
@@ -1212,7 +1222,8 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
       3. Write the managed files (scripts, hooks, runners, …) rendered against
          the user-provided cfg vars. A file no release shipped (a customised
          legacy runner) is parked under ``.scout-state/drift/`` first.
-      4. Merge ``.gitignore`` (append-only).
+      4. Merge ``.gitignore`` (append-only), then seed the cat-2 files the
+         vault lacks (never overwriting one it has).
       5. Skip cat-4 merge entirely — snapshots just established, nothing to
          merge.
       6. Job lifecycle (subject to cfg.skip_jobs), then the kb-lint
@@ -1261,6 +1272,8 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         #    (a customised runner) is parked, not overwritten silently.
         vault_edits = _stage_managed_files(cfg)
         _stage_gitignore(cfg)
+        # 4b. Cat-2 files the legacy vault lacks (create-only, #197).
+        _stage_install_only_seeds(cfg)
         # 5. SKIP cat-4 merge: snapshots just established equal current live.
         # 6. Jobs.
         _stage_jobs_install(cfg)

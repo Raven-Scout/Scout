@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from scout.scripts.bootstrap import (
+    _INSTALL_ONLY_TEMPLATES,
     BootstrapConfig,
     MigrateLegacyResult,
     _is_legacy_vault,
@@ -109,6 +110,18 @@ def test_migrate_legacy_seeds_schedule_yaml(tmp_path):
     schedule = tmp_path / ".scout-state" / "schedule.yaml"
     assert schedule.exists()
     assert "schema_version" in schedule.read_text()
+
+
+def test_migrate_legacy_seeds_missing_cat2_files_and_keeps_existing_ones(tmp_path):
+    """Cat-2 files a legacy vault lacks are seeded; one it already has is never
+    touched (#197)."""
+    _populate_legacy_vault(tmp_path)
+    (tmp_path / "inbox.md").write_text("# legacy inbox\n")
+    plugin = Path(__file__).parent.parent.parent.parent
+    migrate_legacy(_config(tmp_path, plugin_root=plugin))
+    assert (tmp_path / "inbox.md").read_text() == "# legacy inbox\n"
+    for rel, _ in _INSTALL_ONLY_TEMPLATES:
+        assert (tmp_path / rel).exists(), rel
 
 
 def test_migrate_legacy_installs_the_kb_lint_hook(tmp_path):

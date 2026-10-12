@@ -110,6 +110,54 @@ def test_fresh_install_asks_and_calls_bootstrap_auto(tmp_path):
     assert ["schedule", "fire-now", "briefing-am"] in calls
 
 
+def test_setup_names_both_budget_caps_it_set(tmp_path):
+    """#229: two caps, one per session and one per day. Setup says which number
+    went where, so a daily budget can't silently stay at the default."""
+    deps, calls = _deps(tmp_path)
+    p = Scripted(["", "", "", "", "", "U0123", "7.50", "20", "n"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert any("$7.50 per session" in s and "$20 per day" in s for s in p.said)
+
+
+def test_blank_daily_budget_names_the_default_it_keeps(tmp_path):
+    """Blank isn't "no daily budget": the budget check falls back to its default."""
+    from scout.scripts.budget_check import DEFAULT_DAILY_BUDGET_USD
+
+    deps, calls = _deps(tmp_path)
+    p = Scripted(["", "", "", "", "", "U0123", "", "", "n"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    default = f"${DEFAULT_DAILY_BUDGET_USD:g}"
+    assert any("Daily budget" in s and f"blank keeps {default}" in s for s in p.said)
+    assert any("$5.00 per session" in s and f"{default} per day (the default)" in s for s in p.said)
+    assert not any(c[0] == "budget" for c in calls)
+
+
+def test_a_failed_budget_set_is_reported_not_dropped(tmp_path):
+    """#229: if writing the daily budget fails, setup says so and how to retry,
+    instead of leaving the user on the default without a word."""
+    deps, calls = _deps(tmp_path, codes={"budget": 1})
+    p = Scripted(["", "", "", "", "", "U0123", "", "20", "n"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert ["budget", "set", "--daily-usd", "20"] in calls
+    said = "\n".join(p.said)
+    assert "couldn't save the daily budget" in said.lower()
+    assert "scoutctl budget set --daily-usd 20" in said
+    assert "$20 per day" not in said
+
+
+def test_budget_flag_help_names_which_cap_it_sets():
+    """#229: `--max-budget` and `--daily-budget` read alike; their help says which
+    is which, and the stated daily default is the one the budget check uses."""
+    from scout.scripts.budget_check import DEFAULT_DAILY_BUDGET_USD
+
+    runner = CliRunner()
+    setup_help = " ".join(runner.invoke(app, ["setup", "--help"], env={"COLUMNS": "400"}).output.split())
+    assert f"Default: ${DEFAULT_DAILY_BUDGET_USD:g}." in setup_help
+    for cmd in ("install", "migrate-legacy", "auto"):  # upgrade reads it from scout-config.yaml
+        out = " ".join(runner.invoke(app, ["bootstrap", cmd, "--help"], env={"COLUMNS": "400"}).output.split())
+        assert "ONE scheduled session" in out and "budget set --daily-usd" in out, cmd
+
+
 def test_toggling_and_a_pinned_timezone(tmp_path):
     deps, calls = _deps(tmp_path)
     # instance, name, email, keep tz? n, zone (bad, then good),
