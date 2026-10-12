@@ -176,3 +176,52 @@ def test_all_shipped_phase_files_parse():
         except Exception as e:  # noqa: BLE001
             failures.append(f"{pf.relative_to(phases_root)}: {type(e).__name__}: {e}")
     assert not failures, "Unparseable phase files:\n" + "\n".join(failures)
+
+
+def test_run_health_phase_parses_with_all_four_modes():
+    phases_root = Path(__file__).parent.parent.parent.parent / "phases"
+    (section,) = parse_phase_file(phases_root / "core" / "01-run-health.md")
+    assert (section.phase, section.name, section.slot) == ("core", "run-health", "run-health")
+    assert set(section.mode) == {"briefing", "consolidation", "dreaming", "research"}
+    assert section.requires is None
+
+
+def test_run_health_wrap_treats_the_cache_as_the_state_before_this_run():
+    """The cache is written at session start, before this run's own ledger row: the wrap must not
+    repeat what this run disproves (a working login, its own lane) and must date the rest."""
+    phases_root = Path(__file__).parent.parent.parent.parent / "phases"
+    (section,) = parse_phase_file(phases_root / "core" / "01-run-health.md")
+    body = section.body
+    assert "Never repeat `auth.expired`" in body
+    assert "`runs.failing`" in body and "`lane.dark:<type>`" in body and "`lane.silent:<type>`" in body
+    assert "this run's own session type" in body
+    assert "Before this run: <summary> — <fix>" in body
+    assert "run-health warnings before this run — first: <summary>" in body
+    assert "N commits in this run's window (newest `abc1234`)" in body
+
+
+@pytest.mark.parametrize("kind", ["SKILL", "DREAMING", "RESEARCH"])
+def test_run_health_is_the_first_section_after_run_modes(kind):
+    """'At the start of the run' only works if the section is read first: right after the
+    run-modes dispatch table in SKILL, and first of all in DREAMING/RESEARCH (no run-modes)."""
+    from scout.scripts.bootstrap import _assemble
+    from tests.unit.test_briefing_mode_layer import _config
+
+    text = _assemble(_config(), kind)
+    headings = [line for line in text.splitlines() if line.startswith("## ")]
+    expected_first = ["## Run Modes", "## Run Health"] if kind == "SKILL" else ["## Run Health"]
+    assert [h.split(" — ")[0] for h in headings[: len(expected_first)]] == expected_first
+    at = text.index("\n## Run Health\n")
+    assert all(text.index(h) > at for h in headings[len(expected_first) :])
+    assert "Final Action" not in text[:at]
+
+
+@pytest.mark.parametrize("kind", ["SKILL", "DREAMING", "RESEARCH"])
+def test_every_assembled_brain_file_carries_the_run_health_phase(kind):
+    from scout.scripts.bootstrap import _assemble
+    from tests.unit.test_briefing_mode_layer import _config
+
+    text = _assemble(_config(), kind)
+    assert "scoutctl health --json" in text
+    assert ".scout-cache/run-health.json" in text
+    assert 'Never write "by this run"' in text

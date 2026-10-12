@@ -63,7 +63,9 @@ Run all of the following data-gathering steps before composing the dashboard out
 git -C "SCOUT_DIR" log --oneline -10
 ```
 
-Collect the 10 most recent commit messages. Identify the most recent commit that mentions "briefing", "consolidation", "dreaming", "research", "work", and "meta-review" respectively (case-insensitive match on the commit message).
+Collect the 10 most recent commit messages for the "Last 10 Runs" listing. Identify the most recent commit that mentions "work" and "meta-review" (case-insensitive match on the commit message): those sessions are interactive and never fire from the scheduler, so git is the only record of them.
+
+The "Last briefing / consolidation / dreaming / research" lines come from `slots[]` in the run-health report (3g) when they can: for each type, take the slot with the newest `last_fire`, and report its `last_fire`, plus its `last_outcome.outcome` and `last_outcome.finished_at` when `last_outcome` is not null. `last_fire` is the newer of the scheduler's dispatch and the last session end, so word it "last ran", never "dispatched". When run health is unavailable (3g), or `slots[]` has no slot of that type, fall back to the most recent commit whose message mentions that type (case-insensitive), as for work sessions.
 
 ### 3b. KB Health
 
@@ -188,41 +190,18 @@ Store both results for rendering in the dashboard below.
 
 ### 3g. Run health
 
-The runners record how every scheduled run ended in `.scout-logs/run-outcomes.jsonl`, outside Claude, so a run that dies at startup (an expired login) still leaves a row. The git log in 3a can't show this: a failed run commits nothing.
+The runners record how every scheduled run ended in `.scout-logs/run-outcomes.jsonl`, and the scheduler records every fire, both outside Claude, so a run that dies at startup (an expired login) still leaves a trace. `scoutctl health` reads both. The git log in 3a can't show this: a failed run commits nothing.
 
 ```bash
-python3 - "$SCOUT_DIR/.scout-logs/run-outcomes.jsonl" <<'EOF'
-import json, sys, time
-rows = []
-try:
-    with open(sys.argv[1], encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
-except OSError:
-    print("RUN_HEALTH_UNAVAILABLE")
-    raise SystemExit(0)
-if not rows:
-    print("RUN_HEALTH_UNAVAILABLE")
-    raise SystemExit(0)
-ok = [r for r in rows if r.get("exit_code") == 0]
-last_ok = max((r.get("finished_at") or 0 for r in ok), default=0)
-streak = 0
-for r in reversed(rows):
-    if r.get("exit_code") == 0:
-        break
-    streak += 1
-print("LAST_OK_DAYS_AGO=" + (str(int((time.time() - last_ok) // 86400)) if last_ok else "never"))
-print(f"FAILED_STREAK={streak}")
-print("NEWEST_CLASS=" + str(rows[-1].get("failure_class") or "unknown"))
-EOF
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/scout-plugin}"
+# Fallback only: a Raven-Scout/Scout monorepo clone at ~/scout-plugin keeps the plugin under plugin/.
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$PLUGIN_ROOT/plugin/.claude-plugin/plugin.json" ]; then PLUGIN_ROOT="$PLUGIN_ROOT/plugin"; fi
+SCOUT_DATA_DIR="$SCOUT_DIR" "$PLUGIN_ROOT/.venv/bin/scoutctl" health --json; echo "exit=$?"
 ```
 
-Store `LAST_OK_DAYS_AGO`, `FAILED_STREAK` and `NEWEST_CLASS`. `RUN_HEALTH_UNAVAILABLE` means the vault predates the ledger or has never run; skip the run-health headline.
+Of the output, the first line is the JSON report and the last line is `exit=N`. Exit codes 0 (green), 1 (yellow) and 2 (red) are all normal. Any other exit code, a first line that is not a JSON report, or a report with `"severity": "unknown"` (a vault the command cannot find) means `RUN_HEALTH_UNAVAILABLE`: skip the run-health headline, and take the per-type last-run lines from the commit-message match instead (3a).
+
+The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each finding has `id`, `severity` (`yellow`, `red` or `note`), `since`, `summary` and `fix`. Ignore `note` findings everywhere: they are informational and never change the headline. Each slot has `key`, `type`, `last_fire` and `last_outcome` (`{outcome, finished_at, failure_class}` or null). Keep the whole report for Step 4.
 
 ---
 
@@ -238,24 +217,26 @@ Present the dashboard as follows. Use clean Markdown with headers and lists. Do 
 ╚══════════════════════════════════════════════════╝
 ```
 
-**Run-health headline (from 3g).** Put this directly under the banner, before anything else. It's the first thing a user whose Scout "went quiet" needs to see.
+**Run-health headline (from 3g).** Put this directly under the banner, before anything else. It's the first thing a user whose Scout "went quiet" needs to see. Pick the worst finding (red before yellow) and render it:
 
-- `NEWEST_CLASS` is `oauth_expired`:
+- A finding with id `auth.expired`:
 
   ```
   ❌ Scout can't run: your Claude login expired.
-     Last successful run: <LAST_OK_DAYS_AGO> days ago (<FAILED_STREAK> failed runs since).
+     <the finding's summary: failed-run count and last success time>
      Fix: open Terminal and run  claude auth login
   ```
 
-- `FAILED_STREAK` ≥ 2 for any other class:
+- Any other red finding:
 
   ```
-  ⚠️  The last <FAILED_STREAK> scheduled runs failed (<NEWEST_CLASS>).
-     Last successful run: <LAST_OK_DAYS_AGO> days ago. Run `scoutctl bootstrap doctor`.
+  ⚠️  <summary>
+     Fix: <fix>
   ```
 
-- Otherwise: `✅ Last successful run: <LAST_OK_DAYS_AGO> days ago` (`today` for 0).
+- Only yellow findings: one line, `⚠️  <N> run-health warnings — first: <summary of the first>`.
+
+- Green (no yellow or red finding; `note` findings don't count): `✅ Last successful run: <last_ok_at as days ago>` (`today` for 0). When `last_ok_at` is null, show `✅ No runs recorded yet` instead.
 
 ### Config
 
@@ -300,15 +281,15 @@ Show the 10 most recent git log entries as a simple list (hash + message):
 Then below the list, highlight:
 
 ```
-  Last briefing:       <commit message and date/time if identifiable>
-  Last consolidation:  <commit message and date/time if identifiable>
-  Last dreaming:       <commit message and date/time if identifiable>
-  Last research:       <commit message and date/time if identifiable>
+  Last briefing:       <last ran date/time> — <outcome> at <finished_at>
+  Last consolidation:  <last ran date/time> — <outcome> at <finished_at>
+  Last dreaming:       <last ran date/time> — <outcome> at <finished_at>
+  Last research:       <last ran date/time> — <outcome> at <finished_at>
   Last work session:   <commit message and date/time if identifiable>
   Last meta-review:    <commit message and date/time if identifiable>
 ```
 
-If a run type hasn't happened yet, show: `(none found)`
+The first four come from `slots[]` (3a, 3g): the newest `last_fire` among the slots of that type. When that slot's `last_outcome` is null, show just `<last ran date/time> — no outcome recorded`. When run health is unavailable or no slot has that type, show the commit-message match instead (`<commit message and date/time>`), as 3a describes. The work-session and meta-review lines come from the git match. If a run type hasn't happened yet (its slot's `last_fire` is null, or nothing matched), show: `(none found)`
 
 ---
 

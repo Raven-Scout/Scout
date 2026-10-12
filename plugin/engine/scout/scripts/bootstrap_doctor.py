@@ -13,6 +13,7 @@ import re
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -335,8 +336,13 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     return warnings
 
 
-def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None) -> DoctorReport:
-    """Run all doctor checks against ``vault``. Pure read."""
+def run_doctor(
+    *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
+) -> DoctorReport:
+    """Run all doctor checks against ``vault``. Pure read.
+
+    ``now`` pins the run-health clock (tests and the contract fixture); default is the real time.
+    """
     errors: list[str] = []
     warnings: list[str] = []
     notes: list[str] = []
@@ -494,7 +500,7 @@ def run_doctor(*, vault: Path, check_jobs: bool = True, home: Path | None = None
     from scout import health
 
     try:
-        run_health: RunHealth | None = health.evaluate(vault)
+        run_health: RunHealth | None = health.evaluate(vault, now=now)
     except Exception as e:  # noqa: BLE001 - a health-evaluator bug must not break the doctor
         run_health = None
         notes.append(f"run health could not be evaluated: {e}")

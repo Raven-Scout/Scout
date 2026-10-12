@@ -58,6 +58,35 @@ struct EngineHealthServiceTests {
         #expect(model.messages.first == "vault directory missing: /x")
     }
 
+    /// Install health green but the runs themselves are failing: the sidebar dot lights.
+    @Test func redRunHealthNeedsAttentionEvenWhenInstallIsGreen() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: """
+        {"severity": "green", "errors": [], "warnings": [],
+         "run_health": {"severity": "red", "evaluated_at": "x", "last_ok_at": null, "findings": [], "slots": []}}
+        """)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(svc.doctor?.severity == .green)
+        #expect(svc.doctor?.runHealth?.severity == .red)
+        #expect(svc.needsAttention)
+    }
+
+    @Test func yellowRunHealthDoesNotNeedAttention() async throws {
+        let layout = try managedHome()
+        defer { try? FileManager.default.removeItem(at: layout.home) }
+        let runner = RuleBasedRunner()
+        runner.on(tool: "scoutctl", prefix: ["bootstrap", "doctor"], stdout: """
+        {"severity": "green", "errors": [], "warnings": [],
+         "run_health": {"severity": "yellow", "evaluated_at": "x", "last_ok_at": null, "findings": [], "slots": []}}
+        """)
+        let svc = EngineHealthService(locator: EngineLocator(layout: layout), runner: runner)
+        await svc.refresh()
+        #expect(!svc.needsAttention)
+    }
+
     @Test func notInstalledSkipsDoctorAndNeedsAttention() async throws {
         let layout = EngineLayout(home: FileManager.default.temporaryDirectory.appendingPathComponent("empty-\(UUID().uuidString)"))
         let runner = RuleBasedRunner()

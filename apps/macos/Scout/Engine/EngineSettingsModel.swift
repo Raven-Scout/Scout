@@ -87,6 +87,29 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         case .red: return "Needs attention"
         }
     }
+
+    /// The "Runs" row (spec §4.3) appears only when the engine reported run health.
+    var showsRuns: Bool { doctor?.runHealth != nil }
+    var runsIsOK: Bool { doctor?.runHealth?.severity == .green }
+    var runsLabel: String {
+        guard let rh = doctor?.runHealth else { return "Unknown" }
+        switch rh.severity {
+        case .green: return "Healthy"
+        case .yellow: return "Warnings"
+        case .red: return "Failing"
+        }
+    }
+    var runsHelp: String {
+        guard let rh = doctor?.runHealth else { return "" }
+        if let f = rh.firstActionable { return f.summary }
+        if let ok = rh.lastOkAt { return "Last successful run \(Self.relative(ok))" }
+        return "No runs recorded yet"
+    }
+    private static func relative(_ iso: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: iso) else { return iso }
+        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    }
+
     var messages: [String] {
         if case .broken(_, let reason) = state { return [reason] }
         if doctorFailed, let lastError { return [lastError] }
