@@ -6,8 +6,13 @@
 
 - [ ] [#OVRD] **Send the vendor survey answers** — the form was due {{wd-10}}; no reply or follow-up since.
   - Refs: [[projects/billing-cleanup/billing-cleanup]]
+- [ ] [#LATE] **Send the gateway capacity numbers** — due {{d-2}}; the next step is Alex's.
+  - Refs: OPS-312 · [[projects/api-gateway/api-gateway]]
 
 ## 🟡 To Do
+
+- [ ] [#PARK] **Renew the design tool seats** — due {{d-25}}; still want this?
+  - Refs: [[projects/docs-refresh/docs-refresh]]
 
 - [ ] [#QUOTA] **Answer the catalog quota question** — Priya needs a yes or no before the launch plan is final.
   - Refs: [[people/priya]] · [[projects/widgets/widgets]]

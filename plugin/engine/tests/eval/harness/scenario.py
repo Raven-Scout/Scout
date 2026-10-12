@@ -8,7 +8,7 @@ fixture vault).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -16,7 +16,7 @@ import yaml
 SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
 KNOWN_CHECKS = {
     "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget",
-    "outage_reported", "no_false_outage", "dropoff_caught",
+    "outage_reported", "no_false_outage", "dropoff_caught", "demotion",
 }  # fmt: skip
 PERSONA_CONNECTORS = {"slack": "slack", "linear": "linear", "calendar": "calendar", "email": "email"}
 
@@ -34,6 +34,7 @@ class Scenario:
     expected_waiting: tuple[str, ...] = ()
     personas_down: tuple[str, ...] = ()
     dropped_tags: tuple[str, ...] = ()
+    expected_demotion: dict[str, str] = field(default_factory=dict)
 
     @property
     def script(self) -> Path:
@@ -65,4 +66,5 @@ def load_scenario(name: str) -> Scenario:
         expected_waiting=tuple(raw.get("expected_waiting") or []),
         personas_down=tuple(raw.get("personas_down") or []),
         dropped_tags=tuple(raw.get("dropped_tags") or []),
+        expected_demotion={str(k): str(v) for k, v in (raw.get("expected_demotion") or {}).items()},
     )

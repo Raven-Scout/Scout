@@ -23,6 +23,7 @@ from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
 from .checks.daily import body_budget, context_note, no_collapse, waiting_format
+from .checks.demotion import demotion
 from .checks.no_drop import no_drop
 from .checks.placement import placement
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
@@ -217,6 +218,7 @@ def _score(
         "body_budget": lambda: body_budget(today_items),
         "outage_reported": lambda: outage_reported(scenario.personas_down, out.wrap, out.run_notes, out.calls),
         "no_false_outage": lambda: no_false_outage(up, out.wrap, out.run_notes),
+        "demotion": lambda: demotion(today_items, yesterday, out.notes, scenario.expected_demotion),
         "dropoff_caught": lambda: dropoff_caught(
             scenario.dropped_tags, today_items, out.wrap, review_added=out.review_added
         ),

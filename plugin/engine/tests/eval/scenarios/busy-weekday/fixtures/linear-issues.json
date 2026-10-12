@@ -59,6 +59,20 @@
       "dueDate": "{{d+60}}",
       "description": "Action required: move every client off the old auth header before the cutover.",
       "url": "https://linear.app/example-org/issue/OPS-311"
+    },
+    {
+      "identifier": "OPS-312",
+      "title": "Send the gateway capacity numbers",
+      "state": {
+        "name": "Todo",
+        "type": "unstarted"
+      },
+      "updatedAt": "{{d-6}}T10:00:00Z",
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": "{{d-2}}",
+      "url": "https://linear.app/example-org/issue/OPS-312"
     }
   ]
 }

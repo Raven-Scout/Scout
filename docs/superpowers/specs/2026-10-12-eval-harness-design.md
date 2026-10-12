@@ -399,6 +399,24 @@ Seeds: a task due 10 working days ago with no new evidence, one due 2 days ago, 
 regression. On main it should fail, and that is the point: #372's PR flips it, and `compare` shows
 the flip. The eval becomes #372's acceptance test.
 
+**As built (slice 6).** #372 landed before this check did, so `demotion` is a normal check. It
+has one `busy-weekday` seed per branch:
+- `OVRD`: `step_down`, 10 working days past due with no news;
+- `LATE`: `hold`, 2 days past due, Alex's move, with its own tracker issue;
+- `PARK`: `park`, stepped down 16 days ago per its seeded context note.
+
+`hold` fails only on what the rule forbids: moving sections, asking "still want this?", or a body
+stating its age. `park` requires the text unchanged, which is literal in the rule.
+
+The recurring-`overdue` seed is left for later.
+
+**First live sample** (2026-10-12, Sonnet, N=1):
+- **`LATE` held** and **`PARK` parked**, both as the rule says.
+- **`OVRD`** stepped down to 🟡 with `due 2026-09-28; still want this?`.
+- **The miss:** its context note paraphrased the required line as "stepped down to 🟡, 14 quiet
+  days with no news" instead of the literal `stepped down, past due with no news`. A later run
+  must find that exact line to park the item, so the check counts the paraphrase as a miss.
+
 ### 7.3 `connector-down` (mode `morning-consolidation`)
 
 `busy-weekday`'s vault with:
