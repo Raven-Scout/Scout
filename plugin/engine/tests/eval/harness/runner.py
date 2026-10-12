@@ -67,7 +67,13 @@ def allowed_tools(vault: Path, servers: set[str]) -> list[str]:
     root = f"/{vault}"  # the "//abs/path" form is absolute (spec §4.3)
     tools = [f"Read({root}/**)", f"Edit({root}/**)", f"Write({root}/**)", "Glob", "Grep", "ToolSearch"]
     tools += [f"Bash({t} *)" for t in _BASH_TOOLS]
-    tools += [f"Bash({vault}/scripts/*)", "Bash(scripts/*)", f"Bash({ENGINE / '.venv' / 'bin' / 'scoutctl'} *)"]
+    tools += [
+        f"Bash({vault}/scripts/*)",
+        "Bash(scripts/*)",
+        "Bash(bash scripts/*)",
+        f"Bash(bash {vault}/scripts/*)",
+        f"Bash({ENGINE / '.venv' / 'bin' / 'scoutctl'} *)",
+    ]
     tools += [f"mcp__{s}" for s in sorted(servers)]
     return tools
 

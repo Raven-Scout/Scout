@@ -166,6 +166,15 @@ It also confirmed the isolation:
 - every GitHub call reached the fake `gh` (the Bash tool kept the stub first on PATH);
 - the Slack wrap DM was captured.
 
+A second sample after the review fixes ran 62 tool calls in 6 minutes, at 1.72. Each sample
+missed a different placement:
+- the first skipped the team-only review request;
+- the second put a PR waiting on a reviewer into 🟡, counting Friday → Monday as two working days.
+
+That seed was moved off the 2-working-day boundary, so it now tests the rule rather than the
+arithmetic. Two samples, two different misses: this is why every claim is a rate over N, never a
+single run.
+
 On a subscription the cost is usage-limit headroom, not money, so the harness counts **sessions
 started** and reports the usage-equivalent figure for scale. An Opus sample is expected to cost
 several times as much.

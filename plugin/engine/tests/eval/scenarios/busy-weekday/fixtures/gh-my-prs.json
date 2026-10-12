@@ -47,7 +47,7 @@
     "state": "OPEN",
     "reviewDecision": "REVIEW_REQUIRED",
     "isDraft": false,
-    "updatedAt": "{{d-1}}T10:00:00Z",
-    "createdAt": "{{wd-1}}T08:30:00Z"
+    "updatedAt": "{{today}}T06:45:00Z",
+    "createdAt": "{{today}}T06:40:00Z"
   }
 ]

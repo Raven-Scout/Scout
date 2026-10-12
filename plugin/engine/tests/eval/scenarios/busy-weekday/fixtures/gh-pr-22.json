@@ -17,7 +17,7 @@
         "login": "lint-bot"
       },
       "state": "APPROVED",
-      "submittedAt": "{{wd-1}}T09:00:00Z"
+      "submittedAt": "{{today}}T06:45:00Z"
     }
   ],
   "reviewDecision": "REVIEW_REQUIRED",
