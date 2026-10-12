@@ -129,9 +129,9 @@ this project spends nothing (§13 Q1). Isolation comes from flags and a scratch 
 | **Init-event guard** | The shim reads the stream's `system/init` event before the first turn. If `mcp_servers` lists anything outside the scenario's stub set, it kills the session and marks the sample `aborted: mcp_leak`. If a CLI release changes how `--strict-mcp-config` behaves, the harness fails closed instead of quietly using real accounts. |
 | `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir. The run log gets only the final result line. |
 | `--model <alias>`; resolved model **recorded** | The CLI resolves aliases (`sonnet` → `claude-sonnet-5` on 2.1.278) and rejected the full id `claude-sonnet-5-5` as unrecognized, so the shim passes an alias. It records the resolved id from the init event plus `claude --version`. `compare` refuses to judge arms whose resolved model or CLI version differ. Default `sonnet`; `--opus` opts in (§13 Q3). |
-| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault and plugin root where the rule syntax allows, `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
+| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
 | `--no-session-persistence`, `--disable-slash-commands` | No transcript lands in any projects dir, and no skill expands by accident. |
-| `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. Slice 3 verifies the CLI enforces it on an OAuth login. If it doesn't, the harness's wall-clock timeout is the brake. |
+| `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. **The CLI enforces it on an OAuth login** (verified, §4.3): the run ends after the turn that crosses it, with result subtype `error_max_budget_usd` and exit 1, so overrun is bounded by one turn. The harness's wall-clock timeout backs it up. |
 | `PATH` = `stubs/` (fake `gh`) + the checkout's `scoutctl` + system | Real `gh` is unreachable. The checkout's `scoutctl` is the one under test. |
 | `SCOUT_USER_TIMEZONE`, `TZ`, `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_CONFIG_GLOBAL=<fixture file>`, `GH_CONFIG_DIR=<temp>` | Same dating and commit identity every time. No global git or `gh` config is read. |
 
@@ -154,10 +154,30 @@ as determinism goes. The remaining variance is the model's, so it is measured, n
 All model-backed tiers run **locally, on demand, on the maintainer's subscription login**. CI runs
 only tier 0, which makes no model call.
 
-Planning numbers for one consolidation sample on the fixture: a ~45k-token SKILL.md and 40–120
-tool calls, taking 3–10 minutes. Slice 3 replaces these with measured ones. On a subscription the
-cost is usage-limit headroom, not money, so the harness counts **sessions started** and reports
-the usage-equivalent `total_cost_usd` for scale.
+**Measured** (slice 3, 2026-10-12): one `busy-weekday` sample (`morning-consolidation`) on Sonnet
+(`claude-sonnet-5`), CLI 2.1.278:
+- 85 tool calls over 86 turns, 7.5 minutes;
+- `total_cost_usd` 1.90 (a usage-equivalent, not money);
+- longest search run 4, no whole read of the big index, no repeated calls, no reads outside the vault;
+- 0 unstubbed connector calls.
+
+It also confirmed the isolation:
+- the init event listed exactly the three stubs, all `connected`;
+- every GitHub call reached the fake `gh` (the Bash tool kept the stub first on PATH);
+- the Slack wrap DM was captured.
+
+A second sample after the review fixes ran 62 tool calls in 6 minutes, at 1.72. Each sample
+missed a different placement:
+- the first skipped the team-only review request;
+- the second put a PR waiting on a reviewer into 🟡, counting Friday → Monday as two working days.
+
+That seed was moved off the 2-working-day boundary, so it now tests the rule rather than the
+arithmetic. Two samples, two different misses: this is why every claim is a rate over N, never a
+single run.
+
+On a subscription the cost is usage-limit headroom, not money, so the harness counts **sessions
+started** and reports the usage-equivalent figure for scale. An Opus sample is expected to cost
+several times as much.
 
 | Tier | Where / when | Model | Default reps | Scenarios | Sessions started | Est. wall time (concurrency 2) |
 |---|---|---|---|---|---|---|
@@ -184,6 +204,8 @@ Each run below used a fresh scratch `CLAUDE_CONFIG_DIR` and the flags `claude -p
 | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, **no** `--strict-mcp-config` | About 40 of the account's claude.ai connectors in `mcp_servers`, several `connected` (Slack, Linear, Gmail, Google Calendar, Google Drive, GitHub). |
 | As the first row, plus `HOME=<temp dir>` | `Not logged in`. HOME can't be isolated. |
 | `--model sonnet` | Resolved to `claude-sonnet-5`. The full id `claude-sonnet-5-5` was rejected as `unrecognized_model`. |
+| `--max-budget-usd 0.001`, a prompt asking for five sequential Bash calls (slice 3) | Stopped after the first turn: result subtype `error_max_budget_usd`, `is_error: true`, exit 1, one tool call made. Enforced on the subscription login. |
+| `--tools Read --allowedTools "Read(//<vault>/**)"` with `dontAsk`, cwd the vault, asked to read one file inside and one outside (slice 3) | The inside read succeeded and the outside read was denied, recorded in `permission_denials`. The single-slash form behaved the same here, but it is relative to the settings source, so the harness uses `//`. Reads inside the cwd may be allowed without any rule, so the rule's effect is "nothing outside the vault". |
 
 ## 5. The fixture vault
 
@@ -538,6 +560,25 @@ makes that answer one command.
 - **R1. Eating the maintainer's subscription.** Mitigated by small defaults, the printed plan,
   the opt-in flags, the base cache and stopping on the first usage limit (§9). CI never calls a
   model.
+- **R2a′. Bash is not confined, and the allowlist cannot make it so.** Read/Edit/Write are scoped
+  to the vault. But allowed commands can still write anywhere or reach the network, and HOME is
+  real, so the maintainer's own vault is reachable:
+  - `python3` runs arbitrary code, and the phases need it;
+  - `sed -i`, `find -delete`, `awk 'system()'` and `git -C <elsewhere>`/`push` can write outside
+    the vault;
+  - a script written in the vault can be run.
+
+  What contains this today:
+  - the stub `gh`, plus a temp `GH_CONFIG_DIR`, with `GH_TOKEN`/`GITHUB_TOKEN` dropped;
+  - only stub MCP servers;
+  - API credentials dropped from the environment, and an `apiKeySource` check in the init guard;
+  - nothing destructive or networked on the list (no `rm`, `mv`, `cp` or `curl`);
+  - the `outside_reads` metric.
+
+  None of that confines a shell. The follow-up is Claude Code's Bash sandbox: writes confined to
+  the sample's directory, network on an allowlist, set through the shim's `--settings`. Until it
+  lands, run evals as you would any agent session you've given shell access, and expect a model
+  that misbehaves to be able to touch your files.
 - **R2. The eval allowlist differs from production's `--permission-mode auto`.** A behaviour that
   depends on a tool outside the list shows up as denials, which are always reported. If denials
   dominate, widen the list. Running `auto` under `--setting-sources ""` is not an option, because
@@ -587,6 +628,5 @@ approved.
 8. **Scope: no.** Briefing and consolidation (SKILL.md) first. DREAMING/RESEARCH and the
    interactive commands stay in slice 8.
 
-**Still open:** none blocking the implementation plan. Slice 3 settles two facts, not decisions:
-whether `--max-budget-usd` is enforced on a subscription login, and whether vault-scoped Read
-rules work in `--allowedTools` (§4.1).
+**Still open:** none. Slice 3 settled the two remaining facts (§4.3): `--max-budget-usd` is
+enforced on a subscription login, and vault-scoped Read rules work in `--allowedTools`.

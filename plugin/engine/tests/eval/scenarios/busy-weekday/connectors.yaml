@@ -1,0 +1,66 @@
+# Scripted connector responses for busy-weekday (tests/eval/harness/stubs/rules.py).
+# Every persona ends in a quiet default, so a query the script didn't foresee reads as
+# "nothing new", never as an outage.
+
+gh:
+  "*":
+    - match: {argv: '^auth status'}
+      respond: {stdout: "github.com\n  ✓ Logged in to github.com account alex-example"}
+    # Per repo first: Alex has no PRs in example-org/api; its open list holds the team-review PR #40.
+    - match: {argv: '^pr list (?=.*--author @me)(?=.*--repo example-org/api\b)'}
+      respond: {stdout: "[]"}
+    - match: {argv: '^pr list .*--repo example-org/api\b'}
+      respond: {stdout: fixtures/gh-api-prs.json}
+    - match: {argv: '^pr list .*--author @me'}
+      respond: {stdout: fixtures/gh-my-prs.json}
+    - match: {argv: '^search prs .*--review-requested @me'}
+      respond: {stdout: fixtures/gh-review-requested.json}
+    - match: {argv: '^search prs .*--involves @me'}
+      respond: {stdout: fixtures/gh-review-requested.json}
+    - match: {argv: '^pr view 12\b'}
+      respond: {stdout: fixtures/gh-pr-12.json}
+    - match: {argv: '^pr view 20\b'}
+      respond: {stdout: fixtures/gh-pr-20.json}
+    - match: {argv: '^pr view 21\b'}
+      respond: {stdout: fixtures/gh-pr-21.json}
+    - match: {argv: '^pr view 22\b'}
+      respond: {stdout: fixtures/gh-pr-22.json}
+    - match: {argv: '^pr view 40\b'}
+      respond: {stdout: fixtures/gh-pr-40.json}
+    - respond: {stdout: "[]"}
+
+slack:
+  slack_read_user_profile:
+    - respond: fixtures/slack-profile.json
+  slack_search_public_and_private:
+    - respond: fixtures/slack-dms.json
+  slack_search_public:
+    - respond: {messages: []}
+  slack_read_thread:
+    - respond: {messages: []}
+  slack_send_message:
+    - capture: wrap
+  "*":
+    - respond: {messages: []}
+
+linear:
+  list_teams:
+    - respond: {teams: [{key: PROJ, name: Platform}, {key: OPS, name: Operations}]}
+  list_issues:
+    - respond: fixtures/linear-issues.json
+  get_issue:
+    - match: {id: PROJ-1207}
+      respond: {identifier: PROJ-1207, state: {name: Done, type: completed}, completedAt: "{{today}}T05:10:00Z"}
+    - respond: {}
+  "*":
+    - respond: {}
+
+calendar:
+  list_calendars:
+    - respond: {calendars: [{id: primary, summary: Alex Example}]}
+  gcal_list_events:
+    - respond: fixtures/calendar-today.json
+  list_events:
+    - respond: fixtures/calendar-today.json
+  "*":
+    - respond: {events: []}

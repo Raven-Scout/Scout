@@ -1,0 +1,31 @@
+{
+  "messages": [
+    {
+      "channel": "D0123456780",
+      "user": "U0123456780",
+      "user_name": "Priya",
+      "ts": "1700000000.000100",
+      "date": "{{today}}T07:40:00Z",
+      "text": "Morning! Still need your call on the per-workspace quota for the catalog. Can we decide today so I can lock the launch plan?",
+      "permalink": "https://acme-co.slack.com/archives/C0123456789/p1700000000000100"
+    },
+    {
+      "channel": "D0123456781",
+      "user": "U0123456789",
+      "user_name": "Alex Example",
+      "ts": "1700000000.000200",
+      "date": "{{wd-1}}T15:00:00Z",
+      "text": "Sam, how did the billing dry run go? Any surprises in the export totals?",
+      "permalink": "https://acme-co.slack.com/archives/C0123456789/p1700000000000200"
+    },
+    {
+      "channel": "D0123456780",
+      "user": "U0123456789",
+      "user_name": "Alex Example",
+      "ts": "1700000000.000300",
+      "date": "{{wd-3}}T10:00:00Z",
+      "text": "Priya, when do you want to restart the docs refresh? I can draft the outline once we pick a date.",
+      "permalink": "https://acme-co.slack.com/archives/C0123456789/p1700000000000300"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "author": {
+    "login": "priya-example"
+  },
+  "headRefName": "docs-auth",
+  "isDraft": false,
+  "state": "OPEN",
+  "reviewRequests": [
+    {
+      "__typename": "Team",
+      "name": "api-reviewers",
+      "slug": "api-reviewers"
+    }
+  ],
+  "latestReviews": [],
+  "reviewDecision": "REVIEW_REQUIRED",
+  "mergeStateStatus": "BLOCKED",
+  "statusCheckRollup": [],
+  "baseRefName": "main",
+  "body": "Docs only."
+}

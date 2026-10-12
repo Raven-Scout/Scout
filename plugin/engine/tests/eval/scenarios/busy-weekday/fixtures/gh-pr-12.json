@@ -1,0 +1,25 @@
+{
+  "author": {
+    "login": "sam-example"
+  },
+  "headRefName": "rate-limits",
+  "isDraft": false,
+  "state": "OPEN",
+  "reviewRequests": [
+    {
+      "__typename": "User",
+      "login": "alex-example"
+    }
+  ],
+  "latestReviews": [],
+  "reviewDecision": "REVIEW_REQUIRED",
+  "mergeStateStatus": "BLOCKED",
+  "statusCheckRollup": [
+    {
+      "name": "test",
+      "conclusion": "SUCCESS"
+    }
+  ],
+  "baseRefName": "main",
+  "body": "Adds per-workspace rate limits to the catalog."
+}

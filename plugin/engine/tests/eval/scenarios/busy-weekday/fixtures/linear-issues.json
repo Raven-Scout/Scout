@@ -1,0 +1,64 @@
+{
+  "issues": [
+    {
+      "identifier": "PROJ-1207",
+      "title": "Write the rollout notes for the widgets launch",
+      "state": {
+        "name": "Done",
+        "type": "completed"
+      },
+      "completedAt": "{{today}}T05:10:00Z",
+      "updatedAt": "{{today}}T05:10:00Z",
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": null,
+      "url": "https://linear.app/example-org/issue/PROJ-1207"
+    },
+    {
+      "identifier": "PROJ-1210",
+      "title": "Plan the catalog analytics dashboard",
+      "state": {
+        "name": "Todo",
+        "type": "unstarted"
+      },
+      "createdAt": "{{today}}T06:00:00Z",
+      "updatedAt": "{{today}}T06:00:00Z",
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": "{{d+40}}",
+      "url": "https://linear.app/example-org/issue/PROJ-1210"
+    },
+    {
+      "identifier": "PROJ-1211",
+      "title": "Write the catalog quota migration",
+      "state": {
+        "name": "Todo",
+        "type": "unstarted"
+      },
+      "createdAt": "{{today}}T06:05:00Z",
+      "updatedAt": "{{today}}T06:05:00Z",
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": "{{d+12}}",
+      "url": "https://linear.app/example-org/issue/PROJ-1211"
+    },
+    {
+      "identifier": "OPS-311",
+      "title": "Deprecation: the old auth header stops working",
+      "state": {
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "updatedAt": "{{d-5}}T09:00:00Z",
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": "{{d+60}}",
+      "description": "Action required: move every client off the old auth header before the cutover.",
+      "url": "https://linear.app/example-org/issue/OPS-311"
+    }
+  ]
+}

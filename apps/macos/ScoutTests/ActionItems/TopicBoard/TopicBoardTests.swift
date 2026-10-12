@@ -280,7 +280,10 @@ struct TopicBoardTests {
         #expect(tags(b.topics[0].steps) == ["KIDA"])
     }
 
-    @Test func actionChipOnlyOnMineLeaves() throws {
+    /// The phase writes `- Action:` only when the title doesn't already say
+    /// the next step, so a step without one gets no chip rather than a
+    /// generic "Your action" on every row.
+    @Test func actionChipOnlyOnMineLeavesThatNameAnAction() throws {
         let b = try board([
             "## 🔴 Urgent",
             "- [ ] [#PRNT] **Parent**",
@@ -295,7 +298,7 @@ struct TopicBoardTests {
         let steps = b.topics.flatMap(\.steps)
         let parent = try #require(steps.first { $0.item.key == "PRNT" })
         #expect(StepRowView.actionLabel(for: parent) == nil)
-        #expect(parent.children.map(StepRowView.actionLabel) == ["Merge", ActionChip.fallback])
+        #expect(parent.children.map(StepRowView.actionLabel) == ["Merge", nil])
         #expect(StepRowView.actionLabel(for: try #require(steps.first { $0.item.key == "WAIT" })) == nil)
     }
 
