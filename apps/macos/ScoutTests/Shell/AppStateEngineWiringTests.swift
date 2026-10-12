@@ -726,7 +726,7 @@ struct AppStateEngineUpgradeTests {
         #expect(EngineUpgradeFailureMemo.load(from: f.defaults) == nil)
     }
 
-    /// #346: a launch upgrade that can't find Claude Code fails before any
+    /// Raven-Scout/Scout#346: a launch upgrade that can't find Claude Code fails before any
     /// step runs. It shows the sheet once and is remembered, so the next
     /// launch doesn't re-open it while Claude Code is still missing —
     /// Settings ▸ Engine's Update still carries it. Once Claude Code is

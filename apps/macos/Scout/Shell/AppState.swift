@@ -575,7 +575,7 @@ final class AppState: ObservableObject {
     /// `bootstrapVault` is not retried automatically (final review I2): the
     /// sheet would re-open on every launch for a failure that needs the
     /// user. Settings ▸ Engine's Finish update / Repair… row carries it.
-    /// The same goes for a launch that couldn't find Claude Code (#346),
+    /// The same goes for a launch that couldn't find Claude Code (Raven-Scout/Scout#346),
     /// until Claude Code is found: then the launch upgrade runs again.
     func runEngineUpgradeIfNeeded() async {
         let unfinished = engineRelease.map { EngineUpgrader(layout: engineLayout, release: $0).hasUnfinishedSwitch(state: engineHealth.state) } ?? false

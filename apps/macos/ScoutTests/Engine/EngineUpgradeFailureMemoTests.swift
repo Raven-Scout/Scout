@@ -24,7 +24,7 @@ struct EngineUpgradeFailureMemoTests {
         #expect(!EngineUpgradeFailureMemo(targetVersion: "0.11.0", failedStep: .buildVenv).suppressesAutoUpgrade(to: "0.11.0"))
     }
 
-    /// #346: Claude Code missing fails before any step, so it is a reason
+    /// Raven-Scout/Scout#346: Claude Code missing fails before any step, so it is a reason
     /// of its own. It holds back only the same target.
     @Test func claudeCodeMissingSuppressesTheSameTarget() {
         let memo = EngineUpgradeFailureMemo.claudeCodeMissing(target: "0.11.0")

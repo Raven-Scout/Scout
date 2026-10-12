@@ -15,7 +15,7 @@ import Foundation
 /// simply tries again.
 ///
 /// A launch upgrade that can't find Claude Code fails before any step runs
-/// (#346). It is remembered as its own reason; the next launch skips it while
+/// (Raven-Scout/Scout#346). It is remembered as its own reason; the next launch skips it while
 /// Claude Code is still missing, and runs once it is found.
 nonisolated struct EngineUpgradeFailureMemo: Equatable, Sendable {
     enum Reason: Equatable, Sendable {
