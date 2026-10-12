@@ -154,10 +154,21 @@ as determinism goes. The remaining variance is the model's, so it is measured, n
 All model-backed tiers run **locally, on demand, on the maintainer's subscription login**. CI runs
 only tier 0, which makes no model call.
 
-Planning numbers for one consolidation sample on the fixture: a ~45k-token SKILL.md and 40–120
-tool calls, taking 3–10 minutes. Slice 3 replaces these with measured ones. On a subscription the
-cost is usage-limit headroom, not money, so the harness counts **sessions started** and reports
-the usage-equivalent `total_cost_usd` for scale.
+**Measured** (slice 3, 2026-10-12): one `busy-weekday` sample (`morning-consolidation`) on Sonnet
+(`claude-sonnet-5`), CLI 2.1.278:
+- 85 tool calls over 86 turns, 7.5 minutes;
+- `total_cost_usd` 1.90 (a usage-equivalent, not money);
+- longest search run 4, no whole read of the big index, no repeated calls, no reads outside the vault;
+- 0 unstubbed connector calls.
+
+It also confirmed the isolation:
+- the init event listed exactly the three stubs, all `connected`;
+- every GitHub call reached the fake `gh` (the Bash tool kept the stub first on PATH);
+- the Slack wrap DM was captured.
+
+On a subscription the cost is usage-limit headroom, not money, so the harness counts **sessions
+started** and reports the usage-equivalent figure for scale. An Opus sample is expected to cost
+several times as much.
 
 | Tier | Where / when | Model | Default reps | Scenarios | Sessions started | Est. wall time (concurrency 2) |
 |---|---|---|---|---|---|---|
@@ -540,6 +551,10 @@ makes that answer one command.
 - **R1. Eating the maintainer's subscription.** Mitigated by small defaults, the printed plan,
   the opt-in flags, the base cache and stopping on the first usage limit (§9). CI never calls a
   model.
+- **R2a′. Bash is not path-confined.** Read/Edit/Write are scoped to the vault, but an allowed
+  shell command (`git`, `sed`, `scoutctl`) can touch any path. The list therefore holds nothing
+  destructive or networked (no `rm`, `mv`, `cp` or `curl`). The first live sample's only denials
+  were missing `echo`/`mkdir` inside compound commands, which the list now has.
 - **R2. The eval allowlist differs from production's `--permission-mode auto`.** A behaviour that
   depends on a tool outside the list shows up as denials, which are always reported. If denials
   dominate, widen the list. Running `auto` under `--setting-sources ""` is not an option, because

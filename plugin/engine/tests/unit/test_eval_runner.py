@@ -162,3 +162,20 @@ def test_cli_run_with_a_fake_claude_prints_the_plan_and_the_report(
     assert "Will start 1 session (busy-weekday ×1) on sonnet" in out
     assert "placement  0/1" in out and "no_drop  1/1" in out
     assert "tool calls  1" in out
+
+
+def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tmp_path: Path) -> None:
+    from tests.eval.harness.runner import allowed_tools
+
+    tools = allowed_tools(tmp_path / "vault", {"claude_ai_Slack"})
+    for needed in (
+        "Bash(echo *)",
+        "Bash(mkdir *)",
+        "Bash(scoutctl *)",
+        "Bash(git *)",
+        "Bash(gh *)",
+        "mcp__claude_ai_Slack",
+    ):
+        assert needed in tools
+    assert f"Read(/{tmp_path / 'vault'}/**)" in tools
+    assert not any(t.startswith(("Bash(rm", "Bash(mv", "Bash(cp", "Bash(curl")) for t in tools)

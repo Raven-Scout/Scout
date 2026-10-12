@@ -31,7 +31,13 @@ from .scenario import Scenario
 DEFAULT_TIMEOUT_S = 1200
 DEFAULT_BUDGET = "3"
 HOOK_GRACE_S = 300  # the runner's own pre- and post-session steps
-_BASH_TOOLS = ("git", "gh", "scoutctl", "date", "python3", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find")
+# The shell steps phases run (the live sample's denials named echo and mkdir). Bash is not
+# path-confined, so nothing destructive or networked is listed: no rm, mv, cp or curl.
+_BASH_TOOLS = (
+    "git", "gh", "scoutctl", "date", "python3", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find",
+    "echo", "printf", "mkdir", "test", "sort", "uniq", "cut", "tr", "jq", "sed", "awk", "diff", "touch",
+    "basename", "dirname", "true",
+)  # fmt: skip
 
 
 class LoginRequired(Exception):
