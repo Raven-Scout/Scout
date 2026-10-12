@@ -1,0 +1,269 @@
+#!/bin/bash
+# scout-lock.sh — the {{INSTANCE_NAME}} session lock, shared by run-scout.sh,
+# run-dreaming.sh and run-research.sh. Sourced, never executed: the functions
+# below run inside the runner's shell (set -euo pipefail).
+#
+# The runner sets, before sourcing:
+#   SCOUT_DIR  LOG_DIR  LOG_FILE  LOCK_FILE  MODE  RUN_START
+#   RUNNER_KIND   scout | dreaming | research
+# and then calls, in order:
+#   scout_lock_acquire          0 = the lock is ours (released on EXIT);
+#                               1 = it stayed busy for the whole wait
+#   scout_redundant_wait_guard  0 = run; 1 = a session of this kind just did
+#                               this run's work, so skip it (#218)
+#   scout_record_skip <outcome> record a deliberate skip in the run ledger
+#
+# Env knobs:
+#   SCOUT_LOCK_WAIT_SECS=1800       how long a busy lock is waited for
+#   SCOUT_LOCK_POLL_SECS=30         how often it is re-tried meanwhile
+#   SCOUT_LOCK_MAX_AGE_SECS=7200    a live holder older than this is wedged
+#   SCOUT_REDUNDANT_WINDOW_MIN=60   how recent a finished run must be to count
+#   SCOUT_REDUNDANT_WAIT=off|warn|enforce
+#                                   off: never look; warn: log, never skip;
+#                                   enforce: skip a waited run of any kind.
+#                                   Default: enforce for dreaming and research,
+#                                   warn for scout (briefing and consolidation
+#                                   are different work).
+
+# scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
+# custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this file
+# follows its protocol (#331):
+#   - The lock is created atomically. noclobber (`set -C`) opens it with
+#     O_EXCL, so a runner never truncates a lock someone else holds.
+#   - A lock is only ever removed for a dead (or reaped) PID, and only under
+#     the O_EXCL <lock>.takeover guard, after re-reading the PID under it.
+#     Everyone removing a lock not their own takes the guard first, and
+#     nobody can create the lock while the old one occupies the path, so a
+#     lock that still reads that PID under the guard is still the old one
+#     when it is removed.
+#   - An empty or unparseable lock is busy, never stale: it is a competitor
+#     between its create and its PID write.
+#   - On exit the lock is removed only while it still holds our PID.
+# Liveness alone is not enough: a holder that is alive but not progressing
+# (host slept mid-run, wedged network call) passes `kill -0` forever and
+# would silently block every subsequent slot. Real sessions finish in
+# minutes, so a holder past LOCK_MAX_AGE_SECS is wedged by definition —
+# reap it and take over, and record the reap in failures.log so the
+# takeover is visible to audit surfaces (not just this run's log).
+LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h ceiling, env-overridable
+LOCK_GUARD="$LOCK_FILE.takeover"
+# A guard older than this was left by a process that died inside the guarded
+# section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
+LOCK_GUARD_ABANDONED_SECS=30
+
+# A busy lock is waited for, not skipped (#218 generation 1): the dispatcher has
+# already stamped the slot as fired, so an immediate skip loses the slot.
+LOCK_WAIT_SECS="${SCOUT_LOCK_WAIT_SECS:-1800}"
+LOCK_POLL_SECS="${SCOUT_LOCK_POLL_SECS:-30}"
+case "$LOCK_WAIT_SECS" in ''|*[!0-9]*) LOCK_WAIT_SECS=1800 ;; esac
+case "$LOCK_POLL_SECS" in ''|*[!0-9]*|0) LOCK_POLL_SECS=30 ;; esac
+
+# Set by scout_lock_acquire: whether the lock was busy when this run first
+# tried it, and for how many seconds it waited.
+SCOUT_LOCK_CONTENDED=0
+SCOUT_LOCK_WAITED=0
+LOCK_PID=""
+
+# A deliberate skip still records how the run ended (#401). Without a row in
+# .scout-logs/run-outcomes.jsonl, `scoutctl health` reads the fired slot as
+# silent (slot.fired_silent) for a run that was skipped on purpose.
+# scripts/run-outcome.sh is an optional vault helper, as at the end of the run.
+scout_record_skip() {
+    local outcome_sh="$SCOUT_DIR/scripts/run-outcome.sh"
+    if [ -x "$outcome_sh" ]; then
+        "$outcome_sh" record "$MODE" 0 "$RUN_START" "$LOG_FILE" "$1" >> "$LOG_FILE" 2>&1 || true
+    fi
+}
+
+_scout_mtime() {
+    # GNU stat first (errors on BSD), BSD stat second; nothing if unknown.
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true
+}
+
+_scout_lock_pid() {
+    # The PID in the lock; nothing if the lock is absent, empty or unparseable.
+    local pid
+    pid=$(tr -d ' \t\r\n' 2>/dev/null < "$LOCK_FILE") || return 0
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) echo "$pid" ;;
+    esac
+}
+
+_scout_pid_alive() {
+    # PID 0 would make kill probe our own process group; it is never a holder.
+    # ps catches a live holder under another uid, which kill -0 can't signal.
+    [ "$1" -gt 0 ] 2>/dev/null && { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
+}
+
+_scout_take_guard() {
+    local mtime
+    if ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null; then
+        return 0
+    fi
+    # Someone else is recovering the lock. Step in only if they died doing it.
+    mtime=$(_scout_mtime "$LOCK_GUARD")
+    case "$mtime" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ $(( $(date +%s) - mtime )) -gt "$LOCK_GUARD_ABANDONED_SECS" ] || return 1
+    rm -f "$LOCK_GUARD"
+    ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null
+}
+
+_scout_release_lock() {
+    # If the lock was reaped and taken over while we ran, it is not ours to remove.
+    if [ "$(_scout_lock_pid)" = "$$" ]; then
+        rm -f "$LOCK_FILE"
+    fi
+}
+
+# One try at the lock: 0 if it is now ours, 1 if someone else holds it.
+_scout_lock_try() {
+    local _lock_attempt lock_mtime lock_age
+    # Two attempts: recover a dead or wedged holder at most once, then retry the
+    # atomic create. Any other conflict means another session holds the lock.
+    for _lock_attempt in 1 2; do
+        if ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
+            return 0
+        fi
+        LOCK_PID=$(_scout_lock_pid)
+        if [ ! -e "$LOCK_FILE" ]; then
+            continue   # the holder released between our create and our read
+        fi
+        if [ -z "$LOCK_PID" ] || [ "$_lock_attempt" = 2 ]; then
+            break
+        fi
+        if _scout_pid_alive "$LOCK_PID"; then
+            # Lock age = seconds since the holder wrote the lock at session start.
+            # Sourced from the lock file's mtime: macOS ps has no `etimes` keyword,
+            # so elapsed-seconds-of-PID is not portable. Unknown age → treat the
+            # holder as fresh.
+            lock_mtime=$(_scout_mtime "$LOCK_FILE")
+            lock_age=""
+            case "$lock_mtime" in
+                ''|*[!0-9]*) ;;
+                *) lock_age=$(( $(date +%s) - lock_mtime )) ;;
+            esac
+            if [ -z "$lock_age" ] || [ "$lock_age" -le "$LOCK_MAX_AGE_SECS" ]; then
+                break
+            fi
+            if ! _scout_take_guard; then
+                break   # another process is already reaping or recovering it
+            fi
+            if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${lock_age}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
+                echo "Reaped wedged session PID $LOCK_PID after ${lock_age}s at $(date)" >> "$LOG_DIR/failures.log"
+                kill -TERM "$LOCK_PID" 2>/dev/null || true
+                sleep 5
+                # KILL before removing the lock: a KILLed holder cannot run its
+                # EXIT trap. Re-read after it: during the grace the holder may
+                # have released its lock and someone else taken the path.
+                kill -KILL "$LOCK_PID" 2>/dev/null || true
+                if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                    rm -f "$LOCK_FILE"
+                fi
+            fi
+            rm -f "$LOCK_GUARD"
+        else
+            # Stale lock file — previous session crashed. Re-read under the guard:
+            # another process that read the same dead PID may have taken over.
+            if ! _scout_take_guard; then
+                break   # another process is already recovering it
+            fi
+            if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                rm -f "$LOCK_FILE"
+            fi
+            rm -f "$LOCK_GUARD"
+        fi
+    done
+    return 1
+}
+
+# Take the lock, waiting up to LOCK_WAIT_SECS for a busy one. Every poll is a
+# full try, so a holder that dies or wedges during the wait is still recovered.
+scout_lock_acquire() {
+    local started elapsed left
+    started=$(date +%s)
+    while ! _scout_lock_try; do
+        elapsed=$(( $(date +%s) - started ))
+        if [ "$elapsed" -ge "$LOCK_WAIT_SECS" ]; then
+            echo "=== Another {{INSTANCE_NAME}} session running (PID ${LOCK_PID:-unknown}) — skipping after a ${elapsed}s wait ===" >> "$LOG_FILE"
+            return 1
+        fi
+        if [ "$SCOUT_LOCK_CONTENDED" = 0 ]; then
+            SCOUT_LOCK_CONTENDED=1
+            echo "=== Another {{INSTANCE_NAME}} session running (PID ${LOCK_PID:-unknown}) — waiting up to ${LOCK_WAIT_SECS}s for the lock ===" >> "$LOG_FILE"
+        fi
+        left=$(( LOCK_WAIT_SECS - elapsed ))
+        if [ "$left" -gt "$LOCK_POLL_SECS" ]; then left="$LOCK_POLL_SECS"; fi
+        sleep "$left"
+    done
+    trap _scout_release_lock EXIT
+    if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
+        SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
+        echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"
+    fi
+    return 0
+}
+
+# The newest ok ledger row of this runner kind that finished in the last
+# SCOUT_REDUNDANT_WINDOW_MIN minutes, as "<finished_at> <slot> <log>", or
+# nothing. Only rows that name their runner count: a row from an older helper
+# could be any kind, and a wrong witness cancels a run that was needed.
+_scout_witness() {
+    local window="${SCOUT_REDUNDANT_WINDOW_MIN:-60}"
+    case "$window" in ''|*[!0-9]*) window=60 ;; esac
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$LOG_DIR/run-outcomes.jsonl" "$RUNNER_KIND" "$(date +%s)" "$window" <<'PY' 2>/dev/null || true
+import json, sys
+ledger, kind, now, window = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+best = None
+try:
+    lines = open(ledger, encoding="utf-8").read().splitlines()
+except OSError:
+    lines = []
+for line in lines:
+    try:
+        row = json.loads(line)
+        finished = int(row["finished_at"])
+        code = int(row.get("exit_code", 1))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        continue
+    if not isinstance(row, dict) or row.get("runner") != kind:
+        continue
+    if row.get("outcome", "ok" if code == 0 else "failed") != "ok" or code != 0:
+        continue
+    if not now - window * 60 <= finished <= now:
+        continue
+    if best is None or finished >= best[0]:
+        best = (finished, str(row.get("slot") or row.get("mode") or "?"), str(row.get("log") or "-"))
+if best:
+    print(*best)
+PY
+}
+
+# #218 generation 2. The witness is looked for on every run, not only after a
+# wait: a run that starts after a same-kind run exits never touches the lock,
+# and is still worth a note. The wait decides the response. A waiter whose
+# witness finished during its wait would redo the holder's work, so it skips;
+# a serial run is sometimes the only reader of the last run's blind spot, so it
+# only logs (#218, second comment).
+scout_redundant_wait_guard() {
+    local policy="${SCOUT_REDUNDANT_WAIT:-}" witness w_finished w_slot w_log ago
+    case "$policy" in
+        off) return 0 ;;
+        warn|enforce) ;;
+        *) case "$RUNNER_KIND" in dreaming|research) policy=enforce ;; *) policy=warn ;; esac ;;
+    esac
+    witness=$(_scout_witness)
+    [ -n "$witness" ] || return 0
+    read -r w_finished w_slot w_log <<<"$witness"
+    ago=$(( $(date +%s) - w_finished ))
+    if [ "$policy" = enforce ] && [ "$SCOUT_LOCK_CONTENDED" = 1 ] && [ "$w_finished" -ge "$RUN_START" ]; then
+        echo "=== Redundant run: a $RUNNER_KIND run (slot $w_slot, log $w_log) finished ok ${ago}s ago, during this run's ${SCOUT_LOCK_WAITED}s lock wait — skipping ===" >> "$LOG_FILE"
+        return 1
+    fi
+    echo "=== Note: a $RUNNER_KIND run (slot $w_slot, log $w_log) finished ok ${ago}s ago — running anyway ===" >> "$LOG_FILE"
+    return 0
+}

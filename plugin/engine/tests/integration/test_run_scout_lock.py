@@ -22,6 +22,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/scout-plugin
 TEMPLATE = REPO_ROOT / "templates" / "run-scout.sh.tmpl"
+TEMPLATES = REPO_ROOT / "templates"
 
 # The reap path is TERM → 5s grace → KILL, so give runs comfortable headroom.
 RUN_TIMEOUT_S = 30
@@ -43,7 +44,18 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     out = scout_dir / "run-scout.sh"
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
+    _render_lock_lib(scout_dir)
     return out
+
+
+def _render_lock_lib(scout_dir: Path) -> None:
+    """scripts/scout-lock.sh, which every runner sources (#218)."""
+    text = (
+        (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8").replace("{{INSTANCE_NAME}}", "Scout")
+    )
+    out = scout_dir / "scripts" / "scout-lock.sh"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
 
 
 def _stub_retry_wrapper(scout_dir: Path) -> Path:
@@ -58,7 +70,9 @@ def _stub_retry_wrapper(scout_dir: Path) -> Path:
 
 
 def _run(script: Path, *, max_age_s: int) -> subprocess.CompletedProcess:
-    env = {**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": str(max_age_s)}
+    # No wait for a busy lock: these tests drive one try at it (the wait is
+    # covered in test_scout_lock.py).
+    env = {**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": str(max_age_s), "SCOUT_LOCK_WAIT_SECS": "0"}
     return subprocess.run(
         [str(script)],
         env=env,

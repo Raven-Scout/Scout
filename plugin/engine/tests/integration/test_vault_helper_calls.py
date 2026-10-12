@@ -79,6 +79,8 @@ def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
     for d in (".scout-logs", ".scout-cache", "scripts", "hooks"):
         (v / d).mkdir(parents=True)
+    # Every runner sources the session lock (#218).
+    _render("scripts/scout-lock.sh.tmpl", v, "scripts/scout-lock.sh")
     return v
 
 

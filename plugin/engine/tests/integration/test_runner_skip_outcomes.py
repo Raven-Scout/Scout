@@ -76,6 +76,7 @@ def vault(tmp_path: Path) -> Path:
     for name in ("osascript", "notify-send"):
         _script(tmp_path / "fakebin" / name, "#!/bin/bash\ncat > /dev/null\n")
     _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
     # The session body must never run on a skip path.
     _script(v / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
     return v
@@ -118,7 +119,8 @@ def _over_budget(vault: Path) -> None:
 def test_a_lock_skip_records_a_skipped_lock_row(vault: Path, runner: str, live_holder: subprocess.Popen) -> None:
     before = int(time.time())
 
-    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT)
+    # No wait: a wait that runs out is the same skip (test_scout_lock.py).
+    result = _run(vault, runner, SCOUT_FORCE_MODE=SLOT, SCOUT_LOCK_WAIT_SECS="0")
 
     assert result.returncode == 0, result.stderr
     assert not (vault / "session-ran").exists()
@@ -179,6 +181,7 @@ def test_a_run_that_was_not_skipped_records_no_skip(vault: Path, runner: str) ->
     assert (vault / "session-ran").exists()
     (row,) = _ledger(vault)
     assert row["outcome"] == "ok"
+    assert row["runner"] == {"run-scout.sh.tmpl": "scout", "run-dreaming.sh.tmpl": "dreaming"}.get(runner, "research")
 
 
 # ----- the health reading of a skip --------------------------------------------
