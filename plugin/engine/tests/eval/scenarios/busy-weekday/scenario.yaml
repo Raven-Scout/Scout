@@ -1,0 +1,24 @@
+# busy-weekday: a morning consolidation with seeds for #371 placement, #372 demotion and the
+# dropoff guard (spec docs/superpowers/specs/2026-10-12-eval-harness-design.md §7.1).
+mode: morning-consolidation
+weekdays_only: true
+personas: [slack, linear, calendar]
+checks: [placement, no_drop]
+
+# Tag (an item in yesterday's file) or ref: (an item this run should create) → allowed sections.
+expected_placement:
+  QUOTA: [🔴, 🟡]                         # Priya asked Alex; still open: Alex's move
+  BILL: [🟢]                               # Alex asked Sam 1 working day ago
+  DOCS: [🟡]                               # Alex asked Priya 3 working days ago, no reply: nudge
+  DEPR: [🟢]                               # "action required", cutover 60 days out
+  OVRD: [🟡]                               # #372: 10 working days past due, no new evidence
+  "ref:example-org/widgets#12": [🔴, 🟡]   # review requested from Alex by name
+  "ref:example-org/widgets#20": [🔴, 🟡]   # Alex's PR, approved and CLEAN: merge it
+  "ref:example-org/widgets#21": [🔴, 🟡]   # Alex's PR, BEHIND
+  "ref:example-org/widgets#22": [🟢]       # Alex's PR, review requested from Sam today (bot approval only)
+  "ref:example-org/api#40": [🟢]           # review requested only via a team, today
+  "ref:PROJ-1210": [🟢]                    # Alex's own task, due in 40 days
+  "ref:PROJ-1211": [🟡]                    # Alex's own task, due in 12 days
+
+# Closed overnight in the tracker: may leave the open list.
+expected_closures: [LCHK]

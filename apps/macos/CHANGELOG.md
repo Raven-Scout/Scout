@@ -6,6 +6,18 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Topics: Done shows the last 7 days** (#389). The window was the calendar
+  week from Monday, so on a Monday it held only today's work. A done item
+  with no `- Completed:` date now takes its day from the `### YYYY-MM-DD`
+  subhead it sits under in Recently Completed, before falling back to the
+  first daily file it showed up ticked in.
+- **Topics: step rows render markdown** (#390). A row's second line showed
+  `**bold**`, backticks and `[[wikilinks]]` as raw text; it now renders them
+  like the List view's cards.
+- **Topics: no generic "Your action" chip** (#391). A Mine step shows the chip
+  only when it has an `- Action:`; the hover bubble still opens the prompt box.
+
 ## [0.17.0] - 2026-10-12
 
 ### Added

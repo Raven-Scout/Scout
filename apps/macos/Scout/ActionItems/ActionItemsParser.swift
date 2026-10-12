@@ -289,6 +289,7 @@ nonisolated extension ActionItemsParser {
         var currentBullets: [String] = []
         var currentTables: [ActionSection.Table] = []
         var currentSubheads: [String] = []
+        var currentSubheadLines: [Int] = []
         var currentEmoji = ""
         var currentTitle = ""
         var currentKind: ActionSection.Kind = .neutral
@@ -383,13 +384,15 @@ nonisolated extension ActionItemsParser {
                     bullets: currentBullets,
                     tables: currentTables,
                     subheads: currentSubheads,
-                    collapsed: currentCollapsed
+                    collapsed: currentCollapsed,
+                    subheadLines: currentSubheadLines
                 ))
             }
             currentTasks = []
             currentBullets = []
             currentTables = []
             currentSubheads = []
+            currentSubheadLines = []
             currentCollapsed = []
             currentEmoji = ""
             currentTitle = ""
@@ -567,6 +570,7 @@ nonisolated extension ActionItemsParser {
                     currentBullets.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
                 } else {
                     currentSubheads.append(String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces))
+                    currentSubheadLines.append(i + 1)
                 }
                 i += 1; continue
             }
