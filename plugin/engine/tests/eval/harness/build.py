@@ -140,7 +140,11 @@ def _refuse_system_side_effects(cmd: list[str]) -> None:
 def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:
     """``scoutctl bootstrap install`` run from another checkout's engine (its phases, runners, scripts)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SCOUT_", "GIT_"))}
-    env.update(SCOUT_DATA_DIR=str(dest), PYTHONPATH=str(checkout.pythonpath))
+    # A throwaway HOME too: with --no-jobs nothing should touch it, and if anything ever does,
+    # it lands here, not in the user's ~/.local/bin or ~/Library/LaunchAgents.
+    install_home = dest.parent / f".{dest.name}-install-home"
+    install_home.mkdir(parents=True, exist_ok=True)
+    env.update(SCOUT_DATA_DIR=str(dest), PYTHONPATH=str(checkout.pythonpath), HOME=str(install_home))
     # -P: the current directory must not shadow PYTHONPATH. --no-jobs and --skip-claude are what
     # keep a fixture install off launchd: without them it replaces the user's real scheduler jobs.
     cmd = [
@@ -160,21 +164,27 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
         )
 
 
+def _refuse_jobs(cfg: BootstrapConfig) -> None:
+    """The in-process install runs with the real HOME in a live eval run (the keychain login
+    needs it), so jobs must be off: they'd replace the user's real scheduler jobs."""
+    assert cfg.skip_jobs and cfg.skip_claude, "fixture install without skip_jobs/skip_claude"
+
+
 def _install_here(dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:
-    install(
-        BootstrapConfig(
-            vault=dest,
-            plugin_root=PLUGIN_ROOT,
-            instance_name="Scout",
-            instance_name_lower="scout",
-            user_name=FIXTURE_USER,
-            user_email=FIXTURE_EMAIL,
-            timezone="UTC",
-            platform="macos",
-            plugin_version=scout.__version__,
-            enabled_connectors=set(connectors),
-            connector_inputs=dict(inputs),
-            skip_jobs=True,
-            skip_claude=True,
-        )
+    cfg = BootstrapConfig(
+        vault=dest,
+        plugin_root=PLUGIN_ROOT,
+        instance_name="Scout",
+        instance_name_lower="scout",
+        user_name=FIXTURE_USER,
+        user_email=FIXTURE_EMAIL,
+        timezone="UTC",
+        platform="macos",
+        plugin_version=scout.__version__,
+        enabled_connectors=set(connectors),
+        connector_inputs=dict(inputs),
+        skip_jobs=True,
+        skip_claude=True,
     )
+    _refuse_jobs(cfg)
+    install(cfg)
