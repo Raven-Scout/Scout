@@ -40,3 +40,6 @@ Package.resolved
 # Moved from plugin/.gitignore when plugin/docs/ merged into docs/ (Task 4,
 # ruling R24) — a per-checkout local artifact, not part of the plugin.
 docs/plans/archive/PLAN-8-RESUME.md
+
+# Eval harness results (plugin/scripts/eval.sh run): local only, never committed
+.eval-results/

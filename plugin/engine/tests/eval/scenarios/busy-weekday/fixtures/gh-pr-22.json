@@ -1,0 +1,35 @@
+{
+  "author": {
+    "login": "alex-example"
+  },
+  "headRefName": "catalog-validation",
+  "isDraft": false,
+  "state": "OPEN",
+  "reviewRequests": [
+    {
+      "__typename": "User",
+      "login": "sam-example"
+    }
+  ],
+  "latestReviews": [
+    {
+      "author": {
+        "login": "lint-bot"
+      },
+      "state": "APPROVED",
+      "submittedAt": "{{wd-1}}T09:00:00Z"
+    }
+  ],
+  "reviewDecision": "REVIEW_REQUIRED",
+  "mergeStateStatus": "BLOCKED",
+  "statusCheckRollup": [
+    {
+      "name": "test",
+      "conclusion": "SUCCESS"
+    }
+  ],
+  "baseRefName": "main",
+  "body": "Validation.",
+  "mergedAt": null,
+  "closedAt": null
+}

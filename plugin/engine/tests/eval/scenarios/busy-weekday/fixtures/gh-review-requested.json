@@ -1,0 +1,28 @@
+[
+  {
+    "number": 12,
+    "title": "Rate limits for the widget catalog",
+    "url": "https://github.com/example-org/widgets/pull/12",
+    "repository": {
+      "nameWithOwner": "example-org/widgets",
+      "name": "widgets"
+    },
+    "author": {
+      "login": "sam-example"
+    },
+    "createdAt": "{{wd-1}}T14:00:00Z"
+  },
+  {
+    "number": 40,
+    "title": "Drop the old auth header from the docs",
+    "url": "https://github.com/example-org/api/pull/40",
+    "repository": {
+      "nameWithOwner": "example-org/api",
+      "name": "api"
+    },
+    "author": {
+      "login": "priya-example"
+    },
+    "createdAt": "{{today}}T06:30:00Z"
+  }
+]

@@ -1,0 +1,53 @@
+[
+  {
+    "number": 20,
+    "title": "Add the catalog quota setting",
+    "url": "https://github.com/example-org/widgets/pull/20",
+    "repository": {
+      "nameWithOwner": "example-org/widgets",
+      "name": "widgets"
+    },
+    "author": {
+      "login": "alex-example"
+    },
+    "state": "OPEN",
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "updatedAt": "{{d-1}}T16:10:00Z",
+    "createdAt": "{{d-3}}T09:00:00Z"
+  },
+  {
+    "number": 21,
+    "title": "Rename the widget events",
+    "url": "https://github.com/example-org/widgets/pull/21",
+    "repository": {
+      "nameWithOwner": "example-org/widgets",
+      "name": "widgets"
+    },
+    "author": {
+      "login": "alex-example"
+    },
+    "state": "OPEN",
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "updatedAt": "{{d-1}}T11:00:00Z",
+    "createdAt": "{{d-4}}T09:00:00Z"
+  },
+  {
+    "number": 22,
+    "title": "Tighten the catalog validation",
+    "url": "https://github.com/example-org/widgets/pull/22",
+    "repository": {
+      "nameWithOwner": "example-org/widgets",
+      "name": "widgets"
+    },
+    "author": {
+      "login": "alex-example"
+    },
+    "state": "OPEN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "isDraft": false,
+    "updatedAt": "{{d-1}}T10:00:00Z",
+    "createdAt": "{{wd-1}}T08:30:00Z"
+  }
+]
