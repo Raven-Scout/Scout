@@ -27,6 +27,7 @@ from scout.scripts.bootstrap import (
 )
 from scout.scripts.bootstrap_doctor import DoctorReport
 from scout.scripts.bootstrap_lock import LockBusyError
+from scout.scripts.install_cron import CrontabApplyError
 
 RESULT_SCHEMA_VERSION = 1
 
@@ -150,9 +151,10 @@ def run(cfg: BootstrapConfig, *, plan: Plan | None = None, dry_run: bool = False
     Exit codes: the doctor's 0/1/2 after a run; 2 when refused; 0 for dry-run.
     FileExistsError / FileNotFoundError / LockBusyError are the entrypoints'
     pre-flight refusals (vault state, lock contention), raised before any
-    stage runs, so they report ``mutated: false``; a RuntimeError or any other
-    OSError is treated as a stage failing partway, so ``mutated: true``. Any
-    other exception type propagates (exit 70).
+    stage runs, so they report ``mutated: false``; a RuntimeError, any other
+    OSError or a CrontabApplyError (Linux jobs stage) is treated as a stage
+    failing partway, so ``mutated: true``. Any other exception type propagates
+    (exit 70).
     """
     if plan is None:
         plan = detect(cfg.vault)
@@ -172,6 +174,6 @@ def run(cfg: BootstrapConfig, *, plan: Plan | None = None, dry_run: bool = False
         # Before RuntimeError/OSError: FileExistsError and FileNotFoundError
         # are OSError subclasses.
         return result_dict(action=AutoAction.REFUSED, result=None, error=str(e), **common), 2
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, CrontabApplyError) as e:
         return result_dict(action=AutoAction.REFUSED, result=None, error=str(e), mutated=True, **common), 2
     return result_dict(action=plan.action, result=res, **common), res.doctor.exit_code
