@@ -2,8 +2,9 @@ import SwiftUI
 
 /// Inbox, Loose ends and Done, side by side under the topics.
 struct BoardSideListsView: View {
-    let inbox: [SideEntry]
-    let looseEnds: [SideEntry]
+    /// `nil` hides the column: the daily file has no such section.
+    let inbox: [SideEntry]?
+    let looseEnds: [SideEntry]?
     let done: [DoneEntry]
     @Binding var doneRange: DoneRange
     /// `nil` hides the × (the engine can't record a dismissal).
@@ -11,8 +12,12 @@ struct BoardSideListsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
-            entries("Inbox", inbox)
-            entries("Loose ends", looseEnds)
+            if let inbox {
+                entries("Inbox", inbox)
+            }
+            if let looseEnds {
+                entries("Loose ends", looseEnds)
+            }
             SideListView(isEmpty: done.isEmpty) {
                 HStack(spacing: 4) {
                     Text("Done")

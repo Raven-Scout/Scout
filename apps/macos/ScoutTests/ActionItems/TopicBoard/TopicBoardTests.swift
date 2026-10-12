@@ -44,7 +44,7 @@ struct TopicBoardTests {
         ])
     }
 
-    @Test func groupsByTopicFieldThenRootSessionThenOther() throws {
+    @Test func groupsByTopicFieldThenRootSessionElseStandsAlone() throws {
         let b = try board([
             "## 🔴 Urgent",
             "- [ ] [#AAAA] **By field**",
@@ -53,9 +53,41 @@ struct TopicBoardTests {
             "  - Session: https://claude.ai/code/session_0123",
             "- [ ] [#CCCC] **Loose**",
         ], topics: [reattach])
-        #expect(b.topics.map(\.key) == ["STRM", TopicBoard.otherKey])
-        #expect(b.topics.map(\.title) == ["Make stream reattach survive a restart", "Other"])
+        #expect(b.topics.map(\.key) == ["STRM", TopicBoard.standaloneKey("CCCC")])
+        #expect(b.topics.map(\.isStandalone) == [false, true])
         #expect(tags(b.topics[0].steps) == ["AAAA", "BBBB"])
+        #expect(tags(b.topics[1].steps) == ["CCCC"])
+        #expect(b.hasTopicGroups)
+    }
+
+    /// A task without a topic is its own row on the board, ordered among the
+    /// topics by priority, the way the reference board falls back to the
+    /// task's own tag, instead of one "Other" group holding everything.
+    @Test func tasksWithoutATopicStandAloneInPriorityOrder() throws {
+        let b = try board([
+            "## 🔴 Urgent",
+            "- [ ] [#AAAA] **No ticket, no topic**",
+            "- [ ] [#BBBB] **In a topic, no ticket**",
+            "  - Topic: #STRM",
+            "- [ ] [#CCCC] **Ticket, no topic** — PROJ-2",
+            "  - Priority: 1",
+            "- [ ] [#DDDD] **Blocked by the loose one**",
+            "  - Depends: #AAAA",
+        ], topics: [reattach])
+        #expect(b.topics.map(\.key) == [
+            TopicBoard.standaloneKey("CCCC"), "STRM", TopicBoard.standaloneKey("AAAA"),
+        ])
+        let loose = try #require(b.topics.last)
+        #expect(tags(loose.steps) == ["AAAA"])
+        #expect(tags(loose.steps[0].blocked) == ["DDDD"])
+    }
+
+    /// No task names a topic yet (a vault whose runs haven't written the
+    /// board fields): every row stands alone and the view says why.
+    @Test func boardWithoutTopicsSaysSo() throws {
+        let b = try board(["## 🔴 Urgent", "- [ ] [#AAAA] **One**", "- [ ] [#BBBB] **Two**"])
+        #expect(b.topics.map(\.isStandalone) == [true, true])
+        #expect(!b.hasTopicGroups)
     }
 
     @Test func blockedStepsNestUnderTheirBlocker() throws {
@@ -133,7 +165,7 @@ struct TopicBoardTests {
             "- [ ] [#EEEE] **Slack thread** — see acme-co.slack.com/archives/C0123456789/p1700000000000000",
             "  - Topic: #STRM",
         ], topics: [reattach])
-        #expect(b.topics.map(\.key) == ["QBLK", "STRM", TopicBoard.otherKey])
+        #expect(b.topics.map(\.key) == ["QBLK", "STRM", TopicBoard.standaloneKey("AAAA")])
         #expect(tags(b.topics[0].steps) == ["CCCC", "DDDD", "BBBB"])
     }
 
@@ -189,7 +221,7 @@ struct TopicBoardTests {
             "  - Depends: #CCCC",
         ])
         #expect(allKeys(b).sorted() == ["AAAA", "BBBB", "CCCC"])
-        #expect(tags(b.topics[0].steps) == ["AAAA", "CCCC"])
+        #expect(tags(b.topics.flatMap(\.steps)) == ["AAAA", "CCCC"])
     }
 
     @Test func blockedOnHeldWorkIsTopLevelOnly() throws {

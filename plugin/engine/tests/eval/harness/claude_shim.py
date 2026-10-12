@@ -135,6 +135,13 @@ def _abort(result_dir: Path, why: dict[str, Any]) -> None:
     (result_dir / "aborted.json").write_text(json.dumps(why), encoding="utf-8")
 
 
+def _kill_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:  # already gone (ProcessLookupError), or a reaped group (PermissionError)
+        pass
+
+
 def run(runner_argv: list[str], env: dict[str, str]) -> int:
     missing = [k for k in REQUIRED_ENV if not env.get(k)]
     if missing:
@@ -158,6 +165,21 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         CLAUDE_SECURESTORAGE_CONFIG_DIR="",
         CLAUDE_CODE_TMPDIR=str(result_dir / "tmp"),  # TMPDIR for Bash: the default, /tmp/claude, is shared
     )
+    # claude runs in a process group of its own (so the guard and the timeout can kill it with its
+    # MCP stubs), which means signalling the runner's group never reaches it. Whoever stops this
+    # shim, the runner on an overrun or Ctrl-C, must take claude down with it, including when the
+    # signal lands before claude has been started.
+    started: list[subprocess.Popen[str]] = []
+    terminated = threading.Event()
+
+    def _on_terminate(signum: int, _frame: object) -> None:
+        terminated.set()
+        for child in started:
+            _kill_group(child.pid)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _on_terminate)
+    signal.signal(signal.SIGINT, _on_terminate)
     with (result_dir / "claude.stderr").open("w", encoding="utf-8") as err:
         proc = subprocess.Popen(
             cmd,
@@ -168,15 +190,16 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
             text=True,
             start_new_session=True,
         )
-    # claude leads a process group of its own; the runner reads this to kill it on an overrun.
+    started.append(proc)
+    if terminated.is_set():  # the signal arrived while claude was being started
+        _kill_group(proc.pid)
+        return 128 + signal.SIGTERM
+    # The runner's backstop if this shim is killed outright (SIGKILL can't be handled).
     (result_dir / "claude.pgid").write_text(str(proc.pid), encoding="utf-8")
     timed_out = threading.Event()
 
     def _kill() -> None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:  # already gone (ProcessLookupError), or a reaped group (PermissionError)
-            pass
+        _kill_group(proc.pid)
 
     def _on_timeout() -> None:
         timed_out.set()

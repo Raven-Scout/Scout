@@ -42,11 +42,25 @@ _BASH_TOOLS = (
 )  # fmt: skip
 
 
-def _kill_group(pid: int) -> None:
+TERM_GRACE_S = 10  # how long the runner's group gets to stop (the shim kills claude) before SIGKILL
+
+
+def _kill_group(pid: int, sig: int = signal.SIGKILL) -> None:
     try:
-        os.killpg(pid, signal.SIGKILL)
+        os.killpg(pid, sig)
     except OSError:
         pass
+
+
+def _stop_runner(proc: subprocess.Popen[bytes]) -> None:
+    """SIGTERM first: the shim's handler takes claude's own process group down with it.
+    SIGKILL only if the group doesn't stop; the claude.pgid backstop covers that case."""
+    _kill_group(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=TERM_GRACE_S)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc.pid)
+        proc.wait()
 
 
 class LoginRequired(Exception):
@@ -197,10 +211,9 @@ def run_sample(
             runner_exit: int | None = proc.wait(timeout=timeout_s + hook_grace_s)
         except subprocess.TimeoutExpired:
             runner_timed_out, runner_exit = True, None
-            _kill_group(proc.pid)
-            proc.wait()
+            _stop_runner(proc)
         except BaseException:  # Ctrl-C: take the session down with the command
-            _kill_group(proc.pid)
+            _stop_runner(proc)
             raise
     _kill_group(proc.pid)
     pgid = result_dir / "claude.pgid"  # the shim runs claude in a group of its own

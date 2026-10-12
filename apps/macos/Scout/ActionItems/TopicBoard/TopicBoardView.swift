@@ -44,21 +44,30 @@ struct TopicBoardView: View {
                         .font(DS.sans(13))
                         .foregroundStyle(DS.Ink.p3)
                         .padding(14)
+                } else if !board.hasTopicGroups {
+                    Text(Self.noTopicsHint)
+                        .font(DS.sans(12))
+                        .foregroundStyle(DS.Ink.p3)
                 }
                 ForEach(board.topics) { topic in
-                    TopicSectionView(
-                        topic: topic,
-                        scoutDirectory: scoutDirectory,
-                        expanded: isOpen(topic.key),
-                        onRename: renameAction(for: topic)
-                    )
+                    if topic.isStandalone, let step = topic.steps.first {
+                        StepRowView(step: step, topic: nil, scoutDirectory: scoutDirectory)
+                            .boardCard()
+                    } else {
+                        TopicSectionView(
+                            topic: topic,
+                            scoutDirectory: scoutDirectory,
+                            expanded: isOpen(topic.key),
+                            onRename: renameAction(for: topic)
+                        )
+                    }
                 }
                 if !board.onHold.isEmpty {
                     HoldGroupView(steps: board.onHold, scoutDirectory: scoutDirectory, expanded: isOpen(Self.holdKey))
                 }
                 BoardSideListsView(
-                    inbox: SideEntry.entries(inSectionTitled: "Inbox", of: sections, dismissed: dismissed),
-                    looseEnds: SideEntry.entries(inSectionTitled: "Loose ends", of: sections, dismissed: dismissed),
+                    inbox: sideEntries("Inbox"),
+                    looseEnds: sideEntries("Loose ends"),
                     done: DoneEntry.entries(sections: sections, doneDates: doneDates, range: doneRange, today: .now),
                     doneRange: $doneRange,
                     onDismiss: dismissAction
@@ -78,6 +87,15 @@ struct TopicBoardView: View {
             doneDates = await Task.detached { DoneHistory.load(from: directory, upTo: day) }.value
             canWrite = await writerBox.boardWriter.supportsBoardWrites()
         }
+    }
+
+    static let noTopicsHint = "No topics yet, so each task stands on its own. Scout's runs group tasks into topics as they work out which workstream each belongs to."
+
+    /// A side list's open entries, or `nil` when the daily file has no such
+    /// section, so the board doesn't show an empty column runs never fill.
+    private func sideEntries(_ title: String) -> [SideEntry]? {
+        guard SideEntry.hasSection(titled: title, in: sections) else { return nil }
+        return SideEntry.entries(inSectionTitled: title, of: sections, dismissed: dismissed)
     }
 
     /// Forgets open rows that are no longer on today's board. Past days are

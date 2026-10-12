@@ -193,7 +193,7 @@ def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tm
     assert not any(t.startswith(("Bash(rm", "Bash(mv", "Bash(cp", "Bash(curl")) for t in tools)
 
 
-def _gone(pid: int, wait_s: float = 5.0) -> bool:
+def _gone(pid: int, wait_s: float = 10.0) -> bool:
     """True once ``pid`` no longer runs. A killed child whose parent died too can linger
     as a zombie until something reaps it (common on Linux CI), and kill(pid, 0) still
     succeeds on a zombie, so a zombie counts as gone."""
@@ -270,15 +270,17 @@ def test_a_runner_that_overruns_is_killed_with_its_session_and_not_scored(
     tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
-    monkeypatch.setenv("EVAL_FAKE_SLEEP", "60")
+    monkeypatch.setenv("EVAL_FAKE_SLEEP", "120")
     monkeypatch.setenv("EVAL_FAKE_PIDFILE", str(tmp_path / "fake.pid"))
     result = run_sample(
         busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path)),
-        timeout_s=60, hook_grace_s=-50,
+        timeout_s=60, hook_grace_s=-30,  # a 30 s runner budget: slow CI pre-hooks finish first
     )  # fmt: skip
     assert result.aborted is not None and result.aborted["reason"] == "runner_timeout"
     assert result.checks == ()
-    pid = int((tmp_path / "fake.pid").read_text())
+    pid_file = tmp_path / "fake.pid"
+    assert pid_file.exists(), "the session never started inside the runner budget; see runner.log"
+    pid = int(pid_file.read_text())
     assert _gone(pid), f"the session process {pid} outlived the runner timeout"
 
 

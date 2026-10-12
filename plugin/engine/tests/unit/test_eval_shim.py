@@ -236,3 +236,47 @@ def test_a_child_that_dies_before_reading_the_prompt_does_not_hang_the_shim(tmp_
     proc, _ = _run(tmp_path, [], timeout="30", argv=argv, fake_source="#!/bin/bash\nexit 1\n")
     assert time.monotonic() - start < 15
     assert proc.returncode != 0
+
+
+def test_terminating_the_shim_takes_its_claude_session_down(tmp_path: Path) -> None:
+    """The runner stops an overrunning sample by signalling the shim's group. claude runs in a
+    group of its own, so the shim must kill it on SIGTERM, or it outlives the run."""
+    import signal
+    import time
+
+    fake = tmp_path / "fake-claude"
+    fake.write_text(FAKE_CLAUDE)
+    fake.chmod(0o755)
+    (tmp_path / "stream.in").write_text(_init(["claude_ai_Slack"]) + "\n")
+    env = {
+        **os.environ,
+        "SCOUT_EVAL_RESULT_DIR": str(tmp_path / "result"),
+        "SCOUT_EVAL_REAL_CLAUDE": str(fake),
+        "SCOUT_EVAL_MCP_CONFIG": str(tmp_path / "mcp.json"),
+        "SCOUT_EVAL_ALLOWED_SERVERS": "claude_ai_Slack",
+        "SCOUT_EVAL_ALLOWED_TOOLS": "Read",
+        "SCOUT_EVAL_MODEL": "sonnet",
+        "SCOUT_EVAL_TIMEOUT_S": "120",
+        "SCOUT_EVAL_PYTHON": sys.executable,
+        "SCOUT_EVAL_ENGINE": str(ENGINE),
+        "FAKE_ARGV": str(tmp_path / "argv.json"),
+        "FAKE_STREAM": str(tmp_path / "stream.in"),
+        "FAKE_SLEEP": "120",
+    }
+    shim = subprocess.Popen([str(SHIM), *RUNNER_ARGV], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pgid_file, started = tmp_path / "result" / "claude.pgid", tmp_path / "argv.json"
+    deadline = time.monotonic() + 30
+    while not (pgid_file.exists() and started.exists()) and time.monotonic() < deadline:
+        time.sleep(0.05)  # the fake writes argv.json once it is running and has read its prompt
+    claude_pid = int(pgid_file.read_text())
+    shim.send_signal(signal.SIGTERM)
+    shim.wait(timeout=30)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(claude_pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.killpg(claude_pid, signal.SIGKILL)
+    raise AssertionError(f"claude ({claude_pid}) outlived its terminated shim")

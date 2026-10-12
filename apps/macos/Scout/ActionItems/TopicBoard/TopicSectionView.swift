@@ -39,9 +39,7 @@ struct TopicSectionView: View {
                 }
             }
         }
-        .background(RoundedRectangle(cornerRadius: 10).fill(DS.Paper.raised))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .boardCard()
     }
 
     private func header(hovered: Bool) -> some View {
@@ -76,5 +74,14 @@ struct TopicSectionView: View {
                 Text(summary)
             }
         }
+    }
+}
+
+extension View {
+    /// The raised, outlined card a topic or a standalone step sits on.
+    func boardCard() -> some View {
+        background(RoundedRectangle(cornerRadius: 10).fill(DS.Paper.raised))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
