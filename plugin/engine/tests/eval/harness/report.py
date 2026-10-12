@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from statistics import median
+from typing import TYPE_CHECKING
 
 from .metrics import SampleMetrics, longest_search_run, outside_reads, repeated_calls, whole_reads
 from .runner import SampleResult
+
+if TYPE_CHECKING:
+    from .verdicts import Comparison
 from .runner_env import ENGINE
 
 PLUGIN_ROOT = str(ENGINE.parent)
@@ -58,4 +62,30 @@ def summarize(results: Sequence[SampleResult]) -> str:
             for c in failing:
                 for detail in c.details:
                     lines.append(f"    {c.name}: {detail}")
+    return "\n".join(lines)
+
+
+def format_comparison(cmp: Comparison, base: Sequence[SampleResult], head: Sequence[SampleResult]) -> str:
+    """The table `eval.sh compare` prints: per check, then per metric, then where the samples are."""
+    lines = []
+    if cmp.blocked:
+        lines.append(f"NO VERDICT: {cmp.blocked}")
+    lines.append(f"{'check':<14}{'base':>8}{'head':>8}  verdict")
+    for r in cmp.checks:
+        note = f"  ({r.unevaluated} could not evaluate)" if r.unevaluated else ""
+        lines.append(f"{r.name:<14}{f'{r.base_pass}/{r.base_n}':>8}{f'{r.head_pass}/{r.head_n}':>8}  {r.verdict}{note}")
+    lines.append("")
+    lines.append(f"{'metric (median [min–max])':<36}{'base':>18}{'head':>18}")
+    for m in cmp.metrics:
+        b = f"{_fmt(m.base[0])} [{_fmt(m.base[1])}–{_fmt(m.base[2])}]"
+        h = f"{_fmt(m.head[0])} [{_fmt(m.head[1])}–{_fmt(m.head[2])}]"
+        lines.append(f"{m.label:<36}{b:>18}{h:>18}{'  WORSE' if m.worse else ''}")
+    lines.append("")
+    for arm, samples in (("base", base), ("head", head)):
+        for s in samples:
+            state = f"aborted: {s.aborted.get('reason')}" if s.aborted else "scored"
+            lines.append(f"{arm} sample {s.rep} ({state}, {s.meta.get('started_at', '?')})  {s.result_dir}")
+    if cmp.regressions:
+        lines.append("")
+        lines.append(f"REGRESSION: {', '.join(cmp.regressions)}")
     return "\n".join(lines)

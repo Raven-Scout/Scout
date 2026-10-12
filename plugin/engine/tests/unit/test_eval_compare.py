@@ -124,8 +124,11 @@ def test_a_base_install_never_installs_launchd_jobs(tmp_path: Path, monkeypatch:
 
     seen: list[list[str]] = []
 
+    envs: list[dict[str, str]] = []
+
     def fake_run(cmd, **kwargs):
         seen.append(cmd)
+        envs.append(kwargs["env"])
         (tmp_path / "v").mkdir(exist_ok=True)
         (tmp_path / "v" / "SKILL.md").write_text("x")
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -136,6 +139,7 @@ def test_a_base_install_never_installs_launchd_jobs(tmp_path: Path, monkeypatch:
         ("user_slack_id", "github_username", "github_repos", "claude_bin", "max_budget"), "x"))  # fmt: skip
     [cmd] = seen
     assert "--no-jobs" in cmd and "--skip-claude" in cmd
+    assert Path(envs[0]["HOME"]).is_relative_to(tmp_path), "the install must run with a throwaway HOME"
 
 
 def test_the_install_guard_refuses_a_command_without_no_jobs() -> None:
@@ -143,3 +147,68 @@ def test_the_install_guard_refuses_a_command_without_no_jobs() -> None:
 
     with pytest.raises(AssertionError, match="--no-jobs"):
         build._refuse_system_side_effects(["python", "-m", "scout", "bootstrap", "install", "--skip-claude"])
+
+
+def test_the_in_process_install_refuses_jobs() -> None:
+    import tests.eval.harness.build as build
+
+    cfg = build.BootstrapConfig(
+        vault=Path("/x"), plugin_root=Path("/p"), instance_name="S", instance_name_lower="s", user_name="A",
+        user_email="a@example.com", timezone="UTC", platform="macos", plugin_version="0", enabled_connectors=set(),
+        connector_inputs={}, skip_jobs=False, skip_claude=True,
+    )  # fmt: skip
+    with pytest.raises(AssertionError, match="skip_jobs"):
+        build._refuse_jobs(cfg)
+
+
+@pytest.fixture
+def cache_root(tmp_path: Path):
+    root = tmp_path / "cache"
+    yield root
+    for wt in (root / "checkouts").glob("*"):
+        subprocess.run(["git", "-C", str(PLUGIN_ROOT.parent), "worktree", "remove", "--force", str(wt)], check=False)
+
+
+def _compare(fake: Path, cache_root: Path, tmp_path: Path, *extra: str) -> int:
+    from tests.eval.harness.cli import main
+
+    return main(
+        ["compare", "busy-weekday", "--base", "HEAD", "--yes", "--today", "2026-10-12", "--claude", str(fake),
+         "--cli-version", "9.9.9", "--cache", str(cache_root), "--results", str(tmp_path / "results"), *extra]
+    )  # fmt: skip
+
+
+def _cached(cache_root: Path) -> list[Path]:
+    return sorted(p for p in (cache_root / "baselines").glob("*/*") if p.is_dir())
+
+
+def test_compare_runs_both_arms_then_reuses_the_cached_base(
+    tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _compare(fake, cache_root, tmp_path, "--reps", "1") == 0
+    out = capsys.readouterr().out
+    assert "Will start 2 sessions (head busy-weekday ×1, base busy-weekday ×1) on sonnet" in out
+    assert "placement" in out and "need N≥2" in out
+    assert len(_cached(cache_root)) == 1
+
+    assert _compare(fake, cache_root, tmp_path, "--reps", "1") == 0
+    out = capsys.readouterr().out
+    assert "Will start 1 session (head busy-weekday ×1) on sonnet" in out
+    assert "1 cached base sample" in out
+    assert len(_cached(cache_root)) == 1
+
+    assert _compare(fake, cache_root, tmp_path, "--reps", "1", "--fresh-base") == 0
+    assert "Will start 2 sessions" in capsys.readouterr().out
+    assert len(_cached(cache_root)) == 2
+
+
+def test_compare_refuses_an_unknown_base_and_a_big_plan(
+    tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.eval.harness.cli import main
+
+    assert main(["compare", "busy-weekday", "--base", "no-such-ref-xyz", "--yes", "--cache", str(cache_root),
+                 "--claude", str(fake), "--cli-version", "9"]) == 2  # fmt: skip
+    assert "no-such-ref-xyz" in capsys.readouterr().err
+    assert _compare(fake, cache_root, tmp_path, "--reps", "6") == 2
+    assert "--many" in capsys.readouterr().err
