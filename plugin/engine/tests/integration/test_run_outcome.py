@@ -268,14 +268,19 @@ def test_a_row_without_a_readable_reset_has_no_resets_at(
     assert "resets_at" not in _ledger(vault)[-1]
 
 
-def test_a_failing_engine_leaves_resets_at_out(vault: Path, calls: Path) -> None:
+def test_a_failing_engine_leaves_resets_at_out(vault: Path, calls: Path, notifier: tuple[Path, Path]) -> None:
     stub = _script(vault / "bin" / "scoutctl", SCOUTCTL_STUB.format(calls=str(calls), exit_code=1))
     script = _install(vault, scoutctl=stub)
 
-    _record(script, "dreaming-nightly", 1, _log(vault, "You've hit your session limit · resets 3pm\n"))
+    # The failing engine fails `health notify` too, so the desktop floor fires:
+    # into the fake notifier, never a real one.
+    _record(
+        script, "dreaming-nightly", 1, _log(vault, "You've hit your session limit · resets 3pm\n"), **_env(notifier[0])
+    )
 
     row = _ledger(vault)[-1]
     assert row["failure_class"] == "rate_limited" and "resets_at" not in row
+    assert len(_notifications(notifier[1])) == 1
 
 
 # ---------- the notifier ----------
