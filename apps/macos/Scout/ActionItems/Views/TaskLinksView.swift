@@ -5,6 +5,7 @@ import AppKit
 /// Editorial style: boxed chip with tinted icon + label + subtle arrow.
 struct TaskLinksView: View {
     let links: [TaskDeepLink]
+    @Environment(\.openKBNote) private var openKBNote
 
     /// Only links with an external URL open here; in-app refs (cross-refs) and
     /// plain tokens surface as chips in the collapsed header, not this list.
@@ -16,7 +17,16 @@ struct TaskLinksView: View {
         } else {
             HStack(spacing: 6) {
                 ForEach(openableLinks) { link in
-                    if let url = link.openURL {
+                    if case .entity(let target, _) = link, let openKBNote {
+                        // In the KB tab, not Obsidian (Raven-Scout/Scout#295).
+                        Button {
+                            openKBNote(target)
+                        } label: {
+                            chipBody(for: link, external: false)
+                        }
+                        .buttonStyle(.plainHit)
+                        .help("Open \(link.displayLabel) in the Knowledge Base")
+                    } else if let url = link.openURL {
                         Button {
                             NSWorkspace.shared.open(url)
                         } label: {
@@ -31,7 +41,7 @@ struct TaskLinksView: View {
     }
 
     @ViewBuilder
-    private func chipBody(for link: TaskDeepLink) -> some View {
+    private func chipBody(for link: TaskDeepLink, external: Bool = true) -> some View {
         HStack(spacing: 5) {
             Image(systemName: iconName(for: link))
                 .font(.system(size: 10))
@@ -39,7 +49,7 @@ struct TaskLinksView: View {
             Text(label(for: link))
                 .font(DS.sans(11.5, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
-            Image(systemName: "arrow.up.right")
+            Image(systemName: external ? "arrow.up.right" : "arrow.right")
                 .font(.system(size: 9))
                 .foregroundStyle(DS.Ink.p4)
         }

@@ -25,6 +25,11 @@ struct ActionItemsView: View {
     /// revealed; it includes the section's position, so an engine rewrite
     /// that adds or drops a section above resets the ones below. Reset per day.
     @State private var windows: [UUID: TaskWindow] = [:]
+    /// The row a cross-ref chip just scrolled to, outlined for a moment.
+    @State private var highlightedTaskID: UUID?
+    @State private var highlightTask: Task<Void, Never>?
+    /// A row a cross-ref paged in; scrolled to once it appears.
+    @State private var pendingScrollID: UUID?
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -140,6 +145,20 @@ struct ActionItemsView: View {
 
     @ViewBuilder
     private var listContent: some View {
+        ScrollViewReader { proxy in
+            scrollingList
+                .environment(\.revealTaggedTask, StableAction { revealTagged($0, proxy: proxy) })
+                .environment(\.taskRowAppeared, StableAction { id in
+                    guard id == pendingScrollID else { return }
+                    pendingScrollID = nil
+                    scroll(to: id, proxy: proxy)
+                })
+                .environment(\.highlightedTaskID, highlightedTaskID)
+        }
+    }
+
+    @ViewBuilder
+    private var scrollingList: some View {
         ScrollView {
             // Deliberately VStack, not LazyVStack (#83). A lazy stack estimates
             // content height from the items it has realized; that estimate sets
@@ -227,6 +246,46 @@ struct ActionItemsView: View {
             windows[section.id, default: TaskWindow()].reveal(index)
             reconcileSelection()
             return
+        }
+    }
+
+    /// A cross-ref chip (`#TAG`): page the tagged row in if its section's
+    /// window hasn't built it yet, scroll to it, and outline it for a moment
+    /// (Raven-Scout/Scout#295). A row the List doesn't show — done, archived,
+    /// hidden by the filter or search, or not in today's file — gets a toast.
+    private func revealTagged(_ tag: String, proxy: ScrollViewProxy) {
+        guard case .loaded(let doc) = docService.state,
+              let found = CrossRefLocator.locate(tag: tag, in: filteredSections(doc).map(filtered)) else {
+            setToast("#\(tag) isn't in the list. It may be done, archived, or hidden by the filter.")
+            return
+        }
+        let section = filteredSections(doc).map(filtered).first { $0.id == found.sectionID }
+        let built = section.map { window(for: $0).visible($0.tasks).contains { $0.id == found.taskID } } ?? false
+        highlightedTaskID = found.taskID
+        if built {
+            scroll(to: found.taskID, proxy: proxy)
+        } else {
+            // Page the row in; its onAppear scrolls once it exists.
+            pendingScrollID = found.taskID
+            windows[found.sectionID, default: TaskWindow()].reveal(found.index)
+            reconcileSelection()
+        }
+        highlightTask?.cancel()
+        highlightTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            highlightedTaskID = nil
+        }
+    }
+
+    private func scroll(to id: UUID, proxy: ScrollViewProxy) {
+        // After this update's layout, so a row that just appeared has a frame.
+        DispatchQueue.main.async {
+            if reduceMotion {
+                proxy.scrollTo(id, anchor: .center)
+            } else {
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+            }
         }
     }
 
