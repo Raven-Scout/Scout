@@ -39,6 +39,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   `#`). Before, searching a tag found nothing, so a task beyond a section's
   first 20 rows could only be found with **Show more** or by searching its
   title (Raven-Scout/Scout#356).
+- **Claude Desktop — new Cowork task** now opens with the Scout folder
+  attached, the same way the Claude Code session does. Before, the task
+  started with no access to the vault (Raven-Scout/Scout#292).
 
 ## [0.16.0] - 2026-10-11
 

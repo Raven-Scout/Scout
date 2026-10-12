@@ -129,7 +129,7 @@ struct LaunchClaudeMenu: View {
             Label("Claude Desktop — new Chat", systemImage: "bubble.left.and.bubble.right")
         }
         Button {
-            launch(.claudeDesktop(.cowork))
+            launch(.claudeDesktop(.cowork(folder: scoutDirectory)))
         } label: {
             Label("Claude Desktop — new Cowork task", systemImage: "person.2")
         }
