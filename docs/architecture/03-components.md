@@ -486,7 +486,7 @@ flowchart LR
     post["<b>Post-session</b><br/>[scripts/rate-limit-detect.sh,<br/>post-session-backfill.sh, run-outcome.sh,<br/>write-session-cost.sh]<br/>Rate-limit row on failure. Stable ID<br/>prefixes plus a chore commit. Run-outcome<br/>row, Telegram on repeated failure.<br/>Connector-health rollup.<br/>usage-tracker cost row with exit code"]:::component
     tz["<b>scripts/scout-tz.sh</b><br/>[bash]<br/>Resolve the timezone: the config's optional<br/>override, else the host's zone.<br/>Twin of config.today()"]:::component
     hb["<b>scripts/heartbeat.sh</b><br/>[bash]<br/>launchd entry point every 30 min:<br/>scoutctl heartbeat run. Once a day,<br/>session-lane-liveness.py"]:::component
-    render["<b>action-items/render.py, watch.sh</b><br/>[python, fswatch]<br/>Optional markdown to HTML dashboard<br/>re-rendered on change"]:::component
+    render["<b>action-items/render.py</b><br/>[python]<br/>Optional markdown to HTML dashboard"]:::component
   end
 
   dispatch -->|"spawn, SCOUT_FORCE_MODE"| run_scout
