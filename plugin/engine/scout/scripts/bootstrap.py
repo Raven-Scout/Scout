@@ -274,8 +274,21 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         # install the vault's scout-config.yaml does not exist yet, so the
         # merged config cannot answer. #207.
         "TODAY_DATE": _dt.datetime.now(scout_config.timezone_or_default(cfg.timezone)).date().isoformat(),
-        "AUTO_UPDATE_ENABLED": cfg.connector_inputs.get("auto_update_enabled", "false"),
+        "AUTO_UPDATE_ENABLED": _auto_update_enabled(cfg),
     }
+
+
+def _auto_update_enabled(cfg: BootstrapConfig) -> str:
+    """``true``/``false``: this run's ``--auto-update`` choice, else the vault's
+    ``auto_update.enabled``, else the packaged default (run-health spec §7.9).
+
+    It used to read ``connector_inputs.auto_update_enabled``, which no code sets,
+    so it always rendered ``false`` whatever the vault said.
+    """
+    if cfg.auto_update is not None:
+        return "true" if cfg.auto_update else "false"
+    block = scout_config.load_config(cfg.vault).get("auto_update")
+    return "true" if isinstance(block, dict) and block.get("enabled") is True else "false"
 
 
 def _atomic_write(path: Path, content: str) -> None:

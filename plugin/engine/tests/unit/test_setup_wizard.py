@@ -95,8 +95,8 @@ def _opts(tmp_path, **kw):
 
 def test_fresh_install_asks_and_calls_bootstrap_auto(tmp_path):
     deps, calls = _deps(tmp_path)
-    # instance, name, email, keep tz, toggle (enter), slack id, per-session, daily, first run
-    p = Scripted(["", "", "", "", "", "U0123", "", "20", "y"])
+    # instance, name, email, keep tz, toggle (enter), slack id, per-session, daily, auto-update, first run
+    p = Scripted(["", "", "", "", "", "U0123", "", "20", "", "y"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     auto = calls[0]
     assert auto[:6] == ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", "claude-code"]
@@ -114,7 +114,7 @@ def test_setup_names_both_budget_caps_it_set(tmp_path):
     """#229: two caps, one per session and one per day. Setup says which number
     went where, so a daily budget can't silently stay at the default."""
     deps, calls = _deps(tmp_path)
-    p = Scripted(["", "", "", "", "", "U0123", "7.50", "20", "n"])
+    p = Scripted(["", "", "", "", "", "U0123", "7.50", "20", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert any("$7.50 per session" in s and "$20 per day" in s for s in p.said)
 
@@ -124,7 +124,7 @@ def test_blank_daily_budget_names_the_default_it_keeps(tmp_path):
     from scout.scripts.budget_check import DEFAULT_DAILY_BUDGET_USD
 
     deps, calls = _deps(tmp_path)
-    p = Scripted(["", "", "", "", "", "U0123", "", "", "n"])
+    p = Scripted(["", "", "", "", "", "U0123", "", "", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     default = f"${DEFAULT_DAILY_BUDGET_USD:g}"
     assert any("Daily budget" in s and f"blank keeps {default}" in s for s in p.said)
@@ -136,7 +136,7 @@ def test_a_failed_budget_set_is_reported_not_dropped(tmp_path):
     """#229: if writing the daily budget fails, setup says so and how to retry,
     instead of leaving the user on the default without a word."""
     deps, calls = _deps(tmp_path, codes={"budget": 1})
-    p = Scripted(["", "", "", "", "", "U0123", "", "20", "n"])
+    p = Scripted(["", "", "", "", "", "U0123", "", "20", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert ["budget", "set", "--daily-usd", "20"] in calls
     said = "\n".join(p.said)
@@ -163,7 +163,7 @@ def test_toggling_and_a_pinned_timezone(tmp_path):
     # instance, name, email, keep tz? n, zone (bad, then good),
     # toggle "x 99 1" (garbage + out-of-range + calendar off) then enter,
     # slack id, per-session, daily (blank), first run n
-    p = Scripted(["", "", "", "n", "Mars/Olympus", "Europe/Berlin", "x 99 1", "", "U1", "", "", "n"])
+    p = Scripted(["", "", "", "n", "Mars/Olympus", "Europe/Berlin", "x 99 1", "", "U1", "", "", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     auto = calls[0]
     assert auto[auto.index("--connectors") + 1] == "slack"
@@ -278,7 +278,7 @@ def test_end_of_input_at_an_add_server_prompt_cancels_before_anything_is_written
 
 def test_a_red_bootstrap_stops_before_budget_and_first_run(tmp_path):
     deps, calls = _deps(tmp_path, codes={"bootstrap": 2})
-    p = Scripted(["", "", "", "", "", "U1", "", "20", "y"])
+    p = Scripted(["", "", "", "", "", "U1", "", "20", "", "y"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 2
     assert [c[0] for c in calls] == ["bootstrap"]
 
@@ -370,7 +370,7 @@ def test_eof_at_first_run_prompt_is_treated_as_no_not_a_cancel(tmp_path):
     no CANCELLED message, exit 0, bootstrap's own return code."""
     deps, calls = _deps(tmp_path)
     # instance, name, email, keep tz, toggle enter, slack id, per-session, daily -- then EOF
-    p = Scripted(["", "", "", "", "", "U1", "", "20"])
+    p = Scripted(["", "", "", "", "", "U1", "", "20", ""])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert sw.CANCELLED not in p.said
     assert [c[0] for c in calls] == ["bootstrap", "budget"]
@@ -393,6 +393,7 @@ def test_no_terminal_at_first_run_prompt_is_treated_as_no(tmp_path, capsys):
         connectors="calendar",
         max_budget="5.00",
         daily_budget="20",
+        auto_update=True,
     )
     assert sw.run_setup(opts, sw.NoTerminalPrompter(), deps) == 0
     assert [c[0] for c in calls] == ["bootstrap", "budget"]
@@ -408,14 +409,14 @@ def test_bootstrap_failure_code_other_than_2_still_stops_the_flow(tmp_path):
     succeeded. Any code other than 0 (ok) or 1 (warn) must stop the flow and
     be returned as-is."""
     deps, calls = _deps(tmp_path, codes={"bootstrap": 10})
-    p = Scripted(["", "", "", "", "", "U1", "", "20"])
+    p = Scripted(["", "", "", "", "", "U1", "", "20", ""])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 10
     assert [c[0] for c in calls] == ["bootstrap"]
 
 
 def test_claude_bin_is_forwarded_to_bootstrap_install(tmp_path):
     deps, calls = _deps(tmp_path)
-    p = Scripted(["", "", "", "", "", "U1", "", "20", "n"])
+    p = Scripted(["", "", "", "", "", "U1", "", "20", "", "n"])
     opts = _opts(tmp_path, claude_bin="/opt/homebrew/bin/claude")
     assert sw.run_setup(opts, p, deps) == 0
     auto = calls[0]
@@ -471,7 +472,7 @@ def test_cli_setup_forwards_claude_bin_flag(monkeypatch, tmp_path):
 def test_first_run_with_no_briefing_slot_says_so(tmp_path):
     deps, calls = _deps(tmp_path)
     deps = replace(deps, first_briefing_slot=lambda: None)
-    p = Scripted(["", "", "", "", "", "U1", "", "", "y"])
+    p = Scripted(["", "", "", "", "", "U1", "", "", "", "y"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert any("No briefing slot" in s for s in p.said)
     assert not any(c[0] == "schedule" for c in calls)
@@ -489,7 +490,7 @@ def test_float_ok_rejects_non_numeric_text():
 def test_budget_reask_on_non_numeric_input(tmp_path):
     deps, calls = _deps(tmp_path)
     # instance, name, email, keep tz, toggle enter, slack id, budget(bad) budget(good), daily, first run
-    p = Scripted(["", "", "", "", "", "U1", "lots", "7.50", "", "n"])
+    p = Scripted(["", "", "", "", "", "U1", "lots", "7.50", "", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert any("Enter an amount above 0." == s for s in p.said)
     auto = calls[0]
@@ -499,7 +500,7 @@ def test_budget_reask_on_non_numeric_input(tmp_path):
 def test_email_reask_on_invalid_format(tmp_path):
     deps, calls = _deps(tmp_path)
     # instance, name, email(bad) email(good), keep tz, toggle enter, slack id, budget, daily, first run
-    p = Scripted(["", "", "not-an-email", "alex@example.com", "", "", "U1", "", "", "n"])
+    p = Scripted(["", "", "not-an-email", "alex@example.com", "", "", "U1", "", "", "", "n"])
     assert sw.run_setup(_opts(tmp_path), p, deps) == 0
     assert "That doesn't look like an email address." in p.said
     auto = calls[0]

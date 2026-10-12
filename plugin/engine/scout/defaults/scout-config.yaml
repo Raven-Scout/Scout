@@ -30,9 +30,16 @@ features:
   connector_health: true
   dreaming: true
 
+# Engines installed with install.sh or Claude Code: when enabled, the heartbeat
+# installs each stable release about a day after it is published and tells you
+# if an upgrade needs attention. Engines managed by Scout.app ignore this; the
+# app updates itself. A dev checkout is never updated. Toggle with
+# `scoutctl config set-auto-update`. soak_hours: how long a release must have
+# been published before it is installed.
 auto_update:
   enabled: false
   channel: stable
+  soak_hours: 24
 
 # Day planning for /scout-plan. MUST equal PlanningSettings()'s defaults in
 # scout/planning/settings.py; tests/unit/test_planning_settings.py fails the

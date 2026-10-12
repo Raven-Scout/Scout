@@ -2131,6 +2131,11 @@ def _register_bootstrap() -> None:
         yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print the detected action and exit 0."),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
+        auto_update: bool | None = typer.Option(
+            None,
+            "--auto-update/--no-auto-update",
+            help="Record auto_update.enabled in scout-config.yaml. Omit to leave it as it is.",
+        ),
     ) -> None:
         """Detect the vault's state and run install, upgrade or migrate-legacy accordingly (#26)."""
         import platform as _platform
@@ -2255,6 +2260,7 @@ def _register_bootstrap() -> None:
                 skip_claude=skip_claude,
                 managed_by=managed_by,
             )
+        cfg.auto_update = auto_update
 
         if not dry_run and not yes and interactive and plan.action is not AutoAction.REFUSED:
             if not typer.confirm(f"About to run bootstrap {plan.action.value} on {vault} ({plan.reason}). Proceed?"):
@@ -2677,6 +2683,12 @@ def setup_cmd(
     ),
     claude_bin: str = typer.Option("", "--claude-bin"),
     yes: bool = typer.Option(False, "--yes", help="Ask nothing; take the flags and defaults."),
+    auto_update: bool | None = typer.Option(
+        None,
+        "--auto-update/--no-auto-update",
+        help="Install each stable release automatically (engines set up by install.sh or Claude Code). "
+        "Default: ask, or on with --yes.",
+    ),
 ) -> None:
     """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
     import os
@@ -2710,6 +2722,7 @@ def setup_cmd(
         managed_by=managed_by,
         claude_bin=claude_bin,
         yes=yes,
+        auto_update=auto_update,
     )
     raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
 
