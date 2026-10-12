@@ -500,6 +500,66 @@ def cli_archive_stale(
         sys.stdout.write(f"  [#{item.tag}] unchanged since {item.last_changed.isoformat()}\n")
 
 
+@app.command("check-review-requests")
+def cli_check_review_requests(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """List pre-fetched review requests today's action items don't account for.
+
+    A request is accounted for by a task naming its `owner/repo#N` or PR URL, a
+    `- Skipped review request <ref> — <reason>` line, or a dismissed URL. Run it
+    before committing a briefing or consolidation. Exit codes: 0 = all
+    accounted for, 1 = some listed (resolve each), 2 = cannot check.
+    """
+    from scout.action_items.review_requests import SKIP_LINE_FORMAT, ReviewCheckError, check_review_requests
+    from scout.config import today
+
+    if date is not None:
+        try:
+            _dt.date.fromisoformat(date)
+        except ValueError:
+            sys.stdout.write(f"check-review-requests: --date: invalid date {date!r}\n")
+            raise typer.Exit(code=2) from None
+    day = date or today(data_dir).isoformat()
+    try:
+        result = check_review_requests(data_dir=data_dir, today=day, context=context)
+    except ReviewCheckError as e:
+        if json_out:
+            sys.stdout.write(_json.dumps({"error": str(e)}) + "\n")
+        else:
+            sys.stdout.write(f"check-review-requests: cannot check — {e}\n")
+        raise typer.Exit(code=2) from e
+
+    if json_out:
+        rows = [{"ref": r.ref, "url": r.url, "title": r.title} for r in result.unaccounted]
+        sys.stdout.write(_json.dumps({"checked": len(result.checked), "unaccounted": rows}) + "\n")
+    elif not result.checked:
+        sys.stdout.write("check-review-requests: no review requests were pre-fetched\n")
+    elif not result.unaccounted:
+        n = len(result.checked)
+        noun = "request is" if n == 1 else "requests are"
+        sys.stdout.write(f"check-review-requests: all {n} pre-fetched review {noun} accounted for\n")
+    else:
+        sys.stdout.write(
+            f"check-review-requests: {len(result.unaccounted)} of {len(result.checked)} pre-fetched review "
+            "requests are not in today's action items:\n"
+        )
+        for r in result.unaccounted:
+            sys.stdout.write(f"  {r.ref} — {r.title} — {r.url}\n")
+        sys.stdout.write(
+            f"Classify each with `gh pr view` and place it, or add a run-notes line: `{SKIP_LINE_FORMAT}`.\n"
+        )
+    if result.unaccounted:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(

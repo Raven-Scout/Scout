@@ -184,6 +184,20 @@ def test_gather_calls_gh_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert ctx.pr_review_requested == [{"number": 43, "title": "y"}]
 
 
+def test_review_requests_fetch_url_and_a_longer_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`action-items check-review-requests` matches on the URL and sees only what is fetched (#404)."""
+    from scout.scripts import pre_session_data as psd
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(psd, "_gh_json", lambda args, timeout=10: seen.append(args) or [])
+    assert psd.get_pr_review_requested() == []
+    args = seen[0]
+    assert args[:4] == ["search", "prs", "--review-requested", "@me"]
+    assert "url" in args[args.index("--json") + 1].split(",")
+    assert args[args.index("--limit") + 1] == str(psd.REVIEW_REQUEST_LIMIT)
+    assert psd.REVIEW_REQUEST_LIMIT > psd.PR_LIST_LIMIT
+
+
 # ----- write_context ----------------------------------------------------
 
 
