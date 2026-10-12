@@ -8,14 +8,24 @@ import Foundation
 struct DebouncedFileEvents: FileSystemEventSource {
     let base: any FileSystemEventSource
     let interval: Duration
+    /// Times the coalescing window. Tests inject a manual clock so a window
+    /// closes when the test says, not when a starved runner gets to it.
+    let clock: any Clock<Duration>
+
+    init(base: any FileSystemEventSource, interval: Duration, clock: any Clock<Duration> = ContinuousClock()) {
+        self.base = base
+        self.interval = interval
+        self.clock = clock
+    }
 
     func events(for url: URL) -> AsyncStream<FileSystemEvent> {
         // Subscribe to the base source synchronously so no event emitted
         // between this call and the pump task starting is dropped.
         let baseStream = base.events(for: url)
         let interval = self.interval
+        let clock = self.clock
         return AsyncStream { continuation in
-            let coalescer = Coalescer(interval: interval, continuation: continuation)
+            let coalescer = Coalescer(interval: interval, clock: clock, continuation: continuation)
             let pump = Task {
                 for await event in baseStream {
                     await coalescer.ingest(event)
@@ -33,12 +43,14 @@ struct DebouncedFileEvents: FileSystemEventSource {
     /// update once per interval instead of only when the churn stops.
     private actor Coalescer {
         private let interval: Duration
+        private let clock: any Clock<Duration>
         private let continuation: AsyncStream<FileSystemEvent>.Continuation
         private var pending: [URL: FileSystemEvent] = [:]
         private var flushTask: Task<Void, Never>?
 
-        init(interval: Duration, continuation: AsyncStream<FileSystemEvent>.Continuation) {
+        init(interval: Duration, clock: any Clock<Duration>, continuation: AsyncStream<FileSystemEvent>.Continuation) {
             self.interval = interval
+            self.clock = clock
             self.continuation = continuation
         }
 
@@ -46,7 +58,7 @@ struct DebouncedFileEvents: FileSystemEventSource {
             pending[event.url] = event
             guard flushTask == nil else { return }
             flushTask = Task {
-                try? await Task.sleep(for: interval)
+                try? await clock.sleep(for: interval)
                 guard !Task.isCancelled else { return }
                 flush()
             }
