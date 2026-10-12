@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A skipped run records an outcome, so health no longer reports it as silent** (`templates/run-scout.sh.tmpl`, `templates/run-dreaming.sh.tmpl`, `templates/run-research.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`, `engine/scout/health.py`). A run that found the session lock held by another live session, or whose budget check said to skip, exited before recording anything. `scoutctl health` then reported `slot.fired_silent:<slot>` (yellow), and for a weekly slot the finding stayed until the slot's next fire. Both skips now write a ledger row with `outcome` `skipped_lock` or `skipped_budget` (exit code 0), filed under the dispatcher's slot, before they exit. `run-outcome.sh record` takes this as an optional fifth argument, and every row now carries `outcome` (`ok`, `failed` or a skip). Older rows without it still read from the exit code. A fire with no row at all is still `slot.fired_silent`. Its fix text no longer blames a skip: it names a killed run, or runners that predate this fix. Repeated skips are still reported: three lock skips in 24 h is the existing yellow `lock.skips`, and a lane that budget-skips every run still goes red as `lane.silent`. Existing vaults pick this up with `/scout-update`, which updates the runners and `run-outcome.sh` together (#401).
+
 ## [0.17.1] - 2026-10-12
 
 ### Fixed

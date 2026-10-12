@@ -16,8 +16,15 @@
 # wrapper raises one local desktop alert (at most a day apart): the floor.
 #
 # Usage (from each run-*.sh, after the session):
-#     scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file>
+#     scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file> [<outcome>]
 #     scripts/run-outcome.sh clear-stale-locks
+#
+# <outcome> is given only for a deliberate skip (#401): skipped_lock (another
+# session held the vault lock), skipped_budget (the budget check said no) or
+# skipped_redundant. A runner records its skip before it exits, so a fired slot
+# always leaves a row and `scoutctl health` can tell "fired and skipped" from
+# "fired and vanished". Anything else is ignored, and the row's outcome is ok or
+# failed from the exit code. An older helper ignores the extra argument.
 #
 # Ledger: .scout-logs/run-outcomes.jsonl (gitignored; one JSON object per run).
 # Never fails the run: every path of `record` exits 0.
@@ -108,9 +115,13 @@ notify_engine_unreachable() {
 }
 
 cmd_record() {
-    local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}"
+    local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}" outcome="${5:-}"
     local finished duration klass
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
+    case "$outcome" in
+        skipped_lock|skipped_budget|skipped_redundant) ;;
+        *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;
+    esac
     case "$started" in ''|*[!0-9]*) started=0 ;; esac
     finished="$(date +%s)"
     duration=$(( finished - started ))
@@ -118,9 +129,9 @@ cmd_record() {
     klass="$(classify_failure "$log" "$code")"
 
     mkdir -p "$LOG_DIR"
-    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" <<'PY' || true
+    python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" <<'PY' || true
 import json, os, sys
-ledger, mode, code, started, finished, duration, klass, log = sys.argv[1:9]
+ledger, mode, code, started, finished, duration, klass, log, outcome = sys.argv[1:10]
 row = {
     "slot": os.environ.get("SCOUT_FORCE_MODE") or mode,
     "mode": mode,
@@ -129,6 +140,7 @@ row = {
     "duration_s": int(duration),
     "exit_code": int(code),
     "failure_class": klass,
+    "outcome": outcome,
     "log": os.path.basename(log) if log else None,
 }
 with open(ledger, "a", encoding="utf-8") as fh:
@@ -176,7 +188,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         record)            shift; cmd_record "$@" ;;
         clear-stale-locks) cmd_clear_stale_locks ;;
-        *) echo "usage: $0 {record <mode> <exit_code> <started_epoch> <log_file>|clear-stale-locks}" >&2
+        *) echo "usage: $0 {record <mode> <exit_code> <started_epoch> <log_file> [<outcome>]|clear-stale-locks}" >&2
            exit 64 ;;
     esac
 fi
