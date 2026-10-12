@@ -2,8 +2,8 @@
 
 ``expected`` maps a seed's tag to the branch the rule puts it on:
 
-- ``hold``: under 7 quiet days. It stays in its section and its text is unchanged
-  ("age is not a touch": no rewriting to say how overdue it is);
+- ``hold``: under 7 quiet days. It stays in its section, isn't asked "still want this?",
+  and its body never states its age ("age is not a touch"); a status update is fine;
 - ``step_down``: 7+ quiet days. At most 🟡; the body is the due date and one question
   (``due Sep 22; still want this?``); the context note gains a dated
   ``stepped down, past due with no news`` line;
@@ -22,6 +22,9 @@ from .daily import body
 
 _QUESTION = re.compile(r"\bdue [^;]+; still want this\?", re.IGNORECASE)
 _NOTE_LINE = re.compile(r"(\d{4}-\d{2}-\d{2}|[A-Z][a-z]{2} \d{1,2}).*stepped down, past due with no news")
+_AGE = re.compile(
+    r"\b\d+\s+(?:working\s+)?days?\s+(?:overdue|late|past)\b|\bnow \d+ days?\b|\boverdue by \d+", re.IGNORECASE
+)
 PARKED = "🅿️"
 
 
@@ -43,10 +46,14 @@ def demotion(
         where, label = section_emoji(item), f"{tag} ({branch})"
         unchanged = prior is not None and item.raw_line.strip() == prior.raw_line.strip()
         if branch == "hold":
+            # The rule fixes the section and forbids age-only rewrites (:72, :283); a status
+            # update or an appended "· → [[note]]" link is fine.
             if prior is not None and where != section_emoji(prior):
                 problems.append(f"{label}: moved from {section_emoji(prior)} to {where}")
-            elif not unchanged:
-                problems.append(f"{label}: text changed (age is not a touch)")
+            elif _QUESTION.search(body(item)):
+                problems.append(f"{label}: asked 'still want this?' under 7 quiet days")
+            elif _AGE.search(body(item)):
+                problems.append(f"{label}: body states its age (age is not a touch)")
         elif branch == "step_down":
             if where == "🔴":
                 problems.append(f"{label}: still in 🔴")

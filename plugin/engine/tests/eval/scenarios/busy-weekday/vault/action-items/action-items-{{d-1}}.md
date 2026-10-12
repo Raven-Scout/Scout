@@ -7,7 +7,7 @@
 - [ ] [#OVRD] **Send the vendor survey answers** — the form was due {{wd-10}}; no reply or follow-up since.
   - Refs: [[projects/billing-cleanup/billing-cleanup]]
 - [ ] [#LATE] **Send the gateway capacity numbers** — due {{d-2}}; the next step is Alex's.
-  - Refs: OPS-311 · [[projects/api-gateway/api-gateway]]
+  - Refs: OPS-312 · [[projects/api-gateway/api-gateway]]
 
 ## 🟡 To Do
 

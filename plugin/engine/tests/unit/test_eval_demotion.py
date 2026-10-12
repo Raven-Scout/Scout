@@ -56,10 +56,26 @@ def test_each_branch_names_how_it_was_broken() -> None:
     )
 
 
-def test_a_hold_whose_body_was_rewritten_fails() -> None:
-    edited = GOOD.replace("the next step is Alex's.", "the next step is Alex's (2 days overdue).")
+def test_a_hold_rewritten_only_to_say_how_overdue_it_is_fails() -> None:
+    for aged in ("the next step is Alex's (2 days overdue).", "now 2 days past due; the next step is Alex's."):
+        edited = GOOD.replace("the next step is Alex's.", aged)
+        r = demotion(_items(edited), _items(YESTERDAY), NOTES_GOOD, {"LATE": "hold"})
+        assert r.details == ("LATE (hold): body states its age (age is not a touch)",), aged
+
+
+def test_a_hold_may_gain_a_status_update_or_a_note_link() -> None:
+    for updated in (
+        "due Oct 10; the next step is Alex's. · → [[action-items/context/LATE|context]]",
+        "due Oct 10; draft started, the next step is still Alex's.",
+    ):
+        edited = GOOD.replace("due Oct 10; the next step is Alex's.", updated)
+        assert demotion(_items(edited), _items(YESTERDAY), NOTES_GOOD, {"LATE": "hold"}).passed is True, updated
+
+
+def test_a_hold_that_was_stepped_down_anyway_fails() -> None:
+    edited = GOOD.replace("due Oct 10; the next step is Alex's.", "due Oct 10; still want this?")
     r = demotion(_items(edited), _items(YESTERDAY), NOTES_GOOD, {"LATE": "hold"})
-    assert r.details == ("LATE (hold): text changed (age is not a touch)",)
+    assert r.details == ("LATE (hold): asked 'still want this?' under 7 quiet days",)
 
 
 def test_missing_items_and_missing_output() -> None:
@@ -78,3 +94,18 @@ def test_busy_weekday_seeds_each_demotion_branch() -> None:
         assert f"[#{tag}]" in yesterday
     note = (busy.path / "vault" / "action-items" / "context" / "PARK.md").read_text()
     assert "{{d-16}}: stepped down, past due with no news" in note
+
+
+def test_late_has_its_own_tracker_issue_due_two_days_ago() -> None:
+    import json
+
+    from tests.eval.harness.scenario import load_scenario
+
+    busy = load_scenario("busy-weekday")
+    yesterday = (busy.path / "vault" / "action-items" / "action-items-{{d-1}}.md").read_text()
+    late = yesterday.split("[#LATE]", 1)[1].split("\n- [ ]", 1)[0]
+    assert "OPS-312" in late and "OPS-311" not in late
+    issues = {
+        i["identifier"]: i for i in json.loads((busy.path / "fixtures" / "linear-issues.json").read_text())["issues"]
+    }
+    assert issues["OPS-312"]["dueDate"] == "{{d-2}}"
