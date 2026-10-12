@@ -1,7 +1,7 @@
 # Action Items view modes: one model for List, Board and Topics
 
 **Date:** 2026-10-11
-**Status:** Draft for review (coordinator). Docs only.
+**Status:** Agreed (Jordan, 2026-10-12; @cjayyy on #343). Docs only. Updated 2026-10-12 after #343 and #345 shipped in v0.17.0.
 **Surface:** Scout.app (`apps/macos/`). Paths are relative to `apps/macos/`.
 **Refs:** #290 and PR #320 (display profile); #340 and PRs #341, #342, #343, #345 (topic board).
 
@@ -18,7 +18,7 @@ Each PR is sound on its own. Together they leave three things undecided:
 2. which of #320's options apply in Topics;
 3. where per-mode settings live: the vault file, per-Mac storage, or nowhere.
 
-This note settles them, so the PRs can land in either order.
+This note settles them. The order is now settled too: #343 landed first (v0.17.0), so #320's code PR is the one that lands second (§3).
 
 ## 2. The model
 
@@ -57,6 +57,8 @@ The View menu shows only the options that apply in the current mode. Settings sh
 | `fields.comments` | Count chip | Count chip | Count chip on the row |
 | `topics.doneRange` | n/a | n/a | Yes |
 
+Topics rows start reading `fields.refs` and `fields.comments` in a follow-up after #320's code PR (@cjayyy's comment-chip item, §3). Until then, the View menu in Topics shows only the options that are wired.
+
 ### 2.4 One task state, computed in one place
 
 Topics groups by an effective state. The rule as settled in #342's review, in order: a ticked task is **done**; an active snooze makes it **hold**; an open `Depends:` (a dependency whose tag is still open) makes it **blocked**; then its `State:` field; then its section (🔴/🟡 → **mine**, 🟢 → **waiting**, 🅿️ Parked → **hold**). #343 implements it as `BoardState.of(_:in:today:openTags:)` in `TopicBoard/BoardState.swift`. It takes the section kind, because the section is the last fallback, and the set of open tags, because `Depends:` is only blocking while its target is open. The rule (the `BoardState` enum and `of`) moves to `Models/`, next to #342's `TaskFields`, so it isn't private to the Topics code. Then:
@@ -67,25 +69,26 @@ Topics groups by an effective state. The rule as settled in #342's review, in or
 
 ### 2.5 One filtered task set
 
-#320's arrangement order is: done-task consolidation, then filters and search, then sort/group. Topics needs one difference. It works out state, `Depends:` and `Parent:` from the **whole consolidated set**, and uses search (and its legend filter) only to pick which rows show. Otherwise a search that hides a blocking task would quietly unblock the steps behind it. #343 already does it in that order. Search typed in one mode still gives the same matches in another; only the state behind each row comes from the full set.
+#320's arrangement order is: done-task consolidation, then filters and search, then sort/group. Topics needs one difference. It works out state, `Depends:` and `Parent:` from the **whole consolidated set**, and uses search (and its legend filter) only to pick which rows show. Otherwise a search that hides a blocking task would quietly unblock the steps behind it. #343 already does it in that order. Concretely: #320's `ActionItemsLayout` feeds List and Board only, and Topics keeps taking the loaded document's sections plus the search text, as `TopicBoardView` does on `main` today. Search typed in one mode still gives the same matches in another; only the state behind each row comes from the full set.
 
 ## 3. What each PR does
 
-**#320 (display profile), whenever its code PR opens:**
-- Add `topics` to `defaultView`'s accepted values, and `actionItems.topics.doneRange` (`today|yesterday|week`, default `week`) to the schema table.
-- The View menu shows the options in §2.3 for the current mode only.
-- Decide the file name, the question #320 already asks. The coordinator recommends **`scout-display.json`**: #176's `/scout-profile` is about the AI-session profile, and a narrower name avoids two "profiles".
+**#320 (display profile).** Its code PR lands second, after #343, so it carries these:
+- Add `topics` to `defaultView`'s accepted values, and `actionItems.topics.doneRange` (`today|yesterday|week`, default `week`) to the schema table: the key, its codec entry and a Settings row.
+- Leave the Topics branch of `ActionItemsView` alone; Topics keeps its own inputs (§2.5).
+- The View menu shows the options in §2.3 for the current mode only, so Sort, Group and Density are hidden in Topics.
+- The file is named **`scout-display.json`** (decided 2026-10-12, the question #320 asked): #176's `/scout-profile` is about the AI-session profile, and a narrower name avoids two "profiles".
 
 **#343 (Topics view mode):**
 - Make the legend single-select chips with **All** as the default, remembering the last choice in `@AppStorage("topicBoard.filter")`.
-- Read and write the Done range through the display profile when #320 has landed. Until then, keep `@AppStorage("topicBoard.doneRange")`, and migrate its value into the profile once when it first exists.
+- Follow-up after #320's code PR lands: read and write the Done range through the display profile. Until then, keep `@AppStorage("topicBoard.doneRange")`, and migrate its value into the profile once when it first exists.
 - Keep `topicBoard.open` in `@AppStorage`. Don't force-open topics while a filter is on, so collapse state survives filter changes and refreshes.
 - Move `BoardState` and its `of(_:in:today:openTags:)` rule from `TopicBoard/` to `Models/`. Its style extension (`BoardState+Style.swift`) can stay with the Topics views.
 - Add the comment-count chip on rows (§2.3).
 
-@cjayyy has said he'll take all five in #343 (review comment on #347, 2026-10-11).
+@cjayyy has said he'll take all five (review comment on #347, 2026-10-11). #343 and #345 shipped in v0.17.0; the Done-range wiring, the `BoardState` move and the comment chip remain as his follow-ups.
 
-**Whichever lands second** rebases onto the other and does the obligations above that touch the other's code. Neither PR changes the other's files beyond that.
+**#320's code PR rebases onto `main`** and does only the #320 obligations above that touch Topics code. Neither side changes the other's files beyond that.
 
 ## 4. Shared files: who touches what
 
