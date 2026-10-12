@@ -130,7 +130,7 @@ this project spends nothing (§13 Q1). Isolation comes from flags and a scratch 
 | **Init-event guard** | The shim reads the stream's `system/init` event before the first turn. If `mcp_servers` lists anything outside the scenario's stub set, it kills the session and marks the sample `aborted: mcp_leak`. If a CLI release changes how `--strict-mcp-config` behaves, the harness fails closed instead of quietly using real accounts. |
 | `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir. The run log gets only the final result line. |
 | `--model <alias>`; resolved model **recorded** | The CLI resolves aliases (`sonnet` → `claude-sonnet-5` on 2.1.278) and rejected the full id `claude-sonnet-5-5` as unrecognized, so the shim passes an alias. It records the resolved id from the init event plus `claude --version`. `compare` refuses to judge arms whose resolved model or CLI version differ. Default `sonnet`; `--opus` opts in (§13 Q3). |
-| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
+| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, `Bash(python *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
 | `--no-session-persistence`, `--disable-slash-commands` | No transcript lands in any projects dir, and no skill expands by accident. |
 | `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. **The CLI enforces it on an OAuth login** (verified, §4.3): the run ends after the turn that crosses it, with result subtype `error_max_budget_usd` and exit 1, so overrun is bounded by one turn. The harness's wall-clock timeout backs it up. |
 | `PATH` = `stubs/` (fake `gh`) + the checkout's `scoutctl` + system | Real `gh` is unreachable. The checkout's `scoutctl` is the one under test. |
@@ -603,7 +603,9 @@ makes that answer one command.
     unsandboxed sample.
 
   The sample's 5 denials come from the allowlist and are the same with the sandbox off (checked
-  A/B): `$(…)` and `${…}` expansions, a `for` loop, and `python` instead of `python3`.
+  A/B): `$(…)` and `${…}` expansions, a `for` loop, and `python` instead of `python3`. `python` is
+  now on the list. It resolves to the engine venv's interpreter, and the sandbox confines it like
+  `python3`.
 
   Writable regardless of the settings:
   - the top level of `/tmp/claude-<uid>/`. The Bash tool writes its cwd file there, and denying it

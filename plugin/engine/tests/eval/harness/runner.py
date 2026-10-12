@@ -32,10 +32,11 @@ from .scenario import Scenario
 DEFAULT_TIMEOUT_S = 1200
 DEFAULT_BUDGET = "3"
 HOOK_GRACE_S = 300  # the runner's own pre- and post-session steps
-# The shell steps phases run (the live sample's denials named echo and mkdir). Bash is not
-# path-confined, so nothing destructive or networked is listed: no rm, mv, cp or curl.
+# The shell steps phases run (live samples' denials named echo, mkdir and python). The
+# sandbox confines Bash writes (spec §12 R2a′), but still nothing destructive or networked is
+# listed: no rm, mv, cp or curl. ``python`` is the engine venv's, first on PATH after the stubs.
 _BASH_TOOLS = (
-    "git", "gh", "scoutctl", "date", "python3", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find",
+    "git", "gh", "scoutctl", "date", "python3", "python", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find",
     "echo", "printf", "mkdir", "test", "sort", "uniq", "cut", "tr", "jq", "sed", "awk", "diff", "touch",
     "basename", "dirname", "true",
 )  # fmt: skip
