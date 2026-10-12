@@ -60,8 +60,24 @@ Urgency is **capped by how far away the deadline is** — distance sets a *ceili
 - **7–30 days out** → 🟡 To Do (max).
 - **< 7 days out** → eligible for 🔴 Urgent.
 - **< 3 days out** → 🔴 when the next action is {{USER_NAME}}'s to take.
+- **Past due** → *Past-Due Tasks Step Down* below decides.
 
 **Evaluate the actual deadline, not the source's tone.** Notification language — "action required", "expiring soon", "final notice", "limit reached" — is alarm-word framing, not real urgency, and never promotes an item past the distance ceiling. Deprecation / end-of-life notices specifically stay 🟢 Watching until ~2–3 weeks before the cutover. This ceiling is the counterpart to the deadline *escalation* rule under Knowledge Graph Personal Tasks below: escalation raises priority as a deadline nears; the ceiling stops a distant deadline from being surfaced as urgent on tone alone.
+
+### Hard Rule — Past-Due Tasks Step Down
+
+A deadline that passed with nobody acting on it is no longer today's work. Without this rule a past-due task stays 🔴 for good, and the few that really are urgent get lost among them.
+
+For each 🔴 or 🟡 task whose due date has passed, count its **quiet days**: the calendar days since the later of its due date and the last new evidence on it (a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}), as its context note dates that evidence. Then:
+
+- **Under 7 quiet days:** treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
+- **7 or more:** 🟡 at most. The first time, whether you move it down from 🔴 or it was already 🟡, rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `stepped down, past due with no news`.
+- **14 days after that line, still with no news:** move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
+- **New evidence restarts the count.** Record it, dated, in the context note, and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive.
+- A task snoozed past today is skipped: the snooze is {{USER_NAME}}'s decision.
+- A recurring task the cadence computer reports `overdue` is 🔴 on its due day and the 2 days after. On the 3rd day past due with no completion evidence it steps down to 🟡 with the question and the note line (without waiting for 7 quiet days), and parks 14 days after that line, as above.
+
+This is demotion within view: the task keeps its row and its `[#TAG]`, so the count-guard and the dropoff audit see no change. A parked task nobody touches leaves through the 60-day *Stale Items Auto-Archive*, never by being dropped.
 
 ## Action Items File Format
 
@@ -166,7 +182,7 @@ The bold title MUST NOT contain any of:
 - emoji of any kind (including priority 🔴🟡🟢);
 - an internal ` — ` / ` – ` separator (that dash separates title from body).
 
-The **body** (after the ` — ` separator) is short human prose: the next step, with its status and dates, in at most two short sentences (about 25 words). Say what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…"). The `Action:` board field is only the 1–3-word form of that next step. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
+The **body** (after the ` — ` separator) is short human prose: the next step, with its status and dates, in at most two short sentences (about 25 words). A task stepped down under *Past-Due Tasks Step Down* carries its due date and "still want this?" instead. Write a date as a date (`due Oct 3`), never as an age that changes every day (`4 days overdue`, `now 5 days past`). Say what the work does and what breaks or waits without it. Never give a bare PR number as the reason, and never refer to internal context ("you asked session X…"). The `Action:` board field is only the 1–3-word form of that next step. Quotes, sources and longer context go in the item's note, `action-items/context/<TAG>.md`. Entity wikilinks (`[[people/alex|Alex]]`) may appear inline in the body ONLY where a name reads naturally in a sentence. Bare machine ids never appear in the body prose.
 
 **All machine refs go in ONE `- Refs:` sub-bullet** directly under the task line, ` · `-separated: Linear ids, GitHub refs, Slack permalinks, cross-reference hashtags, and entity wikilinks that are pure references (not part of a sentence). Omit the sub-bullet when a task has no refs.
 
@@ -252,18 +268,19 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
 When the list grows long, achieve focus by **reprioritizing**, never by hiding items from view. "Don't overwhelm me" and "don't drop my items" are both real constraints — resolve the tension by demotion *within* view, not omission *from* view.
 
 1. Keep a tight, time-bound **🔴 Urgent** set at the top.
-2. Demote lower-priority open items from 🔴 to 🟡 and reorder within 🟡 — {{USER_NAME}} can scan a long, ordered list and ignore the bottom; he cannot recover items that aren't rendered at all. Never demote {{USER_NAME}}'s own work into 🟢 Watching: that section means the next step is someone else's.
+2. Demote lower-priority open items from 🔴 to 🟡 and reorder within 🟡 — {{USER_NAME}} can scan a long, ordered list and ignore the bottom; he cannot recover items that aren't rendered at all. Never demote {{USER_NAME}}'s own work into 🟢 Watching: that section means the next step is someone else's. The one way down to 🅿️ Parked is *Past-Due Tasks Step Down*.
 3. Mark an item `[unverified]` or drop it **only** when {{USER_NAME}} has explicitly said so (reply, reaction, or an inline `//==<<` directive).
 
 The one exception is the deterministic stale-item archive below — it is not an omission, and you must not undo it.
 
 ### Hard Rule — Stale Items Auto-Archive
 
-An open item whose block (the task line plus its indented sub-bullets) has not changed for **60 days** is moved, verbatim, out of the daily file into `action-items/archive/stale-items-YYYY-MM.md`, under a dated heading and with an `_auto-archived YYYY-MM-DD · unchanged since YYYY-MM-DD_` note. `scoutctl action-items materialize` does this when it creates the day's file; nothing is deleted. Moving an item between sections does not count as touching it — only a change to its text does (a comment, a snooze, a status note, a rewrite). Items snoozed past today are never archived.
+An open item whose block (the task line plus its indented sub-bullets) has not changed for **60 days** is moved, verbatim, out of the daily file into `action-items/archive/stale-items-YYYY-MM.md`, under a dated heading and with an `_auto-archived YYYY-MM-DD · unchanged since YYYY-MM-DD_` note. `scoutctl action-items materialize` does this when it creates the day's file; nothing is deleted. Moving an item between sections does not count as touching it — only a change to its text does (a comment, a snooze, a status note, a rewrite), and not a change to its dates, times or ages alone. Items snoozed past today are never archived.
 
 - **Do not re-add an auto-archived item** to keep the list "complete". It left on purpose, and the count-guard and dropoff audit below account for it.
 - **Restore it when it comes back to life.** If this run finds new activity on an archived item (a reply, a PR update, a meeting mention), or {{USER_NAME}} names it, copy its block back from the stale-items file into the right section of today's file, update it with what's new, and remove the `_auto-archived …_` note. The edit restarts its 60-day clock.
 - **Don't refresh text to keep an item alive.** Rewording an item you have no news about defeats the archive. Edit an item only when something about it actually changed.
+- **Age is not a touch.** Never rewrite an item only to update how old or overdue it is, and never add `_re-anchored <date>_` notes: its age follows from its due date. The archive ignores edits that change only dates, times or ages anyway, so they cost a rewrite and keep nothing alive.
 
 To apply the rule to a file that already exists (e.g. after a manual cleanup), run `scoutctl action-items archive-stale` (`--dry-run` lists what would move).
 
@@ -341,7 +358,7 @@ cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py query --type task -
 
 **Always filter terminal statuses — never query bare `--type task`.** A bare query returns *every* task entity, including ones already finished, so completed work resurfaces on the daily list as if it were still open (the classic regression: a task whose `status` flipped to `completed` weeks ago reappears tomorrow). Pass `--exclude-status "completed,cancelled"` to get the currently-actionable set — task entities use mixed statuses (`open` / `in-progress` / `scheduled` / …), so excluding the terminal ones is more robust than trying to enumerate the live ones. Narrow further with `--domain personal` / `--domain work` when you want a single slice, `--status <s>` for an exact status, and `--deadline-before <ISO-date>` for deadline sweeps.
 
-**`surface_rule` windows are authoritative.** Before rendering any `type: task` entity into the daily file, read its `surface_rule:` block. If `default: do_not_surface` and **no** `windows` entry covers today's date AND **no** `always_visible_if` condition fires, the task is intentionally muted — do not render it, do not flag it stale, do not mention it in the wrap notification. If a window covers today, render at that window's `surface:` priority using its `task:` label override if present. If `always_visible_if` fires, force 🔴. A task with no `surface_rule` falls back to surfacing daily until `status: completed` (back-compat). This stops long-window tasks (multi-week trips, future-dated deadlines) from polluting the daily surface during their idle phases.
+**`surface_rule` windows are authoritative.** Before rendering any `type: task` entity into the daily file, read its `surface_rule:` block. If `default: do_not_surface` and **no** `windows` entry covers today's date AND **no** `always_visible_if` condition fires, the task is intentionally muted — do not render it, do not flag it stale, do not mention it in the wrap notification. If a window covers today, render at that window's `surface:` priority using its `task:` label override if present. If `always_visible_if` fires, force 🔴, unless the task is past due: then *Past-Due Tasks Step Down* applies. A task with no `surface_rule` falls back to surfacing daily until `status: completed` (back-compat). This stops long-window tasks (multi-week trips, future-dated deadlines) from polluting the daily surface during their idle phases.
 
 For the morning briefing, focus on:
 
@@ -350,6 +367,7 @@ For the morning briefing, focus on:
    - 7+ days out: keep existing priority
    - 3-7 days out: escalate to 🟡 if not already higher, when the next action is {{USER_NAME}}'s to take
    - <3 days out: escalate to 🔴, when the next action is {{USER_NAME}}'s to take
+   - past due: *Past-Due Tasks Step Down* applies instead
    - a task waiting on someone else stays in 🟢, with the deadline in its body, until it is under 3 days out; then it goes to 🟡 for {{USER_NAME}} to nudge
 3. **Birthday alerts** — check if any person entity has a `birthday` field matching today's month/day. If so, add a reminder to the action items.
 
@@ -378,7 +396,7 @@ python recurring-task-status.py --date "<today>" \
 
 For each entity the script returns:
 
-1. **`due` / `overdue`** → **mandatory** action item. 🔴 when `surface_window` is `T-0 morning` or the item is `overdue`; 🟡 when the window is wider than 24h. Link `[[recurring-tasks/<name>]]`. `domain: personal` ones go in the Personal section.
+1. **`due` / `overdue`** → **mandatory** action item. 🔴 when `surface_window` is `T-0 morning` or the item is `overdue` (for its first 2 days past due; then *Past-Due Tasks Step Down* applies); 🟡 when the window is wider than 24h. Link `[[recurring-tasks/<name>]]`. `domain: personal` ones go in the Personal section.
 2. **`done`** (completion evidence satisfied for this cadence window) → surface as ✅ Recently Completed, not a TODO.
 3. **`surfacing`** (inside the window, not yet the due day) → 🟡 heads-up.
 4. **`upcoming` / `unknown`** → no action item.
