@@ -72,6 +72,20 @@ struct TaskRefRoutingTests {
         let todo = section(.todo, (0..<45).map { _ in task(nil) } + [target])
         let found = CrossRefLocator.locate(tag: "XREF", in: [section(.urgent, [task("NTX")]), todo])
         #expect(found == .init(sectionID: todo.id, index: 45, taskID: target.id))
+
+        // Past the first page: revealing the index builds the row.
+        var window = TaskWindow()
+        #expect(!window.visible(todo.tasks).contains { $0.id == target.id })
+        window.reveal(found!.index)
+        #expect(window.visible(todo.tasks).contains { $0.id == target.id })
+    }
+
+    @Test func aStableActionComparesEqualAndRuns() {
+        var seen: [String] = []
+        let a = StableAction<String> { seen.append($0) }
+        #expect(a == StableAction<String> { _ in })
+        a("XREF")
+        #expect(seen == ["XREF"])
     }
 
     @Test func matchesTheTagCaseInsensitively() {

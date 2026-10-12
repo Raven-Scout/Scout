@@ -28,6 +28,8 @@ struct ActionItemsView: View {
     /// The row a cross-ref chip just scrolled to, outlined for a moment.
     @State private var highlightedTaskID: UUID?
     @State private var highlightTask: Task<Void, Never>?
+    /// A row a cross-ref paged in; scrolled to once it appears.
+    @State private var pendingScrollID: UUID?
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -145,7 +147,12 @@ struct ActionItemsView: View {
     private var listContent: some View {
         ScrollViewReader { proxy in
             scrollingList
-                .environment(\.revealTaggedTask, { revealTagged($0, proxy: proxy) })
+                .environment(\.revealTaggedTask, StableAction { revealTagged($0, proxy: proxy) })
+                .environment(\.taskRowAppeared, StableAction { id in
+                    guard id == pendingScrollID else { return }
+                    pendingScrollID = nil
+                    scroll(to: id, proxy: proxy)
+                })
                 .environment(\.highlightedTaskID, highlightedTaskID)
         }
     }
@@ -252,22 +259,33 @@ struct ActionItemsView: View {
             setToast("#\(tag) isn't in the list. It may be done, archived, or hidden by the filter.")
             return
         }
-        windows[found.sectionID, default: TaskWindow()].reveal(found.index)
-        reconcileSelection()
+        let section = filteredSections(doc).map(filtered).first { $0.id == found.sectionID }
+        let built = section.map { window(for: $0).visible($0.tasks).contains { $0.id == found.taskID } } ?? false
         highlightedTaskID = found.taskID
-        // A row just paged in is built in the next update; scroll after it.
-        DispatchQueue.main.async {
-            if reduceMotion {
-                proxy.scrollTo(found.taskID, anchor: .center)
-            } else {
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(found.taskID, anchor: .center) }
-            }
+        if built {
+            scroll(to: found.taskID, proxy: proxy)
+        } else {
+            // Page the row in; its onAppear scrolls once it exists.
+            pendingScrollID = found.taskID
+            windows[found.sectionID, default: TaskWindow()].reveal(found.index)
+            reconcileSelection()
         }
         highlightTask?.cancel()
         highlightTask = Task {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             highlightedTaskID = nil
+        }
+    }
+
+    private func scroll(to id: UUID, proxy: ScrollViewProxy) {
+        // After this update's layout, so a row that just appeared has a frame.
+        DispatchQueue.main.async {
+            if reduceMotion {
+                proxy.scrollTo(id, anchor: .center)
+            } else {
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+            }
         }
     }
 

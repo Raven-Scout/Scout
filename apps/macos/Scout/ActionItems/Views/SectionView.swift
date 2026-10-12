@@ -25,6 +25,7 @@ struct SectionView: View {
     /// does not react to clicks, only its small arrow does.
     @State private var completedExpanded = false
     @Environment(\.highlightedTaskID) private var highlightedTaskID
+    @Environment(\.taskRowAppeared) private var taskRowAppeared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -66,6 +67,7 @@ struct SectionView: View {
                         // A cross-ref chip scrolls here by id and outlines the
                         // row for a moment (Raven-Scout/Scout#295).
                         .id(task.id)
+                        .onAppear { taskRowAppeared?(task.id) }
                         .overlay {
                             if highlightedTaskID == task.id {
                                 RoundedRectangle(cornerRadius: 8)

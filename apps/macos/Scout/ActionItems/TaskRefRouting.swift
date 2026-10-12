@@ -4,17 +4,38 @@ import SwiftUI
 // entity chip opens its note in the Knowledge Base tab, a cross-ref chip
 // scrolls the list to the tagged item.
 
+/// A closure in the environment that compares equal to every other one.
+/// The views reading these handlers are the Action Items cards (#83/#88 hot
+/// path); a bare closure is a new value on every parent body run, which
+/// would invalidate every card each time `AppState` publishes anything.
+/// Each handler routes to a stable owner, so skipping the update is safe.
+struct StableAction<Input>: Equatable {
+    let run: (Input) -> Void
+
+    init(_ run: @escaping (Input) -> Void) { self.run = run }
+
+    func callAsFunction(_ input: Input) { run(input) }
+
+    static func == (_: Self, _: Self) -> Bool { true }
+}
+
 /// Opens a KB note by wikilink target (e.g. `people/alex`) in the Knowledge
 /// Base tab. Set on the Action Items tab; nil elsewhere, where entity links
 /// keep opening `obsidian://`.
 private struct OpenKBNoteKey: EnvironmentKey {
-    static let defaultValue: ((String) -> Void)? = nil
+    static let defaultValue: StableAction<String>? = nil
 }
 
-/// Scrolls the Action Items list to the item tagged `[#TAG]` (tag without
-/// `#`). Set by the List view; nil elsewhere, where cross-ref chips stay inert.
+/// Scrolls the List to the item tagged `[#TAG]` (tag without `#`). Set by
+/// the List view; nil elsewhere, where cross-ref chips stay inert.
 private struct RevealTaggedTaskKey: EnvironmentKey {
-    static let defaultValue: ((String) -> Void)? = nil
+    static let defaultValue: StableAction<String>? = nil
+}
+
+/// Called when a task row appears, so a cross-ref can scroll to a row it
+/// just paged in once that row exists.
+private struct TaskRowAppearedKey: EnvironmentKey {
+    static let defaultValue: StableAction<UUID>? = nil
 }
 
 /// The task a cross-ref just scrolled to, outlined briefly so it is findable.
@@ -23,14 +44,19 @@ private struct HighlightedTaskIDKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    var openKBNote: ((String) -> Void)? {
+    var openKBNote: StableAction<String>? {
         get { self[OpenKBNoteKey.self] }
         set { self[OpenKBNoteKey.self] = newValue }
     }
 
-    var revealTaggedTask: ((String) -> Void)? {
+    var revealTaggedTask: StableAction<String>? {
         get { self[RevealTaggedTaskKey.self] }
         set { self[RevealTaggedTaskKey.self] = newValue }
+    }
+
+    var taskRowAppeared: StableAction<UUID>? {
+        get { self[TaskRowAppearedKey.self] }
+        set { self[TaskRowAppearedKey.self] = newValue }
     }
 
     var highlightedTaskID: UUID? {

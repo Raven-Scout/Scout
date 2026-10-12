@@ -60,6 +60,9 @@ struct KnowledgeBaseView: View {
         }
         .onChange(of: service.state) { _, _ in openPendingNote() }
         .onChange(of: pendingNote.wrappedValue) { _, _ in openPendingNote() }
+        // A request still waiting on the index when the user leaves is
+        // dropped, so it can't fire on some later visit.
+        .onDisappear { pendingNote.wrappedValue = nil }
         .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
             KBNewFileSheet(

@@ -35,9 +35,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   offer **Show all**. The 20-row page size is unchanged (Raven-Scout/Scout#356).
 - An action item's entity chip (`[[people/alex]]` in `- Refs:`) opens the
   note in the Knowledge Base tab instead of Obsidian. Obsidian is now only
-  the fallback when the KB can't find the note. A cross-ref chip (`#TAG`)
-  scrolls the list to that item and outlines it, showing more rows first if
-  the item is past the ones shown. If the item isn't in the list (done,
+  the fallback when the KB can't find the note. In List view, a cross-ref
+  chip (`#TAG`) scrolls to that item and outlines it, showing more rows first
+  if the item is past the ones shown. If the item isn't in the list (done,
   archived or filtered out), a note says so (Raven-Scout/Scout#295).
 
 ### Fixed

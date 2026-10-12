@@ -196,9 +196,9 @@ struct TaskCardView: View {
             }
             .buttonStyle(.plainHit)
             .help(inApp.help)
-            .onHover { hovering in
-                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
+            // The system pointer style, not NSCursor push/pop: opening a note
+            // switches tabs under the pointer, so a hover-exit never comes.
+            .pointerStyle(.link)
         } else {
             linkChipView(for: chip)
         }

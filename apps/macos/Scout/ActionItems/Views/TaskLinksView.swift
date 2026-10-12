@@ -22,7 +22,7 @@ struct TaskLinksView: View {
                         Button {
                             openKBNote(target)
                         } label: {
-                            chipBody(for: link)
+                            chipBody(for: link, external: false)
                         }
                         .buttonStyle(.plainHit)
                         .help("Open \(link.displayLabel) in the Knowledge Base")
@@ -41,7 +41,7 @@ struct TaskLinksView: View {
     }
 
     @ViewBuilder
-    private func chipBody(for link: TaskDeepLink) -> some View {
+    private func chipBody(for link: TaskDeepLink, external: Bool = true) -> some View {
         HStack(spacing: 5) {
             Image(systemName: iconName(for: link))
                 .font(.system(size: 10))
@@ -49,7 +49,7 @@ struct TaskLinksView: View {
             Text(label(for: link))
                 .font(DS.sans(11.5, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
-            Image(systemName: "arrow.up.right")
+            Image(systemName: external ? "arrow.up.right" : "arrow.right")
                 .font(.system(size: 9))
                 .foregroundStyle(DS.Ink.p4)
         }
