@@ -9,6 +9,7 @@ the user's crontab. Atomic rewrite via NamedTemporaryFile so a failed
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -72,12 +73,25 @@ def _strip_managed_block(text: str) -> str:
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
-def _render_block(home: Path) -> str:
-    """Render the cron-managed-block template with HOME + scoutctl path substituted.
+def _cron_word(path: Path) -> str:
+    """``path`` as one word of a cron command.
+
+    cron hands the command to the shell, so a space would split it; before
+    that, cron itself turns an unescaped ``%`` into a newline.
+    """
+    return shlex.quote(str(path)).replace("%", "\\%")
+
+
+def _render_block(home: Path, vault: Path) -> str:
+    """Render the cron-managed-block template for ``home`` and ``vault``.
 
     The scoutctl path is the console script beside the interpreter running
     this command (see ``install_schedule_plist.resolve_scoutctl_bin`` for
-    details) — same single source of truth as the macOS plist.
+    details) — same single source of truth as the macOS plist. Like the plists,
+    the block points at the bootstrapped vault and exports it as
+    ``SCOUT_DATA_DIR`` (#271); an env line takes its value verbatim. The
+    scoutctl path stays unquoted: the doctor reads it as the command's first
+    field (no whitespace in it, as before).
     """
     from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 
@@ -85,6 +99,9 @@ def _render_block(home: Path) -> str:
         TEMPLATE.read_text(encoding="utf-8")
         .replace("__USER_HOME__", str(home))
         .replace("__SCOUTCTL_BIN__", str(resolve_scoutctl_bin()))
+        .replace("__HEARTBEAT__", _cron_word(vault / "scripts" / "heartbeat.sh"))
+        .replace("__CRON_LOG__", _cron_word(vault / ".scout-logs" / "cron.log"))
+        .replace("__SCOUT_DIR__", str(vault))
     )
 
 
@@ -108,12 +125,12 @@ def _backup(previous: str, backup_dir: Path) -> None:
         print(f"warning: failed to write crontab backup: {e}", file=sys.stderr)
 
 
-def install_cron(*, home: Path, backup_dir: Path | None = None) -> None:
+def install_cron(*, home: Path, backup_dir: Path | None = None, vault: Path | None = None) -> None:
     """Install or replace the scout-managed block in the user's crontab."""
     backup_dir = backup_dir or home
     previous = _list_crontab()
     stripped = _strip_managed_block(previous)
-    block = _render_block(home)
+    block = _render_block(home, vault or (home / "Scout"))
     if stripped.strip():
         # Has user content — ensure trailing newline before the block.
         if not stripped.endswith("\n"):

@@ -72,6 +72,44 @@ def test_install_uses_resolver_for_scoutctl_path(fake, tmp_path):
     assert f"{resolve_scoutctl_bin()} schedule tick" in fake.content
 
 
+def _managed_lines(content: str) -> list[str]:
+    lines = content.splitlines()
+    return lines[lines.index(cron_mod.BLOCK_OPEN) + 1 : lines.index(cron_mod.BLOCK_CLOSE)]
+
+
+def test_install_renders_vault_into_env_and_paths(fake, tmp_path):
+    """#271: like the launchd plists (E6), the cron block sets SCOUT_DATA_DIR and
+    points the heartbeat and log paths at the bootstrapped vault, not ~/Scout."""
+    vault = tmp_path / "vaults" / "MyScout"
+    cron_mod.install_cron(home=tmp_path, backup_dir=tmp_path, vault=vault)
+    lines = _managed_lines(fake.content)
+    assert f"SCOUT_DATA_DIR={vault}" in lines
+    tick = next(line for line in lines if "schedule tick" in line)
+    beat = next(line for line in lines if "heartbeat.sh" in line)
+    assert tick.endswith(f">> {vault}/.scout-logs/cron.log 2>&1")
+    assert beat.split()[5] == f"{vault}/scripts/heartbeat.sh"
+    assert f"{tmp_path}/Scout" not in fake.content
+    assert "__SCOUT_DIR__" not in fake.content
+
+
+def test_install_vault_defaults_to_home_scout(fake, tmp_path):
+    cron_mod.install_cron(home=tmp_path, backup_dir=tmp_path)
+    assert f"SCOUT_DATA_DIR={tmp_path / 'Scout'}" in _managed_lines(fake.content)
+
+
+def test_install_quotes_a_vault_path_cron_would_split(fake, tmp_path):
+    """A space splits a cron command into words, and an unescaped % ends the
+    command (cron turns it into a newline). The env line takes the raw value."""
+    vault = tmp_path / "My Vault 100%"
+    cron_mod.install_cron(home=tmp_path, backup_dir=tmp_path, vault=vault)
+    lines = _managed_lines(fake.content)
+    assert f"SCOUT_DATA_DIR={vault}" in lines
+    beat = next(line for line in lines if "heartbeat.sh" in line)
+    assert f"'{tmp_path}/My Vault 100\\%/scripts/heartbeat.sh'" in beat
+    tick = next(line for line in lines if "schedule tick" in line)
+    assert tick.split()[5].endswith("/scoutctl")  # the doctor reads the binary from field 6
+
+
 def test_install_replaces_existing_managed_block(fake, tmp_path):
     fake.content = (
         "# user's own line\n"

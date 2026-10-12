@@ -414,12 +414,15 @@ def test_install_wake_schedule_prefers_the_vault_schedule(vault: Path, monkeypat
     assert keys and keys[0]
 
 
-def test_install_cron_install_and_uninstall(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("scout.scripts.install_cron.install_cron", lambda *, home: None)
+def test_install_cron_install_and_uninstall(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    vaults: list[Path] = []
+    monkeypatch.setattr("scout.scripts.install_cron.install_cron", lambda *, home, vault: vaults.append(vault))
     monkeypatch.setattr("scout.scripts.install_cron.uninstall_cron", lambda *, home: None)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "Vault"))
 
     added = runner.invoke(cli.app, ["schedule", "install-cron"])
     assert added.exit_code == 0, added.output
+    assert vaults == [tmp_path / "Vault"]  # the block points at the vault, like the plists (#271)
     assert "installed scout-managed crontab block" in added.stdout
 
     removed = runner.invoke(cli.app, ["schedule", "install-cron", "--uninstall"])
@@ -430,7 +433,7 @@ def test_install_cron_install_and_uninstall(monkeypatch: pytest.MonkeyPatch) -> 
 def test_install_cron_surfaces_apply_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.scripts.install_cron import CrontabApplyError
 
-    def boom(*, home: Path) -> None:
+    def boom(*, home: Path, vault: Path) -> None:
         raise CrontabApplyError("crontab: no crontab for user")
 
     monkeypatch.setattr("scout.scripts.install_cron.install_cron", boom)
@@ -478,7 +481,7 @@ def test_install_all_on_darwin_uninstalls_both_plists(monkeypatch: pytest.Monkey
 def test_install_all_on_linux_uses_cron(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("platform.system", lambda: "Linux")
     calls: list[str] = []
-    monkeypatch.setattr("scout.scripts.install_cron.install_cron", lambda *, home: calls.append("install"))
+    monkeypatch.setattr("scout.scripts.install_cron.install_cron", lambda *, home, vault: calls.append("install"))
     monkeypatch.setattr("scout.scripts.install_cron.uninstall_cron", lambda *, home: calls.append("uninstall"))
 
     added = runner.invoke(cli.app, ["schedule", "install-all"])

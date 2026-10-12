@@ -1204,8 +1204,10 @@ def _register_schedule() -> None:
         """Install or remove the Linux scout-managed crontab block.
 
         The scoutctl path written into the cron block is derived from the
-        running engine's plugin root (same contract as ``install-plist``).
+        running engine's plugin root (same contract as ``install-plist``), and
+        the block runs the vault at ``$SCOUT_DATA_DIR`` (default ~/Scout).
         """
+        from scout import paths as _paths
         from scout.scripts.install_cron import (
             CrontabApplyError,
         )
@@ -1221,7 +1223,7 @@ def _register_schedule() -> None:
                 _u(home=Path.home())
                 typer.echo("removed scout-managed crontab block")
             else:
-                _i(home=Path.home())
+                _i(home=Path.home(), vault=_paths.data_dir())
                 typer.echo("installed scout-managed crontab block")
         except CrontabApplyError as e:
             typer.echo(f"crontab apply failed: {e}", err=True)
@@ -1266,7 +1268,9 @@ def _register_schedule() -> None:
                 uninstall_cron(home=Path.home())
                 typer.echo("uninstalled scout-managed crontab block")
                 return
-            install_cron(home=Path.home())
+            from scout import paths as _paths
+
+            install_cron(home=Path.home(), vault=_paths.data_dir())
             typer.echo("installed scout-managed crontab block")
         else:
             typer.echo(f"unsupported platform: {system}", err=True)

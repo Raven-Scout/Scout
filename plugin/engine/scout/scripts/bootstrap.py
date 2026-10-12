@@ -833,7 +833,7 @@ def _stage_jobs_install(cfg: BootstrapConfig) -> None:
     elif cfg.platform == "linux":
         from scout.scripts.install_cron import install_cron
 
-        install_cron(home=Path.home())
+        install_cron(home=Path.home(), vault=cfg.vault)
 
 
 def _stage_install_scoutctl_shim(cfg: BootstrapConfig) -> None:
