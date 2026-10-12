@@ -84,9 +84,7 @@ struct LaunchClaudeMenu: View {
             .fixedSize()
         }
         .help("Launch this action item in Claude Code or Claude Desktop")
-        .onKeyWindowHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .keyWindowPointingHand()
     }
 
     private var icon: some View {
@@ -103,9 +101,7 @@ struct LaunchClaudeMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Launch this action item in Claude Code or Claude Desktop")
-        .onKeyWindowHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .keyWindowPointingHand()
     }
 
     @ViewBuilder

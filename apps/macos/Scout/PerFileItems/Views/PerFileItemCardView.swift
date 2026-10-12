@@ -116,9 +116,7 @@ struct PerFileItemCardView: View {
         }
         .buttonStyle(.plainHit)
         .disabled(isWriting)
-        .onKeyWindowHover { hovering in
-            if hovering, !isWriting { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .keyWindowPointingHand(enabled: !isWriting)
     }
 
     private func actionLabel(_ label: String, systemImage: String, tint: Color) -> some View {

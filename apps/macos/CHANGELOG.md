@@ -40,9 +40,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   first 20 rows could only be found with **Show more** or by searching its
   title (Raven-Scout/Scout#356).
 - Hover-revealed controls (Comment for Scout, comment edit/delete, Ask
-  Claude, ×) and the pointing-hand cursor show only in the key window. In a
-  background window the first click only brings the window forward, so a
-  revealed button looked clickable but did nothing (Raven-Scout/Scout#294).
+  Claude, the topic rename pencil, ×) and the pointing-hand cursor show only
+  in the key window. In a background window the first click only brings the
+  window forward, so a revealed button looked clickable but did nothing
+  (Raven-Scout/Scout#294).
 
 ## [0.16.0] - 2026-10-11
 

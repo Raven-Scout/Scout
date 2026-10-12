@@ -24,4 +24,17 @@ struct KeyWindowHoverTests {
         #expect(tracker.update(pointerInside: true, state: .key) == true)
         #expect(tracker.update(pointerInside: false, state: .key) == false)
     }
+
+    @Test func aSheetClosingRevealsUnderARestingPointer() {
+        var tracker = KeyWindowHover.Tracker()
+        #expect(tracker.update(pointerInside: true, state: .active) == nil)     // a sheet is key
+        #expect(tracker.update(pointerInside: true, state: .key) == true)
+    }
+
+    @Test func thePointingHandPopsOnlyWhatItPushed() {
+        #expect(KeyWindowPointingHand.change(pushed: false, wanted: true) == .push)
+        #expect(KeyWindowPointingHand.change(pushed: true, wanted: false) == .pop)
+        #expect(KeyWindowPointingHand.change(pushed: false, wanted: false) == nil)  // busy card regains key: no stray pop
+        #expect(KeyWindowPointingHand.change(pushed: true, wanted: true) == nil)
+    }
 }
