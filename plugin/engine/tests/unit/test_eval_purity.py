@@ -28,7 +28,7 @@ def violations(source: str) -> list[str]:
 
 
 def _scored_modules() -> list[Path]:
-    return [HARNESS / "metrics.py", *sorted((HARNESS / "checks").glob("*.py"))]
+    return [HARNESS / "metrics.py", HARNESS / "verdicts.py", *sorted((HARNESS / "checks").glob("*.py"))]
 
 
 def test_the_checker_catches_io() -> None:

@@ -10,7 +10,7 @@ from .runner import SampleResult
 from .runner_env import ENGINE
 
 PLUGIN_ROOT = str(ENGINE.parent)
-_METRICS: list[tuple[str, Callable[[SampleResult, SampleMetrics], float | None]]] = [
+METRICS: list[tuple[str, Callable[[SampleResult, SampleMetrics], float | None]]] = [
     ("tool calls", lambda r, m: m.tool_call_count),
     ("turns", lambda r, m: m.turns),
     ("duration s", lambda r, m: m.duration_s),
@@ -48,7 +48,7 @@ def summarize(results: Sequence[SampleResult]) -> str:
             lines.append(f"    {check}  {passed}/{len(results_for)}{tail}")
         if scored:
             lines.append("  process (median over scored samples)")
-        for label, get in _METRICS:
+        for label, get in METRICS:
             values = [v for r in scored if r.metrics is not None and (v := get(r, r.metrics)) is not None]
             if values:
                 lines.append(f"    {label}  {_fmt(median(values))}")
