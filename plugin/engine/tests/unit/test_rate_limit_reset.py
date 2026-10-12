@@ -92,6 +92,41 @@ def test_a_full_weekday_name_is_read() -> None:
     assert find_reset(text, now=NOW) == _utc(2026, 1, 7, 14, 30)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "You've hit your weekly limit · resets Oct 15 at 2pm (Europe/Prague)",
+            _utc(2026, 10, 15, 12, 0),
+            id="month-day",
+        ),
+        pytest.param(
+            "You've hit your weekly limit · resets 15 Oct 2pm (Europe/Prague)",
+            _utc(2026, 10, 15, 12, 0),
+            id="day-month",
+        ),
+        pytest.param(
+            "You've hit your weekly limit · resets October 15th, 2pm (Europe/Prague)",
+            _utc(2026, 10, 15, 12, 0),
+            id="full-month-ordinal",
+        ),
+    ],
+)
+def test_a_calendar_date_in_the_weekly_limit_is_read(text: str, expected: datetime) -> None:
+    assert find_reset(text, now=NOW) == expected
+
+
+def test_a_calendar_date_that_passed_this_year_means_next_year() -> None:
+    # NOW is 5 January 2026, so 2 January has passed; the limit lifts on 2 January 2027.
+    text = "You've hit your weekly limit · resets Jan 2 at 9am (America/New_York)"
+    assert find_reset(text, now=NOW) == _utc(2027, 1, 2, 14, 0)
+
+
+def test_an_impossible_calendar_date_is_none() -> None:
+    text = "You've hit your weekly limit · resets Feb 30 at 9am (Europe/Prague)"
+    assert find_reset(text, now=NOW) is None
+
+
 def test_the_reset_lands_on_the_far_side_of_a_dst_change() -> None:
     """Prague leaves summer time on Sunday 2026-10-25: Monday 09:00 is UTC+1."""
     friday = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
