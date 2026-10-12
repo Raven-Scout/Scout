@@ -129,9 +129,9 @@ this project spends nothing (§13 Q1). Isolation comes from flags and a scratch 
 | **Init-event guard** | The shim reads the stream's `system/init` event before the first turn. If `mcp_servers` lists anything outside the scenario's stub set, it kills the session and marks the sample `aborted: mcp_leak`. If a CLI release changes how `--strict-mcp-config` behaves, the harness fails closed instead of quietly using real accounts. |
 | `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir. The run log gets only the final result line. |
 | `--model <alias>`; resolved model **recorded** | The CLI resolves aliases (`sonnet` → `claude-sonnet-5` on 2.1.278) and rejected the full id `claude-sonnet-5-5` as unrecognized, so the shim passes an alias. It records the resolved id from the init event plus `claude --version`. `compare` refuses to judge arms whose resolved model or CLI version differ. Default `sonnet`; `--opus` opts in (§13 Q3). |
-| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault and plugin root where the rule syntax allows, `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
+| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
 | `--no-session-persistence`, `--disable-slash-commands` | No transcript lands in any projects dir, and no skill expands by accident. |
-| `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. Slice 3 verifies the CLI enforces it on an OAuth login. If it doesn't, the harness's wall-clock timeout is the brake. |
+| `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. **The CLI enforces it on an OAuth login** (verified, §4.3): the run ends after the turn that crosses it, with result subtype `error_max_budget_usd` and exit 1, so overrun is bounded by one turn. The harness's wall-clock timeout backs it up. |
 | `PATH` = `stubs/` (fake `gh`) + the checkout's `scoutctl` + system | Real `gh` is unreachable. The checkout's `scoutctl` is the one under test. |
 | `SCOUT_USER_TIMEZONE`, `TZ`, `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_CONFIG_GLOBAL=<fixture file>`, `GH_CONFIG_DIR=<temp>` | Same dating and commit identity every time. No global git or `gh` config is read. |
 
@@ -184,6 +184,8 @@ Each run below used a fresh scratch `CLAUDE_CONFIG_DIR` and the flags `claude -p
 | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`, **no** `--strict-mcp-config` | About 40 of the account's claude.ai connectors in `mcp_servers`, several `connected` (Slack, Linear, Gmail, Google Calendar, Google Drive, GitHub). |
 | As the first row, plus `HOME=<temp dir>` | `Not logged in`. HOME can't be isolated. |
 | `--model sonnet` | Resolved to `claude-sonnet-5`. The full id `claude-sonnet-5-5` was rejected as `unrecognized_model`. |
+| `--max-budget-usd 0.001`, a prompt asking for five sequential Bash calls (slice 3) | Stopped after the first turn: result subtype `error_max_budget_usd`, `is_error: true`, exit 1, one tool call made. Enforced on the subscription login. |
+| `--tools Read --allowedTools "Read(//<vault>/**)"` with `dontAsk`, cwd the vault, asked to read one file inside and one outside (slice 3) | The inside read succeeded and the outside read was denied, recorded in `permission_denials`. The single-slash form behaved the same here, but it is relative to the settings source, so the harness uses `//`. Reads inside the cwd may be allowed without any rule, so the rule's effect is "nothing outside the vault". |
 
 ## 5. The fixture vault
 
@@ -587,6 +589,5 @@ approved.
 8. **Scope: no.** Briefing and consolidation (SKILL.md) first. DREAMING/RESEARCH and the
    interactive commands stay in slice 8.
 
-**Still open:** none blocking the implementation plan. Slice 3 settles two facts, not decisions:
-whether `--max-budget-usd` is enforced on a subscription login, and whether vault-scoped Read
-rules work in `--allowedTools` (§4.1).
+**Still open:** none. Slice 3 settled the two remaining facts (§4.3): `--max-budget-usd` is
+enforced on a subscription login, and vault-scoped Read rules work in `--allowedTools`.
