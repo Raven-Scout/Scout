@@ -1,0 +1,10 @@
+# The gh subcommands scenario scripts answer (tests/eval/harness/stubs/gh.py).
+# The coverage lint fails when plugin/phases/connectors/github.md starts using one not listed here.
+commands:
+  - api
+  - auth status
+  - pr list
+  - pr view
+  - repo list
+  - search issues
+  - search prs

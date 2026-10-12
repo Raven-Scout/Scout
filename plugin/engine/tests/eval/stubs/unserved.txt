@@ -1,0 +1,2 @@
+# Tools the connector phases name that the eval stubs deliberately don't serve.
+# One "persona: tool  # reason" per line. tests/eval/harness/coverage_lint.py reads this.
