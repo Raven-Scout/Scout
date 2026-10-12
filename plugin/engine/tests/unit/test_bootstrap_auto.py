@@ -416,6 +416,26 @@ def test_stage_failure_is_refused_and_flagged_mutated(tmp_path, monkeypatch, exc
     assert d["reason"] == "no vault: directory missing or empty"
 
 
+def test_crontab_apply_failure_is_refused_and_flagged_mutated(tmp_path, monkeypatch):
+    """Linux: `crontab <file>` failing in the jobs stage is a refusal with
+    `mutated: true` (the stages before it wrote the vault), not an uncaught
+    CrontabApplyError (exit 70, no JSON). #270"""
+    import scout.scripts.bootstrap as bootstrap
+    from scout.scripts.install_cron import CrontabApplyError
+
+    def boom(cfg: BootstrapConfig) -> None:
+        raise CrontabApplyError("crontab apply failed (rc=1): crontab: installing new crontab failed")
+
+    monkeypatch.setattr(bootstrap, "_stage_jobs_install", boom)
+    vault = tmp_path / "Scout"
+    d, code = run(_cfg(vault))
+    assert code == 2
+    assert d["action"] == "refused"
+    assert d["mutated"] is True
+    assert "crontab apply failed" in d["error"]
+    assert (vault / "scripts" / "heartbeat.sh").exists()  # earlier stages did run
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
 def test_unwritable_vault_parent_is_refused_not_raised(tmp_path):
     """The reviewer's repro: the vault's parent cannot be written (read-only
