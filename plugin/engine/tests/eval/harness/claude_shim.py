@@ -10,6 +10,9 @@ eval needs:
   ``CLAUDE_SECURESTORAGE_CONFIG_DIR=""`` so the keychain login (the only thing
   shared) stays reachable;
 - ``--setting-sources ""`` and hooks off;
+- Claude Code's Bash sandbox (spec §12 R2a′): a Bash command writes only
+  inside the sample's result dir and reaches no network host, and nothing
+  runs outside it. Temp files go to ``<result>/tmp``;
 - ``--strict-mcp-config`` with the stub servers. Without it the account's
   live claude.ai connectors load (verified, spec §4.3);
 - ``dontAsk`` with the eval allowlist;
@@ -50,10 +53,29 @@ REQUIRED_ENV = (
 _DROPPED_WITH_VALUE = {"--permission-mode", "--model"}
 _KEPT_WITH_VALUE = {"--max-budget-usd", "--name"}
 EXIT_ABORTED, EXIT_TIMEOUT, EXIT_ENV = 3, 4, 2
+# The other sessions' trees under Claude Code's shared temp root, which the sandbox
+# leaves writable. Only the per-project dirs: the Bash tool writes its own cwd
+# file at the root's top level, and denying that fails every command (verified).
+_SHARED_TMP_DENY = ["/tmp/claude*/-*", "/private/tmp/claude*/-*"]
+
+
+def settings(result_dir: str) -> dict[str, Any]:
+    """The ``--settings`` JSON. Under ``--setting-sources ""`` it is the only settings source."""
+    return {
+        "disableAllHooks": True,
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,  # an unsandboxed eval session must not start
+            "autoAllowBashIfSandboxed": False,  # the eval allowlist still decides what runs
+            "allowUnsandboxedCommands": False,  # dangerouslyDisableSandbox is ignored
+            "filesystem": {"allowWrite": [result_dir], "denyWrite": _SHARED_TMP_DENY},
+            "network": {"allowedDomains": [], "strictAllowlist": True},
+        },
+    }
 
 
 def build_command(
-    runner_argv: list[str], *, real_claude: str, model: str, mcp_config: str, allowed_tools: str
+    runner_argv: list[str], *, real_claude: str, model: str, mcp_config: str, allowed_tools: str, result_dir: str
 ) -> tuple[list[str], str]:
     """The isolated claude argv for these runner flags, and the prompt to send on stdin."""
     kept: list[str] = []
@@ -78,7 +100,7 @@ def build_command(
         "--setting-sources",
         "",
         "--settings",
-        json.dumps({"disableAllHooks": True}),
+        json.dumps(settings(result_dir)),
         "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
@@ -125,8 +147,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
     if missing:
         print(f"claude-shim: not an eval run, missing {', '.join(missing)}", file=sys.stderr)
         return EXIT_ENV
-    result_dir = Path(env["SCOUT_EVAL_RESULT_DIR"])
+    result_dir = Path(env["SCOUT_EVAL_RESULT_DIR"]).resolve()  # the sandbox matches real paths
     result_dir.mkdir(parents=True, exist_ok=True)
+    (result_dir / "tmp").mkdir(exist_ok=True)
     allowed = {s for s in env["SCOUT_EVAL_ALLOWED_SERVERS"].split(",") if s}
     cmd, prompt = build_command(
         runner_argv,
@@ -134,9 +157,14 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         model=env["SCOUT_EVAL_MODEL"],
         mcp_config=env["SCOUT_EVAL_MCP_CONFIG"],
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
+        result_dir=str(result_dir),
     )
     child_env = {k: v for k, v in env.items() if k not in SECRETS}
-    child_env.update(CLAUDE_CONFIG_DIR=str(result_dir / "claude-config"), CLAUDE_SECURESTORAGE_CONFIG_DIR="")
+    child_env.update(
+        CLAUDE_CONFIG_DIR=str(result_dir / "claude-config"),
+        CLAUDE_SECURESTORAGE_CONFIG_DIR="",
+        CLAUDE_CODE_TMPDIR=str(result_dir / "tmp"),  # TMPDIR for Bash: the default, /tmp/claude, is shared
+    )
     # claude runs in a process group of its own (so the guard and the timeout can kill it with its
     # MCP stubs), which means signalling the runner's group never reaches it. Whoever stops this
     # shim, the runner on an overrun or Ctrl-C, must take claude down with it, including when the

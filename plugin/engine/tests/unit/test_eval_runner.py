@@ -182,6 +182,8 @@ def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tm
         "Bash(echo *)",
         "Bash(mkdir *)",
         "Bash(scoutctl *)",
+        "Bash(python3 *)",
+        "Bash(python *)",
         "Bash(git *)",
         "Bash(gh *)",
         "mcp__claude_ai_Slack",

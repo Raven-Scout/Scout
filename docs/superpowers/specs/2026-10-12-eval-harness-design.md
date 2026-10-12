@@ -124,12 +124,13 @@ this project spends nothing (§13 Q1). Isolation comes from flags and a scratch 
 |---|---|
 | `CLAUDE_CONFIG_DIR=<fresh temp dir>` | The session reads and writes no part of the operator's `~/.claude`: no settings, no `.claude.json` MCP entries, no memory, no session history. |
 | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` | Keeps the operator's keychain login reachable from the scratch config dir. This is the only thing shared. **Required:** without it a scratch config dir runs "Not logged in" (verified, §4.3). |
-| `--setting-sources ""` and `--settings '{"disableAllHooks":true}'` | No user, project or local settings, so no global allow rule widens the tool list and no hook runs, plugin hooks included. This is #354's `Isolation.flags()`. |
+| `--setting-sources ""` and `--settings '{"disableAllHooks":true,"sandbox":{…}}'` | No user, project or local settings, so no global allow rule widens the tool list and no hook runs, plugin hooks included. This is #354's `Isolation.flags()`. The `sandbox` block confines Bash writes to the result dir and turns network off (§12 R2a′). |
+| `CLAUDE_CODE_TMPDIR=<result>/tmp` | `TMPDIR` for sandboxed Bash, inside the write list. The default, `/tmp/claude`, is shared with other sessions. |
 | `--strict-mcp-config --mcp-config <scenario>.mcp.json` | **Mandatory, not hygiene.** Without it the account's claude.ai connectors load even with a scratch config dir and empty setting sources. That means the maintainer's live, signed-in Slack, Linear, Calendar, Gmail and GitHub (verified, §4.3), so a sample could read or post to real accounts. With it, only the stub servers exist. Server keys match production names (`claude_ai_Slack`, `claude_ai_Linear`, `claude_ai_Google_Calendar`, …), so tool names (`mcp__claude_ai_Slack__slack_search_public_and_private`) and `connector_log.classify()` match production. |
 | **Init-event guard** | The shim reads the stream's `system/init` event before the first turn. If `mcp_servers` lists anything outside the scenario's stub set, it kills the session and marks the sample `aborted: mcp_leak`. If a CLI release changes how `--strict-mcp-config` behaves, the harness fails closed instead of quietly using real accounts. |
 | `--output-format stream-json --verbose` | Tee'd to `stream.jsonl` in the result dir. The run log gets only the final result line. |
 | `--model <alias>`; resolved model **recorded** | The CLI resolves aliases (`sonnet` → `claude-sonnet-5` on 2.1.278) and rejected the full id `claude-sonnet-5-5` as unrecognized, so the shim passes an alias. It records the resolved id from the init event plus `claude --version`. `compare` refuses to judge arms whose resolved model or CLI version differ. Default `sonnet`; `--opus` opts in (§13 Q3). |
-| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
+| `--permission-mode dontAsk --allowedTools <eval allowlist>` | Replaces the runner's `auto`. The list: Read/Write/Edit/Glob/Grep/ToolSearch scoped to the vault, written as `Read(//<abs vault>/**)` (the `//` form is an absolute path; verified, §4.3: a Read outside the vault is denied and lands in `permission_denials`), `Bash(git *)`, `Bash(gh *)`, `Bash(scoutctl *)`, `Bash(date*)`, `Bash(python3 *)`, `Bash(python *)`, the vault's `scripts/*`, and `mcp__<stub servers>__*`. **Denials are a metric:** a phase that needs an unlisted tool shows up in `permission_denials`, not as a hang. This is the one deliberate deviation from production (§12 R2). |
 | `--no-session-persistence`, `--disable-slash-commands` | No transcript lands in any projects dir, and no skill expands by accident. |
 | `--max-budget-usd` | Kept from the runner as a runaway brake. On a subscription the figure is a usage-equivalent estimate, not spend. **The CLI enforces it on an OAuth login** (verified, §4.3): the run ends after the turn that crosses it, with result subtype `error_max_budget_usd` and exit 1, so overrun is bounded by one turn. The harness's wall-clock timeout backs it up. |
 | `PATH` = `stubs/` (fake `gh`) + the checkout's `scoutctl` + system | Real `gh` is unreachable. The checkout's `scoutctl` is the one under test. |
@@ -560,25 +561,67 @@ makes that answer one command.
 - **R1. Eating the maintainer's subscription.** Mitigated by small defaults, the printed plan,
   the opt-in flags, the base cache and stopping on the first usage limit (§9). CI never calls a
   model.
-- **R2a′. Bash is not confined, and the allowlist cannot make it so.** Read/Edit/Write are scoped
-  to the vault. But allowed commands can still write anywhere or reach the network, and HOME is
-  real, so the maintainer's own vault is reachable:
+- **R2a′. The allowlist cannot confine Bash, so the sandbox does.** Read/Edit/Write are scoped to
+  the vault. Allowed commands are not path-confined, and HOME is real:
   - `python3` runs arbitrary code, and the phases need it;
-  - `sed -i`, `find -delete`, `awk 'system()'` and `git -C <elsewhere>`/`push` can write outside
-    the vault;
+  - `sed -i`, `find -delete`, `awk 'system()'` and `git -C <elsewhere>`/`push` take any path;
   - a script written in the vault can be run.
 
-  What contains this today:
+  So the shim's `--settings` turns on Claude Code's Bash sandbox. That JSON is the only settings
+  source under `--setting-sources ""`, and the sandbox applies there with `-p`:
+
+  | Key | Value | Why |
+  |---|---|---|
+  | `sandbox.enabled`, `failIfUnavailable` | `true` | A session that cannot sandbox exits instead of running unsandboxed. |
+  | `autoAllowBashIfSandboxed` | `false` | The eval allowlist still decides what runs. The default `true` would allow any command. |
+  | `allowUnsandboxedCommands` | `false` | `dangerouslyDisableSandbox` is ignored. |
+  | `filesystem.allowWrite` | the sample's result dir | The vault, `calls.jsonl`, `gh-config` and `tmp/` all live there. |
+  | `filesystem.denyWrite` | `/tmp/claude*/-*`, `/private/tmp/claude*/-*` | These are other Claude sessions' trees, which the sandbox leaves writable. |
+  | `network.allowedDomains`, `strictAllowlist` | `[]`, `true` | No host is reachable. The phases need none: MCP stubs run outside the sandbox, and `gh` is a stub. |
+
+  The shim also sets `CLAUDE_CODE_TMPDIR=<result>/tmp`, so `TMPDIR` for Bash is in the sample.
+
+  Verified on CLI 2.1.278 (macOS, `sandbox-exec`) with a scratch `CLAUDE_CONFIG_DIR`, Haiku and an
+  empty strict MCP config:
+  - `touch` outside the write list is denied before it runs. With the sandbox on, the Bash
+    permission check reads a command's target paths, and `dontAsk` turns the prompt into a denial;
+  - `python3` writes the check can't see fail at the OS layer with `EPERM`. These were tested into
+    HOME, the system `$TMPDIR` and another session's `/tmp/claude-<uid>/-…` tree;
+  - HTTPS through the proxy gets a `403` (`host is not on the allow list`), and a raw socket gets
+    `EPERM`;
+  - a command off the allowlist (`mkdir`) is still denied;
+  - `git add` and `git commit` into the vault's existing `.git` work. `git init` does not: the
+    sandbox always denies `.git/config` and `.git/hooks`. `build.py` creates the repo before the
+    session starts.
+
+  Measured with one live `busy-weekday` Sonnet sample (N=1). The sandbox broke none of the phases'
+  steps:
+  - no sandbox violations;
+  - `scoutctl health`, the vault's `scripts/`, the stub `gh` (which writes `calls.jsonl`), and
+    `git add` and `git commit` all ran;
+  - 92 tool calls, 9.6 min and 2.38 usage-equivalent, against 85, 7.5 min and 1.90 for the first
+    unsandboxed sample.
+
+  The sample's 5 denials come from the allowlist and are the same with the sandbox off (checked
+  A/B): `$(…)` and `${…}` expansions, a `for` loop, and `python` instead of `python3`. `python` is
+  now on the list. It resolves to the engine venv's interpreter, and the sandbox confines it like
+  `python3`.
+
+  Writable regardless of the settings:
+  - the top level of `/tmp/claude-<uid>/`. The Bash tool writes its cwd file there, and denying it
+    fails every command;
+  - the sandbox's built-in `/dev/*`, `~/.npm/_logs` and `~/.claude/debug`.
+
+  Reads are not confined. HOME is readable, but with no network a read cannot leave the machine
+  except through the transcript. The `outside_reads` metric still reports reads outside the vault.
+
+  The containment from before stays:
   - the stub `gh`, plus a temp `GH_CONFIG_DIR`, with `GH_TOKEN`/`GITHUB_TOKEN` dropped;
   - only stub MCP servers;
   - API credentials dropped from the environment, and an `apiKeySource` check in the init guard;
-  - nothing destructive or networked on the list (no `rm`, `mv`, `cp` or `curl`);
-  - the `outside_reads` metric.
+  - nothing destructive or networked on the list (no `rm`, `mv`, `cp` or `curl`).
 
-  None of that confines a shell. The follow-up is Claude Code's Bash sandbox: writes confined to
-  the sample's directory, network on an allowlist, set through the shim's `--settings`. Until it
-  lands, run evals as you would any agent session you've given shell access, and expect a model
-  that misbehaves to be able to touch your files.
+  Like R2a, this depends on CLI behaviour. Re-run the probe when `claude --version` changes.
 - **R2. The eval allowlist differs from production's `--permission-mode auto`.** A behaviour that
   depends on a tool outside the list shows up as denials, which are always reported. If denials
   dominate, widen the list. Running `auto` under `--setting-sources ""` is not an option, because
