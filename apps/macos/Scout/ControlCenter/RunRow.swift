@@ -57,7 +57,7 @@ struct RunRow: View {
         }
         .overlay(alignment: .bottom) { EditorialRule() }
         .contentShape(Rectangle())
-        .onHover { h in
+        .onKeyWindowHover { h in
             hovering = h
             if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }

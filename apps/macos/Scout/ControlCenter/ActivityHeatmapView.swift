@@ -201,7 +201,7 @@ struct ActivityHeatmapView: View {
         .onTapGesture {
             dayFilter = isSelected ? nil : cell.date
         }
-        .onHover { hovering in
+        .onKeyWindowHover { hovering in
             if total > 0 {
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
@@ -232,7 +232,7 @@ struct ActivityHeatmapView: View {
             .onTapGesture {
                 dayFilter = isSelected ? nil : cell.date
             }
-            .onHover { hovering in
+            .onKeyWindowHover { hovering in
                 if total > 0 {
                     if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }

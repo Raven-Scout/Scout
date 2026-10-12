@@ -116,7 +116,7 @@ struct PerFileItemCardView: View {
         }
         .buttonStyle(.plainHit)
         .disabled(isWriting)
-        .onHover { hovering in
+        .onKeyWindowHover { hovering in
             if hovering, !isWriting { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }

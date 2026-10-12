@@ -92,7 +92,7 @@ struct ProposalCardView: View {
         }
         .buttonStyle(.plainHit)
         .disabled(inFlight != nil)
-        .onHover { hovering in
+        .onKeyWindowHover { hovering in
             if hovering, inFlight == nil { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }

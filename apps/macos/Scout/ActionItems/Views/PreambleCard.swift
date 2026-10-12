@@ -49,7 +49,7 @@ struct PreambleCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plainHit)
-            .onHover { hovering = $0 }
+            .onKeyWindowHover { hovering = $0 }
 
             // Body, conditional. Two-line preview when collapsed; full body
             // when expanded.

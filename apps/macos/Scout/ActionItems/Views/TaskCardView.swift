@@ -198,7 +198,7 @@ struct TaskCardView: View {
             }
             .buttonStyle(.plainHit)
             .help(chip.links[0].url.absoluteString)
-            .onHover { hovering in
+            .onKeyWindowHover { hovering in
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
         default:
@@ -212,7 +212,7 @@ struct TaskCardView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .onHover { hovering in
+            .onKeyWindowHover { hovering in
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
         }

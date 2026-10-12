@@ -102,7 +102,7 @@ struct TaskActionsView: View {
             .fixedSize()
             .help("Choose a copy format")
         }
-        .onHover { hovering in
+        .onKeyWindowHover { hovering in
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }
