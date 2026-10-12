@@ -20,6 +20,9 @@ final class AppState: ObservableObject {
     /// A sidebar tab another view asked to switch to. MainWindowView applies
     /// it to its selection and clears it. (#43)
     @Published var requestedSidebar: SidebarItem? = nil
+    /// A KB note another tab asked the Knowledge Base to open, by wikilink
+    /// target; the KB clears it once handled (Raven-Scout/Scout#295).
+    @Published var pendingKBNote: String? = nil
     @Published private(set) var firingSlotKeys: Set<String> = []
     @Published private(set) var urgentActionCount: Int = 0
     /// Sessions that need you — the Sessions sidebar badge. Forwarded from
@@ -822,6 +825,13 @@ final class AppState: ObservableObject {
     func requestOpenRun(_ id: Run.ID) {
         pendingRunToOpen = id
         requestedSidebar = .controlCenter
+    }
+
+    /// Switch to the Knowledge Base and open the note `target` resolves to
+    /// (an action item's entity chip, Raven-Scout/Scout#295).
+    func requestOpenKBNote(_ target: String) {
+        pendingKBNote = target
+        requestedSidebar = .knowledgeBase
     }
 
     /// Shells out to `scoutctl schedule fire-now <slotKey>`, optionally

@@ -21,6 +21,15 @@ struct TaskChip: Identifiable, Equatable {
         var id: String { url.absoluteString }
     }
 
+    /// Where a Refs chip leads inside the app (Raven-Scout/Scout#295), when
+    /// the surface offers it; otherwise the chip falls back to `links`.
+    enum InAppTarget: Equatable {
+        /// A KB note, by wikilink target (`people/alex`).
+        case note(String)
+        /// The action item tagged `[#tag]`.
+        case task(tag: String)
+    }
+
     let glyph: Glyph
     let label: String
     /// Click targets: 0 = static (no action), 1 = open directly, >1 = dropdown.
@@ -30,14 +39,16 @@ struct TaskChip: Identifiable, Equatable {
     /// (PRs, Linear, Slack) and the carry chip summarise zero or many tokens
     /// and leave it nil, falling back to glyph + label.
     let tokenID: String?
+    let inApp: InAppTarget?
 
-    /// `links` and `tokenID` are defaulted so call sites and tests that
-    /// construct a chip by glyph+label keep compiling and comparing equal.
-    init(glyph: Glyph, label: String, links: [Link] = [], tokenID: String? = nil) {
+    /// `links`, `tokenID` and `inApp` are defaulted so call sites and tests
+    /// that construct a chip by glyph+label keep compiling and comparing equal.
+    init(glyph: Glyph, label: String, links: [Link] = [], tokenID: String? = nil, inApp: InAppTarget? = nil) {
         self.glyph = glyph
         self.label = label
         self.links = links
         self.tokenID = tokenID
+        self.inApp = inApp
     }
 
     /// Stable `ForEach` identity. The label alone collides whenever two
@@ -101,15 +112,18 @@ struct TaskChip: Identifiable, Equatable {
         }
 
         // Refs-block kinds: one chip per token, in source order. Entity chips
-        // open the KB note (obsidian URL); cross-ref and plain chips are inert
-        // (no link) — they resolve in-app or carry no target.
+        // open the note in the KB tab, keeping the obsidian URL as the
+        // fallback link; cross-ref chips scroll to the tagged item and have
+        // no URL; plain chips carry no target.
         for link in task.deepLinks {
             switch link {
-            case .entity:
+            case .entity(let path, _):
                 let links = link.openURL.map { [Link(label: link.displayLabel, url: $0)] } ?? []
-                chips.append(TaskChip(glyph: .entity, label: link.displayLabel, links: links, tokenID: link.id))
-            case .crossRef:
-                chips.append(TaskChip(glyph: .crossRef, label: link.displayLabel, tokenID: link.id))
+                chips.append(TaskChip(glyph: .entity, label: link.displayLabel, links: links, tokenID: link.id,
+                                      inApp: .note(path)))
+            case .crossRef(let tag):
+                chips.append(TaskChip(glyph: .crossRef, label: link.displayLabel, tokenID: link.id,
+                                      inApp: .task(tag: tag)))
             case .plainRef:
                 chips.append(TaskChip(glyph: .plain, label: link.displayLabel, tokenID: link.id))
             case .linear, .githubPR, .slackThread:

@@ -29,6 +29,8 @@ struct TaskCardView: View {
     @State private var expanded: Bool
     @State private var showingQuickSnooze = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openKBNote) private var openKBNote
+    @Environment(\.revealTaggedTask) private var revealTaggedTask
 
     init(
         task: ActionTask,
@@ -183,10 +185,40 @@ struct TaskCardView: View {
         }
     }
 
-    /// Renders a chip per its targets: static text (0 links), a button that
+    /// Renders a chip per its targets: an in-app action when the chip has one
+    /// and this surface handles it, else static text (0 links), a button that
     /// opens directly (1 link), or a dropdown listing each target (>1 links).
     @ViewBuilder
     private func chipView(for chip: TaskChip) -> some View {
+        if let inApp = inAppAction(for: chip) {
+            Button(action: inApp.action) {
+                chipBody(for: chip)
+            }
+            .buttonStyle(.plainHit)
+            .help(inApp.help)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        } else {
+            linkChipView(for: chip)
+        }
+    }
+
+    private func inAppAction(for chip: TaskChip) -> (action: () -> Void, help: String)? {
+        switch chip.inApp {
+        case .note(let target)?:
+            guard let openKBNote else { return nil }
+            return ({ openKBNote(target) }, "Open \(chip.label) in the Knowledge Base")
+        case .task(let tag)?:
+            guard let revealTaggedTask else { return nil }
+            return ({ revealTaggedTask(tag) }, "Show #\(tag) in the list")
+        case nil:
+            return nil
+        }
+    }
+
+    @ViewBuilder
+    private func linkChipView(for chip: TaskChip) -> some View {
         switch chip.links.count {
         case 0:
             chipBody(for: chip)

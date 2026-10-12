@@ -9,6 +9,9 @@ import AppKit
 struct KnowledgeBaseView: View {
     @EnvironmentObject var service: KnowledgeBaseService
     @EnvironmentObject var writerBox: KnowledgeBaseWriterBox
+    /// A note another tab asked for (`AppState.requestOpenKBNote`), opened
+    /// once the index is built, then cleared.
+    var pendingNote: Binding<String?> = .constant(nil)
 
     @State private var selectedPath: String? = nil
     @State private var expanded: Set<String> = []
@@ -51,7 +54,12 @@ struct KnowledgeBaseView: View {
         // search field a typed query uses, so the query is visible, the results
         // list is the familiar one, and clearing it returns to the tree.
         .environment(\.kbTagHandler, { tag in searchQuery = "#\(tag)" })
-        .onAppear { service.load() }
+        .onAppear {
+            service.load()
+            openPendingNote()
+        }
+        .onChange(of: service.state) { _, _ in openPendingNote() }
+        .onChange(of: pendingNote.wrappedValue) { _, _ in openPendingNote() }
         .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
             KBNewFileSheet(
@@ -210,6 +218,21 @@ struct KnowledgeBaseView: View {
     }
 
     // MARK: - Actions
+
+    /// Opens the requested note when the index can say where it is; a note
+    /// the KB can't resolve opens in Obsidian, as entity chips used to.
+    private func openPendingNote() {
+        guard let target = pendingNote.wrappedValue else { return }
+        switch KBNoteRequest.outcome(target: target, state: service.state, resolve: service.resolveWikilink) {
+        case .wait:
+            return
+        case .open(let path):
+            navigate(toPath: path)
+        case .fallback:
+            if let url = KBNoteRequest.fallbackURL(for: target) { NSWorkspace.shared.open(url) }
+        }
+        pendingNote.wrappedValue = nil
+    }
 
     /// Select a note by path, expanding its ancestor folders and clearing search.
     private func navigate(toPath path: String) {

@@ -24,6 +24,7 @@ struct SectionView: View {
     /// so the whole header line toggles it: on macOS a DisclosureGroup label
     /// does not react to clicks, only its small arrow does.
     @State private var completedExpanded = false
+    @Environment(\.highlightedTaskID) private var highlightedTaskID
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -62,6 +63,16 @@ struct SectionView: View {
                             selection: selection,
                             onOp: onOp
                         )
+                        // A cross-ref chip scrolls here by id and outlines the
+                        // row for a moment (Raven-Scout/Scout#295).
+                        .id(task.id)
+                        .overlay {
+                            if highlightedTaskID == task.id {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(DS.Accent.fill, lineWidth: 1.5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                     }
                     ShowMoreRow(window: window, tasks: section.tasks, action: onShowMore, showAll: onShowAll)
                 }
