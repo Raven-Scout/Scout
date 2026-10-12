@@ -383,14 +383,15 @@ During consolidation, also check for completion signals:
 Recurring commitments are **cadence-driven, not event-driven** — a "quiet delta" consolidation must still surface them. This is the load-bearing fix for missed standing commitments (e.g. a weekly Friday status update). If the KB has any `recurring_task` entities, run the cadence computer at compose time:
 
 ```bash
-cd {{SCOUT_DIR}} && python recurring-task-status.py --date "$(TZ="$(scripts/scout-tz.sh)" date '+%Y-%m-%d')"
-# (script lives at {{SCOUT_DIR}}/scripts/recurring-task-status.py)
+cd {{SCOUT_DIR}} && python3 scripts/recurring-task-status.py --date "$(TZ="$(scripts/scout-tz.sh)" date '+%Y-%m-%d')"
 ```
+
+**If it exits non-zero, the cadence check did not run — never read that as "no recurring tasks due".** Add a 🔴 action item quoting its one-line `error:` message (it says how to fix it, e.g. a Python without PyYAML), and still surface any `recurring_task` entity whose `cadence` plainly falls today.
 
 **Live-completion lookup (do this before trusting the date math).** For each entity with a `completion_evidence` source (`linear_project_update`, `slack_post`, `gmail_confirmation`), resolve the *real* last-completion date from the live source — e.g. Linear `get_project` → `lastUpdateAt`, or a Slack/Gmail search — and feed it back so the verdict reflects live evidence (the override is not written to the entity file):
 
 ```bash
-python recurring-task-status.py --date "<today>" \
+python3 scripts/recurring-task-status.py --date "<today>" \
     --last-completed <entity-slug>=<YYYY-MM-DD>
 ```
 

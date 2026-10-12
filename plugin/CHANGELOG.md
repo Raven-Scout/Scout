@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`recurring-task-status.py` runs under a `python3` without PyYAML** (`templates/scripts/recurring-task-status.py`, `phases/core/action-items.md`). Brain files run it with the first `python3` on PATH, which a Homebrew upgrade leaves without PyYAML, so the recurring-task check died at `import yaml` and a run could carry on as if nothing were due. When PyYAML is missing, the script now re-runs itself, same arguments, under the engine's Python (from the engine pointer, `~/.local/state/scout/engine.json`), then the vault's `.venv`. With neither, it exits 2 with one line that says how to fix it (`scoutctl bootstrap upgrade`). An env guard stops a second hop. The phase text now calls `scripts/recurring-task-status.py` (it named a path that doesn't exist) and treats a non-zero exit as a failed check, never as "nothing due". The new code sits above the imports, away from the `import yaml` block, so a vault that patched that block merges with it on `/scout-update` instead of parking the new version (#403).
+
 ## [0.17.1] - 2026-10-12
 
 ### Fixed

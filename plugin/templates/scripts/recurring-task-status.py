@@ -41,6 +41,56 @@ Surface-window DSL (subset):
 
 from __future__ import annotations
 
+
+def _run_under_a_python_with_yaml() -> None:
+    """Re-exec this script under a Python that has PyYAML when this one lacks it.
+
+    Brain files run it with the `python3` first on PATH, which a Homebrew upgrade
+    leaves without PyYAML (#403). Candidates, best first: the engine's Python,
+    named by the engine pointer (~/.local/state/scout/engine.json, the file the
+    scoutctl launcher reads), then the vault's .venv. argv and the exit code pass
+    through unchanged; the guard (shared with vault-local re-exec helpers) stops
+    a second hop. With no usable interpreter, fail with one line, never a
+    traceback. It runs before the imports below, so it imports its own; the
+    `import yaml` guard further down stays as a backstop.
+    """
+    import importlib.util
+    import json
+    import os
+    import sys
+    from pathlib import Path
+
+    if importlib.util.find_spec("yaml") is not None:
+        return
+    guard = "SCOUT_VENV_BOOTSTRAPPED"
+    candidates = []
+    if not os.environ.get(guard):
+        try:
+            pointer = json.loads((Path.home() / ".local/state/scout/engine.json").read_text(encoding="utf-8"))
+            if isinstance(pointer, dict) and isinstance(pointer.get("python"), str):
+                candidates.append(pointer["python"])
+        except (OSError, ValueError):
+            pass
+        candidates.append(str(Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python3"))
+    script = os.path.abspath(sys.argv[0])
+    for python in candidates:
+        if os.access(python, os.X_OK):
+            try:
+                os.execve(python, [python, script, *sys.argv[1:]], dict(os.environ, **{guard: "1"}))
+            except OSError:
+                continue
+    looked = f"tried {', '.join(candidates)}" if candidates else "already re-run once"
+    print(
+        f"error: recurring-task-status.py needs PyYAML, which {sys.executable} lacks, and no Scout "
+        f"engine Python was usable ({looked}); run `scoutctl bootstrap upgrade` to re-record the "
+        "engine in ~/.local/state/scout/engine.json, or run this script with the engine's Python.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+_run_under_a_python_with_yaml()
+
 import argparse
 import calendar
 import json
