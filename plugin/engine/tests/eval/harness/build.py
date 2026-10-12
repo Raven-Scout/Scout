@@ -26,6 +26,7 @@ from scout.scripts.bootstrap import BootstrapConfig, install
 from .checkout import Checkout
 from .dates import UNRENDERED, render_dates
 from .index_gen import generate_index
+from .runner_env import STUB_BIN
 
 EVAL_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = Path(__file__).resolve().parents[4]
@@ -131,10 +132,14 @@ def build_vault(
     return dest
 
 
-def _refuse_system_side_effects(cmd: list[str]) -> None:
-    """A fixture install must never touch launchd, cron or ~/.local/bin: without --no-jobs,
-    `bootstrap install` boots out and replaces the user's real loaded scheduler jobs."""
-    assert "--no-jobs" in cmd and "--skip-claude" in cmd, f"fixture install without --no-jobs/--skip-claude: {cmd}"
+def _refuse_system_side_effects(cmd: list[str], env: dict[str, str]) -> None:
+    """A fixture install must never touch launchd, cron or ~/.local/bin. Without --no-jobs,
+    `bootstrap install` boots out and replaces the user's real loaded scheduler jobs; a real HOME
+    would put anything else that slips through into the user's own dotfiles."""
+    if "--no-jobs" not in cmd or "--skip-claude" not in cmd:
+        raise RuntimeError(f"refusing a fixture install without --no-jobs/--skip-claude: {cmd}")
+    if Path(env.get("HOME", "")).resolve() == Path.home().resolve():
+        raise RuntimeError("refusing a fixture install with the real HOME")
 
 
 def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:
@@ -144,7 +149,12 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
     # it lands here, not in the user's ~/.local/bin or ~/Library/LaunchAgents.
     install_home = dest.parent / f".{dest.name}-install-home"
     install_home.mkdir(parents=True, exist_ok=True)
-    env.update(SCOUT_DATA_DIR=str(dest), PYTHONPATH=str(checkout.pythonpath), HOME=str(install_home))
+    env.update(
+        SCOUT_DATA_DIR=str(dest),
+        PYTHONPATH=str(checkout.pythonpath),
+        HOME=str(install_home),
+        PATH=f"{STUB_BIN}{os.pathsep}{env.get('PATH', '')}",  # refusing launchctl/crontab first
+    )
     # -P: the current directory must not shadow PYTHONPATH. --no-jobs and --skip-claude are what
     # keep a fixture install off launchd: without them it replaces the user's real scheduler jobs.
     cmd = [
@@ -155,7 +165,7 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
         "--github-repos", inputs["github_repos"], "--claude-bin", inputs["claude_bin"],
         "--max-budget", inputs["max_budget"],
     ]  # fmt: skip
-    _refuse_system_side_effects(cmd)
+    _refuse_system_side_effects(cmd, env)
     done = subprocess.run(cmd, env=env, cwd=dest.parent, capture_output=True, text=True)
     if done.returncode != 0 or not (dest / "SKILL.md").is_file():
         raise RuntimeError(
@@ -167,7 +177,8 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
 def _refuse_jobs(cfg: BootstrapConfig) -> None:
     """The in-process install runs with the real HOME in a live eval run (the keychain login
     needs it), so jobs must be off: they'd replace the user's real scheduler jobs."""
-    assert cfg.skip_jobs and cfg.skip_claude, "fixture install without skip_jobs/skip_claude"
+    if not (cfg.skip_jobs and cfg.skip_claude):
+        raise RuntimeError("refusing a fixture install without skip_jobs/skip_claude")
 
 
 def _install_here(dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:

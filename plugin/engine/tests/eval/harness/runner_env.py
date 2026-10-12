@@ -17,7 +17,7 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parents[3]
 STUB_BIN = ENGINE / "tests" / "eval" / "stubs" / "bin"
 SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-_DROPPED_PREFIXES = ("GIT_", "SCOUT_", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE")
+_DROPPED_PREFIXES = ("GIT_", "SCOUT_", "SCOUTCTL_BIN", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE")
 # Credentials that would bill an API or reach a real account. The eval runs on the
 # maintainer's subscription login only (spec §13 Q1); an exported key must never be used.
 SECRETS = (

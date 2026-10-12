@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -28,8 +29,8 @@ def busy():
     return load_scenario("busy-weekday")
 
 
-def _key(arm: Checkout, busy, model: str = "sonnet", cli: str = "2.1.278") -> str:
-    return cache_key(arm, busy, model=model, cli_version=cli)
+def _key(arm: Checkout, busy, model: str = "sonnet", cli: str = "2.1.278", weekday: int = 0) -> str:
+    return cache_key(arm, busy, model=model, cli_version=cli, weekday=weekday)
 
 
 def test_content_hash_is_stable_and_ignores_caches(tmp_path: Path) -> None:
@@ -87,3 +88,27 @@ def test_the_store_keeps_samples_per_key(tmp_path: Path) -> None:
     [loaded] = cache.samples("k1")
     assert (loaded.scenario, loaded.rep, loaded.result_dir) == ("busy-weekday", 1, stored)
     assert cache.samples("k2") == []
+
+
+def test_the_weekday_is_part_of_the_key(arm: Checkout, busy) -> None:
+    # Phases branch on the day (Monday preview, weekend scope): a Monday base isn't a Tuesday head's baseline.
+    assert _key(arm, busy, weekday=0) != _key(arm, busy, weekday=1)
+    assert _key(arm, busy, weekday=0) == _key(arm, busy, weekday=0)
+
+
+def _stored_sample(tmp_path: Path, name: str, started: str) -> Path:
+    d = tmp_path / name
+    d.mkdir()
+    meta = {"scenario": "busy-weekday", "rep": 1, "aborted": None, "started_at": started}
+    (d / "meta.json").write_text(json.dumps(meta))
+    (d / "checks.json").write_text("[]")
+    return d
+
+
+def test_samples_come_back_newest_first_and_clear_empties_a_key(tmp_path: Path) -> None:
+    cache = BaselineCache(tmp_path / "cache")
+    cache.add("k", _stored_sample(tmp_path, "s-a", "2026-10-01T09:00:00+0000"))
+    cache.add("k", _stored_sample(tmp_path, "s-b", "2026-10-12T09:00:00+0000"))
+    assert [s.meta["started_at"][:10] for s in cache.samples("k")] == ["2026-10-12", "2026-10-01"]
+    cache.clear("k")
+    assert cache.samples("k") == []

@@ -75,11 +75,11 @@ def format_comparison(cmp: Comparison, base: Sequence[SampleResult], head: Seque
         note = f"  ({r.unevaluated} could not evaluate)" if r.unevaluated else ""
         lines.append(f"{r.name:<14}{f'{r.base_pass}/{r.base_n}':>8}{f'{r.head_pass}/{r.head_n}':>8}  {r.verdict}{note}")
     lines.append("")
-    lines.append(f"{'metric (median [min–max])':<36}{'base':>18}{'head':>18}")
+    lines.append(f"{'metric (median [min–max])':<36}{'base':>26}{'head':>26}")
     for m in cmp.metrics:
         b = f"{_fmt(m.base[0])} [{_fmt(m.base[1])}–{_fmt(m.base[2])}]"
         h = f"{_fmt(m.head[0])} [{_fmt(m.head[1])}–{_fmt(m.head[2])}]"
-        lines.append(f"{m.label:<36}{b:>18}{h:>18}{'  WORSE' if m.worse else ''}")
+        lines.append(f"{m.label:<36}{b:>26}{h:>26}{'  WORSE' if m.worse else ''}")
     lines.append("")
     for arm, samples in (("base", base), ("head", head)):
         for s in samples:

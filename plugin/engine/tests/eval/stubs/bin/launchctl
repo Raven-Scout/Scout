@@ -1,0 +1,4 @@
+#!/bin/sh
+# eval stub: no eval run may reach the real launchctl (launchd and cron are global to the user).
+echo "launchctl is blocked in eval runs (tests/eval/stubs/bin/launchctl)" >&2
+exit 99

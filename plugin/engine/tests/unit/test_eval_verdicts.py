@@ -106,3 +106,16 @@ def test_a_metric_is_worse_only_when_head_median_exceeds_base_max() -> None:
     row = next(m for m in worse.metrics if m.label == "tool calls")
     assert (row.base, row.head, row.worse) == ((8, 7, 9), (11, 10, 12), True)
     assert next(m for m in overlap.metrics if m.label == "tool calls").worse is False
+
+
+def test_a_head_that_cannot_be_evaluated_where_base_could_is_a_regression() -> None:
+    # e.g. the head session stopped rewriting today's file (not_enriched): that's behaviour, not noise.
+    head = [_sample({"placement": None}) for _ in range(3)]
+    cmp = compare_arms(_arm(True, True, True), head)
+    r = _row(cmp)
+    assert (r.head_n, r.unevaluated, r.verdict) == (0, 3, "regression (head not evaluated)")
+    assert cmp.regressions == ["placement"]
+
+
+def test_improvement_wins_over_a_flaky_base() -> None:
+    assert _row(compare_arms(_arm(True, False, False), _arm(True, True, True))).verdict == "improvement"

@@ -9,6 +9,8 @@ Pure: it takes the two arms' samples and returns rows. The rules:
 - **improvement**: the mirror image (head stable-pass, base at most N−2), checked
   before noise: a mostly failing base under a stable head is an improvement;
 - otherwise a flaky base is ``noisy`` and excluded from the verdict;
+- a head that can't be evaluated more often than base (e.g. it stopped rewriting
+  today's file) is ``regression (head not evaluated)``: behaviour, not noise;
 - fewer than 2 evaluable samples on either arm: ``need N≥2``, never "no regression";
 - a metric (lower is better) is worse only when head's median is above base's max;
 - any aborted sample, or arms that ran different models or CLI versions, block
@@ -96,7 +98,12 @@ def compare_arms(base: Sequence[SampleResult], head: Sequence[SampleResult]) -> 
     for name in names:
         bp, bn, b_un = _tally(base, name)
         hp, hn, h_un = _tally(head, name)
-        verdict = "blocked" if blocked else _verdict(bp, bn, hp, hn)
+        if blocked:
+            verdict = "blocked"
+        elif h_un > b_un:  # e.g. head stopped rewriting today's file: behaviour, not noise
+            verdict = "regression (head not evaluated)"
+        else:
+            verdict = _verdict(bp, bn, hp, hn)
         rows.append(CheckRow(name, bp, bn, hp, hn, verdict, b_un + h_un))
     metrics = []
     for label, get in METRICS:
@@ -105,5 +112,5 @@ def compare_arms(base: Sequence[SampleResult], head: Sequence[SampleResult]) -> 
         if bv and hv:
             worse = not blocked and len(bv) >= 2 and len(hv) >= 2 and median(hv) > max(bv)
             metrics.append(MetricRow(label, _spread(bv), _spread(hv), worse))
-    regressions = [r.name for r in rows if r.verdict == "regression"]
+    regressions = [r.name for r in rows if r.verdict.startswith("regression")]
     return Comparison(rows, metrics, blocked, regressions)

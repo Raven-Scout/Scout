@@ -159,6 +159,7 @@ def test_env_isolates_path_git_and_gh(tmp_path: Path) -> None:
             "PATH": "/usr/local/bin:/usr/bin",
             "GIT_DIR": "/bad",
             "SCOUT_DATA_DIR": "/bad",
+            "SCOUTCTL_BIN": "/live/scoutctl",
             "ANTHROPIC_API_KEY": "k",
             "ANTHROPIC_AUTH_TOKEN": "k",
             "ANTHROPIC_BASE_URL": "u",
@@ -181,7 +182,7 @@ def test_env_isolates_path_git_and_gh(tmp_path: Path) -> None:
     path = env["PATH"].split(":")
     assert path[0].endswith("tests/eval/stubs/bin") and path[1].endswith(".venv/bin")
     assert "/opt/claude/bin" in path and "/usr/local/bin" not in path
-    assert "GIT_DIR" not in env and "SCOUT_DATA_DIR" not in env
+    assert "GIT_DIR" not in env and "SCOUT_DATA_DIR" not in env and "SCOUTCTL_BIN" not in env
     for secret in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
                    "CLAUDE_CODE_USE_VERTEX", "GH_TOKEN", "GITHUB_TOKEN"):  # fmt: skip
         assert secret not in env

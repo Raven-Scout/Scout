@@ -140,13 +140,18 @@ def test_a_base_install_never_installs_launchd_jobs(tmp_path: Path, monkeypatch:
     [cmd] = seen
     assert "--no-jobs" in cmd and "--skip-claude" in cmd
     assert Path(envs[0]["HOME"]).is_relative_to(tmp_path), "the install must run with a throwaway HOME"
+    from tests.eval.harness.runner_env import STUB_BIN
+
+    assert envs[0]["PATH"].split(":")[0] == str(STUB_BIN), "refusing launchctl/crontab first on PATH"
 
 
 def test_the_install_guard_refuses_a_command_without_no_jobs() -> None:
     import tests.eval.harness.build as build
 
-    with pytest.raises(AssertionError, match="--no-jobs"):
-        build._refuse_system_side_effects(["python", "-m", "scout", "bootstrap", "install", "--skip-claude"])
+    with pytest.raises(RuntimeError, match="--no-jobs"):
+        build._refuse_system_side_effects(
+            ["python", "-m", "scout", "bootstrap", "install", "--skip-claude"], {"HOME": "/tmp/x"}
+        )
 
 
 def test_the_in_process_install_refuses_jobs() -> None:
@@ -157,7 +162,7 @@ def test_the_in_process_install_refuses_jobs() -> None:
         user_email="a@example.com", timezone="UTC", platform="macos", plugin_version="0", enabled_connectors=set(),
         connector_inputs={}, skip_jobs=False, skip_claude=True,
     )  # fmt: skip
-    with pytest.raises(AssertionError, match="skip_jobs"):
+    with pytest.raises(RuntimeError, match="skip_jobs"):
         build._refuse_jobs(cfg)
 
 
@@ -197,9 +202,11 @@ def test_compare_runs_both_arms_then_reuses_the_cached_base(
     assert "1 cached base sample" in out
     assert len(_cached(cache_root)) == 1
 
+    before = _cached(cache_root)
     assert _compare(fake, cache_root, tmp_path, "--reps", "1", "--fresh-base") == 0
     assert "Will start 2 sessions" in capsys.readouterr().out
-    assert len(_cached(cache_root)) == 2
+    after = _cached(cache_root)
+    assert len(after) == 1 and after != before  # --fresh-base replaces the key's samples
 
 
 def test_compare_refuses_an_unknown_base_and_a_big_plan(
@@ -212,3 +219,35 @@ def test_compare_refuses_an_unknown_base_and_a_big_plan(
     assert "no-such-ref-xyz" in capsys.readouterr().err
     assert _compare(fake, cache_root, tmp_path, "--reps", "6") == 2
     assert "--many" in capsys.readouterr().err
+
+
+def test_compare_stops_launching_after_an_aborted_sample(
+    tmp_path: Path, fake: Path, cache_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
+    assert _compare(fake, cache_root, tmp_path, "--reps", "2") == 2
+    out = capsys.readouterr().out
+    assert "stopped after an aborted sample" in out
+    assert len(list((tmp_path / "results").iterdir())) == 1
+    assert _cached(cache_root) == []
+
+
+def test_the_install_guards_raise_rather_than_assert() -> None:
+    import tests.eval.harness.build as build
+
+    with pytest.raises(RuntimeError, match="--no-jobs"):
+        build._refuse_system_side_effects(["install", "--skip-claude"], {"HOME": "/tmp/x"})
+    with pytest.raises(RuntimeError, match="HOME"):
+        build._refuse_system_side_effects(["install", "--no-jobs", "--skip-claude"], {"HOME": str(Path.home())})
+
+
+def test_runner_children_and_base_installs_get_refusing_launchctl_and_crontab(tmp_path: Path) -> None:
+    import os
+
+    from tests.eval.harness.runner_env import STUB_BIN
+
+    for tool in ("launchctl", "crontab"):
+        stub = STUB_BIN / tool
+        assert os.access(stub, os.X_OK), tool
+        done = subprocess.run([str(stub), "list"], capture_output=True, text=True)
+        assert done.returncode == 99 and "eval" in done.stderr

@@ -1,0 +1,4 @@
+#!/bin/sh
+# eval stub: no eval run may reach the real crontab (launchd and cron are global to the user).
+echo "crontab is blocked in eval runs (tests/eval/stubs/bin/crontab)" >&2
+exit 99

@@ -143,7 +143,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     head_co = head_checkout()
     jobs = []
     for s in scenarios:
-        key = cache_key(base_co, s, model=model, cli_version=cli_version)
+        key = cache_key(base_co, s, model=model, cli_version=cli_version, weekday=today.weekday())
         cached = [] if args.fresh_base else cache.samples(key)[: args.reps]
         jobs.append((s, key, cached, args.reps - len(cached)))
     sessions = sum(args.reps + missing for _s, _k, _c, missing in jobs)
@@ -179,19 +179,34 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     try:
         for s, key, cached, missing in jobs:
             base_samples, head_samples = list(cached), []
+            replaced = False
             for i in range(max(args.reps, missing)):  # interleaved: base, head, base, head…
+                runs = []
                 if i < missing:
-                    print(f"… {s.name} base sample {i + 1}/{missing}", flush=True)
-                    b = run_sample(s, rep=i + 1, arm="base", checkout=base_co, **common)
-                    base_samples.append(b)
-                    if b.aborted is None:
-                        cache.add(key, b.result_dir)
+                    runs.append(("base", base_co, f"{s.name} base sample {i + 1}/{missing}"))
                 if i < args.reps:
-                    print(f"… {s.name} head sample {i + 1}/{args.reps}", flush=True)
-                    head_samples.append(run_sample(s, rep=i + 1, arm="head", checkout=head_co, **common))
+                    runs.append(("head", head_co, f"{s.name} head sample {i + 1}/{args.reps}"))
+                for arm, checkout, label in runs:
+                    print(f"… {label}", flush=True)
+                    sample = run_sample(s, rep=i + 1, arm=arm, checkout=checkout, **common)
+                    (base_samples if arm == "base" else head_samples).append(sample)
+                    if sample.aborted:
+                        # The verdict is already blocked: don't spend more of the subscription.
+                        left = (missing - len(base_samples) + len(cached)) + (args.reps - len(head_samples))
+                        print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}); "
+                              f"{left} sample(s) never ran ==")  # fmt: skip
+                        print(format_comparison(compare_arms(base_samples, head_samples), base_samples, head_samples))
+                        return 2
+                    if arm == "base":
+                        if args.fresh_base and not replaced:  # replace, only once a fresh sample exists
+                            cache.clear(key)
+                            replaced = True
+                        cache.add(key, sample.result_dir)
             cmp = compare_arms(base_samples, head_samples)
             print(f"\n== {s.name}: base {args.base} vs head (working tree) ==")
             print(format_comparison(cmp, base_samples, head_samples))
+            if cmp.blocked and cmp.blocked.startswith("mixed models"):
+                print("The cached base ran another model: rerun with --fresh-base to replace it.")
             regressions = regressions or bool(cmp.regressions)
     except LoginRequired as exc:
         print(f"eval: {exc}", file=sys.stderr)

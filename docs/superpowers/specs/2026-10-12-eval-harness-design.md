@@ -450,6 +450,26 @@ repeats `auth.expired`), plus everything in 7.1. "The wrap names the expired log
 - `compare` exits 0 with no verdict when either arm had a sample abort (budget, login, rate
   limit, `mcp_leak`, crash). A harness failure never reads as a regression.
 
+**As built (slice 4).**
+- **The base arm** is a detached `git worktree` of the ref under
+  `~/.cache/scout-eval/checkouts/<sha>`. It runs on head's venv with `PYTHONPATH` set to its own
+  engine, so its `bootstrap install`, runner hooks and the session's `scoutctl` are all the base's.
+  The harness's stubs and scorer stay head's.
+- **The cache key** also includes the **weekday**, because phases branch on the day.
+- **The cache** serves its newest samples first. `--fresh-base` replaces a key's samples, but only
+  once a new sample has succeeded.
+- **Stopping:** `compare` stops launching sessions after the first aborted sample.
+- **Unevaluated heads:** a head that can't be evaluated where base could (it stopped rewriting
+  today's file) counts as a regression.
+
+**First live compare** (2026-10-12, Sonnet, N=1 per arm, base `origin/main` against a branch with
+identical phases): the report gave placement 0/1 on base and 1/1 on head, verdict `need N≥2`.
+- The base sample did a whole read of `knowledge-base.md`, the #196 trap. The head sample didn't.
+- Tool calls were 82 against 108.
+
+The same phases scored differently in one sample each. That is the noise the N≥2 rule and the
+verdict rules exist for.
+
 **The base arm is cached locally (§13 Q6).** Model-backed runs use someone's own subscription, so
 running main again on every compare is wasted usage.
 - A base sample is stored under `~/.cache/scout-eval/baselines/<key>/` with its result dir intact.

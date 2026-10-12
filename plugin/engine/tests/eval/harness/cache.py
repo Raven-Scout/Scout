@@ -7,7 +7,7 @@ exactly that:
 - the arm's ``plugin/phases``, ``plugin/templates`` and ``plugin/engine/scout``;
 - the scenario directory;
 - this checkout's harness, stubs and base overlay (the scorer and the fixture);
-- ``HARNESS_VERSION``, the model alias and ``claude --version``.
+- ``HARNESS_VERSION``, the model alias, ``claude --version`` and the weekday.
 
 A main commit that touches none of those reuses the cache. Nothing is shared
 between machines: a cache is one maintainer's record.
@@ -44,7 +44,8 @@ def content_hash(roots: Iterable[Path]) -> str:
     return digest.hexdigest()
 
 
-def cache_key(checkout: Checkout, scenario: Scenario, *, model: str, cli_version: str) -> str:
+def cache_key(checkout: Checkout, scenario: Scenario, *, model: str, cli_version: str, weekday: int) -> str:
+    """``weekday`` (0 = Monday) because phases branch on the day: a Monday base isn't a Tuesday head's baseline."""
     parts = [
         content_hash([checkout.plugin_root / d for d in ARM_DIRS]),
         content_hash([scenario.path]),
@@ -52,6 +53,7 @@ def cache_key(checkout: Checkout, scenario: Scenario, *, model: str, cli_version
         HARNESS_VERSION,
         model,
         cli_version,
+        str(weekday),
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:20]
 
@@ -67,7 +69,11 @@ class BaselineCache:
         d = self._dir(key)
         if not d.is_dir():
             return []
-        return [load_sample(p) for p in sorted(d.iterdir()) if (p / "meta.json").is_file()]
+        found = [load_sample(p) for p in d.iterdir() if (p / "meta.json").is_file()]
+        return sorted(found, key=lambda s: str(s.meta.get("started_at", "")), reverse=True)  # newest first
+
+    def clear(self, key: str) -> None:
+        shutil.rmtree(self._dir(key), ignore_errors=True)
 
     def add(self, key: str, result_dir: Path) -> Path:
         target = self._dir(key) / result_dir.name
