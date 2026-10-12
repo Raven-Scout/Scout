@@ -45,14 +45,15 @@ CLI_AUTH_FAILURE_ERE = (
     "^(Failed to authenticate([.:]|$)"
     "|Invalid authentication credentials"
     "|API Error: 40[13]"
-    "|OAuth (session|token)( has)? expired)"
+    "|OAuth (session|token)( has)? expired"
+    "|Not logged in)"
 )
 
 # Rejected-Claude-credential signatures: the retry wrapper's own banner, or the
 # CLI's raw error (pre-0.8.0 runners never wrote the banner).
 _AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + CLI_AUTH_FAILURE_ERE, re.MULTILINE)
 
-_AUTH_FIX = "Open Terminal and run: claude auth login (or claude setup-token for unattended hosts)"
+_AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)"
 
 
 def iso_z(dt: datetime) -> str:
@@ -87,7 +88,7 @@ class Finding:
     since: datetime | None
     summary: str
     fix: str
-    source: str  # "ledger" | "log" | "schedule" | "events" | "git"
+    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token"
 
     def to_dict(self) -> dict:
         return {
@@ -266,6 +267,21 @@ def _last_ok_at(rows: list[OutcomeRow]) -> datetime | None:
     return max(oks) if oks else None
 
 
+def _window_text(row: OutcomeRow) -> str:
+    """What landed in *row*'s window, as measured (#237), or nothing when unmeasured.
+
+    A window is observable and authorship is not (a hand commit, or a concurrent
+    one, can land in it), so this never says "by this run". A failed run that
+    committed before it died is not a run that "produced nothing".
+    """
+    if row.commits_in_window is None:
+        return ""
+    if row.commits_in_window == 0:
+        return " No commits in that run's window."
+    newest = f" (newest {row.newest_commit})" if row.newest_commit else ""
+    return f" {row.commits_in_window} commit(s) in that run's window{newest}."
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -321,7 +337,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     id="runs.failing",
                     severity="red" if streak >= 2 else "yellow",
                     since=last_ok,
-                    summary=f"The last {streak} scheduled run(s) failed ({newest.failure_class}).",
+                    summary=(
+                        f"The last {streak} scheduled run(s) failed ({newest.failure_class})." + _window_text(newest)
+                    ),
                     fix=f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
                     source="ledger",
                 )
@@ -985,10 +1003,64 @@ def update_findings(vault: Path, rows: list[UpdateOutcome], *, now: datetime) ->
     return findings
 
 
-def evaluate(vault: Path, *, now: datetime | None = None) -> RunHealth:
+_TOKEN_FIX = "Open Terminal and run: scoutctl auth setup-token"
+
+
+def token_findings(found: list[Finding], *, vault: Path, home: Path | None, now: datetime) -> list[Finding]:
+    """Adjust for a stored long-lived token (#267, run-health P6).
+
+    The token overrides the login, so a rejection names the token's fix, not
+    `claude auth login`. A token inside its last 30 days, or past them, is yellow:
+    it lasts a year and nothing else says when that is. So is a last run that
+    couldn't read the stored token (a locked Keychain) and fell back to the login.
+    """
+    from scout import claude_auth
+
+    last = claude_auth.last_sign_in(vault)
+    if last is not None and last.token_unreadable:
+        found = [
+            *found,
+            Finding(
+                id="auth.token_unreadable",
+                severity="yellow",
+                since=last.at,
+                summary=(
+                    "The last scheduled run couldn't read the stored long-lived Claude token (is the "
+                    "Keychain locked?) and used your interactive login, which expires."
+                ),
+                fix="Check it with: scoutctl auth status (keep the login Keychain unlocked while runs fire)",
+                source="token",
+            ),
+        ]
+    st = claude_auth.status(claude_auth.default_store(home=home), now=now)
+    if st.mode != "token":
+        return found
+    out = []
+    for f in found:
+        if f.id == "auth.expired":
+            summary = f.summary.replace("your Claude login expired", "your stored Claude token was rejected")
+            f = replace(f, summary=summary, fix=f"{_TOKEN_FIX} (or scoutctl auth clear to use your Claude login)")
+        out.append(f)
+    expiry = st.expiry_text()
+    if st.expiring and expiry:
+        out.append(
+            Finding(
+                id="auth.token_expiring",
+                severity="yellow",
+                since=None,
+                summary=f"The long-lived Claude token scheduled runs use {expiry}.",
+                fix=_TOKEN_FIX,
+                source="token",
+            )
+        )
+    return out
+
+
+def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:
+    """``home`` locates the stored Claude token (default: the real home)."""
     now = now or datetime.now(UTC)
     rows = read_outcomes(vault)
-    found = ledger_findings(rows, vault=vault, now=now)
+    found = token_findings(ledger_findings(rows, vault=vault, now=now), vault=vault, home=home, now=now)
     loaded = _load_schedule(vault)
     fires = read_last_fires(vault)
     sched, slots = _schedule_findings(vault, loaded, rows, fires, now=now)

@@ -1,7 +1,8 @@
 """The runners' vault-lock protocol matches scoutctl's (#331).
 
 ``run-scout.sh``, ``run-dreaming.sh`` and ``run-research.sh`` take
-``.scout-logs/.scout-session.lock`` in shell, and ``scoutctl`` takes the same
+``.scout-logs/.scout-session.lock`` in shell (the shared
+``scripts/scout-lock.sh``), and ``scoutctl`` takes the same
 file through ``scout/scripts/bootstrap_lock.py``. These tests render the real
 runner templates and drive them against crashed holders, live Python
 ``O_EXCL`` holders, and each other. The lock must be created atomically, a
@@ -45,7 +46,18 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     out = scout_dir / tmpl.name.removesuffix(".tmpl")
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
+    _render_lock_lib(scout_dir)
     return out
+
+
+def _render_lock_lib(scout_dir: Path) -> None:
+    """scripts/scout-lock.sh, which every runner sources (#218)."""
+    text = (
+        (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8").replace("{{INSTANCE_NAME}}", "Scout")
+    )
+    out = scout_dir / "scripts" / "scout-lock.sh"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
 
 
 def _vault(tmp_path: Path, runner: str = "run-scout.sh.tmpl") -> tuple[Path, Path, Path]:
@@ -87,7 +99,9 @@ def _stub_overlap_session(scout_dir: Path, hold_s: float = 0.2) -> tuple[Path, P
 def _popen(script: Path) -> subprocess.Popen:
     return subprocess.Popen(
         [str(script)],
-        env={**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": "3600"},
+        # No wait for a busy lock: the protocol is about one try at it (the
+        # wait is covered in test_scout_lock.py).
+        env={**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": "3600", "SCOUT_LOCK_WAIT_SECS": "0"},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -112,22 +126,6 @@ def _run_log(log_dir: Path) -> str:
 
 def _lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").split() if path.exists() else []
-
-
-# --- static -------------------------------------------------------------------
-
-
-def _lock_block(runner: str) -> str:
-    text = (TEMPLATES / runner).read_text(encoding="utf-8")
-    start = text.index("# Concurrency guard")
-    end = text.index("trap _scout_release_lock EXIT", start)
-    return text[start:end]
-
-
-def test_all_runners_share_one_lock_block() -> None:
-    """The three runners carry the same block; a fix to one must reach all."""
-    blocks = {runner: _lock_block(runner) for runner in RUNNERS}
-    assert len(set(blocks.values())) == 1, "the runners' lock blocks have drifted apart"
 
 
 # --- deterministic behaviour, every runner ------------------------------------
@@ -268,7 +266,7 @@ def test_wedged_holder_is_not_reaped_while_another_process_holds_the_guard(tmp_p
 
         proc = subprocess.run(
             [str(script)],
-            env={**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": "30"},
+            env={**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": "30", "SCOUT_LOCK_WAIT_SECS": "0"},
             capture_output=True,
             text=True,
             timeout=RUN_TIMEOUT_S,

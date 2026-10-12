@@ -181,6 +181,9 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
             "oauth_expired",
             id="oauth-cli-string",
         ),
+        # A Mac set up again comes up logged out rather than expired (#267).
+        pytest.param("Not logged in · Please run /login\n", "oauth_expired", id="not-logged-in"),
+        pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.
         pytest.param(
@@ -479,3 +482,137 @@ def test_an_unknown_command_prints_usage(outcome: Path) -> None:
 
     assert result.returncode == 64
     assert "usage:" in result.stderr
+
+
+# ---------- what landed in the run's window (#237) ----------
+
+
+def _git(vault: Path, *args: str, at: int | None = None) -> str:
+    env = {**os.environ}
+    if at is not None:
+        env |= {"GIT_AUTHOR_DATE": f"@{at} +0000", "GIT_COMMITTER_DATE": f"@{at} +0000"}
+    return subprocess.run(
+        ["git", "-C", str(vault), "-c", "user.name=Alex", "-c", "user.email=alex@example.com", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.strip()
+
+
+def _commit(vault: Path, name: str, at: int | None = None) -> str:
+    (vault / name).write_text(name, encoding="utf-8")
+    _git(vault, "add", name)
+    _git(vault, "commit", "-q", "-m", f"dreaming [08:00]: {name}", at=at)
+    return _git(vault, "rev-parse", "--short", "HEAD")
+
+
+@pytest.fixture
+def repo(vault: Path) -> Path:
+    _git(vault, "init", "-q")
+    return vault
+
+
+def _record_from(script: Path, started: str, log: Path) -> None:
+    result = subprocess.run(
+        ["bash", str(script), "record", "dreaming-evening", "1", started, str(log)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_commits_in_the_run_window_are_counted_and_the_newest_named(repo: Path, outcome: Path) -> None:
+    """The #237 shape: a run that committed and then died did not produce nothing."""
+    started = int(time.time()) - 600
+    _commit(repo, "before.md", at=started - 3600)
+    _commit(repo, "first.md", at=started + 60)
+    newest = _commit(repo, "second.md", at=started + 120)
+
+    _record_from(outcome, str(started), _log(repo, "API Error: Your computer went to sleep mid-response.\n"))
+
+    (row,) = _ledger(repo)
+    assert (row["outcome"], row["commits_in_window"], row["newest_commit"]) == ("failed", 2, newest)
+
+
+def test_a_window_with_no_commits_is_a_measured_zero(repo: Path, outcome: Path) -> None:
+    started = int(time.time()) - 600
+    _commit(repo, "before.md", at=started - 3600)
+
+    _record_from(outcome, str(started), _log(repo, ""))
+
+    (row,) = _ledger(repo)
+    assert (row["commits_in_window"], row["newest_commit"]) == (0, None)
+
+
+@pytest.mark.parametrize("started", ["0", "100000", "notanumber", "999999999"])
+def test_an_implausible_start_is_unmeasured_never_zero(repo: Path, outcome: Path, started: str) -> None:
+    """git's approxidate reads a bad --since as "now" and answers 0 with a clean exit.
+
+    The repo holds a commit at @1500000000 that each of these bounds would
+    include if git honoured it, so a 0 here is the #237 false negative.
+    """
+    _commit(repo, "old.md", at=1500000000)
+
+    _record_from(outcome, started, _log(repo, ""))
+
+    (row,) = _ledger(repo)
+    assert (row["commits_in_window"], row["newest_commit"]) == (None, None)
+
+
+def test_a_start_in_the_future_is_unmeasured(repo: Path, outcome: Path) -> None:
+    _commit(repo, "now.md")
+
+    _record_from(outcome, str(int(time.time()) + 3600), _log(repo, ""))
+
+    assert _ledger(repo)[-1]["commits_in_window"] is None
+
+
+def test_a_sane_bound_counts_the_same_old_commit(repo: Path, outcome: Path) -> None:
+    """The positive control for the test above: the same repo, a valid bound."""
+    _commit(repo, "old.md", at=1500000000)
+
+    _record_from(outcome, "1499999000", _log(repo, ""))
+
+    assert _ledger(repo)[-1]["commits_in_window"] == 1
+
+
+@pytest.mark.parametrize("setup", ["no-repo", "empty-repo"])
+def test_a_vault_without_history_is_unmeasured(vault: Path, outcome: Path, setup: str) -> None:
+    if setup == "empty-repo":
+        _git(vault, "init", "-q")
+
+    _record_from(outcome, str(int(time.time()) - 60), _log(vault, ""))
+
+    assert _ledger(vault)[-1]["commits_in_window"] is None
+
+
+# ---------- who ran it, and what started it ----------
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, "manual"),
+        ({"SCOUT_FORCE_MODE": "morning-briefing"}, "schedule"),
+        ({"SCOUT_TRIGGER": "heartbeat"}, "heartbeat"),
+        ({"SCOUT_TRIGGER": "bogus", "SCOUT_FORCE_MODE": "x"}, "schedule"),
+    ],
+)
+def test_every_row_names_its_trigger(vault: Path, outcome: Path, env: dict[str, str], expected: str) -> None:
+    _record(outcome, "manual", 0, _log(vault, ""), **env)
+
+    assert _ledger(vault)[-1]["trigger"] == expected
+
+
+@pytest.mark.parametrize(("kind", "expected"), [("dreaming", "dreaming"), ("bogus", None), (None, None)])
+def test_a_row_names_its_runner_kind_when_the_runner_says(
+    vault: Path, outcome: Path, kind: str | None, expected: str | None
+) -> None:
+    env = {"SCOUT_RUNNER_KIND": kind} if kind else {}
+
+    _record(outcome, "manual", 0, _log(vault, ""), **env)
+
+    assert _ledger(vault)[-1].get("runner") == expected

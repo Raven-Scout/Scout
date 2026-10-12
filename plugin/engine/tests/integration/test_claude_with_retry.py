@@ -13,6 +13,7 @@ a fresh session on wake. That exit-1 poisoned the next run's failure-backoff.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -549,3 +550,142 @@ def test_a_usage_limit_is_not_retried_in_run(tmp_path: Path, message: str) -> No
     assert "=== Claude usage limit — no retry (exit 1) ===" in log
     assert f"    {message}" in log
     assert "not classified as transient" not in log
+
+
+# ---------- the idle-sleep assertion (#210) ----------
+
+TRANSIENT = "API Error: Connection closed mid-response."
+
+
+def _power_calls(record: Path) -> list[str]:
+    return record.read_text(encoding="utf-8").splitlines() if record.exists() else []
+
+
+def test_every_attempt_and_every_backoff_hold_the_idle_sleep_assertion(tmp_path: Path, power_assertions: Path) -> None:
+    """The backoff sleep is the more exposed line: the wrapper is deliberately
+    idle there, so an assertion scoped to the attempt alone leaves it bare."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=TRANSIENT, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _power_calls(power_assertions) == [
+        "caffeinate -i -m -s true",  # the probe: can this host take the assertion?
+        f"caffeinate -i -m -s {fake}",
+        "caffeinate -i -m -s sleep 0",
+        f"caffeinate -i -m -s {fake}",
+    ]
+    assert "=== Backoff done after 0s ===" in log_file.read_text()
+
+
+def test_the_assertion_passes_the_exit_code_through(tmp_path: Path, power_assertions: Path) -> None:
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output="something else broke", first_attempt_exit=7)
+
+    result = _run(script, fake, scout_dir / "run.log")
+
+    assert result.returncode == 7
+    assert f"caffeinate -i -m -s {fake}" in _power_calls(power_assertions)
+
+
+def test_scout_no_caffeinate_turns_the_assertion_off(tmp_path: Path, power_assertions: Path) -> None:
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=TRANSIENT, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+
+    result = subprocess.run(
+        [str(script), str(log_file), str(fake)],
+        env={**os.environ, "SCOUT_RETRY_BACKOFF_S": "0", "SCOUT_NO_CAFFEINATE": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2
+    assert _power_calls(power_assertions) == []
+
+
+# `true` for the wrapper's probe of the inhibitor.
+_WRAPPER_TOOLS = ("cat", "date", "dirname", "grep", "rm", "sleep", "tail", "tr", "true", "wc")
+
+
+def _bare_path(tmp_path: Path, *extra: tuple[str, str]) -> str:
+    """A PATH holding only what the wrapper needs, plus ``extra`` (name, body) scripts:
+    a host with no caffeinate, as Linux is."""
+    bin_dir = tmp_path / "bare-bin"
+    bin_dir.mkdir()
+    for tool in _WRAPPER_TOOLS:
+        real = shutil.which(tool)
+        assert real, tool
+        (bin_dir / tool).symlink_to(real)
+    for name, body in extra:
+        (bin_dir / name).write_text(body, encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    return str(bin_dir)
+
+
+def _run_on(path: str, scout_dir: Path) -> tuple[subprocess.CompletedProcess, Path]:
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(scout_dir, first_attempt_output=TRANSIENT, first_attempt_exit=1)
+    log_file = scout_dir / "run.log"
+    result = subprocess.run(
+        [str(script), str(log_file), str(fake)],
+        env={**os.environ, "PATH": path, "SCOUT_RETRY_BACKOFF_S": "0"},
+        capture_output=True,
+        text=True,
+    )
+    return result, fake
+
+
+def test_linux_uses_systemd_inhibit_on_both_paths(tmp_path: Path) -> None:
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    calls = tmp_path / "inhibit.calls"
+    inhibit = (
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "$*" >> "{calls}"\n'
+        'while [ "$#" -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done\n'
+        'exec "$@"\n'
+    )
+
+    result, fake = _run_on(_bare_path(tmp_path, ("systemd-inhibit", inhibit)), scout_dir)
+
+    assert result.returncode == 0, (scout_dir / "run.log").read_text()
+    flags = "--what=idle:sleep --why=Scout run"
+    assert calls.read_text().splitlines() == [
+        f"{flags} true",
+        f"{flags} {fake}",
+        f"{flags} sleep 0",
+        f"{flags} {fake}",
+    ]
+
+
+def test_a_host_without_any_assertion_still_runs(tmp_path: Path) -> None:
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+
+    result, _ = _run_on(_bare_path(tmp_path), scout_dir)
+
+    assert result.returncode == 0, (scout_dir / "run.log").read_text()
+    assert _attempts(scout_dir) == 2
+
+
+def test_an_inhibitor_that_cannot_inhibit_here_is_not_used(tmp_path: Path) -> None:
+    """cron often has no logind session: systemd-inhibit then fails before running
+    anything, and wrapping claude in it would fail every run."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    refusing = "#!/bin/bash\necho 'Failed to inhibit: Access denied' >&2\nexit 1\n"
+
+    result, _ = _run_on(_bare_path(tmp_path, ("systemd-inhibit", refusing)), scout_dir)
+
+    assert result.returncode == 0, (scout_dir / "run.log").read_text()
+    assert _attempts(scout_dir) == 2

@@ -105,6 +105,15 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     out = scout_dir / tmpl.name.removesuffix(".tmpl")
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
+    # Every runner sources the session lock (#218).
+    lock_lib = scout_dir / "scripts" / "scout-lock.sh"
+    lock_lib.parent.mkdir(parents=True, exist_ok=True)
+    lock_lib.write_text(
+        (TEMPLATES / "scripts" / "scout-lock.sh.tmpl")
+        .read_text(encoding="utf-8")
+        .replace("{{INSTANCE_NAME}}", "Scout"),
+        encoding="utf-8",
+    )
     return out
 
 
