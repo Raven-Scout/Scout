@@ -1,0 +1,21 @@
+# Email persona (server key claude_ai_Gmail). Tool names follow plugin/phases/connectors/email.md
+# and templates/connector-probes.yaml.
+tools:
+  - name: list_labels
+    description: List the mailbox labels.
+    inputSchema: {type: object, properties: {}}
+  - name: gmail_search_messages
+    description: Search messages with mail search syntax, such as is:unread newer_than:1d.
+    inputSchema:
+      type: object
+      properties:
+        q: {type: string}
+        maxResults: {type: integer}
+      required: [q]
+  - name: get_thread
+    description: Read every message in a thread.
+    inputSchema:
+      type: object
+      properties:
+        threadId: {type: string}
+      required: [threadId]

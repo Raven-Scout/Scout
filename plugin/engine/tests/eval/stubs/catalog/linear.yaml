@@ -1,0 +1,60 @@
+# Linear persona (server key claude_ai_Linear). Tool names follow plugin/phases/connectors/linear.md
+# and templates/connector-probes.yaml; descriptions and schemas are written for the fixture.
+tools:
+  - name: list_teams
+    description: List the teams in the workspace.
+    inputSchema: {type: object, properties: {}}
+  - name: list_issues
+    description: List issues, optionally filtered by assignee, state, team or update time.
+    inputSchema:
+      type: object
+      properties:
+        assignee: {type: string, description: A user id, name, or "me".}
+        state: {type: string}
+        team: {type: string}
+        updatedAt: {type: string, description: ISO-8601 date or duration such as -P1D.}
+        limit: {type: integer}
+  - name: get_issue
+    description: Get one issue by identifier, such as PROJ-1201.
+    inputSchema:
+      type: object
+      properties:
+        id: {type: string}
+      required: [id]
+  - name: list_comments
+    description: List the comments on an issue.
+    inputSchema:
+      type: object
+      properties:
+        issueId: {type: string}
+      required: [issueId]
+  - name: get_project
+    description: Get one project, including its last update time.
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string, description: A project id or name.}
+      required: [query]
+  - name: get_status_updates
+    description: List recent project status updates.
+    inputSchema:
+      type: object
+      properties:
+        project: {type: string}
+        limit: {type: integer}
+  - name: save_issue
+    description: Create or update an issue.
+    inputSchema:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+        state: {type: string}
+  - name: save_comment
+    description: Add a comment to an issue.
+    inputSchema:
+      type: object
+      properties:
+        issueId: {type: string}
+        body: {type: string}
+      required: [issueId, body]
