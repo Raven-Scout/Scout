@@ -64,7 +64,7 @@ def _pointer(managed_by, python=THIS_PYTHON):
     )
 
 
-def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None, pointer=None):
+def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None, pointer=None, has_token=True):
     calls: list[list[str]] = []
     codes = codes or {}
 
@@ -85,6 +85,8 @@ def _deps(tmp_path, *, plan=AutoAction.INSTALL, manager=None, codes=None, pointe
         invoke=invoke,
         add_custom=lambda definition, inputs: {"status": "applied", "message": "Live"},
         first_briefing_slot=lambda: "briefing-am",
+        # True by default: a stored token skips the setup-token question these scripts don't answer.
+        has_token=lambda: has_token,
     )
     return deps, calls
 
@@ -978,3 +980,82 @@ def test_default_deps_first_briefing_slot_is_none_without_any_briefing(monkeypat
     monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
     deps = sw.default_deps()
     assert deps.first_briefing_slot() is None
+
+
+# --- the long-lived token for unattended runs (#267, run-health P6) ---------------
+#
+# Fresh-install answers: instance, name, email, keep tz, toggle, slack id,
+# per-session, daily; then the token question; then the first run.
+_INSTALL_ANSWERS = ["", "", "", "", "", "U0123", "", "20"]
+
+
+def test_setup_offers_a_long_lived_token_and_runs_auth_setup_token(tmp_path):
+    deps, calls = _deps(tmp_path, has_token=False)
+    p = Scripted([*_INSTALL_ANSWERS, "y", "n"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert ["auth", "setup-token"] in calls
+    assert any("Create a long-lived token for unattended runs?" in s for s in p.said)
+    assert calls.index(["auth", "setup-token"]) > 0  # after the install
+
+
+def test_setup_token_question_forwards_claude_bin(tmp_path):
+    deps, calls = _deps(tmp_path, has_token=False)
+    p = Scripted([*_INSTALL_ANSWERS, "y", "n"])
+    sw.run_setup(_opts(tmp_path, claude_bin="/opt/fake/claude"), p, deps)
+    assert ["auth", "setup-token", "--claude-bin", "/opt/fake/claude"] in calls
+
+
+def test_setup_token_declined_says_how_to_do_it_later(tmp_path):
+    deps, calls = _deps(tmp_path, has_token=False)
+    p = Scripted([*_INSTALL_ANSWERS, "", "n"])  # default: no
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert not any(c[:2] == ["auth", "setup-token"] for c in calls)
+    assert any("scoutctl auth setup-token" in s for s in p.said)
+
+
+def test_a_failed_setup_token_is_reported_and_setup_carries_on(tmp_path):
+    deps, calls = _deps(tmp_path, has_token=False, codes={"auth": 2})
+    p = Scripted([*_INSTALL_ANSWERS, "y", "y"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert any("No token stored" in s and "scoutctl auth setup-token" in s for s in p.said)
+    assert ["schedule", "fire-now", "briefing-am"] in calls
+
+
+@pytest.mark.parametrize("end", [EOFError, KeyboardInterrupt])
+def test_end_of_input_at_the_token_question_is_a_no(tmp_path, end):
+    deps, calls = _deps(tmp_path, has_token=False)
+    p = Scripted(_INSTALL_ANSWERS, end=end)
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert not any(c[:2] == ["auth", "setup-token"] for c in calls)
+
+
+def test_headless_setup_prints_the_token_hint_and_asks_nothing(tmp_path):
+    deps, calls = _deps(tmp_path, has_token=False)
+    p = Scripted([])
+    opts = _opts(tmp_path, yes=True, name="Alex", email="alex@example.com", connectors="calendar")
+    assert sw.run_setup(opts, p, deps) == 0
+    assert not any(c[:2] == ["auth", "setup-token"] for c in calls)
+    assert any("scoutctl auth setup-token" in s for s in p.said)
+
+
+def test_a_stored_token_skips_the_question(tmp_path):
+    deps, _calls = _deps(tmp_path, has_token=True)
+    p = Scripted([*_INSTALL_ANSWERS, "n"])
+    assert sw.run_setup(_opts(tmp_path), p, deps) == 0
+    assert not any("long-lived token" in s for s in p.said)
+
+
+def test_an_upgrade_never_asks_about_the_token(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE, manager="install.sh", has_token=False)
+    assert sw.run_setup(_opts(tmp_path), Scripted([]), deps) == 0
+    assert not any(c[:2] == ["auth", "setup-token"] for c in calls)
+
+
+def test_default_deps_has_token_reads_the_store(monkeypatch, tmp_path):
+    from scout import claude_auth
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    deps = sw.default_deps()
+    assert deps.has_token() is False
+    claude_auth.save_token(claude_auth.default_store(), "sk-ant-oat01-FAKE-TEST-TOKEN-0000000000000000")
+    assert deps.has_token() is True
