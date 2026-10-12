@@ -31,31 +31,107 @@ hitting the network.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
+from collections.abc import Callable
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from scout.errors import ConfigError
-from scout.events import Event, now_iso
+from scout import paths
+from scout.errors import ConfigError, ScoutError
+from scout.events import Event
 from scout.ids import new_ulid
 
 TELEGRAM_API = "https://api.telegram.org"
 MAX_MESSAGE_LEN = 4096  # Telegram hard limit per sendMessage
-SECRETS_DIR = Path.home() / ".scout-secrets"
 
 VALID_TIERS = ("info", "action_required")
 DEFAULT_TIMEOUT = 10.0
+
+# Duplicate guard (#241): a byte-identical body to the same chat inside this
+# window is refused. One row per real send, under the vault's state dir.
+DUPLICATE_WINDOW = timedelta(minutes=10)
+SENT_LOG = "telegram-sent.jsonl"
+
+
+class DuplicateSendError(ScoutError):
+    """A byte-identical message already reached this chat inside the window."""
+
+    exit_code = 3
+
+    def __init__(self, original_id: str, sent_at: str) -> None:
+        super().__init__(f"byte-identical message sent at {sent_at} (id {original_id})")
+        self.original_id = original_id
+        self.sent_at = sent_at
+
+
+def secrets_dir() -> Path:
+    """The secrets directory, resolved per call (not at import: HOME can change)."""
+    return Path.home() / ".scout-secrets"
+
+
+def _iso(moment: datetime) -> str:
+    """Event-style UTC timestamp: millisecond precision, ``Z`` suffix."""
+    n = moment.astimezone(UTC)
+    return n.strftime("%Y-%m-%dT%H:%M:%S.") + f"{n.microsecond // 1000:03d}Z"
+
+
+# ----- duplicate guard -------------------------------------------------------
+
+
+def _sent_log_path() -> Path | None:
+    """The sent-log path, or None when no vault state dir exists (guard skipped).
+
+    Creates only the state dir's leaf, never the vault itself.
+    """
+    try:
+        state = paths.state_dir(paths.data_dir())
+        state.mkdir(exist_ok=True)
+    except Exception:  # noqa: BLE001 - a send never fails for want of a log
+        return None
+    return state / SENT_LOG
+
+
+def _recent_rows(log: Path, now: datetime) -> list[dict[str, str]]:
+    """Rows younger than the window; unreadable or malformed content reads as empty."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows: list[dict[str, str]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+            key, rid, ts = row["key"], row["id"], row["ts"]
+            age = now - datetime.fromisoformat(ts)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if isinstance(key, str) and isinstance(rid, str) and timedelta(0) <= age < DUPLICATE_WINDOW:
+            rows.append({"key": key, "id": rid, "ts": ts})
+    return rows
+
+
+def _record_sent(log: Path, rows: list[dict[str, str]], new_row: dict[str, str]) -> None:
+    """Rewrite the log with the live rows plus the new one (atomic; failures swallowed)."""
+    tmp = log.with_name(log.name + ".tmp")
+    try:
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in [*rows, new_row]), encoding="utf-8")
+        os.replace(tmp, log)
+    except OSError:
+        pass
 
 
 # ----- secret loading ------------------------------------------------------
 
 
 def _read_secret(name: str) -> str:
-    """Read a secret file from ``SECRETS_DIR``.
+    """Read a secret file from :func:`secrets_dir`.
 
     Raises ``ConfigError`` (exit code 10) with an actionable message if the
     file is missing, unreadable, empty, or has insecure permissions. The
@@ -68,7 +144,7 @@ def _read_secret(name: str) -> str:
     every other process on the host, so refusing to read it is the
     right default.
     """
-    path = SECRETS_DIR / name
+    path = secrets_dir() / name
     if not path.exists():
         raise ConfigError(
             f"Missing secret: {path}. Create it (mode 600) — see engine/scout/docs/connectors/telegram-setup.md."
@@ -154,6 +230,9 @@ def send(
     *,
     dry_run: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
+    allow_duplicate: bool = False,
+    now: datetime | None = None,
+    receipt: Callable[[str], None] | None = None,
 ) -> Event:
     """Send a message via the Telegram Bot API and return an :class:`Event`.
 
@@ -163,9 +242,15 @@ def send(
     via Typer choices, but this layer rejects unknown tiers in case a Python
     caller bypasses the CLI.
 
+    ``receipt``, when given, is called with the Event id as soon as it is known
+    (before any dry-run output; after the last chunk of a real send), so the CLI
+    can put ``id=<id>`` first on stderr.
+
     Raises:
         ValueError: empty body or unknown tier.
         ConfigError: missing secret files (exit code 10).
+        DuplicateSendError: a byte-identical body went to this chat inside
+            ``DUPLICATE_WINDOW`` and ``allow_duplicate`` is false (exit code 3).
         requests.RequestException: HTTP-layer failure during a real send.
             Bubbles up so the caller knows the send did not complete.
     """
@@ -177,10 +262,34 @@ def send(
     token = _read_secret("telegram-bot-token")
     chat_id = _read_secret("telegram-chat-id")
 
+    now = now or datetime.now(UTC)
+    ts = _iso(now)
+    key = hashlib.sha256(f"{chat_id}\x00{body}".encode()).hexdigest()
+    log = None if dry_run else _sent_log_path()
+    rows = _recent_rows(log, now) if log else []
+    if not allow_duplicate:
+        for row in rows:
+            if row["key"] == key:
+                raise DuplicateSendError(row["id"], row["ts"])
+
     chunks = _split_message(body)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:
+        dry_event = Event(
+            id=new_ulid(),
+            ts=ts,
+            kind="notification.sent",
+            source="cli:notify_telegram",
+            payload={
+                "tier": tier,
+                "channel": "telegram",
+                "body_chars": len(body),
+                "dry_run": True,
+            },
+        )
+        if receipt:
+            receipt(dry_event.id)  # before the preamble, so the id is the first stderr line
         # Dry-run preamble goes to STDERR so stdout stays pure JSON for
         # downstream parsers (the CLI prints the Event to stdout after).
         # The Telegram URL embeds the bot token in the path
@@ -195,18 +304,7 @@ def send(
                 f"[dry-run] body: {json.dumps(payload, ensure_ascii=False)}",
                 file=sys.stderr,
             )
-        return Event(
-            id=new_ulid(),
-            ts=now_iso(),
-            kind="notification.sent",
-            source="cli:notify_telegram",
-            payload={
-                "tier": tier,
-                "channel": "telegram",
-                "body_chars": len(body),
-                "dry_run": True,
-            },
-        )
+        return dry_event
 
     for chunk in chunks:
         payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier)
@@ -215,9 +313,9 @@ def send(
         # layer maps requests.RequestException to a non-zero exit code.
         resp.raise_for_status()
 
-    return Event(
+    ev = Event(
         id=new_ulid(),
-        ts=now_iso(),
+        ts=ts,
         kind="notification.sent",
         source="cli:notify_telegram",
         payload={
@@ -226,6 +324,12 @@ def send(
             "body_chars": len(body),
         },
     )
+    if log:
+        # Recorded only after every chunk posted: one row per logical send.
+        _record_sent(log, rows, {"key": key, "id": ev.id, "ts": ts})
+    if receipt:
+        receipt(ev.id)
+    return ev
 
 
 # ----- CLI entry -----------------------------------------------------------
@@ -252,6 +356,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         print(f"notify-telegram: {e}")
         return ConfigError.exit_code
+    except DuplicateSendError as e:
+        print(f"notify-telegram: refused — {e}")
+        return DuplicateSendError.exit_code
     except ValueError as e:
         print(f"notify-telegram: {e}")
         return 1

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# run-outcome.sh — record how a scheduled {{INSTANCE_NAME}} run ended, and send an
-# out-of-band notice when runs start failing.
+# run-outcome.sh — record how a scheduled {{INSTANCE_NAME}} run ended, and hand the
+# ledger to the run-health notifier.
 #
 # This has to run from the runner, not from inside the session: the failure it
 # exists to catch is a run that never reaches its phases (an expired login, a
@@ -10,7 +10,10 @@
 #   connector-health.md          rolls up tool calls; a run that dies at startup
 #                                makes none, which looks like a quiet window
 #   the wrap-up message          is composed by the run itself
-# So the watcher is the wrapper, and the channel is Telegram.
+# So the watcher is still the wrapper. After every run (a success too, so a
+# recovery is noticed) it calls `scoutctl health notify`, which decides what is
+# red and pushes to every configured channel. If scoutctl itself cannot run, the
+# wrapper raises one local desktop alert (at most a day apart): the floor.
 #
 # Usage (from each run-*.sh, after the session):
 #     scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file>
@@ -29,12 +32,18 @@ if [ ! -x "$SCOUTCTL" ]; then
     SCOUTCTL="$(command -v scoutctl 2>/dev/null || true)"
 fi
 
+# The engine-unreachable floor: one desktop alert, rate-limited by this marker
+# (it holds an epoch). A working `health notify` removes it.
+ENGINE_ALERT_MARKER="$LOG_DIR/.engine-alert-sent"
+ENGINE_ALERT_INTERVAL_S="${SCOUT_ENGINE_ALERT_INTERVAL_S:-86400}"
+case "$ENGINE_ALERT_INTERVAL_S" in ''|*[!0-9]*) ENGINE_ALERT_INTERVAL_S=86400 ;; esac
+
 # Log patterns per failure class, matched case-insensitively against the tail of
 # the run's log. Kept narrow on purpose: the log also holds the pre-session
 # steps' output, and the budget check's preamble names the budget on every run.
 # AUTH_RE is the Claude CLI's own phrasing at the start of a line, matched
 # case-sensitively; it is the same string as the retry wrapper's AUTH_PATTERNS and
-# bootstrap_doctor.CLI_AUTH_FAILURE_ERE (a test keeps them equal), so the Telegram
+# bootstrap_doctor.CLI_AUTH_FAILURE_ERE (a test keeps them equal), so the ledger
 # class, the desktop alert and the doctor agree on what a rejected login is.
 AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
@@ -59,9 +68,43 @@ classify_failure() {
     fi
 }
 
+# notify_engine_unreachable — scoutctl could not run, so nothing can report run
+# health. Raise a local desktop alert, at most once per interval. Same osascript /
+# notify-send block as claude-with-retry.sh's notify_auth_failure. The marker is
+# written only when a notification went out, so a host with no notifier retries.
+notify_engine_unreachable() {
+    local now last=0 sent=0
+    local title="{{INSTANCE_NAME}} engine is broken"
+    local body="scoutctl could not run, so {{INSTANCE_NAME}} cannot report run health. Reinstall: curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | bash, or open Scout.app."
+    now="$(date +%s)"
+    if [ -f "$ENGINE_ALERT_MARKER" ]; then
+        last="$(cat "$ENGINE_ALERT_MARKER" 2>/dev/null || true)"
+        case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    fi
+    # 10#: a value with a leading zero is decimal, not (invalid) octal.
+    if [ $(( 10#$now - 10#$last )) -lt $(( 10#$ENGINE_ALERT_INTERVAL_S )) ]; then
+        return 0
+    fi
+    if command -v osascript >/dev/null 2>&1; then
+        # Title and body go in as argv, never into the AppleScript source.
+        printf '%s\n' 'on run argv' \
+            '    display notification (item 2 of argv) with title (item 1 of argv) sound name "Basso"' \
+            'end run' \
+            | osascript - "$title" "$body" >/dev/null 2>&1 && sent=1
+    elif command -v notify-send >/dev/null 2>&1; then
+        # cron runs without the desktop session's bus address; point at the user bus when there is one.
+        [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "/run/user/$(id -u)/bus" ] && DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus" && export DBUS_SESSION_BUS_ADDRESS
+        notify-send --urgency=critical "$title" "$body" >/dev/null 2>&1 && sent=1
+    fi
+    if [ "$sent" -eq 1 ]; then
+        echo "$now" > "$ENGINE_ALERT_MARKER" 2>/dev/null || true
+    fi
+    return 0
+}
+
 cmd_record() {
     local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}"
-    local finished duration klass streak tier hint
+    local finished duration klass
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
     case "$started" in ''|*[!0-9]*) started=0 ;; esac
     finished="$(date +%s)"
@@ -87,51 +130,15 @@ with open(ledger, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PY
 
-    [ "$code" -eq 0 ] && return 0
-
-    # One failed run is noise; two in a row is an outage. Notify at the first
-    # (silent push) and the second (loud push), then stop: a notice on every
-    # failed slot of a long outage is its own failure mode.
-    streak="$(python3 - "$LEDGER" <<'PY' 2>/dev/null || echo 0
-import json, sys
-rows = []
-try:
-    with open(sys.argv[1], encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                continue
-except OSError:
-    pass
-n = 0
-for row in reversed(rows):
-    if row.get("exit_code", 0) == 0:
-        break
-    n += 1
-print(n)
-PY
-)"
-    case "$streak" in
-        1) tier="info" ;;
-        2) tier="action_required" ;;
-        *) return 0 ;;
-    esac
-
-    case "$klass" in
-        oauth_expired) hint="Re-authenticate the claude binary this runner uses — run: claude auth login" ;;
-        git_lock)      hint="A stale .git lock blocked the commit; run scripts/run-outcome.sh clear-stale-locks." ;;
-        network)       hint="Transient network failure; usually clears on its own." ;;
-        rate_limited)  hint="Rate limited; the next slot backs off." ;;
-        budget)        hint="The run hit its --max-budget-usd cap." ;;
-        *)             hint="See the log for details." ;;
-    esac
-
-    if [ -n "$SCOUTCTL" ] && [ -x "$SCOUTCTL" ]; then
-        "$SCOUTCTL" notify telegram --tier "$tier" --body \
-"{{INSTANCE_NAME}} run failed: ${mode} (exit ${code}, ${klass}), ${streak} in a row.
-${hint}
-Log: ${log}" >/dev/null 2>&1 || true
+    # Every run, success included, so a recovery is noticed. The output lands
+    # next to the run's own log when there is one.
+    local notify_log="$LOG_DIR/health-notify.log"
+    [ -n "$log" ] && [ -f "$log" ] && notify_log="$log"
+    if [ -n "$SCOUTCTL" ] && [ -x "$SCOUTCTL" ] \
+        && "$SCOUTCTL" health notify --quiet >>"$notify_log" 2>&1; then
+        rm -f "$ENGINE_ALERT_MARKER" 2>/dev/null || true
+    else
+        notify_engine_unreachable
     fi
     return 0
 }

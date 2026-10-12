@@ -664,3 +664,48 @@ def test_slot_runtime_invalid_value_raises_config_error(tmp_path):
     )
     with pytest.raises(ConfigError, match="runtime"):
         load_schedule(yaml_file)
+
+
+_GOOD_SLOT = (
+    "    type: briefing\n"
+    "    runner: run-scout.sh\n"
+    "    fires_at_local: '08:00'\n"
+    "    weekdays: [Mon]\n"
+    "    missed_window_hours: 4\n"
+    "    on_miss: fire\n"
+    "    cooldown_minutes: 60\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "slots: [1, 2]\n",
+        "slots: {a: hello}\n",
+        "slots: {a: [1]}\n",
+        "slots:\n  a:\n" + _GOOD_SLOT.replace("[Mon]", "5"),
+        "slots:\n  a:\n" + _GOOD_SLOT.replace("missed_window_hours: 4", "missed_window_hours: [4]"),
+    ],
+)
+def test_malformed_slot_shapes_raise_config_error(tmp_path, body):
+    """A wrong-shaped slots block is a ConfigError, never a TypeError (P1 review F3)."""
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text("schema_version: 1\n" + body)
+    with pytest.raises(ConfigError):
+        load_schedule(yaml_file)
+
+
+def test_null_slots_is_an_empty_schedule(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text("schema_version: 1\nslots:\n")
+    assert list(load_schedule(yaml_file)) == []
+
+
+@pytest.mark.parametrize("overlay_body", ["slots: [1]\n", "slots: {a: hello}\n"])
+def test_malformed_overlay_slot_shapes_raise_config_error(tmp_path, overlay_body):
+    seed = tmp_path / "schedule.yaml"
+    seed.write_text("schema_version: 1\nslots:\n  a:\n" + _GOOD_SLOT)
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text("schema_version: 1\n" + overlay_body)
+    with pytest.raises(ConfigError):
+        load_schedule(seed, overlay=overlay)

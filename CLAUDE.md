@@ -62,6 +62,16 @@ first.** The two have different languages, test runners, and release flows.
   `shasum -a 256`, then `cp` it to
   `apps/macos/ScoutTests/Fixtures/parser-corpus.json` — all in one commit.
   (scout-iOS-app vendors a copy in its own repo; see `apps/macos/CLAUDE.md`.)
+- **The doctor run-health fixture has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/doctor-run-health.json`, generated —
+  never hand-edited — from the vault builder in
+  `plugin/engine/tests/unit/test_doctor_run_health_contract.py`: from
+  `plugin/engine` run
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_doctor_run_health_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/doctor-run-health.json` and update the pins in
+  `apps/macos/ScoutTests/Engine/DoctorReportTests.swift` — all in one commit.
+  `contract.yml` byte-compares the two copies.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

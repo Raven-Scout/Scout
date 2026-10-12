@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -66,7 +67,7 @@ def secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d.mkdir()
     _write_secret(d / "telegram-bot-token", FAKE_TOKEN)
     _write_secret(d / "telegram-chat-id", FAKE_CHAT_ID)
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
     return d
 
 
@@ -74,7 +75,7 @@ def secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def empty_secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Hermetic secrets dir with NO credentials present."""
     d = tmp_path / "secrets"
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
     return d
 
 
@@ -133,7 +134,7 @@ def test_send_missing_chat_id_raises_config_error(tmp_path: Path, monkeypatch: p
     d.mkdir()
     _write_secret(d / "telegram-bot-token", FAKE_TOKEN)
     # chat-id deliberately absent
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     with pytest.raises(ConfigError) as exc_info:
         notify_telegram.send(tier="info", body="test")
@@ -400,7 +401,7 @@ def test_read_secret_rejects_insecure_permissions(tmp_path: Path, monkeypatch: p
     bad = d / "telegram-bot-token"
     bad.write_text(FAKE_TOKEN)
     bad.chmod(0o644)  # world-readable — DEFAULT umask outcome, not safe
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     with pytest.raises(ConfigError) as exc_info:
         notify_telegram._read_secret("telegram-bot-token")
@@ -419,7 +420,7 @@ def test_read_secret_rejects_group_readable_mode_640(tmp_path: Path, monkeypatch
     bad = d / "telegram-bot-token"
     bad.write_text(FAKE_TOKEN)
     bad.chmod(0o640)
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     with pytest.raises(ConfigError, match="insecure permissions"):
         notify_telegram._read_secret("telegram-bot-token")
@@ -432,6 +433,161 @@ def test_read_secret_accepts_mode_600(tmp_path: Path, monkeypatch: pytest.Monkey
     ok = d / "telegram-bot-token"
     ok.write_text(FAKE_TOKEN)
     ok.chmod(0o600)
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     assert notify_telegram._read_secret("telegram-bot-token") == FAKE_TOKEN
+
+
+# ----- #241: duplicate guard and stderr receipt -------------------------------
+#
+# Hermetic: ``requests.post`` is always patched, secrets live under tmp_path, and
+# the sent log goes to the tmp vault ``fake_data_dir`` (SCOUT_DATA_DIR). Nothing
+# here may reach api.telegram.org.
+
+T0 = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def guarded(secrets_dir: Path, fake_data_dir: Path) -> Path:
+    """Secrets + a tmp vault, so the sent log is live. Returns the log path."""
+    return fake_data_dir / ".scout-state" / notify_telegram.SENT_LOG
+
+
+def _send(body: str = "wrap", **kw):
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        ev = notify_telegram.send("info", body, **kw)
+    return ev, post
+
+
+def test_identical_body_within_window_is_refused(guarded: Path) -> None:
+    first, post1 = _send(now=T0)
+    assert post1.call_count == 1
+    with patch("scout.scripts.notify_telegram.requests.post") as post2:
+        with pytest.raises(notify_telegram.DuplicateSendError) as exc:
+            notify_telegram.send("info", "wrap", now=T0 + timedelta(minutes=5))
+    assert post2.call_count == 0
+    assert exc.value.original_id == first.id
+    assert exc.value.sent_at == first.ts
+    assert notify_telegram.DuplicateSendError.exit_code == 3
+
+
+def test_different_body_within_window_is_sent(guarded: Path) -> None:
+    _send("one", now=T0)
+    _, post = _send("two", now=T0 + timedelta(minutes=1))
+    assert post.call_count == 1
+
+
+def test_identical_body_after_window_is_sent(guarded: Path) -> None:
+    _send(now=T0)
+    _, post = _send(now=T0 + timedelta(minutes=10, seconds=1))
+    assert post.call_count == 1
+    # the expired row was pruned on rewrite; only the new one remains
+    assert len(guarded.read_text().splitlines()) == 1
+
+
+def test_allow_duplicate_sends_again(guarded: Path) -> None:
+    _send(now=T0)
+    _, post = _send(now=T0 + timedelta(minutes=1), allow_duplicate=True)
+    assert post.call_count == 1
+
+
+def test_dry_run_neither_checks_nor_records(guarded: Path) -> None:
+    ev, post = _send(dry_run=True, now=T0)
+    assert post.call_count == 0 and ev.payload["dry_run"] is True
+    assert not guarded.exists()
+    _send(now=T0)  # a real send is not blocked by the dry run
+    _send(dry_run=True, now=T0 + timedelta(minutes=1))  # and a dry run is not blocked by the real one
+    assert len(guarded.read_text().splitlines()) == 1
+
+
+def test_corrupt_sent_log_reads_as_empty(guarded: Path) -> None:
+    guarded.write_text('not json\n{"key": 1}\n[1]\n{"key": "k", "id": "x", "ts": "garbage"}\n')
+    _, post = _send(now=T0)
+    assert post.call_count == 1
+    rows = [json.loads(line) for line in guarded.read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["ts"] == "2026-10-11T12:00:00.000Z"
+
+
+def test_unreadable_sent_log_reads_as_empty(guarded: Path) -> None:
+    guarded.mkdir()  # a directory where the file should be: read raises OSError
+    _, post = _send(now=T0)
+    assert post.call_count == 1
+
+
+def test_log_row_only_after_every_chunk_posted(guarded: Path) -> None:
+    body = ("x" * 4000 + "\n\n") * 2
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        ok = _ok_response()
+        bad = MagicMock()
+        bad.raise_for_status.side_effect = RuntimeError("chunk 2 failed")
+        post.side_effect = [ok, bad]
+        with pytest.raises(RuntimeError):
+            notify_telegram.send("info", body, now=T0)
+    assert not guarded.exists()
+
+
+def test_no_vault_skips_the_guard(secrets_dir: Path) -> None:
+    # Hermetic HOME has no ~/Scout: the log can't be created, the send still goes.
+    _, post1 = _send(now=T0)
+    _, post2 = _send(now=T0)
+    assert post1.call_count == post2.call_count == 1
+    assert not (Path.home() / "Scout").exists()
+
+
+def test_path_resolution_failure_skips_the_guard(secrets_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a: object, **k: object) -> Path:
+        raise RuntimeError("no vault")
+
+    monkeypatch.setattr(notify_telegram.paths, "data_dir", boom)
+    _, post = _send(now=T0)
+    assert post.call_count == 1
+
+
+def test_log_write_failure_never_blocks_a_send(guarded: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(notify_telegram.os, "replace", boom)
+    ev, post = _send(now=T0)
+    assert post.call_count == 1 and ev.kind == "notification.sent"
+
+
+def test_secrets_dir_follows_home_per_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "a"))
+    assert notify_telegram.secrets_dir() == tmp_path / "a" / ".scout-secrets"
+    monkeypatch.setenv("HOME", str(tmp_path / "b"))
+    assert notify_telegram.secrets_dir() == tmp_path / "b" / ".scout-secrets"
+
+
+def test_cli_prints_receipt_id_first_on_stderr(runner: CliRunner, guarded: Path) -> None:
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        result = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello"])
+    assert result.exit_code == 0, result.output
+    ev = json.loads(result.stdout)
+    assert result.stderr.splitlines()[0] == f"id={ev['id']}"
+
+
+def test_cli_dry_run_also_prints_receipt(runner: CliRunner, secrets_dir: Path) -> None:
+    result = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert result.stderr.splitlines()[0] == f"id={json.loads(result.stdout)['id']}"
+
+
+def test_cli_refuses_duplicate_with_exit_3(runner: CliRunner, guarded: Path) -> None:
+    with patch("scout.scripts.notify_telegram.requests.post") as post:
+        post.return_value = _ok_response()
+        first = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello"])
+        second = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello"])
+        assert post.call_count == 1
+        third = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello", "--allow-duplicate"])
+        assert post.call_count == 2
+    original = json.loads(first.stdout)
+    assert second.exit_code == 3
+    assert second.stdout == ""
+    lines = second.stderr.splitlines()
+    assert lines[0] == f"id={original['id']}"
+    assert lines[1].startswith("scoutctl notify telegram: refused — byte-identical message sent at ")
+    assert f"(id {original['id']}); pass --allow-duplicate to send it again" in lines[1]
+    assert third.exit_code == 0
