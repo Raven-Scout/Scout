@@ -202,7 +202,8 @@ def test_a_stream_that_does_not_start_with_init_is_killed(tmp_path: Path) -> Non
 def test_a_child_that_dies_before_reading_the_prompt_does_not_hang_the_shim(tmp_path: Path) -> None:
     import time
 
-    argv = [*RUNNER_ARGV[:-1], "x" * 300_000]
+    # Over the 64 KB pipe buffer, under Linux's 128 KB limit on a single argument.
+    argv = [*RUNNER_ARGV[:-1], "x" * 100_000]
     start = time.monotonic()
     proc, _ = _run(tmp_path, [], timeout="30", argv=argv, fake_source="#!/bin/bash\nexit 1\n")
     assert time.monotonic() - start < 15
