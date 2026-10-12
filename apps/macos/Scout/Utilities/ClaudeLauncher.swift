@@ -40,11 +40,11 @@ enum ClaudeLauncher {
         /// `claude://claude.ai/new` — main chat. Reliably opens a fresh chat
         /// with the prompt prefilled from any screen.
         case chat
-        /// `claude://cowork/new` — dispatches into Cowork's composer with
-        /// ``prefillOnly: true``. Works only when the Cowork screen is
-        /// currently mountable, and appends to any existing composer text
-        /// rather than replacing it.
-        case cowork
+        /// `claude://cowork/new` — a new Cowork task, prefilled with the
+        /// prompt, with `folder` attached as the task's folder (Raven-Scout/Scout#292; the
+        /// same `folder` parameter Claude Desktop's own "Send to Claude"
+        /// service uses).
+        case cowork(folder: URL)
         /// `claude://code/new` — new Claude Code session in the Code tab,
         /// prefilled with the prompt. `folder` becomes the session's working
         /// directory; Claude Desktop shows a one-time trust confirmation for
@@ -659,8 +659,10 @@ enum ClaudeLauncher {
         switch mode {
         case .chat:
             components.host = "claude.ai"
-        case .cowork:
+        case .cowork(let folder):
             components.host = "cowork"
+            components.queryItems?.append(
+                URLQueryItem(name: "folder", value: folder.path))
         case .code(let folder):
             components.host = "code"
             components.queryItems?.append(

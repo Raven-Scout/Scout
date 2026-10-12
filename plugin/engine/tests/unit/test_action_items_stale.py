@@ -136,6 +136,153 @@ def test_ledger_ignores_board_field_churn(tmp_path: Path) -> None:
     assert ledger.last_changed("ZQOLD") == OLD
 
 
+AGED_BLOCK = [
+    "- [ ] [#ZQDUE] **File the quarterly expense report** — due Sep 22, now 4 days overdue.",
+    "  - Refs: example-org/app#42 · _re-anchored 2026-09-26 09:15 by the briefing_",
+]
+
+
+@pytest.mark.parametrize(
+    "edited",
+    [
+        # Date-only: a run re-anchors the due date and the note's timestamp.
+        [
+            "- [ ] [#ZQDUE] **File the quarterly expense report** — due Oct 1, now 4 days overdue.",
+            "  - Refs: example-org/app#42 · _re-anchored 2026-10-05 17:40 by the briefing_",
+        ],
+        # Count-only: the day count ticks over (and its unit goes plural to singular).
+        [
+            "- [ ] [#ZQDUE] **File the quarterly expense report** — due Sep 22, now 1 day overdue.",
+            "  - Refs: example-org/app#42 · _re-anchored 2026-09-26 09:15 by the briefing_",
+        ],
+        # Both, in other spellings: ISO date, weekday, relative day word.
+        [
+            "- [ ] [#ZQDUE] **File the quarterly expense report** — due 2026-09-30, now 12 days overdue.",
+            "  - Refs: example-org/app#42 · _re-anchored Mon 2026-10-12 08:05 by the briefing_",
+        ],
+    ],
+    ids=["date-only", "count-only", "iso-weekday"],
+)
+def test_ledger_ignores_edits_that_only_change_dates_or_ages(tmp_path: Path, edited: list[str]) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🔴 Urgent", AGED_BLOCK)), archived=True)
+    _daily(vault, RECENT, _doc(("## 🔴 Urgent", edited)))
+
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=TODAY)
+
+    # Re-anchoring an overdue item to today is not working on it (#372).
+    assert ledger.last_changed("ZQDUE") == OLD
+
+
+@pytest.mark.parametrize(
+    "edited",
+    [
+        # A real wording change.
+        [
+            "- [ ] [#ZQDUE] **File the quarterly expense report** — Sam sent the receipts, ready to file.",
+            "  - Refs: example-org/app#42 · _re-anchored 2026-09-26 09:15 by the briefing_",
+        ],
+        # A number that is not a date or an age: now a different PR.
+        [
+            "- [ ] [#ZQDUE] **File the quarterly expense report** — due Sep 22, now 4 days overdue.",
+            "  - Refs: example-org/app#57 · _re-anchored 2026-09-26 09:15 by the briefing_",
+        ],
+    ],
+    ids=["wording", "reference-number"],
+)
+def test_ledger_still_counts_real_edits_on_an_aged_item(tmp_path: Path, edited: list[str]) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🔴 Urgent", AGED_BLOCK)), archived=True)
+    _daily(vault, RECENT, _doc(("## 🔴 Urgent", edited)))
+
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=TODAY)
+
+    assert ledger.last_changed("ZQDUE") == RECENT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "**Decide** on the vendor with Alex",
+        "**Mark** the March draft as final",
+        "Sunil may join the sync",
+        "Review example-org/app#42 and PROJ-1234",
+        "3 of 5 receipts in",
+        "Step 2 w/ Alex, 500 h budget",
+        "Sam's 500 h budget, 2 hats",
+    ],
+)
+def test_without_dates_leaves_words_and_other_numbers_alone(text: str) -> None:
+    assert stale._without_dates(text).replace(stale._DATE_TOKEN, "<d>") == text.replace("March", "<d>")
+
+
+@pytest.mark.parametrize(
+    ("text", "folded"),
+    [
+        ("due Sep 22, now 4 days overdue", "due <d>, now <d> overdue"),
+        ("due 22 September 2026 · 1 day past", "due <d> · <d> past"),
+        ("_re-anchored Tue 2026-10-13 08:05_", "_re-anchored <d>_"),
+        ("call at 12:00 tomorrow, 2w late", "call at <d> late"),
+        ("day 12 of the wait, T-3", "<d> of the wait, <d>"),
+        ("snoozed-until: 2026-10-20 · re-anchored 2026-10-12", "snoozed-until: 2026-10-20 · re-anchored <d>"),
+        # Italic stamps: `_` must not stop a date from folding whole.
+        ("_re-anchored Oct 11_", "_re-anchored <d>_"),
+        ("_due Sep 22_ · _last seen Mon_", "_due <d>_ · _last seen <d>_"),
+        # Spelled-out and open-ended ages.
+        ("a week overdue, two weeks late", "<d> overdue, <d> late"),
+        ("4+ days past, est. 3h", "<d> past, est. <d>"),
+    ],
+)
+def test_without_dates_folds_dates_times_and_ages(text: str, folded: str) -> None:
+    assert stale._without_dates(text).replace(stale._DATE_TOKEN, "<d>") == folded
+
+
+def test_ledger_counts_a_progress_count_ticking_over(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    before = ["- [ ] [#ZQCNT] **Collect the receipts** — 3 of 5 in."]
+    after = ["- [ ] [#ZQCNT] **Collect the receipts** — 4 of 5 in."]
+    _daily(vault, OLD, _doc(("## 🟡 To Do", before)), archived=True)
+    _daily(vault, RECENT, _doc(("## 🟡 To Do", after)))
+
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=TODAY)
+
+    assert ledger.last_changed("ZQCNT") == RECENT
+
+
+def test_ledger_counts_a_new_snooze_date_as_a_touch(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🟡 To Do", [*STALE_BLOCK, "  - snoozed-until: 2026-08-10"])), archived=True)
+    _daily(vault, RECENT, _doc(("## 🟡 To Do", [*STALE_BLOCK, "  - snoozed-until: 2026-08-20"])))
+
+    ledger = ActivityLedger.load(vault)
+    ledger.catch_up(vault, before=TODAY)
+
+    # Re-snoozing is the user deciding something, unlike a re-anchored date.
+    assert ledger.last_changed("ZQOLD") == RECENT
+
+
+def test_ledger_from_an_older_version_is_rebuilt_from_the_daily_files(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    _daily(vault, OLD, _doc(("## 🔴 Urgent", AGED_BLOCK)), archived=True)
+    cache = ActivityLedger.path_for(vault)
+    cache.parent.mkdir(parents=True)
+    # A v1 ledger hashed raw text, so its hashes never match today's: reusing it
+    # would make every item look edited on upgrade day.
+    cache.write_text(
+        '{"version": 1, "seen_through": "' + OLD.isoformat() + '", "items": '
+        '{"ZQDUE": {"hash": "v1-raw-text-hash", "since": "' + OLD.isoformat() + '"}}}',
+        encoding="utf-8",
+    )
+
+    ledger = ActivityLedger.load(vault)
+    assert ledger.seen_through is None
+    ledger.catch_up(vault, before=TODAY)
+    assert ledger.unchanged("ZQDUE", stale._fingerprints(_doc(("## 🔴 Urgent", AGED_BLOCK)))["ZQDUE"])
+
+
 def test_ledger_treats_a_reappearing_item_as_new(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     _daily(vault, OLD, _doc(("## 🟡 To Do", STALE_BLOCK)), archived=True)
@@ -339,6 +486,31 @@ def test_archive_stale_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert [a.tag for a in archived] == ["ZQOLD"]
     assert today.read_text(encoding="utf-8") == before
     assert not (vault / "action-items" / "archive" / "stale-items-2026-10.md").exists()
+
+
+def test_archive_stale_after_upgrade_retires_an_item_kept_alive_only_by_re_anchoring(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    reanchored = [
+        "- [ ] [#ZQDUE] **File the quarterly expense report** — due Sep 22, now 12 days overdue.",
+        "  - Refs: example-org/app#42 · _re-anchored 2026-10-03 09:15 by the briefing_",
+    ]
+    _daily(vault, OLD, _doc(("## 🔴 Urgent", AGED_BLOCK)), archived=True)
+    _daily(vault, RECENT, _doc(("## 🔴 Urgent", AGED_BLOCK[:1] + reanchored[1:])), archived=True)
+    today = _daily(vault, TODAY, _doc(("## 🔴 Urgent", reanchored)))
+    # The v1 ledger saw yesterday's re-anchor as a touch.
+    cache = ActivityLedger.path_for(vault)
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        '{"version": 1, "seen_through": "' + RECENT.isoformat() + '", "items": '
+        '{"ZQDUE": {"hash": "v1-raw-text-hash", "since": "' + RECENT.isoformat() + '"}}}',
+        encoding="utf-8",
+    )
+
+    archived = archive_stale(data_dir=vault, date=TODAY)
+
+    # Rebuilt without the dates, its clock goes back to OLD: it leaves on upgrade day.
+    assert [(a.tag, a.last_changed) for a in archived] == [("ZQDUE", OLD)]
+    assert "ZQDUE" not in today.read_text(encoding="utf-8")
 
 
 def test_cli_archive_stale_reports_what_it_moved(tmp_path: Path) -> None:

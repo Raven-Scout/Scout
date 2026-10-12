@@ -116,14 +116,25 @@ struct ClaudeLauncherErrorTests {
             Issue.record("expected a .cli target")
         }
 
-        guard case let .claudeDesktop(mode) = ClaudeLauncher.Target.claudeDesktop(.cowork) else {
+        guard case let .claudeDesktop(mode) = ClaudeLauncher.Target.claudeDesktop(.chat) else {
             Issue.record("expected a .claudeDesktop target")
             return
         }
-        guard case .cowork = mode else {
-            Issue.record("expected the .cowork desktop mode")
+        guard case .chat = mode else {
+            Issue.record("expected the .chat desktop mode")
             return
         }
+    }
+
+    @Test("the cowork desktop mode carries the task's folder")
+    func desktopCoworkModeCarriesFolder() {
+        let folder = URL(fileURLWithPath: "/Users/alex/Scout")
+        guard case let .claudeDesktop(mode) = ClaudeLauncher.Target.claudeDesktop(.cowork(folder: folder)),
+              case let .cowork(carried) = mode else {
+            Issue.record("expected a .claudeDesktop(.cowork) target")
+            return
+        }
+        #expect(carried == folder)
     }
 
     @Test("the code desktop mode carries the session's working folder")
@@ -139,10 +150,10 @@ struct ClaudeLauncherErrorTests {
 
     @Test("the three desktop modes are distinguishable")
     func desktopModes_areDistinct() {
-        // `.code` carries an associated value, so the enum isn't auto-Equatable
+        // `.cowork` and `.code` carry a folder, so the enum isn't auto-Equatable
         // — match on the cases instead of comparing them.
         var seen: Set<String> = []
-        for mode in [ClaudeLauncher.DesktopMode.chat, .cowork,
+        for mode in [ClaudeLauncher.DesktopMode.chat, .cowork(folder: URL(fileURLWithPath: "/tmp")),
                      .code(folder: URL(fileURLWithPath: "/tmp"))] {
             switch mode {
             case .chat:   seen.insert("chat")

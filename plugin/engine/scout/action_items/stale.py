@@ -10,7 +10,10 @@ unreadable, and rendering it froze scout-app.
 This module is the one sanctioned exit. An item is *touched* when the text of
 its block (the task line plus its indented sub-bullets) changes — a comment,
 a snooze, a status note, a rewrite. Moving it between sections is not a
-touch: demotion is exactly what happens to items nobody is working. Once an
+touch: demotion is exactly what happens to items nobody is working. Neither is
+an edit that only changes dates, times or ages ("now 5 days overdue", a fresh
+`_re-anchored <date>_` stamp): that is a run re-anchoring an item, not anyone
+working it, and it kept overdue items alive forever (#372). Once an
 item's block has been unchanged for STALE_AFTER_DAYS it moves, verbatim, to
 ``action-items/archive/stale-items-YYYY-MM.md`` with a dated note. Nothing is
 deleted; bringing an item back is copying its block into today's file, which
@@ -37,12 +40,49 @@ from scout.ids import leading_prefix_pattern
 
 STALE_AFTER_DAYS = 60
 
-_LEDGER_VERSION = 1
+# 2: hashes fold dates and ages out of the text (#372). A v1 ledger is rebuilt.
+_LEDGER_VERSION = 2
 _DAILY_NAME_RE = re.compile(r"^action-items-(\d{4}-\d{2}-\d{2})\.md$")
 _OPEN_TASK_RE = re.compile(r"^- \[ \]\s+")
 _SNOOZE_RE = re.compile(r"snoozed-until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 _SUBHEADING_RE = re.compile(r"^###\s")
+
+_DATE_TOKEN = "\x00date\x00"
+# Word edges that treat `_` as a separator, so `_re-anchored Oct 11_` folds whole.
+_L = r"(?<![A-Za-z0-9])"
+_R = r"(?![A-Za-z0-9])"
+_MONTH = (
+    rf"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
+    rf"|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?){_R}\.?"
+)
+_ORDINAL = r"\d{1,2}(?:st|nd|rd|th)?"
+_COUNT = r"(?:\d+(?:\.\d+)?\+?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a\s+few|several)"
+_AGE_UNIT = (
+    r"(?:(?:working|business)\s+)?"
+    r"(?:days?|weeks?|wks?|hours?|hrs?|minutes?|mins?|months?|mos?|years?|yrs?)"
+)
+# Applied in order; each match becomes _DATE_TOKEN. Month and weekday names are
+# case-sensitive so "may" and "sun" in prose are left alone. A one-letter unit
+# counts only attached to its number ("3d", "2w"), so "500 h budget" stays.
+_DATE_PATTERNS = (
+    re.compile(rf"{_L}\d{{4}}-\d{{2}}-\d{{2}}(?:[T ]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?{_R}"),
+    re.compile(
+        rf"{_L}\d{{1,2}}(?::\d{{2}}(?::\d{{2}})?)?\s?[ap]m{_R}|{_L}\d{{1,2}}:\d{{2}}(?::\d{{2}})?{_R}", re.IGNORECASE
+    ),
+    re.compile(rf"{_L}\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?{_R}"),
+    re.compile(rf"(?:{_L}{_ORDINAL}\s+)?{_L}{_MONTH}(?:\s+{_ORDINAL}{_R})?(?:,?\s+\d{{4}}{_R})?"),
+    re.compile(
+        rf"{_L}(?:Mon(?:day)?|Tue(?:s|sday)?|Wed(?:nesday)?|Thu(?:rs?|rsday)?|Fri(?:day)?"
+        rf"|Sat(?:urday)?|Sun(?:day)?){_R}\.?"
+    ),
+    re.compile(rf"{_L}(?:today|tonight|tomorrow|yesterday){_R}", re.IGNORECASE),
+    re.compile(rf"{_L}{_COUNT}\s*(?:-\s*)?{_AGE_UNIT}{_R}|{_L}\d+[dwh]{_R}", re.IGNORECASE),
+    re.compile(rf"{_L}(?:day|week)\s+\d+{_R}", re.IGNORECASE),
+    re.compile(rf"{_L}T[-+]\d+{_R}"),
+)
+# "Mon 2026-10-12 08:05" is one date, however many tokens it took.
+_DATE_RUN_RE = re.compile(rf"{_DATE_TOKEN}(?:[\s,]*{_DATE_TOKEN})+")
 
 
 @dataclass(frozen=True)
@@ -131,16 +171,41 @@ def task_blocks(lines: list[str]) -> list[TaskBlock]:
     return blocks
 
 
+def _without_dates(line: str) -> str:
+    """`line` with every date, time and age folded into one placeholder.
+
+    Runs re-anchor overdue items — "due Sep 22, now 4 days overdue" becomes
+    "now 5 days overdue", or a `_re-anchored <date>_` note gets a new stamp —
+    and that is not the item being worked on (#372). Other numbers (a PR
+    number, an amount, "3 of 5 done") still count. A snooze date is kept as
+    written: re-snoozing is a decision.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _SNOOZE_RE.finditer(line):
+        out += [_fold_dates(line[pos : m.start()]), m.group(0)]
+        pos = m.end()
+    out.append(_fold_dates(line[pos:]))
+    return "".join(out)
+
+
+def _fold_dates(text: str) -> str:
+    for pattern in _DATE_PATTERNS:
+        text = pattern.sub(_DATE_TOKEN, text)
+    return _DATE_RUN_RE.sub(_DATE_TOKEN, text)
+
+
 def _fingerprints(lines: list[str]) -> dict[str, str]:
     """Tag → digest of its block text. Rows sharing a tag hash together.
 
     Board-field lines (`- Priority:`, `- Cycle:`, …) are left out: a run
-    refreshing them from Linear is not the item being worked on.
+    refreshing them from Linear is not the item being worked on. Dates and
+    ages are folded out of the rest (see `_without_dates`).
     """
     parts: dict[str, list[str]] = {}
     for b in task_blocks(lines):
         parts.setdefault(b.tag, []).extend(
-            ln.rstrip() for ln in lines[b.start : b.end] if ln.strip() and match_field_line(ln) is None
+            _without_dates(ln.rstrip()) for ln in lines[b.start : b.end] if ln.strip() and match_field_line(ln) is None
         )
     return {tag: hashlib.sha256("\n".join(body).encode("utf-8")).hexdigest() for tag, body in parts.items()}
 
