@@ -179,6 +179,76 @@ def test_run_claude_env_turns_off_nonblocking_mcp_startup(monkeypatch):
     assert captured["cwd"] == cd.tempfile.gettempdir()
 
 
+# --- why a claude.ai connector's write tools stay out of reach ----------------
+#
+# Drafting a claude.ai connector needs those connectors visible, so neither call
+# passes `--strict-mcp-config`, and every claude.ai connector on the account
+# loads into the session (#374's spike: about 40, Slack, Gmail, Calendar, Drive
+# and GitHub among them, write tools included). What keeps those tools from being
+# called is `--permission-mode dontAsk` with an allowlist of ToolSearch plus, for
+# the probe, one exact read tool: every other call is denied, not prompted.
+# Checked live on 2026-10-12 against Claude Code 2.1.278 (spec §4.2): an
+# adversarial prompt made both sessions call `create_draft` on a connected
+# claude.ai Gmail; each call was denied and listed in `permission_denials`, and
+# no draft was created. These tests pin every input that decision depends on,
+# so a change that widens it fails here first.
+
+_BYPASS_FLAGS = (
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--permission-prompt-tool",
+    "--disallowedTools",  # a denylist would mean the allowlist stopped being the whole story
+)
+
+
+def _allowed_tools(argv: list[str]) -> list[str]:
+    i = argv.index("--allowedTools")
+    tail = argv[i + 1 :]
+    # Variadic in the CLI: it must be the last flag so nothing after it is read as a rule.
+    assert not any(a.startswith("--") for a in tail), argv
+    return tail
+
+
+@pytest.mark.parametrize("server", ["claude.ai Example Suite", "plugin:chat:chat", "example-db"])
+def test_sessions_can_call_only_toolsearch_and_the_one_read_probe(home, tmp_path, server):
+    rec = Recorder(server_slug(server))
+    assert _draft(server, rec, tmp_path)["status"] == "drafted"
+    draft_call, probe_call = rec.calls
+    for argv in rec.calls:
+        assert argv.count("--permission-mode") == 1
+        assert argv[argv.index("--permission-mode") + 1] == "dontAsk", "anything else prompts or allows"
+        assert argv[argv.index("--tools") + 1] == "ToolSearch", "no built-in tool but ToolSearch"
+        assert not any(f in argv for f in _BYPASS_FLAGS), argv
+        assert "permissions" not in _settings(argv), "--settings must never carry allow rules"
+        assert argv[argv.index("--setting-sources") + 1] == "", "user allow rules stay out (#350)"
+        assert not any("*" in rule or "," in rule or " " in rule for rule in _allowed_tools(argv))
+    assert _allowed_tools(draft_call) == ["ToolSearch"]
+    probe = _definition(server_slug(server))["definitions"][0]["probe"]
+    assert _allowed_tools(probe_call) == ["ToolSearch", probe]
+    assert cd.is_read_tool(probe)
+
+
+def test_claude_ai_connectors_stay_visible_on_purpose(home, tmp_path):
+    """`--strict-mcp-config` would hide the connector being drafted. Leaving it
+    off is deliberate; the allowlist above is what keeps the others' tools out of
+    reach. If this flag is ever added, drafting a claude.ai connector breaks."""
+    rec = Recorder(server_slug("claude.ai Example Suite"))
+    _draft("claude.ai Example Suite", rec, tmp_path)
+    for argv in rec.calls:
+        assert "--strict-mcp-config" not in argv
+        assert "--mcp-config" not in argv
+
+
+def test_a_write_tool_never_reaches_the_probe_allowlist():
+    """The gate rejects a write-tool probe before any call; probe_argv itself
+    refuses anything that is not one exact MCP tool name."""
+    for bad in ("mcp__claude_ai_Gmail__*", "mcp__claude_ai_Gmail__list_drafts,mcp__claude_ai_Gmail__create_draft"):
+        with pytest.raises(ValueError):
+            cd.probe_argv("claude", bad, cd.Isolation(settings={"disableAllHooks": True}, mcp_config=None))
+    assert not cd.is_read_tool("mcp__claude_ai_Gmail__create_draft")
+    assert not cd.is_read_tool("mcp__claude_ai_Slack__slack_send_message_draft")
+
+
 # --- what each kind of server gets back --------------------------------------
 
 

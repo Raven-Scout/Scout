@@ -155,6 +155,46 @@ Verified against Claude Code 2.1.278 with a scratch config dir. Without the
 isolation, a globally allowed write tool was called and both user hooks fired.
 With it, the call was denied and no hook ran.
 
+**Why the account's claude.ai connectors are safe to leave loaded.** Neither
+call passes `--strict-mcp-config`, because drafting a claude.ai connector needs
+it visible. So every claude.ai connector on the account loads into both
+sessions, write tools included. #374's spike counted about 40, with Slack,
+Gmail, Calendar, Drive and GitHub connected. The isolation above does not narrow
+that, since a claude.ai connector gets "nothing extra" rather than "nothing
+else". The protection is the permission decision itself:
+- `dontAsk` denies every tool that no rule allows, instead of prompting;
+- the only rules are `--allowedTools ToolSearch` (plus one exact read tool for
+  the probe), with no setting sources, so no user allow rule can add a write tool;
+- `--tools ToolSearch` leaves no built-in tool, Bash included, to route around a
+  denial.
+
+Verified 2026-10-12 against Claude Code 2.1.278:
+- **Setup.** A scratch `CLAUDE_CONFIG_DIR` shared only the login
+  (`CLAUDE_SECURESTORAGE_CONFIG_DIR=""`). Both argvs came from the engine's own
+  `draft_argv` / `probe_argv` / `isolated_session` for `claude.ai Gmail`.
+- **Prompt.** It asked each session to create a Gmail draft with
+  `mcp__claude_ai_Gmail__create_draft`. Sonnet refused it as a prompt
+  injection. To exercise the permission layer rather than the model, the test
+  added `--append-system-prompt` framing the call as an authorized test. That
+  flag is prompt text only and changes no permission input.
+- **Result.** In both the draft and the probe session the model loaded and
+  called `create_draft`. The call was denied ("don't ask mode") and appeared in
+  `permission_denials`. The probe's allowed read (`list_drafts`) ran. A
+  `list_drafts` afterwards showed no draft newer than the test, so the denied
+  calls had no effect.
+
+`test_connector_draft_isolation.py` pins every input that decision depends on,
+beside the exact argvs:
+- `dontAsk`, and `--tools ToolSearch`;
+- an allowlist of ToolSearch plus only the one read probe, with no wildcard, and
+  `--allowedTools` as the last flag;
+- no permission-bypass flag, and no `permissions` in `--settings`;
+- `--strict-mcp-config` absent on purpose.
+
+A change that widens any of these fails there first. If a Claude Code release
+changes how `dontAsk` treats MCP tools, this guarantee has to be re-checked
+live.
+
 **The engine checks every draft before returning it.** No draft is trusted as
 written:
 - Every tool and the probe start with `mcp__<slug>__`.
