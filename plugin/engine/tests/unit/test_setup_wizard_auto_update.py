@@ -21,9 +21,7 @@ def _flag(argv: list[str]) -> str | None:
     return found[0] if found else None
 
 
-@pytest.mark.parametrize(
-    ("answer", "flag"), [("", "--auto-update"), ("y", "--auto-update"), ("n", "--no-auto-update")]
-)
+@pytest.mark.parametrize(("answer", "flag"), [("", "--auto-update"), ("y", "--auto-update"), ("n", "--no-auto-update")])
 def test_install_asks_and_defaults_to_on(tmp_path, answer, flag):
     deps, calls = _deps(tmp_path)
     p = Scripted([*ANSWERS, answer, "n"])
