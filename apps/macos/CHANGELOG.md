@@ -39,6 +39,10 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   `#`). Before, searching a tag found nothing, so a task beyond a section's
   first 20 rows could only be found with **Show more** or by searching its
   title (Raven-Scout/Scout#356).
+- The engine update sheet no longer re-opens on every launch when Claude Code
+  can't be found. It shows once; later launches skip the automatic update until
+  Claude Code is found, then run it. Settings ▸ Engine still offers **Update**
+  (Raven-Scout/Scout#346).
 
 ## [0.16.0] - 2026-10-11
 
