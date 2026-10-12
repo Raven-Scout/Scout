@@ -7,11 +7,37 @@ import SwiftUI
 struct LaunchClaudeMenu: View {
     enum Style { case split, icon }
 
-    let task: ActionTask
+    /// Built only when a launch happens, not on every render.
+    let prompt: () -> String
     let scoutDirectory: URL
     var style: Style = .split
+    /// The item's own Claude session (`- Session:`): a `claude.ai` link opens,
+    /// a local session id resumes in the terminal.
+    var session: String?
     /// Where the host shows a failed launch.
     @Binding var launchError: String?
+
+    init(prompt: @escaping () -> String, scoutDirectory: URL, style: Style = .split, session: String? = nil, launchError: Binding<String?>) {
+        self.prompt = prompt
+        self.scoutDirectory = scoutDirectory
+        self.style = style
+        self.session = session
+        _launchError = launchError
+    }
+
+    init(task: ActionTask, scoutDirectory: URL, style: Style = .split, launchError: Binding<String?>) {
+        self.init(
+            prompt: {
+                ClaudeLauncher.prompt(
+                    for: task,
+                    contextNote: TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
+                )
+            },
+            scoutDirectory: scoutDirectory,
+            style: style,
+            launchError: launchError
+        )
+    }
 
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
@@ -92,12 +118,7 @@ struct LaunchClaudeMenu: View {
         }
         Divider()
         Button {
-            let config = CLIConfig(
-                claudePathOverride: claudeCLIPath,
-                terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
-                customCommand: customLaunchCommand
-            )
-            launch(.cli(cwd: scoutDirectory, config: config))
+            launch(.cli(cwd: scoutDirectory, config: cliConfig))
         } label: {
             Label(cliMenuLabel, systemImage: "terminal")
         }
@@ -112,6 +133,54 @@ struct LaunchClaudeMenu: View {
         } label: {
             Label("Claude Desktop — new Cowork task", systemImage: "person.2")
         }
+        if let session, SessionReference(session).isActionable {
+            Divider()
+            sessionItem(session)
+        }
+    }
+
+    @ViewBuilder
+    private func sessionItem(_ session: String) -> some View {
+        switch SessionReference(session) {
+        case .cloud(let url):
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label("Open this item's Claude session", systemImage: "arrow.up.forward.app")
+            }
+        case .local(let id):
+            Button {
+                resume(id)
+            } label: {
+                Label("Resume this item's Claude session", systemImage: "arrow.uturn.forward")
+            }
+        case .unknown:
+            EmptyView()
+        }
+    }
+
+    /// `claude --resume` finds a session only from the folder it ran in, read
+    /// from its transcript. Without a transcript on this Mac, a new session
+    /// starts instead.
+    private func resume(_ id: String) {
+        guard let folder = ClaudeSessionFolder.folder(forSessionID: id) else {
+            launch(.claudeDesktop(.code(folder: scoutDirectory)))
+            return
+        }
+        do {
+            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cliConfig)
+            launchError = nil
+        } catch {
+            launchError = error.localizedDescription
+        }
+    }
+
+    private var cliConfig: CLIConfig {
+        CLIConfig(
+            claudePathOverride: claudeCLIPath,
+            terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
+            customCommand: customLaunchCommand
+        )
     }
 
     private var cliMenuLabel: String {
@@ -125,8 +194,7 @@ struct LaunchClaudeMenu: View {
 
     private func launch(_ target: ClaudeLauncher.Target) {
         do {
-            let note = TaskContextNote.load(tag: task.shortPrefix, scoutDirectory: scoutDirectory)
-            try ClaudeLauncher.launch(target: target, prompt: ClaudeLauncher.prompt(for: task, contextNote: note))
+            try ClaudeLauncher.launch(target: target, prompt: prompt())
             launchError = nil
         } catch {
             launchError = error.localizedDescription

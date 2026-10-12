@@ -6,6 +6,20 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **Topics view mode for Action Items** (#340). A third mode next to List and
+  Board groups tasks by workstream (`- Topic:`, then the topic's root session),
+  nests blocked steps under the step that blocks them, orders by Linear
+  priority and cycle, and parks on-hold work in one group. The state legend
+  filters the board. Sub-steps (`- Parent:`) nest under their parent. A Mine
+  step shows its next action as a chip; the chip or the hover bubble opens an
+  inline "What should Claude do?" box that sends the note to the item's own
+  session (resume a local one from its own folder, open a cloud one, or
+  start a new one). Done shows this week, today or yesterday. Open rows are remembered. Tab walks
+  the rows; Space expands one and Return asks Claude. A topic shows the
+  user's own name from `action-items/topic-names.md` when there is one.
+  Read-only: writes stay in List.
+
 ### Changed
 - When a section or board column has more rows than it shows, a
   "Showing 20 of 53 · Show 20 more" line now sits right under its header, not
