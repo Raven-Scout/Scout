@@ -109,3 +109,19 @@ Widgets
 Wishlist
 A
 README
+Add
+Create
+Defaults
+Find
+Get
+List
+Read
+Search
+Send
+Supports
+Tool
+With
+
+# --- Standards named in tool descriptions ---
+ISO
+RFC

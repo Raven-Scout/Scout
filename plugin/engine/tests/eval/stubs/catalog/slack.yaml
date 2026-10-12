@@ -1,0 +1,63 @@
+# Slack persona (server key claude_ai_Slack). Tool names follow plugin/phases/connectors/slack.md
+# and templates/connector-probes.yaml; descriptions and schemas are written for the fixture.
+tools:
+  - name: slack_search_public_and_private
+    description: Search messages in public and private channels and direct messages. Supports modifiers such as in:, from:, to:, after:, before:.
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string, description: Search query with optional modifiers.}
+        limit: {type: integer}
+      required: [query]
+  - name: slack_search_public
+    description: Search messages in public channels only.
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string}
+        limit: {type: integer}
+      required: [query]
+  - name: slack_search
+    description: Search messages (alias kept for older instructions).
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string}
+      required: [query]
+  - name: slack_read_thread
+    description: Read every reply in a thread.
+    inputSchema:
+      type: object
+      properties:
+        channel_id: {type: string}
+        message_ts: {type: string}
+      required: [channel_id, message_ts]
+  - name: slack_read_channel
+    description: Read recent messages in a channel or direct message.
+    inputSchema:
+      type: object
+      properties:
+        channel_id: {type: string}
+        limit: {type: integer}
+      required: [channel_id]
+  - name: slack_read_user_profile
+    description: Read a user's profile. With no user_id, reads the signed-in user's own profile.
+    inputSchema:
+      type: object
+      properties:
+        user_id: {type: string}
+  - name: slack_search_users
+    description: Find users by name or email.
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string}
+      required: [query]
+  - name: slack_send_message
+    description: Send a message to a channel or user.
+    inputSchema:
+      type: object
+      properties:
+        channel_id: {type: string, description: A channel ID, or a user ID for a direct message.}
+        message: {type: string}
+      required: [channel_id, message]

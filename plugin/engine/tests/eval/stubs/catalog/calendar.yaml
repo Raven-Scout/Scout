@@ -1,0 +1,23 @@
+# Calendar persona (server key claude_ai_Google_Calendar). Tool names follow
+# plugin/phases/connectors/calendar.md and templates/connector-probes.yaml.
+tools:
+  - name: list_calendars
+    description: List the calendars the user can see.
+    inputSchema: {type: object, properties: {}}
+  - name: gcal_list_events
+    description: List events in a time range on a calendar.
+    inputSchema:
+      type: object
+      properties:
+        calendarId: {type: string, description: Defaults to the primary calendar.}
+        timeMin: {type: string, description: RFC 3339 start.}
+        timeMax: {type: string, description: RFC 3339 end.}
+        q: {type: string}
+  - name: list_events
+    description: List events in a time range (alias of gcal_list_events).
+    inputSchema:
+      type: object
+      properties:
+        calendarId: {type: string}
+        timeMin: {type: string}
+        timeMax: {type: string}
