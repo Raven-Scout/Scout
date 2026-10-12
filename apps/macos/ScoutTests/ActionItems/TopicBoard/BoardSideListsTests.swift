@@ -71,8 +71,50 @@ struct BoardSideListsTests {
         #expect(DoneRange.today.contains(day(2026, 10, 10, hour: 0), today: today, calendar: calendar))
         #expect(!DoneRange.today.contains(day(2026, 10, 9), today: today, calendar: calendar))
         #expect(DoneRange.yesterday.contains(day(2026, 10, 9), today: today, calendar: calendar))
-        #expect(DoneRange.week.contains(day(2026, 10, 5, hour: 0), today: today, calendar: calendar))
-        #expect(!DoneRange.week.contains(day(2026, 10, 4), today: today, calendar: calendar))
+        #expect(DoneRange.week.contains(day(2026, 10, 4, hour: 0), today: today, calendar: calendar))
+        #expect(!DoneRange.week.contains(day(2026, 10, 3, hour: 23), today: today, calendar: calendar))
+    }
+
+    /// The week is the last seven days, today included, like Recently
+    /// Completed itself: a calendar week starting Monday held only today's
+    /// work on a Monday.
+    @Test func weekOnAMondayStillReachesBackSevenDays() {
+        let monday = day(2026, 10, 12)
+        #expect(DoneRange.week.contains(day(2026, 10, 12, hour: 0), today: monday, calendar: calendar))
+        #expect(DoneRange.week.contains(day(2026, 10, 9), today: monday, calendar: calendar))
+        #expect(DoneRange.week.contains(day(2026, 10, 6, hour: 0), today: monday, calendar: calendar))
+        #expect(!DoneRange.week.contains(day(2026, 10, 5, hour: 23), today: monday, calendar: calendar))
+    }
+
+    /// Runs file Recently Completed under `### YYYY-MM-DD` day subheads. That
+    /// day beats the first daily file a tag showed up ticked in, which is a
+    /// day late for work finished after the last run of the day; a
+    /// `- Completed:` date still beats both.
+    @Test func doneDayComesFromTheDaySubheadWhenThereIsNoCompletedDate() throws {
+        let s = try sections([
+            "## ✅ Recently Completed",
+            "",
+            "### 2026-10-12",
+            "- [x] [#AAAA] **Done today**",
+            "",
+            "### 2026-10-11",
+            "- [x] [#BBBB] **Done late yesterday**",
+            "- [x] [#CCCC] **Has its own date**",
+            "  - Completed: 2026-10-10 09:00",
+            "",
+            "### Older",
+            "- [x] [#DDDD] **Under a subhead that is not a day**",
+        ])
+        let monday = day(2026, 10, 12)
+        let firstTicked = ["AAAA": day(2026, 10, 12, hour: 0), "BBBB": day(2026, 10, 12, hour: 0), "DDDD": day(2026, 10, 8, hour: 0)]
+        let week = DoneEntry.entries(sections: s, doneDates: firstTicked, range: .week, today: monday, calendar: calendar)
+        let dates = Dictionary(uniqueKeysWithValues: week.map { ($0.task.shortPrefix ?? "", $0.date) })
+        #expect(dates["AAAA"] == day(2026, 10, 12, hour: 0))
+        #expect(dates["BBBB"] == day(2026, 10, 11, hour: 0))
+        #expect(dates["CCCC"] == day(2026, 10, 10, hour: 0))
+        #expect(dates["DDDD"] == day(2026, 10, 8, hour: 0))
+        let yesterday = DoneEntry.entries(sections: s, doneDates: firstTicked, range: .yesterday, today: monday, calendar: calendar)
+        #expect(yesterday.map(\.task.shortPrefix) == ["BBBB"])
     }
 
     @Test func doneEntriesUseCompletedDateElseUnknown() throws {

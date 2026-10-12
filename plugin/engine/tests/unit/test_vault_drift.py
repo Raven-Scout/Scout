@@ -259,6 +259,26 @@ def test_the_shipped_history_is_what_the_generator_builds() -> None:
     assert proc.returncode == 0, proc.stderr
 
 
+def _gen_render_history():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gen_render_history", REPO / "scripts" / "gen-render-history.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_release_candidate_tags_are_not_shipped_history() -> None:
+    # scripts/release.sh rc cuts vX.Y.Z-rc.N tags; one present in the clone used
+    # to crash the generator (int("0-rc")), and an rc never shipped anyway.
+    gen = _gen_render_history()
+    names = ["v0.10.0", "v0.11.0-rc.1", "v0.9.0", "v0.11.0", "v0.17.0-rc.1", "v0.12.0", "plugin/v0.15.0"]
+    assert gen.release_tags(names, "v0.11.0") == ["v0.9.0", "v0.10.0", "v0.11.0"]
+    with pytest.raises(SystemExit):
+        gen.release_tags(names, "v0.11.0-rc.1")
+
+
 # -------------------------------------------------------------- reconcile ----
 
 

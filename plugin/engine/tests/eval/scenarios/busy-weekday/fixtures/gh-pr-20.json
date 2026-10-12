@@ -1,0 +1,30 @@
+{
+  "author": {
+    "login": "alex-example"
+  },
+  "headRefName": "quota-setting",
+  "isDraft": false,
+  "state": "OPEN",
+  "reviewRequests": [],
+  "latestReviews": [
+    {
+      "author": {
+        "login": "priya-example"
+      },
+      "state": "APPROVED",
+      "submittedAt": "{{d-1}}T16:00:00Z"
+    }
+  ],
+  "reviewDecision": "APPROVED",
+  "mergeStateStatus": "CLEAN",
+  "statusCheckRollup": [
+    {
+      "name": "test",
+      "conclusion": "SUCCESS"
+    }
+  ],
+  "baseRefName": "main",
+  "body": "Adds the quota setting.",
+  "mergedAt": null,
+  "closedAt": null
+}

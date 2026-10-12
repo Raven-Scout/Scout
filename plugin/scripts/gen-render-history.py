@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +34,23 @@ from scout.scripts.vault_drift import RENDER_HISTORY, signature  # noqa: E402
 LAST_RELEASE_WITHOUT_BASES = "v0.11.0"
 
 
-def _version(tag: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in tag.removeprefix("v").split("."))
+# A shipped release is a bare vX.Y.Z. Release candidates (vX.Y.Z-rc.N, cut by
+# scripts/release.sh rc) never shipped, so they are not history.
+_RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+
+
+def _version(tag: str) -> tuple[int, ...] | None:
+    m = _RELEASE_TAG.fullmatch(tag)
+    return tuple(int(part) for part in m.groups()) if m else None
+
+
+def release_tags(names: list[str], through: str) -> list[str]:
+    """The shipped release tags among `names` up to `through`, oldest first."""
+    limit = _version(through)
+    if limit is None:
+        raise SystemExit(f"--through {through!r} is not a vX.Y.Z release tag")
+    versions = {t: v for t in names if (v := _version(t)) is not None and v <= limit}
+    return sorted(versions, key=versions.__getitem__)
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -42,10 +58,7 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def build(through: str) -> dict:
-    tags = sorted(
-        (t for t in _git("tag", "--list", "v*").stdout.split() if _version(t) <= _version(through)),
-        key=_version,
-    )
+    tags = release_tags(_git("tag", "--list", "v*").stdout.split(), through)
     if not tags:
         raise SystemExit("no release tags found — run in a full clone (git fetch --tags)")
     if _git("cat-file", "-e", f"{tags[-1]}:engine/scout/__init__.py").returncode != 0:

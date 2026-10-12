@@ -1,0 +1,43 @@
+{
+  "events": [
+    {
+      "id": "evt-standup",
+      "summary": "Widgets launch standup",
+      "start": {
+        "dateTime": "{{today}}T09:30:00Z"
+      },
+      "end": {
+        "dateTime": "{{today}}T09:45:00Z"
+      },
+      "attendees": [
+        {
+          "email": "alex@example.com"
+        },
+        {
+          "email": "priya@example.com"
+        },
+        {
+          "email": "sam@example.com"
+        }
+      ]
+    },
+    {
+      "id": "evt-1on1",
+      "summary": "Alex / Sam 1:1",
+      "start": {
+        "dateTime": "{{today}}T14:00:00Z"
+      },
+      "end": {
+        "dateTime": "{{today}}T14:30:00Z"
+      },
+      "attendees": [
+        {
+          "email": "alex@example.com"
+        },
+        {
+          "email": "sam@example.com"
+        }
+      ]
+    }
+  ]
+}

@@ -1,12 +1,12 @@
 import Foundation
 
-/// The Done list's window; clicking its label cycles this week → today → yesterday.
+/// The Done list's window; clicking its label cycles last 7 days → today → yesterday.
 nonisolated enum DoneRange: String, CaseIterable, Sendable {
     case week, today, yesterday
 
     var label: String {
         switch self {
-        case .week: "this week"
+        case .week: "last 7 days"
         case .today: "today"
         case .yesterday: "yesterday"
         }
@@ -29,10 +29,10 @@ nonisolated enum DoneRange: String, CaseIterable, Sendable {
             guard let yesterday = calendar.date(byAdding: .day, value: -1, to: start) else { return false }
             return calendar.isDate(date, inSameDayAs: yesterday)
         case .week:
-            var monday = calendar
-            monday.firstWeekday = 2
-            guard let week = monday.dateInterval(of: .weekOfYear, for: start) else { return false }
-            return date >= week.start && date <= today
+            // The last seven days, today included: what Recently Completed
+            // keeps. A calendar week from Monday held only today on a Monday.
+            guard let first = calendar.date(byAdding: .day, value: -6, to: start) else { return false }
+            return date >= first && date <= today
         }
     }
 }
@@ -47,9 +47,10 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
     private static let dayRe = try! NSRegularExpression(pattern: #"\d{4}-\d{2}-\d{2}"#)
 
     /// Done tasks in `range`, newest first. The date is the first `YYYY-MM-DD`
-    /// in a `- Completed:` sub-bullet, else the day the task first showed up
-    /// ticked. Without either it is unknown: the task is still done this week
-    /// (Recently Completed keeps a week), but never counts as today or
+    /// in a `- Completed:` sub-bullet, else the `### YYYY-MM-DD` day subhead
+    /// the task sits under, else the day the task first showed up ticked.
+    /// Without any of them it is unknown: the task still counts in the last
+    /// 7 days (Recently Completed keeps a week), but never counts as today or
     /// yesterday, and sorts last.
     /// - Parameter doneDates: the day each tag first showed up ticked in an
     ///   earlier daily file (`DoneHistory`), used when a task has no
@@ -62,10 +63,15 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
         calendar: Calendar = .current
     ) -> [DoneEntry] {
         sections
-            .flatMap { section in section.tasks.filter { $0.indentLevel == 0 && ($0.done || section.kind == .done) } }
-            .map { task in
-                let date = completedDate(task, calendar: calendar) ?? task.shortPrefix.flatMap { doneDates[$0] }
-                return DoneEntry(task: task, date: date)
+            .flatMap { section in
+                section.tasks
+                    .filter { $0.indentLevel == 0 && ($0.done || section.kind == .done) }
+                    .map { task in
+                        let date = completedDate(task, calendar: calendar)
+                            ?? section.subhead(above: task.lineNumber).flatMap { day(in: $0, prefixOnly: true, calendar: calendar) }
+                            ?? task.shortPrefix.flatMap { doneDates[$0] }
+                        return DoneEntry(task: task, date: date)
+                    }
             }
             .filter { entry in entry.date.map { range.contains($0, today: today, calendar: calendar) } ?? (range == .week) }
             .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
@@ -75,8 +81,15 @@ nonisolated struct DoneEntry: Identifiable, Equatable, Sendable {
         guard let text = task.comments.first(where: { $0.author.caseInsensitiveCompare("Completed") == .orderedSame })?.text else {
             return nil
         }
+        return day(in: text, prefixOnly: false, calendar: calendar)
+    }
+
+    /// The first `YYYY-MM-DD` in `text`; with `prefixOnly`, only one that
+    /// starts it, so a subhead like "Shipped 2026-10-01 builds" isn't a day.
+    private static func day(in text: String, prefixOnly: Bool, calendar: Calendar) -> Date? {
         let ns = text as NSString
-        guard let m = dayRe.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        guard let m = dayRe.firstMatch(in: text, options: prefixOnly ? .anchored : [], range: NSRange(location: 0, length: ns.length))
+        else { return nil }
         let parts = ns.substring(with: m.range).split(separator: "-").compactMap { Int($0) }
         return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
