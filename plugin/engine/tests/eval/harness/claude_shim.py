@@ -159,7 +159,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
         result_dir=str(result_dir),
     )
-    child_env = {k: v for k, v in env.items() if k not in SECRETS}
+    child_env = {k: v for k, v in env.items() if k not in SECRETS and k != "PYTHONPATH"}
+    if env.get("SCOUT_EVAL_SESSION_PYTHONPATH"):  # a base arm: the session's scoutctl is the base's
+        child_env["PYTHONPATH"] = env["SCOUT_EVAL_SESSION_PYTHONPATH"]
     child_env.update(
         CLAUDE_CONFIG_DIR=str(result_dir / "claude-config"),
         CLAUDE_SECURESTORAGE_CONFIG_DIR="",

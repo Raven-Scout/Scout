@@ -20,6 +20,7 @@ from typing import Any
 from scout.action_items.parser import ActionItem, parse_lines
 
 from .build import build_vault
+from .checkout import Checkout
 from .checks import CheckResult
 from .checks.no_drop import no_drop
 from .checks.placement import placement
@@ -186,6 +187,7 @@ def run_sample(
     hook_grace_s: int = HOOK_GRACE_S,
     arm: str = "head",
     cli_version: str = "",
+    checkout: Checkout | None = None,
 ) -> SampleResult:
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     result_dir = results_root / f"{scenario.name}-{arm}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
@@ -198,6 +200,7 @@ def run_sample(
         claude_bin=str(SHIM),
         connectors=scenario.connectors,
         max_budget=budget,
+        checkout=checkout,
     )
     yesterday_file = vault / "action-items" / f"action-items-{(today - timedelta(days=1)).isoformat()}.md"
     yesterday = _items(yesterday_file) or []
@@ -221,6 +224,7 @@ def run_sample(
         script=scenario.script,
         today=today.isoformat(),
         timeout_s=timeout_s,
+        pythonpath=checkout.pythonpath if checkout else None,
     )
     runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:
@@ -274,6 +278,7 @@ def run_sample(
         "cli_version": cli_version,
         "today": today.isoformat(),
         "started_at": started_at,
+        "checkout": {"label": checkout.label, "commit": checkout.commit} if checkout else None,
         "aborted": aborted,
     }
     (result_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

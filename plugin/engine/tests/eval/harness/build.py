@@ -16,12 +16,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
 import scout
 from scout.scripts.bootstrap import BootstrapConfig, install
 
+from .checkout import Checkout
 from .dates import UNRENDERED, render_dates
 from .index_gen import generate_index
 
@@ -98,32 +100,23 @@ def build_vault(
     claude_bin: str = "/usr/bin/false",
     connectors: frozenset[str] = DEFAULT_CONNECTORS,
     max_budget: str = "5",
+    checkout: Checkout | None = None,
 ) -> Path:
+    """Build the fixture vault. ``checkout`` (a comparison's base arm) installs from that
+    checkout's own engine and phases instead of this one's."""
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"eval vault destination is not empty: {dest}")
-    install(
-        BootstrapConfig(
-            vault=dest,
-            plugin_root=PLUGIN_ROOT,
-            instance_name="Scout",
-            instance_name_lower="scout",
-            user_name=FIXTURE_USER,
-            user_email=FIXTURE_EMAIL,
-            timezone="UTC",
-            platform="macos",
-            plugin_version=scout.__version__,
-            enabled_connectors=set(connectors),
-            connector_inputs={
-                "user_slack_id": FIXTURE_SLACK_ID,
-                "github_username": FIXTURE_GITHUB_USER,
-                "github_repos": FIXTURE_REPOS,
-                "claude_bin": claude_bin,
-                "max_budget": max_budget,
-            },
-            skip_jobs=True,
-            skip_claude=True,
-        )
-    )
+    inputs = {
+        "user_slack_id": FIXTURE_SLACK_ID,
+        "github_username": FIXTURE_GITHUB_USER,
+        "github_repos": FIXTURE_REPOS,
+        "claude_bin": claude_bin,
+        "max_budget": max_budget,
+    }
+    if checkout is not None and checkout.pythonpath is not None:
+        _install_from(checkout, dest, connectors, inputs)
+    else:
+        _install_here(dest, connectors, inputs)
     _overlay(BASE_OVERLAY, dest, today)
     if scenario_dir is not None and (scenario_dir / "vault").is_dir():
         _overlay(scenario_dir / "vault", dest, today)
@@ -136,3 +129,52 @@ def build_vault(
     _git(dest, env, "add", "-A")
     _git(dest, env, "commit", "-q", "-m", "fixture")
     return dest
+
+
+def _refuse_system_side_effects(cmd: list[str]) -> None:
+    """A fixture install must never touch launchd, cron or ~/.local/bin: without --no-jobs,
+    `bootstrap install` boots out and replaces the user's real loaded scheduler jobs."""
+    assert "--no-jobs" in cmd and "--skip-claude" in cmd, f"fixture install without --no-jobs/--skip-claude: {cmd}"
+
+
+def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:
+    """``scoutctl bootstrap install`` run from another checkout's engine (its phases, runners, scripts)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SCOUT_", "GIT_"))}
+    env.update(SCOUT_DATA_DIR=str(dest), PYTHONPATH=str(checkout.pythonpath))
+    # -P: the current directory must not shadow PYTHONPATH. --no-jobs and --skip-claude are what
+    # keep a fixture install off launchd: without them it replaces the user's real scheduler jobs.
+    cmd = [
+        sys.executable, "-P", "-m", "scout", "bootstrap", "install", "--no-jobs", "--skip-claude",
+        "--instance-name", "Scout", "--user-name", FIXTURE_USER, "--user-email", FIXTURE_EMAIL,
+        "--timezone", "UTC", "--platform", "macos", "--connectors", ",".join(sorted(connectors)),
+        "--user-slack-id", inputs["user_slack_id"], "--github-username", inputs["github_username"],
+        "--github-repos", inputs["github_repos"], "--claude-bin", inputs["claude_bin"],
+        "--max-budget", inputs["max_budget"],
+    ]  # fmt: skip
+    _refuse_system_side_effects(cmd)
+    done = subprocess.run(cmd, env=env, cwd=dest.parent, capture_output=True, text=True)
+    if done.returncode != 0 or not (dest / "SKILL.md").is_file():
+        raise RuntimeError(
+            f"bootstrap install from {checkout.label} checkout {checkout.root} failed "
+            f"(exit {done.returncode}):\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}"
+        )
+
+
+def _install_here(dest: Path, connectors: frozenset[str], inputs: dict[str, str]) -> None:
+    install(
+        BootstrapConfig(
+            vault=dest,
+            plugin_root=PLUGIN_ROOT,
+            instance_name="Scout",
+            instance_name_lower="scout",
+            user_name=FIXTURE_USER,
+            user_email=FIXTURE_EMAIL,
+            timezone="UTC",
+            platform="macos",
+            plugin_version=scout.__version__,
+            enabled_connectors=set(connectors),
+            connector_inputs=dict(inputs),
+            skip_jobs=True,
+            skip_claude=True,
+        )
+    )
