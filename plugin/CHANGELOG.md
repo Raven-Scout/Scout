@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A run that hits Claude Code's session limit is retried and labelled `rate_limited`** (`templates/scripts/rate-limit-detect.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`). Claude Code's own quota message ("You've hit your session limit · resets <time>") matched none of the rate-limit patterns, so such runs were classified as non-transient, never retried, and recorded as `unknown`. Both scripts now also match `session limit`, `hit your … limit` and `limit … resets`; the last keys on the self-declared reset time, so a reworded limit ("weekly limit", "5-hour limit") still matches. A new test runs both real scripts on the same logs, so the two pattern lists can't drift apart. Existing vaults pick this up with `/scout-update`.
+
 ## [0.17.0] - 2026-10-12
 
 ### Added
