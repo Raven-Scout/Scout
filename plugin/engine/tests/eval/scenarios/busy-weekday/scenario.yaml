@@ -3,7 +3,7 @@
 mode: morning-consolidation
 weekdays_only: true
 personas: [slack, linear, calendar]
-checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget]
+checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, demotion]
 
 # Tag (an item in yesterday's file) or ref: (an item this run should create) → allowed sections.
 expected_placement:
@@ -22,6 +22,11 @@ expected_placement:
 
 # 🟢 items that wait on a person must say 'waiting on <who> since <date>'.
 expected_waiting: [BILL, "ref:example-org/widgets#22"]
+
+# #372 Past-Due Tasks Step Down, one seed per branch (phases/core/action-items.md:67-78):
+# OVRD is 10 working days past due with no news; LATE is 2 days past due and Alex's move;
+# PARK stepped down 16 days ago (its context note says so) with no news since.
+expected_demotion: {OVRD: step_down, LATE: hold, PARK: park}
 
 # Closed overnight in the tracker: may leave the open list.
 expected_closures: [LCHK]

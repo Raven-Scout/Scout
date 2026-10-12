@@ -226,3 +226,13 @@ RATE
 Reply
 Review
 Ship
+
+# --- demotion seeds (#372) ---
+Down
+Due
+LATE
+PARK
+Past
+Renew
+Step
+Tasks
