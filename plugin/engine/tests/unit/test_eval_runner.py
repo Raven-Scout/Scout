@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._waits import wait_until
 from tests.eval.harness.plan import PlanRefused, session_plan
 from tests.eval.harness.runner import run_sample
 from tests.eval.harness.scenario import SCENARIOS_DIR, load_scenario
@@ -195,24 +196,18 @@ def test_allowlist_covers_the_shell_steps_phases_use_but_not_destructive_ones(tm
     assert not any(t.startswith(("Bash(rm", "Bash(mv", "Bash(cp", "Bash(curl")) for t in tools)
 
 
-def _gone(pid: int, wait_s: float = 10.0) -> bool:
-    """True once ``pid`` no longer runs. A killed child whose parent died too can linger
+def _gone(pid: int) -> bool:
+    """True if ``pid`` no longer runs. A killed child whose parent died too can linger
     as a zombie until something reaps it (common on Linux CI), and kill(pid, 0) still
     succeeds on a zombie, so a zombie counts as gone."""
     import os
-    import time
 
-    deadline = time.monotonic() + wait_s
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        stat = Path(f"/proc/{pid}/stat")
-        if stat.exists() and stat.read_text().rsplit(")", 1)[-1].split()[0] == "Z":
-            return True
-        time.sleep(0.1)
-    return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    stat = Path(f"/proc/{pid}/stat")
+    return stat.exists() and stat.read_text().rsplit(")", 1)[-1].split()[0] == "Z"
 
 
 def _fake(tmp_path: Path) -> Path:
@@ -282,7 +277,9 @@ def test_a_runner_that_overruns_is_killed_with_its_session_and_not_scored(
     pid_file = tmp_path / "fake.pid"
     assert pid_file.exists(), "the session never started inside the runner budget; see runner.log"
     pid = int(pid_file.read_text())
-    assert _gone(pid), f"the session process {pid} outlived the runner timeout"
+    wait_until(
+        lambda: _gone(pid), timeout=10, interval=0.1, message=f"the session process {pid} outlived the runner timeout"
+    )
 
 
 def test_the_gh_stub_answers_per_repo(busy) -> None:

@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._waits import wait_until
+
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
 RUNNERS = ("run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl")
@@ -338,10 +340,12 @@ release_lock(lock)
 
 
 def _wait_for(*paths: Path) -> None:
-    deadline = time.monotonic() + RUN_TIMEOUT_S
-    while not all(p.exists() for p in paths):
-        assert time.monotonic() < deadline, f"racers never became ready: {paths}"
-        time.sleep(0.005)
+    wait_until(
+        lambda: all(p.exists() for p in paths),
+        timeout=RUN_TIMEOUT_S,
+        interval=0.005,
+        message=f"racers never became ready: {paths}",
+    )
 
 
 def test_runner_racing_a_python_exclusive_holder_never_overwrites_it(tmp_path: Path) -> None:
