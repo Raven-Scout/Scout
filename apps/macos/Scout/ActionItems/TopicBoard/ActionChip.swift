@@ -3,8 +3,6 @@ import SwiftUI
 /// The small uppercase "what you do next" chip on a Mine step, e.g. MERGE.
 /// Clicking it opens the step's prompt box.
 struct ActionChip: View {
-    static let fallback = "Your action"
-
     let label: String
     let onTap: () -> Void
 

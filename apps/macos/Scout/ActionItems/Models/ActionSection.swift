@@ -57,4 +57,12 @@ nonisolated struct ActionSection: Identifiable, Equatable, Hashable, Sendable {
     /// `tasks`/`bullets` — counts, filters, and the urgent badge must all see
     /// live work only.
     let collapsed: [CollapsedGroup]
+    /// 1-based line number of each of `subheads`, in the same order, so a
+    /// task can tell which subhead it sits under (`subhead(above:)`).
+    var subheadLines: [Int] = []
+
+    /// The last `### subhead` above `lineNumber` in this section, if any.
+    func subhead(above lineNumber: Int) -> String? {
+        zip(subheads, subheadLines).filter { $0.1 < lineNumber }.last?.0
+    }
 }

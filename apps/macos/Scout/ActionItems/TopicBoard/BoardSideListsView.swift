@@ -25,7 +25,7 @@ struct BoardSideListsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(DS.Ink.p2)
-                    .help("Switch between this week, today and yesterday")
+                    .help("Switch between the last 7 days, today and yesterday")
                 }
             } rows: {
                 ForEach(done) { entry in
