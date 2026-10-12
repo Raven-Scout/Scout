@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.eval.harness.claude_shim import SHIM, build_command
+from tests.eval.harness.claude_shim import SHIM, build_command, settings
 from tests.eval.harness.runner_env import build_env
 
 ENGINE = Path(__file__).resolve().parents[2]
@@ -20,7 +20,8 @@ FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys, time
 open(os.environ["FAKE_ARGV"], "w").write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read(),
     "config": os.environ.get("CLAUDE_CONFIG_DIR"), "secure": os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
-    "api_key": os.environ.get("ANTHROPIC_API_KEY"), "gh_token": os.environ.get("GH_TOKEN")}))
+    "api_key": os.environ.get("ANTHROPIC_API_KEY"), "gh_token": os.environ.get("GH_TOKEN"),
+    "tmpdir": os.environ.get("CLAUDE_CODE_TMPDIR")}))
 for line in open(os.environ["FAKE_STREAM"]):
     print(line, end="", flush=True)
     if os.environ.get("FAKE_SLEEP"):
@@ -74,12 +75,23 @@ def _run(
 
 def test_command_drops_the_runner_permission_and_model_and_adds_isolation() -> None:
     cmd, prompt = build_command(
-        RUNNER_ARGV, real_claude="/x/claude", model="sonnet", mcp_config="/r/mcp.json", allowed_tools="Read,Edit"
+        RUNNER_ARGV,
+        real_claude="/x/claude",
+        model="sonnet",
+        mcp_config="/r/mcp.json",
+        allowed_tools="Read,Edit",
+        result_dir="/r",
     )
     assert prompt == "GO"
+    sandbox = (
+        '{"disableAllHooks": true, "sandbox": {"enabled": true, "failIfUnavailable": true, '
+        '"autoAllowBashIfSandboxed": false, "allowUnsandboxedCommands": false, '
+        '"filesystem": {"allowWrite": ["/r"], "denyWrite": ["/tmp/claude*/-*", "/private/tmp/claude*/-*"]}, '
+        '"network": {"allowedDomains": [], "strictAllowlist": true}}}'
+    )
     assert cmd == [
         "/x/claude", "-p", "--model", "sonnet", "--permission-mode", "dontAsk", "--allowedTools", "Read,Edit",
-        "--setting-sources", "", "--settings", '{"disableAllHooks": true}', "--strict-mcp-config",
+        "--setting-sources", "", "--settings", sandbox, "--strict-mcp-config",
         "--mcp-config", "/r/mcp.json", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
         "--disable-slash-commands", "--max-budget-usd", "5", "--name", "scout-x",
     ]  # fmt: skip
@@ -95,6 +107,22 @@ def test_a_clean_stream_is_teed_and_the_result_text_printed(tmp_path: Path) -> N
     assert seen["config"] == str(result / "claude-config")
     assert seen["secure"] == ""
     assert not (result / "aborted.json").exists()
+
+
+def test_bash_is_sandboxed_to_the_result_dir_with_no_network(tmp_path: Path) -> None:
+    # spec §12 R2a′: what the real CLI does with these keys is verified by hand per CLI version (§4.3);
+    # this pins that the shim hands claude the sandbox for this sample's result dir.
+    proc, result = _run(tmp_path, [_init(["claude_ai_Slack"]), RESULT])
+    assert proc.returncode == 0, proc.stderr
+    seen = json.loads((tmp_path / "argv.json").read_text())
+    passed = json.loads(seen["argv"][seen["argv"].index("--settings") + 1])
+    assert passed == settings(str(result.resolve()))
+    box = passed["sandbox"]
+    assert box["enabled"] and box["failIfUnavailable"]
+    assert not box["autoAllowBashIfSandboxed"] and not box["allowUnsandboxedCommands"]
+    assert box["filesystem"]["allowWrite"] == [str(result.resolve())]
+    assert box["network"] == {"allowedDomains": [], "strictAllowlist": True}
+    assert seen["tmpdir"] == str(result.resolve() / "tmp") and (result / "tmp").is_dir()
 
 
 def test_a_non_stub_mcp_server_kills_the_session(tmp_path: Path) -> None:
