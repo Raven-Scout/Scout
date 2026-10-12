@@ -37,6 +37,9 @@ struct InlineMarkdownText: View {
     private let attributed: AttributedString
     @Environment(\.kbWikilinkHandler) private var kbWikilinkHandler
     @Environment(\.kbTagHandler) private var kbTagHandler
+    /// Set on the Action Items tab: entity links open the KB tab, like the
+    /// `- Refs:` chips there (Raven-Scout/Scout#392).
+    @Environment(\.openKBNote) private var openKBNote
 
     init(_ raw: String) {
         self.raw = raw
@@ -208,24 +211,43 @@ struct InlineMarkdownText: View {
         return result
     }
 
+    /// Where a clicked wikilink goes when no in-app handler took it.
+    enum WikilinkRoute: Equatable {
+        /// Open the note in the Knowledge Base tab, which falls back to
+        /// Obsidian itself when it can't resolve the target.
+        case kbNote(String)
+        case external(URL)
+    }
+
+    /// A Linear key opens Linear. Any other target opens in the KB tab when
+    /// this surface can route there (`openKBNote`), else in Obsidian.
+    static func route(for target: String, canOpenKBNote: Bool, linearWorkspace: String) -> WikilinkRoute? {
+        if linearRe.firstMatch(in: target, range: NSRange(location: 0, length: (target as NSString).length)) != nil {
+            let urlString = linearWorkspace.isEmpty
+                ? "https://linear.app/"
+                : "https://linear.app/\(linearWorkspace)/issue/\(target)"
+            if let url = URL(string: urlString) { return .external(url) }
+        }
+        if canOpenKBNote { return .kbNote(target) }
+        let obsidianTarget = target.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? target
+        return URL(string: "obsidian://open?vault=Scout&file=\(obsidianTarget)").map(WikilinkRoute.external)
+    }
+
     /// `target` arrives already percent-decoded from `target(of:)`.
     private func openWikilink(target decoded: String) -> OpenURLAction.Result {
         // In-app navigation first (Knowledge Base). If the handler resolves the
-        // target it returns true and we stop; otherwise fall back to Linear/Obsidian.
+        // target it returns true and we stop; otherwise route it.
         if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
-        if Self.linearRe.firstMatch(in: decoded, range: NSRange(location: 0, length: (decoded as NSString).length)) != nil {
-            let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
-            let urlString = workspace.isEmpty
-                ? "https://linear.app/"
-                : "https://linear.app/\(workspace)/issue/\(decoded)"
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url); return .handled
-            }
+        let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
+        switch Self.route(for: decoded, canOpenKBNote: openKBNote != nil, linearWorkspace: workspace) {
+        case .kbNote(let target):
+            openKBNote?(target)
+            return .handled
+        case .external(let url):
+            NSWorkspace.shared.open(url)
+            return .handled
+        case nil:
+            return .discarded
         }
-        let obsidianTarget = decoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? decoded
-        if let url = URL(string: "obsidian://open?vault=Scout&file=\(obsidianTarget)") {
-            NSWorkspace.shared.open(url); return .handled
-        }
-        return .discarded
     }
 }

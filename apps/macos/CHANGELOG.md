@@ -28,6 +28,11 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
   like the List view's cards.
 - **Topics: no generic "Your action" chip** (#391). A Mine step shows the chip
   only when it has an `- Action:`; the hover bubble still opens the prompt box.
+- **Inline `[[wikilinks]]` in Action Items open the Knowledge Base tab**
+  (#392). #380 routed only the `- Refs:` entity chips there; a wikilink in a
+  task's text still opened Obsidian. It now opens the note in the KB tab,
+  which falls back to Obsidian when it can't resolve the target. Linear keys
+  still open Linear.
 
 ## [0.17.0] - 2026-10-12
 
