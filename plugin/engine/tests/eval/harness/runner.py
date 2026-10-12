@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -268,6 +268,7 @@ def run_sample(
         connectors=scenario.connectors,
         max_budget=budget,
         checkout=checkout,
+        scheduler_tick=datetime.now(UTC),
     )
     yesterday_file = vault / "action-items" / f"action-items-{(today - timedelta(days=1)).isoformat()}.md"
     yesterday = _items(yesterday_file) or []

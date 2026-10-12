@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from scout.action_items.parser import parse_lines
 from tests.eval.harness.checks.daily import body_budget, context_note, no_collapse, waiting_format
 from tests.eval.harness.checks.run import dropoff_caught, no_false_outage, outage_reported
@@ -111,4 +113,77 @@ def test_dropoff_caught_needs_re_add_wrap_and_review_entry() -> None:
     assert r.details == ("INVX: not re-added with [carried-via-audit]",)
     r2 = dropoff_caught(["RUNB"], today, "all good", review_added="")
     assert r2.details == ("wrap doesn't say items were silently dropped", "review-queue.md gained no entry")
+    assert dropoff_caught(["RUNB"], today, wrap, review_added="- dropoff: RUNB").passed is True
+
+
+LONG_DIGEST = (
+    "- Files to review — the gateway runbook, the billing cleanup plan, the docs refresh outline, "
+    "the widgets launch checklist, the quarterly roadmap and the survey results, plus two more notes "
+    "from the weekend that nobody has opened yet."
+)
+LONG_RUN_NOTE = (
+    "- 2026-10-12 12:00 UTC (morning-consolidation) — 0 new / 0 completed / 2 restored via dropoff "
+    "audit / 5 carried forward. Connectors: degraded: Linear (OAuth token expired), Gmail (503). "
+    "Slack, GitHub, Calendar answered, and the standup event carried forward unchanged from "
+    "yesterday's run, etc."
+)
+NON_TASK_LINES = "\n".join(
+    [
+        "## 🟡 To Do",
+        "- [ ] [#NEW] **Answer the quota question** — Priya needs a yes or no today.",
+        "## 📅 Meetings",
+        "- Widgets launch standup — daily 09:30 UTC, attendees Alex, Priya, Sam, plus the on-call engineer etc.",
+        "## 📋 Scout Digest — 2026-10-12 (09:00)",
+        LONG_DIGEST,
+        "## 🪵 Run notes & connector availability",
+        LONG_RUN_NOTE,
+        "",
+    ]
+)
+
+
+def test_daily_checks_score_task_rows_only_not_meetings_digest_or_run_notes() -> None:
+    items = _items(NON_TASK_LINES)
+    assert body_budget(items).passed is True
+    assert no_collapse(items).passed is True
+
+
+def test_waiting_format_is_case_insensitive() -> None:
+    items = _items("## 🟢 Watching\n- [ ] [#WT] **x** — Waiting on Sam since 2026-10-09\n")
+    assert waiting_format(items, ["WT"]).passed is True
+
+
+# (text, persona, is an outage claim) — the slack.md footer format and the real wraps
+CLAIMS = [
+    ("Slack ✓ · Calendar ✓ · Linear ✗ · Gmail ✗", "slack", False),
+    ("Slack ✓ · Calendar ✓ · Linear ✗ · Gmail ✗", "calendar", False),
+    ("Slack ✓ · Calendar ✓ · Linear ✗ · Gmail ✗", "linear", True),
+    ("Slack ✓ · Calendar ✓ · Linear ✗ · Gmail ✗", "email", True),
+    ("Sources checked: 3 Slack threads · 0 Linear updates (auth expired)", "slack", False),
+    ("Sources checked: 3 Slack threads · 0 Linear updates (auth expired)", "linear", True),
+    ("Linear unavailable (auth expired) — Slack and Calendar answered", "slack", False),
+    ("Linear unavailable (auth expired) — Slack and Calendar answered", "linear", True),
+    ("Linear: 3 issues authored by Alex", "linear", False),
+    ("Slack countdown thread for the launch", "slack", False),
+    ("Slack: skipped 2 bot messages", "slack", False),
+    ("Calendar: 0 errors", "calendar", False),
+    ("Linear: 0 updates · Gmail unavailable", "linear", False),
+    ("Degraded connectors: Linear (OAuth token expired) and Gmail (503)", "linear", True),
+    ("Degraded connectors: Linear (OAuth token expired) and Gmail (503)", "email", True),
+    ("Connectors: degraded: Linear (OAuth token expired), Gmail (503 service unavailable).", "email", True),
+    ("Couldn't reach Linear this run: reconnect it in Settings.", "linear", True),
+    ("Slack, GitHub, Calendar answered.", "calendar", False),
+]
+
+
+@pytest.mark.parametrize(("text", "persona", "claimed"), CLAIMS)
+def test_outage_claims_on_realistic_lines(text: str, persona: str, claimed: bool) -> None:
+    from tests.eval.harness.checks.run import claims_outage
+
+    assert claims_outage(persona, text) is claimed
+
+
+def test_dropoff_wording_counts_the_act_of_surfacing_it() -> None:
+    today = _items("## 🟡 To Do\n- [ ] [#RUNB] **Update the runbook** — re-added `[carried-via-audit]`\n")
+    wrap = "7 carried forward (2 came back after a silent dropoff from the earlier run today; flagged for your review)"
     assert dropoff_caught(["RUNB"], today, wrap, review_added="- dropoff: RUNB").passed is True

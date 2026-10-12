@@ -8,7 +8,8 @@ phases/core/action-items.md:306-312).
   ``[carried-via-audit]``, the wrap says so, and ``review-queue.md`` gains an entry.
 
 A name counts as an outage claim only in the same clause as an outage word, so
-"Slack ✓, Calendar ✓, Linear ✗" calls only Linear down.
+"Slack ✓ · Calendar ✓ · Linear ✗" calls only Linear down. The wrap must surface the dropoff
+("silently dropped", "a silent dropoff"); the act counts, not the exact token.
 """
 
 from __future__ import annotations
@@ -26,23 +27,26 @@ NAMES = {
     "calendar": ("Google Calendar", "Calendar"),
     "email": ("Gmail", "Email", "Mail"),
 }
-_OUTAGE = (
-    r"unreachable|outage|down\b|unavailable|failed|failing|error|expired|auth|✗|could ?n[o']t|"
-    r"not available|skipped|offline|no access"
+# Whole words only ("authored" isn't "auth", "countdown" isn't "down"), and nothing neutral:
+# "skipped 2 bot messages" or "0 errors" say nothing about the connector being dark.
+_OUTAGE = re.compile(
+    r"\b(?:unreachable|outage|unavailable|degraded|offline|expired|reconnect|re-?auth(?:enticate)?|"
+    r"timed out|down|503|40[13])\b|✗|"
+    r"\b(?:could ?n[o']t|could not|failed to|unable to) (?:reach|connect|access|load|authenticate)\b|"
+    r"\bnot available\b|\bno access\b|\bauth(?:entication)? (?:expired|failed|error)\b",
+    re.IGNORECASE,
 )
-_CLAUSE = r"[^.;,\n]"
+# Clauses end at the separators run notes and footers use; not at parentheses, which hold
+# the reason ("Linear (OAuth token expired)").
+_CLAUSES = re.compile(r"[.;,\n·|—–]")
 
 
-def _claims_outage(persona: str, text: str | None) -> bool:
+def claims_outage(persona: str, text: str | None) -> bool:
+    """Does ``text`` name this connector as dark: its name and an outage word in one clause?"""
     if not text:
         return False
-    for name in NAMES[persona]:
-        n = re.escape(name)
-        if re.search(rf"\b{n}\b{_CLAUSE}{{0,60}}?(?:{_OUTAGE})", text, re.IGNORECASE):
-            return True
-        if re.search(rf"(?:{_OUTAGE}){_CLAUSE}{{0,30}}?\b{n}\b", text, re.IGNORECASE):
-            return True
-    return False
+    names = [re.compile(rf"\b{re.escape(n)}\b", re.IGNORECASE) for n in NAMES[persona]]
+    return any(_OUTAGE.search(c) and any(n.search(c) for n in names) for c in _CLAUSES.split(text))
 
 
 def outage_reported(
@@ -54,9 +58,9 @@ def outage_reported(
     for persona in down:
         if calls.get(persona, 0) == 0:
             problems.append(f"{persona}: declared down with no recorded call (attempt before declaring)")
-        elif not _claims_outage(persona, wrap):
+        elif not claims_outage(persona, wrap):
             problems.append(f"{persona}: not named as an outage in the wrap")
-        elif not _claims_outage(persona, run_notes):
+        elif not claims_outage(persona, run_notes):
             problems.append(f"{persona}: not named as an outage in the run notes")
     return CheckResult("outage_reported", not problems, tuple(problems))
 
@@ -65,7 +69,7 @@ def no_false_outage(up: Sequence[str], wrap: str | None, run_notes: str | None) 
     problems = [
         f"{p}: reported as an outage but it answered"
         for p in up
-        if _claims_outage(p, wrap) or _claims_outage(p, run_notes)
+        if claims_outage(p, wrap) or claims_outage(p, run_notes)
     ]
     return CheckResult("no_false_outage", not problems, tuple(problems))
 
@@ -77,7 +81,7 @@ def dropoff_caught(
         return CheckResult("dropoff_caught", None, ("missing_output",))
     readded = {i.short_prefix for i in today if "[carried-via-audit]" in i.raw_line}
     problems = [f"{tag}: not re-added with [carried-via-audit]" for tag in missing if tag not in readded]
-    if not wrap or "silently dropped" not in wrap.lower():
+    if not wrap or not re.search(r"\bsilent(?:ly)?[ -]?drop", wrap, re.IGNORECASE):
         problems.append("wrap doesn't say items were silently dropped")
     if not review_added.strip():
         problems.append("review-queue.md gained no entry")
