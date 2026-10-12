@@ -21,6 +21,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **"Not logged in" counts as an auth failure** (#267 comment; `templates/scripts/claude-with-retry.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`, `engine/scout/health.py`). A Mac set up again comes up logged out rather than expired. Each scheduled run then died in seconds on `Not logged in · Please run /login`, which matched none of the auth patterns. So the runs were recorded as `unknown` and no auth alert fired. The three shared auth regexes now match it at line start. Existing vaults pick this up with `/scout-update`.
+
+## [0.17.3] - 2026-10-12
+
+### Fixed
 - **A review request sent to one of your teams no longer goes missing from the action items** (#404; `engine/scout/action_items/review_requests.py`, `engine/scout/action_items/cli.py`, `engine/scout/scripts/pre_session_data.py`, `phases/connectors/github.md`, `phases/core/action-items.md`, `phases/core/00-run-modes.md`). The agent-behaviour eval missed a team-only request in 3 of 5 runs: either the session skipped GitHub's review-request search, or it ran the search and never classified that PR. The new `scoutctl action-items check-review-requests` lists every review request the runner pre-fetched into `.scout-cache/session-context.json` that today's action items don't account for. A request is accounted for when an item names its `owner/repo#N` or URL, when a run-notes line says `Skipped review request owner/repo#N — <reason>`, or when you dismissed its link. The command exits 0 when everything is accounted for, 1 with a list, and 2 when it can't check. `--json` gives the same result as data. Briefings and consolidations now run it before committing, and place or skip every listed request. The GitHub phase now says to run the search on every run and to classify every result individually, team-addressed ones included. The pre-fetch now saves each request's `url` and keeps up to 50 requests instead of 10, since team membership makes the list long. Existing vaults pick this up with `/scout-update`.
 
 ## [0.17.2] - 2026-10-12
