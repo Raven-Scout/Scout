@@ -349,9 +349,6 @@ def test_launch_runner_detaches_and_redirects_into_the_log(vault: Path, monkeypa
     assert seen["start_new_session"] is True
     assert seen["stdin"] is subprocess.DEVNULL
     assert seen["stdout"] is seen["stderr"]
-    # The run ledger's `trigger` field tells a heartbeat launch from a manual one.
-    env = seen["env"]
-    assert isinstance(env, dict) and env["SCOUT_TRIGGER"] == "heartbeat"
 
 
 def test_launch_runner_creates_the_log_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

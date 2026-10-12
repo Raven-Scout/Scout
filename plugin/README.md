@@ -306,7 +306,7 @@ Scout includes a budget tracking and rate limit detection system:
 - **Budget check** (`scoutctl budget check`, called by `scripts/budget-check.sh`) — runs before every session. Calculates rolling window cost, checks for recent rate limits, and skips sessions when budget is exhausted. Inspect the limits with `scoutctl budget show`; change them with `scoutctl budget set` (defaults: $50/day, 5-hour window, skip at 80%).
 - **Session cost tracker** (`scripts/write-session-cost.sh`) — logs each session's cost as JSONL for analysis.
 - **Rate limit detection** (`scripts/rate-limit-detect.sh`) — scans session logs for rate limit signals and triggers backoff. When Claude Code names when its usage limit resets, the backoff lasts exactly until then.
-- **Heartbeat** (`scripts/heartbeat.sh`) — polls every 30 minutes to trigger extra dreaming or research sessions when budget is available and work is pending.
+- **Heartbeat** (`scripts/heartbeat.sh`) — polls every 30 minutes to trigger extra dreaming or research sessions when budget is available and work is pending. How often it may do so is set by the `heartbeat:` block in `scout-config.yaml` (see *"Scout runs extra dreaming sessions too often"* below).
 
 ## Architecture
 
@@ -477,6 +477,23 @@ The next scheduled run picks it up; nothing else needs reinstalling. Scout raise
 
 **My scheduled runs aren't firing.**
 Run `scoutctl bootstrap doctor` first — it checks the schedule, the launchd agents, and that the `claude` path the runners use actually exists. On macOS, `launchctl list | grep scout` should show `com.scout.schedule-tick` and `com.scout.heartbeat`. Make sure your machine is awake at scheduled times — launchd won't fire if the lid is closed (missed runs catch up when it wakes). Check logs in `.scout-logs/` for errors from the last attempted run. If a log mentions a 401/403, see "Scout stopped running" above.
+
+**Scout runs extra dreaming sessions too often (or not often enough).**
+Those extra runs come from the heartbeat, which checks every 30 minutes and logs each decision to `.scout-logs/heartbeat.log`, e.g. `launched dreaming PID=4711 (dreaming_5h_since_last, trigger=signal_hours)`. The `trigger` says why: `signal_hours` means enough hours have passed since the last dreaming run, `dirty_tree` means the vault has uncommitted edits. Tune it with a `heartbeat:` block in `scout-config.yaml`, one key per line (the values below are the defaults):
+
+```yaml
+heartbeat:
+  min_gap_minutes: 120          # 0–10080: minutes since any session before a launch
+  off_peak_min_gap_minutes: 240 # 0–10080: the same floor inside the off-peak window
+  dreaming_signal_hours: 4      # 1–720: hours since the last dreaming run that count as work
+  research_min_gap_hours: 24    # 0–720: hours between heartbeat-launched research runs
+  dirty_tree_triggers: true     # false: uncommitted vault edits no longer count as work
+off_peak:
+  start: 23                     # 0–24, in your configured timezone
+  end: 6
+```
+
+Changes apply on the next heartbeat; nothing needs reinstalling. Scout's own state under `.scout-state/`, `.scout-logs/` and `.scout-cache/` never counts as an uncommitted edit. A value out of range, or a key the heartbeat does not know, keeps the default and shows up as a warning in `scoutctl bootstrap doctor` and in `heartbeat.log`.
 
 **My runs keep getting skipped because of budget.**
 If a session log ends with `=== Budget check: skipping this run ===`, the budget check is stopping it before Claude even starts. Diagnose with:

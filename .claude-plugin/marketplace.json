@@ -14,7 +14,7 @@
         "ref": "stable"
       },
       "description": "Autonomous knowledge management and daily briefing system for Claude Code",
-      "version": "0.17.2",
+      "version": "0.17.3",
       "author": {
         "name": "Jordan Burger"
       },
