@@ -17,8 +17,8 @@ tools:
         query: {type: string}
         limit: {type: integer}
       required: [query]
-  - name: slack_search
-    description: Search messages (alias kept for older instructions).
+  - name: slack_search_channels
+    description: Find channels by name or topic.
     inputSchema:
       type: object
       properties:

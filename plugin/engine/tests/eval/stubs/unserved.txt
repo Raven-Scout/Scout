@@ -1,2 +1,16 @@
-# Tools the connector phases name that the eval stubs deliberately don't serve.
+# Tools the phases name that the eval stubs deliberately don't serve.
 # One "persona: tool  # reason" per line. tests/eval/harness/coverage_lint.py reads this.
+
+# Field values in personal-task entities, not tools
+email: gmail_confirmation  # a completion_signal value
+slack: slack_post  # a completion_evidence value
+
+# Connectors the fixture never enables (granola, fathom, drive)
+any: get_meeting_transcript  # granola / fathom
+any: list_meetings  # granola / fathom
+any: list_recent_files  # drive
+any: read_file_content  # drive
+any: search_files  # drive
+
+# Not a production tool name
+slack: slack_search  # slack.md names it as a concept, not a call

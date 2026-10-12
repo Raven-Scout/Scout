@@ -28,6 +28,13 @@ tools:
       properties:
         issueId: {type: string}
       required: [issueId]
+  - name: get_project
+    description: Get one project, including its last update time.
+    inputSchema:
+      type: object
+      properties:
+        query: {type: string, description: A project id or name.}
+      required: [query]
   - name: get_status_updates
     description: List recent project status updates.
     inputSchema:
