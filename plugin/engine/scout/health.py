@@ -890,6 +890,20 @@ def _trailing(rows: list[UpdateOutcome], result: str) -> list[UpdateOutcome]:
     return run[::-1]
 
 
+def _update_words(row: UpdateOutcome) -> str:
+    """The newest attempt in a few words, for ``update.last`` (and the app's "Updates" row)."""
+    target = row.target or "a new version"
+    return {
+        "up_to_date": f"up to date ({row.target or row.from_version})",
+        "applied": f"updated to {target}",
+        "applied_with_sidecars": f"updated to {target}, with files to merge",
+        "waiting_release": f"{target} is not published yet, or is still settling",
+        "deferred": f"put off: {row.detail}",
+        "held": f"on hold: {row.detail}",
+        "failed": f"the update to {target} failed at the {row.step} step",
+    }[row.result]
+
+
 def update_findings(vault: Path, rows: list[UpdateOutcome], *, now: datetime) -> list[Finding]:
     """``update.*`` findings from the headless-update ledger (spec §4.2, #360)."""
     if not rows:
@@ -953,6 +967,17 @@ def update_findings(vault: Path, rows: list[UpdateOutcome], *, now: datetime) ->
                     source=_UPDATE_SOURCE,
                 )
             )
+    if newest.result != "not_eligible":
+        findings.append(
+            Finding(
+                id="update.last",
+                severity="note",
+                since=newest.at,
+                summary=f"Updates automatically. Last checked {_age(now - newest.at)} ago: {_update_words(newest)}.",
+                fix="Run: scoutctl self-update run --dry-run",
+                source=_UPDATE_SOURCE,
+            )
+        )
     if _newer(newest.target, newest.from_version):
         if newest.result == "not_eligible" and newest.managed_by in ("dev", "unknown"):
             findings.append(

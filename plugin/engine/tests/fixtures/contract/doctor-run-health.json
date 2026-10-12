@@ -27,6 +27,14 @@
         "since": "2026-10-09T06:00:58Z",
         "source": "schedule",
         "summary": "morning-briefing last fired 53 h ago."
+      },
+      {
+        "fix": "Run: scoutctl self-update run --dry-run",
+        "id": "update.last",
+        "severity": "note",
+        "since": "2026-10-11T06:00:00Z",
+        "source": "update ledger",
+        "summary": "Updates automatically. Last checked 6 h ago: updated to 0.17.0."
       }
     ],
     "last_ok_at": "2026-10-07T08:01:00Z",

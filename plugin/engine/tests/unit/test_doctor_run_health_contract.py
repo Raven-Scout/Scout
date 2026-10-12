@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from scout import health
+from scout import health, update_outcomes
 from scout.scripts import bootstrap_doctor
 from scout.scripts.bootstrap_auto import doctor_dict
 
@@ -105,6 +105,21 @@ def _build_vault(root: Path) -> Path:
     }
     day = (NOW - timedelta(minutes=5)).date().isoformat()
     (logs / f"schedule-events-{day}.jsonl").write_text(json.dumps(tick) + "\n", encoding="utf-8")
+    # A headless engine's last self-update (#360): gives the app its "Updates" row (update.last).
+    update_outcomes.append(
+        v,
+        update_outcomes.UpdateOutcome(
+            at=NOW - timedelta(hours=6),
+            from_version="0.16.0",
+            target="0.17.0",
+            managed_by="install.sh",
+            result="applied",
+            step="verify",
+            doctor="green",
+            log="self-update-2026-10-11.log",
+            release_published_at=NOW - timedelta(days=2),
+        ),
+    )
     return v
 
 
@@ -135,6 +150,7 @@ def test_the_fixture_exercises_the_contract_shape(tmp_path, monkeypatch):
     ids = {f["id"]: f["severity"] for f in rh["findings"]}
     assert ids["auth.expired"] == "red"
     assert any(i.startswith("slot.stale:") and s == "yellow" for i, s in ids.items())
+    assert ids["update.last"] == "note"
     assert sorted(rh["slots"][0]) == ["key", "last_fire", "last_outcome", "type"]
     outcomes = [s["last_outcome"] for s in rh["slots"]]
     assert len(outcomes) == 2 and sum(o is None for o in outcomes) == 1

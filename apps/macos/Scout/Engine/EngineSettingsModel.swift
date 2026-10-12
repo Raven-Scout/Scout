@@ -169,8 +169,27 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     /// hands the user `/scout-update` to run.
     var showsHandOff: Bool {
         if state.isBrokenOutsideApp { return true }
-        if case .external = state { return isBehindBundled }
+        if case .external = state { return isBehindBundled && !updatesAutomatically }
         return false
+    }
+
+    /// An external engine that updates itself (`scoutctl self-update run`, run-health
+    /// spec §7.8): its doctor reports an `update.last` note. The "Updates" row replaces
+    /// the `/scout-update` hand-off. App-managed engines never record one.
+    var updatesAutomatically: Bool {
+        guard case .external = state else { return false }
+        return doctor?.runHealth?.findings.contains { $0.id == "update.last" } ?? false
+    }
+    /// A failed or held update outranks the routine "Last checked" line.
+    var updatesHelp: String {
+        let findings = doctor?.runHealth?.findings ?? []
+        if let problem = findings.first(where: { $0.id == "update.failed" || $0.id == "update.held" }) {
+            return problem.summary
+        }
+        return findings.first { $0.id == "update.last" }?.summary ?? ""
+    }
+    var updatesIsOK: Bool {
+        !(doctor?.runHealth?.findings.contains { $0.id == "update.failed" || $0.id == "update.held" } ?? false)
     }
     var handOffTitle: String { state.isBrokenOutsideApp ? "Repair engine" : "Update available" }
     var handOffHelp: String {

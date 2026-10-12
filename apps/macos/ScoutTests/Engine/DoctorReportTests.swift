@@ -45,7 +45,9 @@ struct DoctorReportTests {
         #expect(r?.severity == .yellow)                       // install severity is independent
         #expect(r?.runHealth?.severity == .red)
         #expect(r?.runHealth?.findings.first?.id == "auth.expired")
-        #expect(r?.runHealth?.findings.count == 3)
+        #expect(r?.runHealth?.findings.count == 4)
+        #expect(r?.runHealth?.findings.last?.id == "update.last")
+        #expect(r?.runHealth?.findings.last?.severity == "note")
         #expect(r?.runHealth?.slots.count == 2)
         #expect(r?.runHealth?.slots.first?.lastFire == "2026-10-09T06:00:58Z")
         #expect(r?.runHealth?.slots.last?.lastFire == "2026-10-07T14:00:00Z")

@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **Settings ▸ Engine shows an "Updates" row for an engine that updates itself** (#360; `Scout/Engine/EngineSettingsModel.swift`, `Scout/Shell/EngineSettingsSection.swift`). Engines installed with `install.sh` or Claude Code can now install each stable release on their own (`scoutctl self-update run`). When the engine's doctor reports that it does (an `update.last` note in `run_health`), the row reads "Automatic", with the last check and its result. A failed or held update shows "Needs attention" and its reason. That row replaces the "Copy /scout-update" hand-off. Engines the app manages are unchanged.
+
 ## [0.17.3] - 2026-10-12
 
 ## [0.17.2] - 2026-10-12

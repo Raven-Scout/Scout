@@ -134,6 +134,7 @@ before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fir
 | `update.held` | The newest row is `held`, or `deferred` for more than 72 h. | yellow | update ledger | #360 |
 | `update.sidecars` | Brain sidecars are pending and the newest update row lists them. Otherwise the doctor's existing sidecar warning covers it. | yellow | sidecars | #360 |
 | `update.behind` | An eligible engine is >14 days behind a published release, or a `dev`/`unknown` engine is behind at all. | note (never changes severity) | self-update check | #360 |
+| `update.last` | The newest update row is from an eligible engine: "Last checked <when>: <result>". *(Added in implementation, §13.6.)* | note | update ledger | #360 |
 
 A note on `scheduler.stalled`: on a laptop that just woke, launchd runs the missed `StartInterval`
 tick within seconds. So a 2 h threshold doesn't fire on wake. When the scheduler is dead, nothing
@@ -565,3 +566,26 @@ grace window never triggers a "recovered".
 - **Telegram duplicate guard (#241, folded into P2).** `scoutctl notify telegram` refuses a
   byte-identical body to the same chat within 10 min, unless `--allow-duplicate` is passed. It
   prints its receipt as `id=<id>` on stderr line 1.
+
+### 13.6 Headless updates as built (P7, P8)
+
+- **`update.last` (note).** A healthy `applied` or `up_to_date` state produced no `update.*`
+  finding, so §7.8's "Last checked <when>: <result>" row had nothing to read. Every eligible
+  attempt now yields an `update.last` note ("Updates automatically. Last checked 6 h ago:
+  updated to 0.17.0."). Notes never change severity or push. Scout.app shows the "Updates" row
+  for an external engine whose doctor reports it, in place of the `/scout-update` hand-off. An
+  `update.failed` or `update.held` summary takes precedence in that row.
+- **`scout-config.yaml.tmpl` no longer exists** (#386 removed it). The §7.9 comment and
+  `soak_hours: 24` went into the packaged defaults (`engine/scout/defaults/scout-config.yaml`).
+  The `AUTO_UPDATE_ENABLED` render variable now reads this run's flag, then the vault's
+  `auto_update.enabled`, then that default.
+- **`/scout-setup` Step 3 is reworded, not deleted.** `/scout-setup` is still a full installer.
+  Deleting the question would have left its installs off, against Q1. The question now describes
+  the real behaviour, and a blank answer means yes.
+- **Spec order for `dev`.** A `dev` engine with `auto_update` off gets no target and no
+  `update.behind`, as §7.2 orders it. The read-only check runs only for an enabled `dev` or
+  `unknown` engine. #360's `git pull --ff-only` for `dev` is superseded by D7.
+- **The scheduled gate writes no row** for "outside the off-peak window" or "applied a version
+  in the last 24 h", and the §7.5 backoff skips also write no row. The day's marker is written
+  for the 24 h and backoff skips, and for every row except `deferred`.
+
