@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from .checks.no_drop import no_drop
 from .checks.placement import placement
 from .claude_shim import SHIM
 from .mcp_config import write_mcp_config
-from .metrics import SampleMetrics, parse_stream
+from .metrics import SampleMetrics, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
 from .scenario import Scenario
 
@@ -76,6 +76,28 @@ class SampleResult:
     metrics: SampleMetrics | None
     checks: tuple[CheckResult, ...]
     unstubbed: int
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def load_sample(result_dir: Path) -> SampleResult:
+    """A sample read back from its result dir: what a cached base sample is."""
+    meta = json.loads((result_dir / "meta.json").read_text(encoding="utf-8"))
+    checks_file, metrics_file = result_dir / "checks.json", result_dir / "metrics.json"
+    checks = tuple(
+        CheckResult(c["name"], c["passed"], tuple(c["details"]))
+        for c in (json.loads(checks_file.read_text(encoding="utf-8")) if checks_file.exists() else [])
+    )
+    metrics = metrics_from_dict(json.loads(metrics_file.read_text(encoding="utf-8"))) if metrics_file.exists() else None
+    return SampleResult(
+        scenario=meta["scenario"],
+        rep=meta["rep"],
+        result_dir=result_dir,
+        aborted=meta["aborted"],
+        metrics=metrics,
+        checks=checks,
+        unstubbed=_unstubbed(result_dir / "calls.jsonl"),
+        meta=meta,
+    )
 
 
 def allowed_tools(vault: Path, servers: set[str]) -> list[str]:
@@ -162,8 +184,11 @@ def run_sample(
     timeout_s: int = DEFAULT_TIMEOUT_S,
     budget: str = DEFAULT_BUDGET,
     hook_grace_s: int = HOOK_GRACE_S,
+    arm: str = "head",
+    cli_version: str = "",
 ) -> SampleResult:
-    result_dir = results_root / f"{scenario.name}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    result_dir = results_root / f"{scenario.name}-{arm}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
     vault = result_dir / "vault"
     result_dir.mkdir(parents=True)
     build_vault(
@@ -240,6 +265,18 @@ def run_sample(
     (result_dir / "checks.json").write_text(json.dumps([asdict(c) for c in checks], indent=2), encoding="utf-8")
     if metrics is not None:
         (result_dir / "metrics.json").write_text(json.dumps(asdict(metrics), indent=2), encoding="utf-8")
+    meta = {
+        "scenario": scenario.name,
+        "rep": rep,
+        "arm": arm,
+        "model": model,
+        "resolved_model": metrics.model if metrics else None,
+        "cli_version": cli_version,
+        "today": today.isoformat(),
+        "started_at": started_at,
+        "aborted": aborted,
+    }
+    (result_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return SampleResult(
         scenario=scenario.name,
         rep=rep,
@@ -248,4 +285,5 @@ def run_sample(
         metrics=metrics,
         checks=checks,
         unstubbed=_unstubbed(result_dir / "calls.jsonl"),
+        meta=meta,
     )
