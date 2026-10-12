@@ -117,6 +117,13 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
     )
 
 
+def metrics_from_dict(d: dict[str, Any]) -> SampleMetrics:
+    """The inverse of ``dataclasses.asdict`` on a ``SampleMetrics`` (a stored ``metrics.json``)."""
+    tuple_fields = {"denials", "mcp_servers"}
+    fields = {k: (tuple(v) if k in tuple_fields else v) for k, v in d.items() if k != "calls"}
+    return SampleMetrics(calls=tuple(ToolCall(**c) for c in d.get("calls", [])), **fields)
+
+
 def conforms(m: SampleMetrics) -> list[str]:
     problems = []
     if m.tool_call_count != len(m.calls):

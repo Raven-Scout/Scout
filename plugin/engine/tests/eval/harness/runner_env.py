@@ -17,7 +17,7 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parents[3]
 STUB_BIN = ENGINE / "tests" / "eval" / "stubs" / "bin"
 SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-_DROPPED_PREFIXES = ("GIT_", "SCOUT_", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE")
+_DROPPED_PREFIXES = ("GIT_", "SCOUT_", "SCOUTCTL_BIN", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE")
 # Credentials that would bill an API or reach a real account. The eval runs on the
 # maintainer's subscription login only (spec §13 Q1); an exported key must never be used.
 SECRETS = (
@@ -46,8 +46,14 @@ def build_env(
     script: Path,
     today: str,
     timeout_s: int,
+    pythonpath: Path | None = None,
 ) -> dict[str, str]:
+    """``pythonpath`` is a comparison base arm's engine: the runner's hooks and the session's
+    shell import ``scout`` from it. The harness's own stubs keep this checkout's."""
     env = {k: v for k, v in base.items() if not k.startswith(_DROPPED_PREFIXES) and k not in SECRETS}
+    env.pop("PYTHONPATH", None)
+    if pythonpath is not None:
+        env["PYTHONPATH"] = str(pythonpath)
     path = [str(STUB_BIN), str(ENGINE / ".venv" / "bin"), str(Path(real_claude).parent), *SYSTEM_PATH]
     env.update(
         PATH=":".join(dict.fromkeys(path)),
@@ -70,5 +76,6 @@ def build_env(
         SCOUT_EVAL_SCRIPT=str(script),
         SCOUT_EVAL_CALLS=str(result_dir / "calls.jsonl"),
         SCOUT_EVAL_TODAY=today,
+        SCOUT_EVAL_SESSION_PYTHONPATH=str(pythonpath or ""),
     )
     return env

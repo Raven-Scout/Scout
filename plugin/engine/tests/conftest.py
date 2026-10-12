@@ -91,6 +91,29 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     monkeypatch.setenv("SCOUT_LOCALTIME", str(home / "no-localtime"))
 
 
+_REFUSING_LAUNCHCTL = """#!/bin/sh
+echo "launchctl is blocked in tests (tests/conftest.py): launchd's gui/<uid> domain is global" >&2
+echo "to the user, so a test reaching it replaces the real scheduler jobs. Mock subprocess instead." >&2
+exit 99
+"""
+
+
+@pytest.fixture(autouse=True)
+def _block_real_launchctl(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may run the real launchctl, in this process or in a child.
+
+    A temp HOME doesn't isolate launchd: a `bootstrap install` without --no-jobs boots out and
+    replaces the user's live com.scout.* jobs (it happened once, during an eval-harness test run).
+    The engine always calls `launchctl` through PATH, so a refusing one goes first. Tests that
+    exercise launchctl calls mock subprocess, which never reaches PATH.
+    """
+    bin_dir = tmp_path_factory.mktemp("no-launchctl")
+    script = bin_dir / "launchctl"
+    script.write_text(_REFUSING_LAUNCHCTL)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
 @pytest.fixture(autouse=True)
 def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may reach the real ``gh`` (Agent Sessions spec §7).

@@ -75,6 +75,8 @@ if os.environ.get("EVAL_FAKE_ENRICH"):  # rewrite today's file the way a session
     path = sorted(glob.glob("action-items/action-items-*.md"))[-1]
     lines = [ln for ln in open(path) if "Mechanical carry-forward" not in ln]
     open(path, "w").writelines(lines)
+if os.environ.get("EVAL_FAKE_ENVFILE"):
+    open(os.environ["EVAL_FAKE_ENVFILE"], "w").write(os.environ.get("PYTHONPATH", ""))
 if os.environ.get("EVAL_FAKE_SLEEP"):
     open(os.environ["EVAL_FAKE_PIDFILE"], "w").write(str(os.getpid()))
     time.sleep(float(os.environ["EVAL_FAKE_SLEEP"]))
