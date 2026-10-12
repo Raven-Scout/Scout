@@ -190,6 +190,9 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         pytest.param("fatal: Unable to create '/v/.git/index.lock': File exists.\n", "git_lock", id="git-lock"),
         pytest.param("API Error: 429 Too Many Requests\n", "rate_limited", id="http-429"),
         pytest.param("You have hit your usage limit\n", "rate_limited", id="usage-limit"),
+        # Claude Code's own quota message names a reset time; it is a rate limit.
+        pytest.param("You've hit your session limit · resets 3pm\n", "rate_limited", id="session-limit"),
+        pytest.param("Weekly limit reached · resets Mon 9am\n", "rate_limited", id="limit-resets-rewording"),
         # The budget check's own preamble names the budget on every run; that
         # is not a budget failure.
         pytest.param(

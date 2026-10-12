@@ -48,7 +48,12 @@ case "$ENGINE_ALERT_INTERVAL_S" in ''|*[!0-9]*) ENGINE_ALERT_INTERVAL_S=86400 ;;
 AUTH_RE='^(Failed to authenticate([.:]|$)|Invalid authentication credentials|API Error: 40[13]|OAuth (session|token)( has)? expired)'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
-RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit'
+# Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to
+# retry, this one labels the failure. Claude Code's own quota message ("You've hit your
+# session limit · resets <time>") matched neither, so those runs were never retried and
+# were labelled `unknown`. `limit.{0,20}resets` keys on the self-declared reset rather than
+# the wording, so a rewording ("weekly limit", "5-hour limit") still matches.
+RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit|session limit|hit your .{0,20}limit|limit.{0,20}resets'
 BUDGET_RE='Exceeded USD budget'
 
 # classify_failure <log_file> <exit_code> — name the failure class, so a streak
