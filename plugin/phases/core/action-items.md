@@ -311,6 +311,22 @@ The count-guard catches *how many* dropped; this catches *which*. Before committ
 3. It appears in `action-items/archive/stale-items-*.md` with an `_auto-archived <today>` note → stale auto-archive, OK. Do not re-add it (see *Stale Items Auto-Archive*).
 4. **Otherwise → silent dropoff.** Re-add it to today's file with a `[carried-via-audit]` annotation, surface `🚨 N items silently dropped from yesterday — please verify` in the notification, and write a `review-queue.md` entry. Never let an open item vanish without one of (1)/(2).
 
+### Hard Rule — Review Requests Never Drop (pre-commit)
+
+Before committing a briefing or consolidation, run:
+
+```bash
+scoutctl action-items check-review-requests --data-dir {{SCOUT_DIR}}
+```
+
+It lists each review request the runner pre-fetched into `.scout-cache/session-context.json` that today's file does not account for. An item accounts for a request when its line or its `- Refs:` line names the PR as `owner/repo#N` or by its URL. So does a skip line with a reason, or {{USER_NAME}} having dismissed the PR's link. A request sent only to a team counts like any other. Act on the exit code:
+
+- **0:** every request is accounted for. Go on.
+- **1:** for each listed `owner/repo#N`, run `gh pr view N --repo owner/repo --json state,author,headRefName,reviewRequests,isDraft`, classify it with the three-bucket rule in the GitHub connector phase, and place it in its bucket's section with `owner/repo#N` in its `- Refs:` line. A request sent only to a team goes to 🟢 Watching (see *🔴 and 🟡 Are {{USER_NAME}}'s Move*). Only when it should not be an item at all (it merged or closed since the fetch, say), write this line under this run's 🪵 Run notes entry instead: `  - Skipped review request owner/repo#N — <reason>`. On a `weekend-briefing`, the reason may be `weekend scope`: the next weekday consolidation places it. Then run the check again until it exits 0.
+- **2:** it could not check, and says why. If the context file is missing or from another day, run `scoutctl pre-session data <run mode>` once and check again. Otherwise add `review-request check could not run: <its message>` to this run's 🪵 Run notes entry and go on.
+
+Never edit `session-context.json` to make the check pass.
+
 ### Hard Rule — Leave-State Compose Gate
 
 Before generating any action item that names a specific person as the next-action owner (a 🟢 Watching item, since the next step is theirs), read that person's entity file (`knowledge-base/people/<slug>.md`). If it carries an active leave/out-of-office state (a `status:` containing `leave`/`oof`/`vacation`/`paternity`/`maternity`, a dated leave block overlapping today, or a 🚨/`### ACTIVE STATUS` body header) — do NOT assign them as the owner. Keep it in 🟢 and add `(on leave through <date>; auto-resume on return)`, unless the action item is itself about *responding to* that leave. This prevents assigning work to someone Scout already knows is away.

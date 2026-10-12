@@ -34,6 +34,10 @@ KB_DATES_CACHE_FILENAME = "kb-dates.cache.json"
 DEFAULT_TZ = scout_config.DEFAULT_TIMEZONE
 DEFAULT_GIT_LOG_LOOKBACK = "12 hours ago"
 PR_LIST_LIMIT = 10
+# `--review-requested @me` expands team membership, so the list runs longer than
+# the authored one, and `action-items check-review-requests` only sees what is
+# fetched here (#404).
+REVIEW_REQUEST_LIMIT = 50
 KB_HEAD_SCAN_LINES = 5
 
 # Match the bash find filter: skip */ontology/* and *archive*.
@@ -242,9 +246,9 @@ def get_pr_review_requested() -> list[dict]:
             "--state",
             "open",
             "--json",
-            "number,title,repository",
+            "number,title,url,repository",
             "--limit",
-            str(PR_LIST_LIMIT),
+            str(REVIEW_REQUEST_LIMIT),
         ]
     )
 
@@ -336,6 +340,7 @@ __all__ = [
     "KB_HEAD_SCAN_LINES",
     "OUTPUT_FILENAME",
     "PR_LIST_LIMIT",
+    "REVIEW_REQUEST_LIMIT",
     "SessionContext",
     "extract_last_updated",
     "gather",
