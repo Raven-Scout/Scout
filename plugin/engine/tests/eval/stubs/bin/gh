@@ -1,0 +1,3 @@
+#!/bin/bash
+# eval stub: stands in for the gh CLI inside eval sessions (tests/eval/harness/stubs/gh.py).
+PYTHONPATH="$SCOUT_EVAL_ENGINE" exec "$SCOUT_EVAL_PYTHON" -m tests.eval.harness.stubs.gh "$@"
