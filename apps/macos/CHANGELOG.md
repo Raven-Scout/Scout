@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-12
+
 ### Changed
 - **Topics: tasks without a topic stand alone** (#397). Each is its own row,
   ordered among the topics by priority with what it blocks nested under it,
