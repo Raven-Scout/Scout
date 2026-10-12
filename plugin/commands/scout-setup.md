@@ -162,19 +162,19 @@ Omit `--claude-bin` unless the user told you a specific path: by default the eng
     --auto-update   # or --no-auto-update, per Step 3
 ```
 
-If the user gave a daily budget in Step 3, write it once install has succeeded (`--max-budget` above never reaches the daily budget):
-
-```bash
-"$SCOUTCTL" budget set --daily-usd "<DAILY_USD>"
-```
-
-If that command fails, tell the user scheduled runs use the $50 default until they run it themselves.
-
 Add `--timezone "<IANA_ZONE>"` only if the user named an override in Step 1. Without it, the vault follows the computer's timezone: nothing is written to `scout-config.yaml`, and `scripts/scout-tz.sh` reads the zone from the host on every run.
 
 The plist + cron block installed by this step automatically reference `$SCOUTCTL` — `resolve_scoutctl_bin()` derives the path from the running engine's plugin root, so the scheduler is always pinned to the venv the wizard just used.
 
 Capture exit code and stdout. The command emits one line per concern: `installed: <path>`, `doctor: green`, plus warnings for sidecar files or missing snapshots.
+
+Then, if install exited 0 or 1 and the user gave a daily budget in Step 3, write it (`--max-budget` above never reaches the daily budget):
+
+```bash
+"$SCOUTCTL" budget set --daily-usd "<DAILY_USD>"
+```
+
+If that command fails, tell the user scheduled runs use the $50 default until they run it themselves. Its output is not the install result; report Step 5 from the install's output above.
 
 ---
 
