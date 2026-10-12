@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scout.errors import ConfigError
-from scout.schedule import SlotRuntime, SlotType, load_schedule
+from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
 from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
@@ -405,9 +405,13 @@ _GIT_ENV_DROP = frozenset(
 )
 
 
+def _git_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+
+
 def vault_birth(vault: Path) -> datetime | None:
     """Root-commit time when the vault itself is a git repo, else scout-config.yaml mtime, else None."""
-    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    env = _git_env()
     try:
         top = subprocess.run(
             ["git", "-C", str(vault), "rev-parse", "--show-toplevel"],
@@ -480,20 +484,37 @@ def _age(delta: timedelta) -> str:
     return f"{hours // 24} d" if hours >= 72 else f"{hours} h"
 
 
+def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
+    """The vault's schedule and its file's mtime; None when absent or malformed."""
+    schedule_path = vault / ".scout-state" / "schedule.yaml"
+    try:
+        schedule = load_schedule(schedule_path)
+        return schedule, datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
+    except (ConfigError, OSError):
+        return None
+
+
 def schedule_findings(
     vault: Path, rows: list[OutcomeRow], *, now: datetime
 ) -> tuple[list[Finding], tuple[SlotStatus, ...]]:
     """Slot, fire and scheduler-liveness findings, plus per-slot status."""
+    return _schedule_findings(vault, _load_schedule(vault), rows, read_last_fires(vault), now=now)
+
+
+def _schedule_findings(
+    vault: Path,
+    loaded: tuple[Schedule, datetime] | None,
+    rows: list[OutcomeRow],
+    fires: dict[str, datetime],
+    *,
+    now: datetime,
+) -> tuple[list[Finding], tuple[SlotStatus, ...]]:
     statuses: list[SlotStatus] = []
-    schedule_path = vault / ".scout-state" / "schedule.yaml"
-    try:
-        schedule = load_schedule(schedule_path)
-        schedule_mtime = datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
-    except (ConfigError, OSError):
+    if loaded is None:
         return [], ()
+    schedule, schedule_mtime = loaded
 
     birth = vault_birth(vault)
-    fires = read_last_fires(vault)
     # run-outcome.sh records started_at 0 for a run whose start it couldn't read.
     first_row = min((r.started_at for r in rows if r.started_at.timestamp() >= _MIN_SANE_EPOCH), default=None)
     ref = max(birth, schedule_mtime) if birth is not None else None
@@ -593,9 +614,227 @@ def _scheduler_stalled(vault: Path, *, now: datetime, ref: datetime | None) -> F
     )
 
 
+# (warn, dark) days without committed output. Deliberately generous: these mean
+# "the lane is broken", not "a quiet night".
+LANE_BUDGETS_DAYS = {
+    "briefing": (2, 4),
+    "consolidation": (2, 4),
+    "dreaming": (3, 7),
+    "research": (3, 7),
+}
+DEFAULT_BUDGET = (3, 7)
+RECENT_FIRE_DAYS = 1.5  # fired this recently but nothing committed: firing but silent
+COMMIT_SCAN = 4000
+_LANE_AUTH_RE = re.compile(
+    r"OAuth session expired|OAuth token (has )?expired|Failed to authenticate"
+    r"|Invalid authentication credentials|API Error: 40[13]",
+    re.IGNORECASE,
+)
+_LANE_DARK_FIX = "Read the newest run log under .scout-logs/ and run: scoutctl bootstrap doctor"
+_LANE_SILENT_FIX = (
+    "The scheduler is firing this lane and it commits nothing. Check the newest run log: "
+    "an expired login, the budget check, or a held lock are the usual causes."
+)
+
+
+def lane_budgets(lane: str, weekdays: tuple[str, ...]) -> tuple[int, int]:
+    """(warn, dark) days, widened so a lane's own schedule gaps never read as an outage."""
+    warn, dark = LANE_BUDGETS_DAYS.get(lane, DEFAULT_BUDGET)
+    gap = longest_gap_hours(weekdays) // 24
+    return max(warn, gap), max(dark, gap + 1)
+
+
+def recent_commits(vault: Path, limit: int = COMMIT_SCAN) -> list[tuple[datetime, str]]:
+    """(commit time, subject) for the vault's newest ``limit`` commits; [] without git or a repo.
+
+    Only a repo rooted at the vault counts: a vault nested inside some other
+    repository must not be judged by that repository's history.
+    """
+    env = _git_env()
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=env,
+        )
+        if top.returncode != 0 or not os.path.samefile(top.stdout.strip(), vault):
+            return []
+        raw = subprocess.run(
+            ["git", "-C", str(vault), "log", "-n", str(limit), "--format=%ct%x1f%s"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+            env=env,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out: list[tuple[datetime, str]] = []
+    for line in raw.splitlines():
+        epoch, sep, subject = line.partition("\x1f")
+        if sep and epoch.isdigit():
+            out.append((datetime.fromtimestamp(int(epoch), UTC), subject))
+    return out
+
+
+def newest_log_outcome(vault: Path, runner: str | None, ledger_logs: list[str], *, shared: bool) -> str | None:
+    """Why a lane's newest run produced nothing, read from its runner log.
+
+    The logs the ledger recorded for the lane are always its own. A runner's
+    other logs (``<stem>-YYYY-MM-DD_HH-MM.log``, including runs that stopped
+    before the ledger step) count only when no other lane uses the same runner:
+    run-scout.sh serves both briefing and consolidation and its log names do not
+    say which one ran.
+    """
+    log_dir = vault / ".scout-logs"
+    names = {name for name in ledger_logs if (log_dir / name).is_file()}
+    m = re.fullmatch(r"run-(.+)\.sh", runner or "")
+    if m and not shared:
+        pattern = re.compile(re.escape(m.group(1)) + r"-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.log")
+        names |= {p.name for p in log_dir.glob("*.log") if pattern.fullmatch(p.name)}
+    if not names:
+        return None
+    name = sorted(names)[-1]
+    try:
+        text = (log_dir / name).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if "Budget check: skipping" in text:
+        return f"{name}: budget-skip"
+    if _LANE_AUTH_RE.search(text):
+        return f"{name}: AUTH FAILURE"
+    if re.search(r"Another .* session running", text):
+        return f"{name}: lock-skip"
+    code = re.search(r"exit code: (\d+)", text)
+    if code:
+        return f"{name}: exit {code.group(1)}"
+    return f"{name}: no completion line"
+
+
+def _days(now: datetime, then: datetime | None) -> float | None:
+    return (now - then).total_seconds() / 86400 if then else None
+
+
+def _days_text(days: float) -> str:
+    n = int(days)
+    return f"{n} day{'' if n == 1 else 's'}"
+
+
+def lane_findings(
+    vault: Path,
+    schedule: Schedule | None,
+    rows: list[OutcomeRow],
+    fires: dict[str, datetime],
+    *,
+    now: datetime,
+    commits: list[tuple[datetime, str]] | None = None,
+) -> list[Finding]:
+    """Does each session type (lane) still produce commits? (port of session-lane-liveness.py)
+
+    A lane is every slot of one type, ``manual`` excluded, judged by committed
+    output rather than last-fire (which advances even when a run dies at the
+    door). With no commit history to read (``commits`` empty, or git absent when
+    ``commits`` is None) nothing can be judged, so no lane is reported.
+
+    Verdicts, as the script's: OK and DEGRADED (inside the dark budget) and NO DATA
+    YET raise nothing; DARK is ``lane.dark:<type>``, red; FIRING-BUT-SILENT (past
+    the dark budget, yet fired within ``RECENT_FIRE_DAYS``) is ``lane.silent:<type>``,
+    also red: a broken lane that still fires, which the script exited 3 on and
+    pushed. Both ids share one notifier key (``lane:<type>``), so a lane flapping
+    between them is one outage.
+    """
+    if schedule is None:
+        return []
+    if commits is None:
+        commits = recent_commits(vault)
+    if not commits:
+        return []
+
+    lanes: dict[str, list[str]] = {}
+    for slot in schedule.values():
+        if slot.type is not SlotType.MANUAL:
+            lanes.setdefault(slot.type.value, []).append(slot.key)
+
+    def lane_of_slot(slot: str) -> str | None:
+        if slot in schedule:
+            lane = schedule[slot].type.value
+            return lane if lane in lanes else None
+        prefix = slot.split("-", 1)[0]  # an unscheduled run such as "dreaming-manual"
+        return prefix if prefix in lanes else None
+
+    windows: dict[str, list[tuple[datetime, datetime]]] = {lane: [] for lane in lanes}
+    ledger_logs: dict[str, list[str]] = {lane: [] for lane in lanes}
+    for row in rows:
+        lane = lane_of_slot(row.slot)
+        if lane:
+            # run-outcome.sh records started_at 0 for a run whose start it
+            # couldn't read; that row's window would span 1970..now.
+            if row.started_at.timestamp() >= _MIN_SANE_EPOCH:
+                windows[lane].append((row.started_at, row.finished_at))
+            if row.log:
+                ledger_logs[lane].append(row.log)
+
+    output: dict[str, datetime] = {}
+    for when, subject in commits:
+        words = subject.split()
+        named = words[0].rstrip(":").lower() if words else ""
+        # A subject that names a lane is authoritative; only an unnamed commit is
+        # credited to whichever lane's run it landed in.
+        if named in lanes:
+            owners = {named}
+        else:
+            owners = {lane for lane, spans in windows.items() if any(s <= when <= f for s, f in spans)}
+        for lane in owners:
+            if lane not in output or when > output[lane]:
+                output[lane] = when
+
+    findings: list[Finding] = []
+    for lane in sorted(lanes):
+        slots = lanes[lane]
+        weekdays = tuple(d for key in slots for d in schedule[key].weekdays)
+        warn, dark = lane_budgets(lane, weekdays)
+        commit_dt = output.get(lane)
+        fire_dt = max((fires[k] for k in slots if k in fires), default=None)
+        commit_age, fire_age = _days(now, commit_dt), _days(now, fire_dt)
+        observed = _days(now, min((s for s, _ in windows[lane]), default=None))
+
+        if commit_age is not None and commit_age < dark:
+            continue  # OK, or DEGRADED (inside the dark budget): not worth a finding
+        if commit_age is None and (observed is None or observed < dark):
+            continue  # NO DATA YET: not observed for the lane's whole dark budget
+        silent = fire_age is not None and fire_age < RECENT_FIRE_DAYS
+        summary = (
+            f"{lane} has produced no commits in {_days_text(commit_age)}"
+            if commit_age is not None
+            else f"{lane} has no commits on record"
+        )
+        runner = schedule[slots[0]].runner
+        shared = any(schedule[k].runner == runner for other in lanes if other != lane for k in lanes[other])
+        newest = newest_log_outcome(vault, runner, ledger_logs[lane], shared=shared)
+        if newest:
+            summary += f"; newest run log: {newest}"
+        findings.append(
+            Finding(
+                id=f"lane.{'silent' if silent else 'dark'}:{lane}",
+                severity="red",
+                since=commit_dt,
+                summary=summary,
+                fix=_LANE_SILENT_FIX if silent else _LANE_DARK_FIX,
+                source="git",
+            )
+        )
+    return findings
+
+
 def evaluate(vault: Path, *, now: datetime | None = None) -> RunHealth:
     now = now or datetime.now(UTC)
     rows = read_outcomes(vault)
     found = ledger_findings(rows, vault=vault, now=now)
-    sched, slots = schedule_findings(vault, rows, now=now)
-    return build_report(found + sched, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
+    loaded = _load_schedule(vault)
+    fires = read_last_fires(vault)
+    sched, slots = _schedule_findings(vault, loaded, rows, fires, now=now)
+    lanes = lane_findings(vault, loaded[0] if loaded else None, rows, fires, now=now)
+    return build_report(found + sched + lanes, now=now, last_ok_at=_last_ok_at(rows), slots=slots)

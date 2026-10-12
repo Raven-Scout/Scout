@@ -1546,18 +1546,42 @@ def _register_notify() -> None:
             "--dry-run",
             help="Print the request without POSTing. Still requires secrets.",
         ),
+        allow_duplicate: bool = typer.Option(
+            False,
+            "--allow-duplicate",
+            help="Send even if a byte-identical message went to this chat in the last 10 minutes.",
+        ),
     ) -> None:
-        """Send a Telegram message via the configured bot."""
+        """Send a Telegram message via the configured bot.
+
+        The receipt is `id=<ulid>` on the first line of stderr; stdout is the Event JSON.
+        """
         import json as _json
         from dataclasses import asdict
 
         import requests as _requests
 
         from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import send
+        from scout.scripts.notify_telegram import DuplicateSendError, send
 
         try:
-            ev = send(tier=tier, body=body, dry_run=dry_run)
+            ev = send(
+                tier=tier,
+                body=body,
+                dry_run=dry_run,
+                allow_duplicate=allow_duplicate,
+                receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
+            )
+        except DuplicateSendError as e:
+            # Receipt first (the earlier send's id), so a caller filtering
+            # stderr still finds it; then the refusal and how to override.
+            typer.echo(f"id={e.original_id}", err=True)
+            typer.echo(
+                f"scoutctl notify telegram: refused — byte-identical message sent at {e.sent_at} "
+                f"(id {e.original_id}); pass --allow-duplicate to send it again",
+                err=True,
+            )
+            raise typer.Exit(code=DuplicateSendError.exit_code) from e
         except _ConfigError as e:
             # Map ScoutError exit codes at the command boundary so the CLI
             # surface stays consistent with cli.main()'s ScoutError handler.
@@ -1641,6 +1665,26 @@ def _register_health() -> None:
                 typer.echo(f"{f.severity}  {f.id}: {f.summary}")
                 typer.echo(f"    fix: {f.fix}")
         raise typer.Exit(code=report.exit_code)
+
+    @health_app.command("notify")
+    def cli_health_notify(
+        quiet: bool = typer.Option(False, "--quiet", help="Print nothing when there is no push."),
+    ) -> None:
+        """Push newly red / overdue / recovered run-health changes; always exits 0."""
+        from scout import health_notify as _hn
+        from scout import paths as _paths
+
+        try:
+            vault = _paths.data_dir()
+        except Exception as e:  # noqa: BLE001 - pushes are best-effort; this command always exits 0
+            typer.echo(f"health notify: cannot resolve the vault ({type(e).__name__}); nothing pushed", err=True)
+            return
+        sent = _hn.notify(vault)
+        for push, results in sent:
+            ok = ",".join(r["channel"] for r in results if r.get("ok")) or "none"
+            typer.echo(f"pushed {push.kind} {','.join(push.finding_ids) or push.finding_id}: {ok}")
+        if not sent and not quiet:
+            typer.echo("nothing to push")
 
 
 _register_health()

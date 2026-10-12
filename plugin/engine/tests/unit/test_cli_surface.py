@@ -607,7 +607,7 @@ def test_trigger_test_rejects_unhealthy_source(vault: Path, monkeypatch: pytest.
 def test_notify_telegram_emits_event_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "scout.scripts.notify_telegram.send",
-        lambda *, tier, body, dry_run: _event("notify.sent", {"tier": tier, "dry_run": dry_run}),
+        lambda *, tier, body, dry_run, **_: _event("notify.sent", {"tier": tier, "dry_run": dry_run}),
     )
     result = runner.invoke(cli.app, ["notify", "telegram", "--body", "hello", "--dry-run"])
     assert result.exit_code == 0, result.output

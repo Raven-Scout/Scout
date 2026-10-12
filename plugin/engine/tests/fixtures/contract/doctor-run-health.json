@@ -1,0 +1,57 @@
+{
+  "errors": [],
+  "notes": [],
+  "run_health": {
+    "evaluated_at": "2026-10-11T12:00:00Z",
+    "findings": [
+      {
+        "fix": "Open Terminal and run: claude auth login (or claude setup-token for unattended hosts)",
+        "id": "auth.expired",
+        "severity": "red",
+        "since": "2026-10-07T08:01:00Z",
+        "source": "ledger",
+        "summary": "Scout can't run: your Claude login expired. 2 failed run(s) since the last success (2026-10-07T08:01:00Z)."
+      },
+      {
+        "fix": "The run may have been skipped (lock or budget) or killed; see .scout-logs/failures.log",
+        "id": "slot.fired_silent:weekly-research",
+        "severity": "yellow",
+        "since": "2026-10-07T14:00:00Z",
+        "source": "ledger",
+        "summary": "weekly-research fired at 2026-10-07T14:00:00Z but no run outcome was recorded."
+      },
+      {
+        "fix": "Check that the Mac was awake and the schedule-tick job is loaded: scoutctl bootstrap doctor",
+        "id": "slot.stale:morning-briefing",
+        "severity": "yellow",
+        "since": "2026-10-09T06:00:58Z",
+        "source": "schedule",
+        "summary": "morning-briefing last fired 53 h ago."
+      }
+    ],
+    "last_ok_at": "2026-10-07T08:01:00Z",
+    "severity": "red",
+    "slots": [
+      {
+        "key": "morning-briefing",
+        "last_fire": "2026-10-09T06:00:58Z",
+        "last_outcome": {
+          "failure_class": "oauth_expired",
+          "finished_at": "2026-10-09T06:01:00Z",
+          "outcome": "failed"
+        },
+        "type": "briefing"
+      },
+      {
+        "key": "weekly-research",
+        "last_fire": "2026-10-07T14:00:00Z",
+        "last_outcome": null,
+        "type": "research"
+      }
+    ]
+  },
+  "severity": "yellow",
+  "warnings": [
+    "runner backup present: run-scout.sh.bak.1 (hand-edit detected on prior update)"
+  ]
+}

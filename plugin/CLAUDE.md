@@ -49,3 +49,5 @@ edit just one copy. On any change (anonymizing counts):
    the app's `ParserContractTests`, and scout-iOS's `ParserContractTests`. The plugin
    and app changes land in ONE commit — each checksum guard fails the moment the
    corpus changes without it.
+
+`engine/tests/fixtures/contract/doctor-run-health.json` is a generated contract fixture with an app byte copy too — regenerate it with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.

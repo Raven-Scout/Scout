@@ -35,14 +35,14 @@ def secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d.mkdir()
     _write_secret(d / "telegram-bot-token", FAKE_TOKEN)
     _write_secret(d / "telegram-chat-id", FAKE_CHAT_ID)
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
     return d
 
 
 @pytest.fixture
 def empty_secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d = tmp_path / "secrets"
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
     return d
 
 
@@ -64,7 +64,7 @@ def test_read_secret_rejects_an_empty_file(tmp_path: Path, monkeypatch: pytest.M
     d = tmp_path / "secrets"
     d.mkdir()
     _write_secret(d / "telegram-bot-token", "   ")
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     with pytest.raises(ConfigError, match="Secret file is empty"):
         notify_telegram._read_secret("telegram-bot-token")
@@ -75,7 +75,7 @@ def test_read_secret_surfaces_an_unreadable_file(tmp_path: Path, monkeypatch: py
     d.mkdir()
     secret = d / "telegram-bot-token"
     _write_secret(secret, FAKE_TOKEN)
-    monkeypatch.setattr(notify_telegram, "SECRETS_DIR", d)
+    monkeypatch.setattr(notify_telegram, "secrets_dir", lambda: d)
 
     real_read_text = Path.read_text
 
@@ -132,6 +132,17 @@ def test_main_missing_secrets_exits_with_the_configerror_code(
     "send failed"."""
     assert notify_telegram.main(["--body", "hello"]) == ConfigError.exit_code
     assert "notify-telegram: Missing secret" in capsys.readouterr().out
+
+
+def test_main_refuses_a_duplicate_with_exit_three(
+    secrets_dir: Path, fake_data_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("scout.scripts.notify_telegram.requests.post") as mock_post:
+        mock_post.return_value = _ok_response()
+        assert notify_telegram.main(["--body", "same"]) == 0
+        assert notify_telegram.main(["--body", "same"]) == 3
+    assert mock_post.call_count == 1
+    assert "notify-telegram: refused" in capsys.readouterr().out
 
 
 def test_main_empty_body_exits_one(secrets_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
