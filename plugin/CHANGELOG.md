@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A run that hits a Claude usage limit backs off until the limit resets, and run health says when Scout resumes** (#407; `engine/scout/scripts/rate_limit_reset.py`, `engine/scout/scripts/budget_check.py`, `engine/scout/health.py`, `templates/scripts/rate-limit-detect.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`, `templates/scripts/claude-with-retry.sh.tmpl`). Since 0.17.1 Claude Code's "You've hit your session limit · resets <time>" counts as a rate limit. The budget gate then backed off for a fixed 2 × `failure_backoff_minutes` (two hours by default). A five-hour session limit outlasts that, so the next slot ran straight back into it. A limit that lifted ten minutes after the run instead held every slot for the full two hours. The new `scoutctl budget resets-at <log>` reads the reset from the log: `resets 3pm`, `resets 6:50pm (Europe/Prague)`, `resets Mon 9am`, or a 24-hour time. The optional `(Area/City)` zone is honoured, and the machine's local time applies without one. `rate-limit-detect.sh` adds that time as `resets_at` to the usage-tracker row, and the budget gate backs off until exactly then. `run-outcome.sh` adds it to the `rate_limited` ledger row as `resets_at` (epoch seconds, an optional key). The run-health finding, and the push built from it, now reads "Claude usage limit: Scout resumes after <time>" instead of pointing at the doctor. A reset that can't be read leaves the key out, and everything behaves as before. The retry wrapper never retried these limits; its log now says so ("Claude usage limit — no retry") instead of "not classified as transient". Existing vaults pick this up with `/scout-update`.
+
 ## [0.17.1] - 2026-10-12
 
 ### Fixed

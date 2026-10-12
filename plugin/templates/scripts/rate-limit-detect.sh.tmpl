@@ -77,7 +77,21 @@ if [ "$WRITE_TRACKER" = "--write-tracker" ]; then
     TIMESTAMP_ET=$(TZ="$SCOUT_TZ" date '+%Y-%m-%d %H:%M %Z')
     mkdir -p "$(dirname "$TRACKER_FILE")"
     ESCAPED_MATCH=$(echo "$FIRST_MATCH" | sed 's/"/\\"/g' | tr -d '\n')
-    echo "{\"ts\":\"$TIMESTAMP\",\"ts_et\":\"$TIMESTAMP_ET\",\"type\":\"rate_limit\",\"signal\":\"$ESCAPED_MATCH\",\"log_file\":\"$(basename "$LOG_FILE")\"}" >> "$TRACKER_FILE"
+    # When the log names its reset ("… limit · resets 2:10pm (Europe/Prague)"), record
+    # it: the budget gate then backs off until exactly then, not for a fixed window
+    # that a five-hour session limit outlasts (#407). The engine parses it; with no
+    # engine, or no time it can read, the row has no resets_at and the gate keeps
+    # its fixed window.
+    SCOUTCTL="{{SCOUTCTL_BIN}}"
+    [ -x "$SCOUTCTL" ] || SCOUTCTL="$(command -v scoutctl 2>/dev/null || true)"
+    RESETS_FIELD=""
+    if [ -n "$SCOUTCTL" ]; then
+        RESETS_AT="$("$SCOUTCTL" budget resets-at --iso "$LOG_FILE" 2>/dev/null || true)"
+        case "$RESETS_AT" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) RESETS_FIELD=",\"resets_at\":\"$RESETS_AT\"" ;;
+        esac
+    fi
+    echo "{\"ts\":\"$TIMESTAMP\",\"ts_et\":\"$TIMESTAMP_ET\",\"type\":\"rate_limit\",\"signal\":\"$ESCAPED_MATCH\",\"log_file\":\"$(basename "$LOG_FILE")\"$RESETS_FIELD}" >> "$TRACKER_FILE"
 fi
 
 exit 0

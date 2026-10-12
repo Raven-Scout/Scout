@@ -109,6 +109,59 @@ def test_auth_is_judged_on_the_newest_non_skip_row(tmp_path):
     assert _ids(health.evaluate(v, now=NOW)) == {"runs.failing": "red"}
 
 
+def _failing(report: health.RunHealth) -> health.Finding:
+    (finding,) = [f for f in report.findings if f.id == "runs.failing"]
+    return finding
+
+
+def test_a_usage_limit_with_a_named_reset_says_when_scout_resumes(tmp_path):
+    """#407: a session limit lifts on its own; the finding (and the push built
+    from it) says when, instead of pointing at the doctor."""
+    v = _vault(tmp_path)
+    resets = int((NOW + timedelta(hours=3)).timestamp())
+    _ledger(v, [_row(NOW - timedelta(hours=1), code=1, klass="rate_limited", resets_at=resets)])
+
+    finding = _failing(health.evaluate(v, now=NOW))
+
+    assert "Claude usage limit" in finding.summary
+    assert "resumes after 2026-10-11T15:00:00Z" in finding.summary
+    assert finding.fix.startswith("Nothing to fix")
+
+
+@pytest.mark.parametrize(
+    "resets_at",
+    [
+        pytest.param(int((NOW - timedelta(minutes=10)).timestamp()), id="already-passed"),
+        pytest.param("later", id="unreadable"),
+        pytest.param(10**20, id="out-of-range"),
+        pytest.param(None, id="absent"),
+    ],
+)
+def test_a_usage_limit_without_a_future_reset_reads_as_before(tmp_path, resets_at):
+    v = _vault(tmp_path)
+    extra = {} if resets_at is None else {"resets_at": resets_at}
+    _ledger(v, [_row(NOW - timedelta(hours=1), code=1, klass="rate_limited", **extra)])
+
+    finding = _failing(health.evaluate(v, now=NOW))
+
+    assert finding.summary == "The last 1 scheduled run(s) failed (rate_limited)."
+    assert finding.fix.startswith("Run scoutctl bootstrap doctor")
+
+
+def test_a_reset_on_an_older_row_does_not_speak_for_a_newer_failure(tmp_path):
+    v = _vault(tmp_path)
+    resets = int((NOW + timedelta(hours=3)).timestamp())
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=2), code=1, klass="rate_limited", resets_at=resets),
+            _row(NOW - timedelta(hours=1), code=1, klass="network"),
+        ],
+    )
+
+    assert "resumes" not in _failing(health.evaluate(v, now=NOW)).summary
+
+
 def test_log_fallback_only_without_a_ledger(tmp_path):
     v = _vault(tmp_path)
     (v / ".scout-logs" / "scout-2026-10-11_08-00.log").write_text(

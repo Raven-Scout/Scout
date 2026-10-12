@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -216,6 +218,64 @@ def test_a_missing_log_is_an_unknown_failure(vault: Path, outcome: Path) -> None
     _record(outcome, "dreaming-nightly", 1, vault / ".scout-logs" / "gone.log")
 
     assert _ledger(vault)[-1]["failure_class"] == "unknown"
+
+
+# ---------- a usage limit's reset (#407) ----------
+
+# Runs this checkout's engine for `budget resets-at`; records every other call.
+SCOUTCTL_ENGINE_STUB = """#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1:3] == ["budget", "resets-at"]:
+    os.execv({python!r}, [{python!r}, "-m", "scout.cli", *sys.argv[1:]])
+with open({calls!r}, "a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+"""
+
+
+@pytest.fixture
+def engine_outcome(vault: Path, calls: Path) -> Path:
+    stub = _script(vault / "bin" / "scoutctl", SCOUTCTL_ENGINE_STUB.format(python=sys.executable, calls=str(calls)))
+    return _install(vault, scoutctl=stub)
+
+
+def test_a_usage_limit_row_records_when_it_lifts(vault: Path, engine_outcome: Path, calls: Path) -> None:
+    lifts = (datetime.now(UTC) + timedelta(hours=3)).replace(second=0, microsecond=0)
+    log = _log(vault, f"You've hit your session limit · resets {lifts:%H:%M} (UTC)\n")
+
+    result = _record(engine_outcome, "dreaming-nightly", 1, log)
+
+    assert result.returncode == 0, result.stderr
+    row = _ledger(vault)[-1]
+    assert row["failure_class"] == "rate_limited"
+    assert row["resets_at"] == int(lifts.timestamp())
+    assert _notices(calls) == [["health", "notify", "--quiet"]]
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "log_text"),
+    [
+        pytest.param(1, "You've hit your session limit · resets soon\n", id="unreadable-time"),
+        pytest.param(1, "API Error: 429 Too Many Requests\n", id="no-reset-named"),
+        pytest.param(1, "Unable to connect to API (ECONNRESET) · usage limit resets 3pm\n", id="not-rate-limited"),
+        pytest.param(0, "You've hit your session limit · resets 3pm\n", id="a-success"),
+    ],
+)
+def test_a_row_without_a_readable_reset_has_no_resets_at(
+    vault: Path, engine_outcome: Path, exit_code: int, log_text: str
+) -> None:
+    _record(engine_outcome, "dreaming-nightly", exit_code, _log(vault, log_text))
+
+    assert "resets_at" not in _ledger(vault)[-1]
+
+
+def test_a_failing_engine_leaves_resets_at_out(vault: Path, calls: Path) -> None:
+    stub = _script(vault / "bin" / "scoutctl", SCOUTCTL_STUB.format(calls=str(calls), exit_code=1))
+    script = _install(vault, scoutctl=stub)
+
+    _record(script, "dreaming-nightly", 1, _log(vault, "You've hit your session limit · resets 3pm\n"))
+
+    row = _ledger(vault)[-1]
+    assert row["failure_class"] == "rate_limited" and "resets_at" not in row
 
 
 # ---------- the notifier ----------
