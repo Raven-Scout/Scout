@@ -435,6 +435,17 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     return warnings
 
 
+def _check_heartbeat_config(*, vault: Path) -> list[str]:
+    """One warning per bad value or unknown key in the heartbeat's config (#231).
+
+    The heartbeat keeps the default for each one and logs it every tick; the
+    doctor surfaces it so it is not only in heartbeat.log.
+    """
+    from scout.scripts.heartbeat import load_config_with_issues
+
+    return load_config_with_issues(vault / "scout-config.yaml")[1]
+
+
 def run_doctor(
     *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
 ) -> DoctorReport:
@@ -551,6 +562,7 @@ def run_doctor(
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
 
     warnings.extend(_check_custom_connectors(vault=vault))
+    warnings.extend(_check_heartbeat_config(vault=vault))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

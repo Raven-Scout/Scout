@@ -143,6 +143,37 @@ def desktop_notifications(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     return record
 
 
+_RECORDING_POWER = """#!/bin/sh
+# A stand-in power assertion (tests/conftest.py): records its argv, then runs the
+# wrapped command without asserting anything on the host.
+{{ printf '%s' "$(basename "$0")"; printf ' %s' "$@"; printf '\\n'; }} >> "{record}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in -*) shift ;; *) break ;; esac
+done
+[ "$#" -gt 0 ] || exit 0
+exec "$@"
+"""
+
+
+@pytest.fixture(autouse=True)
+def power_assertions(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No test may hold a real idle-sleep assertion from a shell script (#210).
+
+    claude-with-retry.sh wraps each attempt and backoff in ``caffeinate`` (macOS)
+    or ``systemd-inhibit`` (Linux), found through PATH. Recording stand-ins go
+    first on PATH for every test: each call appends ``<name> <argv…>`` to the
+    returned file (absent until the first call) and runs the wrapped command.
+    """
+    bin_dir = tmp_path_factory.mktemp("no-power-assertion")
+    record = bin_dir / "power-assertions.log"
+    for name in ("caffeinate", "systemd-inhibit"):
+        script = bin_dir / name
+        script.write_text(_RECORDING_POWER.format(record=record))
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return record
+
+
 @pytest.fixture(autouse=True)
 def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may reach the real ``gh`` (Agent Sessions spec §7).
