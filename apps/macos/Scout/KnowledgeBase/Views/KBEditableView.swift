@@ -80,7 +80,7 @@ struct KBEditableView: View {
                     commentAffordance(seg)
                 }
             }
-            .onHover { hovering = $0 ? seg.id : (hovering == seg.id ? nil : hovering) }
+            .onKeyWindowHover { hovering = $0 ? seg.id : (hovering == seg.id ? nil : hovering) }
         }
     }
 

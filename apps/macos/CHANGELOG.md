@@ -46,6 +46,11 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 - **Claude Desktop — new Cowork task** now opens with the Scout folder
   attached, the same way the Claude Code session does. Before, the task
   started with no access to the vault (Raven-Scout/Scout#292).
+- Hover-revealed controls (Comment for Scout, comment edit/delete, Ask
+  Claude, the topic rename pencil, ×) and the pointing-hand cursor show only
+  in the key window. In a background window the first click only brings the
+  window forward, so a revealed button looked clickable but did nothing
+  (Raven-Scout/Scout#294).
 
 ## [0.16.0] - 2026-10-11
 

@@ -41,6 +41,6 @@ struct SideEntryRow: View {
                 .accessibilityLabel("Close \(entry.text)")
             }
         }
-        .onHover { hovering = $0 }
+        .onKeyWindowHover { hovering = $0 }
     }
 }

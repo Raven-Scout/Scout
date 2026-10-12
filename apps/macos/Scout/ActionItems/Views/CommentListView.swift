@@ -88,7 +88,7 @@ private struct CommentRow: View {
                 }
             }
         }
-        .onHover { hovering = $0 }
+        .onKeyWindowHover { hovering = $0 }
         .alert("Delete this comment?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { performDelete() }
             Button("Cancel", role: .cancel) {}

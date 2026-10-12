@@ -70,7 +70,7 @@ struct DisclosureRow<Content: View>: View {
                 .accessibilityLabel("Ask Claude about \(label)")
             }
         }
-        .onHover { hovering = $0 }
+        .onKeyWindowHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
         .accessibilityValue(expanded ? "Expanded" : "Collapsed")

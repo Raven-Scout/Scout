@@ -102,9 +102,7 @@ struct TaskActionsView: View {
             .fixedSize()
             .help("Choose a copy format")
         }
-        .onHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .keyWindowPointingHand()
     }
 
     private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
