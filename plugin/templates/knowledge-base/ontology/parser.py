@@ -74,15 +74,18 @@ class KnowledgeGraph:
         except (OSError, UnicodeDecodeError):
             return None
 
-        if not text.startswith("---"):
+        # Fences are lines that are exactly `---`, so a `---` run inside a
+        # comment or a value can't close the block early and hide the keys
+        # below it. An unclosed block is not parsed.
+        lines = text.split("\n")
+        if lines[0].rstrip() != "---":
             return None
-
-        end = text.find("---", 3)
-        if end == -1:
+        end = next((i for i, raw in enumerate(lines[1:], 1) if raw.rstrip() == "---"), None)
+        if end is None:
             return None
 
         try:
-            return yaml.safe_load(text[3:end])
+            return yaml.safe_load("\n".join(lines[1:end]))
         except yaml.YAMLError:
             return None
 

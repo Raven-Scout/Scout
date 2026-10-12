@@ -22,10 +22,12 @@ REPO="$TMP/repo"; APP="$REPO/apps/macos"
 mkdir -p "$REPO/.claude-plugin" "$REPO/plugin/.claude-plugin" "$REPO/plugin/engine" "$APP/Scout/Resources"
 g init -q
 printf '{"name": "scout", "version": "9.9.9"}\n' > "$REPO/plugin/.claude-plugin/plugin.json"
-# The repo-root marketplace (monorepo shape): source ./plugin, a stale entry
-# version, and a second plugin — none of which may reach the bundled copy.
+# The repo-root marketplace (monorepo shape): scout pinned to the stable
+# branch (#362), a stale entry version, and a second plugin — none of which
+# may reach the bundled copy.
 ROOT_MP='{"name": "scout-plugin", "owner": {"name": "Alex"}, "metadata": {"description": "d"},
- "plugins": [{"name": "scout", "source": "./plugin", "version": "0.0.1", "description": "the engine"},
+ "plugins": [{"name": "scout", "source": {"source": "git-subdir", "url": "https://github.com/example-org/Scout.git",
+               "path": "plugin", "ref": "stable"}, "version": "0.0.1", "description": "the engine"},
              {"name": "other", "source": "./other"}]}'
 printf '%s\n' "$ROOT_MP" > "$REPO/.claude-plugin/marketplace.json"
 echo "print('hi')" > "$REPO/plugin/engine/x.py"

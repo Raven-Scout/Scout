@@ -15,7 +15,7 @@
 # The app registers the unpacked engine as a Claude Code DIRECTORY marketplace
 # (`claude plugin marketplace add ~/.local/share/scout/engine/current`), which
 # needs <dir>/.claude-plugin/marketplace.json. In the monorepo that manifest
-# lives at the repo root (source "./plugin"), outside plugin/, so this script
+# lives at the repo root (its scout entry is a git-subdir source), outside plugin/, so this script
 # derives one from HEAD:.claude-plugin/marketplace.json and adds it to the
 # archive with `git archive --add-virtual-file` (git >= 2.39): same name
 # ("scout-plugin" — the app's foreign-source check keys on it), same
@@ -46,7 +46,7 @@ set -euo pipefail
 APP_ROOT="${SRCROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 UV_PIN="${SCOUT_UV_PIN:-$APP_ROOT/Scout/Resources/uv-release.json}"
 MANIFEST="plugin/.claude-plugin/plugin.json"
-ROOT_MARKETPLACE=".claude-plugin/marketplace.json"    # repo root, source ./plugin
+ROOT_MARKETPLACE=".claude-plugin/marketplace.json"    # repo root, source git-subdir plugin@stable
 BUNDLED_MARKETPLACE=".claude-plugin/marketplace.json"  # archive root, source ./
 
 fail() { echo "error: bundle-engine: $*" >&2; exit 1; }

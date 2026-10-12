@@ -228,7 +228,15 @@ final class AppState: ObservableObject {
             runner: runner,
             gitService: git
         )
-        let writerBox = ActionItemsWriterBox(writer: writerActor)
+        let boardWriter = BoardWriter(
+            scoutctl: scoutctlExe,
+            argumentsPrefix: scoutctlArgsPrefix,
+            actionItemsDirectory: actionItemsDir,
+            scoutDirectory: scoutDir,
+            runner: runner,
+            git: git
+        )
+        let writerBox = ActionItemsWriterBox(writer: writerActor, boardWriter: boardWriter)
         let envState = ActionItemsEnvironmentState()
 
         // Per-file proposals live in `dreaming-proposals/` (the sibling

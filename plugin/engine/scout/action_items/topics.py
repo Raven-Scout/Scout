@@ -1,7 +1,9 @@
 """`action-items/topics.md`: one `## [#TAG] Title` heading per workstream.
 
-Topic tags share the namespace of task tags, so `new-prefix` never mints one
-that a topic already uses.
+Scout runs write each topic's title, `- Session:` and `- Summary:`. The
+user's own names live in `topic-names.md` (`topic_names.py`), which runs
+never write. Topic tags share the namespace of task tags, so `new-prefix`
+never mints one a topic uses.
 """
 
 from __future__ import annotations
@@ -13,7 +15,8 @@ from scout import paths
 
 TOPICS_FILE = "topics.md"
 
-_HEADING_RE = re.compile(r"^##\s+\[#(?P<tag>(?=[A-Z0-9]{2,8}\])[A-Z0-9]*[A-Z][A-Z0-9]*)\]")
+TOPIC_TAG = r"(?=[A-Z0-9]{2,8}\])[A-Z0-9]*[A-Z][A-Z0-9]*"
+_HEADING_RE = re.compile(rf"^##\s+\[#(?P<tag>{TOPIC_TAG})\]")
 
 
 def topics_path(data_dir: Path | None = None) -> Path:

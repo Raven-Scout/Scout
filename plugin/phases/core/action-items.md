@@ -191,7 +191,7 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
 - `Parent:` is the `[#TAG]` of a task that groups several separate actions; the board nests the children under it. Never pack several actions into one task: give each its own task with `Parent:`. A parent exists only while it has two or more open children. With one left, promote that child (drop its `Parent:`) and close the parent; with none left, close it too. Closing means ticking it and moving it to ✅ Recently Completed with its children as the evidence, so the Continuity-Dropoff Audit sees a closure.
 - `State:` is written only as `doing` or `blocked`; everything else comes from where the task sits. Write `doing` only with proof of activity on that task itself: a commit or PR update in about the last hour, or its own session visibly working on it. An agent drafting while it works is `doing`; a related session merely running is not. Write `blocked` only for a blocker that is not a task (an outage, a decision outside this board). A task waiting on another task gets `Depends:` instead, and the board derives blocked from it.
 - `Action:` names the next step on a 🔴 Urgent or 🟡 To Do task, 1–3 words ("Merge", "Review + decide", "Answer agent", "Reply to session", "Decide"), when the title doesn't already say it. Never on a parent.
-- `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional: a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly on its own. Find that from this PR's body and the other PRs fetched this run.
+- `Depends:` lists the tasks this one needs first, each written `#TAG`. The rule is functional, and it is the one rule for PR dependencies (the GitHub cross-check applies it too): a PR whose feature only works once another PR lands, in any repo, depends on it even when it would merge cleanly and does nothing alone (flag, config and chart PRs count). Find that from this PR's body and the other PRs fetched this run.
 - `Session:` is the Claude session working on it: a `claude.ai/code/session_…` link, or a local session's UUID.
 - `Priority:` is the linked Linear issue's priority, 1 urgent … 4 low; omit it for 0 (no priority). `Cycle: current` marks a Linear issue in the active cycle, on tasks someone is working. Omit both without a Linear issue, and rewrite either only when the Linear value actually changed.
 - Carry them forward verbatim with the task, like plan markers. Never fold them into `- Refs:`.
@@ -212,8 +212,22 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
     - Summary: Two PRs, the second needs the first
 
 - Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
-- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte.
+- Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte. The user's own names for topics live in `action-items/topic-names.md`, written only by `scoutctl action-items rename-topic` from the app; never write that file.
 - Remove a topic once none of its tasks has been open for 14 days.
+
+**Inbox and Loose ends** are two optional sections after 🟢 Watching, one bullet each, `Source · date — [what](url)` (the link is optional):
+
+    ## 📥 Inbox
+
+    - Slack · Oct 10 — [Priya asked about the retention window](https://acme-co.slack.com/archives/C0123456789/p1700000000000000)
+
+    ## 🧹 Loose ends
+
+    - [Delete the merged reattach branch](https://github.com/example-org/web/tree/reattach)
+
+- Inbox holds new mentions, DMs and notifications not yet turned into tasks. Loose ends holds cleanup: stale branches, drafts, finished threads to close. This `## 📥 Inbox` section is not `inbox.md`, the user's own capture file that inbox processing empties.
+- Give every entry the link to the thing itself whenever one exists. The link is how the entry is recognised: an entry without one is keyed by its exact text, so rewording it brings a dismissed entry back.
+- `action-items/dismissed.md` lists the entries the user closed, by link or else by text. Never re-add a listed entry, and never write that file yourself. It closes only that Inbox or Loose ends entry: it says nothing about tasks, so keep tracking any task for the same link as usual. `scoutctl action-items materialize` also drops listed entries when it carries a day forward.
 
 ### Hard Rule — Trim by Demotion, Never by Omission
 

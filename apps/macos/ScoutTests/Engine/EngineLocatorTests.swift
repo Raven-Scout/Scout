@@ -307,7 +307,7 @@ struct EngineLocatorTests {
     }
 
     /// Claude Code's marketplace clone of Raven-Scout/Scout is monorepo
-    /// shaped too (the marketplace's `"source": "./plugin"`), and
+    /// shaped too (the plugin lives under `plugin/`), and
     /// `install-venv.sh` puts the venv under `plugin/` there.
     @Test func monorepoMarketplaceCloneUsesTheInTreePlugin() throws {
         let layout = try makeHome()

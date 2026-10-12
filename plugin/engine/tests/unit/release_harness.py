@@ -89,7 +89,10 @@ def _seed(root: Path, version: str) -> None:
         root,
         ".claude-plugin/marketplace.json",
         f'{{\n  "name": "scout-plugin",\n  "plugins": [\n    {{\n      "name": "scout",\n'
-        f'      "source": "./plugin",\n      "version": "{version}"\n    }}\n  ]\n}}\n',
+        f'      "source": {{\n        "source": "git-subdir",\n'
+        f'        "url": "https://github.com/Raven-Scout/Scout.git",\n'
+        f'        "path": "plugin",\n        "ref": "stable"\n      }},\n'
+        f'      "version": "{version}"\n    }}\n  ]\n}}\n',
     )
     _write(root, "plugin/engine/pyproject.toml", f'[project]\nname = "scout-engine"\nversion = "{version}"\n')
     _write(root, "plugin/engine/scout/__init__.py", f'__version__ = "{version}"\n')
@@ -136,6 +139,8 @@ def make_repo(
 ) -> Repo:
     """A throwaway Scout repo whose last release is plugin/v{version}, followed by one `after_release` commit.
 
+    origin's `stable` (the branch marketplace installs read) points at that last release.
+
     `app_release` puts an older app/vX.Y.Z before it, then an app-only feat: commit that no release shipped:
     the state after plugin/v0.15.0 shipped without the app.
     """
@@ -171,6 +176,7 @@ def make_repo(
     _git(root, "commit", "-q", "--allow-empty", "-m", after_release)
     _git(root, "remote", "add", "origin", str(origin))
     _git(root, "push", "-q", "origin", "main", "--tags")
+    _git(root, "push", "-q", "origin", f"plugin/v{version}^{{commit}}:refs/heads/stable")
     _git(root, "branch", "-q", "--set-upstream-to=origin/main", "main")
     if origin_url:
         # Make origin *claim* another repo, so the slug check sees it. Such a test never fetches, and

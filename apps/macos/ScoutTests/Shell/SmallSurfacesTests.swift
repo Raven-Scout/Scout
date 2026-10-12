@@ -7,9 +7,9 @@ import Testing
 @Suite("View mode enums")
 struct ViewModeEnumTests {
 
-    @Test("Action Items view modes persist as list/board and default to list")
+    @Test("Action Items view modes persist as list/board/topics and default to list")
     func actionItemsViewMode_contract() {
-        #expect(ActionItemsViewMode.allCases.map(\.rawValue) == ["list", "board"])
+        #expect(ActionItemsViewMode.allCases.map(\.rawValue) == ["list", "board", "topics"])
         #expect(ActionItemsViewMode.default == .list)
         #expect(ActionItemsViewMode(rawValue: "board") == .board)
         #expect(ActionItemsViewMode(rawValue: "grid") == nil)
@@ -17,6 +17,7 @@ struct ViewModeEnumTests {
         #expect(ActionItemsViewMode.board.id == "board")
         #expect(ActionItemsViewMode.list.displayName == "List")
         #expect(ActionItemsViewMode.board.displayName == "Board")
+        #expect(ActionItemsViewMode.topics.displayName == "Topics")
     }
 
     @Test("Schedules view modes persist as table/cards/timeline and default to table")
@@ -37,7 +38,7 @@ struct ViewModeEnumTests {
 
     @Test("view modes are hashable so they key scene storage dictionaries")
     func viewModes_areHashable() {
-        #expect(Set(ActionItemsViewMode.allCases).count == 2)
+        #expect(Set(ActionItemsViewMode.allCases).count == 3)
         #expect(Set(SchedulesViewMode.allCases).count == 3)
     }
 }
