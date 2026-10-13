@@ -13,6 +13,7 @@ a fresh session on wake. That exit-1 poisoned the next run's failure-backoff.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -579,7 +580,9 @@ def test_every_attempt_and_every_backoff_hold_the_idle_sleep_assertion(tmp_path:
         "caffeinate -i -m -s sleep 0",
         f"caffeinate -i -m -s {fake}",
     ]
-    assert "=== Backoff done after 0s ===" in log_file.read_text()
+    # the wrapper measures the backoff in whole `date +%s` seconds, so a `sleep 0` that
+    # straddles a second boundary reads as 1s
+    assert re.search(r"=== Backoff done after [01]s ===", log_file.read_text())
 
 
 def test_the_assertion_passes_the_exit_code_through(tmp_path: Path, power_assertions: Path) -> None:
