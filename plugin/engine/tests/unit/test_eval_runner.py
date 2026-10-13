@@ -303,3 +303,35 @@ def test_the_gh_stub_answers_per_repo(busy) -> None:
     assert stdout("pr list --repo example-org/api --state all --json number,title") == "fixtures/gh-api-prs.json"
     assert stdout("pr list --author @me --state open --json number,title") == "fixtures/gh-my-prs.json"
     assert stdout("pr list --author @me --repo example-org/widgets --json number") == "fixtures/gh-my-prs.json"
+
+
+def _a_weekday_that_is_not_today() -> date:
+    """A fixed Monday, unless that is the real date (UTC or local): then the next one."""
+    from datetime import UTC, datetime, timedelta
+
+    real = {datetime.now(UTC).date(), date.today()}
+    return MONDAY if MONDAY not in real else MONDAY + timedelta(days=7)
+
+
+def test_a_sample_pinned_to_another_day_writes_that_days_file(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``eval.sh run --today`` on any day but today: the runner's carry-forward step and
+    the checks must name the same daily file. Before the runner honoured
+    SCOUT_EVAL_TODAY, it carried the fixture into the real date's file and every
+    check read a file nobody wrote (missing_output)."""
+    pinned = _a_weekday_that_is_not_today()
+    fake = tmp_path / "fake-claude"
+    fake.write_text(FAKE_CLAUDE)
+    fake.chmod(0o755)
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
+    monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
+
+    result = run_sample(
+        busy, today=pinned, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
+    )
+
+    assert result.aborted is None
+    daily = sorted(p.name for p in (result.result_dir / "vault" / "action-items").glob("action-items-*.md"))
+    assert daily[-1] == f"action-items-{pinned.isoformat()}.md"  # nothing for the real date
+    assert {c.name: c for c in result.checks}["no_drop"].passed is True
