@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`KnowledgeGraph.load()` only re-parses KB files that changed** (#77; `engine/scout/kb/ontology.py`). Every call used to read and YAML-parse every `.md` under the KB: about 1 s per load for 3,000 notes. Parses are now cached per file for the life of the process. Each load re-stats every file and re-parses one only when its mtime, ctime, size or inode changed, so an edit, a same-size rewrite, an atomic replace or a delete is picked up on the next load. A file modified in the last 2 s is re-read every time until it settles, in case the filesystem's timestamps are too coarse to show a second edit. Each hit returns fresh objects. The API and the graph it builds are unchanged. On a 3,000-file KB, a repeat load now takes 0.03 s instead of 1.0 s, and a load after 5 edits takes 0.03 s. The vault's own `knowledge-base/ontology/parser.py` runs as a new process on each call, so this cache does not apply to it, and it is unchanged.
+
 ## [0.18.1] - 2026-10-13
 
 ### Fixed

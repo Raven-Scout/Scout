@@ -17,7 +17,11 @@ The future CLI surface is ``scoutctl kb query`` (Plan 4).
 from __future__ import annotations
 
 import json as _json
+import os
+import pickle
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +29,40 @@ import yaml
 
 from scout.errors import KBSchemaError
 from scout.kb.frontmatter import frontmatter_block
+
+# Per-process frontmatter cache (#77). ``load()`` used to read and YAML-parse
+# every KB file on every call; a 3,000-file KB took ~1 s each time. Now each
+# file is stat'ed, and only a file whose stat key changed is read and parsed
+# again. The key is (mtime_ns, ctime_ns, size, inode): any write moves ctime,
+# and an atomic replace changes the inode, so a hit is the same bytes.
+#
+# Values are pickled so every hit hands back fresh dicts: ``load()`` mutates
+# what it gets, and callers may mutate the entities. Unparseable files are
+# cached too (as None).
+#
+# A file modified within _RACY_WINDOW_NS of the read is not cached — on a
+# coarse-timestamp filesystem (HFS+: 1 s) a same-size edit in the same tick
+# would otherwise keep the old key. It is re-read until it settles (git's
+# "racily clean" rule).
+#
+# Only within one process: nothing in the engine loads the graph from a fresh
+# process often enough to pay for an on-disk cache and its cross-session
+# invalidation.
+_StatKey = tuple[int, int, int, int]
+_FrontmatterCache = dict[str, tuple[_StatKey, bytes]]
+_CACHE: dict[str, _FrontmatterCache] = {}
+_CACHE_LOCK = threading.Lock()
+_RACY_WINDOW_NS = 2_000_000_000
+
+
+def clear_frontmatter_cache() -> None:
+    """Forget every cached parse (tests; a caller that wants a cold load)."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def _stat_key(st: os.stat_result) -> _StatKey:
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
 
 
 class KnowledgeGraph:
@@ -51,8 +89,14 @@ class KnowledgeGraph:
         self.entities = {}
         self.relationships = []
 
+        root_key = os.path.abspath(self.kb_root)
+        with _CACHE_LOCK:
+            previous = _CACHE.get(root_key, {})
+        # Rebuilt each load, so files deleted since the last one drop out.
+        current: _FrontmatterCache = {}
+
         for md_file in Path(self.kb_root).rglob("*.md"):
-            frontmatter = self._extract_frontmatter(md_file)
+            frontmatter = self._cached_frontmatter(md_file, previous, current)
             if not frontmatter or "name" not in frontmatter or "type" not in frontmatter:
                 continue
 
@@ -70,7 +114,30 @@ class KnowledgeGraph:
                     if inverse:
                         self.relationships.append({"source": target, "type": inverse, "target": name})
 
+        with _CACHE_LOCK:
+            _CACHE[root_key] = current
         return self
+
+    def _cached_frontmatter(
+        self, path: Path, previous: _FrontmatterCache, current: _FrontmatterCache
+    ) -> dict[str, Any] | None:
+        """``_extract_frontmatter`` through the per-file stat cache (#77)."""
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        key = _stat_key(st)
+        # Stat-before-read: a write landing mid-read changes the key, so the
+        # next load re-reads rather than trusting this parse.
+        hit = previous.get(str(path))
+        if hit is not None and hit[0] == key:
+            current[str(path)] = hit
+            return pickle.loads(hit[1])
+        frontmatter = self._extract_frontmatter(path)
+        if time.time_ns() - st.st_mtime_ns > _RACY_WINDOW_NS:
+            # safe_load yields only plain types (dict, list, str, numbers, dates), all picklable.
+            current[str(path)] = (key, pickle.dumps(frontmatter, protocol=pickle.HIGHEST_PROTOCOL))
+        return frontmatter
 
     def _extract_frontmatter(self, path: Path) -> dict[str, Any] | None:
         """Extract YAML frontmatter from a markdown file."""
