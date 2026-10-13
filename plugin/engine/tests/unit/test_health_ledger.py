@@ -320,6 +320,10 @@ def test_report_to_dict_shape(tmp_path):
             "summary": "The last 1 scheduled run(s) failed (network).",
             "fix": d["findings"][0]["fix"],
             "source": "ledger",
+            # The row's log isn't on disk, so there is no line to quote and no log to open (#445).
+            "detail": None,
+            "log": None,
+            "until": None,
         }
     ]
     assert set(d) == {"severity", "evaluated_at", "last_ok_at", "findings", "slots"}

@@ -22,6 +22,7 @@ from pathlib import Path
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
 from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
+from scout.scripts.rate_limit_reset import LOG_TAIL_BYTES, reset_from_log
 from scout.update_outcomes import UpdateOutcome
 from scout.update_outcomes import read as read_updates
 
@@ -58,6 +59,26 @@ _AUTH_FAILURE_RE = re.compile(r"=== Authentication failure \(HTTP 401/403\)|" + 
 
 _AUTH_FIX = "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)"
 
+# The line that names a failed run's error, per ledger failure class, best first (#445). Each is
+# a narrower cut of run-outcome.sh's class pattern (a test holds every pick to it), aimed at the
+# CLI's own message rather than the runner's banners, which repeat or merely name the class.
+FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
+    "oauth_expired": (re.compile(CLI_AUTH_FAILURE_ERE),),
+    "network": (
+        re.compile(
+            r"ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up"
+            r"|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response",
+            re.IGNORECASE,
+        ),
+    ),
+    "git_lock": (re.compile(r"index\.lock|HEAD\.lock", re.IGNORECASE),),
+    "rate_limited": (
+        re.compile(r"hit your .{0,20}limit|limit.{0,20}resets", re.IGNORECASE),
+        re.compile(r"API Error: 429|too many requests|overloaded", re.IGNORECASE),
+    ),
+}
+FAILURE_LINE_MAX = 300
+
 
 def iso_z(dt: datetime) -> str:
     """Format ``dt`` as ``2026-10-11T08:00:00Z`` (UTC, seconds precision)."""
@@ -92,6 +113,12 @@ class Finding:
     summary: str
     fix: str
     source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token"
+    # A failed run's own error line, verbatim (#445): what Claude Code or git said, not the class.
+    detail: str | None = None
+    # Absolute path of that run's log, when it is still on disk.
+    log: str | None = None
+    # When a usage-limit pause lifts (runs.paused only).
+    until: datetime | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -101,6 +128,9 @@ class Finding:
             "summary": self.summary,
             "fix": self.fix,
             "source": self.source,
+            "detail": self.detail,
+            "log": self.log,
+            "until": _iso_or_none(self.until),
         }
 
 
@@ -236,6 +266,48 @@ def _tail_text(path: Path, *, max_bytes: int = 65536) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def failure_line(log: Path, failure_class: str) -> str | None:
+    """The newest line in ``log``'s tail that names its ``failure_class`` error, or None.
+
+    Patterns are tried best first; runner banners (``=== … ===``) never count, so
+    the line is the CLI's own words. Read over the same tail run-outcome.sh classifies.
+    """
+    patterns = FAILURE_LINE_RES.get(failure_class, ())
+    if not patterns:
+        return None
+    lines = [ln for ln in _tail_text(log, max_bytes=LOG_TAIL_BYTES).splitlines() if not ln.lstrip().startswith("===")]
+    for pattern in patterns:
+        hit = next((ln.strip() for ln in reversed(lines) if pattern.search(ln)), None)
+        if hit:
+            return hit if len(hit) <= FAILURE_LINE_MAX else hit[: FAILURE_LINE_MAX - 1] + "…"
+    return None
+
+
+def _run_log(vault: Path, row: OutcomeRow) -> Path | None:
+    """``row``'s log under .scout-logs/, when it is still on disk."""
+    if not row.log:
+        return None
+    path = vault / ".scout-logs" / row.log
+    return path if path.is_file() else None
+
+
+def with_log_reset(rows: list[OutcomeRow], vault: Path) -> list[OutcomeRow]:
+    """Fill the newest failure's missing usage-limit reset from its log (#445).
+
+    Runners before #407 recorded no ``resets_at``; their logs still name it. The
+    reset is read against the run's own end, so a bare "resets 2pm" is that run's 2pm.
+    """
+    failed = _trailing_failures(rows)
+    newest = failed[-1] if failed else None
+    if newest is None or newest.failure_class != "rate_limited" or newest.resets_at is not None:
+        return rows
+    log = _run_log(vault, newest)
+    reset = reset_from_log(log, now=newest.finished_at) if log else None
+    if reset is None:
+        return rows
+    return [replace(r, resets_at=reset) if r is newest else r for r in rows]
+
+
 def _log_auth_finding(vault: Path) -> Finding | None:
     """Fallback for vaults without a ledger: did the newest run log end on a 401/403?"""
     logs_dir = vault / ".scout-logs"
@@ -262,6 +334,8 @@ def _log_auth_finding(vault: Path) -> Finding | None:
         ),
         fix=_AUTH_FIX,
         source="log",
+        detail=failure_line(latest, "oauth_expired"),
+        log=str(latest),
     )
 
 
@@ -334,6 +408,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
 
     if streak:
         newest = failed[-1]
+        log = _run_log(vault, newest)
+        detail = failure_line(log, newest.failure_class) if log else None
+        log_path = str(log) if log else None
         if newest.failure_class == "oauth_expired":
             when = iso_z(last_ok) if last_ok else "never"
             findings.append(
@@ -347,6 +424,8 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     ),
                     fix=_AUTH_FIX,
                     source="ledger",
+                    detail=detail,
+                    log=log_path,
                 )
             )
         elif pause is not None:
@@ -364,6 +443,9 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     ),
                     fix="Nothing to fix: the first scheduled run after the reset picks up.",
                     source="ledger",
+                    detail=detail,
+                    log=log_path,
+                    until=pause.lifts,
                 )
             )
         else:
@@ -378,6 +460,8 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     ),
                     fix=f"Run scoutctl bootstrap doctor and read the newest log{log_hint}",
                     source="ledger",
+                    detail=detail,
+                    log=log_path,
                 )
             )
 
@@ -1128,7 +1212,7 @@ def token_findings(found: list[Finding], *, vault: Path, home: Path | None, now:
 def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:
     """``home`` locates the stored Claude token (default: the real home)."""
     now = now or datetime.now(UTC)
-    rows = read_outcomes(vault)
+    rows = with_log_reset(read_outcomes(vault), vault)
     found = token_findings(ledger_findings(rows, vault=vault, now=now), vault=vault, home=home, now=now)
     loaded = _load_schedule(vault)
     fires = read_last_fires(vault)

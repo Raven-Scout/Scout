@@ -61,6 +61,18 @@ nonisolated struct RunHealth: Equatable, Sendable, Decodable {
         let summary: String
         let fix: String
         let source: String
+        /// The failing run's own error line, verbatim (#445); engines before it omit the key.
+        let detail: String?
+        /// Absolute path of that run's log, when it is still on disk.
+        let log: String?
+        /// When a `runs.paused` usage limit lifts, ISO-8601 UTC.
+        let until: String?
+
+        init(id: String, severity: String, since: String?, summary: String, fix: String, source: String,
+             detail: String? = nil, log: String? = nil, until: String? = nil) {
+            self.id = id; self.severity = severity; self.since = since; self.summary = summary; self.fix = fix
+            self.source = source; self.detail = detail; self.log = log; self.until = until
+        }
     }
     nonisolated struct SlotStatus: Equatable, Sendable, Decodable {
         let key: String
