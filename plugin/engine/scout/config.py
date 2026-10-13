@@ -264,6 +264,7 @@ def now(data_dir: Path | None = None) -> _dt.datetime:
     return _dt.datetime.now(resolve_timezone(data_dir))
 
 
+# EVAL-ONLY: never set this on a real vault — every daily file would carry that day's date.
 # Set only by the eval harness (tests/eval/harness/runner_env.py): the day a scenario
 # was rendered for. Unset in every real run, where the clock decides.
 EVAL_TODAY_ENV = "SCOUT_EVAL_TODAY"
@@ -289,7 +290,7 @@ def pinned_eval_day() -> _dt.date | None:
     Raises ConfigError for a value that isn't ``YYYY-MM-DD``: an eval that fell
     back to the clock would score the wrong day's file.
     """
-    pinned = os.environ.get(EVAL_TODAY_ENV)
+    pinned = os.environ.get(EVAL_TODAY_ENV)  # EVAL-ONLY (see EVAL_TODAY_ENV); unset on real vaults
     if not pinned:
         return None
     try:

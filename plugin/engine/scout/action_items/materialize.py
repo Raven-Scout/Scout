@@ -184,7 +184,7 @@ def materialize(
     tz = resolve_timezone(data_dir)
     now = _dt.datetime.now(tz)
     try:
-        pinned = pinned_eval_day()  # an eval run's fixed day (config.today)
+        pinned = pinned_eval_day()  # EVAL-ONLY pinned day (config.EVAL_TODAY_ENV); None on real vaults
     except ConfigError:
         pinned = None  # never block a run over config
     target_date = date or pinned or now.date()
