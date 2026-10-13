@@ -63,8 +63,7 @@ nonisolated enum TaskDeepLink: Equatable, Hashable, Sendable, Identifiable {
         case .entity(let path, _):
             // Open the note the same way `InlineMarkdownText` opens a wikilink
             // when no in-app KB handler is present (Action Items surface).
-            let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-            return URL(string: "obsidian://open?vault=Scout&file=\(encoded)")
+            return LinkSchemePolicy.obsidianOpenURL(file: path)
         case .crossRef, .plainRef:
             return nil
         }
