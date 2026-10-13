@@ -122,6 +122,70 @@ def test_a_calendar_date_that_passed_this_year_means_next_year() -> None:
     assert find_reset(text, now=NOW) == _utc(2027, 1, 2, 14, 0)
 
 
+@pytest.mark.parametrize(
+    "date",
+    [
+        pytest.param("Jan 8 at", id="short-month-at"),
+        pytest.param("January 8 at", id="full-month"),
+        pytest.param("Jan 8", id="no-at"),
+        pytest.param("Jan. 8,", id="dot-and-comma"),
+        pytest.param("8 Jan at", id="day-first-at"),
+        pytest.param("8 January", id="day-first-full-month"),
+    ],
+)
+def test_a_calendar_date_is_read_in_its_other_spellings(date: str) -> None:
+    text = f"You've hit your weekly limit · resets {date} 9am (America/New_York)"
+    assert find_reset(text, now=NOW) == _utc(2026, 1, 8, 14, 0)
+
+
+def test_a_calendar_date_with_a_24_hour_clock() -> None:
+    text = "You've hit your weekly limit · resets Jan 8 at 16:30 (Europe/Prague)"
+    assert find_reset(text, now=NOW) == _utc(2026, 1, 8, 15, 30)
+
+
+def test_a_calendar_date_later_today_is_today() -> None:
+    # NOW is 13:00 in Prague on Jan 5.
+    text = "You've hit your weekly limit · resets Jan 5 at 6pm (Europe/Prague)"
+    assert find_reset(text, now=NOW) == _utc(2026, 1, 5, 17, 0)
+
+
+def test_a_calendar_date_that_passed_minutes_ago_is_this_year() -> None:
+    """The already-passed grace applies to a date too: not next year."""
+    now = _utc(2026, 1, 5, 13, 25)  # 14:25 in Prague
+    text = "You've hit your weekly limit · resets Jan 5 at 2:10pm (Europe/Prague)"
+    assert find_reset(text, now=now) == _utc(2026, 1, 5, 13, 10)
+
+
+def test_a_calendar_date_on_new_years_eve_rolls_into_next_year() -> None:
+    now = _utc(2026, 12, 31, 10, 0)
+    text = "You've hit your weekly limit · resets Jan 2 at 9am (Europe/Prague)"
+    assert find_reset(text, now=now) == _utc(2027, 1, 2, 8, 0)
+
+
+def test_a_calendar_date_lands_on_the_far_side_of_a_dst_change() -> None:
+    """Prague leaves summer time on Sunday 2026-10-25: Oct 27 09:00 is UTC+1."""
+    now = _utc(2026, 10, 23, 12, 0)
+    text = "You've hit your weekly limit · resets Oct 27 at 9am (Europe/Prague)"
+    assert find_reset(text, now=now) == _utc(2026, 10, 27, 8, 0)
+
+
+def test_a_calendar_date_without_a_zone_is_in_the_default_zone() -> None:
+    text = "You've hit your weekly limit · resets Jan 8 at 3pm"
+    assert find_reset(text, now=NOW, default_zone=PRAGUE) == _utc(2026, 1, 8, 14, 0)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("You've hit your weekly limit · resets Oct 15\n", id="date-without-a-time"),
+        pytest.param("You've hit your weekly limit · resets 15 October\n", id="day-first-without-a-time"),
+        pytest.param("You've hit your weekly limit · resets Oct 0 at 2pm\n", id="day-zero"),
+    ],
+)
+def test_an_unreadable_calendar_date_is_none(text: str) -> None:
+    assert find_reset(text, now=NOW, default_zone=PRAGUE) is None
+
+
 def test_an_impossible_calendar_date_is_none() -> None:
     text = "You've hit your weekly limit · resets Feb 30 at 9am (Europe/Prague)"
     assert find_reset(text, now=NOW) is None

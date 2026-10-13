@@ -451,6 +451,46 @@ def test_evaluate_reports_a_dark_lane_from_real_git(live):
     assert report.severity == "red"
 
 
+def _paused_ledger(vault: Path, *, limit_hit_days_ago: float) -> None:
+    """The ledger of a weekly usage limit: runs failed on it, then the gate held them."""
+    hit = int(ago(limit_hit_days_ago).timestamp())
+    resets = int((NOW + timedelta(days=2)).timestamp())
+    base = {"slot": "morning-briefing", "exit_code": 1, "outcome": "failed", "failure_class": "rate_limited"}
+    rows = [
+        {**base, "started_at": hit - 60, "finished_at": hit},
+        {**base, "started_at": hit + 3600, "finished_at": hit + 3660, "resets_at": resets},
+    ]
+    (vault / ".scout-logs" / "run-outcomes.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+
+
+def test_a_lane_gone_dark_during_a_usage_limit_pause_is_held_back(live):
+    """#424: a weekly limit pauses every lane for days. A lane that was inside its
+    budget when the limit hit is dark because of the pause, which runs.paused names."""
+    for subject in ("briefing [08:00]: done", "consolidation [19:00]: done", "research [02:00]: done"):
+        _commit(live, subject, days_ago=6)
+    _commit(live, "dreaming [22:00]: done", days_ago=6)
+    _paused_ledger(live, limit_hit_days_ago=5)
+
+    report = health.evaluate(live, now=NOW)
+
+    assert not [f for f in report.findings if f.id.startswith("lane.")]
+    assert {f.id: f.severity for f in report.findings if f.id.startswith("runs.")} == {"runs.paused": "yellow"}
+
+
+def test_a_lane_already_dark_before_the_pause_is_still_reported(live):
+    for subject in ("briefing [08:00]: done", "consolidation [19:00]: done", "research [02:00]: done"):
+        _commit(live, subject, days_ago=6)
+    _commit(live, "dreaming [22:00]: done", days_ago=30)
+    _paused_ledger(live, limit_hit_days_ago=5)
+
+    report = health.evaluate(live, now=NOW)
+
+    lane = [f for f in report.findings if f.id.startswith("lane.")]
+    assert [(f.id, f.severity) for f in lane] == [("lane.dark:dreaming", "red")]
+
+
 def test_evaluate_runs_git_log_once_and_loads_the_schedule_once(live, monkeypatch):
     calls = {"commits": 0, "schedule": 0}
     real_commits, real_load = health.recent_commits, health.load_schedule
