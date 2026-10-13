@@ -124,6 +124,7 @@ before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fir
 |---|---|---|---|---|
 | `auth.expired` | The newest non-skip outcome is `oauth_expired`. Fallback for vaults without the ledger: today's newest-log scan. | red | ledger, log | #267, #233 |
 | `runs.failing` | Trailing consecutive non-skip runs with `outcome=failed`: 1 is yellow, ≥2 is red. `since` is the last success. | yellow / red | ledger | #233 |
+| `runs.paused` | The newest failure is `rate_limited` and names a reset (`resets_at`) still ahead. Replaces `runs.failing` for that streak. *(Added in implementation, §13.8.)* | yellow | ledger | #407, #424 |
 | `slot.never_fired:<key>` | A slot in `schedule.yaml` has no `last-fire` entry, and the vault is older than that slot's longest weekday gap plus its `missed_window_hours`. | yellow | schedule × last-fire | #199 |
 | `slot.stale:<key>` | Last fire is older than 2 × the slot's largest legitimate gap (from `weekdays` + `fires_at_local`) + `missed_window_hours`. Red when **every** slot is stale. | yellow / red | schedule × last-fire | #199, #210 |
 | `slot.fired_silent:<key>` | Fired at least `missed_window_hours` ago, and no outcome row of that slot *finished* at or after the fire. Not judged while the session lock is held by a live PID. *(Changed in implementation, §13.1.)* | yellow | last-fire × ledger | #218 |
@@ -628,3 +629,25 @@ The rest of §6 is built as written. P6 also adds:
 - **Tests can't reach the real Keychain.** `tests/conftest.py` puts a fake `security` first on PATH
   for every test. It is a temp-dir store for Scout's one item, and it exits 99 on any other
   subcommand or service. Scout calls `security` through PATH only, and a test pins that.
+
+### 13.8 A usage limit is one pause, not a failing streak (#424)
+
+Claude Code's weekly limit names a date ("resets Oct 15 at 2pm (Europe/Prague)"), which the reset
+parser from #407 did not read. With no `resets_at`, the budget gate backed off for only two hours,
+so every slot until the reset started, failed in seconds as `rate_limited`, and `runs.failing` went
+red for days, re-pushed every 24 h. #426 taught the parser the date (`Oct 15`, `15 Oct`, ordinals;
+the year is the next one in which it is still ahead). Health changed with it:
+
+- **`runs.paused` (yellow) replaces `runs.failing`** when the newest failure is `rate_limited` with a
+  `resets_at` still ahead. It says "Claude usage limit — runs paused until <time>" and counts the
+  trailing runs that failed on the limit. It is yellow however long that streak is: the slots that
+  failed before the reset was known are part of the same pause, and the gate records the slots it
+  holds as `skipped_budget`, which never extend a streak. Once the reset passes, the finding goes,
+  and the next failure (if any) is an ordinary `runs.failing` again.
+- **Lanes inside their budget when the pause began are not judged.** A weekly limit can pause runs
+  longer than a lane's dark budget (4 days for briefing). While paused, a lane is reported only if
+  it was already past its dark budget when the first run failed on the limit.
+- **The notifier says "paused", not "recovered".** When the report drops out of red because the
+  pause replaced a red streak, the one push of that transition reads "Scout: runs paused (Claude
+  usage limit)" with the pause's summary, instead of "Scout: runs recovered". The pause, being
+  yellow, never pushes again; the state machine is otherwise unchanged.

@@ -105,6 +105,29 @@ def test_state_machine(name, report, state, delta, expected_kinds):
         assert new["last_overall"] == "red"
 
 
+def test_red_to_a_usage_limit_pause_says_paused_not_recovered():
+    """#424: runs that failed on a usage limit were red until its reset was read.
+    The drop to the pause is one push that says when Scout resumes, and the pause
+    itself never pushes again."""
+    pause = health.Finding(
+        id=health.PAUSED_FINDING_ID,
+        severity="yellow",
+        since=None,
+        summary="Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 3 scheduled run(s) failed.",
+        fix="Nothing to fix: the first scheduled run after the reset picks up.",
+        source="ledger",
+    )
+    red = health_notify.plan(_report(_finding("runs.failing")), {}, now=NOW)[1]
+
+    kinds, pushes, state = _run(_report(pause), red, NOW + timedelta(hours=1))
+
+    assert kinds == ["recovered"]  # leaves red: the bookkeeping of any recovery
+    assert pushes[0].title == "Scout: runs paused (Claude usage limit)"
+    assert pushes[0].body == f"{pause.summary}\nFix: {pause.fix}"
+    assert pushes[0].severity == "yellow"
+    assert _run(_report(pause), state, NOW + timedelta(days=2))[0] == []
+
+
 def test_reminder_elapsed_wording():
     state = _AFTER_RED_A
     # 3 days later
