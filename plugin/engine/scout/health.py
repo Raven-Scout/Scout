@@ -16,6 +16,7 @@ import re
 import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from itertools import takewhile
 from pathlib import Path
 
 from scout.errors import ConfigError
@@ -30,6 +31,8 @@ SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
 LOCK_SKIP_WINDOW = timedelta(hours=24)
+# A Claude usage limit that named its reset: runs wait for it (#424).
+PAUSED_FINDING_ID = "runs.paused"
 
 # Runner log filename prefixes written under <vault>/.scout-logs/ by the three
 # cat-1b runners (run-scout.sh / run-dreaming.sh / run-research.sh).
@@ -267,6 +270,41 @@ def _last_ok_at(rows: list[OutcomeRow]) -> datetime | None:
     return max(oks) if oks else None
 
 
+def _trailing_failures(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The failed runs since the newest non-skip run that wasn't a failure, oldest first."""
+    failed: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES:
+            continue
+        if r.outcome != "failed":
+            break
+        failed.append(r)
+    return failed[::-1]
+
+
+@dataclass(frozen=True)
+class UsagePause:
+    """A Claude usage limit in force: the newest failure named a reset still ahead (#424)."""
+
+    began: datetime  # the first run of the trailing streak that failed on the limit
+    lifts: datetime
+    failed_runs: int  # trailing runs that failed on the limit
+
+
+def usage_pause(rows: list[OutcomeRow], *, now: datetime) -> UsagePause | None:
+    """The usage-limit pause in force at ``now``, or None.
+
+    Every earlier run that failed on the limit (a reset not yet parsed, #424) is
+    part of the same pause; a different failure before them is not.
+    """
+    failed = _trailing_failures(rows)
+    newest = failed[-1] if failed else None
+    if newest is None or newest.failure_class != "rate_limited" or not newest.resets_at or newest.resets_at <= now:
+        return None
+    on_limit = list(takewhile(lambda r: r.failure_class == "rate_limited", reversed(failed)))
+    return UsagePause(began=on_limit[-1].finished_at, lifts=newest.resets_at, failed_runs=len(on_limit))
+
+
 def _window_text(row: OutcomeRow) -> str:
     """What landed in *row*'s window, as measured (#237), or nothing when unmeasured.
 
@@ -290,16 +328,12 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
 
     findings: list[Finding] = []
     last_ok = _last_ok_at(rows)
-    non_skip = [r for r in rows if r.outcome not in SKIP_OUTCOMES]
-
-    streak = 0
-    for r in reversed(non_skip):
-        if r.outcome != "failed":
-            break
-        streak += 1
+    failed = _trailing_failures(rows)
+    streak = len(failed)
+    pause = usage_pause(rows, now=now)
 
     if streak:
-        newest = non_skip[-1]
+        newest = failed[-1]
         if newest.failure_class == "oauth_expired":
             when = iso_z(last_ok) if last_ok else "never"
             findings.append(
@@ -315,16 +349,18 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     source="ledger",
                 )
             )
-        elif newest.failure_class == "rate_limited" and newest.resets_at and newest.resets_at > now:
-            # It lifts on its own; say when rather than send anyone to the doctor.
+        elif pause is not None:
+            # It lifts on its own, and the budget gate holds every slot until then
+            # (#424): one pause that says when, however many slots failed on the
+            # limit first, rather than a red streak that sends anyone to the doctor.
             findings.append(
                 Finding(
-                    id="runs.failing",
-                    severity="red" if streak >= 2 else "yellow",
+                    id=PAUSED_FINDING_ID,
+                    severity="yellow",
                     since=last_ok,
                     summary=(
-                        f"Claude usage limit: Scout resumes after {iso_z(newest.resets_at)}. "
-                        f"The last {streak} scheduled run(s) failed (rate_limited)."
+                        f"Claude usage limit — runs paused until {iso_z(pause.lifts)}. "
+                        f"The last {pause.failed_runs} scheduled run(s) failed on the limit."
                     ),
                     fix="Nothing to fix: the first scheduled run after the reset picks up.",
                     source="ledger",
@@ -784,6 +820,7 @@ def lane_findings(
     *,
     now: datetime,
     commits: list[tuple[datetime, str]] | None = None,
+    paused_since: datetime | None = None,
 ) -> list[Finding]:
     """Does each session type (lane) still produce commits? (port of session-lane-liveness.py)
 
@@ -798,6 +835,11 @@ def lane_findings(
     also red: a broken lane that still fires, which the script exited 3 on and
     pushed. Both ids share one notifier key (``lane:<type>``), so a lane flapping
     between them is one outage.
+
+    ``paused_since`` is when a Claude usage limit that is still in force began
+    (:func:`usage_pause`). A lane that was inside its dark budget then has gone
+    quiet only because runs are paused, which ``runs.paused`` already says, so it
+    is not reported (#424). A lane that was already dark is.
     """
     if schedule is None:
         return []
@@ -858,6 +900,8 @@ def lane_findings(
             continue  # OK, or DEGRADED (inside the dark budget): not worth a finding
         if commit_age is None and (observed is None or observed < dark):
             continue  # NO DATA YET: not observed for the lane's whole dark budget
+        if paused_since is not None and commit_dt is not None and (paused_since - commit_dt).days < dark:
+            continue  # inside its budget when the usage limit paused runs
         silent = fire_age is not None and fire_age < RECENT_FIRE_DAYS
         summary = (
             f"{lane} has produced no commits in {_days_text(commit_age)}"
@@ -1089,6 +1133,9 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     loaded = _load_schedule(vault)
     fires = read_last_fires(vault)
     sched, slots = _schedule_findings(vault, loaded, rows, fires, now=now)
-    lanes = lane_findings(vault, loaded[0] if loaded else None, rows, fires, now=now)
+    pause = usage_pause(rows, now=now)
+    lanes = lane_findings(
+        vault, loaded[0] if loaded else None, rows, fires, now=now, paused_since=pause.began if pause else None
+    )
     updates = update_findings(vault, read_updates(vault), now=now)
     return build_report(found + sched + lanes + updates, now=now, last_ok_at=_last_ok_at(rows), slots=slots)

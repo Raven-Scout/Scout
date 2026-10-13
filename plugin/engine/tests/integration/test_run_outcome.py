@@ -200,6 +200,11 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         # Claude Code's own quota message names a reset time; it is a rate limit.
         pytest.param("You've hit your session limit · resets 3pm\n", "rate_limited", id="session-limit"),
         pytest.param("Weekly limit reached · resets Mon 9am\n", "rate_limited", id="limit-resets-rewording"),
+        pytest.param(
+            "You've hit your weekly limit · resets Oct 15 at 2pm (Europe/Prague)\n",
+            "rate_limited",
+            id="weekly-limit-date",
+        ),
         # The budget check's own preamble names the budget on every run; that
         # is not a budget failure.
         pytest.param(

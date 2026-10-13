@@ -141,18 +141,51 @@ def test_a_failing_run_states_only_what_was_measured_in_its_window(tmp_path, ext
     assert "by this run" not in summary
 
 
-def test_a_usage_limit_with_a_named_reset_says_when_scout_resumes(tmp_path):
-    """#407: a session limit lifts on its own; the finding (and the push built
-    from it) says when, instead of pointing at the doctor."""
+def _paused(report: health.RunHealth) -> health.Finding:
+    (finding,) = [f for f in report.findings if f.id == "runs.paused"]
+    return finding
+
+
+def test_a_usage_limit_with_a_named_reset_is_one_paused_state(tmp_path):
+    """#407, #424: a usage limit lifts on its own. Health says when Scout resumes,
+    as one yellow pause rather than a failure that sends anyone to the doctor."""
     v = _vault(tmp_path)
     resets = int((NOW + timedelta(hours=3)).timestamp())
     _ledger(v, [_row(NOW - timedelta(hours=1), code=1, klass="rate_limited", resets_at=resets)])
 
-    finding = _failing(health.evaluate(v, now=NOW))
+    report = health.evaluate(v, now=NOW)
 
-    assert "Claude usage limit" in finding.summary
-    assert "resumes after 2026-10-11T15:00:00Z" in finding.summary
+    assert _ids(report) == {"runs.paused": "yellow"}
+    finding = _paused(report)
+    assert finding.summary.startswith("Claude usage limit — runs paused until 2026-10-11T15:00:00Z.")
     assert finding.fix.startswith("Nothing to fix")
+    assert finding.source == "ledger"
+
+
+def test_a_pause_after_a_failing_streak_is_still_one_yellow_pause(tmp_path):
+    """#424: the slots that failed on the limit before its reset was parsed, and the
+    skips the budget gate records while it holds, read as one pause, not red."""
+    v = _vault(tmp_path)
+    resets = int((NOW + timedelta(days=3)).timestamp())
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=30)),
+            _row(NOW - timedelta(hours=26), code=1, klass="rate_limited"),
+            _row(NOW - timedelta(hours=22), code=1, klass="rate_limited"),
+            _row(NOW - timedelta(hours=18), code=1, klass="rate_limited", resets_at=resets),
+            {**_row(NOW - timedelta(hours=14)), "outcome": "skipped_budget"},
+            {**_row(NOW - timedelta(hours=10)), "outcome": "skipped_budget"},
+        ],
+    )
+
+    report = health.evaluate(v, now=NOW)
+
+    assert report.severity == "yellow"
+    assert _ids(report) == {"runs.paused": "yellow"}
+    summary = _paused(report).summary
+    assert "paused until 2026-10-14T12:00:00Z" in summary
+    assert "3 scheduled run(s) failed on the limit" in summary
 
 
 @pytest.mark.parametrize(

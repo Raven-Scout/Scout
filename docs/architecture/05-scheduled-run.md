@@ -64,7 +64,9 @@ C4Dynamic
    rolling-window spend crosses `daily_budget × window/24 × skip_pct`, and 2
    when a `rate_limit` row or a non-zero exit sits inside the backoff window.
    A `rate_limit` row with `resets_at` (Claude Code named when its usage limit
-   lifts) backs off until exactly then instead of for the window.
+   lifts, as a time or, for the weekly limit, a date and time) backs off until
+   exactly then instead of for the window, and run health shows one
+   `runs.paused` until it passes.
    Either non-zero result ends the runner with exit 0 and a log line.
 6. **One `claude -p`, retried whole.** `claude-with-retry.sh` re-runs the entire
    invocation when the tail of the log matches a known transient signature

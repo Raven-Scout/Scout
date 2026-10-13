@@ -307,19 +307,16 @@ def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], 
     if "last_recovered" in state:
         new_state["last_recovered"] = state["last_recovered"]
     if state.get("last_overall") == "red" and announced != "red":
+        pause = next((f for f in report.findings if f.id == health.PAUSED_FINDING_ID), None)
         warnings = sum(1 for f in report.findings if f.severity == "yellow")
-        body = "Scout runs are healthy again."
-        if warnings:
+        title, body = "Scout: runs recovered", "Scout runs are healthy again."
+        if pause is not None:
+            # Out of red because the usage limit's reset is now known (#424): not
+            # healthy, just waiting. The pause is yellow, so this is its one push.
+            title, body = "Scout: runs paused (Claude usage limit)", f"{pause.summary}\nFix: {pause.fix}"
+        elif warnings:
             body = f"Scout runs are healthy again; remaining warnings: {warnings}"
-        pushes.append(
-            Push(
-                finding_id="recovered",
-                kind="recovered",
-                severity=announced,
-                title="Scout: runs recovered",
-                body=body,
-            )
-        )
+        pushes.append(Push(finding_id="recovered", kind="recovered", severity=announced, title=title, body=body))
     return pushes, new_state
 
 
