@@ -24,6 +24,7 @@ full = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-xdist>=3.5",
     "mypy>=1.10",
     "ruff>=0.5",
     "types-PyYAML",
@@ -93,8 +94,13 @@ markers = [
 
 # Coverage is opt-in per-invocation (`pytest --cov=scout`), not wired into
 # addopts — the perf tests measure cold-start latency and coverage's tracer
-# skews those numbers. CI runs a dedicated coverage job; see
-# .github/workflows/test.yml.
+# skews those numbers. CI measures coverage on one matrix leg; see
+# .github/workflows/plugin-test.yml.
+#
+# CI runs the suite in parallel (`pytest -n auto -m "not perf"`, pytest-xdist)
+# and the `perf` tests afterwards on their own, serially: a latency budget means
+# nothing while other workers compete for the CPU. Run them the same way
+# locally: `pytest -m perf -p no:xdist`.
 [tool.coverage.run]
 source = ["scout"]
 branch = true
