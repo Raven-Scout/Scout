@@ -68,6 +68,13 @@ struct EngineSettingsSection: View {
                         .disabled(isUpdating)
                 }
             }
+            if model.updatesAutomatically {
+                SettingsRow(title: "Updates", help: model.updatesHelp) {
+                    Text(model.updatesIsOK ? "Automatic" : "Needs attention")
+                        .font(DS.sans(12, weight: .medium))
+                        .foregroundStyle(model.updatesIsOK ? DS.Status.ok : DS.Status.warn)
+                }
+            }
             if model.showsHandOff {
                 SettingsRow(title: model.handOffTitle, help: model.handOffHelp) {
                     Button("Copy /scout-update") { Self.copyToPasteboard("/scout-update") }

@@ -28,7 +28,8 @@ CANCELLED = "Setup cancelled; nothing was written."
 _DEFAULT_DAILY = f"${DEFAULT_DAILY_BUDGET_USD:g}"
 HEADLESS_FLAGS = (
     "--yes --name NAME --email EMAIL [--connectors a,b] [--slack-id ID] [--github-username U] "
-    "[--github-repos owner/repo,…] [--max-budget 5.00] [--daily-budget USD] [--timezone ZONE] [--no-first-run]"
+    "[--github-repos owner/repo,…] [--max-budget 5.00] [--daily-budget USD] [--timezone ZONE] [--no-first-run] "
+    "[--no-auto-update]"
 )
 # needs_user_input name → (bootstrap auto flag, question)
 _INPUTS = {
@@ -145,6 +146,7 @@ class SetupOptions:
     managed_by: str = ""  # "": claude-code on install, preserve on upgrade
     claude_bin: str = ""
     yes: bool = False
+    auto_update: bool | None = None  # None: ask (default yes) for install.sh / claude-code installs
 
 
 @dataclass
@@ -165,6 +167,7 @@ class Answers:
     github_repos: str = ""
     max_budget: str = "5.00"
     daily_budget: str = ""
+    auto_update: bool | None = None  # None: leave scout-config.yaml's auto_update alone
     drafts: list[KeptDraft] = field(default_factory=list)
 
 
@@ -306,7 +309,30 @@ def auto_argv(a: Answers, managed_by: str) -> list[str]:
     ):
         if value:
             argv += [flag, value]
-    return [*argv, "--max-budget", a.max_budget]
+    argv += ["--max-budget", a.max_budget]
+    return [*argv, *_auto_update_flag(a.auto_update)]
+
+
+def _auto_update_flag(value: bool | None) -> list[str]:
+    if value is None:
+        return []
+    return ["--auto-update" if value else "--no-auto-update"]
+
+
+# Engines that update themselves when auto_update is on (spec §7.2). Scout.app
+# updates its own engine and a dev checkout belongs to its owner, so neither is asked.
+_SELF_UPDATING = ("install.sh", "claude-code")
+_AUTO_UPDATE_QUESTION = (
+    "Keep Scout up to date automatically? Each stable release installs about a day after it's published"
+)
+
+
+def _ask_auto_update(p: Prompter, opts: SetupOptions, managed_by: str) -> bool | None:
+    if opts.auto_update is not None:
+        return opts.auto_update
+    if managed_by not in _SELF_UPDATING:
+        return None
+    return True if opts.yes else p.confirm(_AUTO_UPDATE_QUESTION, True)
 
 
 def _ask_required(p: Prompter, question: str, default: str, check: Callable[[str], bool], why: str) -> str:
@@ -384,7 +410,7 @@ def _ask_connectors(p: Prompter, opts: SetupOptions, deps: SetupDeps, a: Answers
     )
 
 
-def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> Answers | None:
+def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps, managed_by: str) -> Answers | None:
     a = Answers()
     git_name, git_email = deps.git_identity()
     if opts.yes:
@@ -430,6 +456,7 @@ def _gather(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> Answers | None:
             "Enter an amount above 0, or leave it blank.",
         )
     )
+    a.auto_update = _ask_auto_update(p, opts, managed_by)
     return a
 
 
@@ -651,9 +678,10 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         upgrade_argv = ["bootstrap", "auto", "--no-interactive", "--yes", "--managed-by", managed_by]
         if opts.claude_bin:
             upgrade_argv += ["--claude-bin", opts.claude_bin]
-        return deps.invoke(upgrade_argv)
+        return deps.invoke([*upgrade_argv, *_auto_update_flag(opts.auto_update)])
+    install_managed_by = opts.managed_by or "claude-code"
     try:
-        answers = _gather(opts, p, deps)
+        answers = _gather(opts, p, deps, install_managed_by)
     except NoTerminal:
         p.say(f"No terminal to ask questions on. Run it headless: scoutctl setup {HEADLESS_FLAGS}")
         return 2
@@ -662,7 +690,7 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return 1
     if answers is None:
         return 2
-    install_argv = auto_argv(answers, opts.managed_by or "claude-code")
+    install_argv = auto_argv(answers, install_managed_by)
     if opts.claude_bin:
         install_argv += ["--claude-bin", opts.claude_bin]
     code = deps.invoke(install_argv)

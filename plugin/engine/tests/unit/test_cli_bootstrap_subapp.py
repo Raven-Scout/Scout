@@ -56,6 +56,25 @@ def test_auto_second_run_upgrades(tmp_path, monkeypatch):
     assert json.loads(result.stdout)["action"] == "upgrade", result.stdout + result.stderr
 
 
+def _auto_update(vault: Path):
+    block = yaml.safe_load((vault / "scout-config.yaml").read_text()).get("auto_update") or {}
+    return block.get("enabled")
+
+
+def test_auto_records_the_auto_update_flag_on_install_and_upgrade(tmp_path, monkeypatch):
+    """#360 §7.9: `scoutctl setup` passes its answer through `bootstrap auto`."""
+    headless = [a if a != "scout-app" else "install.sh" for a in HEADLESS]
+    vault = _vault(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["bootstrap", "auto", *headless, *IDENTITY, "--auto-update"])
+    assert json.loads(result.stdout)["action"] == "install", result.stdout + result.stderr
+    assert _auto_update(vault) is True
+    result = runner.invoke(app, ["bootstrap", "auto", *headless, "--no-auto-update"])
+    assert json.loads(result.stdout)["action"] == "upgrade", result.stdout + result.stderr
+    assert _auto_update(vault) is False
+    runner.invoke(app, ["bootstrap", "auto", *headless])  # omitted: left as it is
+    assert _auto_update(vault) is False
+
+
 def test_auto_dry_run_reports_plan_without_touching_disk(tmp_path, monkeypatch):
     vault = _vault(tmp_path, monkeypatch)
     result = runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY, "--dry-run"])

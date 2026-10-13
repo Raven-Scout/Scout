@@ -226,6 +226,47 @@ struct EngineSettingsModelTests {
         #expect(model(runHealth(.green)).runsHelp == "No runs recorded yet")
     }
 
+    // MARK: headless updates (#360)
+
+    private func finding(_ id: String, _ severity: String, _ summary: String) -> RunHealth.Finding {
+        RunHealth.Finding(id: id, severity: severity, since: nil, summary: summary, fix: "", source: "update ledger")
+    }
+    private func external(_ findings: [RunHealth.Finding], state: EngineState? = nil) -> EngineSettingsModel {
+        EngineSettingsModel(state: state ?? .external(install, .devCheckout),
+                            doctor: DoctorReport(severity: .green, errors: [], warnings: [],
+                                                 runHealth: runHealth(.green, findings: findings)),
+                            lastError: nil, bundledVersion: "0.11.0")
+    }
+
+    @Test func selfUpdatingExternalEngineShowsUpdatesRowInsteadOfHandOff() {
+        let last = finding("update.last", "note", "Updates automatically. Last checked 6 h ago: updated to 0.17.0.")
+        let m = external([last])
+        #expect(m.updatesAutomatically)
+        #expect(!m.showsHandOff)
+        #expect(m.updatesIsOK)
+        #expect(m.updatesHelp == "Updates automatically. Last checked 6 h ago: updated to 0.17.0.")
+    }
+
+    @Test func aFailedUpdateLeadsTheUpdatesRow() {
+        let last = finding("update.last", "note", "Updates automatically. Last checked 1 h ago: the update to 0.17.0 failed at the venv step.")
+        let failed = finding("update.failed", "red", "Scout's update to 0.17.0 failed at the venv step.")
+        let m = external([failed, last])
+        #expect(m.updatesAutomatically && !m.updatesIsOK)
+        #expect(m.updatesHelp == "Scout's update to 0.17.0 failed at the venv step.")
+    }
+
+    @Test func externalWithoutUpdateLastKeepsTheHandOff() {
+        let m = external([finding("update.behind", "note", "behind")])
+        #expect(!m.updatesAutomatically)
+        #expect(m.showsHandOff)
+        #expect(m.updatesHelp == "")
+    }
+
+    @Test func managedEnginesNeverShowTheUpdatesRow() {
+        let last = finding("update.last", "note", "x")
+        #expect(!external([last], state: .managed(install, vaultBootstrapped: true)).updatesAutomatically)
+    }
+
     @Test func runsRowAbsentWithoutRunHealth() {
         let m = model(nil)
         #expect(m.runsLabel == "Unknown")

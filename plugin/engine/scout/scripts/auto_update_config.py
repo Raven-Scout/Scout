@@ -34,7 +34,8 @@ _KEY = "auto_update"
 _HEADER_RE = re.compile(r"auto_update[ \t]*:(?P<rest>[ \t].*)?$")
 _SEQUENCE_ITEM_RE = re.compile(r"-(\s|$)")
 _APPENDED_BLOCK_COMMENT = (
-    "# Whether Scout keeps itself up to date — toggle via /scout-update or\n"
+    "# Whether Scout installs each stable release by itself (engines set up by\n"
+    "# install.sh or Claude Code; Scout.app updates its own). Toggle with\n"
     "# `scoutctl config set-auto-update`. Safe to edit by hand.\n"
 )
 

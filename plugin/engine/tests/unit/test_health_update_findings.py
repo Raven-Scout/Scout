@@ -38,6 +38,34 @@ def test_no_rows_no_findings(tmp_path):
     assert _found(_vault(tmp_path), []) == {}
 
 
+@pytest.mark.parametrize(
+    ("result", "kw", "words"),
+    [
+        ("up_to_date", {"target": "0.16.0"}, "up to date (0.16.0)"),
+        ("applied", {}, "updated to 0.17.0"),
+        ("applied_with_sidecars", {}, "updated to 0.17.0, with files to merge"),
+        ("waiting_release", {}, "0.17.0 is not published yet, or is still settling"),
+        ("deferred", {"detail": "vault lock busy"}, "put off: vault lock busy"),
+        ("held", {"detail": "the install doctor is red"}, "on hold: the install doctor is red"),
+        ("failed", {"step": "venv"}, "the update to 0.17.0 failed at the venv step"),
+    ],
+)
+def test_last_is_a_note_for_every_eligible_attempt(tmp_path, result, kw, words):
+    f = _found(_vault(tmp_path), [_row(timedelta(hours=3), result, **kw)])["update.last"]
+    assert f.severity == "note" and f.since == NOW - timedelta(hours=3)
+    assert f.summary == f"Updates automatically. Last checked 3 h ago: {words}."
+
+
+def test_last_is_absent_when_not_eligible(tmp_path):
+    rows = [_row(timedelta(hours=1), "not_eligible", target=None, detail="disabled")]
+    assert "update.last" not in _found(_vault(tmp_path), rows)
+
+
+def test_last_follows_the_newest_row(tmp_path):
+    rows = [_row(timedelta(days=2), "applied"), _row(timedelta(hours=1), "not_eligible", detail="disabled")]
+    assert "update.last" not in _found(_vault(tmp_path), rows)
+
+
 def test_evaluate_without_update_ledger_has_no_update_findings(tmp_path):
     report = health.evaluate(_vault(tmp_path), now=NOW)
     assert not [f for f in report.findings if f.id.startswith("update.")]
@@ -48,7 +76,7 @@ def test_evaluate_reads_the_update_ledger(tmp_path):
     uo.append(v, _row(timedelta(hours=1), "failed", step="venv"))
     report = health.evaluate(v, now=NOW)
     assert report.severity == "red"
-    assert [f.id for f in report.findings] == ["update.failed"]
+    assert [f.id for f in report.findings] == ["update.failed", "update.last"]
 
 
 def test_failed_is_red_and_names_the_step_and_log(tmp_path):
