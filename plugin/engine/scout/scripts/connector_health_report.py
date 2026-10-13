@@ -506,6 +506,7 @@ def render_health_md(
     alerts: list[Alert],
     records: list[dict[str, Any]],
     lint_overrides: int | None = None,
+    cap_markers: list[dict[str, Any]] | None = None,
 ) -> str:
     recent = session_list[-DEFAULT_MATRIX_DEPTH:]
     recent_ids = [sid for sid, _ in recent]
@@ -518,6 +519,12 @@ def render_health_md(
         f"**Last updated:** {now.astimezone(_zone()).strftime('%Y-%m-%d %H:%M %Z')}",
         f"**Window:** last 14 days, scheduled scout runs only (`{len(recent)}` of `{len(session_list)}` shown).",
         *([f"**KB lint overrides (14d):** {lint_overrides}"] if lint_overrides is not None else []),
+        *[
+            f"**⚠️ Call log capped:** the {m['_ts'].astimezone(_zone()).strftime('%Y-%m-%d')} log hit its daily "
+            f"size cap at {m['_ts'].astimezone(_zone()).strftime('%H:%M %Z')}; calls after that were not logged, "
+            "so that day's counts are low."
+            for m in cap_markers or []
+        ],
         "",
     ]
 
@@ -711,6 +718,11 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
         now=n,
         index_path=paths.cache_dir(target_data) / INDEX_FILENAME,
     )
+    # A capped day's marker (#66) is a notice, not a call: keep it out of the
+    # sessions and counts, and show it on the page.
+    cap_markers = [r for r in records if r.get("connector") == connector_calls.CAP_CONNECTOR]
+    if cap_markers:
+        records = [r for r in records if r.get("connector") != connector_calls.CAP_CONNECTOR]
     if not records:
         return None
 
@@ -747,6 +759,7 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
             alerts=alerts,
             records=records,
             lint_overrides=_lint_override_count(log_dir, n),
+            cap_markers=cap_markers,
         ),
         encoding="utf-8",
     )
@@ -789,6 +802,7 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
             "current_sid": current_sid,
             "current_mode": current_mode,
             "alerts": [a.to_dict() for a in alerts],
+            **({"log_capped_at": [m["ts"] for m in cap_markers]} if cap_markers else {}),
         },
     )
 

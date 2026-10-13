@@ -11,7 +11,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **The connector-call log has a daily size cap and prunes itself** (#66; `engine/scout/connector_calls.py`, `engine/scout/hooks/connector_log.py`, `engine/scout/hooks/session_tool_log.py`). Old days were deleted only when the health report ran, and nothing capped a single day. The ledger now has two bounds:
-  - **Daily cap:** a day's file stops growing at 64 MiB, about 150× a normal day. Rows past the cap are dropped, and the hook says so on stderr. The cap is checked under the append lock, so concurrent writers never overshoot it.
+  - **Daily cap:** a day's file stops growing at 64 MiB, about 150× a normal day. The first row that doesn't fit is replaced by one marker row that records when the cap was hit, and the day's file is closed. Every later row that day is dropped, and the hook says so on stderr. The cap is checked under the append lock, so concurrent writers never overshoot it (beyond the one marker row).
+  - **A capped day is visible:** the health report keeps the marker out of its sessions and counts, so it never becomes a fake run with 0 calls. It shows a notice at the top of `connector-health.md` instead: "Call log capped: the YYYY-MM-DD log hit its daily size cap at HH:MM; calls after that were not logged, so that day's counts are low." The report's event payload gains `log_capped_at`.
   - **Pruning:** both writers delete files dated more than 30 days ago when they write a day's first row, so retention holds even with `connector_health` turned off. The report still prunes too. 30 days is more than twice the report's 14-day window. Run health doesn't read these files.
 
   The Stop hook's transcript replay (`session_tool_log`) now takes the same exclusive lock as the PostToolUse hook. Before, its multi-row writes could interleave with the PostToolUse hook's rows in the same file.

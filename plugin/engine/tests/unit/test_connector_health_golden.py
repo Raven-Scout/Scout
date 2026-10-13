@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from scout import connector_calls
 from scout.scripts import connector_health_report as chr_mod
 
 # Read at import: the autouse env scrub strips SCOUT_* before the test body runs.
@@ -247,3 +248,37 @@ def test_files_with_no_readable_rows_are_skipped_once_indexed(vault: Path, monke
     opened = _opened(monkeypatch)
     assert _outputs(vault) == cold
     assert junk.name not in opened
+
+
+def _marker(source_row: dict[str, Any]) -> dict[str, Any]:
+    marker: dict[str, Any] = json.loads(connector_calls._cap_marker(json.dumps(source_row), 64))
+    marker["ts"] = "2026-09-30T13:30:00Z"
+    return marker
+
+
+def test_a_capped_day_is_a_notice_not_a_run(vault: Path) -> None:
+    """The cap marker (#66) must not become a session or skew any count: the
+    output is the golden one plus the notice line and the payload key."""
+    today = vault / ".scout-logs" / "connector-calls-2026-09-30.jsonl"
+    with today.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_marker({"session_id": "sess-00-4", "mode": "dreaming"})) + "\n")
+    out = _outputs(vault)
+    golden = _golden()
+    notice = (
+        "**⚠️ Call log capped:** the 2026-09-30 log hit its daily size cap at 09:30 EDT; "
+        "calls after that were not logged, so that day's counts are low."
+    )
+    assert out["connector-health.md"] == golden["connector-health.md"].replace(
+        "**KB lint overrides (14d):** 0\n", f"**KB lint overrides (14d):** 0\n{notice}\n", 1
+    )
+    assert out["connector-alerts.log"] == golden["connector-alerts.log"]
+    assert out["connector-alerts-pending.md"] == golden["connector-alerts-pending.md"]
+    payload = json.loads(out["event-payload.json"])
+    assert payload.pop("log_capped_at") == ["2026-09-30T13:30:00Z"]
+    assert payload == json.loads(golden["event-payload.json"])
+
+
+def test_a_window_with_only_a_marker_is_no_report(fake_data_dir: Path) -> None:
+    log = fake_data_dir / ".scout-logs" / "connector-calls-2026-09-30.jsonl"
+    log.write_text(json.dumps(_marker({})) + "\n", encoding="utf-8")
+    assert chr_mod.run(data_dir=fake_data_dir, now=NOW) is None

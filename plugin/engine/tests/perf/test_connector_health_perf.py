@@ -133,7 +133,7 @@ def test_ledger_bounds_hold_at_scale(tmp_path: Path) -> None:
     day = tmp_path / "connector-calls-2026-09-30.jsonl"
     cap = 1024 * 1024
     written = sum(connector_calls.append_rows(day, [row] * 500, max_bytes=cap) for _ in range(20))
-    assert day.stat().st_size <= cap
+    assert day.stat().st_size <= cap + 512  # the cap, plus its one marker row
     assert written == cap // len(row)
 
     ledger = tmp_path / "pruned"
