@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Self-update e2e: the vault's notify.command. Records each push Scout sends (spec §4.3, channel 3)."""
+
+import json
+import os
+import time
+
+KEYS = ("SCOUT_NOTIFY_TITLE", "SCOUT_NOTIFY_BODY", "SCOUT_NOTIFY_SEVERITY", "SCOUT_NOTIFY_FINDING")
+row = {"at": time.time(), **{k.removeprefix("SCOUT_NOTIFY_").lower(): os.environ.get(k, "") for k in KEYS}}
+with open(os.path.join(os.environ["SCOUT_E2E_STATE"], "notify.jsonl"), "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")

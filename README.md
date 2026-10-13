@@ -64,6 +64,12 @@ locally, on their own Claude login (Sonnet, no API key):
 `release.sh prepare` prints this step with the date of the newest local result.
 It is a reminder, never a gate. CI runs no model-backed evals.
 
+They also rehearse the headless update from the previous release to the new one, in a
+throwaway Linux container: `scripts/e2e/self-update/run.sh --from <last tag> --to
+release/vX.Y.Z`, or the manual **e2e-self-update** workflow. `release.sh prepare`
+prints this step too, and the release PR has a checkbox for it. It is not a gate. See
+[`scripts/e2e/self-update/README.md`](scripts/e2e/self-update/README.md).
+
 ## Legal
 
 MIT — see [LICENSE](./LICENSE), [PRIVACY.md](./PRIVACY.md), [TERMS.md](./TERMS.md).
