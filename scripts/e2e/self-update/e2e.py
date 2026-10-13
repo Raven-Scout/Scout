@@ -42,9 +42,9 @@ SCENARIOS = ("happy", "rollback", "sidecars")
 # not FAIL, so the run stays green until the fix lands (and then reports PASS).
 KNOWN_VAULT_NOT_GIT = "Raven-Scout/Scout#433"
 KNOWN_BSD_DATE = "Raven-Scout/Scout#434"
-# Not filed yet: bootstrap_doctor runs `launchctl list` on every POSIX host, so a Linux install is
+# bootstrap_doctor runs `launchctl list` on every POSIX host, so a Linux install is
 # always yellow ("launchctl unavailable") and install.sh exits 1 after a good install.
-KNOWN_LAUNCHCTL_ON_LINUX = "untracked: doctor's launchd check on Linux"
+KNOWN_LAUNCHCTL_ON_LINUX = "Raven-Scout/Scout#449"
 
 
 # --- reporting ------------------------------------------------------------------------------

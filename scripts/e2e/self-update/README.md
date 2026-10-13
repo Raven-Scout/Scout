@@ -95,7 +95,7 @@ PASS once the fix lands:
 
 - [Raven-Scout/Scout#433](https://github.com/Raven-Scout/Scout/issues/433): the vault is not a git repo after setup.
 - [Raven-Scout/Scout#434](https://github.com/Raven-Scout/Scout/issues/434): BSD `date -v` in `phases/connectors/github.md`.
-- Not yet filed: the install doctor runs a `launchctl list` check on every POSIX host. A
+- [Raven-Scout/Scout#449](https://github.com/Raven-Scout/Scout/issues/449): the install doctor runs a `launchctl list` check on every POSIX host. A
   Linux install is therefore always yellow, and `install.sh` exits 1 after a good install.
 
 ## What it does not cover
