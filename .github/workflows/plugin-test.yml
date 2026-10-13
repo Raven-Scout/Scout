@@ -62,6 +62,11 @@ jobs:
   # other two legs time them without a tracer. Neither pytest step checks the
   # floor (each sees only part of the data); `coverage report` does, on the
   # combined total.
+  #
+  # `workers` is twice the runner's cores (ubuntu-latest 4, macos-latest 3):
+  # most of the suite waits on subprocesses (shell runners, git, fake claude),
+  # not the CPU. Measured on #439: the coverage leg's parallel step went 278s
+  # -> 145s and macOS 323s -> 263s against `-n auto`.
   test:
     needs: changes
     if: needs.changes.outputs.run == 'true'
