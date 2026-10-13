@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-10-13
+
 ### Added
 - **Scheduled runs can use a long-lived Claude token, so they survive the interactive login's expiry** (#267, run-health P6; `engine/scout/claude_auth.py`, `engine/scout/cli.py`, `engine/scout/setup_wizard.py`, `engine/scout/scripts/bootstrap_doctor.py`, `engine/scout/health.py`, `templates/scripts/claude-with-retry.sh.tmpl`). An expired `claude` login stopped every scheduled run until someone signed in again.
   - **`scoutctl auth setup-token`** runs `claude setup-token`, then reads back the one-year token it prints, with input hidden. Both stores are outside the vault and never committed:
