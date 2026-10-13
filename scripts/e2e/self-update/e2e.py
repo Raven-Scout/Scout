@@ -133,6 +133,23 @@ def load_render_dates():
 # --- the release fixture ----------------------------------------------------------------------
 
 
+def stamp_version(checkout: Path, version: str) -> bool:
+    """Set every manifest in ``checkout`` to ``version`` (the tree's own versioning.py) and commit.
+
+    Returns False, committing nothing, when the tree already carries ``version``.
+    """
+    subprocess.run(
+        [sys.executable, "plugin/engine/scout/scripts/versioning.py", "--repo-root", ".", "set", version],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    if not git("status", "--porcelain", "--untracked-files=no", cwd=checkout):
+        return False
+    git("commit", "-q", "-am", f"e2e: stamp {version}", cwd=checkout)
+    return True
+
+
 class Releases:
     """The local stand-in for github.com/Raven-Scout/Scout: branches in REMOTE, release JSON per host."""
 
@@ -152,30 +169,20 @@ class Releases:
         git("checkout", "-q", "--detach", "origin/e2e-target", cwd=BUILD)
         git("config", "user.name", "Scout e2e", cwd=BUILD)
         git("config", "user.email", "e2e@example.com", cwd=BUILD)
-        if stamp:
-            # A local build at (or below) the installed version: stamp a newer one, the way
-            # release.sh prepare does, so the updater sees a release to take.
-            self._stamp(stamp)
+        # A local build at (or below) the installed version: stamp a newer one, the way
+        # release.sh prepare does, so the updater sees a release to take. A target that
+        # already carries the version (`--to release/vX.Y.Z --as-version X.Y.Z`) needs none.
+        self.stamped = bool(stamp) and stamp_version(BUILD, stamp)
         self.version = stamp or target_version
-        self.stamped = bool(stamp)
         self.good = self._push("rel-good")
         self.broken = self._broken()
         # The release after the target, for "a fix ships as the next patch".
         t = semver(self.version)
         self.next_version = f"{t[0]}.{t[1]}.{t[2] + 1}"
         git("checkout", "-q", "--detach", self.good, cwd=BUILD)
-        self._stamp(self.next_version)
+        stamp_version(BUILD, self.next_version)
         self.next = self._push("rel-next")
         git("checkout", "-q", "--detach", self.good, cwd=BUILD)
-
-    def _stamp(self, version: str) -> None:
-        subprocess.run(
-            [sys.executable, "plugin/engine/scout/scripts/versioning.py", "--repo-root", ".", "set", version],
-            cwd=BUILD,
-            check=True,
-            capture_output=True,
-        )
-        git("commit", "-q", "-am", f"e2e: stamp {version}", cwd=BUILD)
 
     def _push(self, branch: str) -> str:
         git("push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}", cwd=BUILD)
