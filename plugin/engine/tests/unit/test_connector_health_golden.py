@@ -134,3 +134,116 @@ def test_golden_output(vault: Path) -> None:
     # The fixture exercises both alert levels, so the alert paths are covered too.
     assert "CRITICAL" in out["connector-alerts.log"]
     assert "WARNING" in out["connector-alerts.log"]
+
+
+def _index(vault: Path) -> Path:
+    return vault / ".scout-cache" / chr_mod.INDEX_FILENAME
+
+
+def _opened(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Names of the ledger files load_records opens."""
+    names: list[str] = []
+    real = open
+
+    def spy(file: Any, *args: Any, **kwargs: Any) -> Any:
+        names.append(Path(file).name)
+        return real(file, *args, **kwargs)
+
+    monkeypatch.setattr(chr_mod, "open", spy, raising=False)
+    return names
+
+
+def test_warm_run_skips_old_files_and_matches_golden(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _outputs(vault) == _golden()  # cold: builds the index
+    assert _index(vault).is_file()
+    opened = _opened(monkeypatch)
+    assert _outputs(vault) == _golden()  # warm
+    # Only files with a row inside the 14-day window are read: 09-17 to 09-30
+    # plus the misnamed file. The 17 older days are skipped unopened.
+    assert len(opened) == 15
+    assert "connector-calls-2026-01-15.jsonl" in opened
+    assert "connector-calls-2026-09-01.jsonl" not in opened
+
+
+def _same_inputs_without_index(vault: Path) -> dict[str, str]:
+    _index(vault).unlink()
+    return _outputs(vault)
+
+
+def test_files_changed_behind_the_index_are_reread(vault: Path) -> None:
+    _outputs(vault)
+    log_dir = vault / ".scout-logs"
+    # An old, indexed file gains an in-window row (appended: size, mtime, ctime move).
+    old = log_dir / "connector-calls-2026-09-05.jsonl"
+    with old.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_row(NOW - timedelta(hours=1), "late", "research", "github", False)) + "\n")
+    # Another is rewritten in place at the same size with its mtime restored.
+    other = log_dir / "connector-calls-2026-09-06.jsonl"
+    st = other.stat()
+    text = other.read_text(encoding="utf-8")
+    first = text.splitlines()[0]
+    moved = first.replace("2026-09-06T", "2026-09-29T", 1)
+    assert len(moved) == len(first)
+    other.write_text(text.replace(first, moved, 1), encoding="utf-8")
+    os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+    # A third disappears.
+    (log_dir / "connector-calls-2026-09-07.jsonl").unlink()
+
+    with_index = _outputs(vault)
+    assert with_index != _golden()
+    assert with_index == _same_inputs_without_index(vault)
+    files = json.loads(_index(vault).read_text(encoding="utf-8"))["files"]
+    assert "connector-calls-2026-09-07.jsonl" not in files
+
+
+def test_a_torn_or_foreign_index_is_ignored(vault: Path) -> None:
+    _outputs(vault)
+    for junk in ("{not json", '{"version": 999, "files": {}}', '["a list"]'):
+        _index(vault).write_text(junk, encoding="utf-8")
+        assert _outputs(vault) == _golden()
+        assert json.loads(_index(vault).read_text(encoding="utf-8"))["version"] == chr_mod.INDEX_VERSION
+
+
+def test_an_index_entry_with_a_bad_timestamp_is_a_miss(vault: Path) -> None:
+    _outputs(vault)
+    data = json.loads(_index(vault).read_text(encoding="utf-8"))
+    for entry in data["files"].values():
+        entry["max_ts"] = "not a timestamp"
+    _index(vault).write_text(json.dumps(data), encoding="utf-8")
+    assert _outputs(vault) == _golden()
+
+
+def test_an_unwritable_cache_dir_still_reports(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(chr_mod.os, "replace", fail)
+    assert _outputs(vault) == _golden()
+    assert not _index(vault).exists()
+    assert not list((vault / ".scout-cache").glob(".*.tmp"))
+
+
+def test_recently_modified_files_are_not_indexed(vault: Path) -> None:
+    today = vault / ".scout-logs" / "connector-calls-2026-09-30.jsonl"
+    os.utime(today)  # just written, as the live day's file always is
+    _outputs(vault)
+    files = json.loads(_index(vault).read_text(encoding="utf-8"))["files"]
+    assert today.name not in files
+    assert "connector-calls-2026-09-29.jsonl" in files
+
+
+def test_files_with_no_readable_rows_are_skipped_once_indexed(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    junk = vault / ".scout-logs" / "connector-calls-2026-09-29.jsonl"
+    junk_text = "not json\n" + json.dumps({"session_id": "no-ts"}) + "\n"
+    hidden = vault / ".scout-logs" / "connector-calls-2027-01-01.jsonl"
+    hidden.symlink_to(vault / "nowhere.jsonl")  # matches the glob, can't be stat'ed
+    junk.write_text(junk_text, encoding="utf-8")
+    os.utime(junk, (time.time() - 3_600, time.time() - 3_600))
+    cold = _outputs(vault)
+    assert json.loads(_index(vault).read_text(encoding="utf-8"))["files"][junk.name] == {
+        "key": chr_mod._stat_key(junk.stat()),
+        "max_ts": None,
+    }
+    opened = _opened(monkeypatch)
+    assert _outputs(vault) == cold
+    assert junk.name not in opened

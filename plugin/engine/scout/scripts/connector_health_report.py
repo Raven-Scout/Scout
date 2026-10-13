@@ -19,9 +19,11 @@ zone (scout.config.resolve_timezone, #207) with the real ``%Z`` abbreviation.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import os
 import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,21 +31,31 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scout import paths
+from scout import connector_calls, paths
 from scout.config import resolve_timezone
 from scout.connectors import Capability, Connector, ConnectorRegistry, load_registry
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
 from scout.schedule import SlotType
 
+# Set for the length of one run(): the zone is read from the config once,
+# not once per rendered timestamp (11 config reads per report before #80).
+_run_zone: ZoneInfo | None = None
+
 
 def _zone() -> ZoneInfo:
     """Configured display/day-boundary zone (was hardcoded ET; #207)."""
-    return resolve_timezone()
+    return _run_zone if _run_zone is not None else resolve_timezone()
 
 
 DEFAULT_WINDOW_DAYS = 14
-DEFAULT_RETAIN_DAYS = 30
+DEFAULT_RETAIN_DAYS = connector_calls.RETAIN_DAYS
+# Per-file summary of the ledger under .scout-cache/ (#80); see load_records.
+INDEX_FILENAME = "connector-calls-index.json"
+INDEX_VERSION = 1
+# A file modified this recently isn't summarised: on a coarse-timestamp
+# filesystem a same-size rewrite in the same tick would keep its stat key.
+_RACY_WINDOW_NS = 2_000_000_000
 DEFAULT_MATRIX_DEPTH = 10
 WARN_TOTAL_THRESHOLD = 3
 WARN_ERR_RATIO = 0.5
@@ -83,22 +95,86 @@ def _default_now() -> datetime:
     return datetime.now(UTC)
 
 
+_StatKey = list[int]
+
+
+def _stat_key(st: os.stat_result) -> _StatKey:
+    return [st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino]
+
+
+def _read_index(path: Path) -> dict[str, dict[str, Any]]:
+    """The per-file index, or empty when it is missing, torn or from another version."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != INDEX_VERSION or not isinstance(data.get("files"), dict):
+        return {}
+    return data["files"]
+
+
+def _write_index(path: Path, files: dict[str, dict[str, Any]]) -> None:
+    """Replace the index atomically; a failure only costs the next run a re-read."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"version": INDEX_VERSION, "files": files}, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _all_before(entry: dict[str, Any] | None, key: _StatKey, cutoff: datetime) -> bool:
+    """True when the index proves every row of this unchanged file predates ``cutoff``."""
+    if not isinstance(entry, dict) or entry.get("key") != key:
+        return False
+    newest = entry.get("max_ts")
+    if newest is None:
+        return True  # no row with a readable timestamp: the file contributes nothing
+    try:
+        return bool(datetime.fromisoformat(newest) < cutoff)
+    except (TypeError, ValueError):
+        return False
+
+
 def load_records(
     log_dir: Path,
     *,
     window_days: int = DEFAULT_WINDOW_DAYS,
     now: datetime | None = None,
+    index_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Load JSONL records inside the rolling window, skipping interactive runs.
 
     Each returned record has an extra ``_ts`` key holding a ``datetime``.
     Malformed lines and unreadable files are silently skipped — same as bash.
+
+    With ``index_path`` (#80), a small index remembers each file's newest row
+    timestamp under the file's stat key (mtime, ctime, size, inode). A file
+    whose key is unchanged and whose newest row is older than the cutoff is
+    skipped without being opened: none of its rows could be returned. Any
+    change to a file changes its key, so it is read again; a file's name is
+    never trusted for its dates. The result is exactly what a full read gives.
     """
     n = now or _default_now()
     cutoff = n - timedelta(days=window_days)
     records: list[dict[str, Any]] = []
     log_dir = Path(log_dir)
-    for path in sorted(log_dir.glob("connector-calls-*.jsonl")):
+    index = _read_index(index_path) if index_path is not None else {}
+    seen: dict[str, dict[str, Any]] = {}
+    for path in sorted(log_dir.glob(connector_calls.GLOB)):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        # Stat before the read: an append landing mid-read changes the key,
+        # so the next run reads the file again.
+        key = _stat_key(st)
+        if _all_before(index.get(path.name), key, cutoff):
+            seen[path.name] = index[path.name]
+            continue
+        newest: datetime | None = None
         try:
             with open(path, encoding="utf-8") as f:
                 for line in f:
@@ -110,7 +186,10 @@ def load_records(
                         ts = datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))
                     except (KeyError, ValueError, AttributeError):
                         continue
-                    if ts < cutoff:
+                    old = ts < cutoff
+                    if newest is None or ts > newest:
+                        newest = ts
+                    if old:
                         continue
                     if r.get("mode", "interactive") in ("interactive", "unknown"):
                         continue
@@ -118,6 +197,10 @@ def load_records(
                     records.append(r)
         except OSError:
             continue
+        if time.time_ns() - st.st_mtime_ns > _RACY_WINDOW_NS:
+            seen[path.name] = {"key": key, "max_ts": newest.isoformat() if newest else None}
+    if index_path is not None and seen != index:
+        _write_index(index_path, seen)
     return records
 
 
@@ -130,19 +213,10 @@ def cleanup_old_jsonl(
     """Delete connector-calls-*.jsonl files older than ``retain_days``.
 
     Bash filename format: ``connector-calls-YYYY-MM-DD.jsonl``. Date is treated
-    as UTC midnight to match bash semantics (``replace(tzinfo=UTC)``).
+    as UTC midnight to match bash semantics (``replace(tzinfo=UTC)``). The
+    writers prune the same way on each day's first row (#66).
     """
-    n = now or _default_now()
-    cutoff = n - timedelta(days=retain_days)
-    log_dir = Path(log_dir)
-    for path in log_dir.glob("connector-calls-*.jsonl"):
-        try:
-            date_str = os.path.basename(str(path)).replace("connector-calls-", "").replace(".jsonl", "")
-            fdate = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
-            if fdate < cutoff:
-                os.remove(path)
-        except (ValueError, OSError):
-            continue
+    connector_calls.prune(Path(log_dir), retain_days=retain_days, now=now or _default_now())
 
 
 # ----- aggregation ---------------------------------------------------------
@@ -607,6 +681,15 @@ def run(
     Returns an Event describing the outcome, or None when no scheduled-run
     records exist (matching bash's silent-exit-zero on first run).
     """
+    global _run_zone
+    _run_zone = resolve_timezone()
+    try:
+        return _run(data_dir=data_dir, now=now, cleanup=cleanup)
+    finally:
+        _run_zone = None
+
+
+def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event | None:
     n = now or _default_now()
     target_data = data_dir if data_dir is not None else paths.data_dir()
     log_dir = paths.logs_dir(target_data)
@@ -622,7 +705,12 @@ def run(
     registry = load_registry(data_dir=target_data)
     alertable = _alertable_registry(registry)
 
-    records = load_records(log_dir, window_days=DEFAULT_WINDOW_DAYS, now=n)
+    records = load_records(
+        log_dir,
+        window_days=DEFAULT_WINDOW_DAYS,
+        now=n,
+        index_path=paths.cache_dir(target_data) / INDEX_FILENAME,
+    )
     if not records:
         return None
 

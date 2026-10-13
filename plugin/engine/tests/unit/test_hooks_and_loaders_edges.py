@@ -407,10 +407,13 @@ def test_classify_maps_a_tool_call_to_a_connector_key(tool_name: str, tool_input
 
 
 def test_fcntl_is_optional_at_import_time() -> None:
-    """The module guards the fcntl import for non-POSIX hosts. On POSIX it is
-    present; the guard's other arm is exercised by monkeypatching it to None
-    (see test_registry_idmap_and_log_edges.py)."""
-    assert hasattr(connector_log, "fcntl")
+    """The ledger module (which holds the hook's append lock, #66) guards the
+    fcntl import for non-POSIX hosts. On POSIX it is present; the guard's other
+    arm is exercised by monkeypatching it to None (see
+    test_registry_idmap_and_log_edges.py)."""
+    from scout import connector_calls
+
+    assert hasattr(connector_calls, "fcntl")
 
 
 # ---------------------------------------------------------------------------
