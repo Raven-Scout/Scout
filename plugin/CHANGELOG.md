@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutctl action-items watch` reports the real change when a save truncates the file first** (`engine/scout/action_items/watch.py`). `Path.write_text` and most editors truncate the file, then write it. When the watcher handled the truncate's event before the write landed, it read an empty file. It then printed every item as removed, re-added them all on the next event, and never reported the actual change (a checkbox flip, say). Seen on macOS CI under load. The watcher now re-reads after a 50 ms pause until two reads agree before it diffs. An empty read of a file that had content counts as unfinished until about 0.5 s of re-reads, so a file really emptied still reports its removals. Atomic saves, which write a temp file and rename it over the target, are now seen too: a move onto the target or a create of it triggers a diff, where before only in-place modifies did.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added

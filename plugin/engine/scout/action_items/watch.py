@@ -14,11 +14,19 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from scout.action_items.diff import diff
 from scout.action_items.parser import ActionItem
 from scout.action_items.render import render_changes
+
+# How long to wait between the reads that decide a file has finished being
+# written, and how many re-reads to allow before taking what is there.
+_SETTLE_DELAY_S = 0.05
+_SETTLE_ATTEMPTS = 10
+_sleep = time.sleep  # module-level so tests can step through the settle loop
 
 
 def process_change(
@@ -30,8 +38,8 @@ def process_change(
 ) -> list[str]:
     """Pure core of the watcher: text → text → list of formatted lines.
 
-    Used directly by tests; called from `_handle_modified_event` in the
-    real watcher loop.
+    Used directly by tests; called from `run_watch_loop` once the file has
+    settled (see `read_settled`).
     """
     prev_items = _parse_text(prev_text)
     curr_items = _parse_text(curr_text)
@@ -59,13 +67,48 @@ def _parse_text(text: str) -> list[ActionItem]:
         tmp.unlink(missing_ok=True)
 
 
+def read_settled(
+    read: Callable[[], str | None],
+    *,
+    prev_text: str,
+    sleep: Callable[[float], None] = time.sleep,
+    delay: float = _SETTLE_DELAY_S,
+    attempts: int = _SETTLE_ATTEMPTS,
+) -> str | None:
+    """Read the watched file once it has stopped changing.
+
+    A save that truncates then writes (``Path.write_text``, most editors)
+    fires events in between, so a read can see an empty file, or the first
+    chunk of a long one. Diffing that reports every item removed, then
+    re-added on the next event — and the real change (a checkbox flip) is
+    lost. So re-read after a short pause until two reads agree. An empty read
+    of a file that had content never counts as settled until the attempts run
+    out: a file really emptied still reports its removals, just later.
+
+    ``read`` returns None when the file can't be read right now (mid-rename);
+    that is passed straight back so the caller skips the event.
+    """
+    text = read()
+    if text is None or text == prev_text:
+        return text
+    for _ in range(attempts):
+        sleep(delay)
+        again = read()
+        if again is None:
+            return None
+        if again == text and (again or not prev_text):
+            return again
+        text = again
+    return text
+
+
 def run_watch_loop(target: Path, *, color: bool) -> None:
     """Block until SIGINT, emitting one line per detected change.
 
     Heavy imports inside the body — `scoutctl action-items watch` is
     interactive (a long-running process), so the cost is paid once.
     """
-    from watchdog.events import FileModifiedEvent, FileSystemEventHandler
+    from watchdog.events import FileSystemEvent, FileSystemEventHandler
     from watchdog.observers import Observer
 
     if not target.exists():
@@ -73,17 +116,19 @@ def run_watch_loop(target: Path, *, color: bool) -> None:
 
     state = {"prev_text": target.read_text(encoding="utf-8")}
 
-    def on_modified(event: FileModifiedEvent) -> None:
-        src_path = event.src_path
-        if isinstance(src_path, bytes):
-            src_path = src_path.decode()
-        if Path(src_path) != target:
-            return
+    def read() -> str | None:
         try:
-            curr_text = target.read_text(encoding="utf-8")
+            return target.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return  # mid-rename; the next event will deliver the new contents
-        if curr_text == state["prev_text"]:
+            return None  # mid-rename; the next event will deliver the new contents
+        except UnicodeDecodeError:
+            return None  # the read split a multi-byte character mid-write; ditto
+
+    def on_change() -> None:
+        # watchdog dispatches events one at a time, so the events a save fires
+        # while this settles queue up behind it and then find nothing new.
+        curr_text = read_settled(read, prev_text=state["prev_text"], sleep=_sleep)
+        if curr_text is None or curr_text == state["prev_text"]:
             return
         lines = process_change(
             prev_text=state["prev_text"],
@@ -95,12 +140,28 @@ def run_watch_loop(target: Path, *, color: bool) -> None:
             print(line, flush=True)
         state["prev_text"] = curr_text
 
+    def is_target(path: str | bytes | None) -> bool:
+        if path is None:
+            return False
+        if isinstance(path, bytes):
+            path = path.decode()
+        return Path(path) == target
+
     class _Handler(FileSystemEventHandler):
-        # watchdog stubs widen `event` to FileSystemEvent — narrowing here
-        # is safe because watchdog only dispatches FileModifiedEvent to
-        # on_modified, but mypy correctly flags the Liskov narrowing.
-        def on_modified(self, event: FileModifiedEvent) -> None:  # type: ignore[override]
-            on_modified(event)
+        # In-place saves arrive as modified events. Atomic saves (write a temp
+        # file, rename it over the target) arrive as a move whose destination
+        # is the target, or as a create on backends that report it that way.
+        def on_modified(self, event: FileSystemEvent) -> None:
+            if is_target(event.src_path):
+                on_change()
+
+        def on_created(self, event: FileSystemEvent) -> None:
+            if is_target(event.src_path):
+                on_change()
+
+        def on_moved(self, event: FileSystemEvent) -> None:
+            if is_target(getattr(event, "dest_path", None)):
+                on_change()
 
     observer = Observer()
     observer.schedule(_Handler(), str(target.parent), recursive=False)
