@@ -322,7 +322,12 @@ build_and_publish() {
     fi
   fi
 
-  set -- "$dmg"
+  # scout-release.json: the installer downloads it from /releases/latest/download/ to learn the current
+  # version. GitHub's download counter on this one file is the project's only install count (PRIVACY.md).
+  # Every release and rc carries one, so /releases/latest/download/scout-release.json never 404s.
+  printf '{"name": "scout", "version": "%s", "tag": "%s"}\n' "$v" "$tag" > "$build/release/scout-release.json"
+
+  set -- "$dmg" "$build/release/scout-release.json"
   [ ! -f "$build/appcast.xml" ] || set -- "$@" "$build/appcast.xml"
 
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then

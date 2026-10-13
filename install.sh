@@ -173,6 +173,40 @@ bash "$ROOT/scripts/install-venv.sh" \
   || fail "engine installed but scoutctl does not run. Retry with:
        bash \"$ROOT/scripts/install-venv.sh\""
 
+# --- release check ---
+# Download the latest release's scout-release.json and compare its version with the plugin just
+# installed, so a stale marketplace shows up here rather than as a silently old Scout. GitHub
+# counts downloads of this file, and that public total is the only install count the project
+# sees (PRIVACY.md). SCOUT_NO_RELEASE_CHECK=1 skips it; failure never stops the install.
+release_check() {
+  local url="${SCOUT_RELEASE_MANIFEST_URL:-https://github.com/$MARKETPLACE/releases/latest/download/scout-release.json}"
+  local manifest latest installed
+  [ -z "${SCOUT_NO_RELEASE_CHECK:-}" ] || return 0
+  have curl || return 0
+  manifest="$(curl -fsSL --max-time 10 "$url" 2>/dev/null)" || {
+    echo "note: could not reach GitHub Releases to confirm the latest version; continuing."
+    return 0
+  }
+  latest="$(printf '%s' "$manifest" | uv run --no-project --quiet python -c \
+    'import json, sys; print(json.load(sys.stdin).get("version", ""))' 2>/dev/null || true)"
+  installed="$(uv run --no-project --quiet python -c \
+    'import json, sys; print(json.load(open(sys.argv[1])).get("version", ""))' \
+    "$ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)"
+  [ -n "$latest" ] && [ -n "$installed" ] || return 0
+  if [ "$latest" = "$installed" ]; then
+    echo "Scout $installed is the latest release."
+  else
+    cat >&2 <<EOF
+warning: this installed Scout $installed, but the latest release is $latest.
+         Your marketplace copy is probably stale. To update:
+
+             claude plugin marketplace update scout-plugin
+             claude plugin update $PLUGIN_ID --scope user
+EOF
+  fi
+}
+release_check
+
 echo
 echo "✅ Scout plugin + engine installed."
 if [ "$(uname -s)" = "Darwin" ]; then
