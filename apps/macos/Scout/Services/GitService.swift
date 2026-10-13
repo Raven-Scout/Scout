@@ -190,7 +190,11 @@ enum GitServiceError: Error, Equatable {
     case indexLockContended(stderr: String)
 }
 
-protocol GitServiceProtocol: Sendable {
+/// `nonisolated` so actors can conform (test fakes do), same as `ProcessRunner`:
+/// under the target's default MainActor isolation, Swift 6.4 (Xcode 27)
+/// otherwise infers the protocol as MainActor. `GitService.commitPaths` is
+/// pinned `@MainActor` so it keeps the isolation it has always had.
+nonisolated protocol GitServiceProtocol: Sendable {
     func commitPaths(_ relPaths: [String], message: String) async throws
 }
 
@@ -274,6 +278,7 @@ extension GitService {
     /// 2. `git add -- <paths>` — stage only the named paths.
     /// 3. `git diff --cached --quiet -- <paths>` — if exit 0, nothing to commit.
     /// 4. `git commit -m <message> -- <paths>` — scoped commit.
+    @MainActor
     func commitPaths(_ relPaths: [String], message: String) async throws {
         let repo = repoURL.path
 
