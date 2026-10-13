@@ -54,8 +54,10 @@ class _FakeObserver:
 
 
 class _Event:
-    def __init__(self, src_path: str | bytes) -> None:
+    def __init__(self, src_path: str | bytes, dest_path: str | bytes | None = None) -> None:
         self.src_path = src_path
+        if dest_path is not None:
+            self.dest_path = dest_path
 
 
 @pytest.fixture
@@ -63,6 +65,12 @@ def observed(monkeypatch: pytest.MonkeyPatch) -> type[_FakeObserver]:
     _FakeObserver.instances = []
     monkeypatch.setattr("watchdog.observers.Observer", _FakeObserver)
     return _FakeObserver
+
+
+@pytest.fixture(autouse=True)
+def _instant_settle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settle loop's pauses are real sleeps; these tests don't need them."""
+    monkeypatch.setattr("scout.action_items.watch._sleep", lambda _: None)
 
 
 @pytest.fixture
@@ -197,6 +205,94 @@ def test_state_advances_so_each_change_diffs_against_the_previous_one(
     assert "third task" in second_out
     # "second task" was already reported; it must not repeat.
     assert "second task" not in second_out
+
+
+def test_a_truncate_then_write_save_reports_only_the_real_change(
+    daily: Path, observed: type[_FakeObserver], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path.write_text` and most editors truncate, then write. The event for
+    the truncate can be handled before the write lands, and the read sees an
+    empty file. Diffing that printed every item "removed", then "added" on
+    the next event, and the checkbox flip was never reported (seen on macOS
+    CI under load). Here the write lands during the watcher's first settle
+    pause, which is exactly that interleaving, made deterministic."""
+    run_watch_loop(daily, color=False)
+    capsys.readouterr()
+    handler = _handler(observed)
+
+    def write_lands(_: float) -> None:
+        daily.write_text("## To Do\n\n- [x] first task\n", encoding="utf-8")
+
+    monkeypatch.setattr("scout.action_items.watch._sleep", write_lands)
+    daily.write_text("", encoding="utf-8")  # the truncate
+    handler.on_modified(_Event(str(daily)))  # its event, handled before the write
+    handler.on_modified(_Event(str(daily)))  # the write's own event
+
+    out = capsys.readouterr().out
+    assert "completed" in out
+    assert "first task" in out
+    assert "removed" not in out
+    assert "added" not in out
+
+
+def test_a_file_really_emptied_still_reports_its_removals(
+    daily: Path, observed: type[_FakeObserver], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Waiting out empty reads must not hide a file that stays empty."""
+    run_watch_loop(daily, color=False)
+    capsys.readouterr()
+
+    daily.write_text("", encoding="utf-8")
+    _handler(observed).on_modified(_Event(str(daily)))
+
+    out = capsys.readouterr().out
+    assert "removed" in out
+    assert "first task" in out
+
+
+def test_an_atomic_save_renamed_over_the_target_is_seen(
+    daily: Path, observed: type[_FakeObserver], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Write-temp-then-rename fires a move onto the target, not a modify."""
+    run_watch_loop(daily, color=False)
+    capsys.readouterr()
+
+    tmp = daily.with_suffix(".md.tmp")
+    tmp.write_text("## To Do\n\n- [x] first task\n", encoding="utf-8")
+    tmp.replace(daily)
+    _handler(observed).on_moved(_Event(str(tmp), str(daily)))
+
+    assert "completed" in capsys.readouterr().out
+
+
+def test_a_target_recreated_in_place_is_seen(
+    daily: Path, observed: type[_FakeObserver], capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_watch_loop(daily, color=False)
+    capsys.readouterr()
+
+    daily.unlink()
+    daily.write_text("## To Do\n\n- [x] first task\n", encoding="utf-8")
+    _handler(observed).on_created(_Event(str(daily)))
+
+    assert "completed" in capsys.readouterr().out
+
+
+def test_moves_and_creates_of_other_files_are_ignored(
+    daily: Path, observed: type[_FakeObserver], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A temp file being created, or the target moved *away*, isn't a save."""
+    run_watch_loop(daily, color=False)
+    capsys.readouterr()
+    handler = _handler(observed)
+
+    daily.write_text("## To Do\n\n- [x] first task\n", encoding="utf-8")
+    tmp = daily.with_suffix(".md.tmp")
+    handler.on_created(_Event(str(tmp)))
+    handler.on_moved(_Event(str(daily), str(tmp)))
+    handler.on_moved(_Event(str(tmp), str(daily.parent / "other.md")))
+
+    assert capsys.readouterr().out == ""
 
 
 def test_color_flag_reaches_the_renderer(

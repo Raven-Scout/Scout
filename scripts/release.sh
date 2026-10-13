@@ -14,6 +14,11 @@
 #                      run on the local, unpushed release branch.
 #   SKIP_NOTARIZE=1    finalize/rc: sign and package, but skip Apple's notary service.
 #   SCOUT_SIGN_IDENTITY (default "Developer ID Application"), SCOUT_NOTARY_PROFILE (default "scout-notary")
+#   SCOUT_NOTARY_KEYCHAIN  path of a file-based keychain holding the notary profile, passed to notarytool as
+#                      --keychain. Unset: notarytool searches the default keychains, including the
+#                      data-protection keychain, which macOS can't read while the screen is locked. Store the
+#                      profile with `xcrun notarytool store-credentials <profile> --keychain <path>` and point
+#                      this at the same path (e.g. ~/Library/Keychains/login.keychain-db) to notarize unattended.
 #   SCOUT_PY           Python with the engine importable (default: the dev venv plugin/engine/.venv/bin/python,
 #                      then plugin/.venv/bin/python). prepare's lint uses the ruff and mypy beside it.
 #   SCOUT_REPO_SLUG    tests only: skip deriving owner/repo from origin
@@ -208,11 +213,13 @@ check_bundled_engine() {
 # build_and_publish TAG APP_VERSION SHA SLUG KIND   (KIND: release | rc)
 build_and_publish() {
   local tag="$1" v="$2" sha="$3" slug="$4" kind="$5"
-  local wt="$REPO_ROOT/.release/$tag" ident profile idents build app count dmg_name dmg stage notes prev app_prev latest at hook
+  local wt="$REPO_ROOT/.release/$tag" ident profile notary idents build app count dmg_name dmg stage notes prev app_prev latest at hook
   [ "${SKIP_NOTARIZE:-0}" != 1 ] || [ "${SKIP_RELEASE:-0}" = 1 ] \
     || die "SKIP_NOTARIZE=1 would publish an app Gatekeeper blocks; add SKIP_RELEASE=1 for a dry run"
   ident="${SCOUT_SIGN_IDENTITY:-Developer ID Application}"
   profile="${SCOUT_NOTARY_PROFILE:-scout-notary}"
+  notary=(--keychain-profile "$profile")
+  [ -z "${SCOUT_NOTARY_KEYCHAIN:-}" ] || notary+=(--keychain "$SCOUT_NOTARY_KEYCHAIN")
 
   if [ -e "$wt" ]; then
     git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
@@ -280,7 +287,7 @@ build_and_publish() {
   codesign --verify --strict --verbose=2 "$app"
   if [ "${SKIP_NOTARIZE:-0}" != 1 ]; then
     ditto -c -k --keepParent "$app" "$build/Scout-notarize.zip"
-    xcrun notarytool submit "$build/Scout-notarize.zip" --keychain-profile "$profile" --wait
+    xcrun notarytool submit "$build/Scout-notarize.zip" "${notary[@]}" --wait
     xcrun stapler staple "$app"
     spctl --assess --type execute --verbose=2 "$app"
   fi
@@ -295,7 +302,7 @@ build_and_publish() {
   hdiutil create -volname "Scout ${tag#v}" -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null
   codesign --force --timestamp --sign "$ident" "$dmg"
   if [ "${SKIP_NOTARIZE:-0}" != 1 ]; then
-    xcrun notarytool submit "$dmg" --keychain-profile "$profile" --wait
+    xcrun notarytool submit "$dmg" "${notary[@]}" --wait
     xcrun stapler staple "$dmg"
     spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
   fi

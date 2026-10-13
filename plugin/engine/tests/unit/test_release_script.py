@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scout.scripts import versioning
 from tests.unit.release_harness import REAL_REPO, make_repo
 
@@ -244,6 +246,21 @@ def _merge_release(r, version="0.15.0"):
     _git(r.root, "merge", "-q", "--ff-only", f"release/v{version}")
     _git(r.root, "push", "-q", "origin", "main")
     return _git(r.root, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("keychain", ["", "/Users/alex/Library/Keychains/login.keychain-db"])
+def test_notarization_uses_the_configured_keychain(tmp_path, keychain):
+    """SCOUT_NOTARY_KEYCHAIN points notarytool at a file-based keychain, which stays
+    readable while the screen is locked; unset, notarytool searches the default keychains."""
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"SCOUT_NOTARY_KEYCHAIN": keychain})
+    assert done.returncode == 0, done.stderr
+    submits = [c for c in r.calls() if c.startswith("xcrun notarytool submit")]
+    assert len(submits) == 2
+    for call in submits:
+        assert "--keychain-profile scout-notary" in call
+        assert (f"--keychain {keychain}" in call) if keychain else (" --keychain " not in call)
 
 
 def test_finalize_publishes_once_after_notarization(tmp_path):

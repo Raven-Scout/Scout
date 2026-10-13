@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutctl action-items watch` reports the real change when a save truncates the file first** (`engine/scout/action_items/watch.py`). `Path.write_text` and most editors truncate the file, then write it. When the watcher handled the truncate's event before the write landed, it read an empty file. It then printed every item as removed, re-added them all on the next event, and never reported the actual change (a checkbox flip, say). Seen on macOS CI under load. The watcher now re-reads after a 50 ms pause until two reads agree before it diffs. An empty read of a file that had content counts as unfinished until about 0.5 s of re-reads, so a file really emptied still reports its removals. Atomic saves, which write a temp file and rename it over the target, are now seen too: a move onto the target or a create of it triggers a diff, where before only in-place modifies did.
+
 ### Security
 - **The action-items HTML dashboard escapes link URLs and only links web and mail addresses** (#435; `engine/scout/action_items/render.py`, `templates/action-items/render.py`). A markdown link's URL went into `href="…"` unescaped, so a `"` could break out of the attribute, and a `javascript:` link stayed clickable. Action items are written from Slack, mail, GitHub and Linear text, so that URL can come from someone else. Both renderers now escape the URL for the attribute and make a link only for `http`, `https` and `mailto`. Any other scheme (including mixed-case, whitespace-split and entity-encoded `javascript:`, `data:`, `file:`, `obsidian:`) and any URL without a scheme renders as the link's label in plain text. Existing vaults pick up the template change with `/scout-update`.
 
