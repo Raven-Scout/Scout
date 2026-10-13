@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from scout import paths
+from scout import connector_calls, paths
 from scout.config import today as config_today
 from scout.events import Event, now_iso
 from scout.hooks.connector_log import _custom_bash_connectors, classify
@@ -239,30 +239,30 @@ def write_records(
     if not records:
         return 0
     log_dir.mkdir(parents=True, exist_ok=True)
-    out_path = log_dir / f"connector-calls-{_local_date()}.jsonl"
+    out_path = connector_calls.day_path(log_dir, _local_date())
     bash_connectors = _custom_bash_connectors()  # computed once per batch, not once per record (#perf)
-    written = 0
+    ts_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    lines: list[str] = []
+    for rec in records:
+        is_err, err_snippet = _is_error(rec.tool_response)
+        connector = classify(rec.tool_name, rec.tool_input, bash_connectors=bash_connectors)
+        row: dict[str, Any] = {
+            "ts": ts_utc,
+            "session_id": session_id,
+            "mode": mode,
+            "tool": rec.tool_name,
+            "connector": connector,
+            "error": is_err,
+        }
+        if err_snippet:
+            row["err"] = err_snippet
+        lines.append(json.dumps(row) + "\n")
     try:
-        with out_path.open("a", encoding="utf-8") as f:
-            ts_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-            for rec in records:
-                is_err, err_snippet = _is_error(rec.tool_response)
-                connector = classify(rec.tool_name, rec.tool_input, bash_connectors=bash_connectors)
-                row: dict[str, Any] = {
-                    "ts": ts_utc,
-                    "session_id": session_id,
-                    "mode": mode,
-                    "tool": rec.tool_name,
-                    "connector": connector,
-                    "error": is_err,
-                }
-                if err_snippet:
-                    row["err"] = err_snippet
-                f.write(json.dumps(row) + "\n")
-                written += 1
+        # Same lock as the PostToolUse hook, which may be appending to this
+        # file right now; capped and pruned like it too (#66).
+        return connector_calls.append_rows(out_path, lines)
     except OSError:
-        pass
-    return written
+        return 0
 
 
 # ----- driver --------------------------------------------------------------

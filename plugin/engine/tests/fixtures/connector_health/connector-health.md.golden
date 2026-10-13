@@ -1,0 +1,65 @@
+# Connector Health
+
+Parent: [[knowledge-base]]
+
+**Last updated:** 2026-09-30 17:00 EDT
+**Window:** last 14 days, scheduled scout runs only (`10` of `71` shown).
+**KB lint overrides (14d):** 0
+
+## 🔴 Active Alerts
+
+### 🔴 Slack — CRITICAL
+0 successful calls in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT
+
+**Last error logged:** `stand-in failure from mcp:claude_ai_Slack: request timed out after 30s`
+
+**How to fix:** Slack is a claude.ai MCP connector for scheduled scout runs (the local
+Claude Code plugin path is only used in interactive ~/Scout sessions).
+Reconnect at https://claude.ai/settings/connectors → click Reconnect on
+the Slack row. If the connector is missing entirely, add it back via the
+Add connector flow.
+
+
+### ⚠️ Linear — WARNING
+19/24 calls errored this run (79%)
+
+**Last error logged:** `stand-in failure from mcp:claude_ai_Linear: request timed out after 30s`
+
+**How to fix:** Linear is a claude.ai MCP connector for scheduled scout runs. Reconnect at
+https://claude.ai/settings/connectors → click Reconnect on the Linear row.
+If a Linear workspace switch happened, the OAuth scope may need re-grant.
+
+
+---
+
+## Status (last 10 scheduled runs)
+
+`✅ N` = N successful calls · `⚠️ ok/tot` = errors >50% · `❌` = 0 calls this run · `·` = no attempts
+
+| Connector | 09-28 2107<br/>morning | 09-29 0007<br/>c-1 | 09-29 0307<br/>c-2 | 09-29 0607<br/>research | 09-29 0907<br/>dreaming | 09-29 2107<br/>morning | 09-30 0007<br/>c-1 | 09-30 0307<br/>c-2 | 09-30 0607<br/>research | 09-30 0907<br/>dreaming | 7d OK rate |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Slack | ✅ 14 | ✅ 8 | ✅ 3 | ✅ 8 | ✅ 8 | ✅ 4 | ✅ 4 | ✅ 8 | ✅ 7 | ❌ | 91% (225/245) |
+| Linear | ✅ 12 | ✅ 2 | ✅ 5 | ✅ 6 | ✅ 8 | ✅ 6 | ✅ 4 | ✅ 14 | ✅ 10 | ⚠️ 5/24 | 89% (266/296) |
+| Gmail | ✅ 8 | ✅ 10 | ✅ 5 | ✅ 6 | ✅ 8 | ✅ 6 | ✅ 6 | ✅ 7 | ✅ 6 | ✅ 5 | 94% (232/245) |
+| Google Calendar | ✅ 10 | ✅ 8 | ✅ 2 | ✅ 5 | ✅ 10 | ✅ 5 | ✅ 9 | ✅ 9 | ✅ 6 | ✅ 7 | 95% (243/254) |
+| Granola | · | · | · | · | · | · | · | · | · | · | — |
+| Fathom | · | · | · | · | · | · | · | · | · | · | — |
+| Google Drive | · | · | · | · | · | · | · | · | · | · | — |
+| GitHub (gh CLI) | ✅ 11 | ✅ 11 | ✅ 5 | ✅ 6 | ✅ 10 | ✅ 6 | ✅ 8 | ✅ 6 | ✅ 6 | ✅ 7 | 96% (265/276) |
+| Chrome (Google Messages) | · | · | · | · | · | · | · | · | · | · | — |
+| WhatsApp | · | · | · | · | · | · | · | · | · | · | — |
+
+## How this works
+
+- Every tool call in a scheduled scout run is logged by `hooks/connector-log.sh` (PostToolUse hook) to `.scout-logs/connector-calls-YYYY-MM-DD.jsonl`.
+- After each run, `scripts/connector-health-report.sh` rolls up the last 14 days, rewrites this file in place, and fires alerts on degradation.
+- Interactive Claude Code sessions in ~/Scout are not logged (the hook short-circuits when `SCOUT_MODE` is unset).
+
+### Alert rules
+- **Critical connector (mode-aware):** 0 successful calls in this run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero prior same-mode runs exist, no baseline → no alert.
+- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs fires an alert in modes where it's required by `connectors.yaml`.
+- **Pattern #48:** if a connector has never logged a successful call across the entire window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).
+- **Pattern #54:** if a connector was healthy in any mode within the last 4h and the current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).
+- **Warning:** any connector with ≥3 calls this run and >50% errors.
+
+Alerts are written to `.scout-logs/connector-alerts.log` and surfaced as a macOS notification. Raw call records live in `.scout-logs/connector-calls-*.jsonl` for 30 days.

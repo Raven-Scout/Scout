@@ -1,0 +1,2 @@
+2026-09-30 17:00:00 EDT [CRITICAL] run=dreaming Slack: 0 successful calls in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT
+2026-09-30 17:00:00 EDT [WARNING] run=dreaming Linear: 19/24 calls errored this run (79%)
