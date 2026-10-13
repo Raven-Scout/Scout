@@ -247,7 +247,7 @@ class Host:
 
         The updater reads the host zone two ways: the slot lookahead takes ``TZ`` first, the
         off-peak window takes the vault zone (the /etc/localtime link, or ``SCOUT_LOCALTIME``).
-        Both are set, so both gates see the same clock.
+        Both are set, so both gates see the same clock (Raven-Scout/Scout#451).
         """
         link = self.state / f"localtime-{zone.replace('/', '_')}"
         if not link.is_symlink():

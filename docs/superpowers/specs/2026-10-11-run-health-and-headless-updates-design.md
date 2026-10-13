@@ -687,7 +687,7 @@ as a step, not a gate. The macOS "app-managed engine present" half is
 tripwire. Two observations from building it:
 
 - The off-peak window reads the vault zone (`user.timezone`, else `/etc/localtime`). The slot
-  lookahead reads `TZ` first. They agree on a normal host. The harness sets both. (#449)
+  lookahead reads `TZ` first. They agree on a normal host. The harness sets both. (#451)
 - The install doctor's launchd check runs on Linux too, so a fresh Linux install is yellow
   and `install.sh` exits 1 (#449). The harness reports this as a known issue, along with #433
   and #434.
