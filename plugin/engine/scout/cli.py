@@ -2594,8 +2594,67 @@ def _register_phases() -> None:
 _register_phases()
 
 
-self_update_app = typer.Typer(help="Plugin self-update (check only in v0.4).")
+self_update_app = typer.Typer(help="Plugin self-update: check for a release, or apply one to a headless engine.")
 app.add_typer(self_update_app, name="self-update")
+
+
+@self_update_app.command("run")
+def self_update_run_cmd(
+    scheduled: bool = typer.Option(
+        False, "--scheduled", help="Called by the heartbeat: honour the off-peak window and daily limits."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Say what would happen; fetch nothing, record nothing."),
+    force: bool = typer.Option(False, "--force", help="Skip the scheduled gate and retry a target that kept failing."),
+    json_out: bool = typer.Option(False, "--json"),
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        help="Start the attempt in its own session, logging to .scout-logs/self-update-<date>.log, and return "
+        "at once (the heartbeat uses this, so the job's exit does not kill the update).",
+    ),
+) -> None:
+    """Update an engine Scout.app doesn't manage to the latest published release (#360).
+
+    Engines managed by Scout.app are never touched, and `dev` checkouts are only
+    checked. Each attempt is recorded in .scout-logs/update-outcomes.jsonl and
+    shows up in `scoutctl health`. Exits 0 whatever the outcome.
+    """
+    import datetime as _dt
+    import json as _json
+    import sys as _sys
+
+    from scout import paths as _paths
+    from scout.scripts.self_update_run import default_deps, run_lock, run_update, spawn_detached
+
+    vault = _paths.data_dir()
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    log_name = f"self-update-{today}.log"
+    if detach:
+        argv = [_sys.executable, "-m", "scout", "self-update", "run"]
+        argv += [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        pid = spawn_detached(argv, log_path=vault / ".scout-logs" / log_name)
+        typer.echo(f"self-update: started in the background (pid {pid}); log: .scout-logs/{log_name}")
+        return
+    with run_lock(vault) as held:
+        if not held:
+            typer.echo("self-update: another attempt is still running")
+            return
+        deps = default_deps(vault, log_name=log_name if scheduled else None, quiet=json_out)
+        attempt = run_update(deps, scheduled=scheduled, dry_run=dry_run, force=force)
+    if scheduled and attempt.settled and not dry_run:
+        # The heartbeat starts a scheduled run once per local day; this marker is what it checks.
+        marker = vault / ".scout-cache" / f"self-update-{today}.done"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    if json_out:
+        payload = {
+            "row": attempt.row.to_json() if attempt.row else None,
+            "reason": attempt.reason,
+            "settled": attempt.settled,
+        }
+        typer.echo(_json.dumps(payload))
+    elif attempt.row is None:
+        typer.echo(f"self-update: not now ({attempt.reason})")
 
 
 @self_update_app.command("check")

@@ -22,6 +22,8 @@ from pathlib import Path
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
 from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
+from scout.update_outcomes import UpdateOutcome
+from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
 SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"})
@@ -924,6 +926,127 @@ def lane_findings(
     return findings
 
 
+UPDATE_DEFER_HOLD = timedelta(hours=72)
+UPDATE_BEHIND_NOTE = timedelta(days=14)
+_UPDATE_SOURCE = "update ledger"
+_PRE_SWITCH_STEPS = frozenset({"check", "fetch", "venv"})
+
+
+def _newer(target: str | None, installed: str) -> bool:
+    from scout.scripts.self_update import _semver_tuple
+
+    if not target:
+        return False
+    try:
+        return _semver_tuple(target) > _semver_tuple(installed)
+    except ValueError:
+        return False
+
+
+def _trailing(rows: list[UpdateOutcome], result: str) -> list[UpdateOutcome]:
+    run: list[UpdateOutcome] = []
+    for row in reversed(rows):
+        if row.result != result:
+            break
+        run.append(row)
+    return run[::-1]
+
+
+def update_findings(vault: Path, rows: list[UpdateOutcome], *, now: datetime) -> list[Finding]:
+    """``update.*`` findings from the headless-update ledger (spec §4.2, #360)."""
+    if not rows:
+        return []
+    newest = rows[-1]
+    log_hint = f" (log: .scout-logs/{newest.log})" if newest.log else ""
+    findings: list[Finding] = []
+    if newest.result == "failed":
+        engine = (
+            "the current engine still runs" if newest.step in _PRE_SWITCH_STEPS else "the vault may be partly upgraded"
+        )
+        findings.append(
+            Finding(
+                id="update.failed",
+                severity="red",
+                since=_trailing(rows, "failed")[0].at,
+                summary=f"Scout's update to {newest.target or 'a new version'} failed at the {newest.step} step; "
+                f"{engine}. {newest.detail}".strip(),
+                fix=f"Run: scoutctl bootstrap upgrade{log_hint}",
+                source=_UPDATE_SOURCE,
+            )
+        )
+    elif newest.result == "held":
+        findings.append(
+            Finding(
+                id="update.held",
+                severity="yellow",
+                since=newest.at,
+                summary=f"Scout's update to {newest.target or 'a new version'} is on hold: {newest.detail}".strip(),
+                fix=f"Run: scoutctl bootstrap doctor{log_hint}",
+                source=_UPDATE_SOURCE,
+            )
+        )
+    elif newest.result == "deferred":
+        first = _trailing(rows, "deferred")[0]
+        if now - first.at > UPDATE_DEFER_HOLD:
+            findings.append(
+                Finding(
+                    id="update.held",
+                    severity="yellow",
+                    since=first.at,
+                    summary=f"Scout's update to {newest.target or 'a new version'} has been put off for "
+                    f"{_age(now - first.at)}: {newest.detail}".strip(),
+                    fix=f"Run: scoutctl self-update run{log_hint}",
+                    source=_UPDATE_SOURCE,
+                )
+            )
+    if newest.sidecars:
+        from scout.scripts.brain_merge import pending_brain_sidecars
+
+        pending = [s for s in newest.sidecars if s in set(pending_brain_sidecars(vault))]
+        if pending:
+            findings.append(
+                Finding(
+                    id="update.sidecars",
+                    severity="yellow",
+                    since=newest.at,
+                    summary=f"The update to {newest.target} left files to merge by hand: {', '.join(pending)}. "
+                    "Scout keeps running on the current versions.",
+                    fix="Run: scoutctl bootstrap drift, then scoutctl bootstrap resolve",
+                    source=_UPDATE_SOURCE,
+                )
+            )
+    if _newer(newest.target, newest.from_version):
+        if newest.result == "not_eligible" and newest.managed_by in ("dev", "unknown"):
+            findings.append(
+                Finding(
+                    id="update.behind",
+                    severity="note",
+                    since=newest.at,
+                    summary=f"This engine ({newest.managed_by}, {newest.from_version}) is behind the latest "
+                    f"release {newest.target}; Scout does not update it automatically.",
+                    fix="Update the checkout yourself, then run: scoutctl bootstrap upgrade",
+                    source=_UPDATE_SOURCE,
+                )
+            )
+        elif (
+            newest.result != "not_eligible"
+            and newest.release_published_at is not None
+            and now - newest.release_published_at > UPDATE_BEHIND_NOTE
+        ):
+            findings.append(
+                Finding(
+                    id="update.behind",
+                    severity="note",
+                    since=newest.release_published_at,
+                    summary=f"Scout {newest.target} was released {_age(now - newest.release_published_at)} ago; "
+                    f"this engine is still on {newest.from_version}.",
+                    fix="Run: scoutctl self-update run",
+                    source=_UPDATE_SOURCE,
+                )
+            )
+    return findings
+
+
 _TOKEN_FIX = "Open Terminal and run: scoutctl auth setup-token"
 
 
@@ -989,4 +1112,5 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     lanes = lane_findings(
         vault, loaded[0] if loaded else None, rows, fires, now=now, paused_since=pause.began if pause else None
     )
-    return build_report(found + sched + lanes, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
+    updates = update_findings(vault, read_updates(vault), now=now)
+    return build_report(found + sched + lanes + updates, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
