@@ -60,6 +60,9 @@ struct InlineMarkdownText: View {
                     kbTagHandler(Self.target(of: url))
                     return .handled
                 }
+                // Defence in depth: `attributedString(for:)` already drops
+                // such links, but nothing else may reach NSWorkspace (#435).
+                guard LinkSchemePolicy.allowsExternalOpen(url) else { return .discarded }
                 NSWorkspace.shared.open(url)
                 return .handled
             })
@@ -124,6 +127,7 @@ struct InlineMarkdownText: View {
         )
         var computed = (try? AttributedString(markdown: rewritten, options: options))
             ?? AttributedString(rewritten)
+        dropUnsafeLinks(&computed)
         styleTagChips(&computed)
         if cache.count >= cacheCap { evictColdest() }
         cache[raw] = CacheEntry(value: computed, lastUsed: clock)
@@ -160,6 +164,22 @@ struct InlineMarkdownText: View {
     static func resetCacheForTesting() {
         cache.removeAll()
         clock = 0
+    }
+
+    /// Turn every link the click handler wouldn't open back into plain text
+    /// (Raven-Scout/Scout#435): the text is model-written from Slack, mail,
+    /// GitHub and Linear content, so `[x](file:///…)` or `<javascript:…>` must
+    /// not render as something clickable. The markdown parser has already
+    /// decoded entities like `&#106;`, so the check sees the real scheme.
+    private static func dropUnsafeLinks(_ s: inout AttributedString) {
+        let ranges = s.runs.filter { run in
+            guard let url = run.link else { return false }
+            return !(url.scheme == "scout-wiki" || url.scheme == KBTag.scheme
+                     || LinkSchemePolicy.allowsExternalOpen(url))
+        }.map(\.range)
+        for range in ranges {
+            s[range].link = nil
+        }
     }
 
     /// Give every `scout-tag://` run the chip treatment: accent ink on an
@@ -229,8 +249,7 @@ struct InlineMarkdownText: View {
             if let url = URL(string: urlString) { return .external(url) }
         }
         if canOpenKBNote { return .kbNote(target) }
-        let obsidianTarget = target.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? target
-        return URL(string: "obsidian://open?vault=Scout&file=\(obsidianTarget)").map(WikilinkRoute.external)
+        return LinkSchemePolicy.obsidianOpenURL(file: target).map(WikilinkRoute.external)
     }
 
     /// `target` arrives already percent-decoded from `target(of:)`.
