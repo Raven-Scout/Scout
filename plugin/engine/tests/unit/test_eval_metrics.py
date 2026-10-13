@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from tests.eval.harness.metrics import (
     conforms,
     longest_search_run,
+    metrics_from_dict,
     outside_reads,
     parse_stream,
     position_buckets,
@@ -18,6 +21,7 @@ from tests.eval.harness.metrics import (
 
 GOLDEN = Path(__file__).resolve().parents[1] / "eval" / "golden" / "stream-basic.jsonl"
 VAULT = "/tmp/eval/vault"
+NEW_FIELDS = {"cache_creation_tokens", "brain_tokens", "brain_token_turns"}
 
 
 @pytest.fixture(scope="module")
@@ -89,4 +93,64 @@ def test_conforms_reports_a_count_that_disagrees_with_the_calls(m) -> None:
 def test_an_empty_stream_is_valid_and_empty() -> None:
     e = parse_stream([])
     assert (e.tool_call_count, e.turns, e.model, e.cost_usd) == (0, 0, None, None)
+    assert (e.brain_tokens, e.brain_token_turns) == (0, 0)
     assert conforms(e) == []
+
+
+def test_cache_creation_tokens_come_from_the_result(m) -> None:
+    assert m.cache_creation_tokens == 5000
+
+
+# --- brain-file context (spec 2026-10-13-static-instruction-trim §8.1) --------
+
+
+def _use(msg: str, tid: str, path: str) -> str:
+    block = {"type": "tool_use", "id": tid, "name": "Read", "input": {"file_path": path}}
+    return json.dumps({"type": "assistant", "message": {"id": msg, "content": [block]}})
+
+
+def _result(tid: str, content: object, *, error: bool = False) -> str:
+    block = {"type": "tool_result", "tool_use_id": tid, "content": content, "is_error": error}
+    return json.dumps({"type": "user", "message": {"content": [block]}})
+
+
+def _text(msg: str) -> str:
+    return json.dumps({"type": "assistant", "message": {"id": msg, "content": [{"type": "text", "text": "."}]}})
+
+
+def test_brain_reads_count_tokens_and_the_turns_that_carry_them() -> None:
+    lines = [
+        _use("m1", "t1", "/v/SKILL.md"),
+        _result("t1", "x" * 4000),  # 1000 tokens, carried by m2, m3, m4
+        _use("m2", "t2", "/v/knowledge-base/people/alex.md"),
+        _result("t2", "y" * 4000),  # not a brain file
+        _use("m3", "t3", "/v/.scout-cache/brain/deferred/digest.md"),
+        _result("t3", [{"type": "text", "text": "z" * 400}]),  # 100 tokens, carried by m4
+        _text("m4"),
+    ]
+    m = parse_stream(lines)
+    assert m.brain_tokens == 1100
+    assert m.brain_token_turns == 1000 * 3 + 100 * 1
+
+
+def test_every_brain_kind_counts_and_a_failed_read_does_not() -> None:
+    lines = [
+        _use("m1", "t1", "/v/DREAMING.md"),
+        _result("t1", "a" * 40),
+        _use("m1", "t2", "/v/RESEARCH.md"),
+        _result("t2", "b" * 40),
+        _use("m2", "t3", "/v/SKILL.md"),
+        _result("t3", "c" * 4000, error=True),
+        _use("m2", "t4", "/v/notes/SKILL.md.bak"),
+        _result("t4", "d" * 4000),
+        _text("m3"),
+    ]
+    m = parse_stream(lines)
+    assert m.brain_tokens == 20
+    assert m.brain_token_turns == 20 * 2  # m2 and m3 follow both results
+
+
+def test_metrics_stored_before_the_brain_fields_still_load() -> None:
+    old = {k: v for k, v in asdict(parse_stream([])).items() if k not in NEW_FIELDS}
+    loaded = metrics_from_dict(old)
+    assert (loaded.cache_creation_tokens, loaded.brain_tokens, loaded.brain_token_turns) == (None, None, None)
