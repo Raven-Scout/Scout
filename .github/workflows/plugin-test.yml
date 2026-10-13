@@ -72,13 +72,16 @@ jobs:
           - os: ubuntu-latest
             python: "3.11"
             extras: dev
+            workers: 8
           - os: ubuntu-latest
             python: "3.12"
             extras: dev,full
             coverage: true
+            workers: 8
           - os: macos-latest
             python: "3.12"
             extras: dev
+            workers: 6
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
@@ -97,7 +100,7 @@ jobs:
       - name: Install
         run: uv pip install -e ".[${{ matrix.extras }}]"
       - name: Pytest (parallel)
-        run: .venv/bin/pytest tests/ -n auto -m "not perf" --durations=20 ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
+        run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=20 ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
       - name: Pytest (perf, serial)
         run: .venv/bin/pytest tests/ -m perf -p no:xdist ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
       # Exits non-zero below [tool.coverage.report] fail_under, rounding the
