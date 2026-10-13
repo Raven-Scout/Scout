@@ -4,7 +4,9 @@
 
 > **Revised 2026-10-03 per review:** no "oldest first" sort, no `fields.plan`, no reserved keys, no commits from the app, the List/Board switch is session-only, sub-tasks whose parent is filtered out stand alone, and the arranged sections are cached. Details in the spec's revision note.
 
-**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-profile.json` in the vault root and editable in Settings and from a View menu in the Action Items toolbar (#290).
+> **Revised 2026-10-12 per review and #347:** the file is `scout-display.json`; `defaultView` accepts `topics`; `actionItems.topics.doneRange` is a new key with a Settings row; Topics keeps its own inputs and the View menu hides Sort, Group and Density there; the cross-reference reveal (#380) reads the drawn sections like reopen; line references are now symbol anchors.
+
+**Goal:** Let the user choose the Action Items default view, sort, grouping, density, and card fields, kept in `scout-display.json` in the vault root and editable in Settings and from a View menu in the Action Items toolbar (#290).
 
 **Architecture:** A pure `DisplayProfileCodec` parses and patches the file under the rules in spec section 4. `DisplayProfileService` (`@MainActor ObservableObject`) owns the file: it reads it at init, follows outside edits through `FileSystemEventSource`, and writes in-app changes as patches. It never commits. It also holds the session-only current List/Board view. A pure `ActionItemsArrangement` applies sort and grouping to the already filtered sections, and `ActionItemsView` caches its result. Views take the display values as plain parameters with today's behavior as the default, so every existing call site and test keeps compiling.
 
@@ -14,7 +16,7 @@
 
 ## Global Constraints
 
-- **Defaults render exactly as today.** `ActionItemsDisplay()` is file order, grouped by section, comfortable, refs and snooze on, comment count off. Every new view parameter defaults to that.
+- **Defaults render exactly as today.** `ActionItemsDisplay()` is the List view, file order, grouped by section, comfortable, refs and snooze on, comment count off, and Topics' Done range at last 7 days. Every new view parameter defaults to that.
 - **The app reads and writes JSON only.** No YAML, no `scout-config.yaml`, nothing under `knowledge-base/`.
 - **The app never commits the profile,** and the List/Board switch never writes it.
 - **The path always comes from `AppState.scoutDirectory`.** Never `~/Scout` in code.
@@ -30,7 +32,7 @@
 
 ### Task 1: FileWatcher on a file that does not exist yet
 
-The service watches `scout-profile.json` directly, and the file usually does not exist at launch. FSEvents supports that, but only on the real path: a watch through `/var` (a symlink to `/private/var`, which is where `FileManager` temp directories live) gets no events at all. This task pins both facts.
+The service watches `scout-display.json` directly, and the file usually does not exist at launch. FSEvents supports that, but only on the real path: a watch through `/var` (a symlink to `/private/var`, which is where `FileManager` temp directories live) gets no events at all. This task pins both facts.
 
 **Files:**
 - Create: `Scout/Utilities/URL+RealPath.swift`
@@ -56,7 +58,7 @@ Append to `FileWatcherTests`. The tests use its `firstEvent(named:from:within:)`
             create: true
         ).resolvingRealPath()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let file = tmp.appendingPathComponent("scout-profile.json")
+        let file = tmp.appendingPathComponent("scout-display.json")
         #expect(!FileManager.default.fileExists(atPath: file.path))
 
         let beforeCreate = FileWatcher().events(for: file)
@@ -133,7 +135,7 @@ The rules from spec section 4, as pure functions. `JSONSerialization` rather tha
 - Produces:
   - `nonisolated struct DisplayProfile: Equatable, Sendable` with `var actionItems: ActionItemsDisplay`, `static let currentSchema = 1`, `var entries: [Entry]`, `func changedEntries(from:) -> [Entry]`.
   - `DisplayProfile.Entry { let path: [String]; let value: Value }`, `Value { case string(String), bool(Bool) }`.
-  - `nonisolated struct ActionItemsDisplay: Equatable, Sendable` with `defaultView: ActionItemsViewMode`, `sort: Sort` (`fileOrder`, `alphabetical`), `grouping: Grouping` (JSON key `group`; `section`, `none`), `density: Density` (`comfortable`, `compact`), `fields: Fields` (`refs`, `snooze`, `comments`); each enum `String, CaseIterable, Identifiable, Sendable` with `displayName`.
+  - `nonisolated struct ActionItemsDisplay: Equatable, Sendable` with `defaultView: ActionItemsViewMode` (`list`, `board`, `topics`), `sort: Sort` (`fileOrder`, `alphabetical`), `grouping: Grouping` (JSON key `group`; `section`, `none`), `density: Density` (`comfortable`, `compact`), `fields: Fields` (`refs`, `snooze`, `comments`), `topics: Topics` (`doneRange: DoneRange`, #343's type in `Scout/ActionItems/TopicBoard/DoneRange.swift`, default `.week`); each new enum `String, CaseIterable, Identifiable, Sendable` with `displayName`.
   - `nonisolated enum DisplayProfileCodec` with `fileName`, `Failure { case unreadable(String), unsupportedSchema(Int) }`, `Decoded { profile, warnings }`, `decode(_:) -> Result<Decoded, Failure>`, `patch(_:with:) throws -> Data`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -165,6 +167,8 @@ struct DisplayProfileCodecTests {
         ("{}", DisplayProfile()),
         (#"{"schema":1}"#, DisplayProfile()),
         (#"{"schema":1,"actionItems":{"defaultView":"board"}}"#, profile { $0.defaultView = .board }),
+        (#"{"schema":1,"actionItems":{"defaultView":"topics"}}"#, profile { $0.defaultView = .topics }),
+        (#"{"schema":1,"actionItems":{"topics":{"doneRange":"today"}}}"#, profile { $0.topics.doneRange = .today }),
         (#"{"schema":1,"actionItems":{"sort":"alphabetical","group":"none","density":"compact"}}"#,
          profile { $0.sort = .alphabetical; $0.grouping = .none; $0.density = .compact }),
         (#"{"schema":1,"actionItems":{"fields":{"refs":false,"snooze":false,"comments":true}}}"#,
@@ -299,7 +303,7 @@ Create `Scout/Profile/DisplayProfile.swift`:
 ```swift
 import Foundation
 
-/// The user's display choices, kept in `scout-profile.json` in the vault root.
+/// The user's display choices, kept in `scout-display.json` in the vault root.
 /// Only the Action Items section exists so far. Other sections are added with
 /// the features that read them; until then the codec reports them as unknown
 /// and preserves them on write.
@@ -374,11 +378,18 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
         var comments = false
     }
 
+    /// Topics view options (#343). Its Done toggle reads and writes this in
+    /// #343's follow-up; until then only Settings changes it.
+    struct Topics: Equatable, Sendable {
+        var doneRange: DoneRange = .week
+    }
+
     var defaultView: ActionItemsViewMode = .list
     var sort: Sort = .fileOrder
     var grouping: Grouping = .section
     var density: Density = .comfortable
     var fields = Fields()
+    var topics = Topics()
 
     var entries: [DisplayProfile.Entry] {
         [
@@ -389,6 +400,7 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
             .init(path: ["fields", "refs"], value: .bool(fields.refs)),
             .init(path: ["fields", "snooze"], value: .bool(fields.snooze)),
             .init(path: ["fields", "comments"], value: .bool(fields.comments)),
+            .init(path: ["topics", "doneRange"], value: .string(topics.doneRange.rawValue)),
         ]
     }
 }
@@ -399,12 +411,12 @@ Create `Scout/Profile/DisplayProfileCodec.swift`:
 ```swift
 import Foundation
 
-/// Parsing and patching for `scout-profile.json`, as pure functions. The rules
+/// Parsing and patching for `scout-display.json`, as pure functions. The rules
 /// are spec section 4: an unknown key is reported and preserved, a bad value
 /// falls back for that key only, and a file the app cannot fully read is never
 /// rewritten.
 nonisolated enum DisplayProfileCodec {
-    static let fileName = "scout-profile.json"
+    static let fileName = "scout-display.json"
 
     enum Failure: Error, Equatable, Sendable {
         case unreadable(String)
@@ -491,7 +503,7 @@ nonisolated enum DisplayProfileCodec {
 
     private static func actionItems(_ dict: [String: Any], warnings: inout [String]) -> ActionItemsDisplay {
         let path = "actionItems"
-        let known: Set<String> = ["defaultView", "sort", "group", "density", "fields"]
+        let known: Set<String> = ["defaultView", "sort", "group", "density", "fields", "topics"]
         for key in dict.keys.sorted() where !known.contains(key) {
             warnings.append("unknown key \"\(path).\(key)\"")
         }
@@ -500,21 +512,33 @@ nonisolated enum DisplayProfileCodec {
         if let v: ActionItemsDisplay.Sort = option(dict, "sort", in: path, &warnings) { out.sort = v }
         if let v: ActionItemsDisplay.Grouping = option(dict, "group", in: path, &warnings) { out.grouping = v }
         if let v: ActionItemsDisplay.Density = option(dict, "density", in: path, &warnings) { out.density = v }
-        if let raw = dict["fields"] {
-            guard let fields = raw as? [String: Any] else {
-                warnings.append("\"\(path).fields\" is not an object")
-                return out
-            }
+        if let fields = object(dict, "fields", in: path, known: ["refs", "snooze", "comments"], &warnings) {
             let fieldsPath = "\(path).fields"
-            let knownFields: Set<String> = ["refs", "snooze", "comments"]
-            for key in fields.keys.sorted() where !knownFields.contains(key) {
-                warnings.append("unknown key \"\(fieldsPath).\(key)\"")
-            }
             if let v = flag(fields, "refs", in: fieldsPath, &warnings) { out.fields.refs = v }
             if let v = flag(fields, "snooze", in: fieldsPath, &warnings) { out.fields.snooze = v }
             if let v = flag(fields, "comments", in: fieldsPath, &warnings) { out.fields.comments = v }
         }
+        if let topics = object(dict, "topics", in: path, known: ["doneRange"], &warnings),
+           let v: DoneRange = option(topics, "doneRange", in: "\(path).topics", &warnings) {
+            out.topics.doneRange = v
+        }
         return out
+    }
+
+    /// A nested object, with a warning for each key it doesn't know, or nil
+    /// (and a warning) when the value is not an object.
+    private static func object(
+        _ dict: [String: Any], _ key: String, in path: String, known: Set<String>, _ warnings: inout [String]
+    ) -> [String: Any]? {
+        guard let raw = dict[key] else { return nil }
+        guard let nested = raw as? [String: Any] else {
+            warnings.append("\"\(path).\(key)\" is not an object")
+            return nil
+        }
+        for name in nested.keys.sorted() where !known.contains(name) {
+            warnings.append("unknown key \"\(path).\(key).\(name)\"")
+        }
+        return nested
     }
 
     private static func option<E: RawRepresentable>(
@@ -563,7 +587,7 @@ private extension DisplayProfile.Entry.Value {
 }
 ```
 
-In `Scout/ActionItems/ActionItemsViewMode.swift`, change the declaration to `nonisolated enum ActionItemsViewMode: String, CaseIterable, Identifiable, Hashable, Sendable` (the codec decodes it outside the main actor) and replace "Persists across launches via `@SceneStorage("actionItemsView")`" with "The tab opens in `scout-profile.json`'s `actionItems.defaultView`; the toolbar switch changes the session's view through `DisplayProfileService.currentView`".
+In `Scout/ActionItems/ActionItemsViewMode.swift` (which already has `list`, `board` and #343's `topics`), change the declaration to `nonisolated enum ActionItemsViewMode: String, CaseIterable, Identifiable, Hashable, Sendable` (the codec decodes it outside the main actor) and replace "Persists across launches via `@SceneStorage("actionItemsView")`" with "The tab opens in `scout-display.json`'s `actionItems.defaultView`; the toolbar switch changes the session's view through `DisplayProfileService.currentView`".
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -573,14 +597,14 @@ Run: same command. Expected: PASS, 9 test functions.
 
 ```bash
 git add Scout/Profile ScoutTests/Profile Scout/ActionItems/ActionItemsViewMode.swift
-git commit -m "feat(profile): scout-profile.json model and codec for Action Items display options"
+git commit -m "feat(profile): scout-display.json model and codec for Action Items display options"
 ```
 
 ---
 
 ### Task 3: `DisplayProfileService`
 
-Owns the file at runtime and holds the session-only current view. The load and watch shape follows `UsageTrackerService` (`loadInitial()` at `Scout/Services/UsageTrackerService.swift:18`, `startWatching()` at `:34`); the logger follows `ConnectorHealthService.swift:41`. It never commits: the next session that commits the vault picks the file up.
+Owns the file at runtime and holds the session-only current view. The load and watch shape follows `UsageTrackerService` (its `loadInitial()` and `startWatching()`); the logger follows `ConnectorHealthService`'s `static let log`. It never commits: the next session that commits the vault picks the file up.
 
 **Files:**
 - Create: `Scout/Profile/DisplayProfileService.swift`
@@ -632,7 +656,7 @@ struct DisplayProfileServiceTests {
         #expect(service.status == .ok(warnings: []))
         #expect(service.currentView == .list)
         #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
-        #expect(service.fileURL.lastPathComponent == "scout-profile.json")
+        #expect(service.fileURL.lastPathComponent == "scout-display.json")
         #expect(service.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)
     }
 
@@ -657,7 +681,7 @@ struct DisplayProfileServiceTests {
 
     @Test func theTabOpensInTheDefaultViewAndChoosingADefaultShowsIt() throws {
         try Data(#"{"schema":1,"actionItems":{"defaultView":"board"}}"#.utf8)
-            .write(to: vault.appendingPathComponent("scout-profile.json"))
+            .write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.currentView == .board)
         service.update { $0.defaultView = .list }
@@ -697,7 +721,7 @@ struct DisplayProfileServiceTests {
     }
 
     @Test func aBrokenFileAtLaunchGivesDefaults() throws {
-        try Data("{ broken".utf8).write(to: vault.appendingPathComponent("scout-profile.json"))
+        try Data("{ broken".utf8).write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.profile == DisplayProfile())
         #expect(!service.status.canWrite)
@@ -705,7 +729,7 @@ struct DisplayProfileServiceTests {
 
     @Test func aNewerSchemaIsNeverOverwritten() throws {
         let newer = #"{"schema":2,"actionItems":{"defaultView":"board"}}"#
-        try Data(newer.utf8).write(to: vault.appendingPathComponent("scout-profile.json"))
+        try Data(newer.utf8).write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.status == .unsupportedSchema(found: 2))
         service.update { $0.density = .compact }
@@ -767,7 +791,7 @@ enum DisplayProfileStatus: Equatable {
     }
 }
 
-/// Owns `scout-profile.json` (spec sections 4 and 5): reads it once at init,
+/// Owns `scout-display.json` (spec sections 4 and 5): reads it once at init,
 /// follows edits made outside the app, and writes in-app changes as patches.
 /// It never commits; the next session that commits the vault picks the file up.
 @MainActor
@@ -921,7 +945,7 @@ Run: same command. Expected: PASS, 13 test functions.
 
 ```bash
 git add Scout/Profile/DisplayProfileService.swift ScoutTests/Profile/DisplayProfileServiceTests.swift
-git commit -m "feat(profile): DisplayProfileService reads, follows and patches scout-profile.json"
+git commit -m "feat(profile): DisplayProfileService reads, follows and patches scout-display.json"
 ```
 
 ---
@@ -929,9 +953,9 @@ git commit -m "feat(profile): DisplayProfileService reads, follows and patches s
 ### Task 4: Wire the service into `AppState`
 
 **Files:**
-- Modify: `Scout/Shell/AppState.swift` (property with the other `let` services at `:25-77`, construction next to the other file-watching services after `:115`, assignment block `:233-262`, `startWatching()` in the background-work block after `:307`)
-- Modify: `Scout/Shell/MainWindowView.swift:59-65` (`.environmentObject(appState.displayProfileService)` on `ActionItemsView`)
-- Modify: `ScoutTests/Shell/TabViewSmokeTests.swift:39,55` (same injection, otherwise the render traps on a missing environment object)
+- Modify: `Scout/Shell/AppState.swift` (a `let displayProfileService` next to `budgetSettingsService`; construction next to the other file-watching services, after `GitService(repoURL:runner:)`; assignment next to `self.budgetSettingsService`; `startWatching()` in the background-work block after the `startsBackgroundWork` guard)
+- Modify: `Scout/Shell/MainWindowView.swift` (`.environmentObject(appState.displayProfileService)` next to the other `.environmentObject` calls on `ActionItemsView`)
+- Modify: `ScoutTests/Shell/TabViewSmokeTests.swift` (the same injection on both `ActionItemsView(` renders, otherwise the render traps on a missing environment object)
 - Create: `ScoutTests/Shell/AppStateDisplayProfileTests.swift`
 
 **Interfaces:**
@@ -952,7 +976,7 @@ struct AppStateDisplayProfileTests {
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: vault) }
         try Data(#"{"schema":1,"actionItems":{"defaultView":"board"}}"#.utf8)
-            .write(to: vault.appendingPathComponent("scout-profile.json"))
+            .write(to: vault.appendingPathComponent("scout-display.json"))
 
         let state = AppState(configuration: .testing(scoutDirectory: vault))
         #expect(state.displayProfileService.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)
@@ -1410,18 +1434,19 @@ struct ActionItemsLayoutTests {
 - remove `@SceneStorage("actionItemsView")`; add `@EnvironmentObject var displayProfile: DisplayProfileService` and `private var display: ActionItemsDisplay { displayProfile.profile.actionItems }`.
 - `EditorialSegmentedControl(selection: $displayProfile.currentView, ...)`; every `viewMode` read becomes `displayProfile.currentView`, including `.onChange(of:)`.
 - `ActionItemsDisplayMenu()` sits right after the segmented control.
-- **Cache:** `@State private var layout: ActionItemsLayout?`, recomputed by `relayout()` in `.onAppear` and in `.onChange` of `docService.state`, `filter` and `display`, next to the existing `reconcileSelection()` calls (`ActionItemsView.swift:111-112`). With the default profile (`isPassThrough`) `relayout()` keeps no cache and the body renders `filteredSections(doc).map(filtered)` exactly as today. Otherwise `loadedContent` renders `layout.list.sections` with `density`, `fields` and `kinds`, and the board renders `layout.boardColumns` through `BoardView(columns:scoutDirectory:density:fields:)`.
-- **Task windows:** the List builds one page of rows per section (`TaskWindow`), keyed by the drawn section. `ActionItemsLayout` gains `listSections(_:filtered:)` (the arranged sections, or the filtered ones when `layout` is nil), `selectableRows(in:windows:)`, `shownRows(in:windows:)` and `revealTarget(in:subject:shortPrefix:)`. `visibleSelectableTasks`, `visibleTaskIDs` and `revealReopened` read `listSections`, so Select all and reopen follow the sort and One list. Each `.onChange` calls `relayout()` before `reconcileSelection()`, and `revealReopened` relays out first because the reparse lands before `onChange` runs. Tests: the first selectable page per sort and grouping, One list paging the merged list once, the Done drawer shown in full, a reopened task's drawn row.
+- **Cache:** `@State private var layout: ActionItemsLayout?`, recomputed by `relayout()` in `.onAppear` and in `.onChange` of `docService.state`, `filter` and `display`, next to the existing `.onChange` calls that run `reconcileSelection()`. With the default profile (`isPassThrough`) `relayout()` keeps no cache and the body renders `filteredSections(doc).map(filtered)` exactly as today. Otherwise `loadedContent` renders `layout.list.sections` with `density`, `fields` and `kinds`, and the board renders `layout.boardColumns` through `BoardView(columns:scoutDirectory:density:fields:)`.
+- **Task windows:** the List builds one page of rows per section (`TaskWindow`), keyed by the drawn section. `ActionItemsLayout` gains `listSections(_:filtered:)` (the arranged sections, or the filtered ones when `layout` is nil), `selectableRows(in:windows:)`, `shownRows(in:windows:)` and `revealTarget(in:subject:shortPrefix:)`. `visibleSelectableTasks`, `visibleTaskIDs`, `revealReopened` and `revealTagged` (#380's cross-reference reveal, whose `CrossRefLocator.locate` call reads `filteredSections(doc).map(filtered)` on `main`) read `listSections`, so Select all, reopen and the cross-reference reveal follow the sort and One list. `WindowSummaryRow` ("Showing N of M", #359) is given the drawn section, so it counts the merged One-list section once. Each `.onChange` calls `relayout()` before `reconcileSelection()`, and `revealReopened` relays out first because the reparse lands before `onChange` runs. Tests: the first selectable page per sort and grouping, One list paging the merged list once, the Done drawer shown in full, a reopened task's drawn row, and a cross-referenced task's drawn row next to it.
+- **Topics:** leave the Topics branch alone. `TopicBoardView` keeps taking the loaded document's sections plus the search text (#347 §2.5); `ActionItemsLayout` feeds List and Board only.
 
-`ActionItemsDisplayMenu`: a `Menu` labelled `Label("View", systemImage: "slider.horizontal.3")` in `DS.sans(11.5, weight: .medium)`, `.menuStyle(.borderlessButton)`, `.fixedSize()`, with inline pickers for Sort, Group (List only), Density, and a "Show on cards" section of three toggles: References, Snooze date, Comment count.
+`ActionItemsDisplayMenu`: a `Menu` labelled `Label("View", systemImage: "slider.horizontal.3")` in `DS.sans(11.5, weight: .medium)`, `.menuStyle(.borderlessButton)`, `.fixedSize()`, with inline pickers for Sort, Group (List only), Density, and a "Show on cards" section of three toggles: References, Snooze date, Comment count. In Topics the menu hides Sort, Group and Density (#347 §2.3).
 
-`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view, Sort, Group, Density (each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()`, as at `SettingsView.swift:78-84`), then the three fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
+`ActionItemsDisplaySection`: a `SettingsCard` with `SettingsRow`s: Default view (List, Board, Topics), Sort, Group, Density, Topics Done range (`DoneRange.label`), each an inline menu `Picker` with `.labelsHidden().pickerStyle(.menu).fixedSize()` as in the Claude Code section's CLI terminal picker, and each row's help naming the modes it affects; then the three fields with `SettingsToggle`. Below the card: "Saved in `<path>`" (`fileURL.path` abbreviated with `~`), then one `DS.Status.warn` line for `status` (warnings joined, or "Can't read the file: <reason>. Fix or delete it to save changes again.", or "Written by a newer Scout (schema N). Changes here won't be saved.") and for `writeError`.
 
-`SettingsView`: `section(label: "Action Items") { ActionItemsDisplaySection().environmentObject(appState.displayProfileService) }` after Engine, the same way Budget injects its service at `:106-109`.
+`SettingsView`: `section(label: "Action Items") { ActionItemsDisplaySection().environmentObject(appState.displayProfileService) }` after Engine, the same way the Budget section injects its service with `.environmentObject`.
 
 - [ ] **Step 4: Run** the layout tests and the full suite. Expected: PASS.
 
-- [ ] **Step 5: Commit** `feat(action-items): view options in the toolbar and in Settings, kept in scout-profile.json`
+- [ ] **Step 5: Commit** `feat(action-items): view options in the toolbar and in Settings, kept in scout-display.json`
 
 ---
 

@@ -1,6 +1,6 @@
 # Action Items display profile: design
 
-**Date:** 2026-10-01 (revised 2026-10-03 after review, updated 2026-10-05)
+**Date:** 2026-10-01 (revised 2026-10-03 and 2026-10-12 after review, updated 2026-10-05)
 **Status:** Proposed (for review). Docs only; code follows after approval.
 **Surface:** Scout.app in `apps/macos/` (Action Items tab, Settings). Paths below are relative to `apps/macos/`. No engine or plugin change.
 **Refs:** #290 (the customization half; it was Raven-Scout/scout-app-legacy#52 before the move).
@@ -71,7 +71,7 @@ sections are added together with the features that read them.
 
 ## 3. File and schema
 
-**Path:** `<scoutDirectory>/scout-profile.json`, always derived from
+**Path:** `<scoutDirectory>/scout-display.json`, always derived from
 `AppState.scoutDirectory` and never from a hardcoded `~/Scout`, so a
 configurable vault root (Raven-Scout/scout-app-legacy#104) needs no change here.
 
@@ -91,13 +91,20 @@ configurable vault root (Raven-Scout/scout-app-legacy#104) needs no change here.
 | Key | Values | Default (= today) |
 |---|---|---|
 | `schema` | integer | `1` |
-| `actionItems.defaultView` | `list`, `board` | `list` |
+| `actionItems.defaultView` | `list`, `board`, `topics` | `list` |
 | `actionItems.sort` | `fileOrder`, `alphabetical` | `fileOrder` |
 | `actionItems.group` | `section`, `none` | `section` |
 | `actionItems.density` | `comfortable`, `compact` | `comfortable` |
 | `actionItems.fields.refs` | boolean | `true` |
 | `actionItems.fields.snooze` | boolean | `true` |
 | `actionItems.fields.comments` | boolean | `false` |
+| `actionItems.topics.doneRange` | `today`, `yesterday`, `week` | `week` |
+
+`topics` and `topics.doneRange` follow the Topics view (#343) and the shared
+view-mode model (#347). `doneRange` uses #343's `DoneRange` raw values. This
+change adds the key, its codec entry and a Settings row. Wiring the Done toggle on
+the Topics screen to it, and moving the existing `@AppStorage("topicBoard.doneRange")`
+value into the file once, are #343's follow-up (#347 §3).
 
 The file records the user's choices only. A key the user never changed is not
 written, so it keeps following the app's default if that default changes in a
@@ -181,21 +188,24 @@ Settings scene. No new `AppState.Configuration` field: the path comes from
 
 ### Action Items toolbar
 
-- The List/Board switch changes the view for the current session and writes
+- The List/Board/Topics switch changes the view for the current session and writes
   nothing. The tab opens in the profile's `defaultView` at launch. The current
   choice lives in memory in `DisplayProfileService`, so it survives switching
   sidebar sections and resets to the default on relaunch. (The main window is a
   single `Window` scene, so there is no second window whose state could diverge.)
 - A new View menu (`slider.horizontal.3`) next to it: Sort, Group (List only),
-  Density, and Show on cards (three toggles). These write the profile.
+  Density, and Show on cards (three toggles). These write the profile. The menu
+  shows only the options that apply in the current mode, so Sort, Group and
+  Density are hidden in Topics (#347 §2.3 has the full matrix).
 
 ### Settings
 
 A new Action Items section built from the existing atoms (`SettingsRow`,
-`SettingsToggle`, and an inline menu `Picker` as used for the CLI terminal at
-`SettingsView.swift:78`). It shows Default view and the same controls as the
-View menu, the file path (from `scoutDirectory`), and the warning or unreadable
-line in `DS.Status.warn` when there is one.
+`SettingsToggle`, and an inline menu `Picker` as used for the CLI terminal).
+It shows Default view (List, Board, Topics), every option of the View menu, and
+the Topics Done range, each with a short note on which modes it affects. Below
+them, the file path (from `scoutDirectory`), and the warning or unreadable line
+in `DS.Status.warn` when there is one.
 
 ### Rendering
 
@@ -223,10 +233,16 @@ line in `DS.Status.warn` when there is one.
     Raven-Scout/scout-app-legacy#88). The default profile returns the input
     unchanged, so it costs nothing either way.
   - **Task windows.** The List builds one page of rows per section
-    (`TaskWindow`), keyed by the drawn section. Select all, the visible-row check
-    and reopen therefore read the arranged sections, not the file order: under
-    A-Z, Select all takes the first page on screen, and One list pages the
-    merged list once instead of each source section.
+    (`TaskWindow`), keyed by the drawn section. Select all, the visible-row
+    check, reopen and the cross-reference reveal (#380) therefore read the
+    arranged sections, not the file order: under A-Z, Select all takes the
+    first page on screen, and One list pages the merged list once instead of
+    each source section. The "Showing N of M" summary (#359) counts the merged
+    section once.
+  - **Topics.** `ActionItemsLayout` feeds List and Board only. `TopicBoardView`
+    keeps taking the loaded document's sections plus the search text, as on
+    `main`, because it works out state, `Depends:` and `Parent:` from the full
+    set (#347 §2.5).
 - **Fields** apply to the collapsed list card and to the board card. The
   expanded card always shows everything.
   - `refs`: the relation chips (GitHub, Linear, Slack, entity, cross-ref, plain)
@@ -236,8 +252,8 @@ line in `DS.Status.warn` when there is one.
   - `comments`: a new chip with the comment count. Off by default so the
     default card does not change.
 - **Compact density:** list card padding 14 → 8 points, no body preview on the
-  collapsed card, every card starts collapsed (today Urgent starts expanded,
-  `TaskCardView.swift:51`). Board card padding 12 → 8, title 3 → 2 lines.
+  collapsed card, every card starts collapsed (today Urgent starts expanded, in
+  `TaskCardView`'s initializer). Board card padding 12 → 8, title 3 → 2 lines.
   A density change re-applies the start state to the cards already on screen,
   so choosing Compact collapses open cards at once. A card whose caller fixed
   its state (`startsExpanded:`, as in Recently Completed) keeps it.
@@ -280,7 +296,9 @@ All Swift Testing, `AppState.Configuration.testing()` with an isolated
 - **`@SceneStorage("actionItemsView")`** is replaced. It restored the last view
   across relaunches; now the tab opens in the chosen default, and the toolbar
   switch still changes the view for the session. Someone who wants to land on
-  Board picks it once as the default in Settings.
+  Board picks it once as the default in Settings. Someone on v0.17 who left the
+  tab on Topics also lands on List after the upgrade, and can pick Topics once
+  as the default the same way.
 - **Older app versions** ignore the file. **Newer versions** add keys under
   schema 1, and older apps preserve them.
 - **Vault git:** the app does not commit. The next session that commits the
@@ -309,13 +327,13 @@ All Swift Testing, `AppState.Configuration.testing()` with an isolated
   unknown keys are preserved, which is what keeps later sections safe.
 - **Fields hide on the collapsed card only.** Detail stays one click away, so
   hiding a field never makes information unreachable.
+- **`scout-display.json`, not `scout-profile.json`** (review, 2026-10-12). #176's
+  `/scout-profile` is about the AI-session profile, and a narrower name avoids
+  two "profiles" (#347 §3).
 
 ## 10. Open questions for review
 
-1. **File name.** `scout-profile.json` anticipates later sections (sidebar,
-   Control Center). #176 proposes a `/scout-profile` command for the
-   AI-session profile. Keep the name, or prefer something narrower such as
-   `scout-display.json`?
+None left. The file name was settled in review (section 9).
 
 ## 11. Follow-ups (out of scope)
 
