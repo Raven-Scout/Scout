@@ -78,7 +78,11 @@ struct PluginUpdateResult: Equatable, Sendable {
     )
 }
 
-protocol PluginUpdateChecking: Sendable {
+/// `nonisolated` so actors can conform (test fakes do), same as `ProcessRunner`:
+/// under the target's default MainActor isolation, Swift 6.4 (Xcode 27)
+/// otherwise infers the protocol as MainActor. Every app conformer is already
+/// `nonisolated`.
+nonisolated protocol PluginUpdateChecking: Sendable {
     /// Conformers do file reads and a network fetch: they should run off the
     /// main actor (`@concurrent` on `PluginUpdateChecker`).
     func check(engine: EngineState) async -> PluginUpdateResult
