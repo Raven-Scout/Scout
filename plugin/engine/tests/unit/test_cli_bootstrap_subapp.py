@@ -495,6 +495,10 @@ def fake_launchctl(tmp_path, monkeypatch) -> Path:
     )
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fakebin}:{os.environ['PATH']}")
+    # These runs install with --platform macos, so the doctor must check that host's
+    # scheduler: on a Linux runner it would otherwise look for the cron block (#449),
+    # which a launchd install never writes.
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
     return log
 
 
@@ -533,6 +537,47 @@ def test_auto_with_jobs_writes_one_consistent_engine_pointer(tmp_path, monkeypat
     assert pointer["scoutctl"] == plist["ProgramArguments"][0] == shim_target.group(1)
     assert pointer["vault"] == plist["EnvironmentVariables"]["SCOUT_DATA_DIR"] == str(vault)
     assert pointer["managed_by"] == "scout-app"
+
+
+def test_auto_with_jobs_on_linux_doctor_reads_the_cron_block_install_wrote(tmp_path, monkeypatch):
+    """#449: a jobs-enabled Linux install round-trips through one crontab. The fake keeps
+    what `crontab <file>` installs and returns it from `crontab -l`, as the real one does,
+    so the doctor finds the block install-cron wrote: no cron finding, never red."""
+    vault = _vault(tmp_path, monkeypatch)
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    store = tmp_path / "crontab.txt"
+    fake = fakebin / "crontab"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f'  -l) [ -f "{store}" ] || {{ echo "no crontab for $USER" >&2; exit 1; }}; cat "{store}" ;;\n'
+        f'  -r) rm -f "{store}" ;;\n'
+        f'  *) cp "$1" "{store}" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    claude = fakebin / "claude"
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}:{os.environ['PATH']}")
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Linux")
+    argv = [*JOBS_ENABLED]
+    argv[argv.index("--platform") + 1] = "linux"
+    argv[argv.index("--claude-bin") + 1] = str(claude)
+    argv[argv.index("--managed-by") + 1] = "install.sh"
+
+    result = runner.invoke(app, ["bootstrap", "auto", *argv, *IDENTITY])
+
+    assert result.exit_code in (0, 1), result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["action"] == "install"
+    tab = store.read_text(encoding="utf-8")
+    assert "# >>> scout-managed >>>" in tab and f"SCOUT_DATA_DIR={vault}" in tab
+    findings = payload["doctor"]["errors"] + payload["doctor"]["warnings"]
+    assert not [f for f in findings if "cron" in f or "launchctl" in f or "launchd" in f], findings
+    assert payload["doctor"]["severity"] in ("green", "yellow"), payload["doctor"]
 
 
 # --- Final review: --managed-by defaults to `preserve` (Ruling 15) ----------
