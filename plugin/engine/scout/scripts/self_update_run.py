@@ -524,6 +524,10 @@ def _subprocess_runner(argv: list[str], env: dict[str, str] | None) -> Proc:
 
 
 def _slot_due_within(vault: Path, window: timedelta) -> bool:
+    # Slots fire in `schedule tick`'s zone ($TZ, then the host's), so look ahead in that
+    # zone, not the vault's: with a `user.timezone` override that differs from the host,
+    # the vault's zone would mispredict every slot. _in_off_peak reads the vault's zone
+    # because the heartbeat's off-peak window is defined there. Both are deliberate (#449).
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     from scout.schedule import load_schedule, next_fires

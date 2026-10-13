@@ -148,7 +148,12 @@ def test_run_doctor_reports_auth_with_the_host_checks(tmp_path: Path, monkeypatc
         return ["auth warning"], ["auth note"]
 
     monkeypatch.setattr(bootstrap_doctor, "_check_claude_auth", fake)
-    for name in ("_check_scheduler_bin_path", "_check_engine_pointer", "_check_runner_claude_bin"):
+    for name in (
+        "_check_scheduled_jobs",
+        "_check_scheduler_bin_path",
+        "_check_engine_pointer",
+        "_check_runner_claude_bin",
+    ):
         monkeypatch.setattr(bootstrap_doctor, name, lambda **_k: ([], []))
     monkeypatch.setattr(bootstrap_doctor, "_check_scoutctl_shim", lambda **_k: ([], []))
     _jobs_registered(monkeypatch)
@@ -170,7 +175,12 @@ def test_a_crashing_auth_check_does_not_break_the_doctor(tmp_path: Path, monkeyp
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(bootstrap_doctor, "_check_claude_auth", boom)
-    for name in ("_check_scheduler_bin_path", "_check_engine_pointer", "_check_runner_claude_bin"):
+    for name in (
+        "_check_scheduled_jobs",
+        "_check_scheduler_bin_path",
+        "_check_engine_pointer",
+        "_check_runner_claude_bin",
+    ):
         monkeypatch.setattr(bootstrap_doctor, name, lambda **_k: ([], []))
     monkeypatch.setattr(bootstrap_doctor, "_check_scoutctl_shim", lambda **_k: ([], []))
     _jobs_registered(monkeypatch)
