@@ -130,6 +130,9 @@ def build_vault(
     cache.write_text(NOOP_SCRIPT, encoding="utf-8")
     cache.chmod(0o755)
     env = _git_env(today)
+    # Install makes its own repo (#433): an undated commit and a kb-lint hook. Drop it, so
+    # the fixture's history is the one dated commit below, the same for every checkout arm.
+    shutil.rmtree(dest / ".git", ignore_errors=True)
     _git(dest, env, "init", "-q", "-b", "main")
     # No detached auto-maintenance: its .git/maintenance.lock outlives the commit and races a caller's rmtree.
     _git(dest, env, "config", "maintenance.auto", "false")

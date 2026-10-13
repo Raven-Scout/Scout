@@ -349,6 +349,47 @@ def test_slot_due_within_survives_a_bad_zone(tmp_path, monkeypatch):
     assert sur._slot_due_within(vault, timedelta(hours=24 * 7)) is True
 
 
+def test_slot_lookahead_and_off_peak_each_read_the_clock_their_scheduler_uses(tmp_path, monkeypatch):
+    """#449: the two gates read different zones on purpose, and must keep doing so.
+
+    Slots fire in `schedule tick`'s zone ($TZ, then the host), so the lookahead asks for
+    that zone; the off-peak window is the heartbeat's, in the vault's zone. With a vault
+    override that differs from the host, a lookahead in the vault's zone would mispredict
+    every slot.
+    """
+    import shutil
+    from datetime import timedelta
+
+    from scout import config as scout_config
+    from scout import schedule as sched_mod
+    from scout.scripts import schedule_tick
+
+    vault = tmp_path / "v"
+    (vault / ".scout-state").mkdir(parents=True)
+    shutil.copy(
+        Path(sched_mod.__file__).parent / "defaults" / "schedule.yaml", vault / ".scout-state" / "schedule.yaml"
+    )
+    (vault / "scout-config.yaml").write_text("user:\n  timezone: Asia/Tokyo\n")
+    monkeypatch.setattr(schedule_tick, "_local_tz_name", lambda: "America/Chicago")
+    seen: list[str] = []
+    monkeypatch.setattr(sched_mod, "next_fires", lambda sched, now, window_hours: seen.append(now.tzinfo.key) or [])
+    sur._slot_due_within(vault, timedelta(minutes=45))
+    assert seen == ["America/Chicago"]
+
+    seen_dirs: list[Path | None] = []
+
+    def fake_now(data_dir=None):
+        from datetime import datetime
+
+        seen_dirs.append(data_dir)
+        return datetime(2026, 10, 12, 12, 0)
+
+    monkeypatch.setattr(scout_config, "now", fake_now)
+    sur._in_off_peak(vault)
+    assert seen_dirs == [vault]  # the vault's zone, as heartbeat.decide uses
+    assert scout_config.resolve_timezone(vault).key == "Asia/Tokyo"
+
+
 def test_unparseable_target_is_up_to_date(tmp_path):
     from scout.scripts.self_update import UpdateStatus
 

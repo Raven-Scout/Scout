@@ -325,6 +325,7 @@ def test_check_jobs_missing_launchd_jobs_is_red(tmp_path, monkeypatch):
 
     monkeypatch.setattr("scout.scripts.bootstrap_doctor.subprocess.run", fake_run)
     monkeypatch.setattr("scout.scripts.bootstrap_doctor.os.name", "posix")
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
     report = run_doctor(vault=tmp_path, check_jobs=True)
     assert report.severity is Severity.RED
     assert any("schedule-tick not registered" in e for e in report.errors)
@@ -388,6 +389,7 @@ def _stub_jobs_present(monkeypatch) -> None:
 
     monkeypatch.setattr("scout.scripts.bootstrap_doctor.subprocess.run", fake_run)
     monkeypatch.setattr("scout.scripts.bootstrap_doctor.os.name", "posix")
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
 
 
 def test_plist_scoutctl_bin_missing_is_red(tmp_path, monkeypatch):
@@ -591,8 +593,11 @@ def test_cron_no_scout_managed_block_yields_no_errors_on_linux(tmp_path, monkeyp
 
     monkeypatch.setattr("scout.scripts.bootstrap_doctor.subprocess.run", fake_run)
     report = run_doctor(vault=tmp_path, check_jobs=True, home=tmp_path)
-    assert not any("scoutctl" in e for e in report.errors)
+    # The bin-path check has nothing to inspect, so it stays silent; the job
+    # check (#449) reports that nothing is scheduled.
+    assert not any("references" in e for e in report.errors)
     assert not any("scoutctl" in w for w in report.warnings)
+    assert any("schedule tick not installed" in e for e in report.errors)
 
 
 # ---------------------------------------------------------------------------

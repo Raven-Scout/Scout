@@ -174,6 +174,68 @@ def _check_linux_cron_scoutctl_bin() -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+def _check_launchd_jobs() -> tuple[list[str], list[str]]:
+    """macOS: both scout LaunchAgents are loaded."""
+    try:
+        proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return [], ["launchctl unavailable — skipped job registration check"]
+    errors = [
+        f"launchd: {label} not registered"
+        for label in ("com.scout.schedule-tick", "com.scout.heartbeat")
+        if label not in proc.stdout
+    ]
+    return errors, []
+
+
+def _check_cron_jobs(*, home: Path, vault: Path) -> tuple[list[str], list[str]]:
+    """Linux: the scout-managed crontab block runs the tick and the heartbeat for this vault.
+
+    The block is the one `scoutctl schedule install-cron` writes
+    (defaults/cron-managed-block.tmpl). Lines outside its markers don't count.
+    A block without a SCOUT_DATA_DIR line (written before #271) runs ~/Scout.
+    """
+    try:
+        proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return [], ["crontab unavailable — skipped job registration check"]
+    # A non-zero `crontab -l` is "no crontab for <user>": nothing is scheduled.
+    block: list[str] = []
+    in_block = False
+    for line in proc.stdout.splitlines() if proc.returncode == 0 else []:
+        stripped = line.strip()
+        if stripped == "# >>> scout-managed >>>":
+            in_block = True
+        elif stripped == "# <<< scout-managed <<<":
+            break
+        elif in_block:
+            block.append(stripped)
+    fix = f"Fix: SCOUT_DATA_DIR={shlex.quote(str(vault))} scoutctl schedule install-cron"
+    errors: list[str] = []
+    jobs = [line for line in block if line and not line.startswith("#")]
+    if not any(" schedule tick" in line for line in jobs):
+        errors.append(f"cron: scout schedule tick not installed. {fix}")
+    if not any("heartbeat.sh" in line for line in jobs):
+        errors.append(f"cron: scout heartbeat not installed. {fix}")
+    if errors:
+        return errors, []
+    data_dirs = [line.split("=", 1)[1] for line in block if line.startswith("SCOUT_DATA_DIR=")]
+    scheduled = Path(data_dirs[-1]) if data_dirs else home / "Scout"
+    if scheduled.resolve() != vault.resolve():
+        errors.append(f"cron: the scout jobs run the vault at {scheduled}, not {vault}. {fix}")
+    return errors, []
+
+
+def _check_scheduled_jobs(*, home: Path, vault: Path) -> tuple[list[str], list[str]]:
+    """Dispatch to the platform's scheduler: launchd on macOS, cron on Linux, none elsewhere."""
+    system = platform.system()
+    if system == "Darwin":
+        return _check_launchd_jobs()
+    if system == "Linux":
+        return _check_cron_jobs(home=home, vault=vault)
+    return [], []
+
+
 def _check_scheduler_bin_path(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Dispatch to the platform-specific scoutctl-bin-path check."""
     system = platform.system()
@@ -571,22 +633,12 @@ def run_doctor(
     warnings.extend(drift_warnings)
     notes.extend(drift_notes)
 
-    # Live launchd jobs.
-    if check_jobs and os.name == "posix":
-        try:
-            proc = subprocess.run(
-                ["launchctl", "list"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-            if "com.scout.schedule-tick" not in proc.stdout:
-                errors.append("launchd: com.scout.schedule-tick not registered")
-            if "com.scout.heartbeat" not in proc.stdout:
-                errors.append("launchd: com.scout.heartbeat not registered")
-        except (subprocess.SubprocessError, FileNotFoundError):
-            warnings.append("launchctl unavailable — skipped job registration check")
+    # Live scheduled jobs: launchd on macOS, the scout-managed crontab block on
+    # Linux (#449; launchctl on Linux only ever warned, so every Linux install was yellow).
+    if check_jobs:
+        job_errors, job_warnings = _check_scheduled_jobs(home=home, vault=vault)
+        errors.extend(job_errors)
+        warnings.extend(job_warnings)
 
     # Scheduler scoutctl path — verify the path baked into the installed plist
     # (macOS) or cron block (Linux) actually points to an executable scoutctl

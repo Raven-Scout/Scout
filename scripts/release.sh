@@ -171,6 +171,9 @@ cmd_prepare() {
   "$PY" -m scout.scripts.release_notes --repo-root "$REPO_ROOT" "$new" --repo "$slug" --out "$notes" \
     ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
   eval_reminder "${prev%% *}" || true
+  echo "→ Headless self-update rehearsal (not a gate): the previous release updating itself to this one,"
+  echo "  in a throwaway Linux container (or run the e2e-self-update workflow on $branch):"
+  echo "    scripts/e2e/self-update/run.sh --from ${prev%% *} --to $branch"
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then
     echo "→ SKIP_RELEASE=1: committed 'release: v$new' on $branch locally. Not pushing, no PR."
     echo "→ Release notes: $notes"
@@ -182,7 +185,9 @@ cmd_prepare() {
 **Create a merge commit** (not squash), so the final build's number is above every release candidate's. \
 Then run \`scripts/release.sh finalize v$new\`." \
       "- [ ] Eval (local, not a gate): ran \`plugin/scripts/eval.sh\` on my own Claude login \
-(\`compare --base <last tag>\` if \`plugin/phases/\` changed) and pasted its summary here, or said why not."
+(\`compare --base <last tag>\` if \`plugin/phases/\` changed) and pasted its summary here, or said why not.
+- [ ] Headless self-update rehearsal (not a gate): \`scripts/e2e/self-update/run.sh --from ${prev%% *} --to $branch\` \
+(or the e2e-self-update workflow on \`$branch\`) passed, or I said why not."
     cat "$notes"
   } >"$body"
   git -C "$REPO_ROOT" push -q -u origin "$branch"

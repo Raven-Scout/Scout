@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Stub `claude` for the self-update e2e: the plugin commands Scout's installer and updater use.
+
+No model, no login, no network. The marketplace is the local bare repo in $SCOUT_E2E_REMOTE,
+whatever URL a manifest names, so `stable` there is what an install or update gets — the same
+contract as the real marketplace entry (a `git-subdir` source pinned to `stable`, #362).
+
+Implemented: --version, auth status, mcp list, plugin marketplace add|update,
+plugin install|update|list. Anything else is logged and exits 0 with no output.
+Every call is appended to $SCOUT_E2E_STATE/claude-calls.jsonl, so a scenario can assert
+that a step ran nothing. Faults: a file named fail-<verb> in $SCOUT_E2E_STATE (e.g.
+fail-plugin-update) makes that verb exit 1.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+PLUGIN_ID = "scout@scout-plugin"
+MARKETPLACE = "scout-plugin"
+REMOTE = os.environ.get("SCOUT_E2E_REMOTE", "")
+STATE = Path(os.environ.get("SCOUT_E2E_STATE", "/tmp"))
+HOME = Path.home()
+PLUGINS = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")) / "plugins"
+MP_DIR = PLUGINS / "marketplaces" / MARKETPLACE
+CACHE = PLUGINS / "cache" / MARKETPLACE / "scout"
+INSTALLED = PLUGINS / "installed_plugins.json"
+KNOWN = PLUGINS / "known_marketplaces.json"
+
+
+def log(argv: list[str], rc: int) -> None:
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / "claude-calls.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"at": time.time(), "argv": argv, "rc": rc}) + "\n")
+
+
+def fault(verb: str) -> bool:
+    return (STATE / f"fail-{verb}").exists()
+
+
+def git(*args: str, cwd: Path | None = None) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def die(msg: str) -> int:
+    print(msg, file=sys.stderr)
+    return 1
+
+
+def marketplace_add(src: str) -> int:
+    if MP_DIR.exists():
+        return die(f"Marketplace '{MARKETPLACE}' is already installed")
+    if not REMOTE:
+        return die("SCOUT_E2E_REMOTE is not set")
+    MP_DIR.parent.mkdir(parents=True, exist_ok=True)
+    git("clone", "-q", REMOTE, str(MP_DIR))  # the remote's default branch, as Claude Code does
+    KNOWN.write_text(
+        json.dumps(
+            {
+                MARKETPLACE: {
+                    "source": {"source": "github", "repo": src},
+                    "installLocation": str(MP_DIR),
+                    "lastUpdated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            },
+            indent=2,
+        )
+    )
+    print(f"Successfully added marketplace: {MARKETPLACE}")
+    return 0
+
+
+def marketplace_update(name: str) -> int:
+    if name != MARKETPLACE or not MP_DIR.exists():
+        return die(f"Marketplace '{name}' not found")
+    if fault("marketplace-update"):
+        return die("e2e: induced marketplace update failure")
+    git("fetch", "-q", "origin", cwd=MP_DIR)
+    git("reset", "-q", "--hard", "origin/HEAD", cwd=MP_DIR)
+    print(f"Successfully updated marketplace: {name}")
+    return 0
+
+
+def _entry() -> dict:
+    manifest = json.loads((MP_DIR / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    return next(p for p in manifest["plugins"] if p.get("name") == "scout")
+
+
+def _materialize() -> Path:
+    """Copy the plugin tree the marketplace entry names into the versioned cache; return it."""
+    source = _entry()["source"]
+    with tempfile.TemporaryDirectory() as tmp:
+        if isinstance(source, dict) and source.get("source") == "git-subdir":
+            # Any URL: the e2e remote stands in for github.com/Raven-Scout/Scout.
+            ref, sub = source.get("ref", "HEAD"), source.get("path", "plugin")
+            archive = subprocess.run(
+                ["git", "--git-dir", REMOTE, "archive", ref, sub], check=True, capture_output=True
+            ).stdout
+            subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
+            tree = Path(tmp) / sub
+        elif isinstance(source, str):  # "./plugin": relative to the marketplace checkout
+            tree = (MP_DIR / source).resolve()
+        else:
+            raise SystemExit(f"e2e stub: unsupported plugin source {source!r}")
+        version = json.loads((tree / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+        dest = CACHE / version
+        if not dest.exists():  # Claude Code keeps one cache directory per version
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(tree, dest, symlinks=True)
+    return dest
+
+
+def _registered() -> dict | None:
+    try:
+        return json.loads(INSTALLED.read_text(encoding="utf-8"))["plugins"][PLUGIN_ID][0]
+    except (OSError, KeyError, IndexError, json.JSONDecodeError):
+        return None
+
+
+def _register(root: Path) -> dict:
+    version = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    entry = {"scope": "user", "installPath": str(root), "version": version, "installedAt": time.time()}
+    INSTALLED.parent.mkdir(parents=True, exist_ok=True)
+    INSTALLED.write_text(json.dumps({"version": 2, "plugins": {PLUGIN_ID: [entry]}}, indent=2))
+    return entry
+
+
+def plugin_install(pid: str, *, update: bool) -> int:
+    if pid != PLUGIN_ID:
+        return die(f"Plugin '{pid}' not found")
+    if not MP_DIR.exists():
+        return die(f"Marketplace '{MARKETPLACE}' not found")
+    if update and fault("plugin-update"):
+        return die("e2e: induced plugin update failure")
+    before = _registered()
+    if before and not update:
+        print(f"Plugin '{pid}' is already installed")
+        return 0
+    entry = _register(_materialize())
+    if update and before and before["version"] == entry["version"]:
+        print(f"{pid} is already at the latest version ({entry['version']}).")
+    else:
+        print(f"Installed {pid} {entry['version']}")
+    return 0
+
+
+def plugin_list() -> int:
+    entry = _registered()
+    rows = [] if entry is None else [{"id": PLUGIN_ID, "enabled": True, **entry}]
+    print(json.dumps(rows))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    words = [a for a in argv if not a.startswith("-")]
+    if argv[:1] in (["--version"], ["-v"]):
+        print("2.1.999 (Claude Code e2e stub)")
+        return 0
+    if words[:2] == ["auth", "status"]:
+        print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "pro"}))
+        return 0
+    if words[:2] == ["mcp", "list"]:
+        print("No MCP servers configured.")
+        return 0
+    if words[:3] == ["plugin", "marketplace", "add"] and len(words) > 3:
+        return marketplace_add(words[3])
+    if words[:3] == ["plugin", "marketplace", "update"] and len(words) > 3:
+        return marketplace_update(words[3])
+    if words[:2] in (["plugin", "install"], ["plugin", "update"]) and len(words) > 2:
+        return plugin_install(words[2], update=words[1] == "update")
+    if words[:2] == ["plugin", "list"]:
+        return plugin_list()
+    return 0  # a session (`-p …`) or anything else: no model here
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    try:
+        code = main(args)
+    except subprocess.CalledProcessError as e:
+        print(f"e2e stub: {e} {e.stderr}", file=sys.stderr)
+        code = 1
+    log(args, code)
+    sys.exit(code)

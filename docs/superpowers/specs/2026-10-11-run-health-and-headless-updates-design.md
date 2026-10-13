@@ -674,3 +674,20 @@ the year is the next one in which it is still ahead). Health changed with it:
 - **The scheduled gate writes no row** for "outside the off-peak window" or "applied a version
   in the last 24 h", and the §7.5 backoff skips also write no row. The day's marker is written
   for the 24 h and backoff skips, and for every row except `deferred`.
+
+### 13.10 The §11 end-to-end check as a harness (2026-10-13)
+
+v0.18.0 shipped without the manual §11 run. The Linux half is now
+`scripts/e2e/self-update/run.sh` (or the manual `e2e-self-update` workflow). It installs
+`--from` with that tag's `install.sh` in a throwaway container, with cron, a stub `claude`
+and no desktop, then updates to `--to`: a tag, an rc, a release branch or a local build.
+It asserts the §7 outcomes and the rollback before `vault`. `release.sh prepare` prints it
+as a step, not a gate. The macOS "app-managed engine present" half is
+`test_self_update_run_app_managed.py`: the real `default_deps` with every side effect a
+tripwire. Two observations from building it:
+
+- The off-peak window reads the vault zone (`user.timezone`, else `/etc/localtime`). The slot
+  lookahead reads `TZ` first. They agree on a normal host. The harness sets both. (#451)
+- The install doctor's launchd check runs on Linux too, so a fresh Linux install is yellow
+  and `install.sh` exits 1 (#449). The harness reports this as a known issue, along with #433
+  and #434.

@@ -27,6 +27,10 @@ Package.resolved
 # Release staging (scripts/release.sh finalize/rc build+sign scratch space)
 .release/
 
+# Python bytecode outside plugin/ (plugin/.gitignore covers its own tree), e.g. scripts/e2e/
+__pycache__/
+*.pyc
+
 # Editor
 .vscode/
 .idea/

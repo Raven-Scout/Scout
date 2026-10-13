@@ -10,6 +10,8 @@ requires: github
 
 Check recent code activity by {{USER_NAME}} using the `gh` CLI. This reveals completed work that should be reflected in action items and the KB.
 
+The `python3 -c` time cutoffs in the GitHub scan and query commands are UTC instants (the trailing `Z`) and run the same on macOS and Linux. They are query filters only: a time you write into the vault or a DM is still converted to the display zone (see Timezone Handling).
+
 ### Recent PRs by {{USER_NAME}}
 
 ```bash
@@ -24,7 +26,7 @@ For each PR found:
 ### PRs {{USER_NAME}} Was Involved In
 
 ```bash
-gh search prs --involves @me --updated ">=$(date -v-4H +%Y-%m-%dT%H:%M:%S)" --json number,title,url,repository
+gh search prs --involves @me --updated ">=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 4 * 3600)))')" --json number,title,url,repository
 ```
 
 This catches PRs where {{USER_NAME}} reviewed, commented, or was mentioned — broader than just authored PRs.
@@ -40,7 +42,7 @@ Check if {{USER_NAME}} submitted reviews on others' PRs. A submitted review mean
 For key repos in `{{GITHUB_REPOS}}`, check recent commit activity:
 
 ```bash
-gh api "/repos/{owner}/{repo}/commits?author={{GITHUB_USERNAME}}&since=$(date -v-8H +%Y-%m-%dT%H:%M:%SZ)" --jq '.[].commit.message' 2>/dev/null | head -20
+gh api "/repos/{owner}/{repo}/commits?author={{GITHUB_USERNAME}}&since=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 8 * 3600)))')" --jq '.[].commit.message' 2>/dev/null | head -20
 ```
 
 Commits outside of PRs (direct pushes) also indicate completed work.
@@ -88,7 +90,7 @@ A bare title + status is not enough context to act on.
 ### New Issues Assigned
 
 ```bash
-gh search issues --assignee @me --state open --updated ">=$(date -v-24H +%Y-%m-%dT%H:%M:%S)" --json number,title,url,repository
+gh search issues --assignee @me --state open --updated ">=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600)))')" --json number,title,url,repository
 ```
 
 Check for issues recently assigned to {{USER_NAME}} or recently updated issues where {{USER_NAME}} is the assignee.
@@ -98,7 +100,7 @@ Check for issues recently assigned to {{USER_NAME}} or recently updated issues w
 For key repos in `{{GITHUB_REPOS}}`, check recent comments:
 
 ```bash
-gh api "/repos/{owner}/{repo}/issues/comments?since=$(date -v-4H +%Y-%m-%dT%H:%M:%SZ)" --jq '.[] | select(.user.login != "{{GITHUB_USERNAME}}") | {body: .body[:100], user: .user.login, issue_url: .issue_url}' 2>/dev/null | head -50
+gh api "/repos/{owner}/{repo}/issues/comments?since=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 4 * 3600)))')" --jq '.[] | select(.user.login != "{{GITHUB_USERNAME}}") | {body: .body[:100], user: .user.login, issue_url: .issue_url}' 2>/dev/null | head -50
 ```
 
 Comments on {{USER_NAME}}'s PRs may contain:
@@ -174,7 +176,7 @@ For repos in `{{GITHUB_REPOS}}`, check for recent comment activity on open PRs:
 
 ```bash
 gh api "/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=5" --jq '.[].number' 2>/dev/null | while read pr; do
-  gh api "/repos/{owner}/{repo}/pulls/$pr/comments?since=$(date -v-24H +%Y-%m-%dT%H:%M:%SZ)" --jq '.[] | {user: .user.login, body: .body[:80]}' 2>/dev/null
+  gh api "/repos/{owner}/{repo}/pulls/$pr/comments?since=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600)))')" --jq '.[] | {user: .user.login, body: .body[:80]}' 2>/dev/null
 done | head -30
 ```
 

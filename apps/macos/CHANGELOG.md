@@ -12,6 +12,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ### Fixed
 - **Scout builds on Xcode 27 except for Grape** (#337; `Scout/Services/GitService.swift`, `Scout/Services/Updates/UpdateService.swift`). The first Xcode 27 run found two more protocols that test actors couldn't conform to, `GitServiceProtocol` and `PluginUpdateChecking`. Both are now `nonisolated`, the same fix #353 made for `ProcessRunner`. `GitService.commitPaths` is pinned to `@MainActor` so it keeps the isolation it had. `KBTagTests` now imports SwiftUI for the chip text attributes, because the member-import-visibility check rejects them without that import on the macOS 27 SDK.
 
+## [0.18.1] - 2026-10-13
+
 ### Security
 - **Links in action items open only web and mail addresses** (Raven-Scout/Scout#435; `Scout/ActionItems/LinkSchemePolicy.swift`, `Scout/ActionItems/Views/InlineMarkdownText.swift`, `Scout/ActionItems/Models/TaskDeepLink.swift`, `Scout/ActionItems/TopicBoard/SideEntry.swift`). Action-item text is written from Slack, mail, GitHub and Linear content, and a click on any markdown link went straight to `NSWorkspace`, so a `[…](file:///…)` link could launch an app and another app's URL scheme would open that app. Only `http`, `https` and `mailto` links now render as links; any other scheme, including entity-encoded `javascript:`, renders as plain text. The click handler refuses anything else too. Wikilinks and `#TAG` chips work as before. A wikilink target can no longer add parameters to the `obsidian://open` URL it falls back to (`&`, `=`, `+` and `#` are now percent-encoded).
 
