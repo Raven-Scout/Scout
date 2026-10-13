@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._waits import wait_until
 from tests.eval.harness.claude_shim import SHIM, build_command, settings
 from tests.eval.harness.runner_env import build_env
 
@@ -243,7 +244,6 @@ def test_terminating_the_shim_takes_its_claude_session_down(tmp_path: Path) -> N
     """The runner stops an overrunning sample by signalling the shim's group. claude runs in a
     group of its own, so the shim must kill it on SIGTERM, or it outlives the run."""
     import signal
-    import time
 
     fake = tmp_path / "fake-claude"
     fake.write_text(FAKE_CLAUDE)
@@ -266,18 +266,28 @@ def test_terminating_the_shim_takes_its_claude_session_down(tmp_path: Path) -> N
     }
     shim = subprocess.Popen([str(SHIM), *RUNNER_ARGV], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     pgid_file, started = tmp_path / "result" / "claude.pgid", tmp_path / "argv.json"
-    deadline = time.monotonic() + 30
-    while not (pgid_file.exists() and started.exists()) and time.monotonic() < deadline:
-        time.sleep(0.05)  # the fake writes argv.json once it is running and has read its prompt
+    # the fake writes argv.json once it is running and has read its prompt
+    wait_until(
+        lambda: pgid_file.exists() and started.exists(),
+        timeout=30,
+        interval=0.05,
+        message="the shim never started its claude session",
+    )
     claude_pid = int(pgid_file.read_text())
     shim.send_signal(signal.SIGTERM)
     shim.wait(timeout=30)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+
+    def claude_gone() -> bool:
         try:
             os.kill(claude_pid, 0)
         except ProcessLookupError:
-            return
-        time.sleep(0.05)
-    os.killpg(claude_pid, signal.SIGKILL)
-    raise AssertionError(f"claude ({claude_pid}) outlived its terminated shim")
+            return True
+        return False
+
+    try:
+        wait_until(
+            claude_gone, timeout=10, interval=0.05, message=f"claude ({claude_pid}) outlived its terminated shim"
+        )
+    except AssertionError:
+        os.killpg(claude_pid, signal.SIGKILL)
+        raise

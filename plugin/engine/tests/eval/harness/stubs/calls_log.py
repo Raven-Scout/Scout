@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -43,6 +44,9 @@ class CallsLog:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
+            if markers := os.environ.get("SCOUT_EVAL_LOCK_MARKERS"):
+                # test hook: says "about to block on the lock", so a test holding it knows who is waiting
+                (Path(markers) / str(os.getpid())).touch()
             fcntl.flock(f, fcntl.LOCK_EX)
             reply = decide(self.hits)
             row = {
