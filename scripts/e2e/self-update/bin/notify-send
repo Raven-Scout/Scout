@@ -1,0 +1,4 @@
+#!/bin/sh
+# Self-update e2e: a desktop notification on a host with no desktop. Recorded, never shown.
+printf '%s\n' "$*" >> "${SCOUT_E2E_STATE:-/tmp}/notify-send.log"
+exit 0

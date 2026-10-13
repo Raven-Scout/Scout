@@ -152,6 +152,18 @@ def test_the_eval_reminder_never_stops_a_release(tmp_path):
     assert "- [ ] Eval (local, not a gate): ran `plugin/scripts/eval.sh` on my own Claude login" in body
 
 
+def test_prepare_names_the_headless_self_update_rehearsal(tmp_path):
+    r = make_repo(tmp_path)
+    done = r.run("prepare", "patch")
+    assert done.returncode == 0, done.stderr
+    branch = next(c for c in r.calls() if c.startswith("gh pr create")).split("--head ")[1].split()[0]
+    line = f"scripts/e2e/self-update/run.sh --from plugin/v0.14.0 --to {branch}"
+    assert "→ Headless self-update rehearsal (not a gate)" in done.stdout and line in done.stdout
+    pr = [c for c in r.calls() if c.startswith("gh pr create")]
+    body = Path(_arg_after(pr[0], "--body-file")).read_text(encoding="utf-8")
+    assert f"- [ ] Headless self-update rehearsal (not a gate): `{line}`" in body
+
+
 def test_prepare_refuses_an_existing_release_branch(tmp_path):
     r = make_repo(tmp_path)
     head = _git(r.root, "rev-parse", "HEAD")

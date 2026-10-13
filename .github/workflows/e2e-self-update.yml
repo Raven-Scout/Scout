@@ -1,0 +1,57 @@
+name: e2e-self-update
+
+# Manual only: a disposable Linux host installs one release headless (install.sh, cron, a stub
+# `claude`, no API key) and updates itself to another. See scripts/e2e/self-update/README.md.
+# Run it from the Actions tab, choosing the branch whose harness to use (usually main or the
+# release branch). Never on pull requests: it builds two engine venvs per scenario.
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Installed release tag (empty: the newest vX.Y.Z tag)"
+        required: false
+        default: ""
+      to:
+        description: "Target ref: a tag, an rc tag, a branch or a commit (empty: the ref this run is on)"
+        required: false
+        default: ""
+      as_version:
+        description: "Stamp the target as this X.Y.Z (empty: only when it is not newer than --from)"
+        required: false
+        default: ""
+      scenarios:
+        description: "Comma-separated: happy, rollback, sidecars"
+        required: false
+        default: "happy,rollback,sidecars"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the --from tag and any --to ref must be resolvable
+      - name: Run the container e2e
+        env:
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          AS_VERSION: ${{ inputs.as_version }}
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          args=(--to "${TO:-$GITHUB_SHA}" --scenarios "$SCENARIOS" --work "$RUNNER_TEMP/e2e")
+          [ -z "$FROM" ] || args+=(--from "$FROM")
+          [ -z "$AS_VERSION" ] || args+=(--as-version "$AS_VERSION")
+          scripts/e2e/self-update/run.sh "${args[@]}"
+      - name: Keep the report and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-self-update
+          path: |
+            ${{ runner.temp }}/e2e/report.json
+            ${{ runner.temp }}/e2e/logs/
+          if-no-files-found: warn
