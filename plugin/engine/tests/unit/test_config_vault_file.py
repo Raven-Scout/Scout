@@ -220,13 +220,13 @@ def test_heartbeat_flat_keys_still_parse(tmp_path: Path) -> None:
 
 def test_heartbeat_run_uses_paths_config_path(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Path] = []
-    real_load = heartbeat.load_config
+    real_load = heartbeat.load_config_with_issues
 
-    def spy(config_path: Path) -> heartbeat.HeartbeatConfig:
+    def spy(config_path: Path) -> tuple[heartbeat.HeartbeatConfig, list[str]]:
         seen.append(config_path)
         return real_load(config_path)
 
-    monkeypatch.setattr(heartbeat, "load_config", spy)
+    monkeypatch.setattr(heartbeat, "load_config_with_issues", spy)
     monkeypatch.setattr(heartbeat, "scout_session_running", lambda *_, **__: False)
     monkeypatch.setattr(heartbeat, "vault_has_uncommitted_changes", lambda *_: False)
     monkeypatch.setattr(heartbeat, "run_budget_check", lambda *_, **__: 0)

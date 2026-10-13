@@ -5,7 +5,7 @@
     "evaluated_at": "2026-10-11T12:00:00Z",
     "findings": [
       {
-        "fix": "Open Terminal and run: claude auth login (or claude setup-token for unattended hosts)",
+        "fix": "Open Terminal and run: claude auth login (or scoutctl auth setup-token for unattended runs)",
         "id": "auth.expired",
         "severity": "red",
         "since": "2026-10-07T08:01:00Z",

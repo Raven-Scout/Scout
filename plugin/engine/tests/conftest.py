@@ -143,6 +143,37 @@ def desktop_notifications(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     return record
 
 
+_RECORDING_POWER = """#!/bin/sh
+# A stand-in power assertion (tests/conftest.py): records its argv, then runs the
+# wrapped command without asserting anything on the host.
+{{ printf '%s' "$(basename "$0")"; printf ' %s' "$@"; printf '\\n'; }} >> "{record}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in -*) shift ;; *) break ;; esac
+done
+[ "$#" -gt 0 ] || exit 0
+exec "$@"
+"""
+
+
+@pytest.fixture(autouse=True)
+def power_assertions(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No test may hold a real idle-sleep assertion from a shell script (#210).
+
+    claude-with-retry.sh wraps each attempt and backoff in ``caffeinate`` (macOS)
+    or ``systemd-inhibit`` (Linux), found through PATH. Recording stand-ins go
+    first on PATH for every test: each call appends ``<name> <argv…>`` to the
+    returned file (absent until the first call) and runs the wrapped command.
+    """
+    bin_dir = tmp_path_factory.mktemp("no-power-assertion")
+    record = bin_dir / "power-assertions.log"
+    for name in ("caffeinate", "systemd-inhibit"):
+        script = bin_dir / name
+        script.write_text(_RECORDING_POWER.format(record=record))
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return record
+
+
 @pytest.fixture(autouse=True)
 def _block_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may reach the real ``gh`` (Agent Sessions spec §7).
@@ -201,6 +232,84 @@ def _block_real_pushes(monkeypatch: pytest.MonkeyPatch) -> None:
         desktop, "subprocess", _GuardedModule(desktop.subprocess, {"run": "real osascript/notify-send"})
     )
     monkeypatch.setattr(telegram, "requests", _GuardedModule(telegram.requests, {"post": "real Telegram send"}))
+
+
+_FAKE_SECURITY = r"""#!/bin/bash
+# A stand-in macOS `security` (tests/conftest.py). It keeps Scout's one generic-password
+# item in a temp dir, as <service>@<account> files, and refuses everything else. The real
+# `security` reads and writes the user's login Keychain, which a test must never touch.
+store="{store}"
+refuse() {{
+    echo "security is blocked in tests (tests/conftest.py): $*" >&2
+    echo "Only Scout's own generic-password item is faked; anything else would reach the real Keychain." >&2
+    exit 99
+}}
+one() {{
+    local cmd="$1"; shift
+    local svc="" acct="" pw="" want_pw=0 update=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -s) svc="$2"; shift 2 ;;
+            -a) acct="$2"; shift 2 ;;
+            -U) update=1; shift ;;
+            -w) if [ "$cmd" = find-generic-password ]; then want_pw=1; shift; else pw="$2"; shift 2; fi ;;
+            *) refuse "$cmd: option $1" ;;
+        esac
+    done
+    [ "$svc" = scout-claude-oauth-token ] || refuse "$cmd for service '$svc'"
+    local item="$store/$svc@$acct"
+    case "$cmd" in
+        add-generic-password)
+            [ -n "${{FAKE_KEYCHAIN_LOCKED:-}}" ] && return 36
+            if [ -e "$item" ] && [ "$update" = 0 ]; then
+                echo "The specified item already exists in the keychain." >&2
+                return 45
+            fi
+            printf '%s' "$pw" > "$item" ;;
+        find-generic-password)
+            [ -e "$item" ] || {{ echo "The specified item could not be found in the keychain." >&2; return 44; }}
+            if [ "$want_pw" = 1 ]; then
+                [ -n "${{FAKE_KEYCHAIN_LOCKED:-}}" ] && {{ echo "User interaction is not allowed." >&2; return 36; }}
+                cat "$item"; echo
+            fi ;;
+        delete-generic-password)
+            [ -e "$item" ] || return 44
+            rm -f "$item" ;;
+        *) refuse "$cmd" ;;
+    esac
+}}
+echo "$*" | sed -E 's/-w [^ ]+/-w <redacted>/' >> "$store/.calls"
+if [ "${{1:-}}" = -i ]; then
+    while read -r -a words; do
+        [ "${{#words[@]}}" -gt 0 ] || continue
+        echo "-i ${{words[*]}}" | sed -E 's/-w [^ ]+/-w <redacted>/' >> "$store/.calls"
+        one "${{words[@]}}" || true
+    done
+    exit 0  # like the real one, -i doesn't report a failed command in its exit status
+fi
+one "$@"
+"""
+
+
+@pytest.fixture(autouse=True)
+def fake_keychain(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No test may reach the real macOS ``security`` (and with it the login Keychain).
+
+    A fake ``security`` goes first on PATH, in this process and in every child. It keeps
+    Scout's ``scout-claude-oauth-token`` item as a file in the returned directory and
+    exits 99 on any other subcommand or service: no write, delete or secret read can reach
+    the real Keychain. ``FAKE_KEYCHAIN_LOCKED=1`` makes reads of the secret fail the way a
+    locked Keychain does. ``<dir>/.calls`` records each call, with ``-w`` values redacted.
+    Scout calls ``security`` through PATH only; a test pins that.
+    """
+    bin_dir = tmp_path_factory.mktemp("fake-security")
+    store = tmp_path_factory.mktemp("fake-keychain")
+    script = bin_dir / "security"
+    script.write_text(_FAKE_SECURITY.format(store=store))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.delenv("FAKE_KEYCHAIN_LOCKED", raising=False)
+    return store
 
 
 @pytest.fixture

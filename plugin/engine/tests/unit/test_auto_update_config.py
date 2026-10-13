@@ -452,7 +452,7 @@ def test_no_prompt_round_trips_scout_config_through_pyyaml() -> None:
 
 def test_no_command_asks_about_auto_update() -> None:
     """No command file shells out to `config set-auto-update` (spec S2). /scout-setup still asks the
-    question, as amended by the run-health spec §7.9 / §13.6, and passes the answer to
+    question, as amended by the run-health spec §7.9 / §13.8, and passes the answer to
     `bootstrap install --auto-update`, which writes it."""
     for md in sorted((REPO_ROOT / "commands").glob("*.md")):
         assert "set-auto-update" not in md.read_text(encoding="utf-8"), md.name

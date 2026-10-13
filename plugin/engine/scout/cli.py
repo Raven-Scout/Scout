@@ -1712,6 +1712,84 @@ def _register_health() -> None:
 _register_health()
 
 
+def _register_auth() -> None:
+    """scoutctl auth {setup-token,status,clear} — the long-lived token scheduled runs use (#267)."""
+    auth_app = typer.Typer(help="How scheduled runs sign in to Claude (long-lived token or your login).")
+    app.add_typer(auth_app, name="auth")
+
+    @auth_app.command("setup-token")
+    def cli_auth_setup_token(
+        from_stdin: bool = typer.Option(
+            False, "--stdin", help="Read a token made elsewhere from stdin instead of running `claude setup-token`."
+        ),
+        claude_bin: str = typer.Option("", "--claude-bin", help="The claude CLI. Default: auto-detect."),
+    ) -> None:
+        """Create a long-lived token with `claude setup-token` and store it for scheduled runs."""
+        import sys as _sys
+
+        from scout import claude_auth as _ca
+
+        store = _ca.default_store()
+        if from_stdin:
+            code = _ca.store_pasted(store, _sys.stdin.read(), say=typer.echo)
+        else:
+            from scout.scripts.bootstrap import resolve_claude_bin
+
+            code = _ca.setup_token(
+                store,
+                claude_bin=resolve_claude_bin(claude_bin),
+                interactive=_ca._has_terminal(),
+                run=_ca._run_inherited,
+                read_secret=_ca._read_secret,
+                say=typer.echo,
+            )
+        raise typer.Exit(code=code)
+
+    @auth_app.command("status")
+    def cli_auth_status(json_out: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
+        """Which sign-in scheduled runs use and, for a token, when it expires. Exits 1 on a problem."""
+        import json as _json
+        import os as _os
+
+        from scout import claude_auth as _ca
+
+        st = _ca.status()
+        if json_out:
+            typer.echo(_json.dumps(st.to_dict()))
+        else:
+            typer.echo(st.describe())
+            expiry = st.expiry_text()
+            if st.expiring and expiry:
+                typer.echo(f"The token {expiry}; renew it: {_ca.SETUP_COMMAND}")
+            for problem in st.problems:
+                typer.echo(f"problem: {problem}")
+            if _os.environ.get(_ca.ENV_VAR):
+                typer.echo(
+                    f"note: {_ca.ENV_VAR} is set in this shell; a runner that inherits it uses it "
+                    "instead of the stored token."
+                )
+        raise typer.Exit(code=1 if st.problems or st.expiring else 0)
+
+    @auth_app.command("clear")
+    def cli_auth_clear() -> None:
+        """Remove the stored token; scheduled runs go back to your interactive Claude login."""
+        from scout import claude_auth as _ca
+
+        store = _ca.default_store()
+        try:
+            removed = _ca.clear_token(store)
+        except OSError as e:
+            typer.echo(f"Nothing removed: {e}")
+            raise typer.Exit(code=2) from None
+        if removed:
+            typer.echo(f"Removed the token at {store.location}. Scheduled runs use your interactive Claude login.")
+        else:
+            typer.echo("No stored token; scheduled runs already use your interactive Claude login.")
+
+
+_register_auth()
+
+
 def _resolve_claude_bin_or_warn(explicit: str, resolve: Callable[[str], str]) -> str:
     """Resolve ``--claude-bin`` once so the value persisted in scout-config.yaml
     is the concrete path the runners were rendered with; warn when it is not

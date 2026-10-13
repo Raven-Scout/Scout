@@ -30,6 +30,25 @@ features:
   connector_health: true
   dreaming: true
 
+# How often the heartbeat (every 30 min) may launch an extra dreaming or
+# research session. These MUST equal HeartbeatConfig()'s defaults in
+# scout/scripts/heartbeat.py — tests/unit/test_heartbeat_config.py fails the
+# build if they drift. Write one key per line; the heartbeat reads this block
+# without pyyaml, so an inline {…} mapping is reported and ignored.
+#   min_gap_minutes           0–10080  minutes since ANY session before a launch
+#   off_peak_min_gap_minutes  0–10080  the same floor inside the off-peak window
+#   dreaming_signal_hours     1–720    hours since the last dreaming run that count as work
+#   research_min_gap_hours    0–720    hours between heartbeat-launched research runs
+#   dirty_tree_triggers       true|false  uncommitted vault edits count as work
+#                             (Scout's .scout-state/, .scout-logs/, .scout-cache/ never do)
+# The off-peak window itself is `off_peak: {start: 23, end: 6}` (hours, 0–24).
+heartbeat:
+  min_gap_minutes: 120
+  off_peak_min_gap_minutes: 240
+  dreaming_signal_hours: 4
+  research_min_gap_hours: 24
+  dirty_tree_triggers: true
+
 # Engines installed with install.sh or Claude Code: when enabled, the heartbeat
 # installs each stable release about a day after it is published and tells you
 # if an upgrade needs attention. Engines managed by Scout.app ignore this; the

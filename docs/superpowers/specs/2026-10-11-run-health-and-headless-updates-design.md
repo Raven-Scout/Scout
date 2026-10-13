@@ -134,7 +134,7 @@ before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fir
 | `update.held` | The newest row is `held`, or `deferred` for more than 72 h. | yellow | update ledger | #360 |
 | `update.sidecars` | Brain sidecars are pending and the newest update row lists them. Otherwise the doctor's existing sidecar warning covers it. | yellow | sidecars | #360 |
 | `update.behind` | An eligible engine is >14 days behind a published release, or a `dev`/`unknown` engine is behind at all. | note (never changes severity) | self-update check | #360 |
-| `update.last` | The newest update row is from an eligible engine: "Last checked <when>: <result>". *(Added in implementation, §13.6.)* | note | update ledger | #360 |
+| `update.last` | The newest update row is from an eligible engine: "Last checked <when>: <result>". *(Added in implementation, §13.8.)* | note | update ledger | #360 |
 
 A note on `scheduler.stalled`: on a laptop that just woke, launchd runs the missed `StartInterval`
 tick within seconds. So a 2 h threshold doesn't fire on wake. When the scheduler is dead, nothing
@@ -487,7 +487,7 @@ Jordan accepted every recommendation on 2026-10-11. The table keeps each questio
 | Q3 | Scheduler pre-flight skip on a dead login (#267). | **Dropped** (D12). Close that checkbox on #267. |
 | Q4 | Push channel for headless hosts with no desktop and no Telegram. | **Add `notify.command`** in P2 (§4.3, channel 3). |
 | Q5 | Is "published release + 24 h soak" enough, or pin marketplace installs to the tag? | **Ship D8 now.** Tag pinning, including re-pinning the registry on rollback, is tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362). |
-| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
+| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). *Amended 2026-10-12: the login Keychain on macOS, the file elsewhere (§13.7).* |
 | Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
 | Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
 
@@ -567,7 +567,70 @@ grace window never triggers a "recovered".
   byte-identical body to the same chat within 10 min, unless `--allow-duplicate` is passed. It
   prints its receipt as `id=<id>` on stderr line 1.
 
-### 13.6 Headless updates as built (P7, P8)
+### 13.6 The redundancy witness (P4)
+
+§5.2 reads the witness from the ledger, but a ledger row had no field naming the runner that
+wrote it: `slot` and `mode` are the dispatcher's slot key, which need not name its type. Rows now
+carry `runner` (`scout`, `dreaming` or `research`, from `SCOUT_RUNNER_KIND`, which each runner
+exports). Only rows that carry it can be a witness, so rows from older helpers never cancel a run.
+
+A waited dreaming or research run skips only when its witness finished at or after the run's own
+start, that is, during its wait. A witness that finished earlier is a serial run that the waiter
+did not wait behind (it waited behind some other holder), so it gets the note and runs. This is
+the #218 rule ("the waiter's work is provably the holder's") made exact.
+
+`SCOUT_REDUNDANT_WAIT=enforce` skips a waited run of any kind, `scout` included; it never skips an
+unwaited run. A wait that runs out records `skipped_lock`, as §5.2 says: no new outcome was needed.
+
+`commits_in_window` is measured over `[started_at, finished_at]` of the ledger row (`started_at`
+is the session's start, after the lock and the pre-session hooks). A vault with no git history
+records `null`. Of the finding texts, only `runs.failing` describes a run's output, and it states
+the measured count (§4.5).
+
+### 13.7 Setup token (P6)
+
+**Storage changed from Q6 (Jordan, 2026-10-12).**
+- **macOS:** the token goes in the login Keychain, as a generic-password item: service
+  `scout-claude-oauth-token`, account = the user.
+  - It is written through `security -i` with the command on stdin, never in an argv that `ps` can
+    show. It is then read back to confirm the write, because `-i` can exit 0 after a failed command.
+  - It is read with `find-generic-password -w`.
+- **Linux and other hosts:** the 0600 file at `~/.config/scout/claude-oauth-token`, as Q6 says.
+- Both sit behind a `TokenStore` interface in `scout/claude_auth.py`. The wrapper picks its store
+  the same way, by `uname -s`.
+- If the Keychain is locked, or refuses a launchd process, the run falls back to the interactive
+  login. Any `security` exit other than 44 (no item) counts as that.
+
+The rest of §6 is built as written. P6 also adds:
+
+- **The wrapper exports the token.** The runner export lives in `scripts/claude-with-retry.sh`, not
+  in the three `run-*.sh`, because every runner launches Claude through it.
+- **Each run records how it signed in.** The wrapper writes `.scout-logs/.claude-sign-in.json`:
+  `{at, source, token_unreadable}`, where `source` is `keychain`, `file`, `environment` or `login`.
+  It never holds the token.
+  - Doctor notes the last run's mode.
+  - Run health adds a yellow `auth.token_unreadable` when a stored token couldn't be read.
+- **A rejected token names the token fix.** An exported token overrides the interactive login, so
+  `claude auth login` can't fix a rejected token. While a token is stored, the wrapper's banner and
+  desktop alert, and `auth.expired`'s summary and fix, name `scoutctl auth setup-token` (or
+  `scoutctl auth clear`). `auth.expired`'s default fix now says `scoutctl auth setup-token` instead
+  of a raw `claude setup-token`, which stored nothing. The contract fixture is regenerated to match.
+- **Expiry is estimated.** `claude setup-token` tokens last a year, and the CLI can't report a
+  token's expiry. So `~/.config/scout/claude-oauth-token.meta.json` records when the token was
+  stored, never the token itself.
+  - Doctor warns in the last 30 days, and when the file store is readable by others.
+  - Doctor also warns when a token is stored but the vault's wrapper predates the export.
+  - Run health adds a yellow `auth.token_expiring` (source `token`).
+- **The setup step is install-only.** `scoutctl setup` asks on a fresh install, interactive only and
+  default no. It skips the question when a token is already stored, and under `--yes` it prints the
+  command instead. An upgrade asks nothing, and app-managed engines are never offered it (Q6).
+- **"Not logged in" is an auth failure.** It is the signature of a Mac set up again (#267 comment).
+  It joins the three shared auth regexes.
+- **Tests can't reach the real Keychain.** `tests/conftest.py` puts a fake `security` first on PATH
+  for every test. It is a temp-dir store for Scout's one item, and it exits 99 on any other
+  subcommand or service. Scout calls `security` through PATH only, and a test pins that.
+
+### 13.8 Headless updates as built (P7, P8)
 
 - **`update.last` (note).** A healthy `applied` or `up_to_date` state produced no `update.*`
   finding, so §7.8's "Last checked <when>: <result>" row had nothing to read. Every eligible

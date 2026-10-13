@@ -25,14 +25,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Same anchor as the `limit.{0,20}resets` pattern in rate-limit-detect.sh and
 # run-outcome.sh, so a "resets" that isn't a quota message never counts.
+# The weekly form can name a calendar date instead of a weekday: "Oct 15 at 2pm" or
+# "15 Oct 2pm". Claude Code prints "resets Oct 15 at 2pm" when the limit lifts more
+# than a week out.
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
 _RESET_RE = re.compile(
     r"limit\b.{0,20}?\bresets\s+"
-    r"(?:(?P<dow>mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+)?"
+    r"(?:(?P<dow>mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s+"
+    r"|(?P<month>" + _MONTH + r")\s+(?P<mday>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?"
+    r"|(?P<mday2>\d{1,2})(?:st|nd|rd|th)?\s+(?P<month2>" + _MONTH + r")\s+(?:at\s+)?)?"
     r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[ap]\.?m\b\.?)?"
     r"(?:\s*\((?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*)\))?",
     re.IGNORECASE,
 )
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 # The log is read after the run winds down, so a reset that passed a little
 # while ago has happened: it is today, not tomorrow (or next week).
@@ -78,6 +85,21 @@ def _resolve(match: re.Match[str], *, now: datetime, default_zone: tzinfo | None
     # Step in wall-clock days, then attach the zone, so a DST change between now
     # and the reset lands on the right UTC instant.
     day = local_now.replace(tzinfo=None, hour=clock[0], minute=clock[1], second=0, microsecond=0)
+    month = match["month"] or match["month2"]
+    if month:
+        # A calendar date lifts on that day next year once this year's has passed.
+        try:
+            day = day.replace(
+                month=_MONTHS.index(month[:3].lower()) + 1,
+                day=int(match["mday"] or match["mday2"]),
+            )
+            reset = _attach(day, zone)
+            if reset < now - _ALREADY_PASSED_GRACE:
+                day = day.replace(year=day.year + 1)
+                reset = _attach(day, zone)
+        except ValueError:  # e.g. Feb 30, or Feb 29 in a non-leap year
+            return None
+        return reset.astimezone(UTC)
     step = timedelta(days=1)
     if match["dow"]:
         step = timedelta(days=7)
