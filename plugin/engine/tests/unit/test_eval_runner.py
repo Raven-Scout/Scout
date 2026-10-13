@@ -7,7 +7,7 @@ run-scout.sh with a fake CLAUDE target, which is the whole pipeline for free.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,9 +21,9 @@ MONDAY = date(2026, 10, 12)
 
 
 def _utc_today() -> date:
-    """The day a sample runs on. The runner's pre-session step materializes today's daily file
-    from the real clock (the vault runs on UTC), so an end-to-end sample must be built for the
-    real UTC date, as ``eval.sh run`` does. A pinned date only works on that day."""
+    """The day most samples run on: the real UTC date, as ``eval.sh run`` does by default.
+    A sample pinned to another day works too (the runner honours ``SCOUT_EVAL_TODAY``);
+    ``test_a_sample_pinned_to_another_day_writes_that_days_file`` covers that."""
     return datetime.now(UTC).date()
 
 
@@ -307,8 +307,6 @@ def test_the_gh_stub_answers_per_repo(busy) -> None:
 
 def _a_weekday_that_is_not_today() -> date:
     """A fixed Monday, unless that is the real date (UTC or local): then the next one."""
-    from datetime import UTC, datetime, timedelta
-
     real = {datetime.now(UTC).date(), date.today()}
     return MONDAY if MONDAY not in real else MONDAY + timedelta(days=7)
 
