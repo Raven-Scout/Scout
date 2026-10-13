@@ -33,7 +33,8 @@ from pathlib import Path
 
 from scout import paths
 from scout.action_items.parser import parse_lines
-from scout.config import resolve_timezone
+from scout.config import pinned_eval_day, resolve_timezone
+from scout.errors import ConfigError
 from scout.kb.lint_rules import is_diary_heading
 
 LOOKBACK_DAYS = 7
@@ -182,7 +183,11 @@ def materialize(
     # over a config problem (fallback lives inside the resolver; #207).
     tz = resolve_timezone(data_dir)
     now = _dt.datetime.now(tz)
-    target_date = date or now.date()
+    try:
+        pinned = pinned_eval_day()  # an eval run's fixed day (config.today)
+    except ConfigError:
+        pinned = None  # never block a run over config
+    target_date = date or pinned or now.date()
     target = paths.action_items_daily_path(data_dir, date=target_date)
 
     if target.exists():

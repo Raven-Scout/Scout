@@ -34,6 +34,7 @@ from scout.action_items.edit_comment import edit_comment
 from scout.action_items.mark_done import mark_done
 from scout.action_items.materialize import materialize
 from scout.action_items.snooze import snooze
+from scout.errors import ConfigError
 from scout.triggers.dedup import DedupStore
 
 ZONE_EAST = "Pacific/Kiritimati"  # UTC+14 — the first zone to flip dates
@@ -66,6 +67,33 @@ def test_config_today_follows_configured_zone(zone: str, fake_data_dir: Path, mo
     monkeypatch.setenv("SCOUT_USER_TIMEZONE", zone)
     result, ok = _run_boundary_safe(zone, lambda: config.today(fake_data_dir))
     assert result in ok
+
+
+def test_a_pinned_eval_day_is_today(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The eval harness renders a scenario for a fixed day and pins it as
+    ``SCOUT_EVAL_TODAY``. Every daily-file path, in the runner and in the session,
+    must use that day, not the clock, or the run writes tomorrow's file."""
+    monkeypatch.setenv("SCOUT_EVAL_TODAY", "2026-10-12")
+    assert config.today(fake_data_dir) == dt.date(2026, 10, 12)
+    assert paths.action_items_daily_path(fake_data_dir) == fake_data_dir / "action-items" / "action-items-2026-10-12.md"
+
+
+@pytest.mark.parametrize("unset", ["absent", "empty"])
+def test_without_a_pinned_eval_day_today_is_the_clock(
+    unset: str, fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if unset == "empty":
+        monkeypatch.setenv("SCOUT_EVAL_TODAY", "")
+    monkeypatch.setenv("SCOUT_USER_TIMEZONE", ZONE_EAST)
+    result, ok = _run_boundary_safe(ZONE_EAST, lambda: config.today(fake_data_dir))
+    assert result in ok
+
+
+def test_an_unreadable_pinned_eval_day_is_an_error(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo must not silently fall back to the clock: the eval would score the wrong day."""
+    monkeypatch.setenv("SCOUT_EVAL_TODAY", "Monday")
+    with pytest.raises(ConfigError, match="SCOUT_EVAL_TODAY"):
+        config.today(fake_data_dir)
 
 
 def test_resolve_timezone_falls_back_inside_the_resolver(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

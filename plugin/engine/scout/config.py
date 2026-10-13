@@ -264,11 +264,35 @@ def now(data_dir: Path | None = None) -> _dt.datetime:
     return _dt.datetime.now(resolve_timezone(data_dir))
 
 
+# Set only by the eval harness (tests/eval/harness/runner_env.py): the day a scenario
+# was rendered for. Unset in every real run, where the clock decides.
+EVAL_TODAY_ENV = "SCOUT_EVAL_TODAY"
+
+
 def today(data_dir: Path | None = None) -> _dt.date:
     """THE day boundary: today's civil date in the resolved zone.
 
     Every writer or reader that derives a daily filename, a daily cap, or a
     "today" label must come through here (or :func:`resolve_timezone`) so the
     whole system flips dates at the same instant (#207).
+
+    An eval run pins the day in ``SCOUT_EVAL_TODAY`` (``YYYY-MM-DD``), so the
+    runner's steps and the session's own ``scoutctl`` calls name the same daily
+    file as the scenario's fixtures. Unset or empty, the clock decides.
     """
-    return now(data_dir).date()
+    return pinned_eval_day() or now(data_dir).date()
+
+
+def pinned_eval_day() -> _dt.date | None:
+    """The day an eval run pinned in ``SCOUT_EVAL_TODAY``; None when unset or empty.
+
+    Raises ConfigError for a value that isn't ``YYYY-MM-DD``: an eval that fell
+    back to the clock would score the wrong day's file.
+    """
+    pinned = os.environ.get(EVAL_TODAY_ENV)
+    if not pinned:
+        return None
+    try:
+        return _dt.date.fromisoformat(pinned)
+    except ValueError as e:
+        raise ConfigError(f"{EVAL_TODAY_ENV}: not a YYYY-MM-DD date: {pinned!r}") from e
