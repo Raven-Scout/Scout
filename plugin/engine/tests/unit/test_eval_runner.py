@@ -7,7 +7,7 @@ run-scout.sh with a fake CLAUDE target, which is the whole pipeline for free.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,9 +21,9 @@ MONDAY = date(2026, 10, 12)
 
 
 def _utc_today() -> date:
-    """The day a sample runs on. The runner's pre-session step materializes today's daily file
-    from the real clock (the vault runs on UTC), so an end-to-end sample must be built for the
-    real UTC date, as ``eval.sh run`` does. A pinned date only works on that day."""
+    """The day most samples run on: the real UTC date, as ``eval.sh run`` does by default.
+    A sample pinned to another day works too (the runner honours ``SCOUT_EVAL_TODAY``);
+    ``test_a_sample_pinned_to_another_day_writes_that_days_file`` covers that."""
     return datetime.now(UTC).date()
 
 
@@ -303,3 +303,33 @@ def test_the_gh_stub_answers_per_repo(busy) -> None:
     assert stdout("pr list --repo example-org/api --state all --json number,title") == "fixtures/gh-api-prs.json"
     assert stdout("pr list --author @me --state open --json number,title") == "fixtures/gh-my-prs.json"
     assert stdout("pr list --author @me --repo example-org/widgets --json number") == "fixtures/gh-my-prs.json"
+
+
+def _a_weekday_that_is_not_today() -> date:
+    """A fixed Monday, unless that is the real date (UTC or local): then the next one."""
+    real = {datetime.now(UTC).date(), date.today()}
+    return MONDAY if MONDAY not in real else MONDAY + timedelta(days=7)
+
+
+def test_a_sample_pinned_to_another_day_writes_that_days_file(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``eval.sh run --today`` on any day but today: the runner's carry-forward step and
+    the checks must name the same daily file. Before the runner honoured
+    SCOUT_EVAL_TODAY, it carried the fixture into the real date's file and every
+    check read a file nobody wrote (missing_output)."""
+    pinned = _a_weekday_that_is_not_today()
+    fake = tmp_path / "fake-claude"
+    fake.write_text(FAKE_CLAUDE)
+    fake.chmod(0o755)
+    monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
+    monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
+
+    result = run_sample(
+        busy, today=pinned, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
+    )
+
+    assert result.aborted is None
+    daily = sorted(p.name for p in (result.result_dir / "vault" / "action-items").glob("action-items-*.md"))
+    assert daily[-1] == f"action-items-{pinned.isoformat()}.md"  # nothing for the real date
+    assert {c.name: c for c in result.checks}["no_drop"].passed is True
