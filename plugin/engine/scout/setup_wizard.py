@@ -180,6 +180,7 @@ class SetupDeps:
     invoke: Callable[[list[str]], int]
     add_custom: Callable[[dict[str, Any], dict[str, str]], dict[str, Any]]
     first_briefing_slot: Callable[[], str | None]
+    has_token: Callable[[], bool]  # a long-lived Claude token is stored for scheduled runs (#267)
 
 
 def invoke_scoutctl(args: list[str]) -> int:
@@ -259,6 +260,11 @@ def default_deps(claude_bin: str = "") -> SetupDeps:
         sched = load_schedule(path) if path.exists() else load_default_schedule()
         return next((k for k in sorted(sched.keys()) if sched[k].type.value == "briefing"), None)
 
+    def has_token() -> bool:
+        from scout import claude_auth
+
+        return claude_auth.status().mode == "token"
+
     return SetupDeps(
         plan=detect,
         pointer=pointer,
@@ -270,6 +276,7 @@ def default_deps(claude_bin: str = "") -> SetupDeps:
         invoke=invoke_scoutctl,
         add_custom=add_custom,
         first_briefing_slot=first_briefing_slot,
+        has_token=has_token,
     )
 
 
@@ -592,6 +599,38 @@ def _set_daily_budget(answers: Answers, p: Prompter, deps: SetupDeps) -> None:
     p.say(f"Budget: ${answers.max_budget} per session, {daily}.")
 
 
+TOKEN_QUESTION = "Scheduled runs use your Claude login, which expires. Create a long-lived token for unattended runs?"
+TOKEN_LATER = (
+    "Scheduled runs use your Claude login, which expires. To keep them running unattended: scoutctl auth setup-token"
+)
+
+
+def offer_token(opts: SetupOptions, p: Prompter, deps: SetupDeps) -> None:
+    """Offer `scoutctl auth setup-token` on a fresh install (#267, run-health spec §6).
+
+    Interactive only and default no; --yes prints how to do it later. Never fails setup.
+    """
+    if deps.has_token():
+        return
+    if opts.yes:
+        p.say(TOKEN_LATER)
+        return
+    try:
+        wanted = p.confirm(TOKEN_QUESTION, False)
+    except (NoTerminal, EOFError, KeyboardInterrupt):
+        wanted = False  # setup already wrote the vault: a "no" to one optional question, not a cancel
+    if not wanted:
+        p.say("Later, if you want one: scoutctl auth setup-token")
+        return
+    argv = ["auth", "setup-token"]
+    if opts.claude_bin:
+        argv += ["--claude-bin", opts.claude_bin]
+    if deps.invoke(argv) != 0:
+        p.say(
+            "No token stored; scheduled runs keep using your Claude login. Try again later: scoutctl auth setup-token"
+        )
+
+
 def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
     p = prompter
     ptr = deps.pointer()
@@ -631,6 +670,7 @@ def run_setup(opts: SetupOptions, prompter: Prompter, deps: SetupDeps) -> int:
         return code
     _set_daily_budget(answers, p, deps)
     apply_drafts(answers.drafts, p, deps)
+    offer_token(opts, p, deps)
     first = opts.first_run
     if first is None:
         if opts.yes:

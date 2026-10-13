@@ -12,6 +12,7 @@ import select
 import subprocess
 import time
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -27,19 +28,19 @@ def _scoutctl_path() -> str:
     return "scoutctl"  # fall back to PATH lookup
 
 
-def _read_until(proc: subprocess.Popen[str], substring: str, timeout: float) -> str:
-    """Read stdout until `substring` appears or `timeout` elapses.
+def _read_until(stream: IO[str] | None, substring: str, timeout: float) -> str:
+    """Read `stream` until `substring` appears or `timeout` elapses.
 
-    Returns accumulated stdout. Uses `select` so a wedged subprocess
+    Returns the accumulated output. Uses `select` so a wedged subprocess
     doesn't hang the test.
     """
     deadline = time.monotonic() + timeout
     buf: list[str] = []
-    assert proc.stdout is not None
+    assert stream is not None
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([proc.stdout], [], [], 0.2)
-        if proc.stdout in ready:
-            line = proc.stdout.readline()
+        ready, _, _ = select.select([stream], [], [], 0.2)
+        if stream in ready:
+            line = stream.readline()
             if not line:
                 break
             buf.append(line)
@@ -48,9 +49,6 @@ def _read_until(proc: subprocess.Popen[str], substring: str, timeout: float) -> 
     return "".join(buf)
 
 
-# Quarantined: the fixed 0.5s sleep below can lose the race with the watcher arming
-# on a slow runner, so the flip is never seen.
-@pytest.mark.flaky(reruns=2, issue="https://github.com/Raven-Scout/Scout/issues/307")
 def test_watch_emits_completed_line_on_checkbox_flip(tmp_path: Path) -> None:
     daily = tmp_path / "action-items-2026-04-26.md"
     daily.write_text(
@@ -67,15 +65,19 @@ def test_watch_emits_completed_line_on_checkbox_flip(tmp_path: Path) -> None:
     )
 
     try:
-        # Give the watcher ~500ms to register its filesystem hook.
-        time.sleep(0.5)
+        # Wait for the watcher to say it is armed. It reads the file and starts
+        # its observer before printing this line, so a write after it is a real
+        # change it will see. A fixed sleep lost that race on slow runners (#307):
+        # a cold `scoutctl` start takes 0.5-1s under load.
+        ready = _read_until(proc.stderr, "Watching", timeout=30.0)
+        assert "Watching" in ready, f"watcher never armed; stderr: {ready!r}"
 
         # Mutate the file: flip the checkbox.
         daily.write_text(
             "## In Progress\n\n- [x] [#A3F7] Submit Lever feedback\n",
         )
 
-        out = _read_until(proc, "completed", timeout=10.0)
+        out = _read_until(proc.stdout, "completed", timeout=10.0)
         assert "completed" in out
         assert "[#A3F7]" in out
     finally:

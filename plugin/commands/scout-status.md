@@ -231,10 +231,11 @@ Present the dashboard as follows. Use clean Markdown with headers and lists. Do 
 - A finding with id `auth.expired`:
 
   ```
-  ❌ Scout can't run: your Claude login expired.
-     <the finding's summary: failed-run count and last success time>
-     Fix: open Terminal and run  claude auth login
+  ❌ <the finding's summary: what was rejected, the failed-run count and last success time>
+     Fix: <the finding's fix, as given>
   ```
+
+  Take the fix from the finding; don't substitute `claude auth login`. When a long-lived token is stored (`scoutctl auth setup-token`), the token overrides the login, and the fix names `scoutctl auth setup-token` instead.
 
 - Any other red finding:
 

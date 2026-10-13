@@ -124,7 +124,7 @@ before `exit 0`. That lets the evaluator tell "fired, waited, skipped" from "fir
 |---|---|---|---|---|
 | `auth.expired` | The newest non-skip outcome is `oauth_expired`. Fallback for vaults without the ledger: today's newest-log scan. | red | ledger, log | #267, #233 |
 | `runs.failing` | Trailing consecutive non-skip runs with `outcome=failed`: 1 is yellow, ≥2 is red. `since` is the last success. | yellow / red | ledger | #233 |
-| `runs.paused` | The newest failure is `rate_limited` and names a reset (`resets_at`) still ahead. Replaces `runs.failing` for that streak. *(Added in implementation, §13.7.)* | yellow | ledger | #407, #424 |
+| `runs.paused` | The newest failure is `rate_limited` and names a reset (`resets_at`) still ahead. Replaces `runs.failing` for that streak. *(Added in implementation, §13.8.)* | yellow | ledger | #407, #424 |
 | `slot.never_fired:<key>` | A slot in `schedule.yaml` has no `last-fire` entry, and the vault is older than that slot's longest weekday gap plus its `missed_window_hours`. | yellow | schedule × last-fire | #199 |
 | `slot.stale:<key>` | Last fire is older than 2 × the slot's largest legitimate gap (from `weekdays` + `fires_at_local`) + `missed_window_hours`. Red when **every** slot is stale. | yellow / red | schedule × last-fire | #199, #210 |
 | `slot.fired_silent:<key>` | Fired at least `missed_window_hours` ago, and no outcome row of that slot *finished* at or after the fire. Not judged while the session lock is held by a live PID. *(Changed in implementation, §13.1.)* | yellow | last-fire × ledger | #218 |
@@ -487,7 +487,7 @@ Jordan accepted every recommendation on 2026-10-11. The table keeps each questio
 | Q3 | Scheduler pre-flight skip on a dead login (#267). | **Dropped** (D12). Close that checkbox on #267. |
 | Q4 | Push channel for headless hosts with no desktop and no Telegram. | **Add `notify.command`** in P2 (§4.3, channel 3). |
 | Q5 | Is "published release + 24 h soak" enough, or pin marketplace installs to the tag? | **Ship D8 now.** Tag pinning, including re-pinning the registry on rollback, is tracked in [#362](https://github.com/Raven-Scout/Scout/issues/362). |
-| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). |
+| Q6 | Where the setup token lives, and who is offered it. | **A 0600 file at `~/.config/scout/claude-oauth-token`, offered only to non-app engines** (§6). *Amended 2026-10-12: the login Keychain on macOS, the file elsewhere (§13.7).* |
 | Q7 | Exclude `dev` engines? | **Excluded** (D7). They get `update.behind` as a note only. |
 | Q8 | Doctor exit code. | **Install-only** (D2). `scoutctl health` carries the run verdict. |
 
@@ -587,7 +587,50 @@ is the session's start, after the lock and the pre-session hooks). A vault with 
 records `null`. Of the finding texts, only `runs.failing` describes a run's output, and it states
 the measured count (§4.5).
 
-### 13.7 A usage limit is one pause, not a failing streak (#424)
+### 13.7 Setup token (P6)
+
+**Storage changed from Q6 (Jordan, 2026-10-12).**
+- **macOS:** the token goes in the login Keychain, as a generic-password item: service
+  `scout-claude-oauth-token`, account = the user.
+  - It is written through `security -i` with the command on stdin, never in an argv that `ps` can
+    show. It is then read back to confirm the write, because `-i` can exit 0 after a failed command.
+  - It is read with `find-generic-password -w`.
+- **Linux and other hosts:** the 0600 file at `~/.config/scout/claude-oauth-token`, as Q6 says.
+- Both sit behind a `TokenStore` interface in `scout/claude_auth.py`. The wrapper picks its store
+  the same way, by `uname -s`.
+- If the Keychain is locked, or refuses a launchd process, the run falls back to the interactive
+  login. Any `security` exit other than 44 (no item) counts as that.
+
+The rest of §6 is built as written. P6 also adds:
+
+- **The wrapper exports the token.** The runner export lives in `scripts/claude-with-retry.sh`, not
+  in the three `run-*.sh`, because every runner launches Claude through it.
+- **Each run records how it signed in.** The wrapper writes `.scout-logs/.claude-sign-in.json`:
+  `{at, source, token_unreadable}`, where `source` is `keychain`, `file`, `environment` or `login`.
+  It never holds the token.
+  - Doctor notes the last run's mode.
+  - Run health adds a yellow `auth.token_unreadable` when a stored token couldn't be read.
+- **A rejected token names the token fix.** An exported token overrides the interactive login, so
+  `claude auth login` can't fix a rejected token. While a token is stored, the wrapper's banner and
+  desktop alert, and `auth.expired`'s summary and fix, name `scoutctl auth setup-token` (or
+  `scoutctl auth clear`). `auth.expired`'s default fix now says `scoutctl auth setup-token` instead
+  of a raw `claude setup-token`, which stored nothing. The contract fixture is regenerated to match.
+- **Expiry is estimated.** `claude setup-token` tokens last a year, and the CLI can't report a
+  token's expiry. So `~/.config/scout/claude-oauth-token.meta.json` records when the token was
+  stored, never the token itself.
+  - Doctor warns in the last 30 days, and when the file store is readable by others.
+  - Doctor also warns when a token is stored but the vault's wrapper predates the export.
+  - Run health adds a yellow `auth.token_expiring` (source `token`).
+- **The setup step is install-only.** `scoutctl setup` asks on a fresh install, interactive only and
+  default no. It skips the question when a token is already stored, and under `--yes` it prints the
+  command instead. An upgrade asks nothing, and app-managed engines are never offered it (Q6).
+- **"Not logged in" is an auth failure.** It is the signature of a Mac set up again (#267 comment).
+  It joins the three shared auth regexes.
+- **Tests can't reach the real Keychain.** `tests/conftest.py` puts a fake `security` first on PATH
+  for every test. It is a temp-dir store for Scout's one item, and it exits 99 on any other
+  subcommand or service. Scout calls `security` through PATH only, and a test pins that.
+
+### 13.8 A usage limit is one pause, not a failing streak (#424)
 
 Claude Code's weekly limit names a date ("resets Oct 15 at 2pm (Europe/Prague)"), which the reset
 parser from #407 did not read. With no `resets_at`, the budget gate backed off for only two hours,
