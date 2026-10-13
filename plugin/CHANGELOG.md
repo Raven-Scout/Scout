@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **The action-items HTML dashboard escapes link URLs and only links web and mail addresses** (#435; `engine/scout/action_items/render.py`, `templates/action-items/render.py`). A markdown link's URL went into `href="…"` unescaped, so a `"` could break out of the attribute, and a `javascript:` link stayed clickable. Action items are written from Slack, mail, GitHub and Linear text, so that URL can come from someone else. Both renderers now escape the URL for the attribute and make a link only for `http`, `https` and `mailto`. Any other scheme (including mixed-case, whitespace-split and entity-encoded `javascript:`, `data:`, `file:`, `obsidian:`) and any URL without a scheme renders as the link's label in plain text. Existing vaults pick up the template change with `/scout-update`.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added
