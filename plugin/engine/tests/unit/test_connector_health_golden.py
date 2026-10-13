@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -121,8 +122,26 @@ def _outputs(vault: Path) -> dict[str, str]:
     return out
 
 
+# Stored as ``<output>.golden``: a golden named ``*.log`` matched the repo's
+# ``*.log`` ignore rule, was never committed, and only failed on clean checkouts.
+OUTPUTS = ("connector-alerts-pending.md", "connector-alerts.log", "connector-health.md", "event-payload.json")
+SUFFIX = ".golden"
+
+
 def _golden() -> dict[str, str]:
-    return {p.name: p.read_text(encoding="utf-8") for p in sorted(GOLDEN.iterdir())}
+    found = sorted(p.name for p in GOLDEN.iterdir())
+    assert found == sorted(name + SUFFIX for name in OUTPUTS), f"golden set is incomplete: {found}"
+    return {name: (GOLDEN / (name + SUFFIX)).read_text(encoding="utf-8") for name in OUTPUTS}
+
+
+def test_golden_files_are_committable() -> None:
+    """Every golden file must survive a clean checkout: none may be git-ignored."""
+    repo = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=GOLDEN, capture_output=True, text=True)
+    if repo.returncode != 0:
+        pytest.skip("not a git checkout")
+    names = [str(GOLDEN / (name + SUFFIX)) for name in OUTPUTS]
+    ignored = subprocess.run(["git", "check-ignore", *names], cwd=GOLDEN, capture_output=True, text=True)
+    assert ignored.stdout == "", f"git-ignored golden files: {ignored.stdout}"
 
 
 def test_golden_output(vault: Path) -> None:
@@ -130,7 +149,7 @@ def test_golden_output(vault: Path) -> None:
     if REGEN:
         GOLDEN.mkdir(parents=True, exist_ok=True)
         for name, text in out.items():
-            (GOLDEN / name).write_text(text, encoding="utf-8")
+            (GOLDEN / (name + SUFFIX)).write_text(text, encoding="utf-8")
     assert out == _golden()
     # The fixture exercises both alert levels, so the alert paths are covered too.
     assert "CRITICAL" in out["connector-alerts.log"]
