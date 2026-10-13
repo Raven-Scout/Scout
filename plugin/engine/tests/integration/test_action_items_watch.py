@@ -72,17 +72,18 @@ def test_watch_emits_completed_line_on_checkbox_flip(tmp_path: Path) -> None:
         ready = _read_until(proc.stderr, "Watching", timeout=30.0)
         assert "Watching" in ready, f"watcher never armed; stderr: {ready!r}"
 
-        # Mutate the file: flip the checkbox, in place. write_text truncates
-        # first, and a watcher that reads between the truncate and the write
-        # sees an empty file: it prints "removed" then "added", never
-        # "completed" (macOS CI under xdist load). "[ ]" -> "[x]" keeps the
-        # length, so one write over the old bytes never exposes an empty file.
-        flipped = "## In Progress\n\n- [x] [#A3F7] Submit Lever feedback\n"
-        with daily.open("r+", encoding="utf-8") as f:
-            f.write(flipped)
+        # Mutate the file: flip the checkbox with write_text, which truncates
+        # first. A watcher that diffed the read between the truncate and the
+        # write printed "removed" then "added", never "completed" (macOS CI
+        # under xdist load); the watcher now waits for the file to settle.
+        daily.write_text(
+            "## In Progress\n\n- [x] [#A3F7] Submit Lever feedback\n",
+        )
 
         out = _read_until(proc.stdout, "completed", timeout=10.0)
         assert "completed" in out
+        assert "removed" not in out
+        assert "added" not in out
         assert "[#A3F7]" in out
     finally:
         proc.terminate()
