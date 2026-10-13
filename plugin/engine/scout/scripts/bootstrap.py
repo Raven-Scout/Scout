@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -877,12 +878,65 @@ def _stage_install_scoutctl_shim(cfg: BootstrapConfig) -> None:
     install_scoutctl_shim(home=Path.home())
 
 
+def _stage_git_init(cfg: BootstrapConfig) -> None:
+    """Make the vault a git repo with one initial commit, if it is not one (#433).
+
+    Runs commit, sync and drift all assume a repo, and nothing else creates
+    one: the git-setup phase only sets the identity. Upgrade runs this too, so
+    a vault installed without it is repaired by its next update. The identity
+    is the git-setup phase's, set in the vault's own config, so the first
+    commit works on a host with no global git identity. That commit skips
+    signing and hooks: no kb-lint hook exists yet, and a global signing or
+    hooks setting must not block it.
+
+    An existing repo is left alone. Never fatal: with no git, or a git that
+    fails, it warns and the install goes on.
+    """
+    if (cfg.vault / ".git").exists():
+        return
+    git = shutil.which("git")
+    if git is None:
+        print(
+            f"warning: git not found — {cfg.vault} is not a git repo; install git, then re-run /scout-update.",
+            file=sys.stderr,
+        )
+        return
+    steps = [
+        ["-c", "init.defaultBranch=main", "init", "-q"],
+        ["config", "user.email", cfg.user_email],
+        ["config", "user.name", f"{cfg.instance_name} Bot"],
+        ["add", "-A"],
+        [
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            f"Initial {cfg.instance_name} vault",
+        ],
+    ]
+    for args in steps:
+        try:
+            proc = subprocess.run([git, "-C", str(cfg.vault), *args], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            detail = str(e)
+        else:
+            if proc.returncode == 0:
+                continue
+            detail = (proc.stderr or proc.stdout).strip()
+        print(f"warning: could not initialize git in {cfg.vault} (git {' '.join(args)}): {detail}", file=sys.stderr)
+        return
+
+
 def _stage_install_git_hook(cfg: BootstrapConfig) -> None:
     """Install the kb-lint pre-commit hook when the vault is a git repo.
 
     Never fatal: a foreign pre-commit hook is left alone with a warning, and a
-    vault that is not (yet) a git repo is skipped — the git-setup phase inits
-    it on the first session and the next /scout-update installs the hook.
+    vault that is not a git repo (no git on the host) is skipped — the next
+    /scout-update after _stage_git_init succeeds installs it.
     """
     if not (cfg.vault / ".git").exists():
         return
@@ -1147,9 +1201,12 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_cat4_install(cfg)
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
-        _stage_install_git_hook(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
         marker.unlink(missing_ok=True)
+        # After the stamp and the marker, so the initial commit holds the whole
+        # install (scout-config.yaml included) and never the marker.
+        _stage_git_init(cfg)
+        _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)
@@ -1215,8 +1272,10 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         conflicts = cat4.conflicts
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
-        _stage_install_git_hook(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
+        # A vault installed before #433 was never initialized: repair it here.
+        _stage_git_init(cfg)
+        _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
     finally:
         release_lock(lock)

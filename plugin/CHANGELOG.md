@@ -6,6 +6,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A new vault is a git repo** (#433; `engine/scout/scripts/bootstrap.py`). Nothing ever ran `git init`: the git-setup phase only sets the identity, so a fresh vault (on Linux, and on macOS too) stayed a plain folder, run commits failed, and the kb-lint pre-commit hook was skipped. `scoutctl bootstrap install` now initializes the vault and makes one initial commit, then installs the hook in the same run. The commit uses the run's own identity (`<Instance> Bot` and your email, set in the vault's `.git/config`), so it works on a host with no global git identity, and it is never signed or hooked. `bootstrap upgrade` does the same for a vault that is not a repo yet, so the next update repairs a vault installed without one. An existing repo is never touched. With no `git` on the host the install warns and carries on.
+- **Phase shell commands run on Linux** (#434; `phases/connectors/github.md`, `phases/core/git-setup.md`, `commands/scout-meta-review.md`). The GitHub scan's five time filters used BSD-only `date -v-NH`, which fails on GNU/Linux and left the filter empty. They now use a `python3 -c` one-liner. Three of them also put a `Z` (UTC) on a local time, which moved the window by the UTC offset on macOS too; all five are now real UTC instants. The timestamp-conversion rule's example used GNU-only `date -d`, and `/scout-meta-review` read log dates with BSD-first `stat -f`, which on Linux printed filesystem details instead; both use `python3 -c` now. A new test fails on BSD-only or GNU-only `date`, `sed -i` and `stat -f` usage in phases, commands, skills, templates and scripts.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added
