@@ -7,7 +7,7 @@ run-scout.sh with a fake CLAUDE target, which is the whole pipeline for free.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,13 @@ from tests.eval.harness.runner import run_sample
 from tests.eval.harness.scenario import SCENARIOS_DIR, load_scenario
 
 MONDAY = date(2026, 10, 12)
+
+
+def _utc_today() -> date:
+    """The day a sample runs on. The runner's pre-session step materializes today's daily file
+    from the real clock (the vault runs on UTC), so an end-to-end sample must be built for the
+    real UTC date, as ``eval.sh run`` does. A pinned date only works on that day."""
+    return datetime.now(UTC).date()
 
 
 @pytest.fixture(scope="module")
@@ -101,8 +108,9 @@ def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypa
     fake.chmod(0o755)
     monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
     monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
+    today = _utc_today()
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
+        busy, today=today, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
     )
     assert result.aborted is None
     assert result.metrics.tool_call_count == 1 and result.metrics.model == "claude-sonnet-5"
@@ -114,7 +122,7 @@ def test_one_sample_end_to_end_with_a_fake_claude(tmp_path: Path, busy, monkeypa
     saved = json.loads((result.result_dir / "checks.json").read_text())
     assert {c["name"] for c in saved} == set(busy.checks)
     assert json.loads((result.result_dir / "metrics.json").read_text())["tool_call_count"] == 1
-    assert (result.result_dir / "vault" / "action-items" / "action-items-2026-10-12.md").exists()
+    assert (result.result_dir / "vault" / "action-items" / f"action-items-{today.isoformat()}.md").exists()
 
 
 def test_a_leaking_session_is_aborted_and_not_scored(tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,7 +133,7 @@ def test_a_leaking_session_is_aborted_and_not_scored(tmp_path: Path, busy, monke
         "EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack,claude.ai Slack"
     )
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
     )
     assert result.aborted == {"reason": "mcp_leak", "servers": ["claude.ai Slack"]}
     assert result.checks == ()
@@ -136,7 +144,7 @@ def test_a_session_that_never_starts_is_aborted_not_scored(tmp_path: Path, busy)
     fake.write_text("#!/bin/bash\nexit 1\n")
     fake.chmod(0o755)
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "results", real_claude=str(fake)
     )
     assert result.aborted is not None and result.aborted["reason"] == "no_session"
     assert result.checks == ()
@@ -167,7 +175,7 @@ def test_cli_run_with_a_fake_claude_prints_the_plan_and_the_report(
     monkeypatch.setenv("EVAL_FAKE_SERVERS", "claude_ai_Google_Calendar,claude_ai_Linear,claude_ai_Slack")
     monkeypatch.setenv("EVAL_FAKE_ENRICH", "1")
     code = main(
-        ["run", "busy-weekday", "--reps", "1", "--yes", "--today", "2026-10-12",
+        ["run", "busy-weekday", "--reps", "1", "--yes", "--allow-weekend",
          "--claude", str(fake), "--results", str(tmp_path / "results")]
     )  # fmt: skip
     out = capsys.readouterr().out
@@ -226,7 +234,7 @@ def test_a_session_that_ends_in_an_error_is_aborted_not_scored(
     monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
     monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
     )
     assert result.aborted == {"reason": "error_max_budget_usd"}
     assert result.checks == ()
@@ -237,7 +245,7 @@ def test_a_session_that_never_rewrote_todays_file_is_not_scored_as_a_pass(
 ) -> None:
     monkeypatch.setenv("EVAL_FAKE_SERVERS", SERVERS)
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
     )
     assert result.aborted is None
     assert {(c.name, c.passed, c.details) for c in result.checks} == {
@@ -269,7 +277,7 @@ def test_a_runner_that_overruns_is_killed_with_its_session_and_not_scored(
     monkeypatch.setenv("EVAL_FAKE_SLEEP", "120")
     monkeypatch.setenv("EVAL_FAKE_PIDFILE", str(tmp_path / "fake.pid"))
     result = run_sample(
-        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path)),
+        busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path)),
         timeout_s=60, hook_grace_s=-30,  # a 30 s runner budget: slow CI pre-hooks finish first
     )  # fmt: skip
     assert result.aborted is not None and result.aborted["reason"] == "runner_timeout"
