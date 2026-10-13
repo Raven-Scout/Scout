@@ -123,6 +123,78 @@ jobs:
             apps/macos/xcodebuild.log
           if-no-files-found: ignore
 
+  # Early warning for the next Xcode (#337). Not in app-ci's `needs`, so it
+  # never blocks a merge or holds the required check. It runs beside `test`
+  # on GitHub's free `xcode-27` preview image, whose default is Xcode 27.0.
+  # The `test` job stays on macos-15 / Xcode 26.x, which matches releases.
+  xcode-27:
+    name: ScoutTests (Xcode 27, non-blocking)
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain info
+        run: xcodebuild -version
+
+      - name: Resolve packages
+        working-directory: apps/macos
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Scout.xcodeproj \
+            -scheme Scout \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"
+
+      # Grape 1.1.0 (newest tag) doesn't compile against the macOS 27 SDK:
+      # `@State` is now a macro with a private backing store, and
+      # GraphDragGesture.swift references it from `@inlinable` code. The fix
+      # is upstream (li3zhen1/Grape#78); the project waits for a release with
+      # it rather than pinning a fork. Until then this job applies the same
+      # change to its own throwaway checkout, so the leg still tests Scout's
+      # code. Shipped builds are untouched. Once Grape's file has no
+      # `@inlinable` left the step is a no-op; delete it after the bump.
+      - name: Patch Grape for the SDK 27 @State macro (CI only)
+        run: |
+          f="$RUNNER_TEMP/spm/checkouts/Grape/Sources/Grape/Gestures/GraphDragGesture.swift"
+          if grep -qE '^[[:space:]]*@inlinable[[:space:]]*$' "$f"; then
+            chmod u+w "$f"
+            sed -i '' -E '/^[[:space:]]*@inlinable[[:space:]]*$/d' "$f"
+            echo "::warning::Patched Grape's GraphDragGesture.swift for SDK 27 (li3zhen1/Grape#78)"
+          else
+            echo "Grape needs no patch; remove this step."
+          fi
+
+      - name: Run ScoutTests
+        working-directory: apps/macos
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Scout.xcodeproj \
+            -scheme Scout \
+            -destination 'platform=macOS' \
+            -only-testing:ScoutTests \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" \
+            -disableAutomaticPackageResolution \
+            -skipPackageUpdates \
+            -resultBundlePath TestResults-xcode27.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee xcodebuild-xcode27.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TestResults-xcode27
+          path: |
+            apps/macos/TestResults-xcode27.xcresult
+            apps/macos/xcodebuild-xcode27.log
+          if-no-files-found: ignore
+
   app-ci:
     name: app-ci
     needs: [changes, test]
