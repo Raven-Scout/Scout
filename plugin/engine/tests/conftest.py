@@ -23,11 +23,15 @@ from _pytest.runner import runtestprotocol
 # starts failing more often stays visible. Remove the marker when the issue is
 # fixed; never add one without an issue.
 
-_FLAKY_RERUNS = pytest.StashKey[list[str]]()
+_FLAKY_RERUN_PROPERTY = "quarantined-flaky-rerun"
+# This session's rerun lines. pytest_runtest_logreport gets no config to stash
+# them on, so they're module state, reset per session so an in-process pytest
+# run (pytester) doesn't inherit an earlier session's lines.
+_FLAKY_RERUN_LINES: list[str] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    config.stash[_FLAKY_RERUNS] = []
+    _FLAKY_RERUN_LINES.clear()
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -42,22 +46,37 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
     item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
     reports = runtestprotocol(item, nextitem=nextitem, log=False)
+    rerun_lines = []
     for attempt in range(1, reruns + 1):
         call = next((r for r in reports if r.when == "call"), None)
         if call is None or not call.failed:
             break
         crash = getattr(call.longrepr, "reprcrash", None)
         why = crash.message.splitlines()[0] if crash and crash.message else "failed"
-        item.config.stash[_FLAKY_RERUNS].append(f"{item.nodeid} attempt {attempt}/{reruns + 1}: {why} ({issue})")
+        rerun_lines.append(f"{item.nodeid} attempt {attempt}/{reruns + 1}: {why} ({issue})")
         reports = runtestprotocol(item, nextitem=nextitem, log=False)
+    # The lines ride on the reports, not straight into the stash: under
+    # pytest-xdist this runs in a worker, whose stash the controller never
+    # prints, while user_properties are serialized back with the report.
     for report in reports:
+        if report.when == "call":
+            report.user_properties.extend((_FLAKY_RERUN_PROPERTY, line) for line in rerun_lines)
         item.ihook.pytest_runtest_logreport(report=report)
     item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
     return True
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    # Fires in the process that prints the summary (the xdist controller, or the
+    # only process without xdist) and in each worker; only the former's lines
+    # are ever printed.
+    for name, value in report.user_properties:
+        if name == _FLAKY_RERUN_PROPERTY:
+            _FLAKY_RERUN_LINES.append(str(value))
+
+
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter, config: pytest.Config) -> None:
-    reruns = config.stash.get(_FLAKY_RERUNS, [])
+    reruns = _FLAKY_RERUN_LINES
     if reruns:
         terminalreporter.section("quarantined flaky reruns", yellow=True)
         for line in reruns:

@@ -7,9 +7,54 @@ from __future__ import annotations
 
 import datetime as dt
 
-from scout.action_items.watch import process_change
+from scout.action_items.watch import process_change, read_settled
 
 _NOW = dt.datetime(2026, 4, 26, 14, 32, 15)
+
+
+def _reads(*texts: str | None):
+    """A reader that returns `texts` in turn, then repeats the last one."""
+    queue = list(texts)
+
+    def read() -> str | None:
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return read
+
+
+def _no_sleep(_: float) -> None:
+    pass
+
+
+def test_read_settled_waits_out_the_truncated_read_of_a_truncate_then_write_save() -> None:
+    prev = "- [ ] [#A3F7] task\n"
+    curr = "- [x] [#A3F7] task\n"
+    assert read_settled(_reads("", curr), prev_text=prev, sleep=_no_sleep) == curr
+
+
+def test_read_settled_waits_out_a_partially_written_file() -> None:
+    prev = "- [ ] [#A3F7] task A\n"
+    curr = "- [ ] [#A3F7] task A\n- [ ] [#B5K2] task B\n"
+    assert read_settled(_reads(curr[:25], curr), prev_text=prev, sleep=_no_sleep) == curr
+
+
+def test_read_settled_accepts_a_file_really_emptied_once_attempts_run_out() -> None:
+    sleeps: list[float] = []
+    got = read_settled(_reads(""), prev_text="- [ ] [#A3F7] task\n", sleep=sleeps.append, attempts=4)
+    assert got == ""
+    assert len(sleeps) == 4
+
+
+def test_read_settled_does_not_wait_when_nothing_changed() -> None:
+    text = "- [ ] [#A3F7] task\n"
+    sleeps: list[float] = []
+    assert read_settled(_reads(text), prev_text=text, sleep=sleeps.append) == text
+    assert sleeps == []
+
+
+def test_read_settled_passes_an_unreadable_file_back_as_none() -> None:
+    assert read_settled(_reads(None), prev_text="x\n", sleep=_no_sleep) is None
+    assert read_settled(_reads("", None), prev_text="x\n", sleep=_no_sleep) is None
 
 
 def test_process_change_emits_no_lines_when_text_identical() -> None:

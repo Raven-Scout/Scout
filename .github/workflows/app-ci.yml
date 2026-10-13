@@ -22,11 +22,16 @@ jobs:
   # skipped by `paths:` filtering is stuck "Pending" forever and blocks
   # merging, while a job skipped by an `if:` conditional reports "Success".
   # This job decides, and every other job gates on its output.
+  #
+  # A release PR (`scripts/release.sh prepare`: version lines and CHANGELOGs
+  # only) skips ScoutTests too — see version-bump-only.sh. contract still runs
+  # `versioning check` on it (MARKETING_VERSION against plugin.json), and the
+  # push to main after the merge runs this workflow in full.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      run: ${{ steps.match.outputs.run }}
+      run: ${{ steps.match.outputs.run == 'true' && steps.release.outputs.version_only != 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +40,12 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(apps/macos/|plugin/\.claude-plugin/plugin\.json$|\.github/workflows/app-ci\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(apps/macos/|plugin/\.claude-plugin/plugin\.json$|\.github/workflows/app-ci\.yml$|\.github/scripts/(changed-paths|version-bump-only)\.sh$)'
+      - id: release
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/version-bump-only.sh
 
   test:
     name: ScoutTests

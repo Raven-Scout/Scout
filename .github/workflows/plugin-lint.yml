@@ -11,6 +11,7 @@ on:
       - ".claude-plugin/**"
       - ".github/workflows/plugin-lint.yml"
       - ".github/scripts/changed-paths.sh"
+      - ".github/scripts/version-bump-only.sh"
 
 jobs:
   # Path-scoped `paths:` filters were removed from `on.pull_request` above so
@@ -31,7 +32,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|scripts/|apps/macos/scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|scripts/|apps/macos/scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/(changed-paths|version-bump-only)\.sh$)'
 
   lint:
     needs: changes
@@ -65,8 +66,8 @@ jobs:
           # engine launcher — full severity (existing guard)
           shellcheck plugin/engine/bin/scoutctl
           # installer (repo root), both release scripts, and the PR-gating
-          # script every workflow's `changes` job runs — error severity
-          shellcheck -S error install.sh scripts/*.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/changed-paths.sh
+          # scripts every workflow's `changes` job runs — error severity
+          shellcheck -S error install.sh scripts/*.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/*.sh
           # all shell templates seeded into user vaults (placeholders don't
           # break shellcheck parsing) — error severity
           find plugin/templates -name '*.sh.tmpl' -print0 | xargs -0 -r shellcheck -S error

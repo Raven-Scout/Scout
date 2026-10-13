@@ -13,7 +13,7 @@ nonisolated struct SideEntry: Identifiable, Equatable, Sendable {
     /// written, never `URL`'s percent-encoded form, so the engine's
     /// `side_entry_key` gets the same key.
     var key: String { link ?? text }
-    var url: URL? { link.flatMap(URL.init(string:)) }
+    var url: URL? { link.flatMap(URL.init(string:)).flatMap { LinkSchemePolicy.allowsExternalOpen($0) ? $0 : nil } }
     var id: String { key }
 
     private static let linkRe = try! NSRegularExpression(pattern: #"\[([^\]]+)\]\((https?://[^)\s]+)\)"#)
