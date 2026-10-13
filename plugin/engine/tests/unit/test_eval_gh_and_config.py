@@ -9,6 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from tests._waits import wait_until
 from tests.eval.harness.mcp_config import PERSONA_SERVERS, write_mcp_config
 from tests.eval.harness.stubs.gh import GH_BIN_DIR
 
@@ -87,9 +88,8 @@ def test_mcp_config_has_one_stdio_server_per_persona(tmp_path: Path) -> None:
 
 
 def test_times_holds_when_gh_calls_overlap(tmp_path: Path) -> None:
-    """Hold the calls-log lock while four gh calls start, so all of them are in flight at once."""
+    """Hold the calls-log lock until all four gh calls are waiting on it, so all are in flight at once."""
     import fcntl
-    import time
 
     (tmp_path / "connectors.yaml").write_text(
         "gh:\n  '*':\n    - times: 1\n      error: unavailable\n    - respond: {stdout: ok}\n"
@@ -104,12 +104,20 @@ def test_times_holds_when_gh_calls_overlap(tmp_path: Path) -> None:
         "SCOUT_EVAL_CALLS": str(calls),
         "SCOUT_EVAL_TODAY": "2026-10-14",
         "HOME": str(tmp_path),
+        "SCOUT_EVAL_LOCK_MARKERS": str(markers := tmp_path / "markers"),
     }
+    markers.mkdir()
     with open(calls, "a") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
         procs = [subprocess.Popen(["gh", "pr", "list"], env=env, cwd=tmp_path) for _ in range(4)]
-        time.sleep(1.5)
-        fcntl.flock(held, fcntl.LOCK_UN)
+        try:
+            wait_until(
+                lambda: len(list(markers.iterdir())) == 4,
+                timeout=60,
+                message="not all four gh calls reached the calls-log lock",
+            )
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
     codes = [p.wait(timeout=60) for p in procs]
     assert sorted(codes) == [0, 0, 0, 1]
     kinds = [json.loads(line)["kind"] for line in calls.read_text().splitlines()]
