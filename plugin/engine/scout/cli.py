@@ -1685,7 +1685,11 @@ def _register_health() -> None:
             typer.echo(f"run health: {report.severity}")
             for f in report.findings:
                 typer.echo(f"{f.severity}  {f.id}: {f.summary}")
+                if f.detail:
+                    typer.echo(f"    error: {f.detail}")
                 typer.echo(f"    fix: {f.fix}")
+                if f.log:
+                    typer.echo(f"    log: {f.log}")
         raise typer.Exit(code=report.exit_code)
 
     @health_app.command("notify")
