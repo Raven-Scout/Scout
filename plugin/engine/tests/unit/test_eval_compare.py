@@ -232,6 +232,46 @@ def test_compare_stops_launching_after_an_aborted_sample(
     assert _cached(cache_root) == []
 
 
+def _compare_models(fake: Path, tmp_path: Path, *extra: str) -> int:
+    from tests.eval.harness.cli import main
+
+    return main(
+        ["compare-models", "busy-weekday", "--yes", "--today", "2026-10-12", "--claude", str(fake),
+         "--cli-version", "9.9.9", "--results", str(tmp_path / "results"), *extra]
+    )  # fmt: skip
+
+
+def test_compare_models_runs_both_models_interleaved(
+    tmp_path: Path, fake: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _compare_models(fake, tmp_path, "--reps", "1") == 0
+    out = capsys.readouterr().out
+    assert "Will start 2 sessions (busy-weekday: opus ×1 and sonnet ×1, interleaved)" in out
+    assert "A regression means sonnet did worse" in out
+    # The stand-in claude reports one model whatever it is asked for, so the
+    # guard must refuse a verdict rather than call the two arms "same".
+    assert "NO VERDICT: both arms ran" in out
+    assert f"{'check':<14}{'opus':>8}{'sonnet':>8}" in out
+    arms = sorted(p.name.removeprefix("busy-weekday-").split("-")[0] for p in (tmp_path / "results").iterdir())
+    assert arms == ["opus", "sonnet"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (("--a", "sonnet", "--b", "Sonnet"), "two different models"),
+        (("--b", "sonet"), "is not opus, sonnet, haiku"),
+        (("--reps", "6"), "--many"),
+    ],
+)
+def test_compare_models_refuses_a_bad_plan(
+    tmp_path: Path, fake: Path, capsys: pytest.CaptureFixture[str], extra: tuple[str, ...], message: str
+) -> None:
+    assert _compare_models(fake, tmp_path, *extra) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "results").exists()
+
+
 def test_the_install_guards_raise_rather_than_assert() -> None:
     import tests.eval.harness.build as build
 
