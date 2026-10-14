@@ -119,3 +119,33 @@ def test_a_head_that_cannot_be_evaluated_where_base_could_is_a_regression() -> N
 
 def test_improvement_wins_over_a_flaky_base() -> None:
     assert _row(compare_arms(_arm(True, False, False), _arm(True, True, True))).verdict == "improvement"
+
+
+# ----- compare-models: the arms ran different models on purpose -------------
+
+
+def test_across_models_scores_two_different_models() -> None:
+    opus = _arm(True, True, True, model="claude-opus-5")
+    sonnet = _arm(True, False, False, model="claude-sonnet-5")
+    cmp = compare_arms(opus, sonnet, across_models=True)
+    assert cmp.blocked is None
+    assert _row(cmp).verdict == "regression"
+    assert cmp.regressions == ["placement"]
+
+
+def test_across_models_blocks_when_both_arms_ran_the_same_model() -> None:
+    # The switch did not take (e.g. a shim that ignored --model): no verdict, not "same".
+    cmp = compare_arms(_arm(True, True), _arm(True, True), across_models=True)
+    assert cmp.blocked is not None and "did not take" in cmp.blocked
+    assert _row(cmp).verdict == "blocked"
+
+
+def test_across_models_blocks_an_arm_that_mixed_models() -> None:
+    a = [*_arm(True, model="claude-opus-5"), *_arm(True, model="claude-opus-4")]
+    cmp = compare_arms(a, _arm(True, True, model="claude-sonnet-5"), across_models=True)
+    assert cmp.blocked is not None and "within one arm" in cmp.blocked
+
+
+def test_the_default_still_blocks_mixed_models() -> None:
+    cmp = compare_arms(_arm(True, True, model="claude-opus-5"), _arm(True, True, model="claude-sonnet-5"))
+    assert cmp.blocked is not None and cmp.blocked.startswith("mixed models")
