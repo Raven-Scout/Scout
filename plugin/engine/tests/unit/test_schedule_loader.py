@@ -709,3 +709,45 @@ def test_malformed_overlay_slot_shapes_raise_config_error(tmp_path, overlay_body
     overlay.write_text("schema_version: 1\n" + overlay_body)
     with pytest.raises(ConfigError):
         load_schedule(seed, overlay=overlay)
+
+
+# ---------------------------------------------------------------------------
+# Slot.model — per-slot model selection (spec 2026-10-13-slot-model-selection)
+# ---------------------------------------------------------------------------
+
+_MODEL_SLOT = (
+    "schema_version: 1\n"
+    "slots:\n"
+    "  midday-consolidation:\n"
+    "    type: consolidation\n"
+    "    runner: run-scout.sh\n"
+    "    fires_at_local: '13:00'\n"
+    "    weekdays: [Mon]\n"
+    "    missed_window_hours: 2\n"
+    "    on_miss: collapse\n"
+    "    cooldown_minutes: 90\n"
+)
+
+
+def test_slot_model_defaults_to_none(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT)
+    assert load_schedule(yaml_file)["midday-consolidation"].model is None
+
+
+def test_slot_model_is_read_and_normalised(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT + "    model: Sonnet\n")
+    assert load_schedule(yaml_file)["midday-consolidation"].model == "sonnet"
+
+
+def test_slot_model_invalid_value_names_the_slot(tmp_path):
+    yaml_file = tmp_path / "schedule.yaml"
+    yaml_file.write_text(_MODEL_SLOT + "    model: sonet\n")
+    with pytest.raises(ConfigError, match=r"slot 'midday-consolidation': model 'sonet'"):
+        load_schedule(yaml_file)
+
+
+def test_shipped_schedule_sets_no_model():
+    # Defaults don't change quality: every seeded slot inherits models.default.
+    assert all(slot.model is None for slot in load_default_schedule().values())

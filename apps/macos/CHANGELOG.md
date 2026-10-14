@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Fixed
+- **Saving a slot in Schedules keeps every slot's `model:`** (`Scout/Models/Slot.swift`, `Scout/Schedules/SlotDraft.swift`, `Scout/Services/ScheduleEditService.swift`). The app rewrites the whole `schedule.yaml` on save from the fields it knows. Now that the engine reads a per-slot `model:`, the app decodes it from `scoutctl schedule list --json` and writes it back, so a model set by hand isn't dropped the next time any slot is saved. The picker for it follows.
+
 ### Changed
 - **CI also runs ScoutTests on Xcode 27, without blocking merges** (#337; `.github/workflows/app-ci.yml`). A new `xcode-27` job uses GitHub's free `xcode-27` preview image. It isn't part of the required `app-ci` check, and releases still build on Xcode 26.x. Grape 1.1.0 doesn't compile against the macOS 27 SDK yet; the fix is upstream in li3zhen1/Grape#78. Until Grape tags a release with that fix, the job patches its own throwaway copy of Grape so it can still test Scout's code. Shipped builds don't include that patch.
 
