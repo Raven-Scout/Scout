@@ -57,6 +57,34 @@ struct SessionLogServiceTests {
         #expect(body.endedAt == nil)
     }
 
+    @Test func parseBody_readsTheRunsModel() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-04-19_13-00.log")
+        try """
+        === Scout run starting at Sun Apr 19 13:00:01 EDT 2026 ===
+        === model: sonnet ===
+        === Scout run finished at Sun Apr 19 13:05:00 EDT 2026 (exit code: 0, duration: 299s) ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.model == "sonnet")
+    }
+
+    @Test func parseBody_olderLogHasNoModel() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scout-2026-04-19_13-30.log")
+        try """
+        === Scout run starting at Sun Apr 19 13:30:01 EDT 2026 ===
+        the session said: === model: sonnet === in passing
+        === Scout run finished at Sun Apr 19 13:35:00 EDT 2026 (exit code: 0, duration: 299s) ===
+        """.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let parsed = SessionLogService.parseFilename(tmp)!
+        let body = try SessionLogService.parseBody(at: tmp, filename: parsed)
+        #expect(body.model == nil, "only the runner's own whole-line marker counts")
+    }
+
     @Test func parseBody_timeout() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("scout-2026-04-19_16-00.log")
