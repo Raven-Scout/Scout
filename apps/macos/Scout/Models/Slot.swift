@@ -17,6 +17,10 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
     let budgetUsd: Double?
     let tz: String?
     let runtime: SlotRuntime
+    /// The Claude model this slot runs on (`opus`, `sonnet`, `haiku` or a full
+    /// `claude-…` ID). nil = inherit scout-config's `models.default`. Must
+    /// round-trip through the YAML emitter, or saving any slot would drop it.
+    let model: String?
 
     var id: String { key }
 
@@ -32,6 +36,7 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         case budgetUsd = "budget_usd"
         case tz
         case runtime
+        case model
     }
 
     init(
@@ -45,7 +50,8 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         cooldownMinutes: Int,
         budgetUsd: Double? = nil,
         tz: String? = nil,
-        runtime: SlotRuntime = .local
+        runtime: SlotRuntime = .local,
+        model: String? = nil
     ) {
         self.key = key
         self.type = type
@@ -58,6 +64,7 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         self.budgetUsd = budgetUsd
         self.tz = tz
         self.runtime = runtime
+        self.model = model
     }
 
     init(from decoder: Decoder) throws {
@@ -74,6 +81,8 @@ struct Slot: Identifiable, Equatable, Hashable, Sendable, Codable {
         self.tz = try c.decodeIfPresent(String.self, forKey: .tz)
         // Forward-compat: default to .local when the engine omits the field.
         self.runtime = try c.decodeIfPresent(SlotRuntime.self, forKey: .runtime) ?? .local
+        // Absent on engines before per-slot models, and null when the slot inherits.
+        self.model = try c.decodeIfPresent(String.self, forKey: .model)
     }
 }
 

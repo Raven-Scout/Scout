@@ -119,6 +119,7 @@ struct TabViewSmokeTests {
         ViewHost.render(
             SchedulesView()
                 .environmentObject(vault.state.scheduleEditService)
+                .environmentObject(vault.state.modelSettingsService)
                 .environmentObject(vault.state))
     }
 
