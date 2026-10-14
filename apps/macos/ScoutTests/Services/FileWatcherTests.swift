@@ -102,7 +102,7 @@ struct FileWatcherTests {
             create: true
         ).resolvingRealPath()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let file = tmp.appendingPathComponent("scout-profile.json")
+        let file = tmp.appendingPathComponent("scout-display.json")
         #expect(!FileManager.default.fileExists(atPath: file.path))
 
         let beforeCreate = FileWatcher().events(for: file)

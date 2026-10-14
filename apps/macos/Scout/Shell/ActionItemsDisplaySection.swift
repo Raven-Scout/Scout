@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Settings > Action Items: the default view plus the options of the toolbar's
-/// View menu, all kept in `scout-profile.json` in the vault root (#52).
+/// View menu, all kept in `scout-display.json` in the vault root (#52).
 struct ActionItemsDisplaySection: View {
     @EnvironmentObject var service: DisplayProfileService
 
@@ -10,33 +10,44 @@ struct ActionItemsDisplaySection: View {
             SettingsCard {
                 SettingsRow(
                     title: "Default view",
-                    help: "What Action Items opens in. The List/Board switch in the toolbar only changes the current view."
+                    help: "What Action Items opens in. The switch in the toolbar only changes the current view."
                 ) {
                     picker(\.defaultView, ActionItemsViewMode.allCases) { $0.displayName }
                 }
-                SettingsRow(title: "Sort", help: "Order of tasks in each section and Board column.") {
+                SettingsRow(
+                    title: "Sort",
+                    help: "List and Board: order of tasks in each section and column. Topics keeps its own order."
+                ) {
                     picker(\.sort, ActionItemsDisplay.Sort.allCases) { $0.displayName }
                 }
                 SettingsRow(
                     title: "Group",
-                    help: "By section, or one list of open tasks. Each card keeps its priority stripe."
+                    help: "List: by section, or one list of open tasks. Each card keeps its priority stripe."
                 ) {
                     picker(\.grouping, ActionItemsDisplay.Grouping.allCases) { $0.displayName }
                 }
                 SettingsRow(
                     title: "Density",
-                    help: "Compact hides the body preview and starts every card collapsed."
+                    help: "List and Board: Compact hides the body preview and starts every card collapsed."
                 ) {
                     picker(\.density, ActionItemsDisplay.Density.allCases) { $0.displayName }
                 }
-                SettingsRow(title: "References", help: "Linear, GitHub, Slack and other links on collapsed cards.") {
+                SettingsRow(title: "References", help: "List and Board: Linear, GitHub, Slack and other links on collapsed cards.") {
                     SettingsToggle(isOn: service.binding(\.fields.refs))
                 }
-                SettingsRow(title: "Snooze date", help: "The snooze date on collapsed cards.") {
+                SettingsRow(title: "Snooze date", help: "List and Board: the snooze date on collapsed cards.") {
                     SettingsToggle(isOn: service.binding(\.fields.snooze))
                 }
-                SettingsRow(title: "Comment count", help: "How many comments a task has, on collapsed cards.") {
+                SettingsRow(title: "Comment count", help: "List and Board: how many comments a task has, on collapsed cards.") {
                     SettingsToggle(isOn: service.binding(\.fields.comments))
+                }
+                SettingsRow(title: "Done range", help: "Topics: how far back the Done list goes.") {
+                    Picker("", selection: service.binding(\.topics.doneRange)) {
+                        ForEach(DoneRange.allCases, id: \.self) { Text($0.label.capitalizedFirst).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
                 }
             }
             Text("Saved in \(path)")
@@ -85,4 +96,9 @@ struct ActionItemsDisplaySection: View {
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
+}
+
+private extension String {
+    /// "last 7 days" → "Last 7 days".
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

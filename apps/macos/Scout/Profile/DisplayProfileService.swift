@@ -17,7 +17,7 @@ enum DisplayProfileStatus: Equatable {
     }
 }
 
-/// Owns `scout-profile.json` (spec sections 4 and 5): reads it once at init,
+/// Owns `scout-display.json` (spec sections 4 and 5): reads it once at init,
 /// follows edits made outside the app, and writes in-app changes as patches.
 /// It never commits; the next session that commits the vault picks the file up.
 @MainActor

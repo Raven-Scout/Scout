@@ -33,7 +33,7 @@ struct DisplayProfileServiceTests {
         #expect(service.status == .ok(warnings: []))
         #expect(service.currentView == .list)
         #expect(!FileManager.default.fileExists(atPath: service.fileURL.path))
-        #expect(service.fileURL.lastPathComponent == "scout-profile.json")
+        #expect(service.fileURL.lastPathComponent == "scout-display.json")
         #expect(service.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)
     }
 
@@ -58,7 +58,7 @@ struct DisplayProfileServiceTests {
 
     @Test func theTabOpensInTheDefaultViewAndChoosingADefaultShowsIt() throws {
         try Data(#"{"schema":1,"actionItems":{"defaultView":"board"}}"#.utf8)
-            .write(to: vault.appendingPathComponent("scout-profile.json"))
+            .write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.currentView == .board)
         service.update { $0.defaultView = .list }
@@ -98,7 +98,7 @@ struct DisplayProfileServiceTests {
     }
 
     @Test func aBrokenFileAtLaunchGivesDefaults() throws {
-        try Data("{ broken".utf8).write(to: vault.appendingPathComponent("scout-profile.json"))
+        try Data("{ broken".utf8).write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.profile == DisplayProfile())
         #expect(!service.status.canWrite)
@@ -106,7 +106,7 @@ struct DisplayProfileServiceTests {
 
     @Test func aNewerSchemaIsNeverOverwritten() throws {
         let newer = #"{"schema":2,"actionItems":{"defaultView":"board"}}"#
-        try Data(newer.utf8).write(to: vault.appendingPathComponent("scout-profile.json"))
+        try Data(newer.utf8).write(to: vault.appendingPathComponent("scout-display.json"))
         let service = makeService()
         #expect(service.status == .unsupportedSchema(found: 2))
         service.update { $0.density = .compact }

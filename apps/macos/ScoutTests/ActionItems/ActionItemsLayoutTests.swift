@@ -29,6 +29,18 @@ struct ActionItemsLayoutTests {
         #expect(todo?.tasks.map(\.subject) == ["Ask Priya", "Book travel"])
     }
 
+    /// The View menu shows only what applies in the current mode
+    /// (Raven-Scout/Scout#347 §2.3). Topics has its own order, grouping and
+    /// fixed-height rows, and doesn't read the card fields yet, so it gets none.
+    @Test(arguments: [
+        (ActionItemsViewMode.list, [ActionItemsDisplayMenu.Option.sort, .group, .density, .fields]),
+        (.board, [.sort, .density, .fields]),
+        (.topics, []),
+    ])
+    func theViewMenuFollowsTheMode(_ mode: ActionItemsViewMode, _ options: [ActionItemsDisplayMenu.Option]) {
+        #expect(ActionItemsDisplayMenu.options(for: mode) == options)
+    }
+
     @Test func theDefaultProfileLeavesTheSectionsAlone() {
         let sections = [SmokeFixtures.section(kind: .urgent), SmokeFixtures.section(kind: .todo)]
         #expect(ActionItemsLayout.isPassThrough(ActionItemsDisplay()))

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The user's display choices, kept in `scout-profile.json` in the vault root.
+/// The user's display choices, kept in `scout-display.json` in the vault root.
 /// Only the Action Items section exists so far. Other sections are added with
 /// the features that read them; until then the codec reports them as unknown
 /// and preserves them on write.
@@ -75,11 +75,19 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
         var comments = false
     }
 
+    /// Topics view options. The Done toggle on the Topics screen reads and
+    /// writes `doneRange` in a follow-up (Raven-Scout/Scout#347 §3); until
+    /// then only Settings changes it.
+    struct Topics: Equatable, Sendable {
+        var doneRange: DoneRange = .week
+    }
+
     var defaultView: ActionItemsViewMode = .list
     var sort: Sort = .fileOrder
     var grouping: Grouping = .section
     var density: Density = .comfortable
     var fields = Fields()
+    var topics = Topics()
 
     var entries: [DisplayProfile.Entry] {
         [
@@ -90,6 +98,7 @@ nonisolated struct ActionItemsDisplay: Equatable, Sendable {
             .init(path: ["fields", "refs"], value: .bool(fields.refs)),
             .init(path: ["fields", "snooze"], value: .bool(fields.snooze)),
             .init(path: ["fields", "comments"], value: .bool(fields.comments)),
+            .init(path: ["topics", "doneRange"], value: .string(topics.doneRange.rawValue)),
         ]
     }
 }

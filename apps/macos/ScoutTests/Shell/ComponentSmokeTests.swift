@@ -214,9 +214,9 @@ struct ComponentSmokeTests {
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: vault) }
         let service = DisplayProfileService(scoutDirectory: vault, fileEvents: InjectableFS())
-        for grouping in [true, false] {
+        for mode in [ActionItemsViewMode.list, .board] {
             ViewHost.render(
-                ActionItemsDisplayMenu(showsGrouping: grouping).environmentObject(service),
+                ActionItemsDisplayMenu(mode: mode).environmentObject(service),
                 size: CGSize(width: 300, height: 60))
         }
         try Data("{ broken".utf8).write(to: service.fileURL)

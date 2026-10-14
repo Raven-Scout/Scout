@@ -2,7 +2,7 @@ import Foundation
 
 /// View mode for the Action Items tab: the editorial reading List (default),
 /// a status Board (issue #15), or the topic board (Raven-Scout/Scout#340). The
-/// tab opens in `scout-profile.json`'s `actionItems.defaultView`; the toolbar
+/// tab opens in `scout-display.json`'s `actionItems.defaultView`; the toolbar
 /// switch changes the session's view through `DisplayProfileService.currentView`.
 nonisolated enum ActionItemsViewMode: String, CaseIterable, Identifiable, Hashable, Sendable {
     case list

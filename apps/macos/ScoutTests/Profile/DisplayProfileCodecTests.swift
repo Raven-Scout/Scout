@@ -22,6 +22,8 @@ struct DisplayProfileCodecTests {
         ("{}", DisplayProfile()),
         (#"{"schema":1}"#, DisplayProfile()),
         (#"{"schema":1,"actionItems":{"defaultView":"board"}}"#, profile { $0.defaultView = .board }),
+        (#"{"schema":1,"actionItems":{"defaultView":"topics"}}"#, profile { $0.defaultView = .topics }),
+        (#"{"schema":1,"actionItems":{"topics":{"doneRange":"today"}}}"#, profile { $0.topics.doneRange = .today }),
         (#"{"schema":1,"actionItems":{"sort":"alphabetical","group":"none","density":"compact"}}"#,
          profile { $0.sort = .alphabetical; $0.grouping = .none; $0.density = .compact }),
         (#"{"schema":1,"actionItems":{"fields":{"refs":false,"snooze":false,"comments":true}}}"#,
@@ -53,6 +55,12 @@ struct DisplayProfileCodecTests {
          [#""actionItems.fields.refs" is not true or false; using the default"#,
           #""actionItems.fields.snooze" is not true or false; using the default"#]),
         (#"{"schema":1,"actionItems":[]}"#, DisplayProfile(), [#""actionItems" is not an object"#]),
+        (#"{"schema":1,"actionItems":{"topics":{"doneRange":"month","legend":"mine"}}}"#, DisplayProfile(),
+         [#"unknown key "actionItems.topics.legend""#,
+          #""actionItems.topics.doneRange" has an unsupported value; using the default"#]),
+        (#"{"schema":1,"actionItems":{"fields":true,"topics":{"doneRange":"today"}}}"#,
+         profile { $0.topics.doneRange = .today },
+         [#""actionItems.fields" is not an object"#]),
     ]
 
     @Test(arguments: warned)

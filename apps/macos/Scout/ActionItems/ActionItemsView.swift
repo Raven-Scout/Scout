@@ -51,7 +51,9 @@ struct ActionItemsView: View {
                     selection: $displayProfile.currentView,
                     options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
                 )
-                ActionItemsDisplayMenu(showsGrouping: viewMode == .list)
+                if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
+                    ActionItemsDisplayMenu(mode: viewMode)
+                }
                 if viewMode == .list, case .loaded = docService.state {
                     Button {
                         toggleSelectionMode()

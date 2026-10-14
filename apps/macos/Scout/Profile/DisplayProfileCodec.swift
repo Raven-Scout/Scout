@@ -1,11 +1,11 @@
 import Foundation
 
-/// Parsing and patching for `scout-profile.json`, as pure functions. The rules
+/// Parsing and patching for `scout-display.json`, as pure functions. The rules
 /// are spec section 4: an unknown key is reported and preserved, a bad value
 /// falls back for that key only, and a file the app cannot fully read is never
 /// rewritten.
 nonisolated enum DisplayProfileCodec {
-    static let fileName = "scout-profile.json"
+    static let fileName = "scout-display.json"
 
     enum Failure: Error, Equatable, Sendable {
         case unreadable(String)
@@ -92,7 +92,7 @@ nonisolated enum DisplayProfileCodec {
 
     private static func actionItems(_ dict: [String: Any], warnings: inout [String]) -> ActionItemsDisplay {
         let path = "actionItems"
-        let known: Set<String> = ["defaultView", "sort", "group", "density", "fields"]
+        let known: Set<String> = ["defaultView", "sort", "group", "density", "fields", "topics"]
         for key in dict.keys.sorted() where !known.contains(key) {
             warnings.append("unknown key \"\(path).\(key)\"")
         }
@@ -101,21 +101,33 @@ nonisolated enum DisplayProfileCodec {
         if let v: ActionItemsDisplay.Sort = option(dict, "sort", in: path, &warnings) { out.sort = v }
         if let v: ActionItemsDisplay.Grouping = option(dict, "group", in: path, &warnings) { out.grouping = v }
         if let v: ActionItemsDisplay.Density = option(dict, "density", in: path, &warnings) { out.density = v }
-        if let raw = dict["fields"] {
-            guard let fields = raw as? [String: Any] else {
-                warnings.append("\"\(path).fields\" is not an object")
-                return out
-            }
+        if let fields = object(dict, "fields", in: path, known: ["refs", "snooze", "comments"], &warnings) {
             let fieldsPath = "\(path).fields"
-            let knownFields: Set<String> = ["refs", "snooze", "comments"]
-            for key in fields.keys.sorted() where !knownFields.contains(key) {
-                warnings.append("unknown key \"\(fieldsPath).\(key)\"")
-            }
             if let v = flag(fields, "refs", in: fieldsPath, &warnings) { out.fields.refs = v }
             if let v = flag(fields, "snooze", in: fieldsPath, &warnings) { out.fields.snooze = v }
             if let v = flag(fields, "comments", in: fieldsPath, &warnings) { out.fields.comments = v }
         }
+        if let topics = object(dict, "topics", in: path, known: ["doneRange"], &warnings),
+           let v: DoneRange = option(topics, "doneRange", in: "\(path).topics", &warnings) {
+            out.topics.doneRange = v
+        }
         return out
+    }
+
+    /// A nested object, with a warning for each key it doesn't know, or nil
+    /// (and a warning) when the value is not an object.
+    private static func object(
+        _ dict: [String: Any], _ key: String, in path: String, known: Set<String>, _ warnings: inout [String]
+    ) -> [String: Any]? {
+        guard let raw = dict[key] else { return nil }
+        guard let nested = raw as? [String: Any] else {
+            warnings.append("\"\(path).\(key)\" is not an object")
+            return nil
+        }
+        for name in nested.keys.sorted() where !known.contains(name) {
+            warnings.append("unknown key \"\(path).\(key).\(name)\"")
+        }
+        return nested
     }
 
     private static func option<E: RawRepresentable>(

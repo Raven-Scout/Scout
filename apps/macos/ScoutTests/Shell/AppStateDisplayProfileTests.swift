@@ -10,7 +10,7 @@ struct AppStateDisplayProfileTests {
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: vault) }
         try Data(#"{"schema":1,"actionItems":{"defaultView":"board"}}"#.utf8)
-            .write(to: vault.appendingPathComponent("scout-profile.json"))
+            .write(to: vault.appendingPathComponent("scout-display.json"))
 
         let state = AppState(configuration: .testing(scoutDirectory: vault))
         #expect(state.displayProfileService.fileURL.deletingLastPathComponent().path == vault.resolvingRealPath().path)

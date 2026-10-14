@@ -43,7 +43,7 @@ final class AppState: ObservableObject {
     let scheduleEditService: ScheduleEditService
     let budgetSettingsService: BudgetSettingsService
     let modelSettingsService: ModelSettingsService
-    /// Action Items display options from `scout-profile.json` in the vault root (#52).
+    /// Action Items display options from `scout-display.json` in the vault root (#52).
     let displayProfileService: DisplayProfileService
     let gitService: GitService
     let notificationService: NotificationService
