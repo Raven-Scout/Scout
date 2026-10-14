@@ -178,7 +178,7 @@ cmd_record() {
     mkdir -p "$LOG_DIR"
     python3 - "$LEDGER" "$mode" "$code" "$started" "$finished" "$duration" "$klass" "$log" "$outcome" "$resets_at" \
         "$commits" "$newest" "$(run_trigger)" <<'PY' || true
-import json, os, sys
+import json, os, re, sys
 (ledger, mode, code, started, finished, duration, klass, log, outcome, resets_at,
  commits, newest, trigger) = sys.argv[1:14]
 row = {
@@ -200,6 +200,11 @@ if runner in ("scout", "dreaming", "research"):
     row["runner"] = runner
 if resets_at:
     row["resets_at"] = int(resets_at)
+# The model the runner passed to claude (scoutctl model resolve), so health and
+# eval can attribute a run's cost; left out for rows from older runners.
+model = os.environ.get("SCOUT_MODEL", "").strip().lower()
+if re.fullmatch(r"[a-z0-9][a-z0-9.\-]*", model):
+    row["model"] = model
 with open(ledger, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PY
