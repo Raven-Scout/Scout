@@ -65,11 +65,39 @@ struct ActionItemsLayoutWindowTests {
         #expect(!oneList.map { $0.subject }.contains("Item 30"))
     }
 
+    /// "Showing N of M" (Raven-Scout/Scout#359) counts the merged One-list
+    /// section once, not once per source section.
+    @Test func oneListSummarisesTheMergedListOnce() {
+        let drawn = Self.drawn([Self.urgent, Self.todo], sort: .alphabetical, grouping: .none)
+        let open = drawn.filter { $0.kind == .neutral }
+        #expect(open.count == 1)
+        #expect(TaskWindow().summary(in: open[0].tasks) == "Showing \(TaskWindow.pageSize) of 26")
+    }
+
     @Test func theDoneDrawerIsShownInFull() {
         let done = Self.section(.done, (1...25).map { Self.task(String(format: "Done %02d", $0)) })
         let shown = ActionItemsLayout.shownRows(in: [Self.todo, done], windows: [:])
         #expect(shown.count == TaskWindow.pageSize + 25)
         #expect(ActionItemsLayout.selectableRows(in: [Self.todo, done], windows: [:]).count == TaskWindow.pageSize)
+    }
+
+    /// A `#TAG` cross-reference chip pages in and scrolls to the tagged row
+    /// where the List draws it (Raven-Scout/Scout#380).
+    @Test func aCrossReferencedTaskLandsOnItsDrawnRow() throws {
+        let tagged = ActionTask(
+            id: ActionItemsParser.stableID("t|Item 25 tagged"), lineNumber: 1, done: false,
+            subject: "Item 25", plainSubject: "Item 25", body: "", comments: [], deepLinks: [],
+            details: [], snoozedUntil: nil, carriedInFrom: nil, indentLevel: 0, shortPrefix: "IOTA")
+        let todo = Self.section(.todo, [tagged] + (1...24).reversed().map { Self.task(String(format: "Item %02d", $0)) })
+        let sections = [Self.urgent, todo]
+        let fileOrder = try #require(CrossRefLocator.locate(
+            tag: "IOTA", in: Self.drawn(sections, sort: .fileOrder, grouping: .section)))
+        #expect(fileOrder.sectionID == todo.id)
+        #expect(fileOrder.index == 0)
+        let oneList = try #require(CrossRefLocator.locate(
+            tag: "IOTA", in: Self.drawn(sections, sort: .alphabetical, grouping: .none)))
+        #expect(oneList.sectionID == ActionItemsArrangement.mergedSectionID)
+        #expect(oneList.index == 24)
     }
 
     @Test func aReopenedTaskLandsOnItsDrawnRow() throws {

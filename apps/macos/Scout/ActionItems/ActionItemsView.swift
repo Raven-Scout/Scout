@@ -281,11 +281,11 @@ struct ActionItemsView: View {
     /// hidden by the filter or search, or not in today's file — gets a toast.
     private func revealTagged(_ tag: String, proxy: ScrollViewProxy) {
         guard case .loaded(let doc) = docService.state,
-              let found = CrossRefLocator.locate(tag: tag, in: filteredSections(doc).map(filtered)) else {
+              let found = CrossRefLocator.locate(tag: tag, in: listSections(doc)) else {
             setToast("#\(tag) isn't in the list. It may be done, archived, or hidden by the filter.")
             return
         }
-        let section = filteredSections(doc).map(filtered).first { $0.id == found.sectionID }
+        let section = listSections(doc).first { $0.id == found.sectionID }
         let built = section.map { window(for: $0).visible($0.tasks).contains { $0.id == found.taskID } } ?? false
         highlightedTaskID = found.taskID
         if built {
