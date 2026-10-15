@@ -1558,10 +1558,23 @@ def _register_notify() -> None:
             "--tier",
             help="info (silent) | action_required (loud)",
         ),
-        body: str = typer.Option(
-            ...,
+        body: str | None = typer.Option(
+            None,
             "--body",
-            help="Message body. Newlines preserved.",
+            help="Message body. Newlines preserved. Exactly one of --body / --body-file.",
+        ),
+        body_file: Path | None = typer.Option(
+            None,
+            "--body-file",
+            help="Read the message body from this UTF-8 file instead of --body (keeps it off the shell).",
+        ),
+        parse_mode: str = typer.Option(
+            "none",
+            "--parse-mode",
+            help=(
+                "none (plain text) | html (Telegram HTML: <b> <i> <u> <s> <a href> <code> <pre> "
+                "<blockquote>; escape <, >, & in text). A body Telegram can't parse is resent as plain text."
+            ),
         ),
         dry_run: bool = typer.Option(
             False,
@@ -1586,10 +1599,22 @@ def _register_notify() -> None:
         from scout.errors import ConfigError as _ConfigError
         from scout.scripts.notify_telegram import DuplicateSendError, send
 
+        if (body is None) == (body_file is None):
+            typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
+            raise typer.Exit(code=1)
+        if body_file is not None:
+            try:
+                body = body_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                typer.echo(f"scoutctl notify telegram: could not read --body-file {body_file}: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        assert body is not None
+
         try:
             ev = send(
                 tier=tier,
                 body=body,
+                parse_mode=parse_mode,
                 dry_run=dry_run,
                 allow_duplicate=allow_duplicate,
                 receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
