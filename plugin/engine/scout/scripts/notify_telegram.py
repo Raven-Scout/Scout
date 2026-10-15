@@ -9,7 +9,27 @@ Reads ``~/.scout-secrets/telegram-bot-token`` and ``~/.scout-secrets/telegram-ch
 Returns an :class:`~scout.events.Event` with ``kind="notification.sent"`` and
 ``source="cli:notify_telegram"``. Payload shape::
 
-    {"tier": <tier>, "channel": "telegram", "body_chars": <int>, "dry_run": <bool>?}
+    {"tier": <tier>, "channel": "telegram", "body_chars": <int>, "dry_run": <bool>?,
+     "parse_mode": "html"?, "parse_fallback": <bool>?}
+
+``parse_mode`` appears only for ``--parse-mode html``; ``parse_fallback`` only
+when Telegram rejected the HTML of at least one chunk and it went out as plain
+text instead.
+
+**HTML mode.** ``--parse-mode html`` sends with Telegram's ``parse_mode=HTML``.
+HTML, not MarkdownV2: HTML needs only ``<``, ``>`` and ``&`` escaped, where
+MarkdownV2 needs ~18 characters escaped, and one miss in an LLM-written body
+gets the whole message refused. Telegram accepts ``<b> <i> <u> <s> <a href>
+<code> <pre> <blockquote>`` (and a few more), and ``<a href>`` only for
+http(s), tg and mailto URLs. Two safety nets:
+
+  - Long bodies split tag-aware: a cut never lands inside a tag or an entity,
+    and tags open at the cut are closed at the end of the chunk and reopened
+    at the start of the next.
+  - If Telegram answers 400 "can't parse entities", that chunk is resent as
+    plain text (tags stripped, link URLs kept in parentheses, entities
+    unescaped), with a warning on stderr. A formatting mistake never loses the
+    message.
 
 Used by the Claude session at session-wrap from inside its prompt (via the Bash
 tool):
@@ -32,8 +52,10 @@ hitting the network.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
@@ -52,6 +74,7 @@ TELEGRAM_API = "https://api.telegram.org"
 MAX_MESSAGE_LEN = 4096  # Telegram hard limit per sendMessage
 
 VALID_TIERS = ("info", "action_required")
+VALID_PARSE_MODES = ("none", "html")
 DEFAULT_TIMEOUT = 10.0
 
 # Duplicate guard (#241): a byte-identical body to the same chat inside this
@@ -182,46 +205,148 @@ def _split_message(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     chunks: list[str] = []
     remaining = body
     while len(remaining) > limit:
-        window = remaining[:limit]
-        # Prefer paragraph boundary (consume the \n\n).
-        cut: int | None = None
-        consumed = 0
-        idx = window.rfind("\n\n")
-        if idx > 0:
-            cut = idx
-            consumed = 2
-        else:
-            idx = window.rfind("\n")
-            if idx > 0:
-                cut = idx
-                consumed = 1
-            else:
-                idx = window.rfind(" ")
-                if idx > 0:
-                    cut = idx
-                    consumed = 1
-        if cut is None:
-            # Hard cut — no breakable char in the window.
-            chunks.append(window)
-            remaining = remaining[limit:]
-        else:
-            chunks.append(remaining[:cut])
-            remaining = remaining[cut + consumed :]
+        cut, consumed = _find_cut(remaining[:limit])
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut + consumed :]
     if remaining:
         chunks.append(remaining)
     return chunks
 
 
+def _find_cut(window: str) -> tuple[int, int]:
+    """Where to end a chunk inside ``window``: ``(cut, delimiter chars consumed)``.
+
+    Paragraph, then line, then word boundary; a hard cut at the window's end
+    (nothing consumed) when none of them is past position 0.
+    """
+    for delim in ("\n\n", "\n", " "):
+        idx = window.rfind(delim)
+        if idx > 0:
+            return idx, len(delim)
+    return len(window), 0
+
+
+# ----- HTML mode -------------------------------------------------------------
+
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^<>]*>")
+_ENTITY_RE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
+_LINK_RE = re.compile(r"""<a\s[^<>]*?href\s*=\s*(["'])(.*?)\1[^<>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
+
+
+def _safe_html_cut(text: str, cut: int) -> int:
+    """Move ``cut`` back to the start of a tag or entity it would split."""
+    lt = text.rfind("<", 0, cut)
+    if lt != -1 and ">" not in text[lt:cut]:
+        return lt
+    amp = text.rfind("&", 0, cut)
+    if amp != -1:
+        m = _ENTITY_RE.match(text, amp)
+        if m and m.end() > cut:
+            return amp
+    return cut
+
+
+def _open_tags_after(piece: str, stack: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The ``(name, opening tag)`` stack still open after ``piece``, given ``stack`` before it."""
+    stack = list(stack)
+    for m in _TAG_RE.finditer(piece):
+        name = m.group(2).lower()
+        if not m.group(1):
+            stack.append((name, m.group(0)))
+            continue
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i][0] == name:
+                del stack[i:]
+                break
+    return stack
+
+
+def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
+    """:func:`_split_message` for Telegram HTML: every chunk is balanced on its own.
+
+    A cut never lands inside a tag or an entity. Tags still open at a cut are
+    closed at the end of that chunk and reopened (with their attributes) at the
+    start of the next, and both count against ``limit``. Unbalanced input is
+    not repaired beyond that: a stray closing tag still goes out, Telegram
+    refuses it, and the plain-text fallback in :func:`send` takes over.
+    """
+    if len(body) <= limit:
+        return [body]
+
+    chunks: list[str] = []
+    stack: list[tuple[str, str]] = []
+    remaining = body
+    while True:
+        prefix = "".join(tag for _, tag in stack)
+        if len(prefix) > limit // 2:
+            # Reopening would eat most of the chunk: give up on carrying the
+            # formatting over. The stray closers that follow make Telegram
+            # refuse this chunk, and it goes out as plain text instead.
+            stack, prefix = [], ""
+        budget = limit - len(prefix)
+        if len(remaining) <= budget:
+            chunks.append(prefix + remaining)
+            return chunks
+        while True:
+            cut, consumed = _find_cut(remaining[:budget])
+            safe = _safe_html_cut(remaining, cut)
+            if safe != cut:
+                cut, consumed = safe, 0
+            if cut == 0:
+                # A single tag longer than the budget: nothing safe to do.
+                cut, consumed = budget, 0
+            piece = remaining[:cut]
+            after = _open_tags_after(piece, stack)
+            closers = "".join(f"</{name}>" for name, _ in reversed(after))
+            overflow = len(prefix) + len(piece) + len(closers) - limit
+            if overflow <= 0 or budget == 1:
+                break
+            budget = max(budget - overflow, 1)
+        if _html_to_plain(piece).strip():
+            chunks.append(prefix + piece + closers)
+        # else: only tags, which Telegram refuses as an empty message. They
+        # are not lost: the ones still open are reopened by the next prefix.
+        stack = after
+        remaining = remaining[cut + consumed :]
+        if not remaining:
+            return chunks
+
+
+def _html_to_plain(text: str) -> str:
+    """Telegram-HTML to readable plain text: links as ``label (url)``, tags dropped, entities unescaped."""
+
+    def link(m: re.Match[str]) -> str:
+        url = html.unescape(m.group(2))
+        label = _TAG_RE.sub("", m.group(3))
+        return label if html.unescape(label).strip() == url else f"{label} ({url})"
+
+    return html.unescape(_TAG_RE.sub("", _LINK_RE.sub(link, text)))
+
+
+def _is_parse_error(resp: requests.Response) -> bool:
+    """True when Telegram refused the message because of its formatting entities."""
+    if resp.status_code != 400:
+        return False
+    try:
+        description = str(resp.json().get("description", ""))
+    except (ValueError, AttributeError):
+        return False
+    return "can't parse entities" in description.lower()
+
+
 # ----- send ----------------------------------------------------------------
 
 
-def _build_payload(*, chat_id: str, text: str, tier: str) -> dict[str, Any]:
+def _build_payload(*, chat_id: str, text: str, tier: str, parse_mode: str = "none") -> dict[str, Any]:
     """Build the JSON body for a single sendMessage call."""
-    return {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
         "disable_notification": tier == "info",
     }
+    if parse_mode == "html":
+        payload["parse_mode"] = "HTML"
+    return payload
 
 
 def send(
@@ -229,6 +354,7 @@ def send(
     body: str,
     *,
     dry_run: bool = False,
+    parse_mode: str = "none",
     timeout: float = DEFAULT_TIMEOUT,
     allow_duplicate: bool = False,
     now: datetime | None = None,
@@ -240,14 +366,15 @@ def send(
     long bodies, then issues one POST per chunk (or echoes the request body
     on ``dry_run``). Defense-in-depth: the CLI layer ALSO restricts ``--tier``
     via Typer choices, but this layer rejects unknown tiers in case a Python
-    caller bypasses the CLI.
+    caller bypasses the CLI. ``parse_mode`` is ``none`` (plain text) or
+    ``html`` (see the module docstring for the split and fallback rules).
 
     ``receipt``, when given, is called with the Event id as soon as it is known
     (before any dry-run output; after the last chunk of a real send), so the CLI
     can put ``id=<id>`` first on stderr.
 
     Raises:
-        ValueError: empty body or unknown tier.
+        ValueError: empty body, unknown tier or unknown parse mode.
         ConfigError: missing secret files (exit code 10).
         DuplicateSendError: a byte-identical body went to this chat inside
             ``DUPLICATE_WINDOW`` and ``allow_duplicate`` is false (exit code 3).
@@ -258,6 +385,8 @@ def send(
         raise ValueError("body cannot be empty")
     if tier not in VALID_TIERS:
         raise ValueError(f"unknown tier {tier!r}; valid tiers are: {', '.join(VALID_TIERS)}")
+    if parse_mode not in VALID_PARSE_MODES:
+        raise ValueError(f"unknown parse mode {parse_mode!r}; valid modes are: {', '.join(VALID_PARSE_MODES)}")
 
     token = _read_secret("telegram-bot-token")
     chat_id = _read_secret("telegram-chat-id")
@@ -272,7 +401,7 @@ def send(
             if row["key"] == key:
                 raise DuplicateSendError(row["id"], row["ts"])
 
-    chunks = _split_message(body)
+    chunks = _split_html(body) if parse_mode == "html" else _split_message(body)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:
@@ -286,6 +415,7 @@ def send(
                 "channel": "telegram",
                 "body_chars": len(body),
                 "dry_run": True,
+                **({"parse_mode": "html"} if parse_mode == "html" else {}),
             },
         )
         if receipt:
@@ -298,7 +428,7 @@ def send(
         # logs should never see the raw token.
         redacted_url = f"{TELEGRAM_API}/bot<REDACTED>/sendMessage"
         for chunk in chunks:
-            payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier)
+            payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
             print(f"[dry-run] POST {redacted_url}", file=sys.stderr)
             print(
                 f"[dry-run] body: {json.dumps(payload, ensure_ascii=False)}",
@@ -306,9 +436,21 @@ def send(
             )
         return dry_event
 
-    for chunk in chunks:
-        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier)
+    parse_fallback = False
+    for n, chunk in enumerate(chunks, 1):
+        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
         resp = requests.post(url, json=payload, timeout=timeout)
+        if parse_mode == "html" and _is_parse_error(resp):
+            # Telegram's description names the offending tag and offset, never
+            # the URL, so it is safe to print.
+            print(
+                f"warning: Telegram refused the HTML of chunk {n}/{len(chunks)} "
+                f"({resp.json().get('description')}); resent it as plain text",
+                file=sys.stderr,
+            )
+            parse_fallback = True
+            payload = _build_payload(chat_id=chat_id, text=_html_to_plain(chunk), tier=tier)
+            resp = requests.post(url, json=payload, timeout=timeout)
         # Surface HTTP errors so the caller sees a non-zero exit. The CLI
         # layer maps requests.RequestException to a non-zero exit code.
         resp.raise_for_status()
@@ -322,6 +464,8 @@ def send(
             "tier": tier,
             "channel": "telegram",
             "body_chars": len(body),
+            **({"parse_mode": "html"} if parse_mode == "html" else {}),
+            **({"parse_fallback": True} if parse_fallback else {}),
         },
     )
     if log:
@@ -348,11 +492,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="notify-telegram")
     parser.add_argument("--tier", default="info", choices=list(VALID_TIERS))
     parser.add_argument("--body", required=True)
+    parser.add_argument("--parse-mode", default="none", choices=list(VALID_PARSE_MODES))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        ev = send(tier=args.tier, body=args.body, dry_run=args.dry_run)
+        ev = send(tier=args.tier, body=args.body, dry_run=args.dry_run, parse_mode=args.parse_mode)
     except ConfigError as e:
         print(f"notify-telegram: {e}")
         return ConfigError.exit_code
