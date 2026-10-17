@@ -157,10 +157,21 @@ def _first_free_part(p: Path) -> int:
     overwrites the shards already on disk — and because the index links shards
     by name, every link keeps resolving afterwards, so the loss is silent.
     """
+    base = _base_stem(p)
     i = 1
-    while p.with_name(f"{p.stem}-p{i:02d}.md").exists():
+    while p.with_name(f"{base}-p{i:02d}.md").exists():
         i += 1
     return i
+
+
+def _base_stem(p: Path) -> str:
+    """`2026-09-p01` -> `2026-09`; `2026-09` -> `2026-09`.
+
+    A part that outgrows the budget must split into the NEXT free part of its own series,
+    not into `-p01-p01`. Using `p.stem` verbatim produced the double suffix and destroyed
+    the basename every inbound link resolved by, for no gain.
+    """
+    return re.sub(r"-p\d{2}$", "", p.stem)
 
 
 def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
@@ -197,8 +208,9 @@ def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
             cur.append(ln)
             size += n
         chunks.append(cur)
+        base = _base_stem(p)
         for i, c in enumerate(chunks, _first_free_part(p)):
-            p.with_name(f"{p.stem}-p{i:02d}.md").write_text("\n".join(head + c) + "\n", encoding="utf-8")
+            p.with_name(f"{base}-p{i:02d}.md").write_text("\n".join(head + c) + "\n", encoding="utf-8")
         p.unlink()
         orphaned.append(p.stem)
         split += 1
