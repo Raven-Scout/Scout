@@ -96,6 +96,54 @@ _scout_pid_alive() {
     [ "$1" -gt 0 ] 2>/dev/null && { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
 }
 
+_scout_pgid_of() {
+    # The process group id of a PID; nothing if it cannot be read.
+    local pgid
+    pgid=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' \t\r\n') || return 0
+    case "$pgid" in
+        ''|*[!0-9]*) ;;
+        *) echo "$pgid" ;;
+    esac
+}
+
+_scout_group_alive() {
+    # True while ANY process remains in the group. The holder's own PID is not
+    # the question: the wrapper can die while the session it launched lives on.
+    local pgid="$1"
+    [ -n "$pgid" ] || return 1
+    [ -n "$(ps -o pid= -g "$pgid" 2>/dev/null | tr -d ' \t\r\n')" ]
+}
+
+_scout_kill_session() {
+    # Signal the holder's whole process GROUP, not just the holder.
+    #
+    # The lock records `$$` from a sourced scout-lock.sh -- the PID of
+    # run-<mode>.sh itself, which launchd starts as its own process group
+    # leader. The `claude` session is a CHILD inside that group, so signalling
+    # the bare PID kills the wrapper and leaves the session running, and the
+    # lock is then handed to a new run while the old one keeps writing the
+    # vault. Observed 2026-10-16: a session reported as reaped committed seven
+    # more times, concurrently with the run that replaced it (Pattern #263).
+    #
+    # The group is resolved by the CALLER, before the first signal: once the
+    # leader dies its pgid is no longer readable from its PID, and the orphaned
+    # children would survive the follow-up KILL.
+    #
+    # A negative argument means "this process group" to kill(1), and that is
+    # only the right target when the holder really leads one -- a hand-started
+    # run can inherit its shell's group, and killing that would take down the
+    # operator's own terminal. So fall back to the holder plus its children.
+    local sig="$1" pid="$2" pgid="$3" child
+    if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
+        kill "-$sig" -- "-$pgid" 2>/dev/null || true
+        return 0
+    fi
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+        kill "-$sig" "$child" 2>/dev/null || true
+    done
+    kill "-$sig" "$pid" 2>/dev/null || true
+}
+
 _scout_take_guard() {
     local mtime
     if ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null; then
@@ -120,7 +168,7 @@ _scout_release_lock() {
 
 # One try at the lock: 0 if it is now ours, 1 if someone else holds it.
 _scout_lock_try() {
-    local _lock_attempt lock_mtime lock_age
+    local _lock_attempt lock_mtime lock_age reap_pgid
     # Two attempts: recover a dead or wedged holder at most once, then retry the
     # atomic create. Any other conflict means another session holds the lock.
     for _lock_attempt in 1 2; do
@@ -154,13 +202,22 @@ _scout_lock_try() {
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
                 echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${lock_age}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
                 echo "Reaped wedged session PID $LOCK_PID after ${lock_age}s at $(date)" >> "$LOG_DIR/failures.log"
-                kill -TERM "$LOCK_PID" 2>/dev/null || true
+                # Resolve the group BEFORE the first signal -- see _scout_kill_session.
+                reap_pgid=$(_scout_pgid_of "$LOCK_PID")
+                _scout_kill_session TERM "$LOCK_PID" "$reap_pgid"
                 sleep 5
                 # KILL before removing the lock: a KILLed holder cannot run its
                 # EXIT trap. Re-read after it: during the grace the holder may
                 # have released its lock and someone else taken the path.
-                kill -KILL "$LOCK_PID" 2>/dev/null || true
-                if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                _scout_kill_session KILL "$LOCK_PID" "$reap_pgid"
+                if _scout_group_alive "$reap_pgid" || _scout_pid_alive "$LOCK_PID"; then
+                    # The reap did not land. Taking the lock now would put a
+                    # second writer on the same vault, which is strictly worse
+                    # than losing this slot: a skipped run is recorded and
+                    # recoverable, two concurrent runs overwrite each other.
+                    echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
+                    echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
+                elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -267,3 +324,66 @@ scout_redundant_wait_guard() {
     echo "=== Note: a $RUNNER_KIND run (slot $w_slot, log $w_log) finished ok ${ago}s ago — running anyway ===" >> "$LOG_FILE"
     return 0
 }
+# ---------------------------------------------------------------------------
+# Self-test. This file is a library (every runner sources it), so the block
+# below only runs when it is executed directly:
+#   scripts/scout-lock.sh --self-test
+# It exercises the reap's kill path against real processes, because the defect
+# it guards (Pattern #263) is invisible to any test that mocks kill(1): the
+# bug was never in the decision to reap, only in what the signal reached.
+# ---------------------------------------------------------------------------
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--self-test" ]; then
+    _st_fails=0
+    _st_check() {  # name expected actual
+        if [ "$2" = "$3" ]; then
+            printf '%-52s PASS\n' "$1"
+        else
+            printf '%-52s FAIL (want %s, got %s)\n' "$1" "$2" "$3"
+            _st_fails=$((_st_fails + 1))
+        fi
+    }
+
+    # A wrapper that leads its own group and launches a child, exactly as
+    # launchd starts run-<mode>.sh and run-<mode>.sh starts claude.
+    set -m
+    bash -c 'sleep 45 & sleep 45' &
+    _st_leader=$!
+    sleep 0.5
+    _st_pgid=$(_scout_pgid_of "$_st_leader")
+    _st_check "wrapper leads its own process group" "$_st_leader" "$_st_pgid"
+
+    # The bug: signalling the bare PID leaves the session running.
+    kill -TERM "$_st_leader" 2>/dev/null || true
+    sleep 0.5
+    if _scout_group_alive "$_st_pgid"; then _st_alive=yes; else _st_alive=no; fi
+    _st_check "bare-PID kill leaves the session alive (the bug)" "yes" "$_st_alive"
+
+    # The fix, using the pgid captured before the first signal: the leader is
+    # already gone here, so a late _scout_pgid_of would find nothing.
+    _scout_kill_session KILL "$_st_leader" "$_st_pgid"
+    sleep 0.5
+    if _scout_group_alive "$_st_pgid"; then _st_alive=yes; else _st_alive=no; fi
+    _st_check "group kill clears the whole session" "no" "$_st_alive"
+
+    # Not a group leader: kill the process, never the group it merely belongs to.
+    sleep 45 &
+    _st_follower=$!
+    sleep 0.3
+    _st_fpgid=$(_scout_pgid_of "$_st_follower")
+    _scout_kill_session KILL "$_st_follower" "$_st_fpgid"
+    sleep 0.3
+    if _scout_pid_alive "$_st_follower"; then _st_alive=yes; else _st_alive=no; fi
+    _st_check "non-leader killed by PID" "no" "$_st_alive"
+    if _scout_pid_alive "$$"; then _st_alive=yes; else _st_alive=no; fi
+    _st_check "our own process group survived that" "yes" "$_st_alive"
+
+    if _scout_group_alive ""; then _st_alive=yes; else _st_alive=no; fi
+    _st_check "empty pgid is not alive" "no" "$_st_alive"
+
+    if [ "$_st_fails" -eq 0 ]; then
+        echo "--- scout-lock self-test: all pass ---"
+    else
+        echo "--- scout-lock self-test: $_st_fails FAILED ---"
+        exit 1
+    fi
+fi
