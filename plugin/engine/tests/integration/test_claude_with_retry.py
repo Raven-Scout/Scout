@@ -130,6 +130,53 @@ def test_retries_on_sleep_mid_response(tmp_path: Path) -> None:
     assert _attempts(scout_dir) == 2, "wrapper should have retried after the lid-close sleep"
 
 
+def test_retries_when_dns_cannot_resolve_the_api(tmp_path: Path) -> None:
+    """A name that will not resolve is transient — Wi-Fi handoff, VPN flap, wake.
+
+    Regression context (2026-10-18): TRANSIENT_PATTERNS held both of this error's
+    siblings, ECONNRESET and ConnectionRefused, but not the resolution failure, and
+    the CLI words that one as an entirely different sentence rather than the
+    `Unable to connect to API (X)` shape. Over this vault's logs 8 runs hit it and
+    **7 died unretried** — the last being the Sunday weekend briefing, which burned
+    2 h 3 m and produced no board and no DM, while `run-outcome.sh` recorded the
+    very same failure as `failure_class: network`.
+    """
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(
+        scout_dir,
+        first_attempt_output=(
+            "API Error: Can't reach the API server \u2014 check your internet or DNS (ENOTFOUND)"
+        ),
+        first_attempt_exit=1,
+    )
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2, "wrapper should have retried after the DNS failure"
+
+
+def test_retries_on_enotfound_in_the_sibling_wording(tmp_path: Path) -> None:
+    """The `Unable to connect to API (ENOTFOUND)` shape, in case the CLI reverts to it."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    fake = _fake_claude(
+        scout_dir,
+        first_attempt_output="API Error: Unable to connect to API (ENOTFOUND)",
+        first_attempt_exit=1,
+    )
+    log_file = scout_dir / "run.log"
+
+    result = _run(script, fake, log_file)
+
+    assert result.returncode == 0, log_file.read_text()
+    assert _attempts(scout_dir) == 2, "wrapper should have retried after the DNS failure"
+
+
 def test_existing_transient_pattern_still_retries(tmp_path: Path) -> None:
     """Guard: editing the regex alternation must not break a pre-existing pattern."""
     scout_dir = tmp_path / "Scout"
