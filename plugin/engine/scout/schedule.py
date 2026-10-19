@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from scout.errors import ConfigError
+from scout.models import validate_model
 
 
 class SlotType(enum.Enum):
@@ -81,6 +82,7 @@ class Slot:
     budget_usd: float | None = None  # optional; not load-bearing in v0.5
     tz: str | None = None  # optional IANA zone; absent → system local
     runtime: SlotRuntime = SlotRuntime.LOCAL
+    model: str | None = None  # optional; absent → scout-config's models.default (scout.models)
 
     @property
     def priority(self) -> SlotPriority:
@@ -246,6 +248,8 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             raise ConfigError(
                 f"slot {key!r}: runtime {runtime_raw!r} is not one of {[r.value for r in SlotRuntime]}"
             ) from e
+        model_raw = raw.get("model")
+        model = None if model_raw is None else validate_model(model_raw, where=f"slot {key!r}")
         return Slot(
             key=key,
             type=slot_type,
@@ -258,6 +262,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             budget_usd=raw.get("budget_usd"),
             tz=tz,
             runtime=runtime,
+            model=model,
         )
     except (KeyError, ValueError, TypeError) as e:
         raise ConfigError(f"slot {key}: malformed entry: {e}") from e

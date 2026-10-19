@@ -42,6 +42,7 @@ final class AppState: ObservableObject {
     let powerStateService: PowerStateService
     let scheduleEditService: ScheduleEditService
     let budgetSettingsService: BudgetSettingsService
+    let modelSettingsService: ModelSettingsService
     let gitService: GitService
     let notificationService: NotificationService
     let claudeSessionService: ClaudeSessionService
@@ -207,6 +208,13 @@ final class AppState: ObservableObject {
             runner: runner,
             argumentsPrefix: scoutctlArgsPrefix
         )
+        // Model defaults go through `scoutctl model show/set-default` for the
+        // same reason; a slot's own model is saved with the slot.
+        let modelSettings = ModelSettingsService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix
+        )
         let notif = NotificationService()
         let ccSessions = ClaudeSessionService(
             projectsDirectory: configuration.claudeSessionsDirectory
@@ -292,6 +300,7 @@ final class AppState: ObservableObject {
         self.powerStateService = power
         self.scheduleEditService = scheduleEditService
         self.budgetSettingsService = budgetSettings
+        self.modelSettingsService = modelSettings
         self.notificationService = notif
         self.claudeSessionService = ccSessions
         self.sessionIndexService = sessionIndex

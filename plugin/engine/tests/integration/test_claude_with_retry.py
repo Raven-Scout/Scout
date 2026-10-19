@@ -146,9 +146,7 @@ def test_retries_when_dns_cannot_resolve_the_api(tmp_path: Path) -> None:
     script = _render(TEMPLATE, scout_dir)
     fake = _fake_claude(
         scout_dir,
-        first_attempt_output=(
-            "API Error: Can't reach the API server \u2014 check your internet or DNS (ENOTFOUND)"
-        ),
+        first_attempt_output=("API Error: Can't reach the API server \u2014 check your internet or DNS (ENOTFOUND)"),
         first_attempt_exit=1,
     )
     log_file = scout_dir / "run.log"

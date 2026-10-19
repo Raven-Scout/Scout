@@ -281,7 +281,7 @@ while :; do
                     echo "      - headless:    run: scoutctl auth setup-token   (stores a long-lived 'claude setup-token' token every scheduled run uses)."
                     ;;
             esac
-            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model opus"
+            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
         } >> "$LOG_FILE"
         notify_auth_failure || true
         exit "$exit_code"
