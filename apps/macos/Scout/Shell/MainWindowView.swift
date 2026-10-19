@@ -98,6 +98,7 @@ struct MainWindowView: View {
         case .schedules:
             SchedulesView()
                 .environmentObject(appState.scheduleEditService)
+                .environmentObject(appState.modelSettingsService)
         case .proposals:
             ProposalsView()
                 .environmentObject(appState.proposalsDocumentService)

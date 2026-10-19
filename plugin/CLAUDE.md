@@ -58,6 +58,6 @@ A PR that adds or changes a behavioural rule in `phases/` should also add or
 update a seed in an eval scenario (`engine/tests/eval/scenarios/`) and the check
 that scores it (`engine/tests/eval/harness/checks/`), or say in the PR why not.
 This is a nudge (the PR template asks), not a gate. Model-backed runs are local
-only, on your own Claude login: `scripts/eval.sh run|compare` (spec:
+only, on your own Claude login: `scripts/eval.sh run|compare|compare-models` (spec:
 `docs/superpowers/specs/2026-10-12-eval-harness-design.md`). CI runs the
 harness's tier-0 tests and never starts a model.

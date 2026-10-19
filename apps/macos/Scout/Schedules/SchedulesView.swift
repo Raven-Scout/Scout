@@ -3,6 +3,7 @@ import SwiftUI
 struct SchedulesView: View {
     @EnvironmentObject var service: ScheduleEditService
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var modelSettings: ModelSettingsService
 
     @SceneStorage("schedulesView") private var viewMode: SchedulesViewMode = .table
     @State private var filterMode: SchedulesFilterMode = .all
@@ -25,7 +26,8 @@ struct SchedulesView: View {
                 onSave: handleSave,
                 onDelete: handleDelete,
                 onFireNow: handleFireNow,
-                onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil
+                onRevertNewDraft: detailIsNewDraft ? { newDraftSlot = nil; selectedSlotKey = nil } : nil,
+                defaultModel: modelSettings.settings?.default.model
             )
             .frame(width: 380)
         }
@@ -223,6 +225,9 @@ struct SchedulesView: View {
     }
 
     private func reload() async {
+        // Best effort: an engine without `scoutctl model` leaves the settings
+        // nil and the model picker hidden. Never blocks the schedule load.
+        try? await modelSettings.load()
         do {
             try await service.loadAll()
             isInitialLoading = false

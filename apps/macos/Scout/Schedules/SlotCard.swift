@@ -16,9 +16,14 @@ struct SlotCard: View {
                 .frame(width: 4)
             VStack(alignment: .leading, spacing: 12) {
                 topRow
-                Text(slot.key)
-                    .font(DS.mono(12))
-                    .foregroundStyle(DS.Ink.p2)
+                HStack(spacing: 6) {
+                    Text(slot.key)
+                        .font(DS.mono(12))
+                        .foregroundStyle(DS.Ink.p2)
+                    if let model = slot.model {
+                        SlotModelTag(model: model)
+                    }
+                }
                 DayCircleStrip(
                     activeDays: Set(slot.weekdays),
                     typeColor: typeColor,
