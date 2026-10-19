@@ -9,6 +9,12 @@ struct SystemProcessRunnerTests {
     /// still complete. Reading stdout only after termination deadlocks: the
     /// child blocks on write, never exits, and the continuation never
     /// resumes — silently wedging whatever awaited it (issue #22 audit).
+    ///
+    /// A deadlocked runner never returns, however long we wait; a working one
+    /// returns in well under a second on an idle machine. So the ceiling only
+    /// bounds how long a regression hangs the suite — it is not a speed budget,
+    /// and it sits far above what a starved CI runner needs (one took 22.8 s
+    /// against the old 15 s ceiling and was reported as a deadlock, #430).
     @Test func drainsOutputLargerThanPipeBuffer() async throws {
         let runner = SystemProcessRunner()
         let result = await withTaskGroup(of: ProcessResult?.self) { group in
@@ -21,14 +27,14 @@ struct SystemProcessRunnerTests {
                 )
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: .seconds(120))
                 return nil
             }
             let first = await group.next()!
             group.cancelAll()
             return first
         }
-        let r = try #require(result, "runner deadlocked on >64KB output (timed out)")
+        let r = try #require(result, "runner deadlocked on >64KB output (no result after 120 s)")
         #expect(r.exitCode == 0)
         #expect(r.stdout.count == 256 * 1024)
     }

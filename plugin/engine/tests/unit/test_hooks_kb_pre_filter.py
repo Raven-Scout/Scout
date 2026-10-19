@@ -38,6 +38,15 @@ def test_freshness_hours_special_files(tmp_path):
     assert freshness_hours_for(tmp_path / "ai-landscape.md") == 168
 
 
+def test_the_meetings_registry_gets_a_roster_budget(tmp_path):
+    # #369: meetings/meetings.md changes only when a recurring meeting is added
+    # or retired, so it gets channels.md's two weeks rather than the 168h default.
+    registry = tmp_path / "meetings" / "meetings.md"
+    registry.parent.mkdir()
+    registry.write_text("# Meetings\n\n**Last updated:** 2026-05-04\n", encoding="utf-8")
+    assert freshness_hours_for(registry) == 336
+
+
 def test_freshness_hours_priority_red(tmp_path):
     f = tmp_path / "proj.md"
     f.write_text("---\npriority: 🔴 Urgent\n---\n# Project\n")

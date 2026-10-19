@@ -530,7 +530,7 @@ def _slot_due_within(vault: Path, window: timedelta) -> bool:
     # because the heartbeat's off-peak window is defined there. Both are deliberate (#449).
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-    from scout.schedule import load_schedule, next_fires
+    from scout.schedule import load_schedule, next_fire_per_slot
     from scout.scripts.schedule_tick import _local_tz_name
 
     path = vault / ".scout-state" / "schedule.yaml"
@@ -544,7 +544,7 @@ def _slot_due_within(vault: Path, window: timedelta) -> bool:
         sched = load_schedule(path)
     except Exception:  # noqa: BLE001 - an unreadable schedule never blocks an update
         return False
-    return bool(next_fires(sched, now=datetime.now(tz), window_hours=window.total_seconds() / 3600))
+    return bool(next_fire_per_slot(sched, now=datetime.now(tz), window_hours=window.total_seconds() / 3600))
 
 
 def _in_off_peak(vault: Path) -> bool:

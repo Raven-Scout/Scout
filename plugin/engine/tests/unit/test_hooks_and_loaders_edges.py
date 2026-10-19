@@ -26,7 +26,7 @@ import pytest
 from scout.errors import ConfigError
 from scout.hooks import connector_log, kb_pre_filter
 from scout.hooks import session_tokens as stok
-from scout.schedule import load_default_schedule, load_schedule, next_fires
+from scout.schedule import load_default_schedule, load_schedule, next_fire_per_slot
 
 # ---------------------------------------------------------------------------
 # session_tokens helpers
@@ -345,22 +345,22 @@ def test_target_today_requires_a_tz_aware_now() -> None:
         slot.target_today(now=_dt.datetime(2026, 5, 28, 14, 0))
 
 
-def test_next_fires_requires_a_tz_aware_now() -> None:
+def test_next_fire_per_slot_requires_a_tz_aware_now() -> None:
     with pytest.raises(ValueError, match="now must be timezone-aware"):
-        next_fires(load_default_schedule(), now=_dt.datetime(2026, 5, 28, 14, 0), window_hours=24)
+        next_fire_per_slot(load_default_schedule(), now=_dt.datetime(2026, 5, 28, 14, 0), window_hours=24)
 
 
-def test_next_fires_finds_the_upcoming_target_for_every_slot() -> None:
+def test_next_fire_per_slot_finds_the_upcoming_target_for_every_slot() -> None:
     sched = load_default_schedule()
     now = _dt.datetime(2026, 5, 28, 6, 0, tzinfo=ZoneInfo("America/New_York"))
-    fires = dict(next_fires(sched, now=now, window_hours=24 * 8))
+    fires = dict(next_fire_per_slot(sched, now=now, window_hours=24 * 8))
     assert set(fires) == set(sched)
     assert all(dt > now for dt in fires.values())
 
 
-def test_next_fires_is_empty_for_a_zero_window() -> None:
+def test_next_fire_per_slot_is_empty_for_a_zero_window() -> None:
     now = _dt.datetime(2026, 5, 28, 6, 0, tzinfo=ZoneInfo("America/New_York"))
-    assert next_fires(load_default_schedule(), now=now, window_hours=0) == []
+    assert next_fire_per_slot(load_default_schedule(), now=now, window_hours=0) == []
 
 
 def test_an_overlay_with_a_bad_schema_version_is_rejected(tmp_path: Path) -> None:
