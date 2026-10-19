@@ -1723,14 +1723,15 @@ def _register_notify() -> None:
             raise typer.Exit(code=2) from e
         except _requests.RequestException as e:
             # Non-HTTP failures during a live send: timeout, DNS, connection
-            # refused, SSL. ``str()`` of these does not include the request
-            # URL (the URL lives on the PreparedRequest / Response, neither
-            # of which is rendered by the exception's ``__str__``), so
-            # ``e`` is safe to print here. Exit non-zero with a clear
-            # stderr line instead of dumping a stack trace into the
-            # runner's prompt.
-            typer.echo(f"scoutctl notify telegram: HTTP error: {e}", err=True)
-            raise typer.Exit(code=2) from e
+            # refused, SSL. ``str()`` of a ConnectionError DOES include the
+            # request path (``Max retries exceeded with url: /bot<token>/…``).
+            # send() scrubs it; redact again here so this line can never
+            # carry the token. Exit non-zero with a clear stderr line instead
+            # of dumping a stack trace into the runner's prompt.
+            from scout.redact import redact_secrets
+
+            typer.echo(f"scoutctl notify telegram: HTTP error: {redact_secrets(str(e))}", err=True)
+            raise typer.Exit(code=2) from None
 
         # Print the resulting Event JSON to stdout. Dry-run preamble (the
         # [dry-run] lines) is intentionally routed through stderr inside

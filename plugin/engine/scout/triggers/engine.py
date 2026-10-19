@@ -29,6 +29,7 @@ from typing import Any
 
 from scout import paths
 from scout.errors import ConfigError
+from scout.redact import redact_secrets
 from scout.triggers.config import Trigger, load_triggers, triggers_path
 from scout.triggers.dedup import DedupStore
 from scout.triggers.dispatcher import FireOutcome, dispatch, log_fire
@@ -114,7 +115,7 @@ def evaluate(
         try:
             events = source.scan_since(since_iso)
         except Exception as e:  # noqa: BLE001 — one dark connector must not blind the rest
-            result.errors.append({"source": source_name, "error": f"{type(e).__name__}: {e}"})
+            result.errors.append({"source": source_name, "error": f"{type(e).__name__}: {redact_secrets(str(e))}"})
             continue
         result.events_scanned += len(events)
 
