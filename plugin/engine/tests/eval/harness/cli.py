@@ -7,6 +7,7 @@ the stubs, and (for model-backed commands) a logged-in Claude Code.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -214,6 +215,87 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 1 if regressions else 0
 
 
+_MODEL_RE = re.compile(r"^(opus|sonnet|haiku|claude-[a-z0-9][a-z0-9.\-]*)$")
+
+
+def _cmd_compare_models(args: argparse.Namespace) -> int:
+    """Run the working tree on two models and score B against A (spec 2026-10-13 slot models §8).
+
+    Answers "can this slot run on a cheaper model?": A is the reference (default
+    opus), B the candidate (default sonnet). A check that is stable on A and
+    misses twice on B is a regression; the exit code is 1 when B regresses.
+    """
+    from .plan import MAX_WITHOUT_MANY
+    from .report import format_comparison
+    from .runner import LoginRequired, run_sample
+    from .scenario import load_scenario
+    from .verdicts import compare_arms
+
+    model_a, model_b = args.a.strip().lower(), args.b.strip().lower()
+    for model in (model_a, model_b):
+        if not _MODEL_RE.match(model):
+            print(f"eval: model {model!r} is not opus, sonnet, haiku or a full claude-… ID", file=sys.stderr)
+            return 2
+    if model_a == model_b:
+        print(f"eval: --a and --b are both {model_a}; compare-models needs two different models", file=sys.stderr)
+        return 2
+    today = date.fromisoformat(args.today) if args.today else _utc_today()
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    try:
+        scenarios = [load_scenario(n) for n in args.scenarios]
+    except FileNotFoundError as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    if args.reps < 1:
+        print("eval: --reps must be at least 1", file=sys.stderr)
+        return 2
+    if today.weekday() >= 5 and any(s.weekdays_only for s in scenarios) and not args.allow_weekend:
+        print("eval: a weekday-only scenario on a weekend; pass --allow-weekend to run anyway", file=sys.stderr)
+        return 2
+    sessions = 2 * args.reps * len(scenarios)
+    if sessions > MAX_WITHOUT_MANY and not args.many:
+        print(f"eval: {sessions} sessions is more than {MAX_WITHOUT_MANY}; pass --many", file=sys.stderr)
+        return 2
+    cli_version = args.cli_version or _cli_version(real_claude)
+    names = ", ".join(s.name for s in scenarios)
+    print(
+        f"Will start {sessions} sessions ({names}: {model_a} ×{args.reps} and {model_b} ×{args.reps}, "
+        "interleaved) via your Claude login."
+    )
+    print(f"Reference: {model_a}. Candidate: {model_b}. A regression means {model_b} did worse.")
+    if not args.yes:
+        input("Press Enter to start, Ctrl-C to cancel: ")
+    results_root = Path(args.results).resolve()
+    regressions = False
+    try:
+        for s in scenarios:
+            arms: dict[str, list] = {model_a: [], model_b: []}
+            for i in range(args.reps):  # interleaved: a, b, a, b… so drift hits both arms alike
+                for model in (model_a, model_b):
+                    print(f"… {s.name} {model} sample {i + 1}/{args.reps}", flush=True)
+                    sample = run_sample(
+                        s, today=today, rep=i + 1, model=model, results_root=results_root,
+                        real_claude=real_claude, arm=model, cli_version=cli_version,
+                    )  # fmt: skip
+                    arms[model].append(sample)
+                    if sample.aborted:
+                        print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}) ==")
+                        cmp = compare_arms(arms[model_a], arms[model_b], across_models=True)
+                        print(format_comparison(cmp, arms[model_a], arms[model_b], labels=(model_a, model_b)))
+                        return 2
+            cmp = compare_arms(arms[model_a], arms[model_b], across_models=True)
+            print(f"\n== {s.name}: {model_b} vs {model_a} (working tree) ==")
+            print(format_comparison(cmp, arms[model_a], arms[model_b], labels=(model_a, model_b)))
+            regressions = regressions or bool(cmp.regressions)
+    except LoginRequired as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    return 1 if regressions else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="eval.sh", description="Scout agent-behaviour eval harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -248,5 +330,21 @@ def main(argv: list[str] | None = None) -> int:
     cmp.add_argument("--claude", help=argparse.SUPPRESS)  # a stand-in claude binary, for tests
     cmp.add_argument("--cli-version", help=argparse.SUPPRESS)  # skip `claude --version`, for tests
     cmp.set_defaults(func=_cmd_compare)
+    cm = sub.add_parser(
+        "compare-models",
+        help="score a candidate model (--b) against a reference (--a) on the working tree",
+    )
+    cm.add_argument("scenarios", nargs="+", help="scenario names from tests/eval/scenarios/")
+    cm.add_argument("--a", default="opus", help="the reference model (default opus)")
+    cm.add_argument("--b", default="sonnet", help="the candidate model (default sonnet)")
+    cm.add_argument("--reps", type=int, default=3, help="samples per model (default 3)")
+    cm.add_argument("--many", action="store_true", help="allow more than 10 sessions")
+    cm.add_argument("--yes", action="store_true", help="don't wait for Enter after printing the plan")
+    cm.add_argument("--allow-weekend", action="store_true", help="run weekday-only scenarios on a weekend")
+    cm.add_argument("--today", help="render fixture dates as if today were YYYY-MM-DD (default: today, UTC)")
+    cm.add_argument("--results", default=str(REPO_ROOT / ".eval-results"), help="where result dirs go")
+    cm.add_argument("--claude", help=argparse.SUPPRESS)  # a stand-in claude binary, for tests
+    cm.add_argument("--cli-version", help=argparse.SUPPRESS)  # skip `claude --version`, for tests
+    cm.set_defaults(func=_cmd_compare_models)
     args = parser.parse_args(argv)
     return int(args.func(args))

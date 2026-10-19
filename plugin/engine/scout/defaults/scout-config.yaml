@@ -60,6 +60,15 @@ auto_update:
   channel: stable
   soak_hours: 24
 
+# The Claude model scheduled runs use. A slot's own `model:` in
+# .scout-state/schedule.yaml wins; models.default covers every other run;
+# with neither, runs use opus. Values: opus, sonnet, haiku, or a full
+# claude-… model ID. Set it with `scoutctl model set-default` or in Scout.app.
+# Deliberately unset here, so `scoutctl model show` can tell a chosen default
+# from the built-in one.
+# models:
+#   default: opus
+
 # Day planning for /scout-plan. MUST equal PlanningSettings()'s defaults in
 # scout/planning/settings.py; tests/unit/test_planning_settings.py fails the
 # build if they drift. Times are quoted: YAML 1.1 reads a bare 09:00 as a

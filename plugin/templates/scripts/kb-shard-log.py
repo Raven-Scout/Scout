@@ -181,19 +181,19 @@ def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
     Returns (count, orphaned_stems). Each orphaned stem is a basename that used to be a
     file and no longer is: every wikilink resolving by that basename dangles until it is
     repointed. Splitting creates that debt silently unless it is reported, so callers
-    must repoint the links (and re-run dangling-links.py) before committing.
+    must repoint the links before committing.
     """
     split = 0
     orphaned: list[str] = []
-    for p in sorted(shard_dir.glob("*.md")):
-        if p.stat().st_size <= max_bytes:
-            continue
-        if index_file is not None and p.resolve() == index_file.resolve():
-            # The index lives inside the shard dir. Splitting it would delete the very file
-            # _reindex() reads next, leaving the mutation done and the command reporting failure.
-            print(f"refusing to split {p} — it is the index file passed as `file`; "
-                  f"pass the real index (e.g. the folder's parent .md) instead", file=sys.stderr)
-            raise SystemExit(2)
+    oversized = [p for p in sorted(shard_dir.glob("*.md")) if p.stat().st_size > max_bytes]
+    if index_file is not None and any(p.resolve() == index_file.resolve() for p in oversized):
+        # The index lives inside the shard dir. Splitting it would delete the very file
+        # _reindex() reads next, leaving the mutation done and the command reporting failure.
+        # Checked before any split, so a refusal leaves every shard untouched.
+        print(f"refusing to split {index_file} — it is the index file passed as `file`; "
+              f"pass the real index (e.g. the folder's parent .md) instead", file=sys.stderr)
+        raise SystemExit(2)
+    for p in oversized:
         lines = p.read_text(encoding="utf-8").splitlines()
         head, body = lines[:header_lines], lines[header_lines:]
         base = sum(len(h.encode()) + 1 for h in head)
@@ -215,6 +215,12 @@ def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
         orphaned.append(p.stem)
         split += 1
     return split, orphaned
+
+
+def _ere_escape(text: str) -> str:
+    """Escape for a POSIX ERE (`grep -E`). `re.escape` also escapes `-`, which
+    GNU grep warns about as a stray backslash."""
+    return re.sub(r"([.\[\]()*+?{}|^$\\])", r"\\\1", text)
 
 
 def main(argv: list[str]) -> int:
@@ -240,7 +246,9 @@ def main(argv: list[str]) -> int:
             print("    [[wikilink]] to them is now dangling. Repoint them in THIS change:")
             for stem in orphaned:
                 print(f"      • [[{stem}]]  →  its -pNN part")
-            print("    Then confirm with: python3 scripts/dangling-links.py")
+            print("    Find them from the vault root with:")
+            for stem in orphaned:
+                print(f"      grep -rnE '\\[\\[([^]|#]*/)?{_ere_escape(stem)}[]|#]' --include='*.md' .")
             return 3
         return 0
     if a.shard_dir.exists() and any(a.shard_dir.iterdir()) and not a.append:

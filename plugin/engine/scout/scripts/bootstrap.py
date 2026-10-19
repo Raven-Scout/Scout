@@ -144,6 +144,8 @@ _CAT1_FILES_FROM_PLUGIN = {
     # (scripts/heartbeat.sh). Standard-library Python, run with python3.
     "scripts/vault-freshness.py": "templates/scripts/vault-freshness.py",
     "scripts/session-lane-liveness.py": "templates/scripts/session-lane-liveness.py",
+    # The KB log sharder (one-time log sharding, spec 2026-09-26 §3.1).
+    "scripts/kb-shard-log.py": "templates/scripts/kb-shard-log.py",
 }
 
 # Plugin-owned files the vault is known to extend, not just patch: parser.py is
