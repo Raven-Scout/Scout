@@ -23,6 +23,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
   The Stop hook's transcript replay (`session_tool_log`) now takes the same exclusive lock as the PostToolUse hook. Before, its multi-row writes could interleave with the PostToolUse hook's rows in the same file.
 
+### Security
+- **A failed Telegram send no longer prints or logs the bot token** (`engine/scout/scripts/notify_telegram.py`, `engine/scout/redact.py`, `engine/scout/cli.py`, `engine/scout/triggers/`). The token is part of the Bot API URL, and `requests` copies the URL into its errors: a connection failure's message has the path, an HTTP error's message the full URL. `scoutctl notify telegram` printed such a message to stderr, and a trigger's `notify` action wrote it to `.scout-logs/trigger-fires-*.jsonl`. `send()` now re-raises any failure with the token removed from its message, its arguments and the URL it carries, and keeps the same `requests` error type. The CLI, `main()` and the trigger paths also redact the error text they print or record.
+
 ## [0.18.1] - 2026-10-13
 
 ### Fixed

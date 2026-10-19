@@ -31,6 +31,7 @@ hitting the network.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -47,6 +48,7 @@ from scout import paths
 from scout.errors import ConfigError, ScoutError
 from scout.events import Event
 from scout.ids import new_ulid
+from scout.redact import redact_secrets
 
 TELEGRAM_API = "https://api.telegram.org"
 MAX_MESSAGE_LEN = 4096  # Telegram hard limit per sendMessage
@@ -224,6 +226,78 @@ def _build_payload(*, chat_id: str, text: str, tier: str) -> dict[str, Any]:
     }
 
 
+# ----- error scrubbing -------------------------------------------------------
+#
+# The request URL embeds the bot token (``/bot<token>/sendMessage``) and
+# ``requests`` copies it into its exceptions: ConnectionError's str() has the
+# path, HTTPError's the full URL, and both carry the request (and HTTPError the
+# response) whose ``.url`` holds it. Anything send() raises passes through
+# ``_scrubbed`` so no caller — CLI, trigger log, health push — can print it.
+
+
+def _leaks(exc: BaseException, token: str | None) -> bool:
+    seen: set[int] = set()
+    todo: list[BaseException] = [exc]
+    while todo:
+        e = todo.pop()
+        if id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, requests.RequestException):
+            return True  # carries the URL on its request/response whatever its message says
+        texts = [str(e), *(repr(a) for a in e.args)]
+        if any(redact_secrets(t, *([token] if token else [])) != t for t in texts):
+            return True
+        todo += [c for c in (e.__cause__, e.__context__) if c is not None]
+    return False
+
+
+def _clean_response(resp: Any, token: str | None) -> requests.Response | None:
+    """A bare Response with the status of ``resp`` and a redacted URL, no request."""
+    if resp is None:
+        return None
+    clean = requests.Response()
+    clean.status_code = getattr(resp, "status_code", None)  # type: ignore[assignment]
+    clean.reason = getattr(resp, "reason", None)  # type: ignore[assignment]
+    clean.url = redact_secrets(str(getattr(resp, "url", "") or ""), *([token] if token else []))
+    return clean
+
+
+def _clean_exception(exc: Exception, token: str | None) -> Exception:
+    """The same kind of error, with the token gone from its message, args and URLs."""
+    message = redact_secrets(str(exc), *([token] if token else []))
+    if isinstance(exc, requests.RequestException):
+        try:
+            return type(exc)(message, response=_clean_response(exc.response, token))
+        except Exception:  # noqa: BLE001 - an odd subclass signature: keep the family
+            return requests.RequestException(message, response=_clean_response(exc.response, token))
+    try:
+        return type(exc)(message)
+    except Exception:  # noqa: BLE001
+        return RuntimeError(f"{type(exc).__name__}: {message}")
+
+
+def _scrubbed(fn: Callable[..., Event]) -> Callable[..., Event]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Event:
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            try:
+                token: str | None = _read_secret("telegram-bot-token")
+            except Exception:  # noqa: BLE001 - redact by pattern alone
+                token = None
+            if not _leaks(e, token):
+                raise
+            clean = _clean_exception(e, token)
+        # Raised outside the except block, so the original (with the URL) is
+        # neither the __cause__ nor the __context__ of the clean one.
+        raise clean
+
+    return wrapper
+
+
+@_scrubbed
 def send(
     tier: str,
     body: str,
@@ -252,7 +326,8 @@ def send(
         DuplicateSendError: a byte-identical body went to this chat inside
             ``DUPLICATE_WINDOW`` and ``allow_duplicate`` is false (exit code 3).
         requests.RequestException: HTTP-layer failure during a real send.
-            Bubbles up so the caller knows the send did not complete.
+            Bubbles up so the caller knows the send did not complete. Like
+            any error from here, it is scrubbed of the bot token first.
     """
     if not body:
         raise ValueError("body cannot be empty")
@@ -370,9 +445,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"notify-telegram: HTTP {status} {reason} (token redacted in URL)")
         return 2
     except requests.RequestException as e:
-        # Non-HTTP failures (timeout, DNS, connection refused) — these
-        # don't carry the URL in their str() representation.
-        print(f"notify-telegram: HTTP error: {e}")
+        # Non-HTTP failures (timeout, DNS, connection refused). send() already
+        # scrubbed the URL from these; redact again in case a caller didn't.
+        print(f"notify-telegram: HTTP error: {redact_secrets(str(e))}")
         return 2
 
     print(json.dumps(asdict(ev), indent=2))
