@@ -118,6 +118,19 @@ fi
 # telemetry is ever written (#192, #121).
 export SCOUT_MODE="$MODE"
 
+# The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
+# .scout-state/schedule.yaml, else scout-config's models.default, else opus —
+# resolved by the engine (scout/models.py). A resolver failure never blocks the
+# run: it goes ahead on opus, the default, and the reason lands in this log.
+SCOUT_MODEL="$("$SCOUTCTL_BIN" model resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
+if [ -z "$SCOUT_MODEL" ]; then
+    echo "=== model resolve failed — running on opus ===" >> "$LOG_FILE"
+    SCOUT_MODEL=opus
+fi
+# Exported so the run-outcome and session-cost rows can record it.
+export SCOUT_MODEL
+echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
+
 START_TIME=$(date +%s)
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
@@ -128,7 +141,7 @@ cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \
     --permission-mode auto \
-    --model opus \
+    --model "$SCOUT_MODEL" \
     --max-budget-usd {{MAX_BUDGET}} \
     --name "{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)" \
     -p "$PROMPT" \
