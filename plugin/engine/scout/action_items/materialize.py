@@ -76,6 +76,7 @@ _WINDOW_PREP = re.compile(
     re.IGNORECASE,
 )
 _CARRIED_MARK = " — ⚠️ carried from {prev}, not re-verified"
+_MONTH_NUMBER = {n: i for i, n in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), start=1)}
 
 
 def _mark_carried_day_headings(body: str, prev_date: _dt.date) -> str:
@@ -93,7 +94,6 @@ def _mark_carried_day_headings(body: str, prev_date: _dt.date) -> str:
     thing the banner already says about the body, at the place a reader is
     actually looking.
     """
-    label = _DAY_LABEL.pattern
     out = []
     for line in body.splitlines(keepends=True):
         stripped = line.rstrip("\n")
@@ -101,7 +101,7 @@ def _mark_carried_day_headings(body: str, prev_date: _dt.date) -> str:
             out.append(line)
             continue
         hit = None
-        for m in re.finditer(label, stripped):
+        for m in _DAY_LABEL.finditer(stripped):
             if _WINDOW_PREP.search(stripped[: m.start()]):
                 continue
             hit = m
@@ -123,14 +123,11 @@ def _names_date(label: str, when: _dt.date) -> bool:
     m = re.search(rf"\b({_MONTHS})[a-z]*\.?\s+(\d{{1,2}})(?:,?\s+(20\d{{2}}))?", label)
     if not m:
         return False
-    months = {n: i for i, n in enumerate(
-        "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), start=1)}
-    mon = months.get(m.group(1)[:3].title())
+    mon = _MONTH_NUMBER.get(m.group(1)[:3].title())
     if not mon:
         return False
     try:
-        return _dt.date(int(m.group(3)) if m.group(3) else when.year,
-                        mon, int(m.group(2))) == when
+        return _dt.date(int(m.group(3)) if m.group(3) else when.year, mon, int(m.group(2))) == when
     except ValueError:
         return False
 

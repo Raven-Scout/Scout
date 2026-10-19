@@ -68,12 +68,7 @@ def test_does_not_rewrite_the_date_itself():
 
 
 def test_preserves_body_lines_and_trailing_newline_shape():
-    body = (
-        "## 📅 Today's Meetings (Saturday Oct 17)\n"
-        "\n"
-        "_No events today._\n"
-        "- [ ] [#FOO] something\n"
-    )
+    body = "## 📅 Today's Meetings (Saturday Oct 17)\n\n_No events today._\n- [ ] [#FOO] something\n"
     out = _mark_carried_day_headings(body, PREV)
     assert out.count("\n") == body.count("\n")
     assert "- [ ] [#FOO] something\n" in out
