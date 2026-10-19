@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from scout.events import now_iso
+from scout.redact import redact_secrets
 from scout.triggers.actions import interactive, notify, run_skill
 from scout.triggers.config import ActionKind, Trigger
 from scout.triggers.sources.base import ConnectorEvent
@@ -55,7 +56,7 @@ def dispatch(
             detail = interactive.run(trigger, event, vault=vault, send_telegram=send_telegram)
         status = "ok"
     except Exception as e:  # noqa: BLE001 — one bad fire must not kill the tick
-        detail = {"error": f"{type(e).__name__}: {e}"}
+        detail = {"error": f"{type(e).__name__}: {redact_secrets(str(e))}"}  # goes to the fire log
         status = "error"
     return FireOutcome(
         trigger_id=trigger.id,
