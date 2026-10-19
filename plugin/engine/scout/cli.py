@@ -1076,7 +1076,7 @@ def _register_schedule() -> None:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
         from scout import paths as _paths
-        from scout.schedule import load_default_schedule, load_schedule, next_fires
+        from scout.schedule import load_default_schedule, load_schedule, next_fire_per_slot
         from scout.scripts.schedule_tick import _local_tz_name
 
         vault_path = _paths.data_dir() / ".scout-state" / "schedule.yaml"
@@ -1091,7 +1091,7 @@ def _register_schedule() -> None:
 
         now = _datetime.now(tz=local_tz)
 
-        fires = next_fires(sched, now=now, window_hours=window)
+        fires = next_fire_per_slot(sched, now=now, window_hours=window)
 
         if use_json:
             records = []
