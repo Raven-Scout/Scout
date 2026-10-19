@@ -100,6 +100,9 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     let errorsDetected: [DetectedError]
     let commits: [Commit]
     let retryOf: Run.ID?
+    /// The model the runner passed to claude, from the log's
+    /// `=== model: … ===` line; nil for runs logged before per-slot models.
+    var model: String? = nil
 
     static func makeId(type: RunType, startedAt: Date) -> String {
         let iso = ISO8601DateFormatter()
@@ -135,7 +138,8 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             scheduledAt: scheduledAt, startedAt: startedAt, endedAt: endedAt,
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
-            errorsDetected: errorsDetected, commits: commits, retryOf: retryOf
+            errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
+            model: model
         )
     }
 }
@@ -155,7 +159,8 @@ extension Run {
         commits: [Commit] = [],
         retryOf: Run.ID? = nil,
         runnerScript: String? = nil,
-        headerStartedAt: Date? = nil
+        headerStartedAt: Date? = nil,
+        model: String? = nil
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -180,7 +185,8 @@ extension Run {
             logSizeBytes: 0,
             errorsDetected: [],
             commits: commits,
-            retryOf: retryOf
+            retryOf: retryOf,
+            model: model
         )
     }
 }

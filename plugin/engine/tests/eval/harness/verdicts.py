@@ -15,6 +15,9 @@ Pure: it takes the two arms' samples and returns rows. The rules:
 - a metric (lower is better) is worse only when head's median is above base's max;
 - any aborted sample, or arms that ran different models or CLI versions, block
   every verdict. A harness failure never reads as a regression.
+- ``across_models`` (``eval.sh compare-models``) inverts the model rule: each
+  arm must run one model, and the two arms must differ — if they ran the same
+  model the switch did not take, and the comparison would say nothing.
 """
 
 from __future__ import annotations
@@ -78,21 +81,32 @@ def _spread(values: list[float]) -> tuple[float, float, float]:
     return (median(values), min(values), max(values))
 
 
-def _blocked(base: Sequence[SampleResult], head: Sequence[SampleResult]) -> str | None:
+def _blocked(base: Sequence[SampleResult], head: Sequence[SampleResult], *, across_models: bool = False) -> str | None:
     b_ab, h_ab = sum(1 for s in base if s.aborted), sum(1 for s in head if s.aborted)
     if b_ab or h_ab:
         return f"aborted samples (base {b_ab}, head {h_ab}): no verdict"
-    models = {s.meta.get("resolved_model") for s in [*base, *head]}
-    if len(models) > 1:
-        return f"mixed models {sorted(str(m) for m in models)}: no verdict"
+    if across_models:
+        per_arm = [{str(s.meta.get("resolved_model")) for s in arm} for arm in (base, head)]
+        for arm_models in per_arm:
+            if len(arm_models) > 1:
+                return f"mixed models within one arm {sorted(arm_models)}: no verdict"
+        if per_arm[0] == per_arm[1]:
+            return f"both arms ran {sorted(per_arm[0])}: no verdict (the model switch did not take)"
+    else:
+        models = {s.meta.get("resolved_model") for s in [*base, *head]}
+        if len(models) > 1:
+            return f"mixed models {sorted(str(m) for m in models)}: no verdict"
     clis = {s.meta.get("cli_version") for s in [*base, *head]}
     if len(clis) > 1:
         return f"mixed CLI versions {sorted(str(c) for c in clis)}: no verdict"
     return None
 
 
-def compare_arms(base: Sequence[SampleResult], head: Sequence[SampleResult]) -> Comparison:
-    blocked = _blocked(base, head)
+def compare_arms(
+    base: Sequence[SampleResult], head: Sequence[SampleResult], *, across_models: bool = False
+) -> Comparison:
+    """Score ``head`` against ``base``. ``across_models``: the arms ran different models on purpose."""
+    blocked = _blocked(base, head, across_models=across_models)
     names = list(dict.fromkeys(c.name for s in [*base, *head] for c in s.checks))
     rows = []
     for name in names:

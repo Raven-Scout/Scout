@@ -134,7 +134,12 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    assert calls.read_text(encoding="utf-8").splitlines() == [f"{vault} connector-health-report"]
+    # Before the session the runner asks the engine for the run's model; after
+    # it, for the connector-health roll-up. Both against this vault.
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        f"{vault} model resolve --slot {slot}",
+        f"{vault} connector-health-report",
+    ]
     assert "connector-health: 2 sessions in window" in _runner_log(vault)
 
 
