@@ -195,7 +195,22 @@ class CommitScanError(RuntimeError):
     """
 
 
+def _has_no_commits_yet(vault: Path) -> bool:
+    """A repo whose HEAD resolves to nothing (exit 1), as opposed to no repo (128)."""
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--verify", "--quiet", "HEAD"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 1
+
+
 def recent_commits(vault: Path) -> list[tuple[datetime, str]]:
+    if _has_no_commits_yet(vault):
+        return []  # a new vault: genuinely nothing committed, not a failed scan
     try:
         raw = subprocess.run(
             ["git", "-C", str(vault), "log", "-n", str(COMMIT_SCAN), "--format=%ct%x1f%s"],
@@ -294,7 +309,7 @@ def assess(vault: Path, now: datetime | None = None) -> tuple[list[dict], int]:
                 ledger_logs[lane].append(log)
 
     output: dict[str, tuple[datetime, str]] = {}
-    for when, subject in recent_commits(vault):
+    for when, subject in recent_commits(vault) if lanes else ():
         words = subject.split()
         named = words[0].rstrip(":").lower() if words else ""
         # A subject that names a lane is authoritative; only an unnamed commit is

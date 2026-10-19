@@ -101,13 +101,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _venv_bootstrap; _venv_bootstrap.ensure("yaml")   # noqa: E702
-
 try:
     import yaml
 except ImportError:
-    print("error: pyyaml not installed and no vault .venv to fall back to.", file=sys.stderr)
+    print("error: pyyaml not installed. run: pip install pyyaml", file=sys.stderr)
     sys.exit(2)
 
 

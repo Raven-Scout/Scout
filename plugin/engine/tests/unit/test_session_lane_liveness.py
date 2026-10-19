@@ -450,3 +450,51 @@ def test_without_scout_data_dir_it_checks_the_vault_it_is_installed_in(vault: Pa
         "consolidation",
         "dreaming",
     ]
+
+
+# ---------- a commit scan that fails ----------
+
+
+def test_a_failed_commit_scan_is_unknown_not_every_lane_silent(vault: Path, tmp_path: Path) -> None:
+    """An empty scan reads as "this lane never committed", so a `git log` that fails
+    must not become FIRING-BUT-SILENT on every lane at once: it is its own answer,
+    exit 4, and no lane verdict is printed."""
+    _fired(vault, **{"morning-briefing": 0.4, "evening-consolidation": 0.4, "dreaming-nightly": 0.4})
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "git"
+    stub.write_text("#!/bin/sh\necho 'fatal: simulated' >&2\nexit 128\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    result = _run(vault, "--quiet", PATH=f"{bindir}:{os.environ['PATH']}")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "lane liveness unknown" in result.stderr
+    assert "SILENT" not in result.stdout and "DARK" not in result.stdout
+
+
+def test_a_repo_with_no_commits_yet_is_judged_not_unknown(vault: Path) -> None:
+    """`git log` fails on a repo with no commits; that is "nothing committed", not a failed scan."""
+    result = _run(vault, "--json")
+
+    assert result.returncode != 4, result.stderr
+    assert sorted(_lanes(vault)) == ["briefing", "consolidation", "dreaming"]
+
+
+def test_a_commit_scan_that_times_out_raises_instead_of_returning_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _module()
+
+    def slow(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="git log", timeout=float(str(kwargs.get("timeout", 0))))
+
+    monkeypatch.setattr(mod.subprocess, "run", slow)
+
+    with pytest.raises(mod.CommitScanError, match="git log"):
+        mod.recent_commits(vault)
+
+
+def test_the_commit_scan_allows_a_slow_git_log() -> None:
+    """`git log -n 4000` takes tens of seconds on a large vault; 60 s tripped."""
+    assert _module().COMMIT_SCAN_TIMEOUT >= 300

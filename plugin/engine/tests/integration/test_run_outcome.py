@@ -160,6 +160,36 @@ def test_the_slot_is_the_dispatcher_slot_when_one_is_set(vault: Path, outcome: P
     assert (row["slot"], row["mode"]) == ("evening-consolidation", "manual")
 
 
+def test_the_row_records_the_model_the_runner_used(vault: Path, outcome: Path) -> None:
+    _record(outcome, "midday-consolidation", 0, _log(vault, ""), SCOUT_MODEL="sonnet")
+
+    (row,) = _ledger(vault)
+    assert row["model"] == "sonnet"
+
+
+def test_a_row_without_a_model_leaves_it_out(vault: Path, outcome: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODEL"}
+    subprocess.run(
+        ["bash", str(outcome), "record", "manual", "0", str(int(time.time())), str(_log(vault, ""))],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    (row,) = _ledger(vault)
+    assert "model" not in row
+
+
+@pytest.mark.parametrize("unsafe", ['sonnet", "x": "y', "two words", "ÿ"])
+def test_an_unsafe_model_value_is_left_out(vault: Path, outcome: Path, unsafe: str) -> None:
+    _record(outcome, "manual", 0, _log(vault, ""), SCOUT_MODEL=unsafe)
+
+    (row,) = _ledger(vault)
+    assert "model" not in row
+    assert "x" not in row
+
+
 def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome: Path, tmp_path: Path) -> None:
     other = tmp_path / "Other"
     log = _log(vault, "")
