@@ -8,9 +8,10 @@ that was alive but not progressing â€” host slept mid-run, wedged network call â
 held the lock indefinitely and every subsequent scheduled slot silently exited
 0 (41h and 21h outages observed, invisible to every audit surface because the
 skip path is exit 0 and last-fire.json still records the fire). The guard now
-bounds the lock by age: a live holder past SCOUT_LOCK_MAX_AGE_SECS is reaped
-(TERM, grace, KILL), the reap is recorded in failures.log, and the new session
-takes over the lock.
+bounds the lock: a live holder that makes no progress for SCOUT_LOCK_MAX_AGE_SECS
+of awake time is reaped (TERM, grace, KILL), the reap is recorded in
+failures.log, and the new session takes over the lock. Progress, not lock age,
+decides (#466): see test_lock_reaper_progress.py.
 """
 
 from __future__ import annotations
@@ -69,10 +70,16 @@ def _stub_retry_wrapper(scout_dir: Path) -> Path:
     return marker
 
 
-def _run(script: Path, *, max_age_s: int) -> subprocess.CompletedProcess:
-    # No wait for a busy lock: these tests drive one try at it (the wait is
-    # covered in test_scout_lock.py).
-    env = {**os.environ, "SCOUT_LOCK_MAX_AGE_SECS": str(max_age_s), "SCOUT_LOCK_WAIT_SECS": "0"}
+def _run(script: Path, *, max_age_s: int, wait_s: int = 0) -> subprocess.CompletedProcess:
+    # By default no wait for a busy lock: one try at it (the wait is covered in
+    # test_scout_lock.py). A reap needs a wait: wedged is judged across
+    # progress samples, and a holder's first sample is only a baseline (#466).
+    env = {
+        **os.environ,
+        "SCOUT_LOCK_MAX_AGE_SECS": str(max_age_s),
+        "SCOUT_LOCK_WAIT_SECS": str(wait_s),
+        "SCOUT_LOCK_POLL_SECS": "1",
+    }
     return subprocess.run(
         [str(script)],
         env=env,
@@ -89,7 +96,7 @@ def _run_log(scout_dir: Path) -> str:
 
 
 def test_fresh_alive_holder_still_skips(tmp_path: Path) -> None:
-    """A live holder under the age ceiling keeps the original skip behavior."""
+    """A live holder that has not stalled keeps the original skip behavior."""
     scout_dir = tmp_path / "Scout"
     scout_dir.mkdir()
     script = _render(TEMPLATE, scout_dir)
@@ -114,35 +121,55 @@ def test_fresh_alive_holder_still_skips(tmp_path: Path) -> None:
 
 
 def test_wedged_holder_is_reaped_and_lock_taken_over(tmp_path: Path) -> None:
-    """A live holder past the age ceiling is killed, logged, and replaced."""
+    """A live holder that makes no progress past the ceiling is killed, logged,
+    and replaced. Wedged is judged by progress samples (#466), so the waiter
+    polls: its first sample is a baseline, later ones see the stall grow."""
     scout_dir = tmp_path / "Scout"
     scout_dir.mkdir()
     script = _render(TEMPLATE, scout_dir)
     marker = _stub_retry_wrapper(scout_dir)
     log_dir = scout_dir / ".scout-logs"
     log_dir.mkdir()
-    holder = subprocess.Popen(["sleep", "300"])
+    # Detached and leading its own group, as launchd starts a runner; reparented
+    # to init, so its death is reaped at once instead of leaving a zombie.
+    out = subprocess.run(
+        ["bash", "-c", "set -m; sleep 300 </dev/null >/dev/null 2>&1 & echo $!"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    holder = int(out.stdout.strip())
     try:
         lock = log_dir / ".scout-session.lock"
-        lock.write_text(f"{holder.pid}\n", encoding="utf-8")
-        held_since = time.time() - 120
-        os.utime(lock, (held_since, held_since))  # lock written 120s ago
+        lock.write_text(f"{holder}\n", encoding="utf-8")
 
-        result = _run(script, max_age_s=30)
+        result = _run(script, max_age_s=2, wait_s=20)
 
         assert result.returncode == 0, result.stderr
         log = _run_log(scout_dir)
         assert "Reaping wedged Scout session" in log
         failures = (log_dir / "failures.log").read_text(encoding="utf-8")
-        assert f"Reaped wedged session PID {holder.pid}" in failures, (
+        assert f"Reaped wedged session PID {holder} after " in failures, (
             "the reap must be visible to audit surfaces, not just the per-run log"
         )
+        assert f"signalled PIDs {holder}" in failures, "the reap must say which PIDs it signalled"
         assert marker.exists(), "the new session must proceed after the takeover"
-        assert holder.wait(timeout=10) != 0, "the wedged holder must be killed"
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                os.kill(holder, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, "the wedged holder must be killed"
+            time.sleep(0.1)
         assert not lock.exists(), "the takeover session must clean up its own lock on exit"
+        assert not (log_dir / ".scout-session.lock.progress").exists(), "progress samples go with the lock"
     finally:
-        holder.kill()
-        holder.wait()
+        try:
+            os.killpg(holder, 9)
+        except ProcessLookupError:
+            pass
 
 
 def _live_pids(*, pgid: int | None = None, ppid: int | None = None) -> set[int]:
@@ -191,14 +218,15 @@ def test_a_reaped_holder_takes_its_whole_process_group_with_it(tmp_path: Path) -
     log_dir = scout_dir / ".scout-logs"
     log_dir.mkdir()
     holder = subprocess.Popen(
-        ["bash", "-c", "bash -c 'trap \"\" TERM; while :; do sleep 1; done' & wait"],
+        # No loop: a session that keeps starting processes is progressing (#466).
+        ["bash", "-c", "bash -c 'trap \"\" TERM; sleep 300' & wait"],
         start_new_session=True,  # its own process group, led by the holder
     )
     try:
         _wait_for(lambda: len(_live_pids(pgid=holder.pid)) >= 2)
         _wedge(log_dir, holder)
 
-        result = _run(script, max_age_s=30)
+        result = _run(script, max_age_s=2, wait_s=20)
 
         assert result.returncode == 0, result.stderr
         assert marker.exists(), "the new session must proceed once the old one is gone"
@@ -226,7 +254,7 @@ def test_a_holder_without_its_own_group_is_reaped_with_its_descendants_only(tmp_
         grandchildren = {g for m in middle for g in _live_pids(ppid=m)}
         _wedge(log_dir, holder)
 
-        result = _run(script, max_age_s=30)
+        result = _run(script, max_age_s=2, wait_s=20)
 
         assert result.returncode == 0, result.stderr
         assert marker.exists(), "the new session must proceed once the old one is gone"
