@@ -674,6 +674,26 @@ def schedule_findings(
     return _schedule_findings(vault, _load_schedule(vault), rows, read_last_fires(vault), now=now)
 
 
+def _live_session_slot(vault: Path, fires: dict[str, datetime]) -> str | None:
+    """The slot of the session holding the vault lock, or None if none is live.
+
+    Every scheduled run reads run health while it holds the lock (#467), so the
+    lock alone can't defer every slot. The tick stamps a fire at dispatch,
+    before its runner takes the lock, and a slot dispatched while the lock is
+    held records a skip row. So the holder is the slot with the newest fire at
+    or before the lock's mtime.
+    """
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    if not is_lock_held_by_live_pid(lock):
+        return None
+    try:
+        taken = datetime.fromtimestamp(lock.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
+    before = {k: t for k, t in fires.items() if t <= taken + FIRE_MATCH_SLACK}
+    return max(before, key=lambda k: before[k]) if before else None
+
+
 def _schedule_findings(
     vault: Path,
     loaded: tuple[Schedule, datetime] | None,
@@ -692,7 +712,7 @@ def _schedule_findings(
     first_row = min((r.started_at for r in rows if r.started_at.timestamp() >= _MIN_SANE_EPOCH), default=None)
     ref = max(birth, schedule_mtime) if birth is not None else None
     # A run longer than its missed window has no ledger row until it ends.
-    session_live = is_lock_held_by_live_pid(vault / ".scout-logs" / ".scout-session.lock")
+    live_slot = _live_session_slot(vault, fires)
     slot_findings: list[Finding] = []
     stale: list[Finding] = []
     never_fired = 0
@@ -738,7 +758,7 @@ def _schedule_findings(
         # second or two before finished_at); a row that ended at or after the
         # fire (less the slack) covers either.
         if (
-            not session_live
+            key != live_slot
             and first_row is not None
             and fire > first_row
             and now - fire >= timedelta(hours=mw)

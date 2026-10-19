@@ -149,6 +149,7 @@ def test_the_budget_tiers_are_the_kb_pre_filter_tiers() -> None:
     [
         ("linear-issues.md", "# issues\n"),
         ("channels.md", "# channels\n"),
+        ("meetings.md", "# meetings\n"),
         ("projects/a.md", "---\npriority: 🟡 medium\n---\n"),
         ("projects/b.md", "**Priority:** 🟢\n"),
         ("projects/c.md", "priority: none\n"),

@@ -62,6 +62,76 @@ def _carry_body(prev_file: Path) -> str:
     return "".join(lines[skip:])
 
 
+_MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+_WEEKDAYS = "Mon|Tue|Tues|Wed|Weds|Thu|Thur|Thurs|Fri|Sat|Sun"
+# A day label in an H2: "(Saturday Oct 17)", "— Sat Oct 17, 2026", "— Oct 17".
+_DAY_LABEL = re.compile(
+    rf"(?:\b(?:{_WEEKDAYS})[a-z]*\.?,?\s+)?"
+    rf"\b(?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}}(?:,?\s+20\d{{2}})?\b"
+)
+# A date introduced by one of these is a window boundary or a provenance stamp,
+# not the section's own day: "(since May 3 …)", "From chrome sweep (Wed Sep 9 …".
+_WINDOW_PREP = re.compile(
+    r"\b(?:since|from|between|through|until|as of|after|before|window|vs\.?)\b",
+    re.IGNORECASE,
+)
+_CARRIED_MARK = " — ⚠️ carried from {prev}, not re-verified"
+_MONTH_NUMBER = {n: i for i, n in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), start=1)}
+
+
+def _mark_carried_day_headings(body: str, prev_date: _dt.date) -> str:
+    """Annotate every ``## `` heading that names the *previous* file's day.
+
+    The carry-forward re-dates the H1 and writes a fresh banner; until now that
+    was the whole of it, so a heading like ``## 📅 Today's Meetings (Saturday
+    Oct 17)`` travelled verbatim into Sunday's file and asserted the wrong day
+    one screen below a correct title. Measured over one vault: 39 of 193 daily
+    files carried at least one such heading.
+
+    We deliberately **mark** rather than re-date. The content under the heading
+    is still yesterday's — re-dating the label would make a visible staleness
+    invisible, which is strictly worse than the defect. The mark says the same
+    thing the banner already says about the body, at the place a reader is
+    actually looking.
+    """
+    out = []
+    for line in body.splitlines(keepends=True):
+        stripped = line.rstrip("\n")
+        if not stripped.startswith("## ") or _CARRIED_MARK.split("{")[0] in stripped:
+            out.append(line)
+            continue
+        hit = None
+        for m in _DAY_LABEL.finditer(stripped):
+            if _WINDOW_PREP.search(stripped[: m.start()]):
+                continue
+            hit = m
+            break
+        if hit and _names_date(hit.group(0), prev_date):
+            nl = "\n" if line.endswith("\n") else ""
+            out.append(stripped + _CARRIED_MARK.format(prev=prev_date.isoformat()) + nl)
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def _names_date(label: str, when: _dt.date) -> bool:
+    """Does this free-text day label resolve to ``when``?
+
+    The year is optional in house style, so an absent year is taken from
+    ``when`` — inside a dated daily file that is never ambiguous.
+    """
+    m = re.search(rf"\b({_MONTHS})[a-z]*\.?\s+(\d{{1,2}})(?:,?\s+(20\d{{2}}))?", label)
+    if not m:
+        return False
+    mon = _MONTH_NUMBER.get(m.group(1)[:3].title())
+    if not mon:
+        return False
+    try:
+        return _dt.date(int(m.group(3)) if m.group(3) else when.year, mon, int(m.group(2))) == when
+    except ValueError:
+        return False
+
+
 _H2 = re.compile(r"^##\s")
 _H3 = re.compile(r"^###\s")
 _H4PLUS = re.compile(r"^#{4,}\s")
@@ -205,6 +275,10 @@ def materialize(
             prev=prev_date.isoformat(),
         )
         body = _carry_body(prev)
+        # Before anything reshapes the body: a `## ` heading that names the day
+        # we are carrying *from* is about to travel into a file dated something
+        # else. Mark it; never re-date it (see _mark_carried_day_headings).
+        body = _mark_carried_day_headings(body, prev_date)
         # Archive before compacting: the ledger fingerprinted the prior file as
         # written, and compaction drops whatever headings the archive emptied.
         body, archived_note = _archive_stale(data_dir, target_date, body)

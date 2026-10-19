@@ -372,7 +372,9 @@ def test_slot_lookahead_and_off_peak_each_read_the_clock_their_scheduler_uses(tm
     (vault / "scout-config.yaml").write_text("user:\n  timezone: Asia/Tokyo\n")
     monkeypatch.setattr(schedule_tick, "_local_tz_name", lambda: "America/Chicago")
     seen: list[str] = []
-    monkeypatch.setattr(sched_mod, "next_fires", lambda sched, now, window_hours: seen.append(now.tzinfo.key) or [])
+    monkeypatch.setattr(
+        sched_mod, "next_fire_per_slot", lambda sched, now, window_hours: seen.append(now.tzinfo.key) or []
+    )
     sur._slot_due_within(vault, timedelta(minutes=45))
     assert seen == ["America/Chicago"]
 
