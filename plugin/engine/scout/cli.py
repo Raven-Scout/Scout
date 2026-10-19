@@ -834,7 +834,7 @@ def _register_schedule() -> None:
             help=(
                 "Emit a JSON array of full slot records (key/type/runner/"
                 "fires_at_local/weekdays/missed_window_hours/on_miss/"
-                "cooldown_minutes/budget_usd/tz/runtime) instead of "
+                "cooldown_minutes/budget_usd/tz/runtime/model) instead of "
                 "tab-separated lines. Plan 6's ScheduleEditService consumes "
                 "this for the in-app editor."
             ),
@@ -863,6 +863,7 @@ def _register_schedule() -> None:
                     "budget_usd": sched[key].budget_usd,
                     "tz": sched[key].tz,
                     "runtime": sched[key].runtime.value,
+                    "model": sched[key].model,
                 }
                 for key in sorted(sched.keys())
             ]
@@ -900,6 +901,7 @@ def _register_schedule() -> None:
             "cooldown_minutes": slot.cooldown_minutes,
             "budget_usd": slot.budget_usd,
             "tz": slot.tz,
+            "model": slot.model,
         }
         typer.echo(_json.dumps(record, indent=2))
 
@@ -1298,6 +1300,97 @@ def _register_schedule() -> None:
 _register_schedule()
 
 
+def _register_model() -> None:
+    """scoutctl model {resolve,show,set-default} — which Claude model scheduled runs use.
+
+    The runners call `model resolve --slot "$MODE"` before each session; Scout.app
+    reads `model show --json` and writes the default with `model set-default`.
+    Precedence and allowed values live in scout.models.
+    """
+
+    model_app = typer.Typer(help="Which Claude model scheduled runs use.")
+    app.add_typer(model_app, name="model")
+
+    @model_app.command("resolve")
+    def cli_model_resolve(
+        slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        as_json: bool = typer.Option(False, "--json", help='Emit {"model", "source"}.'),
+    ) -> None:
+        """Print the model for one run: SCOUT_MODEL, else the slot's model, else models.default, else opus."""
+        import json as _json
+
+        from scout.models import resolve_model
+
+        try:
+            resolved = resolve_model(slot_key=slot)
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps({"model": resolved.model, "source": resolved.source}))
+        else:
+            typer.echo(resolved.model)
+
+    @model_app.command("show")
+    def cli_model_show(
+        as_json: bool = typer.Option(False, "--json", help="Emit the default and every slot's model as JSON."),
+    ) -> None:
+        """Show the default model and the model each slot runs on, with where it comes from."""
+        import json as _json
+
+        from scout.models import ALIASES, default_model, slot_models
+
+        try:
+            default = default_model()
+            per_slot = slot_models()
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        slots = [
+            {"key": key, "model": model, "source": "slot"}
+            if model
+            else {"key": key, "model": default.model, "source": default.source}
+            for key, model in sorted(per_slot.items())
+        ]
+        if as_json:
+            payload = {
+                "default": {"model": default.model, "source": default.source},
+                "slots": slots,
+                "aliases": list(ALIASES),
+            }
+            typer.echo(_json.dumps(payload))
+            return
+        origin = "built-in" if default.source == "builtin" else "scout-config.yaml"
+        typer.echo(f"default: {default.model} ({origin})")
+        for row in slots:
+            note = "" if row["source"] == "slot" else "  (default)"
+            typer.echo(f"{row['key']}\t{row['model']}{note}")
+
+    @model_app.command("set-default")
+    def cli_model_set_default(
+        model: str = typer.Argument(..., help="opus, sonnet, haiku, or a full claude-… model ID."),
+        as_json: bool = typer.Option(False, "--json", help="Emit {config_path, default, changed}."),
+    ) -> None:
+        """Write models.default to the vault's scout-config.yaml; every other line is kept."""
+        import json as _json
+
+        from scout.scripts.models_config import ModelsWriteError, write_models_default
+
+        try:
+            payload = write_models_default(model)
+        except ModelsWriteError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps(payload))
+            return
+        verb = "wrote" if payload["changed"] else "unchanged:"
+        typer.echo(f"{verb} {payload['config_path']} (models.default: {payload['default']})")
+
+
+_register_model()
+
+
 def _register_triggers() -> None:
     """scoutctl trigger {list,show,validate,reload,test,fire-now,stats}.
 
@@ -1685,7 +1778,11 @@ def _register_health() -> None:
             typer.echo(f"run health: {report.severity}")
             for f in report.findings:
                 typer.echo(f"{f.severity}  {f.id}: {f.summary}")
+                if f.detail:
+                    typer.echo(f"    error: {f.detail}")
                 typer.echo(f"    fix: {f.fix}")
+                if f.log:
+                    typer.echo(f"    log: {f.log}")
         raise typer.Exit(code=report.exit_code)
 
     @health_app.command("notify")
