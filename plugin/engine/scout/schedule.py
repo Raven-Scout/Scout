@@ -271,17 +271,27 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def next_fires(
+def next_fire_per_slot(
     schedule: Schedule,
     *,
     now: datetime,
     window_hours: float = 24.0,
 ) -> list[tuple[str, datetime]]:
-    """Return (slot_key, next_fire_datetime) pairs for slots firing within window.
+    """Return each slot's NEXT fire, if it falls within the window.
 
-    For each slot, finds the soonest fire time strictly in the future that
-    falls within ``now + window_hours``. Results are sorted chronologically.
-    Does NOT consult the tracker — this is pure forward-looking schema math.
+    **At most one entry per slot**, whatever the window: a slot that fires
+    Mon/Wed/Fri, asked with a 7-day window on Monday morning, yields Monday's
+    fire only, not Wednesday's or Friday's. The result is "which slots fire
+    soon, and when first", not every fire in the window. Callers rely on
+    this: ``scoutctl schedule list-upcoming --json`` emits one row per slot,
+    which the app's Control Center strip reads, and self-update only asks
+    whether any slot is due. (Named ``next_fires`` until #67.)
+
+    For each slot, finds the soonest fire time strictly in the future; the
+    slot is included only if that fire is at or before ``now + window_hours``.
+    Results are sorted chronologically. Looks at most 8 days ahead, so a
+    window longer than that never adds anything. Does NOT consult the
+    tracker — this is pure forward-looking schema math.
 
     DST note: on spring-forward day, a ``fires_at_local`` that lands in the
     missing hour (e.g. '02:30' on 2026-03-08 in America/New_York) silently
@@ -295,7 +305,8 @@ def next_fires(
         window_hours: How many hours ahead to look (default 24).
 
     Returns:
-        List of (slot_key, fire_datetime) tuples, sorted by fire_datetime.
+        List of (slot_key, fire_datetime) tuples, sorted by fire_datetime,
+        with each slot_key appearing at most once.
     """
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")

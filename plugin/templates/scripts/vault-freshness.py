@@ -52,6 +52,7 @@ BASENAME_HOURS = {
     "knowledge-base.md": 6,
     "people.md": 168,
     "channels.md": 336,
+    "meetings.md": 336,
     "ai-costs.md": 168,
     "ai-landscape.md": 168,
 }
