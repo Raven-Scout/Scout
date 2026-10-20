@@ -193,6 +193,14 @@ def test_split_html_without_tags_matches_plain_splitter() -> None:
     assert notify_telegram._split_html(body) == notify_telegram._split_message(body)
 
 
+def test_split_html_skips_a_whitespace_only_chunk() -> None:
+    # The one place a tag-free body splits differently: _split_message would
+    # send the lone "\n" between the cuts, which Telegram refuses as empty.
+    body = "x" * 10 + "\n\n\n" + "y" * 10
+    assert notify_telegram._split_message(body, limit=11) == ["x" * 10, "\n", "y" * 10]
+    assert notify_telegram._split_html(body, limit=11) == ["x" * 10, "y" * 10]
+
+
 def test_split_html_closes_and_reopens_open_tags() -> None:
     body = '<blockquote><a href="https://example.com/x">' + "word " * 60 + "</a></blockquote> tail"
     chunks = notify_telegram._split_html(body, limit=150)

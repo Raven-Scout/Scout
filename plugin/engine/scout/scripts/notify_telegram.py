@@ -272,6 +272,10 @@ def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     start of the next, and both count against ``limit``. Unbalanced input is
     not repaired beyond that: a stray closing tag still goes out, Telegram
     refuses it, and the plain-text fallback in :func:`send` takes over.
+
+    A body without tags or entities splits as :func:`_split_message` does,
+    except that a chunk of only whitespace is skipped (Telegram refuses an
+    empty message).
     """
     if len(body) <= limit:
         return [body]

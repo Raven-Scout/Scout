@@ -224,9 +224,12 @@ order is sequential.
 
 In HTML mode a cut never lands inside a tag or an entity, and each chunk is
 valid on its own: a tag still open at the cut is closed at the end of that
-chunk and reopened, with its attributes, at the start of the next. Input that
-is unbalanced to begin with (a stray `</b>`) is not repaired; Telegram
-refuses that chunk and it goes out as plain text, as above.
+chunk and reopened, with its attributes, at the start of the next. A chunk of
+only whitespace is skipped, since Telegram refuses an empty message. Input
+that is unbalanced to begin with (a stray `</b>`) is not repaired; Telegram
+refuses that chunk and it goes out as plain text, as above. The same happens
+if the tags open at a cut, with their closers, would take more than half a
+chunk (about 2000 characters of nesting): Scout stops carrying them over.
 
 ## Troubleshooting
 
