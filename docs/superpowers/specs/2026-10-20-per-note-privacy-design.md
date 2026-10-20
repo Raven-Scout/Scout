@@ -469,8 +469,11 @@ Until all six exist, `agent:*` gets nothing, and the indexer stores
   either field directly. The pre-commit check enforces this for widening
   (§8.3).
 - An owner may share a note only with groups they belong to, plus `org`
-  (§3.3). The host enforces this at read time as well: a `group:` principal
-  naming a group the owner has left admits nobody.
+  (§3.3). The host re-resolves every principal at read time (which §7.1
+  conditions 3 and 5 require anyway), and each of these admits nobody:
+  - a `group:` naming a group the owner has since left;
+  - a `person:` whose host account was removed or deactivated;
+  - `org`, once the owner has left the instance.
 - A run that creates a new note never sets `federation_scope`. New notes are
   `none` by default, so a run can't share anything by writing.
 - `/scout-setup` and `/scout-update` explain the two fields in one paragraph
