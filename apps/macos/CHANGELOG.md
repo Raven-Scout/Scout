@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-20
+
 ### Added
 - **Choose the Claude model each scheduled slot runs on** (`Scout/Schedules/SlotEditForm.swift`, `Scout/Models/ModelChoice.swift`, `Scout/Services/ModelSettingsService.swift`, `Scout/Shell/ModelSettingsSection.swift`, `Scout/Schedules/SlotModelTag.swift`, `Scout/Services/SessionLogService.swift`). The slot editor in Schedules has a Model row: Default (the model named), Opus, Sonnet or Haiku. A full model ID set by hand in `schedule.yaml` shows as its own option and is kept on save. Settings has a Model section that sets the default for every slot without its own, written through `scoutctl model set-default` (the app never edits `scout-config.yaml`). Slots with their own model show a small tag in the table and cards; the rest look as before. A run's detail Metadata tab lists the model it ran on, read from the run log. Both pickers hide on an engine without `scoutctl model`, which would ignore the setting. Nothing changes until you pick a model: every run stays on Opus.
 
