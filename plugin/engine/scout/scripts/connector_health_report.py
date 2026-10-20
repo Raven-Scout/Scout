@@ -397,6 +397,7 @@ def compute_critical_alerts(
         curr_ok = _ok_count(stats, c, current_sid)
         if curr_ok != 0:
             continue
+        curr_err = _err_count(stats, c, current_sid)
         gap = dark_runs(stats, c, session_list)
         samples, healthy = mode_baseline(stats, c, prior_sessions, current_mode, sessions_by_id, n=3)
         if samples >= 3:
@@ -406,10 +407,26 @@ def compute_critical_alerts(
         else:
             should_alert = False
 
-        # Chronic-skip override: dark for >=3 runs in a slot type that requires
-        # this connector.
         mode_required = connector.required_in_type(current_slot_type)
-        if not should_alert and gap >= DARK_GAP_THRESHOLD and mode_required:
+        chronic = gap >= DARK_GAP_THRESHOLD and mode_required
+
+        # A connector that was never ATTEMPTED this run produced no evidence about its
+        # health. `curr_ok == 0 and curr_err == 0` means unexercised: the PostToolUse
+        # hook logs every call, so no row at all means no call was made. That is a
+        # property of the run (a short run, one that didn't need the connector), and
+        # `mode_baseline` can't tell it from an outage: it asks "do prior runs of this
+        # mode usually call it?", which is a statement about runs, not the connector.
+        #
+        # So an unexercised connector only reaches CRITICAL through the chronic-skip
+        # backstop: >=3 consecutive dark runs in a slot type that REQUIRES it. That
+        # costs up to two runs of detection latency for a connector that dies
+        # silently, and removes a false CRITICAL on every run that simply didn't
+        # call a healthy connector.
+        if curr_err == 0:
+            should_alert = chronic
+        elif chronic:
+            # Chronic-skip override: dark for >=3 runs in a slot type that requires
+            # this connector.
             should_alert = True
 
         if not should_alert:
@@ -425,13 +442,23 @@ def compute_critical_alerts(
         # connector simply wasn't exercised in this mode) AND the connector was
         # healthy in ANY mode within the liveness window, it's alive — not an
         # outage. Suppress the false CRITICAL. Error calls this run still alert.
-        curr_err = _err_count(stats, c, current_sid)
         current_ts = sessions_by_id[current_sid][0]["_ts"]
         if curr_err == 0 and last_ok is not None and current_ts - last_ok <= CROSS_MODE_LIVENESS_WINDOW:
             continue
 
+        # Say which kind of zero this is. "0 successful calls" reads as "it was
+        # called and failed"; when curr_err is also 0 nothing was called at all, and
+        # the alert rests on the run gap rather than on any observed failure.
+        observed = (
+            f"{curr_err} failed call(s) in `{current_mode}` run"
+            if curr_err
+            else (
+                f"NOT CALLED in `{current_mode}` run (no successes, no errors — "
+                f"alerting on the {gap}-run gap, not on an observed failure)"
+            )
+        )
         reason = (
-            f"0 successful calls in `{current_mode}` run; "
+            f"{observed}; "
             f"{healthy}/{samples} prior `{current_mode}` runs were healthy; "
             f"dark for {gap} run(s) total; last healthy {fmt_ts(last_ok)}"
         )
@@ -595,12 +622,13 @@ def render_health_md(
         "when `SCOUT_MODE` is unset).",
         "",
         "### Alert rules",
-        "- **Critical connector (mode-aware):** 0 successful calls in this run when ≥2 of the "
-        "3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 "
-        "prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero "
-        "prior same-mode runs exist, no baseline → no alert.",
+        "- **Critical connector (mode-aware):** 0 successful calls and ≥1 failed call in this "
+        "run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls "
+        "each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough "
+        "to trigger. If zero prior same-mode runs exist, no baseline → no alert.",
         "- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs "
-        "fires an alert in modes where it's required by `connectors.yaml`.",
+        "fires an alert in modes where it's required by `connectors.yaml`. This is the only way "
+        "a connector that was NOT CALLED this run (no successes, no errors) can alert.",
         "- **Pattern #48:** if a connector has never logged a successful call across the entire "
         "window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).",
         "- **Pattern #54:** if a connector was healthy in any mode within the last 4h and the "
