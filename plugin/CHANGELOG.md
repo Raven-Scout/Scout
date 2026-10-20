@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The Telegram setup doc no longer claims the wrap goes to Telegram on its own** (#485; `engine/scout/docs/connectors/telegram-setup.md`). §7 said a session "fans out the wrap message to Telegram in addition to the Slack DM", but nothing in `phases/` or the runner templates calls `scoutctl notify telegram`. It now says how the wrap's channel is chosen: the runners defer to the brain file's notification section (`SKILL.md`, or `DREAMING.md` / `RESEARCH.md` when they have one, #481). To send the wrap to Telegram, edit that section in your vault to call `scoutctl notify telegram --tier info|action_required --parse-mode html --body-file -`. The edit is vault-level: `/scout-update` keeps it, and it should not be back-ported into `phases/`. The intro's "same fan-out pattern as the session-wrap Slack DM" is reworded to match.
+
 ## [0.18.2] - 2026-10-20
 
 ### Added
