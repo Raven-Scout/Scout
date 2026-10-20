@@ -12,5 +12,8 @@ any: list_recent_files  # drive
 any: read_file_content  # drive
 any: search_files  # drive
 
+# Engine-change PRs, opened from a clone under ~/.scout-worktrees/ (git-setup.md): no scenario makes one
+gh: pr create  # a scheduled run's engine fix, never vault work
+
 # Not a production tool name
 slack: slack_search  # slack.md names it as a concept, not a call

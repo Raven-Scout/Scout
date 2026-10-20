@@ -43,6 +43,19 @@ Narrate any non-session commits (anything not authored by this run) in the summa
 
 All GitHub operations use the `gh` CLI, which is authenticated and has full access to both public and private repos. **Do not use GitHub MCP tools** — they have limited scope.
 
+## Engine Changes: Never in the Live Engine Checkout
+
+The engine checkout scheduled runs execute is `"engine_root"` in `~/.local/state/scout/engine.json`; read it there, never assume a path. On a developer's machine it is an editable install: whatever its working tree holds runs in the next scheduled run, unreviewed, and a checkout off `main` or a release tag blocks upgrades. **In it, never run `git checkout`, `git switch`, `git stash`, `git reset` or `git pull`, never create a branch, and never edit, write or delete a file.** Reading is fine.
+
+Make any engine or plugin change in a fresh clone of `origin/main`, with `NAME` a short kebab-case name for the change:
+
+```bash
+ROOT="$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.local/state/scout/engine.json")))["engine_root"])')"
+git clone -q "$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo https://github.com/Raven-Scout/Scout.git)" ~/.scout-worktrees/$NAME && git -C ~/.scout-worktrees/$NAME switch -c scout/$NAME
+```
+
+Commit there, `git push -u origin scout/$NAME`, then `gh pr create --draft`. Never merge it, and never leave uncommitted work (push unfinished work as the draft). Name the PR, or the clone's path if the push fails, in the wrap notification. `scoutctl phases backport --apply` needs `--plugin-root ~/.scout-worktrees/$NAME/plugin`. The repo is public: no vault content (people, companies, issue IDs, channels). A run-health `engine.dirty` or `engine.off_release` finding means that checkout was changed: report it, and never clean or switch it yourself.
+
 ## Timezone Handling
 
 The sandbox/server clock may run in UTC. You **must** use the run's display zone for all time checks and timestamp generation throughout the run: the computer's own timezone (the clock the scheduler fires on), unless `scout-config.yaml` sets a `timezone:` override. `scripts/scout-tz.sh` resolves it — never use bare `date`, always prefix with `TZ="$(scripts/scout-tz.sh)"`. Never hardcode a zone name: the user travels, and the resolver follows them.
