@@ -5,16 +5,20 @@ vault. "Warm" is the second call with nothing changed: ``visible_files`` reads i
 labels from the stat-keyed ``.scout-cache/privacy-index.json`` (no note is opened),
 and the query reuses ``KnowledgeGraph``'s per-process frontmatter cache.
 
-CI asserts the work as well as the time: a warm listing opens no note. The
-wall-clock budget is the spec's, timed in process (the CLI adds interpreter
-start-up, which the spec doesn't count); the best of three runs is taken so one
-stall on a loaded runner doesn't fail it.
+CI asserts the work as well as the time: a warm listing opens no note. Two
+timings: in process, and the commands as processes (`scoutctl kb files`,
+`scoutctl kb query --type task`) net of a baseline measured in the same test, a
+process that only imports `scout.cli` (ruling R14: the budget excludes
+interpreter start-up and imports). Each is the best of three runs, so one stall
+on a loaded runner doesn't fail it.
 """
 
 from __future__ import annotations
 
 import os
 import random
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -104,3 +108,27 @@ def test_warm_kb_files_and_query_within_budget(tmp_path: Path, monkeypatch: pyte
     print(f"\nwarm kb files: {files_s * 1000:.0f} ms, warm kb query: {query_s * 1000:.0f} ms")
     assert files_s < WARM_BUDGET_S, f"warm kb files took {files_s:.3f}s"
     assert query_s < WARM_BUDGET_S, f"warm kb query took {query_s:.3f}s"
+
+
+def _proc_s(argv: list[str]) -> float:
+    def run() -> None:
+        subprocess.run(argv, check=True, capture_output=True)
+
+    return _best_of(run)
+
+
+def test_warm_cli_kb_files_and_query_within_budget(tmp_path: Path) -> None:
+    vault = _write_vault(tmp_path, FILES)
+    scoutctl = str(Path(sys.executable).parent / "scoutctl")
+    files = [scoutctl, "kb", "files", "--repo", str(vault)]
+    query = [scoutctl, "kb", "query", "--type", "task", "--repo", str(vault)]
+    for argv in (files, query):  # warm: the privacy index is written
+        subprocess.run(argv, check=True, capture_output=True)
+    baseline = _proc_s([sys.executable, "-c", "import scout.cli"])
+    files_s, query_s = _proc_s(files), _proc_s(query)
+    print(
+        f"\nbaseline {baseline * 1000:.0f} ms; scoutctl kb files {files_s * 1000:.0f} ms, "
+        f"kb query {query_s * 1000:.0f} ms"
+    )
+    assert files_s - baseline < WARM_BUDGET_S, f"kb files: {files_s:.3f}s vs baseline {baseline:.3f}s"
+    assert query_s - baseline < WARM_BUDGET_S, f"kb query: {query_s:.3f}s vs baseline {baseline:.3f}s"

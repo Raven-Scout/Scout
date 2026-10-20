@@ -569,3 +569,178 @@ def test_unwritable_log_never_fails_the_read(own_vault: Path) -> None:
     assert result.exit_code == 0
     assert CANARIES[SAM] in result.stdout
     assert "kb-reads" in result.stderr
+
+
+# ----- review fixes -------------------------------------------------------------------
+
+
+def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Facts an older classifier stored must not keep labelling an unchanged file (fail closed)."""
+    _settle(own_vault)
+    kb_read.visible_files(own_vault, "owner")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    data = json.loads(index.read_text(encoding="utf-8"))
+    assert data["classifier"] == kb_read.CLASSIFIER_VERSION and data["engine"] == kb_read.__version__
+    # an older classifier's verdict for SAM, under its current stat key
+    stale = data["files"][SAM]
+    stale["facts"] = {"state": "ok", "visibility": "normal", "declared": "none", "warnings": []}
+    stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
+    for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
+        index.write_text(json.dumps({**data, header: value}), encoding="utf-8")
+        assert dict(kb_read.visible_files(own_vault, "owner"))[SAM].visibility == "private", header
+        rebuilt = json.loads(index.read_text(encoding="utf-8"))
+        assert rebuilt["classifier"] == kb_read.CLASSIFIER_VERSION and rebuilt["engine"] == kb_read.__version__
+    # the same header trusts the planted entry: the header is what invalidates it
+    index.write_text(json.dumps(data), encoding="utf-8")
+    assert dict(kb_read.visible_files(own_vault, "owner"))[SAM].visibility == "normal"
+    monkeypatch.setattr(kb_read, "CLASSIFIER_VERSION", kb_read.CLASSIFIER_VERSION + 1)
+    assert dict(kb_read.visible_files(own_vault, "owner"))[SAM].visibility == "private"
+
+
+def test_rg_failure_without_matches_is_an_error(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Failed:
+        returncode = 2
+        stdout = b""
+        stderr = b"rg: some other failure\n"
+
+    monkeypatch.setattr(kb_read, "find_rg", lambda: "/usr/bin/rg")
+    monkeypatch.setattr(kb_read.subprocess, "run", lambda *_a, **_k: Failed())
+    with pytest.raises(kb_read.PatternError):
+        kb_read.search(vault, "owner", "x", ())
+    result = kb(vault, "search", "x")
+    assert result.exit_code == 2 and "some other failure" in result.stderr
+
+
+def test_rg_drops_matches_in_binary_files(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def ev(kind: str, data: dict[str, Any]) -> bytes:
+        return json.dumps({"type": kind, "data": data}).encode()
+
+    out = b"\n".join(
+        [
+            ev("match", {"path": {"text": "inbox.md"}, "line_number": 1, "lines": {"text": "x\n"}}),
+            ev("end", {"path": {"text": "inbox.md"}, "binary_offset": 12}),
+            ev("match", {"path": {"text": SAM}, "line_number": 2, "lines": {"text": "x\n"}}),
+            ev("end", {"path": {"text": SAM}, "binary_offset": None}),
+        ]
+    )
+
+    class R:
+        returncode = 0
+        stdout = out
+        stderr = b""
+
+    monkeypatch.setattr(kb_read, "find_rg", lambda: "/usr/bin/rg")
+    monkeypatch.setattr(kb_read.subprocess, "run", lambda *_a, **_k: R())
+    assert [m.path for m in kb_read.search(vault, "owner", "x", ())] == [SAM]
+
+
+@pytest.mark.skipif(kb_read.find_rg() is None, reason="rg not installed")
+def test_rg_and_fallback_agree_on_odd_files(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _odd_files(own_vault)
+    with_rg = kb_read.search(own_vault, "owner", "needle", ("knowledge-base/**",))
+    monkeypatch.setattr(kb_read, "find_rg", lambda: None)
+    without = kb_read.search(own_vault, "owner", "needle", ("knowledge-base/**",))
+    assert [(m.path, m.line, m.text) for m in with_rg] == [(m.path, m.line, m.text) for m in without]
+    assert not any(m.path.endswith("blob.bin") for m in with_rg)
+
+
+# Machine plumbing (local_only.always) with a marker; stand-in content only.
+PLUMBING = {
+    ".venv/lib/site.py": "venv PLUMB-MARKER\n",
+    ".scout-logs/run.jsonl": '{"x": "PLUMB-MARKER"}\n',
+    ".claude/settings.json": "{}\n",
+    ".env": "STAND_IN=PLUMB-MARKER\n",
+    ".mcp.json": "{}\n",
+    ".scout-state/other-state.json": "PLUMB-MARKER\n",
+    ".scout-cache/session-context.json": "{}\n",
+}
+CARVED_OUT = ".scout-state/schedule.yaml"
+
+
+def _plumb(vault: Path) -> None:
+    for rel, text in {**PLUMBING, CARVED_OUT: "slots: []\n"}.items():
+        path = vault / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def test_listing_leaves_out_plumbing(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ruling R13: local_only.always (minus sync_allow) isn't listed, searched or walked by default."""
+    _plumb(own_vault)
+    walked: list[str] = []
+    real_scandir = os.scandir
+
+    def scandir(path: Any = ".") -> Any:
+        walked.append(os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    paths = {p for p, _ in kb_read.visible_files(own_vault, "owner")}
+    monkeypatch.undo()
+    assert not set(PLUMBING) & paths
+    assert CARVED_OUT in paths  # a sync_allow carve-out
+    assert "trading/positions.md" in paths  # overlay local_only_add is vault content
+    for d in (".venv", ".scout-logs", ".claude", ".scout-cache"):
+        assert not any(w.endswith(os.sep + d) or (os.sep + d + os.sep) in w for w in walked), d
+    assert kb_read.search(own_vault, "owner", "PLUMB-MARKER", ()) == []
+    # a wildcard-first glob never pulls plumbing in
+    assert not set(PLUMBING) & {p for p, _ in kb_read.visible_files(own_vault, "owner", ("**",))}
+    # kb read and kb classify still reach it
+    assert "PLUMB-MARKER" in kb(own_vault, "read", ".env").stdout
+    assert json.loads(kb(own_vault, "classify", ".env", "--json").stdout)[0]["local_only"] is True
+
+
+@pytest.mark.parametrize(
+    ("glob", "want"),
+    [
+        (".scout-logs/**", {".scout-logs/run.jsonl"}),
+        (".env*", {".env"}),
+        (".venv/**/*.py", {".venv/lib/site.py"}),
+        (".scout-state/*", {".scout-state/other-state.json", CARVED_OUT}),
+    ],
+)
+def test_explicit_glob_reaches_plumbing(own_vault: Path, glob: str, want: set[str]) -> None:
+    _plumb(own_vault)
+    assert {p for p, _ in kb_read.visible_files(own_vault, "owner", (glob,))} == want
+    assert {r["path"] for r in kb_json(own_vault, "files", "--glob", glob)} == want
+    # the default listing afterwards is unchanged (the index keeps both)
+    assert not set(PLUMBING) & {p for p, _ in kb_read.visible_files(own_vault, "owner")}
+
+
+def test_index_is_not_rewritten_by_the_audit_log(own_vault: Path) -> None:
+    _settle(own_vault)
+    kb(own_vault, "files", reader="autonomous")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    before = index.stat().st_mtime_ns
+    for _ in range(2):
+        assert kb(own_vault, "files", reader="autonomous").exit_code == 0
+    assert (own_vault / ".scout-logs" / "kb-reads.jsonl").is_file()
+    assert index.stat().st_mtime_ns == before
+
+
+def test_failed_calls_are_audited(own_vault: Path) -> None:
+    assert kb(own_vault, "search", "[unclosed", reader="autonomous").exit_code == 2
+    assert kb(own_vault, "read", "../outside.md", reader="autonomous").exit_code == 2
+    assert kb(own_vault, "related", reader="autonomous").exit_code == 2  # missing NAME
+    assert kb(own_vault, "query", "--visibility", "bogus", reader="autonomous").exit_code == 2
+    assert kb(own_vault, "files", "--reader", "owner", reader=AGENT).exit_code == 2  # widening refused
+    assert kb(own_vault, "classify", SAM, reader="autonomous").exit_code == 0
+    assert kb(own_vault, "classify", SAM, reader=AGENT).exit_code == 0
+    assert kb(own_vault, "policy", reader="autonomous").exit_code == 0
+    rows = _log(own_vault)
+    assert [r["command"] for r in rows] == [
+        "search",
+        "read",
+        "related",
+        "query",
+        "files",
+        "classify",
+        "classify",
+        "policy",
+    ]
+    assert all(r["paths_returned"] == 0 for r in rows[:5])
+    assert rows[4]["reader"] == AGENT
+    assert (rows[5]["paths_returned"], rows[5]["private_paths"]) == (1, 1)
+    assert (rows[6]["paths_returned"], rows[6]["paths_denied"]) == (0, 1)
+    raw = (own_vault / ".scout-logs" / "kb-reads.jsonl").read_text(encoding="utf-8")
+    assert "unclosed" not in raw and "outside" not in raw and "sam" not in raw.lower()

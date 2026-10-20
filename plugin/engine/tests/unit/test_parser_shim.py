@@ -273,6 +273,22 @@ def test_shim_output_is_labelled_for_the_owner(vault: Path) -> None:
     assert export["entities"]["sam"]["_label"]["visibility"] == "private"
 
 
+def test_shim_labels_private_results_for_autonomous(vault: Path) -> None:
+    """The real shim → scoutctl, as a scheduled run reads (SCOUT_READER=autonomous)."""
+    path_env = f"{VENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {"SCOUT_READER": "autonomous"}
+    query = _run_shim(vault, ["query", "--type", "task", "--domain", "personal"], path_env, **env)
+    assert query.returncode == 0, query.stderr
+    assert "  [private] [task] task-renew-permit" in query.stdout
+    assert "  [task] task-buy-gift" in query.stdout
+    related = _run_shim(vault, ["related", "--name", "priya"], path_env, **env).stdout
+    assert "  [private] works_with → sam" in related
+    entity = json.loads(_run_shim(vault, ["entity", "--name", "sam"], path_env, **env).stdout)
+    assert entity["_label"]["visibility"] == "private"
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    assert log.is_file() and '"reader": "autonomous"' in log.read_text(encoding="utf-8")
+
+
 def test_shim_gives_an_agent_nothing(vault: Path) -> None:
     path_env = f"{VENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
     for args in PARITY:
@@ -280,4 +296,9 @@ def test_shim_gives_an_agent_nothing(vault: Path) -> None:
         assert result.returncode == 0, result.stderr
         for canary in CANARIES.values():
             assert canary not in result.stdout
-        assert "task-renew-permit" not in result.stdout
+        assert "task-renew-permit" not in result.stdout and "knowledge-base/" not in result.stdout
+        assert "[private]" not in result.stdout and "_label" not in result.stdout
+        if args[0] == "query":
+            assert result.stdout.strip() == "0 result(s)."
+        if args[0] == "export":
+            assert json.loads(result.stdout) == {"entities": {}, "relationships": []}

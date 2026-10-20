@@ -53,6 +53,7 @@ from scout.kb.privacy import (
     decode_head,
     facts_from_frontmatter,
     label_from_facts,
+    load_frontmatter_yaml,
     load_policy,
     normalize_rel,
     note_facts,
@@ -274,7 +275,7 @@ class KnowledgeGraph:
             return pickle.loads(hit[1])
         frontmatter = self._extract_frontmatter(path)
         if time.time_ns() - st.st_mtime_ns > _RACY_WINDOW_NS:
-            # safe_load yields only plain types (dict, list, str, numbers, dates), all picklable.
+            # The safe loader yields only plain types (dict, list, str, numbers, dates), all picklable.
             current[str(path)] = (key, pickle.dumps(frontmatter, protocol=pickle.HIGHEST_PROTOCOL))
         return frontmatter
 
@@ -298,7 +299,7 @@ class KnowledgeGraph:
             return None
 
         try:
-            frontmatter = yaml.safe_load("\n".join(block))
+            frontmatter = load_frontmatter_yaml("\n".join(block))
         except yaml.YAMLError:
             return None
         if isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter:

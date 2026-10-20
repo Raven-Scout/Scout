@@ -65,6 +65,25 @@ from scout.kb.lint_config import glob_match
 
 SCHEMA_VERSION = 1
 
+# The classifier's own version. Bump it on ANY change to what classify(),
+# note_facts() or label_from_facts() return for a given input (a new rule, a
+# changed default, a different YAML parse): caches of labels or NoteFacts (the
+# kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
+# mismatch, so a stale label can never outlive the rules that made it.
+CLASSIFIER_VERSION = 1
+
+# libyaml's C parser when PyYAML was built with it (about 10x faster on a big
+# KB), else the pure-Python one. Same SafeConstructor either way: plain types.
+# Every frontmatter parse on the label path goes through load_frontmatter_yaml,
+# so the classifier and KnowledgeGraph always parse a block the same way.
+_FM_LOADER: Any = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) else yaml.SafeLoader
+
+
+def load_frontmatter_yaml(text: str) -> Any:
+    """``yaml.safe_load`` of a frontmatter block, with libyaml when available."""
+    return yaml.load(text, Loader=_FM_LOADER)
+
+
 VISIBILITIES = ("normal", "private")
 Visibility = Literal["normal", "private"]
 VisibilitySource = Literal["frontmatter", "path_default", "default", "forced"]
@@ -371,7 +390,7 @@ def _frontmatter(text: str | None) -> dict[str, Any] | None:
     if block is None:
         raise _Unparseable
     try:
-        data = yaml.safe_load("\n".join(block))
+        data = load_frontmatter_yaml("\n".join(block))
     except yaml.YAMLError as e:
         raise _Unparseable from e
     if data is None:

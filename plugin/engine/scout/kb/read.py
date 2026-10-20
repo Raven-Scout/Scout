@@ -5,8 +5,9 @@ the text form prefixes a private result with ``[private] ``. ``owner`` and
 ``autonomous`` see every file; any other reader (every ``agent:*``) sees nothing
 in v1, and nothing under the vault is listed or opened for it.
 
-- :func:`visible_files` lists the vault (everything but ``.git/``), labelled,
-  through a stat-keyed index at ``.scout-cache/privacy-index.json`` (below).
+- :func:`visible_files` lists the vault, labelled, through a stat-keyed index
+  at ``.scout-cache/privacy-index.json`` (below). Machine plumbing is left out
+  (ruling R13, below).
 - :func:`search` runs ``rg`` over the visible paths, in batches of
   :data:`SEARCH_BATCH`, never over the tree; a Python scan when ``rg`` is absent.
 - :func:`read_file`, :func:`resolve`, and the graph commands over the engine's
@@ -24,7 +25,10 @@ prints.
 size, inode), its :class:`~scout.kb.privacy.NoteFacts` (what its own text says)
 and its label. The header records a hash of the effective policy: when the
 policy changes, labels are recomputed from the stored facts without reading any
-file. A torn or foreign index, or a malformed entry, is ignored and rebuilt; an
+file. It also records :data:`~scout.kb.privacy.CLASSIFIER_VERSION` and the
+engine version: after an upgrade the whole index is rebuilt from the files, so
+facts an older classifier stored can't keep labelling a file (fail closed). A
+torn or foreign index, or a malformed entry, is ignored and rebuilt; an
 unwritable one only costs speed. A file modified less than 2 s before the walk
 isn't stored (a coarse-timestamp filesystem could keep its key across a
 same-size rewrite), as in the connector-calls index (#80).
@@ -33,8 +37,16 @@ same-size rewrite), as in the connector-calls index (#80).
 alias would list every note twice; another could leave the vault) and symlinked
 files are skipped: their targets are listed under their own paths. The index
 file itself isn't listed.
-Local-only files are listed too, labelled ``local_only``: the owner's laptop
-reads them like any other.
+
+**What a listing leaves out (ruling R13).** ``kb files`` and ``kb search`` skip
+the policy's ``local_only.always`` paths (``.venv/``, ``.scout-logs/``,
+``.claude/``, ``.env*``, ``.mcp.json`` ...) except its ``sync_allow`` carve-outs,
+and don't even walk those directories, unless a ``--glob`` names them
+explicitly: a glob that starts with a literal character (``.scout-logs/**``,
+``.env*``) and matches the path. A glob that starts with a wildcard
+(``**/*.md``) never pulls plumbing in. ``kb read`` and ``kb classify`` still
+reach any vault file. The overlay's ``local_only_add`` paths (``trading/**``)
+are vault content: listed and searched as usual, labelled ``local_only``.
 """
 
 from __future__ import annotations
@@ -53,10 +65,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from scout import __version__
 from scout.errors import KBError
 from scout.kb.lint_config import glob_match
 from scout.kb.ontology import KnowledgeGraph, find_vault
 from scout.kb.privacy import (
+    CLASSIFIER_VERSION,
     FULL_READERS,
     VISIBILITIES,
     Label,
@@ -74,7 +88,7 @@ from scout.kb.privacy import (
 from scout.kb.read_log import log_event
 
 INDEX_FILENAME = "privacy-index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 SEARCH_BATCH = 500
 ENGINE_SCHEMA = Path(__file__).with_name("schema.yaml")
 _RACY_WINDOW_NS = 2_000_000_000
@@ -88,8 +102,12 @@ class Denied(Exception):
     """The reader may not see this file (or any file)."""
 
 
-class PatternError(ValueError):
-    """A search pattern that doesn't compile."""
+class UsageError(ValueError):
+    """A bad argument: the CLI exits 2 (a path outside the vault, a pattern that won't compile ...)."""
+
+
+class PatternError(UsageError):
+    """A search that can't run: a pattern that doesn't compile, or ``rg`` failing outright."""
 
 
 # ----- the labelled listing -------------------------------------------------------
@@ -99,8 +117,53 @@ def policy_hash(policy: Policy) -> str:
     return hashlib.sha256(json.dumps(policy.to_json(), sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _walk(vault: Path) -> Iterator[tuple[str, os.stat_result]]:
-    """``(vault-relative path, lstat)`` for every regular file outside ``.git/``."""
+def _literal_prefix(glob: str) -> str:
+    """The part of a glob before its first wildcard."""
+    cut = [i for i in (glob.find("*"), glob.find("?")) if i >= 0]
+    return glob[: min(cut)] if cut else glob
+
+
+class _Scope:
+    """Which paths a listing walks and returns (ruling R13; see the module docstring)."""
+
+    def __init__(self, policy: Policy, globs: Sequence[str]) -> None:
+        self.always = policy.local_only_always
+        self.allow = policy.sync_allow
+        self.explicit = tuple(g for g in globs if g and g[0] not in "*?")
+        prefixes = tuple(_literal_prefix(g) for g in self.always)
+        # A cheap pre-check: a path that starts with none of these can't be plumbing.
+        self._always_prefixes = prefixes if all(prefixes) else ("",)
+        # Directories a `P/**` entry covers whole: never walked unless needed.
+        self._roots = tuple(g[:-3] for g in self.always if g.endswith("/**") and g[:-3] == _literal_prefix(g[:-3]))
+        self._needed = tuple(_literal_prefix(g) for g in (*self.allow, *self.explicit))
+
+    def plumbing(self, rel: str) -> bool:
+        """``local_only.always`` and not carved out by ``sync_allow``."""
+        if not rel.startswith(self._always_prefixes):
+            return False
+        return any(glob_match(g, rel) for g in self.always) and not any(glob_match(g, rel) for g in self.allow)
+
+    def skip_file(self, rel: str) -> bool:
+        return self.plumbing(rel) and not any(glob_match(g, rel) for g in self.explicit)
+
+    def skip_dir(self, rel: str) -> bool:
+        if rel.rsplit("/", 1)[-1] == ".git":
+            return True
+        if not any(rel == r or rel.startswith(r + "/") for r in self._roots):
+            return False
+        d = rel + "/"
+        return not any(p.startswith(d) or d.startswith(p) for p in self._needed)
+
+    def unwalked(self, rel: str) -> bool:
+        """Whether a file at ``rel`` is outside this listing (for keeping its index entry)."""
+        parts = rel.split("/")
+        if any(self.skip_dir("/".join(parts[:i])) for i in range(1, len(parts))):
+            return True
+        return self.skip_file(rel)
+
+
+def _walk(vault: Path, scope: _Scope) -> Iterator[tuple[str, os.stat_result]]:
+    """``(vault-relative path, lstat)`` for every regular file ``scope`` keeps."""
     stack = [(str(vault), "")]
     while stack:
         directory, prefix = stack.pop()
@@ -115,9 +178,9 @@ def _walk(vault: Path) -> Iterator[tuple[str, os.stat_result]]:
                     if entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
-                        if entry.name != ".git":
+                        if not scope.skip_dir(rel):
                             stack.append((entry.path, rel + "/"))
-                    elif entry.is_file(follow_symlinks=False):
+                    elif entry.is_file(follow_symlinks=False) and not scope.skip_file(rel):
                         yield rel, entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
@@ -190,13 +253,24 @@ def _label_from_json(data: Any, rel: str) -> Label | None:
     )
 
 
+def _index_header(policy: str) -> dict[str, Any]:
+    return {"version": INDEX_VERSION, "classifier": CLASSIFIER_VERSION, "engine": __version__, "policy": policy}
+
+
 def _read_index(path: Path) -> tuple[str | None, dict[str, Any]]:
-    """``(policy hash, entries)``; empty when missing, torn or from another version."""
+    """``(policy hash, entries)``; empty when missing, torn, or written by another
+    index version, classifier version or engine version."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None, {}
-    if not isinstance(data, dict) or data.get("version") != INDEX_VERSION or not isinstance(data.get("files"), dict):
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != INDEX_VERSION
+        or data.get("classifier") != CLASSIFIER_VERSION
+        or data.get("engine") != __version__
+        or not isinstance(data.get("files"), dict)
+    ):
         return None, {}
     policy = data.get("policy")
     return (policy if isinstance(policy, str) else None), data["files"]
@@ -207,15 +281,20 @@ def _write_index(path: Path, policy: str, files: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"version": INDEX_VERSION, "policy": policy, "files": files}), encoding="utf-8")
+        tmp.write_text(json.dumps({**_index_header(policy), "files": files}), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         with contextlib.suppress(OSError):
             tmp.unlink()
 
 
-def all_labels(vault: Path, policy: Policy) -> dict[str, Label]:
-    """Every file in ``vault`` (resolved) → its label, through the privacy index."""
+def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = ()) -> dict[str, Label]:
+    """Every file a listing of ``vault`` (resolved) keeps → its label, through the privacy index.
+
+    ``globs`` only decide which plumbing paths are walked (:class:`_Scope`);
+    callers filter by them. Index entries for paths this walk leaves out are kept.
+    """
+    scope = _Scope(policy, globs)
     index_path = vault / ".scout-cache" / INDEX_FILENAME
     want_policy = policy_hash(policy)
     old_policy, old = _read_index(index_path)
@@ -223,7 +302,7 @@ def all_labels(vault: Path, policy: Policy) -> dict[str, Label]:
     fresh: dict[str, Any] = {}
     labels: dict[str, Label] = {}
     now = time.time_ns()
-    for rel, st in _walk(vault):
+    for rel, st in _walk(vault, scope):
         if rel.startswith(_INDEX_PREFIXES):  # the index itself (and its temp files)
             continue
         key = _stat_key(st)
@@ -243,6 +322,10 @@ def all_labels(vault: Path, policy: Policy) -> dict[str, Label]:
         labels[rel] = label
         if now - st.st_mtime_ns > _RACY_WINDOW_NS:
             fresh[rel] = entry
+    if same_policy:  # a policy change drops them: their labels would be stale
+        for rel, entry in old.items():
+            if rel not in labels and scope.unwalked(rel):
+                fresh[rel] = entry
     if not same_policy or fresh != old:
         _write_index(index_path, want_policy, fresh)
     return labels
@@ -252,12 +335,13 @@ def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[t
     """The files ``reader`` may see, sorted, each with its label. Nothing is touched for others.
 
     ``globs`` (vault-relative, ``*`` within a segment, ``**`` across) keep a file
-    when any of them matches.
+    when any of them matches. Plumbing (``local_only.always`` minus
+    ``sync_allow``) is left out unless a glob names it explicitly (ruling R13).
     """
     if reader not in FULL_READERS:
         return []
     root = vault.resolve()
-    labels = all_labels(root, load_policy(root))
+    labels = all_labels(root, load_policy(root), globs)
     return [
         (rel, label)
         for rel, label in sorted(labels.items())
@@ -311,22 +395,28 @@ def _search_rg(
     for i in range(0, len(rels), SEARCH_BATCH):
         proc = subprocess.run([*base, *rels[i : i + SEARCH_BATCH]], cwd=vault, capture_output=True, check=False)
         batch: list[tuple[str, int, str]] = []
+        binary: set[str] = set()
         for raw in proc.stdout.splitlines():
             try:
                 event = json.loads(raw)
             except ValueError:
                 continue
-            if not isinstance(event, dict) or event.get("type") != "match":
+            if not isinstance(event, dict):
                 continue
             data = event.get("data") or {}
-            line = data.get("line_number")
-            if isinstance(line, int):
+            if event.get("type") == "end" and data.get("binary_offset") is not None:
+                binary.add(_rg_path(data.get("path")))
+            elif event.get("type") == "match" and isinstance(data.get("line_number"), int):
                 text = _rg_text(data.get("lines")).rstrip("\n").removesuffix("\r")
-                batch.append((_rg_path(data.get("path")), line, text))
-        if proc.returncode == 2 and not batch and proc.stderr:
+                batch.append((_rg_path(data.get("path")), data["line_number"], text))
+        # rg searches an explicitly named binary file up to its first NUL and
+        # reports `binary_offset` in the file's `end` event; there is no flag to
+        # skip such files, so drop their matches here, as the Python scan skips
+        # any file with a NUL byte.
+        batch = [m for m in batch if m[0] not in binary]
+        if proc.returncode == 2 and not batch and proc.stderr.strip():
             message = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
-            if any("regex" in m.lower() or "pattern" in m.lower() for m in message):
-                raise PatternError(message[-1] if message else "bad pattern")
+            raise PatternError(message[-1] if message else "rg failed")
         found += batch
     return found
 
@@ -363,9 +453,9 @@ def search(
 ) -> list[Match]:
     """Lines matching ``pattern`` in the files ``reader`` may see, each with its file's label.
 
-    ``PatternError`` for a pattern that doesn't compile. Binary files (a NUL
-    byte) are skipped by the Python scan; ``rg`` handles them its own way. Bad
-    UTF-8 is replaced, never fatal.
+    ``PatternError`` for a pattern that doesn't compile, or when ``rg`` exits 2
+    with an error and no matches. Binary files (a NUL byte) give no matches,
+    with ``rg`` or without. Bad UTF-8 is replaced, never fatal.
     """
     files = visible_files(vault, reader, globs)
     if not files:
@@ -390,22 +480,25 @@ def read_file(vault: Path, reader: str, path: str) -> tuple[Label, bytes]:
     """``(label, bytes)`` of one vault file.
 
     ``Denied`` for a reader that sees nothing (before anything is touched, so a
-    denial never says whether the file exists); ``ValueError`` for a path
+    denial never says whether the file exists); ``UsageError`` for a path
     outside the vault, under ``.git/``, or that isn't a file.
     """
     if reader not in FULL_READERS:
         raise Denied(reader)
     root = vault.resolve()
-    rel = normalize_rel(root, path)
+    try:
+        rel = normalize_rel(root, path)
+    except ValueError as e:
+        raise UsageError(str(e)) from e
     if ".git" in rel.split("/"):
-        raise ValueError(f"not a vault file: {rel}")
+        raise UsageError(f"not a vault file: {rel}")
     target = root / rel
     if not target.is_file():
-        raise ValueError(f"no such file: {rel}")
+        raise UsageError(f"no such file: {rel}")
     try:
         data = target.read_bytes()
     except OSError as e:
-        raise ValueError(f"can't read {rel}: {e.strerror or e}") from e
+        raise UsageError(f"can't read {rel}: {e.strerror or e}") from e
     text = decode_head(data) if target.suffix.lower() == ".md" else None
     label = classify(rel, text, load_policy(root))
     if not visible_to(label, reader):
