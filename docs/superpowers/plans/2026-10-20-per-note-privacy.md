@@ -2,9 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Do not start until Jordan has approved the spec.** Decisions D1–D11 in the
-> spec may change values below; re-read the approved spec's §2 first and update
-> this plan where an answer differs from the recommendation.
+> **Do not start until Jordan has approved the spec.** D5 and D6 are still
+> pending (spec §13); if Jordan adopts the §13 drafts, Tasks 1, 4, 6, 7 and 8
+> change (output classes instead of a read-gate for `autonomous`). Re-read the
+> approved spec's §2 first and update this plan to match.
 
 **Goal:** Add `visibility:` and `federation_scope:` to any vault note, enforced through one set of `scoutctl kb` read commands, with outbound guards and a conformance corpus for the Agnes indexer.
 
@@ -18,7 +19,7 @@
 
 - Fields: `visibility: normal | private`; `federation_scope: none | org | [person:<email> | group:<host group id>, …]`; regexes `^person:[^\s@,\[\]]+@[^\s@,\[\]]+$` (case-insensitive) and `^group:[A-Za-z0-9_-]{1,64}$` (spec §3.3).
 - Unknown `visibility` → `private`; unparseable `federation_scope` → `none`; unparseable frontmatter → `private` + `none`.
-- Defaults: `visibility: normal`, `federation_scope: none`; unmatched ceiling → `none`; `federation.enabled: false`.
+- Defaults: `visibility: normal`, `federation_scope: none`. v1: `federation_scope` is reserved — parsed and stored as `federation_scope_declared`, effective always `none`, every `agent:*` reader denied; no ceilings or `federation.enabled` in v1 (spec §3.2, §12).
 - Scout never writes privacy defaults into note frontmatter.
 - Reader resolution: `SCOUT_READER` if set; else `autonomous` if `SCOUT_MODE` set; else `owner`. `--reader` only narrows. Order of width: `owner` > `autonomous` > `agent:*`.
 - `--include-private` accepted only for reader `owner`.
@@ -50,15 +51,15 @@
 
 **Interfaces:**
 - Produces:
-  - `@dataclass(frozen=True) class Policy` with `local_only_always`, `local_only`, `sync_allow`, `visibility_defaults: tuple[tuple[str,str],...]`, `federation_ceilings`, `federation_defaults`, `federation_enabled: bool`, `outbound_surfaces: tuple[str,...]`.
-  - `load_policy(vault: Path | None) -> Policy` — engine default merged with `scout-config.yaml → privacy:` (keys `local_only_add`, `local_only_remove: [{glob, reason}]`, `visibility_defaults`, `federation_ceilings`, `federation.enabled`). `local_only.always` cannot be removed.
-  - `@dataclass(frozen=True) class Label` with fields exactly spec §5.5 (`path, visibility, visibility_source, federation_scope, federation_scope_declared, federation_source, ceiling, local_only, warnings`); `Label.to_json() -> dict`.
+  - `@dataclass(frozen=True) class Policy` with `local_only_always`, `local_only`, `sync_allow`, `visibility_defaults: tuple[tuple[str,str],...]`, `outbound_surfaces: tuple[str,...]`.
+  - `load_policy(vault: Path | None) -> Policy` — engine default merged with `scout-config.yaml → privacy:` (keys `local_only_add`, `local_only_remove: [{glob, reason}]`, `visibility_defaults`). `local_only.always` cannot be removed; Stage 2 keys in an overlay produce a `federation-reserved` warning and are ignored.
+  - `@dataclass(frozen=True) class Label` with fields exactly spec §5.5 (`path, visibility, visibility_source, federation_scope, federation_scope_declared, federation_source, local_only, warnings`; `federation_source` is always `"reserved"` in v1); `Label.to_json() -> dict`.
   - `FederationScope = Literal["none","org"] | tuple[str, ...]`.
   - `classify(rel_path: str, text: str | None, policy: Policy) -> Label` — pure; `text` is the file's leading bytes (frontmatter region) or `None` for unreadable.
   - `normalize_rel(vault: Path, path: str | Path) -> str` — resolves the `knowledge_base` symlink, `./`, `..`; raises `ValueError` outside the vault.
   - `visible_to(label: Label, reader: str, policy: Policy) -> bool`.
 
-- [ ] **Step 1: Write failing table-driven tests** `test_classify_rules` parametrized over every rule in spec §3.1, §3.2 and §5.4 (absent, `normal`, `Private ` trimmed, `PRIVATE while drafting` → private + warning, broken YAML → private/none/`forced`, `federation_scope: org` under topics → org, under sources → none (ceiling), `[person:priya@example.com]` ∩ org → list, private + org → none + `privacy-contradiction` warning, local-only → none, overlay `visibility_defaults` glob applies, no inheritance for a sibling). `test_visible_to` matrix: owner sees all; autonomous sees non-private; `agent:person:priya@example.com` sees nothing while `federation_enabled=False`, and only admitting notes when True. `test_normalize_rel_symlink_spellings` (Review Focus 1).
+- [ ] **Step 1: Write failing table-driven tests** `test_classify_rules` parametrized over every rule in spec §3.1, §3.2 and §5.4 (absent, `normal`, `Private ` trimmed, `PRIVATE while drafting` → private + warning, broken YAML → private/none/`forced`, `federation_scope: org` → declared `org`, effective `none`, source `reserved`; `[person:priya@example.com]` parses; `federation_scope: bogus` → declared `none` + warning; private + org → `privacy-contradiction` warning; local-only path → `local_only: true`; overlay `visibility_defaults` glob applies, no inheritance for a sibling). `test_visible_to` matrix: owner sees all; autonomous sees non-private; `agent:person:priya@example.com` sees nothing, even for `federation_scope: org` and with an overlay `federation.enabled: true`. `test_normalize_rel_symlink_spellings` (Review Focus 1).
 - [ ] **Step 2: Run** `cd plugin/engine && .venv/bin/python -m pytest tests/unit/test_kb_privacy.py -q` — Expected: FAIL (module missing).
 - [ ] **Step 3: Implement** `privacy.py`. Use `scout.kb.lint_config.glob_match` for globs and `scout.kb.frontmatter.frontmatter_block` for the block; first-match-wins lists.
 - [ ] **Step 4: Snapshot.** `privacy_snapshot.py` writes `privacy.snapshot.json` (`{schema_version: 1, engine_version, policy}` sorted keys). Test `test_snapshot_matches_yaml` regenerates in tmp and compares bytes.
@@ -180,9 +181,9 @@
 
 **Interfaces:**
 - Consumes: Task 5 `private_terms`, `find_mentions`; Task 1 `classify`.
-- Produces: lint rule ids `private-link`, `private-mention`, `visibility-value`, `privacy-contradiction`, `frontmatter-unparseable` (severities per spec §8.2); run-health events `privacy.outbound_blocked`, `privacy.check_failed`.
+- Produces: lint rule ids `private-link`, `private-mention`, `visibility-value`, `privacy-contradiction`, `frontmatter-unparseable`, `federation-reserved` (severities per spec §8.2); `ALLOW_MARKER_RE = r"%%privacy:allow ([a-z0-9._-]+)%%"`; run-health events `privacy.outbound_blocked`, `privacy.check_failed`.
 
-- [ ] **Step 1: Failing tests:** each rule fires/quiet; `private-link` via alias display name (Review Focus 4); block vs warn by `SCOUT_MODE` and outbound-surface match; widening guard blocks under `SCOUT_MODE` even with `SCOUT_LINT_OVERRIDE`, passes interactively; checker exception → refused under `SCOUT_MODE`, allowed interactively; commit-msg naming a private note refused under `SCOUT_MODE`; Telegram message with a private name dropped + event; doctor shows the count.
+- [ ] **Step 1: Failing tests:** each rule fires/quiet; `private-link` via alias display name (Review Focus 4); `private-link`/`private-mention` block an **interactive** commit too, in `report` mode, and ignore `SCOUT_LINT_OVERRIDE`; same-line `%%privacy:allow sam%%` lets exactly that link through, a marker for another slug or another line doesn't; only added/changed lines are checked (an old link in an edited file passes); `kb lint --report` lists markers and old unmarked links; widening guard under `SCOUT_MODE` blocks removing `private`, widening `federation_scope`, adding a marker, or editing `privacy:`; checker exception → commit refused (run: `privacy.check_failed` event; interactive: message pointing to `scoutctl doctor`); commit-msg naming a private note refused under `SCOUT_MODE`; Telegram message with a private name dropped + event; doctor shows the count.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(kb): privacy lint, widening guard and outbound send guards`.
 
@@ -214,4 +215,4 @@ Blocked on the `vault sync` spec from the Agnes plan. When it lands: sync writes
 ## Self-review notes
 
 - Spec §3–§5 → Tasks 1–2; §6 → Tasks 3–5, 7, 10; §7.2 consent → Task 8 widening guard; §7.3 audit → Tasks 4, 8; §8 → Tasks 5, 7, 8; §9 → Task 2; §10 P5 → Task 9; P7 → Task 11; §11 → fixtures in Task 3, tests throughout, eval in Task 7.
-- §7.1 host conditions are Agnes-side; nothing here turns `federation.enabled` on.
+- Stage 2 (spec §12) has no tasks here: it needs its own approval and plan. v1 only parses and stores `federation_scope`.
