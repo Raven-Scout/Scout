@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-20
+
 ### Added
 - **`scoutctl notify telegram` can send formatted messages** (`engine/scout/scripts/notify_telegram.py`, `engine/scout/cli.py`, `engine/scout/docs/connectors/telegram-setup.md`). A briefing sent to Telegram arrived as one block of plain text. The new `--parse-mode html` sends the body with Telegram's HTML formatting: `<b> <i> <u> <s> <a href> <code> <pre> <blockquote>`. HTML, not MarkdownV2: it needs only `<`, `>` and `&` escaped, where MarkdownV2 needs ~18 characters escaped and one miss gets the whole message refused. The default, `--parse-mode none`, sends plain text as before, with the same request and Event.
   - **A formatting mistake never loses the message.** When Telegram answers 400 "can't parse entities", that chunk is resent as plain text: tags stripped, link URLs kept in parentheses, entities unescaped. A warning goes to stderr and the Event payload gets `"parse_fallback": true`. Other errors are not retried.
