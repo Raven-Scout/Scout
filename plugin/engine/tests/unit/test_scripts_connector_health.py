@@ -218,7 +218,9 @@ def test_slack_dark_two_prior_healthy_fires_critical(fake_data_dir, monkeypatch)
             },
         )
 
-    # Current morning-briefing run: Slack dark (0 calls), Linear healthy.
+    # Current morning-briefing run: Slack dark (every call fails), Linear healthy.
+    # A Slack that wasn't called at all is not dark on one run; see
+    # test_scripts_connector_health_unattempted.py.
     _seed_session(
         log_dir,
         sid="s_curr",
@@ -226,7 +228,7 @@ def test_slack_dark_two_prior_healthy_fires_critical(fake_data_dir, monkeypatch)
         ts=_frozen_now() - timedelta(hours=1),
         calls={
             "mcp:claude_ai_Linear": (4, 0),
-            # Slack absent in this run.
+            "mcp:claude_ai_Slack": (0, 2),
         },
     )
 
@@ -491,13 +493,13 @@ def test_render_includes_alert_section_and_remediation(fake_data_dir, monkeypatc
             ts=base + timedelta(days=i),
             calls={"mcp:claude_ai_Slack": (5, 0)},
         )
-    # Current: Slack dark.
+    # Current: Slack dark (called, every call fails).
     _seed_session(
         log_dir,
         sid="curr",
         mode="morning-briefing",
         ts=_frozen_now() - timedelta(hours=1),
-        calls={"mcp:claude_ai_Linear": (3, 0)},
+        calls={"mcp:claude_ai_Linear": (3, 0), "mcp:claude_ai_Slack": (0, 2)},
     )
 
     chr_mod.run(data_dir=fake_data_dir)

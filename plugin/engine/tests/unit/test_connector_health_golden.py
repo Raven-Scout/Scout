@@ -110,15 +110,18 @@ def _outputs(vault: Path) -> dict[str, str]:
     event = chr_mod.run(data_dir=vault, now=NOW)
     assert event is not None
     alerts_log = vault / ".scout-logs" / "connector-alerts.log"
+
+    def read(path: Path) -> str:
+        # A run with no alerts writes neither alert file; read that as empty.
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
     out = {
-        "connector-health.md": (vault / "knowledge-base" / "connector-health.md").read_text(encoding="utf-8"),
-        "connector-alerts-pending.md": (vault / ".scout-cache" / "connector-alerts-pending.md").read_text(
-            encoding="utf-8"
-        ),
-        "connector-alerts.log": alerts_log.read_text(encoding="utf-8"),
+        "connector-health.md": read(vault / "knowledge-base" / "connector-health.md"),
+        "connector-alerts-pending.md": read(vault / ".scout-cache" / "connector-alerts-pending.md"),
+        "connector-alerts.log": read(alerts_log),
         "event-payload.json": json.dumps(event.payload, indent=2, sort_keys=True) + "\n",
     }
-    alerts_log.unlink()  # appended per run; each comparison is of one run's lines
+    alerts_log.unlink(missing_ok=True)  # appended per run; each comparison is of one run's lines
     return out
 
 

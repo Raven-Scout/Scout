@@ -9,7 +9,7 @@ Parent: [[knowledge-base]]
 ## 🔴 Active Alerts
 
 ### 🔴 Slack — CRITICAL
-0 successful calls in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT
+14 failed call(s) in `dreaming` run; 3/3 prior `dreaming` runs were healthy; dark for 1 run(s) total; last healthy Sep 30 06:07 EDT
 
 **Last error logged:** `stand-in failure from mcp:claude_ai_Slack: request timed out after 30s`
 
@@ -56,8 +56,8 @@ If a Linear workspace switch happened, the OAuth scope may need re-grant.
 - Interactive Claude Code sessions in ~/Scout are not logged (the hook short-circuits when `SCOUT_MODE` is unset).
 
 ### Alert rules
-- **Critical connector (mode-aware):** 0 successful calls in this run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero prior same-mode runs exist, no baseline → no alert.
-- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs fires an alert in modes where it's required by `connectors.yaml`.
+- **Critical connector (mode-aware):** 0 successful calls and ≥1 failed call in this run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero prior same-mode runs exist, no baseline → no alert.
+- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs fires an alert in modes where it's required by `connectors.yaml`. This is the only way a connector that was NOT CALLED this run (no successes, no errors) can alert.
 - **Pattern #48:** if a connector has never logged a successful call across the entire window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).
 - **Pattern #54:** if a connector was healthy in any mode within the last 4h and the current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).
 - **Warning:** any connector with ≥3 calls this run and >50% errors.
