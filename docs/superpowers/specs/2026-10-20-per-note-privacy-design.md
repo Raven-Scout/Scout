@@ -119,9 +119,14 @@ Agreed with the Agnes spec (2026-10-20), pending Jordan's D1:
 - Groups are named by the host's **stable id**, not a slug or display name:
   Agnes groups have no slug, and admins can rename display names. A rename
   must never widen or narrow what a note shares.
-- Scout tooling that writes a group principal takes the id from the host
-  (Agnes: `agnes groups list --json`), and lint and the UI show the group's
-  current name next to the id when a lookup is available.
+- Scout tooling that writes a group principal takes the id from the host.
+  In Agnes that is the person's share-target lookup (`GET
+  /api/sharing/groups`, also wrapped by the Agnes stdio MCP server), or the
+  `agnes groups list --json` CLI verb once Agnes ships it. Lint and the UI
+  show the group's current name next to the id when a lookup is available.
+- Because that lookup returns only the person's own groups plus Everyone, an
+  owner can only name groups they belong to (plus `org`), as in Agnes Library
+  sharing (§7.2).
 - **A principal the host can't resolve admits nobody.** That covers an
   unknown email, a deleted group, and the wrong host.
 
@@ -463,6 +468,9 @@ Until all six exist, `agent:*` gets nothing, and the indexer stores
   sensitive) only by proposing it in the review queue; they never write
   either field directly. The pre-commit check enforces this for widening
   (§8.3).
+- An owner may share a note only with groups they belong to, plus `org`
+  (§3.3). The host enforces this at read time as well: a `group:` principal
+  naming a group the owner has left admits nobody.
 - A run that creates a new note never sets `federation_scope`. New notes are
   `none` by default, so a run can't share anything by writing.
 - `/scout-setup` and `/scout-update` explain the two fields in one paragraph
