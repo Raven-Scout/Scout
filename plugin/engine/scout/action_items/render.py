@@ -396,7 +396,7 @@ _URL_IGNORED_RE = re.compile(r"[\x00-\x20\x7f]")
 _URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*):")
 
 
-def _safe_href(url: str) -> str | None:
+def safe_href(url: str) -> str | None:
     """*url* (unescaped) escaped for an ``href`` attribute, or None if its scheme isn't allowed."""
     m = _URL_SCHEME_RE.match(_URL_IGNORED_RE.sub("", url))
     if m is None or m.group(1).lower() not in SAFE_LINK_SCHEMES:
@@ -407,7 +407,7 @@ def _safe_href(url: str) -> str | None:
 def _link(m: re.Match[str]) -> str:
     # The text was escaped before the link pass; undo that so the scheme check
     # sees the URL as written, then escape it again for the attribute.
-    href = _safe_href(html.unescape(m.group(2)))
+    href = safe_href(html.unescape(m.group(2)))
     if href is None:
         return m.group(1)
     return f'<a href="{href}" target="_blank" rel="noopener">{m.group(1)}</a>'
