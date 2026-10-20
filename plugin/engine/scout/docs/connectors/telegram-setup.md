@@ -201,8 +201,9 @@ scoutctl notify telegram --tier info --parse-mode html \
 - **Escape `<`, `>` and `&` in text** as `&lt;`, `&gt;` and `&amp;`, also in
   a URL inside `href` (`?a=1&amp;b=2`).
 - **Links must be `http://`, `https://`, `tg://` or `mailto:`.** Telegram
-  rejects other schemes, so an `obsidian://` link does not work; put such a
-  path in `<code>` instead.
+  accepts a message with any other scheme but silently drops the link: an
+  `<a href="obsidian://…">label</a>` arrives as the plain word `label`. Put
+  such a path in `<code>` instead.
 - **Why HTML and not MarkdownV2:** HTML needs only those three characters
   escaped. MarkdownV2 needs ~18, and one miss gets the whole message refused.
 
@@ -235,7 +236,7 @@ refuses that chunk and it goes out as plain text, as above.
 | `Missing secret: .../telegram-chat-id`                           | Step 4 not done.                                                             |
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
-| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an unescaped `<`/`&`, or a non-http(s) link. The chunk was sent as plain text. |
+| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an or an unescaped `<`/`&`. The chunk was sent as plain text. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |
 

@@ -21,7 +21,8 @@ HTML, not MarkdownV2: HTML needs only ``<``, ``>`` and ``&`` escaped, where
 MarkdownV2 needs ~18 characters escaped, and one miss in an LLM-written body
 gets the whole message refused. Telegram accepts ``<b> <i> <u> <s> <a href>
 <code> <pre> <blockquote>`` (and a few more), and ``<a href>`` only for
-http(s), tg and mailto URLs. Two safety nets:
+http(s), tg and mailto URLs (any other scheme is accepted, but Telegram drops
+the link and keeps the label). Two safety nets:
 
   - Long bodies split tag-aware: a cut never lands inside a tag or an entity,
     and tags open at the cut are closed at the end of the chunk and reopened
