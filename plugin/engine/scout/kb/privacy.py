@@ -36,6 +36,9 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
   under ``owner_only``; ignored.
 - ``visibility-value``: an overlay ``visibility_defaults`` entry has a value
   other than ``normal``/``private``; it is kept as ``private``.
+- ``privacy-overlay-unreadable``: ``scout-config.yaml`` exists but can't be
+  read or parsed (or isn't a mapping); the whole overlay is dropped and the
+  engine default applies. Later tasks refuse sync while it is set.
 - ``privacy-overlay-invalid``: the ``privacy:`` block or one of its keys has the
   wrong shape; that part is ignored.
 """
@@ -43,6 +46,7 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
 from __future__ import annotations
 
 import dataclasses
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -53,13 +57,14 @@ from typing import Any, Literal
 
 import yaml
 
-from scout.config import load_config
+from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
 
 SCHEMA_VERSION = 1
 
 VISIBILITIES = ("normal", "private")
+Visibility = Literal["normal", "private"]
 VisibilitySource = Literal["frontmatter", "path_default", "default", "forced"]
 SurfaceClass = Literal["owner_only", "shared"]
 # Declared federation scope: "none", "org", or a tuple of principal strings.
@@ -132,11 +137,11 @@ class Label:
     """
 
     path: str
-    visibility: str
+    visibility: Visibility
     visibility_source: VisibilitySource
     federation_scope: str = "none"
     federation_scope_declared: FederationScope = "none"
-    federation_source: str = "reserved"
+    federation_source: Literal["reserved"] = "reserved"
     local_only: bool = False
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
@@ -163,12 +168,14 @@ def _strs(value: Any) -> tuple[str, ...]:
     return tuple(str(v) for v in value or ())
 
 
-def _parse_visibility(value: Any) -> str | None:
+def _parse_visibility(value: Any) -> Visibility | None:
     """``normal``/``private`` (trimmed, case-insensitive), else None."""
     if isinstance(value, str):
         v = value.strip().lower()
-        if v in VISIBILITIES:
-            return v
+        if v == "normal":
+            return "normal"
+        if v == "private":
+            return "private"
     return None
 
 
@@ -224,7 +231,18 @@ def load_policy(vault: Path | None) -> Policy:
     base = _engine_default()
     if vault is None:
         return base
-    overlay = load_config(vault).get("privacy")
+    config = paths.config_path(vault)
+    if not config.exists():
+        return base
+    try:
+        data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+    if data is None:
+        return base
+    if not isinstance(data, dict):
+        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+    overlay = data.get("privacy")
     if overlay is None:
         return base
     warnings: list[str] = []
@@ -392,7 +410,7 @@ def classify(rel_path: str, text: str | None, policy: Policy) -> Label:
             warnings=("frontmatter-unparseable",),
         )
 
-    visibility: str
+    visibility: Visibility
     source: VisibilitySource
     if fm is not None and "visibility" in fm:
         source = "frontmatter"
@@ -407,7 +425,9 @@ def classify(rel_path: str, text: str | None, policy: Policy) -> Label:
         if match is None:
             visibility, source = "normal", "default"
         else:
-            visibility, source = match, "path_default"
+            # Fail-closed for a hand-built Policy carrying an odd value.
+            visibility = "normal" if match == "normal" else "private"
+            source = "path_default"
 
     declared: FederationScope = "none"
     if fm is not None and "federation_scope" in fm:
@@ -434,14 +454,47 @@ def classify(rel_path: str, text: str | None, policy: Policy) -> Label:
 # ----- paths, readers, surfaces -------------------------------------------------
 
 
+def _on_disk_case(root: Path, parts: tuple[str, ...]) -> tuple[str, ...]:
+    """``parts`` with each existing component spelled as its directory entry.
+
+    An exact entry name wins; otherwise a unique case-insensitive match is
+    taken (a case-insensitive disk opens it under either spelling). From the
+    first component that doesn't exist on, the rest stays as typed.
+    """
+    out: list[str] = []
+    cur = root
+    for i, part in enumerate(parts):
+        try:
+            with os.scandir(cur) as it:
+                names = [e.name for e in it]
+        except OSError:
+            return (*out, *parts[i:])
+        if part in names:
+            real = part
+        else:
+            folded = [n for n in names if n.casefold() == part.casefold()]
+            if len(folded) != 1:
+                return (*out, *parts[i:])
+            real = folded[0]
+        out.append(real)
+        cur = cur / real
+    return tuple(out)
+
+
 def normalize_rel(vault: Path, path: str | Path) -> str:
-    """The vault-relative POSIX spelling of ``path``, symlinks resolved.
+    """The vault-relative POSIX spelling of ``path``, symlinks and case resolved.
 
     Relative paths are taken from ``vault``. ``./``, ``..`` and symlinks
-    (notably ``knowledge_base`` → ``knowledge-base``) are resolved, so every
-    spelling of one file gets the same label. A leading ``knowledge_base``
-    segment is rewritten to ``knowledge-base`` even when the symlink is absent.
-    Raises ``ValueError`` for a path outside the vault or the vault root itself.
+    (notably ``knowledge_base`` → ``knowledge-base``) are resolved, and every
+    component that exists on disk takes its real entry name, so every spelling
+    of one file (``Knowledge-Base/PERSONAL/t.md`` on a case-insensitive disk)
+    gets the same label. Components that don't exist stay as typed. A leading
+    ``knowledge_base`` segment (any case) is rewritten to ``knowledge-base``
+    even when the symlink is absent. Raises ``ValueError`` for a path outside
+    the vault or the vault root itself.
+
+    Glob matching (``classify``) is case-sensitive, so whether a file such as
+    ``.ENV`` matches ``.env*`` depends on its canonical on-disk name.
     """
     p = Path(path)
     if str(path) == "":
@@ -455,7 +508,8 @@ def normalize_rel(vault: Path, path: str | Path) -> str:
     parts = rel.parts
     if not parts:
         raise ValueError(f"path is the vault root: {path}")
-    if parts[0] == _KB_ALIAS:
+    parts = _on_disk_case(root, parts)
+    if parts[0].casefold() == _KB_ALIAS:
         parts = (_KB_DIR, *parts[1:])
     return "/".join(parts)
 

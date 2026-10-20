@@ -379,6 +379,27 @@ def test_overlay_wrong_shapes_are_ignored_with_warning(tmp_path: Path, body: str
 def test_missing_config_or_key_means_defaults(tmp_path: Path) -> None:
     assert load_policy(tmp_path) == load_policy(None)
     assert load_policy(_overlay(tmp_path, "user:\n  name: Alex\n")) == load_policy(None)
+    assert load_policy(_overlay(tmp_path, "")) == load_policy(None)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'privacy:\n  local_only_add: ["trading/**"\n',  # missing ]
+        "- a\n- list\n",
+        b"\xff\xfeprivacy: {}\n",
+    ],
+)
+def test_unreadable_overlay_warns_and_uses_defaults(tmp_path: Path, body: str | bytes) -> None:
+    config = tmp_path / "scout-config.yaml"
+    if isinstance(body, bytes):
+        config.write_bytes(body)
+    else:
+        config.write_text(body, encoding="utf-8")
+    pol = load_policy(tmp_path)
+    assert pol.warnings == ("privacy-overlay-unreadable",)
+    assert dataclasses.replace(pol, warnings=()) == load_policy(None)
+    assert classify("trading/p.md", None, pol).local_only is False
 
 
 def test_engine_default_policy_matches_spec(policy: Policy) -> None:
@@ -485,6 +506,15 @@ def test_surface_class(policy: Policy, surface: str, expected: str) -> None:
     assert surface_class(policy, surface) == expected
 
 
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "Case-Probe"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (directory / "case-probe").exists()
+    finally:
+        probe.unlink()
+
+
 def test_normalize_rel_symlink_spellings(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     (vault / "knowledge-base" / "personal").mkdir(parents=True)
@@ -502,6 +532,13 @@ def test_normalize_rel_symlink_spellings(tmp_path: Path) -> None:
         vault / "knowledge_base" / "personal" / "task-renew-permit.md",
         Path("knowledge_base") / "personal" / "task-renew-permit.md",
     ]
+    if _case_insensitive(vault):
+        spellings += [
+            "Knowledge-Base/Personal/task-renew-permit.md",
+            "knowledge-base/PERSONAL/task-renew-permit.md",
+            "KNOWLEDGE_BASE/personal/Task-Renew-Permit.MD",
+            vault / "Knowledge-Base" / "personal" / "TASK-RENEW-PERMIT.md",
+        ]
     pol = load_policy(None)
     labels: set[Label] = set()
     for spelling in spellings:
@@ -509,6 +546,31 @@ def test_normalize_rel_symlink_spellings(tmp_path: Path) -> None:
         assert rel == want, spelling
         labels.add(classify(rel, note.read_text(), pol))
     assert len(labels) == 1
+
+
+def test_normalize_rel_missing_components_stay_as_typed(tmp_path: Path) -> None:
+    (tmp_path / "knowledge-base").mkdir()
+    (tmp_path / "knowledge-base" / "a.md").write_text("x", encoding="utf-8")
+    assert normalize_rel(tmp_path, "knowledge-base/New/Thing.md") == "knowledge-base/New/Thing.md"
+    # A component under a regular file can't be listed: kept as typed.
+    assert normalize_rel(tmp_path, "knowledge-base/a.md/Sub") == "knowledge-base/a.md/Sub"
+
+
+def test_on_disk_case_ambiguous_match_stays_as_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Entry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _Listing:
+        def __enter__(self) -> list[_Entry]:
+            return [_Entry("Notes"), _Entry("NOTES")]
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(privacy.os, "scandir", lambda _p: _Listing())
+    assert privacy._on_disk_case(tmp_path, ("notes", "a.md")) == ("notes", "a.md")
+    assert privacy._on_disk_case(tmp_path, ("NOTES", "a.md")) == ("NOTES", "a.md")
 
 
 def test_normalize_rel_without_symlink_still_maps_spelling(tmp_path: Path) -> None:

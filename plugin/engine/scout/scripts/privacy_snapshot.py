@@ -18,6 +18,10 @@ Snapshot file format (v1)::
 ``policy`` is ``load_policy(None).to_json()`` without ``warnings``: the engine
 default in ``privacy.yaml``'s shape, surface ids sorted.
 
+``engine_version`` is the engine version when the snapshot was last
+regenerated, i.e. when the policy last changed, not necessarily the current
+release (releases don't regenerate it).
+
 Determinism: ``json.dumps(indent=2, sort_keys=True)`` plus one trailing
 newline; list order (first-match-wins) is preserved. ``--check`` compares
 everything except ``engine_version``: a release bumps the version without
