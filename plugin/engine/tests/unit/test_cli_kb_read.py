@@ -1,0 +1,571 @@
+"""The labelled ``scoutctl kb`` read commands: the single read gate (#453, spec §6.1, §7.4).
+
+Over the privacy fixture vault (spec §11.1): ``owner`` and ``autonomous`` get every
+file, each result labelled and, in text form, private ones prefixed ``[private] ``;
+an ``agent:*`` reader gets nothing at all (no canary, no path), and ``kb read``
+denies it with exit 3. Also: the stat-keyed privacy index, ``kb search`` with and
+without ``rg``, binary and non-UTF-8 files, and the audit log.
+"""
+
+from __future__ import annotations
+
+import builtins
+import io
+import json
+import os
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner, Result
+
+from scout.cli import app
+from scout.kb import read as kb_read
+from scout.kb.ontology import clear_frontmatter_cache
+from scout.kb.privacy import Label
+from scout.kb.read_log import LOG_FIELDS, log_event
+from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
+
+runner = CliRunner()
+AGENT = "agent:person:priya@example.com"
+FULL = ["owner", "autonomous"]
+SAM = "knowledge-base/people/sam.md"
+PERMIT = "knowledge-base/personal/task-renew-permit.md"
+GIFT = "knowledge-base/personal/task-buy-gift.md"
+
+# Every read command, with arguments that reach private notes on the fixture.
+COMMANDS: list[list[str]] = [
+    ["files"],
+    ["files", "--glob", "knowledge-base/**"],
+    ["search", "CANARY-PRIV"],
+    ["search", "canary-priv-2s4m", "-i"],
+    ["search", "CANARY-PRIV-2S4M", "--fixed", "--glob", "knowledge-base/**"],
+    ["read", SAM],
+    ["resolve", "sam"],
+    ["resolve", "Sammy"],
+    ["query"],
+    ["query", "--type", "task", "--domain", "personal"],
+    ["query", "--visibility", "private"],
+    ["related", "priya"],
+    ["traverse", "priya"],
+    ["path", "priya", "sam"],
+    ["entity", "sam"],
+    ["name-lookup", "Sam"],
+    ["export"],
+    ["stats"],
+    ["validate"],
+]
+
+
+@pytest.fixture(scope="module")
+def shared_vault(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_privacy_vault(tmp_path_factory.mktemp("kb-read"))
+
+
+@pytest.fixture
+def vault(shared_vault: Path) -> Path:
+    clear_frontmatter_cache()
+    return shared_vault
+
+
+@pytest.fixture
+def own_vault(tmp_path: Path) -> Path:
+    clear_frontmatter_cache()
+    return build_privacy_vault(tmp_path)
+
+
+def kb(vault: Path, *args: str, reader: str | None = None, env: dict[str, str] | None = None) -> Result:
+    full_env = dict(env or {})
+    if reader is not None:
+        full_env["SCOUT_READER"] = reader
+    return runner.invoke(app, ["kb", *args, "--repo", str(vault)], env=full_env)
+
+
+def kb_json(vault: Path, *args: str, reader: str | None = None) -> Any:
+    result = kb(vault, *args, "--json", reader=reader)
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)
+
+
+def _settle(vault: Path) -> None:
+    """Backdate every file past the index's racy window."""
+    old = time.time() - 86_400
+    for p in vault.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            os.utime(p, (old, old))
+
+
+def _labels_by_path(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {r["label"]["path"]: r["label"] for r in rows}
+
+
+# ----- owner and autonomous: everything, labelled ----------------------------------
+
+
+@pytest.mark.parametrize("reader", FULL)
+def test_owner_and_autonomous_see_private_labelled(vault: Path, reader: str) -> None:
+    # files: every vault file but .git/, labelled; no double listing through knowledge_base/
+    files = kb_json(vault, "files", reader=reader)
+    paths = {r["path"] for r in files}
+    assert all(r["path"] == r["label"]["path"] for r in files)
+    assert set(CANARIES) <= paths
+    assert not any(p.startswith((".git/", "knowledge_base/")) for p in paths)
+    labels = _labels_by_path(files)
+    assert labels[SAM]["visibility"] == "private"
+    assert labels[PERMIT]["visibility_source"] == "path_default"
+    assert labels[GIFT]["visibility"] == "normal"
+    assert labels["inbox.md"]["visibility"] == "normal"
+    assert labels["trading/positions.md"]["local_only"] is True
+    text = kb(vault, "files", reader=reader).stdout.splitlines()
+    assert f"[private] {SAM}" in text and "inbox.md" in text
+    globbed = {r["path"] for r in kb_json(vault, "files", "--glob", "knowledge-base/people/*.md", reader=reader)}
+    assert globbed == {SAM, "knowledge-base/people/priya.md"}
+
+    # search: matches carry their file's label
+    hits = kb_json(vault, "search", "CANARY-PRIV", reader=reader)
+    assert {h["path"] for h in hits} >= {SAM, PERMIT}
+    assert all(h["label"]["visibility"] == "private" for h in hits if h["path"] == SAM)
+    assert any(CANARIES[SAM] in h["text"] for h in hits)
+    text = kb(vault, "search", CANARIES[SAM], "--fixed", reader=reader).stdout.splitlines()
+    assert text and all(line.startswith(f"[private] {SAM}:") for line in text)
+
+    # read
+    got = kb_json(vault, "read", SAM, reader=reader)
+    assert got["label"]["visibility"] == "private" and CANARIES[SAM] in got["content"]
+    text = kb(vault, "read", "knowledge_base/people/sam.md", reader=reader).stdout
+    assert text.splitlines()[0] == f"[private] {SAM}" and CANARIES[SAM] in text
+    plain = kb(vault, "read", "inbox.md", reader=reader).stdout
+    assert plain == (vault / "inbox.md").read_text(encoding="utf-8")
+
+    # resolve: name, alias, slug of a plain note
+    for name in ("sam", "Sammy", "SAM"):
+        (row,) = kb_json(vault, "resolve", name, reader=reader)
+        assert row["path"] == SAM and row["label"]["visibility"] == "private", name
+    (row,) = kb_json(vault, "resolve", "billing", reader=reader)
+    assert row["path"] == "knowledge-base/topics/billing/billing.md" and row["label"]["visibility"] == "private"
+    assert kb(vault, "resolve", "sam", reader=reader).stdout.splitlines() == [f"[private] {SAM}"]
+    assert kb(vault, "resolve", "no-such-note", reader=reader).exit_code == 1
+
+    # query
+    tasks = kb_json(vault, "query", "--type", "task", "--domain", "personal", reader=reader)
+    by_name = {t["name"]: t for t in tasks}
+    assert set(by_name) == {"task-renew-permit", "task-buy-gift"}
+    assert by_name["task-renew-permit"]["label"]["visibility"] == "private"
+    assert by_name["task-renew-permit"]["path"] == PERMIT
+    assert by_name["task-renew-permit"]["entity"]["domain"] == "personal"
+    assert by_name["task-buy-gift"]["label"]["visibility"] == "normal"
+    text = kb(vault, "query", "--type", "task", "--domain", "personal", reader=reader).stdout
+    assert "  [private] [task] task-renew-permit" in text and "  [task] task-buy-gift" in text
+    private = kb_json(vault, "query", "--visibility", "private", reader=reader)
+    assert {p["name"] for p in private} == {"task-renew-permit", "sam"}
+
+    # related / traverse / path: each node labelled
+    rel = kb_json(vault, "related", "priya", reader=reader)
+    sam_rel = next(r for r in rel if r["target"] == "sam")
+    assert sam_rel["label"]["visibility"] == "private"
+    assert "  [private] works_with → sam" in kb(vault, "related", "priya", reader=reader).stdout
+    trav = kb_json(vault, "traverse", "priya", reader=reader)
+    assert next(t for t in trav if t["entity"] == "sam")["label"]["visibility"] == "private"
+    assert "[private] [1 hop] sam (via works_with)" in kb(vault, "traverse", "priya", reader=reader).stdout
+    path = kb_json(vault, "path", "priya", "sam", reader=reader)
+    assert path["steps"][-1]["node"] == "sam" and path["steps"][-1]["label"]["visibility"] == "private"
+    assert "priya --works_with--> [private] sam" in kb(vault, "path", "priya", "sam", reader=reader).stdout
+
+    # the parser-compat commands
+    ent = json.loads(kb(vault, "entity", "sam", reader=reader).stdout)
+    assert ent["_label"]["visibility"] == "private"
+    (cand, *_) = kb_json(vault, "name-lookup", "Sam", reader=reader)
+    assert cand["name"] == "sam" and cand["label"]["visibility"] == "private"
+    assert "[private] [exact] sam" in kb(vault, "name-lookup", "Sam", reader=reader).stdout
+    export = json.loads(kb(vault, "export", reader=reader).stdout)
+    assert export["entities"]["sam"]["_label"]["visibility"] == "private"
+    assert "Entities:" in kb(vault, "stats", reader=reader).stdout
+    assert kb(vault, "validate", reader=reader).exit_code == 0
+
+
+# ----- agents: nothing ----------------------------------------------------------
+
+
+def _assert_nothing(out: str) -> None:
+    for canary in CANARIES.values():
+        assert canary not in out
+    assert "knowledge-base/" not in out and ".md" not in out
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("args", COMMANDS, ids=lambda a: " ".join(a))
+def test_agent_sees_nothing(vault: Path, args: list[str], as_json: bool) -> None:
+    result = kb(vault, *args, *(["--json"] if as_json else []), reader=AGENT)
+    _assert_nothing(result.output)
+    if args[0] == "read":
+        assert result.exit_code == 3
+        assert json.loads(result.stdout) == {"denied": True, "reason": f"not visible to {AGENT}"}
+
+
+def test_agent_read_denial_is_the_same_for_missing_files(vault: Path) -> None:
+    there = kb(vault, "read", SAM, reader=AGENT)
+    missing = kb(vault, "read", "knowledge-base/people/nobody.md", reader=AGENT)
+    assert (there.exit_code, there.stdout) == (missing.exit_code, missing.stdout)
+
+
+def test_agent_opens_no_vault_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No command opens, lists or stats a vault file for an agent (the audit log aside)."""
+    opened: list[str] = []
+    root = str(vault.resolve())
+    real_open, real_io, real_scandir = builtins.open, io.open, os.scandir
+
+    def note(target: Any) -> None:
+        name = os.fspath(target) if isinstance(target, (str, os.PathLike)) else ""
+        if isinstance(name, str) and os.path.abspath(name).startswith(root) and ".scout-logs" not in name:
+            opened.append(name)
+
+    def b_open(file: Any, *a: Any, **k: Any) -> Any:
+        note(file)
+        return real_open(file, *a, **k)
+
+    def i_open(file: Any, *a: Any, **k: Any) -> Any:
+        note(file)
+        return real_io(file, *a, **k)
+
+    def scandir(path: Any = ".") -> Any:
+        note(path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(builtins, "open", b_open)
+    monkeypatch.setattr(io, "open", i_open)
+    monkeypatch.setattr(os, "scandir", scandir)
+    for args in COMMANDS:
+        kb(vault, *args, reader=AGENT)
+    monkeypatch.undo()
+    assert opened == []
+
+
+def test_agent_with_federation_overlay_still_sees_nothing(own_vault: Path) -> None:
+    config = own_vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + "  federation:\n    enabled: true\n", encoding="utf-8")
+    for args in COMMANDS:
+        _assert_nothing(kb(own_vault, *args, "--json", reader=AGENT).output)
+    # widget.md declares federation_scope: org; it's still nothing for an agent
+    assert kb(own_vault, "read", "knowledge-base/projects/widget/widget.md", reader=AGENT).exit_code == 3
+
+
+def test_reader_flag_only_narrows(vault: Path) -> None:
+    assert kb(vault, "files", "--reader", "owner", reader="autonomous").exit_code == 2
+    result = kb(vault, "files", "--reader", AGENT)
+    assert result.exit_code == 0
+    _assert_nothing(result.output)
+
+
+# ----- binary and non-UTF-8 files (Review Focus 2) --------------------------------
+
+
+def _odd_files(vault: Path) -> None:
+    misc = vault / "knowledge-base" / "topics" / "misc"
+    (misc / "latin.md").write_bytes(b"---\nvisibility: private\n---\ncaf\xe9 needle here\n\xff\xfe needle again\n")
+    (misc / "blob.bin").write_bytes(b"\x00\x01\x02needle\x00\xff" * 50)
+    (misc / "bad-front.md").write_bytes(b"---\nname: \xff\xfe\ntype: topic\n---\nneedle body\n")
+
+
+@pytest.mark.parametrize("use_rg", [False, True])
+def test_binary_and_non_utf8_files(own_vault: Path, monkeypatch: pytest.MonkeyPatch, use_rg: bool) -> None:
+    if use_rg and kb_read.find_rg() is None:
+        pytest.skip("rg not installed")
+    if not use_rg:
+        monkeypatch.setattr(kb_read, "find_rg", lambda: None)
+    _odd_files(own_vault)
+    labels = _labels_by_path(kb_json(own_vault, "files"))
+    assert labels["knowledge-base/topics/misc/latin.md"]["visibility"] == "private"
+    assert labels["knowledge-base/topics/misc/blob.bin"]["visibility"] == "normal"
+    assert labels["knowledge-base/topics/misc/bad-front.md"]["visibility"] in ("normal", "private")
+
+    hits = kb_json(own_vault, "search", "needle", "--glob", "knowledge-base/**")
+    latin = [h for h in hits if h["path"] == "knowledge-base/topics/misc/latin.md"]
+    assert [h["line"] for h in latin] == [4, 5]
+    assert all(h["label"]["visibility"] == "private" for h in latin)
+    assert all(isinstance(h["text"], str) for h in hits)
+    assert kb(own_vault, "search", "needle").exit_code == 0
+
+    got = kb_json(own_vault, "read", "knowledge-base/topics/misc/latin.md")
+    assert "needle here" in got["content"] and "�" in got["content"]
+    assert kb(own_vault, "read", "knowledge-base/topics/misc/blob.bin").exit_code == 0
+    assert kb(own_vault, "query").exit_code == 0
+
+
+# ----- search -------------------------------------------------------------------
+
+
+def test_search_without_rg(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kb_read, "find_rg", lambda: None)
+    hits = kb_read.search(vault, "owner", "CANARY-PRIV-[0-9]S", ())
+    assert {(m.path, m.visibility) for m in hits} == {(SAM, "private")}
+    assert all(m.label.path == m.path for m in hits)
+    fixed = kb_read.search(vault, "owner", "canary-priv-2s4m", (), fixed=True, ignore_case=True)
+    assert {m.path for m in fixed} == {SAM}
+    assert kb_read.search(vault, "owner", "[a-", (), fixed=True) == []
+    assert kb_read.search(vault, AGENT, "CANARY", ()) == []
+    assert kb(vault, "search", "[unclosed").exit_code == 2
+
+
+def test_search_batches_paths(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``rg`` gets the visible paths in batches, never the vault root."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_k: Any) -> Any:
+        calls.append(argv)
+
+        class R:
+            returncode = 1
+            stdout = b""
+            stderr = b""
+
+        return R()
+
+    monkeypatch.setattr(kb_read, "find_rg", lambda: "/usr/bin/rg")
+    monkeypatch.setattr(kb_read, "SEARCH_BATCH", 4)
+    monkeypatch.setattr(kb_read.subprocess, "run", fake_run)
+    kb_read.search(vault, "owner", "x", ())
+    n_files = len(kb_read.visible_files(vault, "owner"))
+    assert len(calls) == -(-n_files // 4)
+    for argv in calls:
+        paths = argv[argv.index("--") + 1 :]
+        assert 0 < len(paths) <= 4 and "." not in paths and str(vault) not in paths
+
+
+def test_rg_json_output_is_parsed_safely(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Text and base64 ``bytes`` fields (bad UTF-8) both decode; a path outside the batch is dropped."""
+    import base64
+
+    def ev(path: dict[str, str], line: int, lines: dict[str, str]) -> bytes:
+        return json.dumps({"type": "match", "data": {"path": path, "line_number": line, "lines": lines}}).encode()
+
+    out = b"\n".join(
+        [
+            json.dumps({"type": "begin", "data": {}}).encode(),
+            ev({"text": SAM}, 13, {"text": f"# Sam {CANARIES[SAM]}\n"}),
+            ev(
+                {"bytes": base64.b64encode(b"inbox.md").decode()},
+                2,
+                {"bytes": base64.b64encode(b"caf\xe9\r\n").decode()},
+            ),
+            ev({"text": "not/visible.md"}, 1, {"text": "x\n"}),
+            b"not json",
+        ]
+    )
+
+    class R:
+        returncode = 0
+        stdout = out
+        stderr = b""
+
+    monkeypatch.setattr(kb_read, "find_rg", lambda: "/usr/bin/rg")
+    monkeypatch.setattr(kb_read.subprocess, "run", lambda *_a, **_k: R())
+    hits = kb_read.search(vault, "owner", "x", ("knowledge-base/people/*.md", "inbox.md"))
+    assert [(m.path, m.line, m.text, m.visibility) for m in hits] == [
+        ("inbox.md", 2, "caf�", "normal"),
+        (SAM, 13, f"# Sam {CANARIES[SAM]}", "private"),
+    ]
+
+    class Bad:
+        returncode = 2
+        stdout = b""
+        stderr = b"rg: regex parse error:\n    [a-\n    ^\nerror: unclosed character class"
+
+    monkeypatch.setattr(kb_read.subprocess, "run", lambda *_a, **_k: Bad())
+    with pytest.raises(kb_read.PatternError):
+        kb_read.search(vault, "owner", "[a-", ())
+
+
+@pytest.mark.skipif(kb_read.find_rg() is None, reason="rg not installed")
+def test_rg_and_fallback_agree(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with_rg = kb_read.search(vault, "owner", "CANARY-PRIV", ())
+    monkeypatch.setattr(kb_read, "find_rg", lambda: None)
+    assert sorted(kb_read.search(vault, "owner", "CANARY-PRIV", ())) == sorted(with_rg)
+
+
+# ----- the privacy index ----------------------------------------------------------
+
+
+def test_index_makes_a_warm_listing_read_nothing(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _settle(own_vault)
+    cold = kb_read.visible_files(own_vault, "owner")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    assert index.is_file()
+    opened: list[str] = []
+    real_open = Path.open
+
+    def spy(self: Path, *a: Any, **k: Any) -> Any:
+        if self.suffix == ".md":
+            opened.append(str(self))
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", spy)
+    warm = kb_read.visible_files(own_vault, "owner")
+    monkeypatch.undo()
+    assert opened == []
+    assert warm == cold
+
+
+def test_index_relabels_on_change(own_vault: Path) -> None:
+    _settle(own_vault)
+    kb_read.visible_files(own_vault, "owner")
+    # an edited note relabels (its stat key moved)
+    plain = own_vault / "knowledge-base" / "topics" / "misc" / "plain.md"
+    plain.write_text("---\nvisibility: private\n---\nNow private.\n", encoding="utf-8")
+    assert dict(kb_read.visible_files(own_vault, "owner"))["knowledge-base/topics/misc/plain.md"].visibility == (
+        "private"
+    )
+    # a policy change relabels files whose stat key didn't move
+    config = own_vault / "scout-config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "  visibility_defaults:\n    - {glob: 'knowledge-base/projects/**', visibility: private}\n",
+        encoding="utf-8",
+    )
+    labels = dict(kb_read.visible_files(own_vault, "owner"))
+    assert labels["knowledge-base/projects/widget/notes.md"].visibility == "private"
+
+
+def test_index_skips_fresh_files(own_vault: Path) -> None:
+    _settle(own_vault)
+    fresh = own_vault / "knowledge-base" / "fresh.md"
+    fresh.write_text("hello\n", encoding="utf-8")
+    kb_read.visible_files(own_vault, "owner")
+    data = json.loads((own_vault / ".scout-cache" / kb_read.INDEX_FILENAME).read_text(encoding="utf-8"))
+    assert "knowledge-base/fresh.md" not in data["files"]
+    assert SAM in data["files"]
+
+
+@pytest.mark.parametrize("junk", ["{torn", '{"version": 999, "files": {}}', '{"version": 1, "files": []}', "[]"])
+def test_torn_or_foreign_index_is_rebuilt(own_vault: Path, junk: str) -> None:
+    _settle(own_vault)
+    want = kb_read.visible_files(own_vault, "owner")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    index.write_text(junk, encoding="utf-8")
+    assert kb_read.visible_files(own_vault, "owner") == want
+
+
+def test_bad_index_entry_is_recomputed(own_vault: Path) -> None:
+    _settle(own_vault)
+    want = kb_read.visible_files(own_vault, "owner")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    data = json.loads(index.read_text(encoding="utf-8"))
+    data["files"][SAM]["label"] = {"visibility": "normal"}  # wrong shape: must not be trusted
+    index.write_text(json.dumps(data), encoding="utf-8")
+    assert dict(kb_read.visible_files(own_vault, "owner"))[SAM].visibility == "private"
+    assert kb_read.visible_files(own_vault, "owner") == want
+
+
+def test_unwritable_index_costs_only_speed(own_vault: Path) -> None:
+    shutil.rmtree(own_vault / ".scout-cache", ignore_errors=True)
+    (own_vault / ".scout-cache").write_text("not a dir\n", encoding="utf-8")
+    labels = dict(kb_read.visible_files(own_vault, "owner"))
+    assert labels[SAM].visibility == "private"
+
+
+def test_directory_symlinks_are_not_followed(own_vault: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.md").write_text("outside the vault\n", encoding="utf-8")
+    (own_vault / "linked").symlink_to(outside)
+    paths = {p for p, _ in kb_read.visible_files(own_vault, "owner")}
+    assert not any(p.startswith(("linked/", "knowledge_base/")) for p in paths)
+    assert kb(own_vault, "read", "linked/leak.md").exit_code == 2
+
+
+def test_visible_files_returns_labels(vault: Path) -> None:
+    rows = kb_read.visible_files(vault, "owner", ("knowledge-base/people/*.md",))
+    assert [p for p, _ in rows] == sorted(p for p, _ in rows)
+    assert all(isinstance(label, Label) and label.path == p for p, label in rows)
+    assert kb_read.visible_files(vault, AGENT) == []
+
+
+# ----- read edge cases --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["knowledge-base/people/nobody.md", "../outside.md", ".git/config", "knowledge-base"])
+def test_owner_read_refuses_non_files(vault: Path, path: str) -> None:
+    assert kb(vault, "read", path).exit_code == 2
+
+
+# ----- the audit log (spec §7.4) ------------------------------------------------------
+
+
+def _log(vault: Path) -> list[dict[str, Any]]:
+    path = vault / ".scout-logs" / "kb-reads.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_log_event_no_content(own_vault: Path) -> None:
+    kb(own_vault, "search", CANARIES[SAM])  # owner: not logged
+    kb(own_vault, "read", SAM)
+    assert _log(own_vault) == []
+
+    kb(own_vault, "search", CANARIES[SAM], "--fixed", reader="autonomous")
+    kb(own_vault, "read", SAM, reader="autonomous")
+    kb(own_vault, "query", "--type", "task", reader="autonomous")
+    kb(own_vault, "read", SAM, reader=AGENT)
+    kb(own_vault, "related", "sam", reader=AGENT, env={"SCOUT_MODE": "briefing"})
+    rows = _log(own_vault)
+    assert len(rows) == 5
+    raw = (own_vault / ".scout-logs" / "kb-reads.jsonl").read_text(encoding="utf-8")
+    for canary in CANARIES.values():
+        assert canary not in raw
+    assert "sam" not in raw.lower() and "task" not in raw
+    for row in rows:
+        assert set(row) == set(LOG_FIELDS)
+        assert len(row["args_hash"]) == 64
+        assert all(isinstance(row[k], int) for k in ("paths_returned", "paths_denied", "private_paths"))
+    search, read, query, denied, related = rows
+    assert (search["reader"], search["command"], search["blocked"]) == ("autonomous", "search", False)
+    assert search["paths_returned"] >= 1 and search["private_paths"] >= 1
+    assert (read["paths_returned"], read["private_paths"]) == (1, 1)
+    assert query["private_paths"] == 1 and query["paths_returned"] >= 2
+    assert (denied["reader"], denied["paths_returned"], denied["paths_denied"]) == (AGENT, 0, 1)
+    assert related["scout_mode"] == "briefing" and related["paths_returned"] == 0
+    assert search["args_hash"] != read["args_hash"]
+
+
+def test_log_event_blocked_owner_is_logged(tmp_path: Path) -> None:
+    log_event(
+        tmp_path,
+        reader="owner",
+        command="check-outbound",
+        surface="slack",
+        args=["check-outbound", "draft.md"],
+        returned=0,
+        denied=0,
+        private_paths=1,
+        blocked=True,
+    )
+    log_event(
+        tmp_path,
+        reader="owner",
+        command="read",
+        surface=None,
+        args=["read"],
+        returned=1,
+        denied=0,
+        private_paths=0,
+        blocked=False,
+    )
+    (row,) = _log(tmp_path)
+    assert row["blocked"] is True and row["surface"] == "slack" and row["reader"] == "owner"
+    assert row["args_hash"] == kb_read_hash(["check-outbound", "draft.md"])
+
+
+def kb_read_hash(args: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256("\x00".join(args).encode("utf-8")).hexdigest()
+
+
+def test_unwritable_log_never_fails_the_read(own_vault: Path) -> None:
+    (own_vault / ".scout-logs").write_text("not a dir\n", encoding="utf-8")
+    result = kb(own_vault, "read", SAM, reader="autonomous")
+    assert result.exit_code == 0
+    assert CANARIES[SAM] in result.stdout
+    assert "kb-reads" in result.stderr
