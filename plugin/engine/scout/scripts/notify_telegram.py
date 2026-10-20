@@ -53,7 +53,6 @@ hitting the network.
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import os
 import re
@@ -313,15 +312,38 @@ def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
             return chunks
 
 
+# The only named entities Telegram knows; numeric ones are all accepted.
+_NAMED_ENTITIES = {"lt": "<", "gt": ">", "amp": "&", "quot": '"'}
+
+
+def _unescape_telegram(text: str) -> str:
+    """Decode the entities Telegram decodes, and leave everything else as typed.
+
+    Not :func:`html.unescape`: HTML5 also decodes legacy entities without a
+    ``;``, so ``?id=1&copy=2`` in a URL would become ``?id=1©=2``.
+    """
+
+    def entity(m: re.Match[str]) -> str:
+        ref = m.group(0)[1:-1]
+        if not ref.startswith("#"):
+            return _NAMED_ENTITIES.get(ref, m.group(0))
+        try:
+            return chr(int(ref[2:], 16) if ref[1] in "xX" else int(ref[1:]))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    return _ENTITY_RE.sub(entity, text)
+
+
 def _html_to_plain(text: str) -> str:
     """Telegram-HTML to readable plain text: links as ``label (url)``, tags dropped, entities unescaped."""
 
     def link(m: re.Match[str]) -> str:
-        url = html.unescape(m.group(2))
+        url = _unescape_telegram(m.group(2))
         label = _TAG_RE.sub("", m.group(3))
-        return label if html.unescape(label).strip() == url else f"{label} ({url})"
+        return label if _unescape_telegram(label).strip() == url else f"{label} ({url})"
 
-    return html.unescape(_TAG_RE.sub("", _LINK_RE.sub(link, text)))
+    return _unescape_telegram(_TAG_RE.sub("", _LINK_RE.sub(link, text)))
 
 
 def _is_parse_error(resp: requests.Response) -> bool:

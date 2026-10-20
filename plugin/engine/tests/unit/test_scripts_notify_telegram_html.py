@@ -165,6 +165,15 @@ def test_html_to_plain() -> None:
     assert to_plain('<pre><code class="language-py">x &lt; 1</code></pre>') == "x < 1"
 
 
+def test_html_to_plain_decodes_only_what_telegram_decodes() -> None:
+    to_plain = notify_telegram._html_to_plain
+    # A raw `&` in a query string is the likely input when the fallback runs.
+    assert to_plain("see https://x.com/?a=1&copy=2&para=3") == "see https://x.com/?a=1&copy=2&para=3"
+    assert to_plain("a&nbsp;b &nbsp c &eacute;") == "a&nbsp;b &nbsp c &eacute;"
+    assert to_plain("&lt;&gt;&amp;&quot; &#128512;&#x1F600; &#99999999;") == '<>&" 😀😀 &#99999999;'
+    assert to_plain('<a href="https://x.com/?a=1&copy=2">l</a>') == "l (https://x.com/?a=1&copy=2)"
+
+
 # ----- tag-aware splitting ---------------------------------------------------
 
 
