@@ -851,6 +851,11 @@ What it changes in the design:
   rulings must come together.
 - Cloud runs then see `personal/`, so a briefing in Agnes surfaces personal
   tasks the same as one on the laptop.
+- This **overrides an earlier default** in the Scout–Agnes integration plan
+  ("`personal/`, the inbox and trading paths stay local by default"). Jordan
+  confirms D6 against that default, including whether vault-specific paths
+  that a link step adds (for example a brokerage or trading folder) stay
+  local-only or sync as private.
 - Open for Jordan: should `.scout-inbox/` (raw phone notification texts) and
   `Raw/` (scans) default to private as well? The draft says yes for
   `.scout-inbox/**`, and leaves `Raw/` to the files ingested from it.
