@@ -193,15 +193,15 @@ def test_split_html_without_tags_matches_plain_splitter() -> None:
 
 
 def test_split_html_closes_and_reopens_open_tags() -> None:
-    body = '<blockquote><a href="https://example.com/x">' + "word " * 40 + "</a></blockquote> tail"
-    chunks = notify_telegram._split_html(body, limit=100)
+    body = '<blockquote><a href="https://example.com/x">' + "word " * 60 + "</a></blockquote> tail"
+    chunks = notify_telegram._split_html(body, limit=150)
     assert len(chunks) > 2
     for chunk in chunks:
-        assert len(chunk) <= 100
+        assert len(chunk) <= 150
         assert _is_balanced(chunk), chunk
     assert chunks[1].startswith('<blockquote><a href="https://example.com/x">')
     plain = " ".join(notify_telegram._html_to_plain(c).replace(" (https://example.com/x)", "") for c in chunks)
-    assert plain.split() == ["word"] * 40 + ["tail"]
+    assert plain.split() == ["word"] * 60 + ["tail"]
 
 
 def test_split_html_never_cuts_inside_a_tag_or_entity() -> None:
@@ -226,6 +226,19 @@ def test_split_html_does_not_cut_at_a_space_inside_a_tag() -> None:
         assert not re.search(r"<[^>]*$", chunk), chunk
         assert not re.match(r"^[^<]*>", chunk), chunk
         assert _is_balanced(chunk), chunk
+
+
+def test_split_html_deep_nesting_stays_within_the_limit() -> None:
+    # Four <blockquote>s reopened plus their closers took 101 of 100 chars, and
+    # the splitter then sent the text one character (and one entity) at a time.
+    body = "<blockquote>" * 4 + "word &amp; " * 30 + "</blockquote>" * 4
+    chunks = notify_telegram._split_html(body, limit=100)
+    for chunk in chunks:
+        assert len(chunk) <= 100
+        assert not re.search(r"&[a-z]*$", chunk), chunk
+        assert not re.match(r"^[a-z]*;", chunk), chunk
+    assert len(chunks) < 20
+    assert "".join(notify_telegram._html_to_plain(c) for c in chunks).count("word") == 30
 
 
 def test_split_html_link_first_chunk_still_cuts_at_a_word() -> None:

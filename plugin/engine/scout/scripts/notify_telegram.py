@@ -279,41 +279,71 @@ def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     chunks: list[str] = []
     stack: list[tuple[str, str]] = []
     remaining = body
-    while True:
+    while remaining:
+        stack = _carried(stack, limit)
         prefix = "".join(tag for _, tag in stack)
-        if len(prefix) > limit // 2:
-            # Reopening would eat most of the chunk: give up on carrying the
-            # formatting over. The stray closers that follow make Telegram
-            # refuse this chunk, and it goes out as plain text instead.
-            stack, prefix = [], ""
-        budget = limit - len(prefix)
-        if len(remaining) <= budget:
+        if len(prefix) + len(remaining) <= limit:
             chunks.append(prefix + remaining)
-            return chunks
-        while True:
-            # A space inside `<a href=…>` is not a word boundary.
-            cut, consumed = _find_cut(remaining[:budget], ok=lambda i: _safe_html_cut(remaining, i) == i)  # noqa: B023
-            if not consumed:
-                # Hard cut. 0 means the chunk starts with a tag or entity longer
-                # than the budget: cut it anyway. Telegram refuses that chunk and
-                # the plain-text fallback sends it, where an over-long chunk
-                # would be refused for good.
-                cut = _safe_html_cut(remaining, cut) or cut
-            piece = remaining[:cut]
-            after = _open_tags_after(piece, stack)
-            closers = "".join(f"</{name}>" for name, _ in reversed(after))
-            overflow = len(prefix) + len(piece) + len(closers) - limit
-            if overflow <= 0 or budget == 1:
-                break
-            budget = max(budget - overflow, 1)
-        if _html_to_plain(piece).strip():
-            chunks.append(prefix + piece + closers)
-        # else: only tags, which Telegram refuses as an empty message. They
-        # are not lost: the ones still open are reopened by the next prefix.
-        stack = after
-        remaining = remaining[cut + consumed :]
-        if not remaining:
-            return chunks
+            break
+        chunk, advance, stack = _next_chunk(remaining, stack, limit)
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[advance:]
+    return chunks
+
+
+def _closers(stack: list[tuple[str, str]]) -> str:
+    return "".join(f"</{name}>" for name, _ in reversed(stack))
+
+
+def _carried(stack: list[tuple[str, str]], limit: int) -> list[tuple[str, str]]:
+    """The open tags to reopen in the next chunk, or none when they would crowd it out.
+
+    The reopening tags and their closers together may take at most half the
+    chunk. Past that, give up on carrying the formatting over: the stray
+    closers that follow make Telegram refuse the chunk, and it goes out as
+    plain text instead.
+    """
+    if sum(len(tag) for _, tag in stack) + len(_closers(stack)) > limit // 2:
+        return []
+    return stack
+
+
+def _next_chunk(
+    remaining: str, stack: list[tuple[str, str]], limit: int
+) -> tuple[str | None, int, list[tuple[str, str]]]:
+    """Cut one chunk off ``remaining``: ``(chunk, chars of remaining used, tag stack after it)``.
+
+    ``chunk`` is ``None`` when the piece holds only tags, which Telegram refuses
+    as an empty message. They are not lost: the ones still open are reopened by
+    the next chunk.
+    """
+    prefix = "".join(tag for _, tag in stack)
+    budget = limit - len(prefix)
+
+    def outside_markup(i: int) -> bool:  # a space inside `<a href=…>` is not a word boundary
+        return _safe_html_cut(remaining, i) == i
+
+    while True:
+        cut, consumed = _find_cut(remaining[:budget], ok=outside_markup)
+        if not consumed:
+            # Hard cut. 0 means the chunk starts with a tag or entity longer
+            # than the budget: cut it anyway. Telegram refuses that chunk and
+            # the plain-text fallback sends it, where an over-long chunk
+            # would be refused for good.
+            cut = _safe_html_cut(remaining, cut) or cut
+        piece = remaining[:cut]
+        after = _open_tags_after(piece, stack)
+        closers = _closers(after)
+        overflow = len(prefix) + len(piece) + len(closers) - limit
+        if overflow <= 0:
+            break
+        # Ends: at budget 1 the piece is one character and opens no tag, so
+        # the chunk is at most prefix + 1 + the stack's closers, which
+        # _carried keeps within half the limit.
+        budget = max(budget - overflow, 1)
+    chunk = prefix + piece + closers if _html_to_plain(piece).strip() else None
+    return chunk, cut + consumed, after
 
 
 # The only named entities Telegram knows; numeric ones are all accepted.
