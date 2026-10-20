@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,9 @@ PRIYA = "agent:person:priya@example.com"
         ("agent:group:team-1", {"SCOUT_READER": "autonomous"}, "agent:group:team-1"),
         (PRIYA, {"SCOUT_READER": PRIYA}, PRIYA),
         # emails compare case-insensitively
-        ("agent:person:PRIYA@example.com", {"SCOUT_READER": PRIYA}, "agent:person:PRIYA@example.com"),
+        ("agent:person:PRIYA@example.com", {"SCOUT_READER": PRIYA}, PRIYA),
+        ("agent:PERSON:Priya@Example.com", {"SCOUT_READER": "AGENT:person:priya@example.com"}, PRIYA),
+        ("AGENT:group:team-1", {}, "agent:group:team-1"),
     ],
 )
 def test_resolve_reader_ok(flag: str | None, env: dict[str, str], want: str) -> None:
@@ -306,3 +309,37 @@ def test_policy_allowed_for_agent_readers(vault: Path) -> None:
     assert json.loads(result.stdout) == load_policy(None).to_json()
     # a bad reader env doesn't break it either: policy is configuration, not content
     assert _run(vault, "policy", "--json", env={"SCOUT_READER": "bogus"}).exit_code == 0
+
+
+def test_policy_reader_flag(vault: Path) -> None:
+    ok = _run(vault, "policy", "--json", "--reader", PRIYA)
+    assert ok.exit_code == 0
+    assert json.loads(ok.stdout) == load_policy(None).to_json()
+    assert _run(vault, "policy", "--reader", "owner", env={"SCOUT_READER": PRIYA}).exit_code == 2
+    assert _run(vault, "policy", "--reader", "indexer").exit_code == 2
+
+
+def test_classify_unknown_reader_object_is_denied_not_labelled(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.kb.reader as reader_mod
+
+    monkeypatch.setattr(reader_mod, "resolve_reader", lambda flag, env: "somebody-new")
+    result = _run(vault, "classify", "knowledge-base/people/sam.md", "--json")
+    assert json.loads(result.stdout) == [{"path": "knowledge-base/people/sam.md", "denied": True}]
+
+
+def test_classify_md_directory_is_private_forced(vault: Path) -> None:
+    (vault / "knowledge-base" / "people" / "dir.md").mkdir()
+    row = json.loads(_run(vault, "classify", "knowledge-base/people/dir.md", "--json").stdout)[0]
+    assert (row["visibility"], row["visibility_source"], row["warnings"]) == ("private", "forced", ["file-unreadable"])
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
+def test_classify_permission_denied_md_is_private_forced(vault: Path) -> None:
+    note = vault / "knowledge-base" / "people" / "locked.md"
+    note.write_text("---\nvisibility: normal\n---\n", encoding="utf-8")
+    note.chmod(0)
+    try:
+        row = json.loads(_run(vault, "classify", "knowledge-base/people/locked.md", "--json").stdout)[0]
+    finally:
+        note.chmod(0o600)
+    assert (row["visibility"], row["visibility_source"], row["warnings"]) == ("private", "forced", ["file-unreadable"])

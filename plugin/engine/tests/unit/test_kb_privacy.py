@@ -624,3 +624,9 @@ def test_label_is_frozen(policy: Policy) -> None:
     label: Label = classify("a.md", None, policy)
     with pytest.raises(dataclasses.FrozenInstanceError):
         label.visibility = "private"  # type: ignore[misc]
+
+
+def test_classify_unreadable_is_private_forced(policy: Policy) -> None:
+    label = classify("knowledge-base/people/sam.md", None, policy, unreadable=True)
+    assert (label.visibility, label.visibility_source, label.warnings) == ("private", "forced", ("file-unreadable",))
+    assert classify("knowledge-base/people/sam.md", None, policy).visibility == "normal"
