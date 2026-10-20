@@ -174,25 +174,38 @@ def holders() -> Iterator[list[int]]:
 # --- sleep is not wedged time --------------------------------------------------
 
 
-@pytest.mark.parametrize(("awake_since_last_sample_s", "reaped"), [(0, False), (120, True)])
+@pytest.mark.parametrize(("awake_since_last_sample_s", "reaped"), [(0, False), (20, True)])
 def test_wall_clock_age_never_reaps_only_awake_stall_does(
     vault: Path, holders: list[int], awake_since_last_sample_s: int, reaped: bool
 ) -> None:
     """The issue's first incident: a holder sampled just before the host slept
     8 h, then sampled again on wake. Its lock is 8 h old and it made no progress
     since the last sample, but the host was asleep for all of it, so it is not
-    wedged. The control: the same holder with 120 s of AWAKE time since the
-    last sample is past the 60 s ceiling and reaped. The old code reaped both,
+    wedged. The control: the same holder with 20 s of AWAKE time since the
+    last sample is past the 10 s ceiling and reaped. The old code reaped both,
     on the lock's age alone."""
     pid = _detached("exec sleep 300")
     holders.append(pid)
-    lock_mtime = _hold_lock(vault, pid, held_for_s=EIGHT_HOURS_S)
-    last_sample = _awake_now() - awake_since_last_sample_s
-    # The sample taken before the host slept: same holder, same process list, no CPU.
+    _hold_lock(vault, pid, held_for_s=EIGHT_HOURS_S)
+    # On Linux the awake clock is CLOCK_MONOTONIC, about the host's uptime, and
+    # a fresh CI VM can be younger than the gap. Moved back past zero, the
+    # sample would be rejected as corrupt and taken as a new baseline.
+    _wait_for(
+        lambda: _awake_now() > awake_since_last_sample_s,
+        "the awake clock to pass the gap",
+        timeout_s=awake_since_last_sample_s + 5,
+    )
+    # The sample taken before the host slept, written by a waiter itself (a
+    # baseline), then moved back by the awake time that passed since.
+    baseline = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="10", SCOUT_LOCK_WAIT_SECS="0")
+    assert baseline.returncode == 0, baseline.stderr
     progress = vault / ".scout-logs" / ".scout-session.lock.progress"
-    progress.write_text(f"{pid} {lock_mtime} 0 0 {pid} awake {last_sample} 0\n", encoding="utf-8")
+    sample = progress.read_text(encoding="utf-8").split()
+    assert sample[0] == str(pid) and sample[-1] == "0", sample
+    sample[6] = str(int(sample[6]) - awake_since_last_sample_s)
+    progress.write_text(" ".join(sample) + "\n", encoding="utf-8")
 
-    result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="60", SCOUT_LOCK_WAIT_SECS="0")
+    result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="10", SCOUT_LOCK_WAIT_SECS="0")
 
     assert result.returncode == 0, result.stderr
     if reaped:
@@ -220,6 +233,8 @@ def test_the_first_sample_of_a_holder_is_a_baseline(vault: Path, holders: list[i
     assert "Reaped" not in _failures(vault)
     sample = (vault / ".scout-logs" / ".scout-session.lock.progress").read_text(encoding="utf-8").split()
     assert sample[0] == str(pid) and sample[-1] == "0", sample
+    assert sample[5] == "awake", f"the stall must be timed on the awake clock, not wall time: {sample}"
+    assert int(sample[6]) == pytest.approx(_awake_now(), abs=5), sample
     assert _lock(vault).stat().st_mtime == pytest.approx(time.time() - EIGHT_HOURS_S, abs=5), (
         "the lock's mtime is the time it was taken (health.py reads it): a waiter must never touch it"
     )
