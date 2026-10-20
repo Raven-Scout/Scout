@@ -1,0 +1,14 @@
+# Privacy fixture vault config (stand-in values only).
+user:
+  name: Alex
+
+privacy:
+  local_only_add:
+    - "trading/**"
+
+# A Telegram target for the outbound-guard tests. A positive chat id is a
+# private chat with the owner (owner-only); a group or channel id is below zero
+# (shared). Stand-in id.
+notify:
+  telegram:
+    chat_id: "100200300"

@@ -342,6 +342,19 @@ class _Unparseable(Exception):
     pass
 
 
+def classifier_block(text: str) -> list[str] | None:
+    """The frontmatter lines the classifier parses from ``text``, or None.
+
+    None when line one (after a BOM) isn't a fence or the block doesn't close.
+    A caller that already YAML-parsed the very same lines may hand the result to
+    :func:`facts_from_frontmatter` instead of re-parsing (``KnowledgeGraph``).
+    """
+    lines = text.removeprefix("\ufeff").splitlines()
+    if not lines or lines[0].rstrip() != FENCE:
+        return None
+    return frontmatter_block(lines)
+
+
 def _frontmatter(text: str | None) -> dict[str, Any] | None:
     """The parsed frontmatter mapping; None when the file has none.
 
@@ -351,7 +364,7 @@ def _frontmatter(text: str | None) -> dict[str, Any] | None:
     """
     if text is None:
         return None
-    lines = text.removeprefix("﻿").splitlines()
+    lines = text.removeprefix("\ufeff").splitlines()
     if not lines or lines[0].rstrip() != FENCE:
         return None
     block = frontmatter_block(lines)
@@ -396,56 +409,79 @@ def _parse_federation_scope(value: Any) -> FederationScope | None:
     return None
 
 
-def classify(rel_path: str, text: str | None, policy: Policy, *, unreadable: bool = False) -> Label:
-    """Label one vault file (spec §5.3). Pure.
+@dataclass(frozen=True)
+class NoteFacts:
+    """What a file's own text says about its privacy, before the policy applies.
 
-    ``rel_path`` is vault-relative and already normalised (:func:`normalize_rel`).
-    ``text`` is the file's leading text, enough to include the closing
-    frontmatter fence, or ``None`` for a non-markdown or missing file (path
-    defaults only). ``unreadable=True`` says an existing markdown file could not
-    be read (permission, a directory named ``x.md``, ...): it can't be
-    inspected, so it is private, source ``forced``, warning ``file-unreadable``
-    (fail closed; ``text`` is ignored).
+    :func:`classify` is ``label_from_facts(rel, note_facts(text), policy)``.
+    The split lets a caller cache the facts per file (they depend on the text
+    alone) and re-apply a changed policy without reading the file again, as
+    ``KnowledgeGraph.load()`` does. Small and picklable.
+
+    ``state`` is ``ok``, ``unparseable`` or ``unreadable``. ``visibility`` is the
+    parsed frontmatter value (an unknown value already ``private``), or None
+    when the key is absent. ``warnings`` are the text-only ones, in
+    :func:`classify`'s order.
     """
+
+    state: Literal["ok", "unparseable", "unreadable"] = "ok"
+    visibility: Visibility | None = None
+    declared: FederationScope = "none"
+    warnings: tuple[str, ...] = ()
+
+
+def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
+    """The policy-free half of :func:`classify` (same arguments)."""
+    if unreadable:
+        return NoteFacts(state="unreadable")
+    try:
+        fm = _frontmatter(text)
+    except _Unparseable:
+        return NoteFacts(state="unparseable")
+    return NoteFacts() if fm is None else facts_from_frontmatter(fm)
+
+
+def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
+    """:func:`note_facts` for a frontmatter mapping already parsed from :func:`classifier_block`'s lines."""
+    warnings: list[str] = []
+    visibility: Visibility | None = None
+    if "visibility" in fm:
+        visibility = _parse_visibility(fm["visibility"])
+        if visibility is None:
+            warnings.append("visibility-value")
+            visibility = "private"
+    declared: FederationScope = "none"
+    if "federation_scope" in fm:
+        scope = _parse_federation_scope(fm["federation_scope"])
+        if scope is None:
+            warnings.append("visibility-value")
+        else:
+            declared = scope
+    return NoteFacts(visibility=visibility, declared=declared, warnings=tuple(warnings))
+
+
+def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
+    """The policy half of :func:`classify`. Pure."""
     rel = rel_path
     local_only = (_any(policy.local_only_always, rel) and not _any(policy.sync_allow, rel)) or _any(
         policy.local_only, rel
     )
     shared_by_path = _any(policy.shared_files, rel)
-    warnings: list[str] = []
 
-    if unreadable:
+    if facts.state != "ok":
         return Label(
             path=rel,
             visibility="private",
             visibility_source="forced",
             local_only=local_only,
             shared_file=shared_by_path,
-            warnings=("file-unreadable",),
-        )
-
-    try:
-        fm = _frontmatter(text)
-    except _Unparseable:
-        return Label(
-            path=rel,
-            visibility="private",
-            visibility_source="forced",
-            local_only=local_only,
-            shared_file=shared_by_path,
-            warnings=("frontmatter-unparseable",),
+            warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
         )
 
     visibility: Visibility
     source: VisibilitySource
-    if fm is not None and "visibility" in fm:
-        source = "frontmatter"
-        parsed = _parse_visibility(fm["visibility"])
-        if parsed is None:
-            warnings.append("visibility-value")
-            visibility = "private"
-        else:
-            visibility = parsed
+    if facts.visibility is not None:
+        visibility, source = facts.visibility, "frontmatter"
     else:
         match = next((v for g, v in policy.visibility_defaults if glob_match(g, rel)), None)
         if match is None:
@@ -455,14 +491,8 @@ def classify(rel_path: str, text: str | None, policy: Policy, *, unreadable: boo
             visibility = "normal" if match == "normal" else "private"
             source = "path_default"
 
-    declared: FederationScope = "none"
-    if fm is not None and "federation_scope" in fm:
-        scope = _parse_federation_scope(fm["federation_scope"])
-        if scope is None:
-            warnings.append("visibility-value")
-        else:
-            declared = scope
-
+    warnings = list(facts.warnings)
+    declared = facts.declared
     if visibility == "private" and declared != "none":
         warnings.append("privacy-contradiction")
 
@@ -475,6 +505,62 @@ def classify(rel_path: str, text: str | None, policy: Policy, *, unreadable: boo
         shared_file=shared_by_path or declared != "none",
         warnings=_dedup(warnings),
     )
+
+
+def classify(rel_path: str, text: str | None, policy: Policy, *, unreadable: bool = False) -> Label:
+    """Label one vault file (spec §5.3). Pure.
+
+    ``rel_path`` is vault-relative and already normalised (:func:`normalize_rel`).
+    ``text`` is the file's leading text, enough to include the closing
+    frontmatter fence, or ``None`` for a non-markdown or missing file (path
+    defaults only). ``unreadable=True`` says an existing markdown file could not
+    be read (permission, a directory named ``x.md``, ...): it can't be
+    inspected, so it is private, source ``forced``, warning ``file-unreadable``
+    (fail closed; ``text`` is ignored).
+    """
+    return label_from_facts(rel_path, note_facts(text, unreadable=unreadable), policy)
+
+
+# ----- reading files ----------------------------------------------------------------
+
+# How much of a markdown file the classifier reads. A frontmatter fence that
+# doesn't close inside the window classifies as unparseable (private).
+HEAD_BYTES = 64 * 1024
+
+
+def decode_head(data: bytes) -> str:
+    """The classifier's view of a markdown file's bytes: the leading
+    :data:`HEAD_BYTES`, decoded with ``errors="replace"`` so a stray bad byte
+    can't hide its frontmatter."""
+    return data[:HEAD_BYTES].decode("utf-8", errors="replace")
+
+
+def read_head(path: Path) -> tuple[str | None, bool]:
+    """``(text, unreadable)`` for one file, the input :func:`classify` takes.
+
+    Text is :func:`decode_head` of a markdown (``.md``) file. A non-markdown or
+    missing file gives ``(None, False)`` (path defaults only); any other
+    failure on an existing ``.md`` (permission, a directory named ``x.md``)
+    gives ``(None, True)``, which ``classify`` treats as private. Every reader
+    of vault files labels through this (or :func:`decode_head` on bytes it
+    already read), so they all label a file the same way.
+    """
+    if path.suffix.lower() != ".md":
+        return None, False
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(HEAD_BYTES)
+    except FileNotFoundError:
+        return None, False
+    except OSError:
+        return None, True
+    return decode_head(data), False
+
+
+def label_file(vault: Path, rel: str, policy: Policy) -> Label:
+    """The label of ``<vault>/<rel>``; ``rel`` already :func:`normalize_rel`-ed."""
+    text, unreadable = read_head(vault / rel)
+    return classify(rel, text, policy, unreadable=unreadable)
 
 
 # ----- paths, readers, surfaces -------------------------------------------------
