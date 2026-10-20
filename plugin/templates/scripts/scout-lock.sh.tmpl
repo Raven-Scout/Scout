@@ -96,6 +96,93 @@ _scout_pid_alive() {
     [ "$1" -gt 0 ] 2>/dev/null && { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
 }
 
+_scout_pgid_of() {
+    # The process group id of a PID; nothing if it cannot be read.
+    local pgid
+    pgid=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' \t\r\n') || return 0
+    case "$pgid" in
+        ''|*[!0-9]*) ;;
+        *) echo "$pgid" ;;
+    esac
+}
+
+_scout_session_pids() {
+    # The live processes of a session: every member of process group $1 (when
+    # one is given), plus the remaining arguments and all their descendants.
+    # Zombies are left out -- a killed child its parent has not reaped yet is
+    # not writing anything. One `ps -A` table, read the same way on macOS and
+    # Linux (`ps -g` is a process-group filter only in procps; BSD reads it
+    # differently).
+    local pgid="$1"
+    shift
+    ps -A -o pid= -o ppid= -o pgid= -o stat= 2>/dev/null | awk -v pg="$pgid" -v roots="$*" '
+        { pid[NR] = $1; ppid[NR] = $2; grp[NR] = $3; st[NR] = $4 }
+        END {
+            n = split(roots, r, " ")
+            for (i = 1; i <= n; i++) if (r[i] ~ /^[0-9]+$/ && r[i] > 0) keep[r[i]] = 1
+            for (i = 1; i <= NR; i++) if (pg != "" && grp[i] == pg) keep[pid[i]] = 1
+            do {
+                grew = 0
+                for (i = 1; i <= NR; i++)
+                    if ((ppid[i] in keep) && !(pid[i] in keep)) { keep[pid[i]] = 1; grew = 1 }
+            } while (grew)
+            for (i = 1; i <= NR; i++) if ((pid[i] in keep) && st[i] !~ /^Z/) print pid[i]
+        }'
+}
+
+_scout_kill_session() {
+    # Signal the holder's whole session, not just the holder.
+    #
+    # The lock records `$$` from a sourced scout-lock.sh -- the PID of
+    # run-<mode>.sh itself, which launchd starts as its own process group
+    # leader. The `claude` session runs below it, so signalling the bare PID
+    # kills the wrapper and leaves the session running, and the lock is then
+    # handed to a new run while the old one keeps writing the vault. Observed
+    # 2026-10-16: a session reported as reaped committed seven more times,
+    # concurrently with the run that replaced it.
+    #
+    # $1 is the signal, $2 the holder's process group when the holder leads
+    # one (else empty), and the rest the session's PIDs, which the CALLER
+    # resolves before the first signal: once the holder dies its children are
+    # re-parented and its group is no longer readable from its PID.
+    #
+    # A negative argument means "this process group" to kill(1), and that is
+    # only the right target when the holder really leads one -- a hand-started
+    # run can share its shell's group, and signalling that would take down the
+    # operator's own terminal. Without one, only the listed PIDs are signalled.
+    local sig="$1" pgid="$2" p
+    shift 2
+    if [ -n "$pgid" ]; then
+        kill "-$sig" -- "-$pgid" 2>/dev/null || true
+    fi
+    for p in "$@"; do
+        kill "-$sig" "$p" 2>/dev/null || true
+    done
+}
+
+_scout_reap_holder() {
+    # Kill the wedged holder $1's session: TERM, a grace, KILL. 0 when nothing
+    # of it is left alive, 1 when something survived SIGKILL.
+    local holder="$1" pgid group="" pids _i
+    pgid=$(_scout_pgid_of "$holder")
+    [ "$pgid" = "$holder" ] && group="$pgid"
+    pids=$(_scout_session_pids "$group" "$holder")
+    # shellcheck disable=SC2086 # the PID list is split into words on purpose
+    _scout_kill_session TERM "$group" $pids
+    sleep 5
+    # Children the session started during the grace are its too.
+    # shellcheck disable=SC2086
+    pids=$(_scout_session_pids "$group" $pids)
+    # shellcheck disable=SC2086
+    _scout_kill_session KILL "$group" $pids
+    for _i in 1 2 3 4 5; do
+        # shellcheck disable=SC2086
+        [ -z "$(_scout_session_pids "$group" $pids)" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 _scout_take_guard() {
     local mtime
     if ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null; then
@@ -154,13 +241,17 @@ _scout_lock_try() {
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
                 echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${lock_age}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
                 echo "Reaped wedged session PID $LOCK_PID after ${lock_age}s at $(date)" >> "$LOG_DIR/failures.log"
-                kill -TERM "$LOCK_PID" 2>/dev/null || true
-                sleep 5
                 # KILL before removing the lock: a KILLed holder cannot run its
                 # EXIT trap. Re-read after it: during the grace the holder may
                 # have released its lock and someone else taken the path.
-                kill -KILL "$LOCK_PID" 2>/dev/null || true
-                if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                if ! _scout_reap_holder "$LOCK_PID"; then
+                    # The reap did not land. Taking the lock now would put a
+                    # second writer on the same vault, which is strictly worse
+                    # than losing this slot: a skipped run is recorded and
+                    # recoverable, two concurrent runs overwrite each other.
+                    echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
+                    echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
+                elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
                     rm -f "$LOCK_FILE"
                 fi
             fi

@@ -145,6 +145,100 @@ def test_wedged_holder_is_reaped_and_lock_taken_over(tmp_path: Path) -> None:
         holder.wait()
 
 
+def _live_pids(*, pgid: int | None = None, ppid: int | None = None) -> set[int]:
+    """Non-zombie processes in a group, or with a parent; one `ps -A` table, as the lock reads it."""
+    out = subprocess.run(
+        ["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    pids: set[int] = set()
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[3].startswith("Z"):
+            continue
+        if (pgid is not None and int(fields[2]) == pgid) or (ppid is not None and int(fields[1]) == ppid):
+            pids.add(int(fields[0]))
+    return pids
+
+
+def _wedge(log_dir: Path, holder: subprocess.Popen) -> Path:
+    lock = log_dir / ".scout-session.lock"
+    lock.write_text(f"{holder.pid}\n", encoding="utf-8")
+    held_since = time.time() - 120
+    os.utime(lock, (held_since, held_since))  # lock written 120s ago
+    return lock
+
+
+def _wait_for(predicate, timeout_s: float = 5.0) -> None:  # type: ignore[no-untyped-def]
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out waiting for the holder's session to start"
+        time.sleep(0.05)
+
+
+def test_a_reaped_holder_takes_its_whole_process_group_with_it(tmp_path: Path) -> None:
+    """The lock's PID is run-<mode>.sh, which launchd starts as a group leader; the
+    claude session runs below it. Killing the bare PID left the session writing
+    the vault after its lock was handed on. The child here ignores TERM, as a
+    session busy in a tool call effectively does, so only the KILL to the group
+    reaches it."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    marker = _stub_retry_wrapper(scout_dir)
+    log_dir = scout_dir / ".scout-logs"
+    log_dir.mkdir()
+    holder = subprocess.Popen(
+        ["bash", "-c", "bash -c 'trap \"\" TERM; while :; do sleep 1; done' & wait"],
+        start_new_session=True,  # its own process group, led by the holder
+    )
+    try:
+        _wait_for(lambda: len(_live_pids(pgid=holder.pid)) >= 2)
+        _wedge(log_dir, holder)
+
+        result = _run(script, max_age_s=30)
+
+        assert result.returncode == 0, result.stderr
+        assert marker.exists(), "the new session must proceed once the old one is gone"
+        assert _live_pids(pgid=holder.pid) == set(), "a process of the reaped session survived"
+        assert "Reap FAILED" not in _run_log(scout_dir)
+    finally:
+        subprocess.run(["kill", "-KILL", "--", f"-{holder.pid}"], capture_output=True)
+        holder.wait()
+
+
+def test_a_holder_without_its_own_group_is_reaped_with_its_descendants_only(tmp_path: Path) -> None:
+    """A hand-started run shares its shell's process group, so the group is never
+    signalled: the holder and everything below it are, and the group's other
+    members (here, the test itself) are left alone."""
+    scout_dir = tmp_path / "Scout"
+    scout_dir.mkdir()
+    script = _render(TEMPLATE, scout_dir)
+    marker = _stub_retry_wrapper(scout_dir)
+    log_dir = scout_dir / ".scout-logs"
+    log_dir.mkdir()
+    holder = subprocess.Popen(["bash", "-c", "bash -c 'sleep 300 & wait' & wait"])  # in our group
+    try:
+        _wait_for(lambda: any(_live_pids(ppid=child) for child in _live_pids(ppid=holder.pid)))
+        middle = _live_pids(ppid=holder.pid)
+        grandchildren = {g for m in middle for g in _live_pids(ppid=m)}
+        _wedge(log_dir, holder)
+
+        result = _run(script, max_age_s=30)
+
+        assert result.returncode == 0, result.stderr
+        assert marker.exists(), "the new session must proceed once the old one is gone"
+        assert holder.wait(timeout=10) != 0, "the holder must be killed"
+        live = _live_pids(pgid=os.getpgid(0))
+        assert not (middle | grandchildren) & live, "a descendant of the reaped holder survived"
+        assert os.getpid() in live
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_dead_holder_stale_lock_still_removed(tmp_path: Path) -> None:
     """Guard: the pre-existing crashed-holder branch keeps working."""
     scout_dir = tmp_path / "Scout"
