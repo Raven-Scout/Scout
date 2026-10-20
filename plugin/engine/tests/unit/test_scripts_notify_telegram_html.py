@@ -215,6 +215,26 @@ def test_split_html_never_cuts_inside_a_tag_or_entity() -> None:
     assert "".join(notify_telegram._html_to_plain(c) for c in chunks).endswith("&" * 40)
 
 
+def test_split_html_does_not_cut_at_a_space_inside_a_tag() -> None:
+    # The space in `<a href` counted as a word boundary. The cut moved back to
+    # the `<a`, and the overflow loop then hard-cut inside `<blockquote>`:
+    # `…</u><blockquote` | `><i>y</i>…`. Found by fuzzing.
+    body = '<u><blockquote><a href="https://example.com/x">x</a></blockquote></u><blockquote><i>y</i><code>z</code></blockquote>'
+    chunks = notify_telegram._split_html(body, limit=100)
+    for chunk in chunks:
+        assert len(chunk) <= 100
+        assert not re.search(r"<[^>]*$", chunk), chunk
+        assert not re.match(r"^[^<]*>", chunk), chunk
+        assert _is_balanced(chunk), chunk
+
+
+def test_split_html_link_first_chunk_still_cuts_at_a_word() -> None:
+    body = '<a href="https://example.com">' + "x" * 40 + " " + "y" * 40 + " " + "z" * 40 + "</a>"
+    chunks = notify_telegram._split_html(body, limit=100)
+    assert chunks[0] == '<a href="https://example.com">' + "x" * 40 + "</a>"
+    assert all(_is_balanced(c) for c in chunks)
+
+
 def test_send_html_long_body_sends_balanced_chunks(secrets_dir: Path) -> None:
     body = "<b>" + "bold words " * 1000 + "</b>"
     with patch("scout.scripts.notify_telegram.requests.post") as mock_post:

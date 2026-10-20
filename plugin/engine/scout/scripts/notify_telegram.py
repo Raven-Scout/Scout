@@ -213,14 +213,17 @@ def _split_message(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     return chunks
 
 
-def _find_cut(window: str) -> tuple[int, int]:
+def _find_cut(window: str, ok: Callable[[int], bool] = lambda _: True) -> tuple[int, int]:
     """Where to end a chunk inside ``window``: ``(cut, delimiter chars consumed)``.
 
     Paragraph, then line, then word boundary; a hard cut at the window's end
-    (nothing consumed) when none of them is past position 0.
+    (nothing consumed) when none of them is past position 0. A boundary at a
+    position ``ok`` rejects is skipped, and the search goes on to its left.
     """
     for delim in ("\n\n", "\n", " "):
         idx = window.rfind(delim)
+        while idx > 0 and not ok(idx):
+            idx = window.rfind(delim, 0, idx)
         if idx > 0:
             return idx, len(delim)
     return len(window), 0
@@ -288,13 +291,14 @@ def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
             chunks.append(prefix + remaining)
             return chunks
         while True:
-            cut, consumed = _find_cut(remaining[:budget])
-            safe = _safe_html_cut(remaining, cut)
-            if safe != cut:
-                cut, consumed = safe, 0
-            if cut == 0:
-                # A single tag longer than the budget: nothing safe to do.
-                cut, consumed = budget, 0
+            # A space inside `<a href=…>` is not a word boundary.
+            cut, consumed = _find_cut(remaining[:budget], ok=lambda i: _safe_html_cut(remaining, i) == i)  # noqa: B023
+            if not consumed:
+                # Hard cut. 0 means the chunk starts with a tag or entity longer
+                # than the budget: cut it anyway. Telegram refuses that chunk and
+                # the plain-text fallback sends it, where an over-long chunk
+                # would be refused for good.
+                cut = _safe_html_cut(remaining, cut) or cut
             piece = remaining[:cut]
             after = _open_tags_after(piece, stack)
             closers = "".join(f"</{name}>" for name, _ in reversed(after))
