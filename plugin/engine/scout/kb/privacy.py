@@ -48,7 +48,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.resources import as_file, files
@@ -242,11 +242,22 @@ def load_policy(vault: Path | None) -> Policy:
         return base
     if not isinstance(data, dict):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    overlay = data.get("privacy")
+    return policy_from_overlay(data.get("privacy"))
+
+
+def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
+    """Engine default merged with a ``privacy:`` overlay mapping (no vault needed).
+
+    ``None`` means the engine default. This is the merge :func:`load_policy`
+    applies, exposed so the contract corpus (and the Agnes indexer's runner)
+    can build a policy from a bare overlay. A non-mapping overlay is ignored
+    with ``privacy-overlay-invalid``.
+    """
+    base = _engine_default()
     if overlay is None:
         return base
     warnings: list[str] = []
-    if not isinstance(overlay, dict):
+    if not isinstance(overlay, Mapping):
         return dataclasses.replace(base, warnings=("privacy-overlay-invalid",))
 
     if any(k in overlay for k in _STAGE2_KEYS):

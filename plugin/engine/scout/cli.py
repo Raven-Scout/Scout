@@ -195,6 +195,106 @@ def kb_install_hook(
     print(f"Installed: {path}")
 
 
+_CLASSIFY_HEAD_BYTES = 64 * 1024
+
+
+def _read_head(path: Path) -> str | None:
+    """The file's leading text (up to 64 KiB), or None if it isn't readable UTF-8.
+
+    A multi-byte character cut by the window is dropped, not an error. A
+    frontmatter fence that doesn't close inside the window classifies as
+    unparseable (private), which fails closed.
+    """
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(_CLASSIFY_HEAD_BYTES)
+    except OSError:
+        return None
+    for cut in range(4):
+        try:
+            return data[: len(data) - cut].decode("utf-8")
+        except UnicodeDecodeError:
+            if len(data) < _CLASSIFY_HEAD_BYTES:
+                return None
+    return None
+
+
+@kb_app.command("classify")
+def kb_classify(
+    paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print each file's privacy label (visibility, local-only, shared). Exit 2 = bad path or reader.
+
+    owner and autonomous readers get labels. An agent reader gets
+    {"path": ..., "denied": true} for every path, without the file being looked
+    at, so a denial says nothing about whether the file exists or what it is.
+    """
+    import json
+    import os
+
+    from scout.kb.privacy import classify, load_policy, normalize_rel
+    from scout.kb.reader import resolve_reader
+
+    who = resolve_reader(reader, os.environ)
+    rows: list[dict[str, object]] = []
+    lines: list[str] = []
+    if who.startswith("agent:"):
+        rows = [{"path": p, "denied": True} for p in paths]
+        lines = [f"{p}: denied" for p in paths]
+    else:
+        root = _kb_repo(repo)
+        policy = load_policy(root)
+        for p in paths:
+            try:
+                rel = normalize_rel(root, p)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                raise typer.Exit(2) from e
+            label = classify(rel, _read_head(root / rel), policy)
+            rows.append(label.to_json())
+            lines.append(f"[private] {rel}" if label.visibility == "private" else rel)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for line in lines:
+            print(line)
+
+
+@kb_app.command("policy")
+def kb_policy(
+    as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print the effective privacy policy: engine default plus the vault's scout-config.yaml overlay.
+
+    Any reader may run it: it is configuration (globs, surface ids), not note content.
+    """
+    import json
+
+    from scout.kb.privacy import load_policy
+
+    data = load_policy(_kb_repo(repo)).to_json()
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return
+    lo = data["local_only"]
+    print("local_only.always:    " + " ".join(lo["always"]))
+    print("local_only.default:   " + (" ".join(lo["default"]) or "(none)"))
+    print("local_only.sync_allow: " + " ".join(lo["sync_allow"]))
+    print("visibility_defaults:")
+    for entry in data["visibility_defaults"]:
+        print(f"  {entry['glob']} -> {entry['visibility']}")
+    print("surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]))
+    print("surfaces.shared:      " + " ".join(data["surfaces"]["shared"]))
+    print("shared_files:         " + (" ".join(data["shared_files"]) or "(none)"))
+    print("warnings:             " + (" ".join(data["warnings"]) or "(none)"))
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration

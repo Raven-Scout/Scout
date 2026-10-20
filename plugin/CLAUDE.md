@@ -50,6 +50,17 @@ edit just one copy. On any change (anonymizing counts):
    and app changes land in ONE commit — each checksum guard fails the moment the
    corpus changes without it.
 
+### `privacy-corpus.json` is checksum-guarded, and the Agnes indexer runs it too
+
+`engine/tests/fixtures/contract/privacy-corpus.json` holds `{path, frontmatter_text,
+policy_overlay, expected_label}` cases (#453). `tests/unit/test_privacy_corpus.py` asserts
+`classify(...)` reproduces every `expected_label`, so `scout/kb/privacy.py` is the judge. It has no
+app copy, but the Agnes indexer runs the same file against its own classifier, so a label change
+is a contract change. On any edit: keep the file at 2-space indent, sorted keys, trailing newline;
+set `EXPECTED_SHA256` in that test to the new `shasum -a 256`; regenerate
+`scout/privacy.snapshot.json` if the policy moved (`python -m scout.scripts.privacy_snapshot`);
+all in ONE commit, and tell the indexer owners.
+
 `engine/tests/fixtures/contract/doctor-run-health.json` is a generated contract fixture with an app byte copy too — regenerate it with `SCOUT_REGEN_CONTRACT=1`, never by hand; see the root `CLAUDE.md`.
 
 ## A behavioural rule in `phases/` gets an eval seed
