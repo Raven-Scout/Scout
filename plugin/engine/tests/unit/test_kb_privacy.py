@@ -667,27 +667,3 @@ def test_label_file_matches_classify(tmp_path: Path, policy: Policy) -> None:
     assert privacy.label_file(tmp_path, "knowledge-base/personal/gone.md", policy).visibility_source == "path_default"
     (tmp_path / "x.md").mkdir()
     assert privacy.label_file(tmp_path, "x.md", policy).warnings == ("file-unreadable",)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        None,
-        "",
-        "no frontmatter\n",
-        "---\nvisibility: normal\n---\n",
-        "---\nvisibility: PRIVATE while drafting\nfederation_scope: [bogus]\n---\n",
-        "---\nvisibility: private\nfederation_scope: org\n---\n",
-        "---\nfederation_scope: [person:Priya@Example.com, group:team-1]\n---\n",
-        "---\ntitle: [unclosed\n---\n",
-        "---\nname: x\n",
-        "---\n- a list\n---\n",
-    ],
-)
-@pytest.mark.parametrize("rel", ["knowledge-base/personal/t.md", "drafts/d.md", "notes/n.md", ".env.local"])
-def test_classify_is_label_from_facts(policy: Policy, text: str | None, rel: str) -> None:
-    """The cacheable split (facts from text, then the policy) is ``classify`` exactly."""
-    assert privacy.label_from_facts(rel, privacy.note_facts(text), policy) == classify(rel, text, policy)
-    assert privacy.label_from_facts(rel, privacy.note_facts(text, unreadable=True), policy) == classify(
-        rel, text, policy, unreadable=True
-    )

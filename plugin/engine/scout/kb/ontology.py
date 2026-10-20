@@ -43,7 +43,7 @@ from typing import Any
 
 import yaml
 
-from scout.errors import KBSchemaError
+from scout.errors import KBError, KBSchemaError
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.privacy import (
     FULL_READERS,
@@ -98,23 +98,51 @@ def _stat_key(st: os.stat_result) -> _StatKey:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
 
 
+_KB_DIRS = ("knowledge-base", "knowledge_base")
+
+
+def find_vault(kb_root: str | Path) -> Path:
+    """The vault holding ``kb_root``: a KB folder or any folder inside one.
+
+    Walks up from the resolved ``kb_root`` to the nearest directory that has a
+    ``knowledge-base`` (or ``knowledge_base``) entry whose resolved path
+    contains ``kb_root``, or that holds ``scout-config.yaml``. Raises
+    ``KBError`` when there is none: a wrong vault would mislabel every file
+    (path defaults are vault-relative) and miss the owner's overlay, so it
+    never guesses.
+    """
+    kb_real = Path(kb_root).resolve()
+    for d in (kb_real, *kb_real.parents):
+        for name in _KB_DIRS:
+            kb_dir = d / name
+            if kb_dir.is_dir() and kb_real.is_relative_to(kb_dir.resolve()):
+                return d
+        if (d / "scout-config.yaml").is_file():
+            return d
+    raise KBError(
+        f"can't find the vault for KB root {kb_root}: no parent folder has a knowledge-base/ holding it "
+        "or a scout-config.yaml; pass vault= explicitly"
+    )
+
+
 class _Labeller:
     """Vault-relative paths and labels for one ``load()``: the policy is loaded once.
 
-    The vault is the KB root's parent after resolving symlinks (so a
-    ``knowledge_base`` alias root works). Paths are built from the canonical
-    KB-root spelling plus the walk's own entry names, which is what
-    :func:`~scout.kb.privacy.normalize_rel` returns for them, so labels match
-    ``scoutctl kb classify``. A file reached through a symlink (the file or a
-    folder) goes through ``normalize_rel`` itself and is labelled by its
-    target; one whose target is outside the vault keeps its in-KB spelling.
+    The vault is ``vault`` when given, else :func:`find_vault`. The KB root's
+    vault-relative spelling comes from :func:`~scout.kb.privacy.normalize_rel`
+    (symlinks such as ``knowledge_base`` and case resolved); each file's path
+    is that plus the walk's own entry names, which is what ``normalize_rel``
+    returns for them, so labels match ``scoutctl kb classify``. A file reached
+    through a symlink (the file or a folder) goes through ``normalize_rel``
+    itself and is labelled by its target; one whose target is outside the
+    vault keeps its in-KB spelling.
     """
 
-    def __init__(self, kb_root: str) -> None:
+    def __init__(self, kb_root: str, vault: Path | None = None) -> None:
         self.kb_root = Path(kb_root)
         kb_real = self.kb_root.resolve()
-        self.vault = kb_real.parent
-        self.kb_rel = normalize_rel(self.vault, kb_real)
+        self.vault = (vault if vault is not None else find_vault(kb_root)).resolve()
+        self.kb_rel = normalize_rel(self.vault, kb_real)  # ValueError: kb_root is outside vault
         self.policy: Policy = load_policy(self.vault)
         # String forms: pathlib's relative_to costs more than the label itself.
         root = str(self.kb_root)
@@ -153,10 +181,14 @@ class _Labeller:
 class KnowledgeGraph:
     """Markdown-native knowledge graph with YAML frontmatter entities."""
 
-    def __init__(self, schema_path: str, kb_root: str, *, reader: str = "owner") -> None:
+    def __init__(
+        self, schema_path: str, kb_root: str, *, reader: str = "owner", vault: Path | str | None = None
+    ) -> None:
         self.schema_path = schema_path
         self.kb_root = kb_root
         self.reader = reader
+        # The vault labels are relative to; None finds it from kb_root on load (find_vault).
+        self.vault = Path(vault) if vault is not None else None
         # A reader that sees nothing gets no schema read either: nothing under
         # the KB is opened for it.
         self.schema: dict[str, Any] = self._load_schema() if self._full else {}
@@ -181,7 +213,8 @@ class KnowledgeGraph:
         """Walk all .md files in kb_root, extract frontmatter, build graph.
 
         Each entity gets ``_source_path`` and ``_label``. A reader outside
-        ``FULL_READERS`` gets an empty graph and nothing is read.
+        ``FULL_READERS`` gets an empty graph and nothing is read. ``KBError``
+        when no ``vault`` was given and :func:`find_vault` finds none.
         """
         self.entities = {}
         self.relationships = []
@@ -189,7 +222,7 @@ class KnowledgeGraph:
         if not self._full:
             return self
 
-        labeller = _Labeller(self.kb_root)
+        labeller = _Labeller(self.kb_root, self.vault)
         root_key = os.path.abspath(self.kb_root)
         with _CACHE_LOCK:
             previous = _CACHE.get(root_key, {})
@@ -290,7 +323,7 @@ class KnowledgeGraph:
         entity = self.entities.get(name)
         return entity.get("_label") if entity else None
 
-    def query(self, visibility: str | None = None, **filters: Any) -> list[dict[str, Any]]:
+    def query(self, *, visibility: str | None = None, **filters: Any) -> list[dict[str, Any]]:
         """Query entities by property filters.
 
         Special filters:

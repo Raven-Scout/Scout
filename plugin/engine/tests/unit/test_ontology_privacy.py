@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from scout.errors import KBError
 from scout.kb import ontology as ontology_mod
 from scout.kb import privacy
 from scout.kb.ontology import KnowledgeGraph, clear_frontmatter_cache
@@ -34,10 +35,14 @@ from tests.unit.privacy_vault_helpers import (
     CANARIES,
     COMMITS,
     ENGINE_SCHEMA,
+    GROUP_CHAT_ID,
+    PRIVATE_CHAT_ID,
     SEED_SUBJECT,
+    STAND_IN_BOT_TOKEN,
     action_items_rel,
     build_privacy_vault,
     git,
+    privacy_secrets,
 )
 
 TEMPLATE_PARSER = Path(__file__).resolve().parents[3] / "templates" / "knowledge-base" / "ontology" / "parser.py"
@@ -317,18 +322,68 @@ def test_agent_reader_loads_nothing(vault: Path, reader: str, monkeypatch: pytes
 # ----- the stat cache (#77) keeps labels cheap -----------------------------------
 
 
+def _watch_kb_reads(monkeypatch: pytest.MonkeyPatch, vault: Path) -> list[str]:
+    """Record every open of a file under the vault's KB, by any of the usual routes."""
+    kb_dirs = (str(vault / "knowledge-base"), str((vault / "knowledge-base").resolve()), str(vault / "knowledge_base"))
+    reads: list[str] = []
+
+    def note(target: object) -> None:
+        name = os.fspath(target) if isinstance(target, (str, os.PathLike)) else ""
+        if isinstance(name, str) and name.startswith(kb_dirs):
+            reads.append(name)
+
+    real_builtin, real_io = builtins.open, io.open
+    real_path_open, real_bytes, real_text = Path.open, Path.read_bytes, Path.read_text
+
+    def b_open(file: Any, *a: Any, **k: Any) -> Any:
+        note(file)
+        return real_builtin(file, *a, **k)
+
+    def i_open(file: Any, *a: Any, **k: Any) -> Any:
+        note(file)
+        return real_io(file, *a, **k)
+
+    def p_open(self: Path, *a: Any, **k: Any) -> Any:
+        note(self)
+        return real_path_open(self, *a, **k)
+
+    def p_bytes(self: Path) -> bytes:
+        note(self)
+        return real_bytes(self)
+
+    def p_text(self: Path, *a: Any, **k: Any) -> str:
+        note(self)
+        return real_text(self, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", b_open)
+    monkeypatch.setattr(io, "open", i_open)
+    monkeypatch.setattr(Path, "open", p_open)
+    monkeypatch.setattr(Path, "read_bytes", p_bytes)
+    monkeypatch.setattr(Path, "read_text", p_text)
+    return reads
+
+
+def test_kb_read_watch_sees_every_route(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The spy below is only as good as its coverage: each route is seen."""
+    note = own_vault / "knowledge-base" / "people" / "priya.md"
+    reads = _watch_kb_reads(monkeypatch, own_vault)
+    with open(note, "rb"):
+        pass
+    with note.open("rb"):
+        pass
+    note.read_bytes()
+    note.read_text(encoding="utf-8")
+    privacy.read_head(note)
+    monkeypatch.undo()
+    assert len(reads) >= 5
+
+
 def test_warm_load_reads_no_file_and_keeps_labels(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _settle(own_vault)
     cold = _graph(own_vault)
-    reads: list[Path] = []
-    real = Path.read_bytes
-
-    def spy(self: Path) -> bytes:
-        reads.append(self)
-        return real(self)
-
-    monkeypatch.setattr(Path, "read_bytes", spy)
+    reads = _watch_kb_reads(monkeypatch, own_vault)
     warm = _graph(own_vault)
+    monkeypatch.undo()
     assert reads == []
     assert warm.entities == cold.entities
     assert warm.export_json() == cold.export_json()
@@ -338,22 +393,122 @@ def test_policy_change_relabels_a_warm_load(own_vault: Path, monkeypatch: pytest
     """The cache holds the file's facts, not its label: a new overlay applies without a re-read."""
     _settle(own_vault)
     assert _graph(own_vault).entities["priya"]["_label"]["visibility"] == "normal"
-    (own_vault / "scout-config.yaml").write_text(
-        "privacy:\n  local_only_add: ['trading/**']\n"
-        "  visibility_defaults:\n    - {glob: 'knowledge-base/people/**', visibility: private}\n",
-        encoding="utf-8",
-    )
-    reads: list[Path] = []
-    real = Path.read_bytes
-
-    def spy(self: Path) -> bytes:
-        reads.append(self)
-        return real(self)
-
-    monkeypatch.setattr(Path, "read_bytes", spy)
+    (own_vault / "scout-config.yaml").write_text(PEOPLE_PRIVATE_OVERLAY, encoding="utf-8")
+    reads = _watch_kb_reads(monkeypatch, own_vault)
     label = _graph(own_vault).entities["priya"]["_label"]
+    monkeypatch.undo()
     assert reads == []
     assert (label["visibility"], label["visibility_source"]) == ("private", "path_default")
+
+
+# ----- the vault a graph labels against ------------------------------------------
+
+PEOPLE_PRIVATE_OVERLAY = (
+    "privacy:\n  local_only_add: ['trading/**']\n"
+    "  visibility_defaults:\n    - {glob: 'knowledge-base/people/**', visibility: private}\n"
+)
+
+
+@pytest.mark.parametrize("kb", ["knowledge-base/personal", "knowledge_base/personal"])
+def test_graph_rooted_at_a_subfolder_labels_against_the_vault(vault: Path, kb: str) -> None:
+    g = _graph(vault, kb=kb)
+    label = g.label_of("task-renew-permit")
+    assert label is not None
+    assert label == label_file(vault, "knowledge-base/personal/task-renew-permit.md", load_policy(vault)).to_json()
+    assert (label["visibility"], label["visibility_source"]) == ("private", "path_default")
+
+
+def test_graph_rooted_at_a_subfolder_applies_the_overlay(own_vault: Path) -> None:
+    (own_vault / "scout-config.yaml").write_text(PEOPLE_PRIVATE_OVERLAY, encoding="utf-8")
+    g = _graph(own_vault, kb="knowledge-base/people")
+    assert set(g.entities) == {"sam", "priya"}
+    policy = load_policy(own_vault)
+    for name, entity in g.entities.items():
+        assert entity["_label"] == label_file(own_vault, entity["_label"]["path"], policy).to_json(), name
+    assert g.label_of("priya") == {**g.label_of("priya"), "visibility": "private", "visibility_source": "path_default"}
+
+
+def test_find_vault(vault: Path, tmp_path: Path) -> None:
+    assert ontology_mod.find_vault(vault / "knowledge-base") == vault.resolve()
+    assert ontology_mod.find_vault(vault / "knowledge_base" / "people") == vault.resolve()
+    assert ontology_mod.find_vault(vault / "knowledge-base" / "topics" / "billing") == vault.resolve()
+    bare = tmp_path / "loose"
+    (bare / "notes").mkdir(parents=True)
+    with pytest.raises(KBError):
+        ontology_mod.find_vault(bare / "notes")
+    with pytest.raises(KBError):
+        KnowledgeGraph(str(ENGINE_SCHEMA), str(bare / "notes")).load()
+    # A vault named explicitly is used as given; one that doesn't hold the root is refused.
+    assert KnowledgeGraph(str(ENGINE_SCHEMA), str(bare / "notes"), vault=bare).load().entities == {}
+    with pytest.raises(ValueError):
+        KnowledgeGraph(str(ENGINE_SCHEMA), str(vault / "knowledge-base"), vault=bare).load()
+
+
+def test_scout_config_marks_a_vault_without_a_kb_dir(tmp_path: Path) -> None:
+    (tmp_path / "v" / "kb").mkdir(parents=True)
+    (tmp_path / "v" / "scout-config.yaml").write_text("user: {name: Alex}\n", encoding="utf-8")
+    assert ontology_mod.find_vault(tmp_path / "v" / "kb") == (tmp_path / "v").resolve()
+
+
+# ----- the graph labels edge-case files exactly as kb classify does -------------
+
+
+@pytest.mark.parametrize(
+    ("filename", "raw", "expect"),
+    [
+        ("crlf.md", b"---\r\nname: crlf\r\ntype: person\r\nvisibility: private\r\n---\r\nBody.\r\n", "frontmatter"),
+        # The classifier reads 64 KiB: a fence closing past it is unparseable, so forced private.
+        (
+            "big.md",
+            b"---\nname: big\ntype: person\nnotes: '" + b"x" * (70 * 1024) + b"'\n---\nBody.\n",
+            "forced",
+        ),
+        ("cr.md", b'---\nname: cr\ntype: person\nnote: "a\rb"\nvisibility: normal\n---\n', "frontmatter"),
+        # U+2028 splits a line for the classifier (splitlines) but not for the entity
+        # parse, so the graph can't reuse its parse and must classify the head itself.
+        (
+            "ls.md",
+            '---\nname: ls\ntype: person\ntitle: "a b"\nvisibility: private\n---\n'.encode(),
+            "frontmatter",
+        ),
+        ("bad-byte.md", b"---\nname: bad\ntype: person\n---\n\xff\n", "default"),
+    ],
+)
+def test_edge_case_entity_label_matches_label_file(tmp_path: Path, filename: str, raw: bytes, expect: str) -> None:
+    clear_frontmatter_cache()
+    own_vault = tmp_path / "vault"
+    path = own_vault / "knowledge-base" / "people" / filename
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    g = _graph(own_vault)
+    policy = load_policy(own_vault)
+    rel = f"knowledge-base/people/{filename}"
+    matches = [e for e in g.entities.values() if e["_source_path"] == str(path)]
+    if filename == "bad-byte.md":
+        assert matches == []  # strict UTF-8 for the entity: not indexed (unchanged behaviour)
+        assert label_file(own_vault, rel, policy).visibility == "normal"
+        return
+    (entity,) = matches
+    assert entity["_label"] == label_file(own_vault, rel, policy).to_json()
+    assert entity["_label"]["visibility_source"] == expect
+    if expect == "forced":
+        assert entity["_label"]["visibility"] == "private"
+        assert entity["_label"]["warnings"] == ["frontmatter-unparseable"]
+
+
+def test_privacy_secrets_are_where_notify_telegram_reads_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import notify_telegram
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    secrets = privacy_secrets(tmp_path, GROUP_CHAT_ID)
+    assert secrets == notify_telegram.secrets_dir()
+    assert notify_telegram._read_secret("telegram-chat-id") == GROUP_CHAT_ID
+    assert notify_telegram._read_secret("telegram-bot-token") == STAND_IN_BOT_TOKEN
+    privacy_secrets(tmp_path)
+    assert notify_telegram._read_secret("telegram-chat-id") == PRIVATE_CHAT_ID
+    assert int(PRIVATE_CHAT_ID) > 0 > int(GROUP_CHAT_ID)
+    for f in secrets.iterdir():
+        assert f.stat().st_mode & 0o777 == 0o600
 
 
 def test_policy_is_loaded_once_per_load(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

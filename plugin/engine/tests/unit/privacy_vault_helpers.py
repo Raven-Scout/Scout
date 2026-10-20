@@ -63,6 +63,29 @@ _DATE_OFFSETS = {"2000-01-01": -7, "2000-06-30": 3, "2000-12-31": 7}
 _TEXT_SUFFIXES = {".md", ".yaml", ".jsonl", ".txt"}
 
 
+# Telegram targets (stand-ins). A positive chat id is a private chat with the
+# owner (owner-only surface); a group or channel id is below zero (shared).
+PRIVATE_CHAT_ID = "100200300"
+GROUP_CHAT_ID = "-100400500"
+STAND_IN_BOT_TOKEN = "000000000:stand-in-token-not-real"
+
+
+def privacy_secrets(home: Path, chat_id: str = PRIVATE_CHAT_ID, token: str = STAND_IN_BOT_TOKEN) -> Path:
+    """Write the Telegram secrets where ``notify_telegram._read_secret`` reads them.
+
+    That is ``<home>/.scout-secrets/telegram-bot-token`` and ``telegram-chat-id``,
+    mode 600 (it refuses anything looser). Point ``HOME`` at ``home`` (the
+    autouse ``_hermetic_env`` already uses a temp one). Returns the secrets dir.
+    """
+    secrets = home / ".scout-secrets"
+    secrets.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name, value in (("telegram-bot-token", token), ("telegram-chat-id", chat_id)):
+        path = secrets / name
+        path.write_text(value + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    return secrets
+
+
 def action_items_rel(today: date | None = None) -> str:
     return f"action-items/action-items-{(today or date.today()).isoformat()}.md"
 

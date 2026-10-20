@@ -24,7 +24,8 @@ SCHEMA = Path(__file__).parent.parent / "fixtures" / "kb-sample" / "schema.yaml"
 
 
 def _graph(kb_root: Path) -> KnowledgeGraph:
-    return KnowledgeGraph(schema_path=str(SCHEMA), kb_root=str(kb_root))
+    # A bare tmp dir is no vault, so name the vault labels are relative to (#453).
+    return KnowledgeGraph(schema_path=str(SCHEMA), kb_root=str(kb_root), vault=kb_root.parent)
 
 
 def _must(entity: dict[str, object] | None) -> dict[str, object]:
@@ -437,5 +438,5 @@ def test_validate_tolerates_a_schema_with_no_sections(tmp_path: Path) -> None:
     kb = tmp_path / "kb"
     _entity(kb, "people/alex.md", "name: Alex\ntype: person\n")
 
-    g = KnowledgeGraph(schema_path=str(schema), kb_root=str(kb)).load()
+    g = KnowledgeGraph(schema_path=str(schema), kb_root=str(kb), vault=tmp_path).load()
     assert _messages(g.validate(), "Alex") == {"Unknown entity type: person"}

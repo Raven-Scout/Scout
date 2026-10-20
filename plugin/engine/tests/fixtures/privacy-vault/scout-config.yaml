@@ -1,14 +1,9 @@
 # Privacy fixture vault config (stand-in values only).
+# The Telegram target isn't config: the engine reads it from the secret files
+# in ~/.scout-secrets; tests write them with privacy_vault_helpers.privacy_secrets.
 user:
   name: Alex
 
 privacy:
   local_only_add:
     - "trading/**"
-
-# A Telegram target for the outbound-guard tests. A positive chat id is a
-# private chat with the owner (owner-only); a group or channel id is below zero
-# (shared). Stand-in id.
-notify:
-  telegram:
-    chat_id: "100200300"
