@@ -423,6 +423,11 @@ def pre_session_data_cmd(
     raise typer.Exit(psd_main(session_type))
 
 
+def _read_text_arg(path: str | Path) -> str:
+    """The UTF-8 text of a file argument; ``-`` reads stdin."""
+    return sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
+
+
 def _register_connectors() -> None:
     """scoutctl connectors {list,show,reload} — read-only roster ops in v0.4."""
     connectors_app = typer.Typer(help="Connector roster operations (read-only in v0.4).")
@@ -688,8 +693,7 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import Outcome
 
         try:
-            text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
-            return _yaml.safe_load(text), None
+            return _yaml.safe_load(_read_text_arg(file)), None
         except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
             return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
 
@@ -1566,7 +1570,7 @@ def _register_notify() -> None:
         body_file: Path | None = typer.Option(
             None,
             "--body-file",
-            help="Read the message body from this UTF-8 file instead of --body (keeps it off the shell).",
+            help="Read the message body from this UTF-8 file ('-' = stdin) instead of --body (keeps it off the shell).",
         ),
         parse_mode: str = typer.Option(
             "none",
@@ -1599,21 +1603,22 @@ def _register_notify() -> None:
         from scout.errors import ConfigError as _ConfigError
         from scout.scripts.notify_telegram import DuplicateSendError, send
 
-        if (body is None) == (body_file is None):
-            typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
-            raise typer.Exit(code=1)
-        if body_file is not None:
+        if body is not None and body_file is None:
+            text = body
+        elif body is None and body_file is not None:
             try:
-                body = body_file.read_text(encoding="utf-8")
+                text = _read_text_arg(body_file)
             except (OSError, UnicodeDecodeError) as e:
                 typer.echo(f"scoutctl notify telegram: could not read --body-file {body_file}: {e}", err=True)
                 raise typer.Exit(code=1) from e
-        assert body is not None
+        else:
+            typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
+            raise typer.Exit(code=1)
 
         try:
             ev = send(
                 tier=tier,
-                body=body,
+                body=text,
                 parse_mode=parse_mode,
                 dry_run=dry_run,
                 allow_duplicate=allow_duplicate,

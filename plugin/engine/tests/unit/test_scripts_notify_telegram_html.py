@@ -417,6 +417,16 @@ def test_cli_body_file(runner: CliRunner, secrets_dir: Path, tmp_path: Path) -> 
     assert json.dumps(body, ensure_ascii=False) in result.stderr
 
 
+def test_cli_body_file_dash_reads_stdin(runner: CliRunner, secrets_dir: Path) -> None:
+    body = "<b>Briefing</b> from a pipe"
+    result = runner.invoke(
+        cli.app, ["notify", "telegram", "--body-file", "-", "--parse-mode", "html", "--dry-run"], input=body
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["payload"]["body_chars"] == len(body)
+    assert json.dumps(body, ensure_ascii=False) in result.stderr
+
+
 @pytest.mark.parametrize("args", [[], ["--body", "x", "--body-file", "f.txt"]])
 def test_cli_needs_exactly_one_body_source(runner: CliRunner, secrets_dir: Path, args: list[str]) -> None:
     result = runner.invoke(cli.app, ["notify", "telegram", *args, "--dry-run"])
