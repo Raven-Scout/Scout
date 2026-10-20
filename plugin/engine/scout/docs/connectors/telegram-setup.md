@@ -200,9 +200,11 @@ scoutctl notify telegram --tier info --parse-mode html \
   newlines and `•` for lists.
 - **Escape `<`, `>` and `&` in text** as `&lt;`, `&gt;` and `&amp;`, also in
   a URL inside `href` (`?a=1&amp;b=2`).
-- **Scout keeps only `http://`, `https://` and `mailto:` links.** Any other
-  `<a href>` (`tg://`, `obsidian://`, `javascript:`) is replaced by its label
-  before sending, and a `warning: dropped N link(s) …` line goes to stderr.
+- **Scout keeps only `http://`, `https://` and `mailto:` links, written as
+  `<a href="…">` with no other attribute.** Any other `<a>` (`tg://`,
+  `obsidian://`, `javascript:`, a second `href`, `target=…`) is replaced by
+  its label before sending, and a `warning: dropped N link(s) …` line goes to
+  stderr.
   Telegram itself would keep a `tg://` deep link live (join a chat, add a
   proxy) and silently drop an `obsidian://` link. Put such a path in `<code>`
   instead.

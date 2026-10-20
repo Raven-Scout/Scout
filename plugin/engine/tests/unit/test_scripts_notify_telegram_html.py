@@ -190,12 +190,24 @@ def test_html_to_plain_decodes_only_what_telegram_decodes() -> None:
         ('<a href="tg://x"><b>bold</b> label</a>', "<b>bold</b> label", 1),
         ('<a href="HTTPS://example.com">ok</a>', '<a href="HTTPS://example.com">ok</a>', 0),
         ('<a href="mailto:a@example.com">mail</a>', '<a href="mailto:a@example.com">mail</a>', 0),
-        ("<a href=https://example.com>ok</a>", "<a href=https://example.com>ok</a>", 0),
+        ("<a href=https://example.com>ok</a>", '<a href="https://example.com">ok</a>', 0),
+        ("<A HREF='https://example.com/?a=1&amp;b=2'>ok</A>", '<a href="https://example.com/?a=1&amp;b=2">ok</a>', 0),
         (
             '<a href="https://example.com">ok</a> and <a href="tg://x">bad</a>',
             '<a href="https://example.com">ok</a> and bad',
             1,
         ),
+        # Fails closed: only exactly `<a href=…>` survives, rebuilt from the href that was checked.
+        ('<a data-href="https://example.com" href="tg://x">join</a>', "join", 1),
+        ('<a href="https://example.com" href="tg://x">join</a>', "join", 1),
+        ('<a title=">" href="tg://x">join</a>', "join", 1),
+        ('<a target="_blank" href="https://example.com">ok</a>', "ok", 1),
+        (
+            '<a href="https://example.com"><a href="https://example.com/2">in</a></a>',
+            '<a href="https://example.com">in</a>',
+            1,
+        ),
+        ("stray</a>", "stray", 0),
     ],
 )
 def test_drop_unsafe_links(body: str, expected: str, dropped: int) -> None:

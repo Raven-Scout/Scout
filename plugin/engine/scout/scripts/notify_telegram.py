@@ -395,23 +395,43 @@ def _link_url(m: re.Match[str]) -> str:
     return _unescape_telegram(m["qurl"] if m["qurl"] is not None else m["url"])
 
 
+# Any <a> opening tag (a quoted attribute value may hold a `>`) or closing tag.
+_A_TAG_RE = re.compile(r"""<a(?=[\s>])(?:"[^"]*"|'[^']*'|[^"'>])*>|</a\s*>""", re.IGNORECASE)
+# The one <a> form the sanitizer keeps: a single href and nothing else.
+_PLAIN_A_RE = re.compile(r"""<a\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))\s*>""", re.IGNORECASE)
+
+
 def _drop_unsafe_links(body: str) -> tuple[str, int]:
-    """Replace each link whose href is not http(s) or mailto with its label: ``(body, links dropped)``.
+    """Keep only http(s) and mailto links, each rebuilt as ``<a href="…">``: ``(body, links dropped)``.
 
     A body can carry text Scout did not write (Slack, GitHub, mail), and
     Telegram keeps ``tg://`` deep links live (join a chat, add a proxy). The
-    rule is the action-items dashboard's (:func:`~scout.action_items.render.safe_href`).
+    scheme rule is the action-items dashboard's
+    (:func:`~scout.action_items.render.safe_href`).
+
+    Fails closed: every ``<a>`` tag is read on its own, and one that is not
+    exactly ``<a href=…>`` (another attribute, a second href, a ``data-href``)
+    is dropped with its ``</a>``, as is a link nested in another. The label
+    always stays. A rebuilt tag carries only the href that was checked, so
+    Telegram cannot read a different one.
     """
     dropped = 0
+    open_links: list[bool] = []  # per open <a>: kept?
 
-    def link(m: re.Match[str]) -> str:
+    def tag(m: re.Match[str]) -> str:
         nonlocal dropped
-        if safe_href(_link_url(m)) is not None:
-            return m.group(0)
-        dropped += 1
-        return m["label"]
+        if m.group(0).startswith("</"):
+            return "</a>" if open_links and open_links.pop() else ""
+        plain = _PLAIN_A_RE.fullmatch(m.group(0))
+        url = _unescape_telegram(next(g for g in plain.groups() if g is not None)) if plain else ""
+        href = safe_href(url) if plain and not open_links else None
+        open_links.append(href is not None)
+        if href is None:
+            dropped += 1
+            return ""
+        return f'<a href="{href}">'
 
-    return _LINK_RE.sub(link, body), dropped
+    return _A_TAG_RE.sub(tag, body), dropped
 
 
 def _prepare(body: str, parse_mode: str) -> tuple[list[str], int]:
