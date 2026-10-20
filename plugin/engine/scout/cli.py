@@ -2573,8 +2573,11 @@ def _register_bootstrap() -> None:
             typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
 
 
-def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
-    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed)."""
+def _vault_bootstrap_config(vault: Path, *, plugin_root: Path | None = None) -> BootstrapConfig:
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed).
+
+    ``plugin_root`` defaults to this engine's own plugin dir.
+    """
     import yaml as _yaml
 
     from scout import __version__
@@ -2584,7 +2587,9 @@ def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
         typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
         raise typer.Exit(code=2)
     try:
-        return config_from_vault(vault, plugin_root=Path(__file__).parent.parent.parent, plugin_version=__version__)
+        return config_from_vault(
+            vault, plugin_root=plugin_root or Path(__file__).parent.parent.parent, plugin_version=__version__
+        )
     except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
         typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
         raise typer.Exit(code=ConfigError.exit_code) from e
@@ -2604,6 +2609,12 @@ def _register_phases() -> None:
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
         vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+        plugin_root_opt: str = typer.Option(
+            "",
+            "--plugin-root",
+            help="Plugin dir of the checkout to read and write phases/ in, e.g. a clone under "
+            "~/.scout-worktrees/<name>/plugin (default: this engine's own)",
+        ),
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
@@ -2612,9 +2623,12 @@ def _register_phases() -> None:
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
         sidecaring. Default is a read-only report; --apply writes the ✓ hunks.
-        Never commits, pushes, or opens a PR — the operator does that.
+        --apply refuses to write into the engine scheduled runs use (the engine
+        pointer's root): pass --plugin-root to a separate clone instead. Never
+        commits, pushes, or opens a PR — the operator does that.
         """
         from scout import paths as _paths
+        from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
@@ -2624,9 +2638,16 @@ def _register_phases() -> None:
         )
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
-        cfg = _vault_bootstrap_config(vault)
-        vars_ = _template_vars(cfg)
+        plugin_root = Path(plugin_root_opt).expanduser() if plugin_root_opt else None
+        if plugin_root is not None and not (plugin_root / "phases").is_dir():
+            typer.echo(f"scoutctl phases backport: {plugin_root} has no phases/ directory", err=True)
+            raise typer.Exit(code=2)
+        cfg = _vault_bootstrap_config(vault, plugin_root=plugin_root)
         phases_root = cfg.plugin_root / "phases"
+        if apply and (why := refuse_live_engine_write(phases_root, home=Path.home())):
+            typer.echo(f"scoutctl phases backport: {why}", err=True)
+            raise typer.Exit(code=2)
+        vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
