@@ -6,6 +6,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A privacy policy and a pure classifier label every vault file `normal` or `private`** (#453; `engine/scout/defaults/privacy.yaml`, `engine/scout/privacy.snapshot.json`, `engine/scout/kb/privacy.py`, `engine/scout/scripts/privacy_snapshot.py`; spec `docs/superpowers/specs/2026-10-20-per-note-privacy-design.md` §3, §5). This is the foundation the per-note privacy work builds on; nothing reads it yet, so no run behaves differently. `classify(path, text, policy)` returns the spec §5.4 label from the path, the frontmatter and the policy alone, so the Agnes indexer can reproduce it exactly.
+  - **Fail-closed.** An unknown `visibility:` value (`PRIVATE while drafting`) is `private` with a `visibility-value` warning; frontmatter that doesn't parse, or a fence that never closes, is `private` with source `forced`. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by path default; an explicit `visibility: normal` overrides that for one note. Nothing inherits through folders or links.
+  - **`federation_scope` is parsed and stored, and grants nothing.** `none`, `org` or a list of `person:<email>` / `group:<id>` principals is recorded as `federation_scope_declared`; the effective scope is always `none`. A declared scope makes the note a shared file for lint, and `private` plus a declared scope draws `privacy-contradiction`.
+  - **Policy is data.** `privacy.yaml` lists local-only paths (machine plumbing, minus three `.scout-state/` files that sync), path defaults, owner-only and shared surfaces, and shared files (`drafts/**`). `python -m scout.scripts.privacy_snapshot` generates the JSON snapshot the indexer loads; `--check` fails on drift. A vault's `scout-config.yaml → privacy:` can add local-only paths, path defaults (checked first), shared files and surfaces. It can't remove the machine-plumbing paths or move a shared surface to owner-only (`surface-widen-ignored`), and Stage 2 keys are ignored with `federation-reserved`.
+
 ## [0.18.2] - 2026-10-20
 
 ### Added
