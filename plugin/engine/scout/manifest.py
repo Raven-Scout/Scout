@@ -76,6 +76,9 @@ def build_manifest() -> EngineManifest:
             "planning_v1": True,
             # Topic board writes: `action-items rename-topic` and `action-items dismiss`.
             "topic_board_v1": True,
+            # Per-slot model selection: Slot.model, `scoutctl model resolve|show|set-default`.
+            # Scout.app shows its model pickers only when this is advertised.
+            "slot_model_v1": True,
             # Event triggers (docs/specs/event-triggers.md). Opt-in: flips
             # True once the polling matcher + dedup/cooldown are verified
             # across a week of live runs.

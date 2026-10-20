@@ -60,7 +60,19 @@ if [ "${SCOUT_RETRY_DISABLE:-0}" = "1" ]; then
 fi
 
 # Pipe-separated grep -E regex. Keep narrow — anything matched here triggers a retry.
-TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded'
+#
+# `Can.t reach the API server` / `(ENOTFOUND)` is the DNS-resolution failure, added
+# 2026-10-18. The list already held its two siblings — ECONNRESET and
+# ConnectionRefused — but not the one that fires when the name never resolves at all
+# (Wi-Fi handoff, VPN flap, waking from sleep), and the CLI words that one as a whole
+# different sentence: `API Error: Can't reach the API server — check your internet or
+# DNS (ENOTFOUND)`. Measured over this vault's logs: 8 runs hit it, **7 died
+# unretried**, the last being the Sunday 2026-10-18 weekend briefing — 2 h 3 m of
+# runtime, no board, no DM, and `run-outcome.sh` filed it `failure_class: network`
+# while the retry gate called it permanent. The apostrophe is `.` on purpose: this
+# string is single-quoted. Known remaining gap, unevidenced here so deliberately not
+# added: `EAI_AGAIN` (DNS timeout) would be the same class.
+TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded'
 
 # Auth-failure class (HTTP 401/403). NOT retried — re-authentication needs a human —
 # but surfaced with a concrete remediation instead of the opaque "not classified"
@@ -269,7 +281,7 @@ while :; do
                     echo "      - headless:    run: scoutctl auth setup-token   (stores a long-lived 'claude setup-token' token every scheduled run uses)."
                     ;;
             esac
-            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model opus"
+            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
         } >> "$LOG_FILE"
         notify_auth_failure || true
         exit "$exit_code"

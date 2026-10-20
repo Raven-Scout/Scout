@@ -123,6 +123,11 @@ struct SettingsView: View {
                         .environmentObject(appState.budgetSettingsService)
                 }
 
+                section(label: "Model") {
+                    ModelSettingsSection()
+                        .environmentObject(appState.modelSettingsService)
+                }
+
                 section(label: "Proposals") {
                     SettingsCard {
                         SettingsField(
