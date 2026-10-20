@@ -36,7 +36,17 @@ CREDENTIAL_RE = re.compile(
     r"|Bearer\s+[A-Za-z0-9._~+/-]{12,}"
 )
 _FIELDS = frozenset(
-    {"display_name", "server", "probe", "preset", "notes", "needs_user_input", "required_in_types", *ACTIVITIES}
+    {
+        "display_name",
+        "server",
+        "probe",
+        "preset",
+        "notes",
+        "needs_user_input",
+        "required_in_types",
+        "restrict_tools",
+        *ACTIVITIES,
+    }
 )
 # Binaries too generic to identify a connector: mapping them would relabel
 # every unrelated call (curl, python3 …) in a session as that connector.
@@ -113,6 +123,9 @@ class CustomConnector:
     notes: str = ""
     needs_user_input: tuple[str, ...] = ()
     required_in_types: tuple[str, ...] = ()
+    # Scheduled runs may call only the MCP tools listed here (probe + activities);
+    # the mcp-tool-gate hook denies the server's other tools. See tool_gate().
+    restrict_tools: bool = False
 
     @property
     def health_key(self) -> str:
@@ -406,6 +419,15 @@ def parse_connector(
                 msg = f"uses {{{{{placeholder}}}}} but does not declare `{name}` in needs_user_input"
             issues.append(Issue(f"{base}.needs_user_input", msg))
 
+    restrict = body.get("restrict_tools")
+    if restrict is None:
+        restrict = False
+    if not isinstance(restrict, bool):
+        issues.append(Issue(f"{base}.restrict_tools", "must be true or false"))
+        restrict = False
+    elif restrict and server is None:
+        issues.append(Issue(f"{base}.restrict_tools", "needs an MCP server; it limits that server's tools"))
+
     if issues or probe is None:
         return None, issues
     return (
@@ -419,6 +441,7 @@ def parse_connector(
             notes=notes.strip(),
             needs_user_input=tuple(needs),
             required_in_types=tuple(types),
+            restrict_tools=restrict,
         ),
         [],
     )
@@ -678,3 +701,58 @@ def bash_binaries(vault: Path) -> dict[str, str]:
                 if binary and binary not in _GENERIC_BINARIES and binary not in out:
                     out[binary] = str(key)
     return out
+
+
+# Every server is gated when the file can't be read at all: the hook can't tell
+# which servers a restricted entry names, so it denies every MCP call.
+GATE_ALL = "*"
+_GATE_SERVER_RE = re.compile(r"^\s*server:\s*[\"']?([A-Za-z0-9_-]+)", re.MULTILINE)
+_GATE_TOOL_RE = re.compile(r"mcp__([A-Za-z0-9_-]+?)__[A-Za-z0-9_-]+")
+
+
+def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
+    """Server → the MCP tools a scheduled run may call, for each ``restrict_tools`` entry.
+
+    Read on the hook path, so unvalidated and never raises — and it fails
+    closed. An entry whose ``restrict_tools`` is anything but absent or false
+    is gated even when it is otherwise invalid: ``load`` drops an invalid
+    entry, and that must not quietly lift its restriction. A file that isn't
+    YAML gates every server named in it with nothing allowed; one that exists
+    but can't be read, or a restricted entry that names no server, gates every
+    server (``GATE_ALL``). Enabled or not doesn't matter: a disabled
+    connector's server stays restricted.
+    """
+    try:
+        text = (vault / CUSTOM_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError):
+        return {GATE_ALL: frozenset()}
+    if "restrict_tools" not in text:
+        return {}
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError:
+        servers = set(_GATE_SERVER_RE.findall(text)) | set(_GATE_TOOL_RE.findall(text))
+        return {s: frozenset() for s in servers} if servers else {GATE_ALL: frozenset()}
+    conns = raw.get("connectors") if isinstance(raw, dict) else None
+    if not isinstance(conns, dict):
+        return {GATE_ALL: frozenset()}
+    gate: dict[str, set[str]] = {}
+    for body in conns.values():
+        if not isinstance(body, dict) or body.get("restrict_tools") in (None, False):
+            continue
+        refs: list[Any] = [body.get("probe")]
+        for name in ACTIVITIES:
+            block = body.get(name)
+            if isinstance(block, dict) and isinstance(block.get("tools"), list):
+                refs += block["tools"]
+        tools = [r for r in refs if isinstance(r, str) and MCP_TOOL_RE.match(r)]
+        servers = {t.split("__")[1] for t in tools}
+        if isinstance(body.get("server"), str) and body["server"]:
+            servers.add(body["server"])
+        if not servers:
+            return {GATE_ALL: frozenset()}
+        for server in servers:
+            gate.setdefault(server, set()).update(t for t in tools if t.split("__")[1] == server)
+    return {s: frozenset(t) for s, t in gate.items()}

@@ -6,6 +6,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`restrict_tools: true` makes a custom connector's tool list binding** (`engine/scout/custom_connectors.py`, `engine/scout/hooks/mcp_tool_gate.py`, `engine/scout/cli.py`, `hooks/hooks.json`; spec `docs/superpowers/specs/2026-10-02-custom-connectors-design.md` §1). A custom connector's `tools` were guidance only: scheduled runs use `--permission-mode auto` with no `--allowedTools`, so a run could call any tool its MCP server exposes, including ones that write, when the server signs in with a person's full-access token. With `restrict_tools: true`, a new PreToolUse hook (`scoutctl hook mcp-tool-gate`) denies, in scheduled runs only, every tool of that server that the entry does not list as its probe or an activity tool. The run is told which tools it may use. The gate fails closed: an invalid restricted entry, a file that isn't YAML, or a gate error blocks rather than lifts the restriction. Interactive sessions are untouched. The hook's shell guard exits before Python unless `SCOUT_MODE` is set and the vault's `connectors.custom.yaml` mentions `restrict_tools`, so other vaults pay nothing (Python costs ~0.15 s per MCP call when it does run). Default `false`: nothing changes for existing connectors.
+
+### Fixed
+- **Drafting finds an MCP server registered for the vault only** (`engine/scout/scripts/connector_draft.py`). `/scout-connect`'s drafting and probe sessions copied only a user-scope server (`claude mcp add -s user`) into their isolated config. A server added at local scope in the vault directory (`claude mcp add -s local`, run in the vault), which keeps it out of every other Claude Code session, was invisible, so drafting failed with no tools. They now fall back to the vault's local-scope entry; user scope still wins.
+
 ## [0.18.2] - 2026-10-20
 
 ### Added
