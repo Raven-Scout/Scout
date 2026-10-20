@@ -170,11 +170,24 @@ def test_classify_unparseable_frontmatter_is_forced_private(vault: Path) -> None
     assert "CANARY-PRIV" not in result.output
 
 
-def test_classify_non_utf8_reads_no_text(vault: Path) -> None:
+def test_classify_md_with_invalid_byte_in_body_stays_private(vault: Path) -> None:
     result = _run(vault, "classify", "knowledge-base/people/binary.md", "--json")
     assert result.exit_code == 0, result.output
     row = json.loads(result.stdout)[0]
-    assert row["visibility_source"] == "default"  # text None: path defaults only
+    assert (row["visibility"], row["visibility_source"]) == ("private", "frontmatter")
+
+
+def test_classify_invalid_byte_inside_frontmatter_value_stays_private(vault: Path) -> None:
+    (vault / "knowledge-base" / "people" / "bad-fm.md").write_bytes(b"---\nname: Sam\xff\nvisibility: private\n---\n")
+    row = json.loads(_run(vault, "classify", "knowledge-base/people/bad-fm.md", "--json").stdout)[0]
+    assert row["visibility"] == "private"
+
+
+def test_classify_non_markdown_gets_no_text(vault: Path) -> None:
+    f = vault / "knowledge-base" / "personal" / "x.txt"
+    f.write_text("---\nvisibility: normal\n---\n", encoding="utf-8")
+    row = json.loads(_run(vault, "classify", "knowledge-base/personal/x.txt", "--json").stdout)[0]
+    assert (row["visibility"], row["visibility_source"]) == ("private", "path_default")
 
 
 def test_classify_large_file_closing_fence_inside_head(vault: Path) -> None:

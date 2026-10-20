@@ -199,24 +199,22 @@ _CLASSIFY_HEAD_BYTES = 64 * 1024
 
 
 def _read_head(path: Path) -> str | None:
-    """The file's leading text (up to 64 KiB), or None if it isn't readable UTF-8.
+    """The leading text (up to 64 KiB) of a markdown file, else None.
 
-    A multi-byte character cut by the window is dropped, not an error. A
-    frontmatter fence that doesn't close inside the window classifies as
-    unparseable (private), which fails closed.
+    Only ``.md`` files carry frontmatter; anything else, and a file that can't
+    be read (OSError), gives None (path defaults only). A markdown file is
+    always decoded with ``errors="replace"``, so a stray bad byte can never
+    hide its frontmatter (``visibility: private`` stays private). A fence that
+    doesn't close inside the window classifies as unparseable (private).
     """
+    if path.suffix.lower() != ".md":
+        return None
     try:
         with path.open("rb") as fh:
             data = fh.read(_CLASSIFY_HEAD_BYTES)
     except OSError:
         return None
-    for cut in range(4):
-        try:
-            return data[: len(data) - cut].decode("utf-8")
-        except UnicodeDecodeError:
-            if len(data) < _CLASSIFY_HEAD_BYTES:
-                return None
-    return None
+    return data.decode("utf-8", errors="replace")
 
 
 @kb_app.command("classify")
