@@ -1,7 +1,8 @@
 # Telegram outbound — operator setup
 
-Telegram outbound lets a Scout session push notifications to your phone — same
-fan-out pattern as the session-wrap Slack DM, but to a Telegram chat instead.
+Telegram outbound lets a Scout session push notifications to your phone, in a
+Telegram chat. It can carry the session-wrap message instead of (or as well as)
+a Slack DM; see §7 for how to route the wrap here.
 It is **outbound only by design** in v0.4: Scout sends; you receive. There is
 no return-bridge yet (inbound replies as feedback signals are v0.7+ territory
 per the event-architecture spec).
@@ -151,27 +152,41 @@ will.
 
 ## 7. How Scout uses this
 
-The Claude session at session-wrap calls the same CLI command from inside
-its prompt (via the Bash tool):
+Nothing in the shipped plugin sends the wrap to Telegram on its own. The
+runners (`run-scout.sh`, `run-dreaming.sh`, `run-research.sh`) only say that a
+wrap message is owed, and defer to the brain file's notification section for the
+channel and the recipient (#481):
+
+| Runner             | Reads the channel from                                           |
+|--------------------|------------------------------------------------------------------|
+| `run-scout.sh`     | `SKILL.md`'s notification section (stock: "Slack Notification")  |
+| `run-dreaming.sh`  | `DREAMING.md`'s notification section, else `SKILL.md`'s          |
+| `run-research.sh`  | `RESEARCH.md`'s notification step (stock: "Step 4d: Slack Notification"), else `SKILL.md`'s |
+
+A stock vault's section is the Slack one. To send the wrap to Telegram, edit
+that section in your vault so it tells the session to pipe the wrap into
+`scoutctl notify telegram` (via the Bash tool):
 
 ```bash
-scoutctl notify telegram --tier action_required --body "$(scoutctl ... --format wrap)"
+scoutctl notify telegram --tier info --parse-mode html --body-file - <<'WRAP'
+<b>Scout briefing</b>
+...
+WRAP
 ```
 
-A body that holds text from Slack, GitHub or mail is safer in a file than in
-a shell argument. `--body-file PATH` reads it from a UTF-8 file instead of
-`--body` (pass exactly one of the two):
+`--body-file -` reads the body from stdin, so a wrap that quotes Slack, GitHub
+or mail text never goes through a shell argument. `--body-file PATH` reads it
+from a UTF-8 file instead. With `--parse-mode html`, escape `<`, `>` and `&` in
+any text Scout did not write (see "Formatting (HTML mode)" below).
 
-```bash
-scoutctl notify telegram --tier info --parse-mode html --body-file briefing.html
-```
-
-This fans out the wrap message to Telegram in addition to the Slack DM.
 Tier choice mirrors urgency: a session that surfaced 🔴 Urgent items
-escalates with `action_required`; a routine briefing posts `info`.
+escalates with `--tier action_required`; a routine briefing posts
+`--tier info`. Say in the section whether Telegram replaces the Slack DM or
+goes out alongside it.
 
-The runner stays bash-only in Plan 4; Plan 7 will Pythonize it. Either
-way, the integration point is `scoutctl notify telegram`.
+This edit is vault-level. `/scout-update` 3-way-merges the brain files, so it
+keeps your section across upgrades. Do not back-port it into `plugin/phases/`:
+the stock section stays Slack, and the channel is each vault's choice.
 
 ## Tier semantics
 
