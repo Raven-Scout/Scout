@@ -20,9 +20,10 @@ text instead.
 HTML, not MarkdownV2: HTML needs only ``<``, ``>`` and ``&`` escaped, where
 MarkdownV2 needs ~18 characters escaped, and one miss in an LLM-written body
 gets the whole message refused. Telegram accepts ``<b> <i> <u> <s> <a href>
-<code> <pre> <blockquote>`` (and a few more), and ``<a href>`` only for
-http(s), tg and mailto URLs (any other scheme is accepted, but Telegram drops
-the link and keeps the label). Two safety nets:
+<code> <pre> <blockquote>`` (and a few more). Before sending, a link whose
+href is not http(s) or mailto is replaced by its label, with a warning on
+stderr: Telegram would keep a ``tg://`` deep link live, and silently drop any
+other scheme. Two safety nets:
 
   - Long bodies split tag-aware: a cut never lands inside a tag or an entity,
     and tags open at the cut are closed at the end of the chunk and reopened
@@ -66,6 +67,7 @@ from typing import Any
 import requests
 
 from scout import paths
+from scout.action_items.render import safe_href
 from scout.errors import ConfigError, ScoutError
 from scout.events import Event
 from scout.ids import new_ulid
@@ -233,7 +235,11 @@ def _find_cut(window: str, ok: Callable[[int], bool] = lambda _: True) -> tuple[
 
 _TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^<>]*>")
 _ENTITY_RE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
-_LINK_RE = re.compile(r"""<a\s[^<>]*?href\s*=\s*(["'])(.*?)\1[^<>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
+# A link with its href quoted or not (Telegram accepts both): groups `qurl` or `url`, then `label`.
+_LINK_RE = re.compile(
+    r"""<a\s[^<>]*?href\s*=\s*(?:(["'])(?P<qurl>.*?)\1|(?P<url>[^\s"'<>]+))[^<>]*>(?P<label>.*?)</a\s*>""",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _safe_html_cut(text: str, cut: int) -> int:
@@ -377,11 +383,43 @@ def _html_to_plain(text: str) -> str:
     """Telegram-HTML to readable plain text: links as ``label (url)``, tags dropped, entities unescaped."""
 
     def link(m: re.Match[str]) -> str:
-        url = _unescape_telegram(m.group(2))
-        label = _TAG_RE.sub("", m.group(3))
+        url = _link_url(m)
+        label = _TAG_RE.sub("", m["label"])
         return label if _unescape_telegram(label).strip() == url else f"{label} ({url})"
 
     return _unescape_telegram(_TAG_RE.sub("", _LINK_RE.sub(link, text)))
+
+
+def _link_url(m: re.Match[str]) -> str:
+    """The unescaped href of a :data:`_LINK_RE` match."""
+    return _unescape_telegram(m["qurl"] if m["qurl"] is not None else m["url"])
+
+
+def _drop_unsafe_links(body: str) -> tuple[str, int]:
+    """Replace each link whose href is not http(s) or mailto with its label: ``(body, links dropped)``.
+
+    A body can carry text Scout did not write (Slack, GitHub, mail), and
+    Telegram keeps ``tg://`` deep links live (join a chat, add a proxy). The
+    rule is the action-items dashboard's (:func:`~scout.action_items.render.safe_href`).
+    """
+    dropped = 0
+
+    def link(m: re.Match[str]) -> str:
+        nonlocal dropped
+        if safe_href(_link_url(m)) is not None:
+            return m.group(0)
+        dropped += 1
+        return m["label"]
+
+    return _LINK_RE.sub(link, body), dropped
+
+
+def _prepare(body: str, parse_mode: str) -> tuple[list[str], int]:
+    """The chunks to send, and how many unsafe links were dropped from an HTML body."""
+    if parse_mode != "html":
+        return _split_message(body), 0
+    body, dropped = _drop_unsafe_links(body)
+    return _split_html(body), dropped
 
 
 def _is_parse_error(resp: requests.Response) -> bool:
@@ -462,7 +500,9 @@ def send(
             if row["key"] == key:
                 raise DuplicateSendError(row["id"], row["ts"])
 
-    chunks = _split_html(body) if parse_mode == "html" else _split_message(body)
+    chunks, dropped = _prepare(body, parse_mode)
+    if dropped:
+        print(f"warning: dropped {dropped} link(s) whose href is not http(s) or mailto", file=sys.stderr)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:

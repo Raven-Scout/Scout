@@ -175,6 +175,56 @@ def test_html_to_plain_decodes_only_what_telegram_decodes() -> None:
     assert to_plain('<a href="https://x.com/?a=1&copy=2">l</a>') == "l (https://x.com/?a=1&copy=2)"
 
 
+# ----- link sanitizing -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "expected", "dropped"),
+    [
+        ('<a href="obsidian://open?vault=x">vault</a>', "vault", 1),
+        ('<a href="tg://resolve?domain=x">join</a>', "join", 1),
+        ("<a href='javascript:alert(1)'>x</a>", "x", 1),
+        ('<a href="java\tscript:alert(1)">x</a>', "x", 1),
+        ('<a href="&#106;avascript:alert(1)">x</a>', "x", 1),
+        ("<a href=tg://resolve?domain=x>unquoted</a>", "unquoted", 1),
+        ('<a href="tg://x"><b>bold</b> label</a>', "<b>bold</b> label", 1),
+        ('<a href="HTTPS://example.com">ok</a>', '<a href="HTTPS://example.com">ok</a>', 0),
+        ('<a href="mailto:a@example.com">mail</a>', '<a href="mailto:a@example.com">mail</a>', 0),
+        ("<a href=https://example.com>ok</a>", "<a href=https://example.com>ok</a>", 0),
+        (
+            '<a href="https://example.com">ok</a> and <a href="tg://x">bad</a>',
+            '<a href="https://example.com">ok</a> and bad',
+            1,
+        ),
+    ],
+)
+def test_drop_unsafe_links(body: str, expected: str, dropped: int) -> None:
+    assert notify_telegram._drop_unsafe_links(body) == (expected, dropped)
+
+
+def test_html_to_plain_unquoted_href() -> None:
+    assert notify_telegram._html_to_plain("<a href=https://e.com>label</a>") == "label (https://e.com)"
+
+
+def test_send_html_drops_unsafe_links_and_warns(secrets_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    body = '<a href="tg://resolve?domain=x">join</a> <a href="https://example.com">ok</a>'
+    with patch("scout.scripts.notify_telegram.requests.post") as mock_post:
+        mock_post.return_value = _ok_response()
+        ev = notify_telegram.send(tier="info", body=body, parse_mode="html")
+    assert _payloads(mock_post)[0]["text"] == 'join <a href="https://example.com">ok</a>'
+    assert "warning: dropped 1 link(s) whose href is not http(s) or mailto" in capsys.readouterr().err
+    assert ev.payload["body_chars"] == len(body)
+
+
+def test_send_plain_mode_keeps_links_as_typed(secrets_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    body = '<a href="tg://x">join</a>'
+    with patch("scout.scripts.notify_telegram.requests.post") as mock_post:
+        mock_post.return_value = _ok_response()
+        notify_telegram.send(tier="info", body=body)
+    assert _payloads(mock_post)[0]["text"] == body
+    assert "dropped" not in capsys.readouterr().err
+
+
 # ----- tag-aware splitting ---------------------------------------------------
 
 

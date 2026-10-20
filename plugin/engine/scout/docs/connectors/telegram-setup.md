@@ -200,10 +200,16 @@ scoutctl notify telegram --tier info --parse-mode html \
   newlines and `•` for lists.
 - **Escape `<`, `>` and `&` in text** as `&lt;`, `&gt;` and `&amp;`, also in
   a URL inside `href` (`?a=1&amp;b=2`).
-- **Links must be `http://`, `https://`, `tg://` or `mailto:`.** Telegram
-  accepts a message with any other scheme but silently drops the link: an
-  `<a href="obsidian://…">label</a>` arrives as the plain word `label`. Put
-  such a path in `<code>` instead.
+- **Scout keeps only `http://`, `https://` and `mailto:` links.** Any other
+  `<a href>` (`tg://`, `obsidian://`, `javascript:`) is replaced by its label
+  before sending, and a `warning: dropped N link(s) …` line goes to stderr.
+  Telegram itself would keep a `tg://` deep link live (join a chat, add a
+  proxy) and silently drop an `obsidian://` link. Put such a path in `<code>`
+  instead.
+- **Escape any text you did not write** (Slack, GitHub, mail) with
+  `html.escape` before you put it in an HTML body. Only links Scout builds
+  itself should be `<a>`: an unescaped `<a href="https://evil">` would show as
+  a live link with someone else's label.
 - **Why HTML and not MarkdownV2:** HTML needs only those three characters
   escaped. MarkdownV2 needs ~18, and one miss gets the whole message refused.
 
@@ -240,6 +246,7 @@ chunk (about 2000 characters of nesting): Scout stops carrying them over.
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
 | `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an or an unescaped `<`/`&`. The chunk was sent as plain text. |
+| `warning: dropped N link(s) whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |
 
