@@ -16,7 +16,7 @@
 
 ## Global Constraints
 
-- Fields: `visibility: normal | private`; `federation_scope: none | org | [group:<slug> | person:<handle>, …]`, principal regex `^(group|person):[a-z0-9._@-]+$`.
+- Fields: `visibility: normal | private`; `federation_scope: none | org | [person:<email> | group:<host group id>, …]`; regexes `^person:[^\s@,\[\]]+@[^\s@,\[\]]+$` (case-insensitive) and `^group:[A-Za-z0-9_-]{1,64}$` (spec §3.3).
 - Unknown `visibility` → `private`; unparseable `federation_scope` → `none`; unparseable frontmatter → `private` + `none`.
 - Defaults: `visibility: normal`, `federation_scope: none`; unmatched ceiling → `none`; `federation.enabled: false`.
 - Scout never writes privacy defaults into note frontmatter.
@@ -58,7 +58,7 @@
   - `normalize_rel(vault: Path, path: str | Path) -> str` — resolves the `knowledge_base` symlink, `./`, `..`; raises `ValueError` outside the vault.
   - `visible_to(label: Label, reader: str, policy: Policy) -> bool`.
 
-- [ ] **Step 1: Write failing table-driven tests** `test_classify_rules` parametrized over every rule in spec §3.1, §3.2 and §5.4 (absent, `normal`, `Private ` trimmed, `PRIVATE while drafting` → private + warning, broken YAML → private/none/`forced`, `federation_scope: org` under topics → org, under sources → none (ceiling), `[person:priya]` ∩ org → list, private + org → none + `privacy-contradiction` warning, local-only → none, overlay `visibility_defaults` glob applies, no inheritance for a sibling). `test_visible_to` matrix: owner sees all; autonomous sees non-private; `agent:person:priya` sees nothing while `federation_enabled=False`, and only admitting notes when True. `test_normalize_rel_symlink_spellings` (Review Focus 1).
+- [ ] **Step 1: Write failing table-driven tests** `test_classify_rules` parametrized over every rule in spec §3.1, §3.2 and §5.4 (absent, `normal`, `Private ` trimmed, `PRIVATE while drafting` → private + warning, broken YAML → private/none/`forced`, `federation_scope: org` under topics → org, under sources → none (ceiling), `[person:priya@example.com]` ∩ org → list, private + org → none + `privacy-contradiction` warning, local-only → none, overlay `visibility_defaults` glob applies, no inheritance for a sibling). `test_visible_to` matrix: owner sees all; autonomous sees non-private; `agent:person:priya@example.com` sees nothing while `federation_enabled=False`, and only admitting notes when True. `test_normalize_rel_symlink_spellings` (Review Focus 1).
 - [ ] **Step 2: Run** `cd plugin/engine && .venv/bin/python -m pytest tests/unit/test_kb_privacy.py -q` — Expected: FAIL (module missing).
 - [ ] **Step 3: Implement** `privacy.py`. Use `scout.kb.lint_config.glob_match` for globs and `scout.kb.frontmatter.frontmatter_block` for the block; first-match-wins lists.
 - [ ] **Step 4: Snapshot.** `privacy_snapshot.py` writes `privacy.snapshot.json` (`{schema_version: 1, engine_version, policy}` sorted keys). Test `test_snapshot_matches_yaml` regenerates in tmp and compares bytes.
@@ -81,7 +81,7 @@
   - `scoutctl kb classify <path>… [--reader R] [--json]` — a non-visible path prints `{"path": p, "denied": true}`.
   - `scoutctl kb policy [--json]`.
 
-- [ ] **Step 1: Failing tests:** corpus runner asserts `classify(...).to_json() == expected_label` for every case; checksum test; `test_resolve_reader` (unset+SCOUT_MODE → autonomous, both unset → owner, `--reader owner` under `SCOUT_READER=autonomous` → error, `agent:person:priya` can't widen); CLI test via `typer.testing.CliRunner` on a tmp vault.
+- [ ] **Step 1: Failing tests:** corpus runner asserts `classify(...).to_json() == expected_label` for every case; checksum test; `test_resolve_reader` (unset+SCOUT_MODE → autonomous, both unset → owner, `--reader owner` under `SCOUT_READER=autonomous` → error, `agent:person:priya@example.com` can't widen); CLI test via `typer.testing.CliRunner` on a tmp vault.
 - [ ] **Step 2: Run** — Expected: FAIL.
 - [ ] **Step 3: Implement** `reader.py` and the two commands.
 - [ ] **Step 4: Run** — Expected: PASS.
@@ -120,7 +120,7 @@
   - `log_read(vault, reader, command, args, returned, denied) -> None` appends spec §7.3 fields to `.scout-logs/kb-reads.jsonl` for non-owner readers only; `args_hash` = sha256 of the joined args.
   - CLI: `kb files|search|read|resolve|query|related|traverse|path` per spec §6.1; `kb read` on a denied path exits 3 with `{"denied": true, "reason": "not visible to <reader>"}`.
 
-- [ ] **Step 1: Failing tests:** `test_no_canary_for_non_owner` parametrized over every command × readers `autonomous`, `agent:person:priya` — stdout never contains `CANARY-PRIV`; `test_owner_sees_canaries`; `test_read_denied_exit_3_no_title`; `test_binary_and_non_utf8_files` (Review Focus 2: a JPG and a latin-1 `.md` under `knowledge-base/` don't crash `files`/`search`); `test_search_without_rg`; `test_read_log_no_content`; perf test marked like existing perf tests (generated 3,000 files, warm < 300 ms).
+- [ ] **Step 1: Failing tests:** `test_no_canary_for_non_owner` parametrized over every command × readers `autonomous`, `agent:person:priya@example.com` — stdout never contains `CANARY-PRIV`; `test_owner_sees_canaries`; `test_read_denied_exit_3_no_title`; `test_binary_and_non_utf8_files` (Review Focus 2: a JPG and a latin-1 `.md` under `knowledge-base/` don't crash `files`/`search`); `test_search_without_rg`; `test_read_log_no_content`; perf test marked like existing perf tests (generated 3,000 files, warm < 300 ms).
 - [ ] **Step 2: Run** — Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — Expected: PASS.

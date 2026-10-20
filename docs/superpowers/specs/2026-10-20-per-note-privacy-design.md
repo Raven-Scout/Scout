@@ -42,7 +42,7 @@ ones are repeated at the end (§13) in priority order.
 
 | # | Question | Recommendation |
 |---|---|---|
-| D1 | Field names and values | `visibility: normal \| private` and `federation_scope: none \| org \| [<principal>, …]` (§3). |
+| D1 | Field names and values | `visibility: normal \| private` and `federation_scope: none \| org \| [person:<email> \| group:<host group id>, …]` (§3). |
 | D2 | Default for an unmarked note | `visibility: normal`; `federation_scope: none` (nobody). |
 | D3 | "Never leaves the laptop": a third `visibility: local` value, or path-level? | **Path-level**, outside frontmatter, as Agnes proposes (§4.3). No `local` value. |
 | D4 | Folder defaults: written into frontmatter, or loadable data? | **Data.** An engine-owned `privacy.yaml` (+ generated `privacy.snapshot.json`) that the engine and the indexer both load. Scout never rewrites frontmatter to apply a default (§5). |
@@ -90,7 +90,7 @@ report it.
 |---|---|
 | `none` | The default. No other person's agent learns anything from it. |
 | `org` | Any member of the owner's organisation on the host (in Agnes: the instance), through their own agent. |
-| a list of principals | Only those. A principal is `group:<slug>` or `person:<handle>`, resolved by the host. Scout checks only the syntax (`^(group\|person):[a-z0-9._@-]+$`). |
+| a list of principals | Only those. A principal is `person:<email>` or `group:<host group id>`, resolved by the host (§3.3). |
 
 Rules:
 
@@ -106,7 +106,26 @@ Rules:
 `public` (the open web) is deliberately not a value. Publishing a curated
 slice outside the organisation is a separate, later design (§12).
 
-### 3.3 How `visibility` interacts with `surface_rule`
+### 3.3 Principals
+
+Agreed with the Agnes spec (2026-10-20), pending Jordan's D1:
+
+| Form | Syntax Scout checks | Agnes resolves it as |
+|---|---|---|
+| `person:<email>` | `^person:[^\s@,\[\]]+@[^\s@,\[\]]+$`, compared case-insensitively | the Agnes user with that email |
+| `group:<host group id>` | `^group:[A-Za-z0-9_-]{1,64}$` (opaque to Scout) | the group with that id (Agnes: 32-hex) |
+| `org` | the scalar value, not a list entry | the instance's Everyone group |
+
+- Groups are named by the host's **stable id**, not a slug or display name:
+  Agnes groups have no slug, and admins can rename display names. A rename
+  must never widen or narrow what a note shares.
+- Scout tooling that writes a group principal takes the id from the host
+  (Agnes: `agnes groups list --json`), and lint and the UI show the group's
+  current name next to the id when a lookup is available.
+- **A principal the host can't resolve admits nobody.** That covers an
+  unknown email, a deleted group, and the wrong host.
+
+### 3.4 How `visibility` interacts with `surface_rule`
 
 **Private wins.** `surface_rule` only shapes *when* a non-private `task` is
 rendered. A private task never reaches the daily file, whatever its windows or
@@ -547,7 +566,7 @@ route the DM through a `scoutctl` send command so the engine enforces it
 
 | Agnes question | Answer |
 |---|---|
-| Exact field names and allowed values | `visibility: normal \| private`; `federation_scope: none \| org \| [group:<slug> \| person:<handle>, …]` (§3). Unknown `visibility` → private; unparseable `federation_scope` → none; broken frontmatter → private + none. |
+| Exact field names and allowed values | `visibility: normal \| private`; `federation_scope: none \| org \| [person:<email> \| group:<host group id>, …]` (§3, §3.3). Unknown `visibility` → private; unparseable `federation_scope` → none; broken frontmatter → private + none. |
 | Default for an unmarked note | `visibility: normal` and `federation_scope: none`, after path defaults (§5.4). Agnes's assumption is correct. |
 | Folder defaults: frontmatter or data? | **Data.** Scout never writes defaults into frontmatter; frontmatter is only an explicit override. The indexer loads `.scout-state/privacy-policy.json` from the commit it indexes (or `privacy.snapshot.json` for the engine defaults) and applies §5.4. |
 | `visibility: local`? | No. Local-only is path-level (§4.3). The indexer never sees those paths; the host refuses a push that contains one. |
@@ -606,7 +625,7 @@ and slug-adjacent text. Contents:
 | `knowledge-base/topics/billing/billing.md` | Plain topic, `visibility: private`, no `name:`/`type:`. |
 | `knowledge-base/topics/billing/rollout.md` | Normal sibling: no inheritance. |
 | `knowledge-base/projects/widget/widget.md` | Normal project, `federation_scope: org`. |
-| `knowledge-base/projects/widget/notes.md` | `federation_scope: [person:priya]`. |
+| `knowledge-base/projects/widget/notes.md` | `federation_scope: [person:priya@example.com]`. |
 | `knowledge-base/sources/2026-10/2026-10-01-sync.md` | `federation_scope: org` above its `none` ceiling. |
 | `knowledge-base/topics/misc/draft.md` | `visibility: PRIVATE while drafting` (fail-closed). |
 | `knowledge-base/topics/misc/broken.md` | Unparseable frontmatter. |
@@ -624,7 +643,7 @@ files, a commit touching a private and a normal file, and a normal commit.
   corpus. Checksum test for the corpus.
 - **Snapshot:** `privacy.snapshot.json` matches a fresh generation (CI fails on
   drift, like `connectors.snapshot.json`).
-- **Read commands, per reader:** for `autonomous` and `agent:person:priya`,
+- **Read commands, per reader:** for `autonomous` and `agent:person:priya@example.com`,
   `kb files`, `search`, `read`, `resolve`, `query`, `related`, `traverse`,
   `delta` and `classify` over the fixture never print any `CANARY-PRIV-*`
   string or private path; `read` of a private path exits 3 without echoing a
@@ -707,8 +726,8 @@ need Jordan's OK, per the no-paid-API rule.
 3. **D3/D4 — path-level local-only and policy-as-data.** Recommended as Agnes
    proposed; needs Jordan's yes because Agnes will build on it.
 4. **D1 — value names.** `normal`/`private`, and `none`/`org`/principal list.
-   The principal syntax (`group:`/`person:`) must match what the host can
-   resolve; to align with the Agnes spec.
+   The principal forms (`person:<email>`, `group:<host group id>`) are
+   agreed with the Agnes spec (§3.3).
 5. **D6 — `personal/` stays normal-but-local-only**, not private.
 6. **§8.2 severities** — `private-link` warn for the owner's commits, block
    only for scheduled runs' outbound files.
