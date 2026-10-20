@@ -27,6 +27,8 @@ Warning rule ids carried on a :class:`Label` (kb-lint ids, spec §8.2):
   ``federation_scope`` other than ``none``.
 - ``frontmatter-unparseable``: the block doesn't parse; the note is private
   with ``visibility_source == "forced"``.
+- ``file-unreadable``: the caller passed ``unreadable=True`` (an existing
+  markdown file that couldn't be read); private, ``forced``.
 
 Warning rule ids carried on a :class:`Policy` (from the overlay):
 
@@ -48,7 +50,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.resources import as_file, files
@@ -71,7 +73,7 @@ SurfaceClass = Literal["owner_only", "shared"]
 FederationScope = str | tuple[str, ...]
 
 _STAGE2_KEYS = ("federation_ceilings", "federation_defaults", "federation")
-_FULL_READERS = frozenset({"owner", "autonomous"})
+FULL_READERS = frozenset({"owner", "autonomous"})
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
@@ -242,11 +244,22 @@ def load_policy(vault: Path | None) -> Policy:
         return base
     if not isinstance(data, dict):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    overlay = data.get("privacy")
+    return policy_from_overlay(data.get("privacy"))
+
+
+def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
+    """Engine default merged with a ``privacy:`` overlay mapping (no vault needed).
+
+    ``None`` means the engine default. This is the merge :func:`load_policy`
+    applies, exposed so the contract corpus (and the Agnes indexer's runner)
+    can build a policy from a bare overlay. A non-mapping overlay is ignored
+    with ``privacy-overlay-invalid``.
+    """
+    base = _engine_default()
     if overlay is None:
         return base
     warnings: list[str] = []
-    if not isinstance(overlay, dict):
+    if not isinstance(overlay, Mapping):
         return dataclasses.replace(base, warnings=("privacy-overlay-invalid",))
 
     if any(k in overlay for k in _STAGE2_KEYS):
@@ -383,13 +396,16 @@ def _parse_federation_scope(value: Any) -> FederationScope | None:
     return None
 
 
-def classify(rel_path: str, text: str | None, policy: Policy) -> Label:
+def classify(rel_path: str, text: str | None, policy: Policy, *, unreadable: bool = False) -> Label:
     """Label one vault file (spec §5.3). Pure.
 
     ``rel_path`` is vault-relative and already normalised (:func:`normalize_rel`).
     ``text`` is the file's leading text, enough to include the closing
-    frontmatter fence, or ``None`` for a non-markdown or unreadable file (path
-    defaults only).
+    frontmatter fence, or ``None`` for a non-markdown or missing file (path
+    defaults only). ``unreadable=True`` says an existing markdown file could not
+    be read (permission, a directory named ``x.md``, ...): it can't be
+    inspected, so it is private, source ``forced``, warning ``file-unreadable``
+    (fail closed; ``text`` is ignored).
     """
     rel = rel_path
     local_only = (_any(policy.local_only_always, rel) and not _any(policy.sync_allow, rel)) or _any(
@@ -397,6 +413,16 @@ def classify(rel_path: str, text: str | None, policy: Policy) -> Label:
     )
     shared_by_path = _any(policy.shared_files, rel)
     warnings: list[str] = []
+
+    if unreadable:
+        return Label(
+            path=rel,
+            visibility="private",
+            visibility_source="forced",
+            local_only=local_only,
+            shared_file=shared_by_path,
+            warnings=("file-unreadable",),
+        )
 
     try:
         fm = _frontmatter(text)
@@ -522,7 +548,7 @@ def visible_to(label: Label, reader: str) -> bool:
     denied (fail-closed). The Agnes indexer applies its own rules (§9).
     """
     del label  # v1: the decision doesn't depend on the label yet (Stage 2 will)
-    return reader in _FULL_READERS
+    return reader in FULL_READERS
 
 
 def surface_class(policy: Policy, surface: str) -> SurfaceClass:
