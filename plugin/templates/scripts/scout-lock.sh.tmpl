@@ -16,7 +16,10 @@
 # Env knobs:
 #   SCOUT_LOCK_WAIT_SECS=1800       how long a busy lock is waited for
 #   SCOUT_LOCK_POLL_SECS=30         how often it is re-tried meanwhile
-#   SCOUT_LOCK_MAX_AGE_SECS=7200    a live holder older than this is wedged
+#   SCOUT_LOCK_MAX_AGE_SECS=7200    a live holder that makes no progress for
+#                                   this many seconds of AWAKE time is wedged
+#   SCOUT_LOCK_PROGRESS_CPU_SECS=10 CPU seconds the holder's session must burn
+#                                   to count as progress
 #   SCOUT_REDUNDANT_WINDOW_MIN=60   how recent a finished run must be to count
 #   SCOUT_REDUNDANT_WAIT=off|warn|enforce
 #                                   off: never look; warn: log, never skip;
@@ -40,13 +43,31 @@
 #     between its create and its PID write.
 #   - On exit the lock is removed only while it still holds our PID.
 # Liveness alone is not enough: a holder that is alive but not progressing
-# (host slept mid-run, wedged network call) passes `kill -0` forever and
-# would silently block every subsequent slot. Real sessions finish in
-# minutes, so a holder past LOCK_MAX_AGE_SECS is wedged by definition —
-# reap it and take over, and record the reap in failures.log so the
-# takeover is visible to audit surfaces (not just this run's log).
-LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h ceiling, env-overridable
+# (wedged network call, stopped process) passes `kill -0` forever and would
+# silently block every subsequent slot. So a live holder is reaped once it has
+# made NO PROGRESS for LOCK_MAX_AGE_SECS, and the reap is recorded in
+# failures.log so the takeover is visible to audit surfaces (not just this
+# run's log).
+#
+# Wedged is judged by progress, never by the lock's age (#466). Lock age is
+# wall-clock time, and a laptop's sleep counts toward it: a session started
+# just before the lid closed was reaped on the first slot after wake, while it
+# was alive and working. Instead, every waiter samples the holder's session --
+# the CPU time of its processes, its process list, and the mtime of its run
+# log -- into LOCK_PROGRESS. Any movement resets the stall; the stall only
+# grows by time on a clock that stops while the host sleeps
+# (_scout_awake_now). The first sample of a holder is a baseline and never
+# reaps: nothing is known yet about whether it moves.
+LOCK_MAX_AGE_SECS="${SCOUT_LOCK_MAX_AGE_SECS:-7200}"   # 2h of awake no-progress, env-overridable
+case "$LOCK_MAX_AGE_SECS" in ''|*[!0-9]*) LOCK_MAX_AGE_SECS=7200 ;; esac
+LOCK_PROGRESS_CPU_SECS="${SCOUT_LOCK_PROGRESS_CPU_SECS:-10}"
+case "$LOCK_PROGRESS_CPU_SECS" in ''|*[!0-9]*) LOCK_PROGRESS_CPU_SECS=10 ;; esac
 LOCK_GUARD="$LOCK_FILE.takeover"
+# Waiters' samples of the holder's progress, and the holder's run log path. The
+# lock itself stays a bare PID that is never rewritten: scoutctl reads it
+# (bootstrap_lock.py), and health.py reads its mtime as the time it was taken.
+LOCK_PROGRESS="$LOCK_FILE.progress"
+LOCK_OWNER="$LOCK_FILE.owner"
 # A guard older than this was left by a process that died inside the guarded
 # section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
 LOCK_GUARD_ABANDONED_SECS=30
@@ -63,6 +84,10 @@ case "$LOCK_POLL_SECS" in ''|*[!0-9]*|0) LOCK_POLL_SECS=30 ;; esac
 SCOUT_LOCK_CONTENDED=0
 SCOUT_LOCK_WAITED=0
 LOCK_PID=""
+# Set by _scout_holder_wedged: awake seconds the holder has gone without
+# progress, and the PIDs of its session (comma-separated).
+SCOUT_LOCK_STALLED=0
+SCOUT_LOCK_SESSION_PIDS=""
 
 # A deliberate skip still records how the run ended (#401). Without a row in
 # .scout-logs/run-outcomes.jsonl, `scoutctl health` reads the fired slot as
@@ -78,6 +103,10 @@ scout_record_skip() {
 _scout_mtime() {
     # GNU stat first (errors on BSD), BSD stat second; nothing if unknown.
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true
+}
+
+_scout_uint() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
 }
 
 _scout_lock_pid() {
@@ -183,6 +212,86 @@ _scout_reap_holder() {
     return 1
 }
 
+_scout_session_cpu() {
+    # "<centiseconds> <pid,pid,...>": the CPU time and PIDs of the session of
+    # holder $2 (group $1 when it leads one, as for _scout_session_pids).
+    # Prints "0 -" if nothing of it is alive. `ps -o time=` is
+    # [[dd-]hh:]mm:ss with optional hundredths on both macOS and Linux.
+    local pids
+    pids=$(_scout_session_pids "$1" "$2" | tr '\n' ',')
+    pids="${pids%,}"
+    if [ -z "$pids" ]; then
+        echo "0 -"
+        return 0
+    fi
+    ps -o time= -p "$pids" 2>/dev/null | awk -v pids="$pids" '
+        function secs(t,    d, n, f, i, s) {
+            d = 0
+            if (index(t, "-")) { split(t, dp, "-"); d = dp[1]; t = dp[2] }
+            n = split(t, f, ":"); s = 0
+            for (i = 1; i <= n; i++) s = s * 60 + f[i]
+            return d * 86400 + s
+        }
+        { total += secs($1) }
+        END { printf "%d %s\n", total * 100 + 0.5, pids }' || echo "0 $pids"
+}
+
+_scout_awake_now() {
+    # "<clock> <seconds>" on a clock that does not advance while the host
+    # sleeps: CLOCK_UPTIME_RAW on macOS, CLOCK_MONOTONIC on Linux (both exclude
+    # suspend). Without python3, wall time -- the clock name keeps the two
+    # from ever being subtracted from each other.
+    python3 -c 'import time; c = getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC); print("awake", int(time.clock_gettime(c)))' 2>/dev/null \
+        || echo "wall $(date +%s)"
+}
+
+_scout_holder_wedged() {
+    # One progress sample of the live holder $1 (lock mtime $2): 0 (wedged)
+    # once it has made no progress for more than LOCK_MAX_AGE_SECS of awake
+    # time, else 1. Sets SCOUT_LOCK_STALLED and SCOUT_LOCK_SESSION_PIDS.
+    #
+    # Progress is any of: the session burned LOCK_PROGRESS_CPU_SECS of CPU
+    # since the last progress mark, its CPU total fell or its process list
+    # changed (a process started or exited, which a stopped session never
+    # does), or its run log was written. LOCK_PROGRESS holds one line:
+    #   pid lock_mtime mark_cpu_cs mark_log_mtime mark_pids clock last_sample stalled
+    # It belongs to one holder (pid + lock mtime); any mismatch is a baseline.
+    local pid="$1" lock_mtime="${2:--}" pgid group="" cpu pids clock now log log_mtime
+    local s_pid s_lock s_cpu s_log s_pids s_clock s_last s_stalled gap stalled=0 tmp
+    pgid=$(_scout_pgid_of "$pid")
+    [ "$pgid" = "$pid" ] && group="$pgid"
+    read -r cpu pids <<<"$(_scout_session_cpu "$group" "$pid")"
+    _scout_uint "$cpu" || cpu=0
+    pids="${pids:--}"
+    SCOUT_LOCK_SESSION_PIDS="$pids"
+    read -r clock now <<<"$(_scout_awake_now)"
+    log=$(head -n 1 "$LOCK_OWNER" 2>/dev/null || true)
+    log_mtime=""
+    [ -n "$log" ] && log_mtime=$(_scout_mtime "$log")
+    _scout_uint "$log_mtime" || log_mtime=0
+
+    read -r s_pid s_lock s_cpu s_log s_pids s_clock s_last s_stalled 2>/dev/null < "$LOCK_PROGRESS" || true
+    if [ "${s_pid:-}" = "$pid" ] && [ "${s_lock:-}" = "$lock_mtime" ] && [ "${s_clock:-}" = "$clock" ] \
+        && _scout_uint "${s_cpu:-}" && _scout_uint "${s_log:-}" && _scout_uint "${s_last:-}" && _scout_uint "${s_stalled:-}"; then
+        if [ $(( cpu - s_cpu )) -ge $(( LOCK_PROGRESS_CPU_SECS * 100 )) ] || [ "$cpu" -lt "$s_cpu" ] \
+            || [ "$pids" != "${s_pids:-}" ] || [ "$log_mtime" -gt "$s_log" ]; then
+            stalled=0   # progress: this sample is the new mark
+        else
+            gap=$(( now - s_last ))
+            [ "$gap" -ge 0 ] || gap=0   # the clock went back: a reboot, so no stall is known
+            stalled=$(( s_stalled + gap ))
+            cpu="$s_cpu"; log_mtime="$s_log"; pids="$s_pids"   # keep the old mark
+        fi
+    fi
+    # Best effort: a sample that can't be written only delays a reap.
+    tmp="$LOCK_PROGRESS.$$"
+    if { printf '%s %s %s %s %s %s %s %s\n' "$pid" "$lock_mtime" "$cpu" "$log_mtime" "$pids" "$clock" "$now" "$stalled" > "$tmp"; } 2>/dev/null; then
+        mv -f "$tmp" "$LOCK_PROGRESS" 2>/dev/null || rm -f "$tmp"
+    fi
+    SCOUT_LOCK_STALLED="$stalled"
+    [ "$stalled" -gt "$LOCK_MAX_AGE_SECS" ]
+}
+
 _scout_take_guard() {
     local mtime
     if ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null; then
@@ -201,6 +310,7 @@ _scout_take_guard() {
 _scout_release_lock() {
     # If the lock was reaped and taken over while we ran, it is not ours to remove.
     if [ "$(_scout_lock_pid)" = "$$" ]; then
+        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER"
         rm -f "$LOCK_FILE"
     fi
 }
@@ -222,25 +332,24 @@ _scout_lock_try() {
             break
         fi
         if _scout_pid_alive "$LOCK_PID"; then
-            # Lock age = seconds since the holder wrote the lock at session start.
-            # Sourced from the lock file's mtime: macOS ps has no `etimes` keyword,
-            # so elapsed-seconds-of-PID is not portable. Unknown age → treat the
-            # holder as fresh.
+            # Lock age is wall-clock time and only ever logged: it counts host
+            # sleep, so it never decides a reap (#466). The lock's mtime also
+            # ties the progress samples to this holder.
             lock_mtime=$(_scout_mtime "$LOCK_FILE")
-            lock_age=""
+            lock_age="?"
             case "$lock_mtime" in
-                ''|*[!0-9]*) ;;
+                ''|*[!0-9]*) lock_mtime="" ;;
                 *) lock_age=$(( $(date +%s) - lock_mtime )) ;;
             esac
-            if [ -z "$lock_age" ] || [ "$lock_age" -le "$LOCK_MAX_AGE_SECS" ]; then
-                break
+            if ! _scout_holder_wedged "$LOCK_PID" "$lock_mtime"; then
+                break   # alive and progressing, or not stalled for long enough yet
             fi
             if ! _scout_take_guard; then
                 break   # another process is already reaping or recovering it
             fi
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
-                echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID, lock held ${lock_age}s > ${LOCK_MAX_AGE_SECS}s) ===" >> "$LOG_FILE"
-                echo "Reaped wedged session PID $LOCK_PID after ${lock_age}s at $(date)" >> "$LOG_DIR/failures.log"
+                echo "=== Reaping wedged {{INSTANCE_NAME}} session (PID $LOCK_PID: no progress for ${SCOUT_LOCK_STALLED}s awake > ${LOCK_MAX_AGE_SECS}s; lock held ${lock_age}s wall clock; signalling PIDs ${SCOUT_LOCK_SESSION_PIDS}) ===" >> "$LOG_FILE"
+                echo "Reaped wedged session PID $LOCK_PID after ${SCOUT_LOCK_STALLED}s awake with no progress (ceiling ${LOCK_MAX_AGE_SECS}s; lock held ${lock_age}s wall clock); signalled PIDs ${SCOUT_LOCK_SESSION_PIDS} at $(date)" >> "$LOG_DIR/failures.log"
                 # KILL before removing the lock: a KILLed holder cannot run its
                 # EXIT trap. Re-read after it: during the grace the holder may
                 # have released its lock and someone else taken the path.
@@ -252,6 +361,7 @@ _scout_lock_try() {
                     echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
                     echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
                 elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                    rm -f "$LOCK_PROGRESS"
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -291,6 +401,8 @@ scout_lock_acquire() {
         sleep "$left"
     done
     trap _scout_release_lock EXIT
+    # Where this run logs, so waiters can see it progress. Best effort.
+    { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
     if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
         SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
         echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"
