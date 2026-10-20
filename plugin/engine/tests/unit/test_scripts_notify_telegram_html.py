@@ -8,6 +8,7 @@ wiring. All HTTP calls are mocked — no live Telegram traffic.
 from __future__ import annotations
 
 import json
+import random
 import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -246,6 +247,64 @@ def test_split_html_link_first_chunk_still_cuts_at_a_word() -> None:
     chunks = notify_telegram._split_html(body, limit=100)
     assert chunks[0] == '<a href="https://example.com">' + "x" * 40 + "</a>"
     assert all(_is_balanced(c) for c in chunks)
+
+
+_FUZZ_TAGS = ["b", "i", "u", "s", "code", "blockquote", 'a href="https://example.com/?a=1&amp;b=2"']
+_FUZZ_TEXT = ["word", "x" * 20, "&amp;", "&lt;", "é", "😀", "&#128512;", "\n", "\n\n", " "]
+
+
+def _fuzz_body(rng: random.Random, depth: int = 0, in_link: bool = False) -> str:
+    parts = []
+    for _ in range(rng.randint(1, 6)):
+        if depth < 4 and rng.random() < 0.35:
+            tag = rng.choice([t for t in _FUZZ_TAGS if not (in_link and t.startswith("a "))])
+            name = tag.split()[0]
+            inner = _fuzz_body(rng, depth + 1, in_link or name == "a")
+            parts.append(f"<{tag}>{inner}</{name}>")
+        else:
+            parts.append("".join(rng.choice(_FUZZ_TEXT) for _ in range(rng.randint(1, 8))))
+    return "".join(parts)
+
+
+def _visible(html_text: str) -> str:
+    return re.sub(r"\s+", "", notify_telegram._unescape_telegram(notify_telegram._TAG_RE.sub("", html_text)))
+
+
+@pytest.mark.parametrize("limit", [100, 150, 250, 300, 400, 600])
+def test_split_html_properties(limit: int) -> None:
+    # Random balanced bodies, nested up to 4 deep. Every chunk fits the limit,
+    # never starts or ends inside a tag or entity, and no text is lost. From 300
+    # up the carried tags never hit _carried's cap, so every chunk must also be
+    # balanced on its own; below that the cap may give up on carrying them.
+    rng = random.Random(465)
+    for _ in range(300):
+        body = _fuzz_body(rng)
+        chunks = notify_telegram._split_html(body, limit=limit)
+        for chunk in chunks:
+            assert len(chunk) <= limit, body
+            assert not re.search(r"<[^>]*$|&#?[a-zA-Z0-9]*$", chunk), (body, chunk)
+            assert not re.match(r"^[^<]*>|^#?[a-zA-Z0-9]+;", chunk), (body, chunk)
+            if limit >= 300:
+                assert _is_balanced(chunk), (body, chunk)
+        assert _visible("".join(chunks)) == _visible(body), body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<b>" + "😀é" * 150 + "</b>",  # hard cut
+        "<b>" + "😀é " * 100 + "</b>",  # word cut
+        "x" * 95 + "&#128512;" * 20,  # entity at the boundary
+    ],
+)
+def test_split_html_multibyte_at_the_boundary(body: str) -> None:
+    chunks = notify_telegram._split_html(body, limit=100)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 100
+        assert len(chunk.encode()) <= 4 * 100
+        assert not re.search(r"&#?[0-9]*$", chunk), chunk
+    assert _visible("".join(chunks)) == _visible(body)
 
 
 def test_send_html_long_body_sends_balanced_chunks(secrets_dir: Path) -> None:
