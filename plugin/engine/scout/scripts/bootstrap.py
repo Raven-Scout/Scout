@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
 import yaml
@@ -210,6 +211,14 @@ _INSTALL_ONLY_TEMPLATES = (
     # The research run log (its items are files in knowledge-base/research-queue/).
     ("knowledge-base/research-queue.md", "templates/knowledge-base/research-queue.md.tmpl"),
 )
+
+# Vault-owned files seeded, like the cat-2 templates above, only where the
+# vault has none, but copied byte for byte from a file the engine package ships
+# rather than from templates/ (so there is one copy in the repo, not two). The
+# ontology schema: the vault's parser.py loads the schema.yaml next to it and
+# fails without one, and the engine's resolve_schema_path prefers it to the
+# packaged default, which it starts out identical to.
+_PACKAGED_SEEDS = (("knowledge-base/ontology/schema.yaml", ("kb", "schema.yaml")),)
 
 _CAT1B_RUNNERS = (
     ("run-scout.sh", "templates/run-scout.sh.tmpl"),
@@ -463,6 +472,11 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
         _atomic_write(target, rendered)
+    for vault_rel, resource in _PACKAGED_SEEDS:
+        target = cfg.vault / vault_rel
+        if target.exists() or target.is_symlink():
+            continue  # never overwrite: the vault may have extended it
+        _atomic_write(target, files("scout").joinpath(*resource).read_text(encoding="utf-8"))
 
 
 def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
