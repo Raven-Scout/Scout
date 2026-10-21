@@ -70,18 +70,30 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 1
+CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader (ruling R15)
 
 # libyaml's C parser when PyYAML was built with it (about 10x faster on a big
-# KB), else the pure-Python one. Same SafeConstructor either way: plain types.
-# Every frontmatter parse on the label path goes through load_frontmatter_yaml,
-# so the classifier and KnowledgeGraph always parse a block the same way.
+# KB), else the pure-Python one. Labels must be what pure ``yaml.safe_load``
+# gives (the Agnes indexer mirrors it), and the two scanners disagree on tabs
+# (``visibility:\tnormal``: C parses it, Python rejects it, which is private)
+# and on backslash escapes (``"\ud800"``: the reverse). So the C loader is used
+# only for a block with neither a tab nor a backslash (:func:`frontmatter_loader`);
+# anything else goes through SafeLoader. Every frontmatter parse on the label
+# path (the classifier and ``KnowledgeGraph``) goes through
+# :func:`load_frontmatter_yaml`, so the two always agree.
 _FM_LOADER: Any = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) else yaml.SafeLoader
 
 
+def frontmatter_loader(text: str) -> Any:
+    """The YAML loader for a frontmatter block: libyaml only where it agrees with SafeLoader."""
+    if "\t" in text or "\\" in text:
+        return yaml.SafeLoader
+    return _FM_LOADER
+
+
 def load_frontmatter_yaml(text: str) -> Any:
-    """``yaml.safe_load`` of a frontmatter block, with libyaml when available."""
-    return yaml.load(text, Loader=_FM_LOADER)
+    """``yaml.safe_load`` of a frontmatter block (libyaml when that gives the same result)."""
+    return yaml.load(text, Loader=frontmatter_loader(text))
 
 
 VISIBILITIES = ("normal", "private")

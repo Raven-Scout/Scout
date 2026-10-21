@@ -1045,5 +1045,39 @@
         ]
       }
     }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/tab-after-colon.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: tab-after-colon\ntype: topic\nvisibility:\tnormal\n---\nA tab after the colon: pure SafeLoader rejects the block.\n",
+    "path": "knowledge-base/topics/misc/tab-after-colon.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/surrogate-escape.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: surrogate-escape\ntype: topic\nvisibility: normal\ntitle: \"lone surrogate \\ud800 escape\"\n---\nSafeLoader accepts a lone surrogate escape; libyaml rejects it.\n",
+    "path": "knowledge-base/topics/misc/surrogate-escape.md",
+    "policy_overlay": null
   }
 ]
