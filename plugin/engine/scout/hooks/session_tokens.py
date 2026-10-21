@@ -9,8 +9,10 @@ The Swift `SessionTokenEntry` decoder (scout-app/Scout/Models/SessionTokenEntry.
 consumes this JSONL — schema MUST stay byte-stable on field names and types.
 
 Phase 1 of the usage-and-connector-health design. Pricing is a static table
-(see PRICING_USD_PER_M_TOKENS); Phase 2 will replace dollar display with
-quota utilization and the table becomes irrelevant.
+(see MODEL_PRICING_USD_PER_M_TOKENS); Phase 2 will replace dollar display with
+quota utilization and the table becomes irrelevant. The estimate reproduces
+claude's own total_cost_usd, which the hook can't read: claude writes it to the
+transcript (the `cost-state` row) only when the process exits, after Stop.
 
 Environment:
   SCOUT_MODE             — set by runner scripts. Without it, the mode named in
@@ -45,14 +47,52 @@ from scout.events import Event, now_iso
 from scout.hooks import run_context
 from scout.ids import new_ulid
 
-# PRICING: $ per 1M tokens. Verify against https://www.anthropic.com/pricing
-# before shipping; these are the published rates as of 2026-04-22 (verbatim
-# from sum-session-tokens.sh:21-23). Phase 2 makes this table irrelevant —
-# quota utilization replaces dollar display.
+
+def _rates(input_: float, output: float, cache_read: float) -> dict[str, float]:
+    # Cache writes: 1.25x input for the 5-minute TTL, 2x for the 1-hour TTL.
+    return {
+        "input": input_,
+        "output": output,
+        "cache_read": cache_read,
+        "cache_create": input_ * 1.25,
+        "cache_create_1h": input_ * 2,
+    }
+
+
+# PRICING: $ per 1M tokens, by model family. These price a model no row of
+# MODEL_PRICING_USD_PER_M_TOKENS names: the dearest current rates in each
+# family, so an unpriced model is over- rather than under-estimated. Phase 2
+# makes this table irrelevant — quota utilization replaces dollar display.
 PRICING_USD_PER_M_TOKENS: dict[str, dict[str, float]] = {
-    "claude-opus": {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_create": 18.75},
-    "claude-sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_create": 3.75},
-    "claude-haiku": {"input": 0.80, "output": 4.00, "cache_read": 0.08, "cache_create": 1.00},
+    "claude-opus": _rates(5.00, 25.00, 0.50),
+    "claude-sonnet": _rates(3.00, 15.00, 0.30),
+    "claude-haiku": _rates(1.00, 5.00, 0.10),
+}
+
+# Per-model rates, $ per 1M tokens, from Anthropic's first-party API price list
+# (checked 2026-10-21). Cache reads are 0.1x input unless the list says
+# otherwise. The longest matching prefix wins, so `claude-opus-5` doesn't price
+# `claude-opus-5-5`. Pinned in tests against claude's own totalCostUSD for real
+# Opus 5, Sonnet 5 and Haiku 4.5 runs (tests/fixtures/usage-pinning/).
+MODEL_PRICING_USD_PER_M_TOKENS: dict[str, dict[str, float]] = {
+    "claude-fable-5-1": _rates(10.00, 50.00, 0.25),
+    "claude-mythos-5-1": _rates(10.00, 50.00, 0.25),
+    "claude-fable-5": _rates(10.00, 50.00, 1.00),
+    "claude-mythos-5": _rates(10.00, 50.00, 1.00),
+    "claude-opus-5-5": _rates(4.00, 20.00, 0.20),
+    "claude-opus-5": _rates(5.00, 25.00, 0.50),
+    "claude-opus-4-8": _rates(5.00, 25.00, 0.50),
+    "claude-opus-4-7": _rates(5.00, 25.00, 0.50),
+    "claude-opus-4-6": _rates(5.00, 25.00, 0.50),
+    "claude-opus-4-5": _rates(5.00, 25.00, 0.50),
+    "claude-opus-4-1": _rates(15.00, 75.00, 1.50),
+    "claude-opus-4-2": _rates(15.00, 75.00, 1.50),  # claude-opus-4-2025xxxx (Opus 4)
+    "claude-sonnet-5-5": _rates(2.00, 10.00, 0.20),
+    "claude-sonnet-5": _rates(2.00, 10.00, 0.20),
+    "claude-sonnet-4": _rates(3.00, 15.00, 0.30),
+    "claude-haiku-5-5": _rates(0.10, 0.50, 0.01),  # prompts up to 100K tokens
+    "claude-haiku-4-5": _rates(1.00, 5.00, 0.10),
+    "claude-3-5-haiku": _rates(0.80, 4.00, 0.08),
 }
 
 # Polling for transcript flush. Bash line 61: 6 attempts × 0.5s = 3s ceiling.
@@ -77,11 +117,20 @@ def _model_family(model: str | None) -> str:
     return "claude-opus"
 
 
+def _model_rates(model: str | None) -> dict[str, float]:
+    """The rates for one turn's model: the longest matching model prefix, else its family row."""
+    if model:
+        matches = [p for p in MODEL_PRICING_USD_PER_M_TOKENS if model.startswith(p)]
+        if matches:
+            return MODEL_PRICING_USD_PER_M_TOKENS[max(matches, key=len)]
+    return PRICING_USD_PER_M_TOKENS[_model_family(model)]
+
+
 def _is_known_model(model: str) -> bool:
-    """Whether `model` matches one of the three known families (non-empty)."""
+    """Whether `model` matches a known family or a priced model (non-empty)."""
     if not model:
         return False
-    return any(model.startswith(p) for p in PRICING_USD_PER_M_TOKENS)
+    return any(model.startswith(p) for p in (*PRICING_USD_PER_M_TOKENS, *MODEL_PRICING_USD_PER_M_TOKENS))
 
 
 def _utc_ts() -> str:
@@ -142,12 +191,18 @@ def _zero_row(
 
 
 def _read_usage_turns(transcript_path: Path) -> list[dict[str, Any]]:
-    """Read the transcript JSONL and return every turn that has message.usage.
+    """Read the transcript JSONL and return one turn per API message that has message.usage.
+
+    Claude Code writes a transcript row per content block (thinking, text,
+    tool_use), and every row of one API message repeats that message's usage.
+    Rows are therefore keyed by message.id — the last row of each message wins,
+    in the position of its first — or summing them counts each message once per
+    block (2-4x on real runs). A row without an id is its own turn.
 
     Lines that fail JSON parsing are silently skipped (jq `fromjson?` equivalent
     — see bash line 62). Same for blank lines.
     """
-    turns: list[dict[str, Any]] = []
+    turns: dict[object, dict[str, Any]] = {}
     try:
         with transcript_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -160,11 +215,11 @@ def _read_usage_turns(transcript_path: Path) -> list[dict[str, Any]]:
                     continue
                 msg = obj.get("message")
                 if isinstance(msg, dict) and msg.get("usage") is not None:
-                    turns.append(obj)
+                    turns[msg.get("id") or len(turns)] = obj
     except OSError:
         # Treated upstream as transcript_not_found; here we just return empty.
         return []
-    return turns
+    return list(turns.values())
 
 
 def _poll_for_usage_turns(transcript_path: Path) -> list[dict[str, Any]]:
@@ -186,23 +241,32 @@ def _poll_for_usage_turns(transcript_path: Path) -> list[dict[str, Any]]:
 def _compute_cost_usd(turns: list[dict[str, Any]]) -> float:
     """Per-turn cost summation (bash lines 89-107).
 
-    Each turn is priced against ITS OWN model's family, not the primary's.
-    Unknown models fall back to Opus. Order of operations matches the bash:
-    sum(per_turn_dollar_amounts) where each per_turn_dollar_amount is
-    (i*price_in + o*price_out + cr*price_cr + cc*price_cc) / 1_000_000.
+    Each turn is priced against ITS OWN model's rates, not the primary's.
+    Unknown models fall back to the Opus family row. Order of operations matches
+    the bash: sum(per_turn_dollar_amounts) where each per_turn_dollar_amount is
+    (i*price_in + o*price_out + cr*price_cr + cc*price_cc) / 1_000_000, with
+    cache writes split by TTL.
     """
     total = 0.0
     for t in turns:
         msg = t.get("message") or {}
         usage = msg.get("usage") or {}
-        family = _model_family(msg.get("model"))
-        rates = PRICING_USD_PER_M_TOKENS[family]
+        rates = _model_rates(msg.get("model"))
         i = usage.get("input_tokens") or 0
         o = usage.get("output_tokens") or 0
         cr = usage.get("cache_read_input_tokens") or 0
         cc = usage.get("cache_creation_input_tokens") or 0
+        # A 1-hour cache write costs more than a 5-minute one; Claude Code's usage
+        # splits them under cache_creation. Without the split, all are 5-minute.
+        split = usage.get("cache_creation")
+        cc_1h = (split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+        cc_1h = min(cc_1h, cc)
         total += (
-            i * rates["input"] + o * rates["output"] + cr * rates["cache_read"] + cc * rates["cache_create"]
+            i * rates["input"]
+            + o * rates["output"]
+            + cr * rates["cache_read"]
+            + (cc - cc_1h) * rates["cache_create"]
+            + cc_1h * rates["cache_create_1h"]
         ) / 1_000_000
     return total
 
