@@ -1,7 +1,8 @@
 # Telegram outbound — operator setup
 
-Telegram outbound lets a Scout session push notifications to your phone — same
-fan-out pattern as the session-wrap Slack DM, but to a Telegram chat instead.
+Telegram outbound lets a Scout session push notifications to your phone, in a
+Telegram chat. Once set up, it carries the session-wrap message in place of the
+Slack DM (see §7).
 It is **outbound only by design** in v0.4: Scout sends; you receive. There is
 no return-bridge yet (inbound replies as feedback signals are v0.7+ territory
 per the event-architecture spec).
@@ -151,27 +152,50 @@ will.
 
 ## 7. How Scout uses this
 
-The Claude session at session-wrap calls the same CLI command from inside
-its prompt (via the Bash tool):
+The runners (`run-scout.sh`, `run-dreaming.sh`, `run-research.sh`) only say
+that a wrap message is owed. The brain file's notification section names the
+channel and the recipient:
+
+| Runner             | Reads the channel from                                               |
+|--------------------|----------------------------------------------------------------------|
+| `run-scout.sh`     | `SKILL.md`'s notification sections                                   |
+| `run-dreaming.sh`  | `DREAMING.md`'s notification section, else `SKILL.md`'s              |
+| `run-research.sh`  | `RESEARCH.md`'s Step 4d, else `SKILL.md`'s notification sections     |
+
+Turn it on with the `telegram` connector:
+
+- **New vault:** once both secrets from steps 2 and 4 exist, `/scout-setup`
+  detects `telegram` (`test -s` on the two files; no network call). Enable it.
+- **Existing vault:** add `telegram` to `connectors.enabled` in your vault's
+  `scout-config.yaml`, then run `/scout-update`.
+
+SKILL.md then gains a **Telegram Notification** section and RESEARCH.md a
+**Step 4d: Telegram Notification**. Dreaming has no section of its own and
+follows SKILL.md.
+
+**Telegram replaces the Slack DM.** With both Slack and Telegram enabled, the
+wrap goes to Telegram only, and the Slack sections say so. A run summary can
+carry personal content, and Telegram is the channel you set up for yourself.
+Slack scans are unaffected. If a send fails, the session says so in its final
+message and does not fall back to Slack.
+
+The section tells the session to pipe the wrap in through stdin, in HTML mode:
 
 ```bash
-scoutctl notify telegram --tier action_required --body "$(scoutctl ... --format wrap)"
+scoutctl notify telegram --tier info --parse-mode html --body-file - <<'SCOUT_WRAP'
+<b>Scout morning briefing ready.</b>
+...
+SCOUT_WRAP
 ```
 
-A body that holds text from Slack, GitHub or mail is safer in a file than in
-a shell argument. `--body-file PATH` reads it from a UTF-8 file instead of
-`--body` (pass exactly one of the two):
+`--body-file -` reads the body from stdin, so a wrap that quotes Slack, GitHub
+or mail text never goes through a shell argument (`--body-file PATH` reads a
+UTF-8 file instead). Tier choice mirrors urgency: a session that surfaced 🔴
+Urgent items escalates with `--tier action_required`; a routine run posts
+`--tier info`.
 
-```bash
-scoutctl notify telegram --tier info --parse-mode html --body-file briefing.html
-```
-
-This fans out the wrap message to Telegram in addition to the Slack DM.
-Tier choice mirrors urgency: a session that surfaced 🔴 Urgent items
-escalates with `action_required`; a routine briefing posts `info`.
-
-The runner stays bash-only in Plan 4; Plan 7 will Pythonize it. Either
-way, the integration point is `scoutctl notify telegram`.
+To change the wording or the rule, edit the section in your vault's SKILL.md
+or RESEARCH.md; `/scout-update` keeps your edits.
 
 ## Tier semantics
 

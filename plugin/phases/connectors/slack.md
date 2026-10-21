@@ -199,6 +199,8 @@ requires: slack
 
 Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
 
+**Skip this DM when SKILL.md also has a Telegram Notification section:** the wrap then goes to Telegram only (see that section).
+
 ### Consolidation Notification (3-5 lines)
 
 Keep it tight. Example format:
