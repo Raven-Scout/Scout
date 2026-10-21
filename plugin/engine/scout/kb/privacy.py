@@ -76,9 +76,11 @@ CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader 
 # KB), else the pure-Python one. Labels must be what pure ``yaml.safe_load``
 # gives (the Agnes indexer mirrors it), and the two scanners disagree on tabs
 # (``visibility:\tnormal``: C parses it, Python rejects it, which is private)
-# and on backslash escapes (``"\ud800"``: the reverse). So the C loader is used
-# only for a block with neither a tab nor a backslash (:func:`frontmatter_loader`);
-# anything else goes through SafeLoader. Every frontmatter parse on the label
+# and on backslash escapes (``"\ud800"``: the reverse), and a fuzz found more
+# (a U+FEFF inside the block: C rejects it; a bare ``!`` tag: C gives '', Python
+# None). So the C loader is used only for a pure-ASCII block with no tab, no
+# backslash and no ``!`` (:func:`frontmatter_loader`); anything else goes
+# through SafeLoader. Every frontmatter parse on the label
 # path (the classifier and ``KnowledgeGraph``) goes through
 # :func:`load_frontmatter_yaml`, so the two always agree.
 _FM_LOADER: Any = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) else yaml.SafeLoader
@@ -86,7 +88,7 @@ _FM_LOADER: Any = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) e
 
 def frontmatter_loader(text: str) -> Any:
     """The YAML loader for a frontmatter block: libyaml only where it agrees with SafeLoader."""
-    if "\t" in text or "\\" in text:
+    if not text.isascii() or "\t" in text or "\\" in text or "!" in text:
         return yaml.SafeLoader
     return _FM_LOADER
 

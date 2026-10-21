@@ -1079,5 +1079,39 @@
     "frontmatter_text": "---\nname: surrogate-escape\ntype: topic\nvisibility: normal\ntitle: \"lone surrogate \\ud800 escape\"\n---\nSafeLoader accepts a lone surrogate escape; libyaml rejects it.\n",
     "path": "knowledge-base/topics/misc/surrogate-escape.md",
     "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/bom-line-start.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: bom-line-start\n\ufefftype: topic\nvisibility: normal\n---\nA U+FEFF opening a line inside the block: SafeLoader keeps it in the key; libyaml rejects the block.\n",
+    "path": "knowledge-base/topics/misc/bom-line-start.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/bom-own-line.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: bom-own-line\ntype: topic\n\ufeff\nvisibility: normal\n---\nA U+FEFF alone on a line inside the block: SafeLoader rejects the block; libyaml skips it.\n",
+    "path": "knowledge-base/topics/misc/bom-own-line.md",
+    "policy_overlay": null
   }
 ]

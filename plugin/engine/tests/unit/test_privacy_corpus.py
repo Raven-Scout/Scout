@@ -27,7 +27,7 @@ from tests.unit.test_kb_privacy import _ROWS
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "privacy-corpus.json"
 
-EXPECTED_SHA256 = "81213ede818f4068511cd9541eca830a99978997a2ec9710b5c622cf3542f6b7"
+EXPECTED_SHA256 = "5b78bb65c0cd6a5a10529ee7d27234873ab861e1d6e2a9f4de5beefe84cede68"
 
 _CASES: list[dict[str, Any]] = json.loads(CORPUS.read_text(encoding="utf-8")) if CORPUS.exists() else []
 
@@ -91,15 +91,29 @@ def test_label_is_the_same_with_or_without_libyaml(case: dict[str, Any], monkeyp
 @pytest.mark.skipif(not _LIBYAML, reason="PyYAML built without libyaml")
 def test_libyaml_is_used_only_where_the_loaders_agree() -> None:
     assert privacy.frontmatter_loader("name: x\ntype: topic\n") is yaml.CSafeLoader
-    assert privacy.frontmatter_loader("visibility:\tnormal\n") is yaml.SafeLoader
-    assert privacy.frontmatter_loader('title: "a\\ud800"\n') is yaml.SafeLoader
+    for text in (
+        "visibility:\tnormal\n",  # tab
+        'title: "a\\ud800"\n',  # backslash escape
+        "name: x\n\ufefftype: topic\n",  # U+FEFF opening a line
+        "name: x\n\ufeff\nvisibility: normal\n",  # U+FEFF alone on a line
+        "title: café\n",  # any non-ASCII
+        "tag: !\n",  # bare tag: C gives '', Python None
+        "tag: !!str 1\n",
+    ):
+        assert privacy.frontmatter_loader(text) is yaml.SafeLoader, repr(text)
 
 
 @pytest.mark.parametrize(
-    "rel", ["knowledge-base/topics/misc/tab-after-colon.md", "knowledge-base/topics/misc/surrogate-escape.md"]
+    "rel",
+    [
+        "knowledge-base/topics/misc/tab-after-colon.md",
+        "knowledge-base/topics/misc/surrogate-escape.md",
+        "knowledge-base/topics/misc/bom-line-start.md",
+        "knowledge-base/topics/misc/bom-own-line.md",
+    ],
 )
 def test_graph_parses_the_loader_edge_cases_like_the_classifier(tmp_path: Path, rel: str) -> None:
-    """KnowledgeGraph uses the same loader choice: the tab block isn't an entity, the escape one is."""
+    """KnowledgeGraph uses the same loader choice: an unparseable block isn't an entity, a parsed one is."""
     (case,) = [c for c in _CASES if c["path"] == rel]
     note = tmp_path / rel
     note.parent.mkdir(parents=True)
@@ -110,7 +124,13 @@ def test_graph_parses_the_loader_edge_cases_like_the_classifier(tmp_path: Path, 
     clear_frontmatter_cache()
     graph = KnowledgeGraph(str(schema), str(tmp_path / "knowledge-base")).load()
     labels = {e["_label"]["path"]: e["_label"] for e in graph.entities.values()}
-    if case["expected_label"]["visibility_source"] == "forced":
-        assert rel not in labels
-    else:
+    # The reference: an entity exactly when pure yaml.safe_load gives a mapping with name and type.
+    try:
+        block = case["frontmatter_text"].split("\n---\n", 1)[0].removeprefix("---\n")
+        reference = yaml.safe_load(block)
+    except yaml.YAMLError:
+        reference = None
+    is_entity = isinstance(reference, dict) and "name" in reference and "type" in reference
+    assert (rel in labels) == is_entity
+    if is_entity:
         assert labels[rel] == case["expected_label"]
