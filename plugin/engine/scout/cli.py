@@ -203,32 +203,6 @@ def kb_install_hook(
     print(f"Installed: {path}")
 
 
-_CLASSIFY_HEAD_BYTES = 64 * 1024
-
-
-def _read_head(path: Path) -> tuple[str | None, bool]:
-    """``(text, unreadable)`` for one file.
-
-    Text is the leading 64 KiB of a markdown file, always decoded with
-    ``errors="replace"`` so a stray bad byte can't hide its frontmatter. A
-    non-markdown or missing file gives ``(None, False)`` (path defaults only);
-    any other failure on an existing ``.md`` (permission, a directory named
-    ``x.md``) gives ``(None, True)``, which ``classify`` treats as private. A
-    fence that doesn't close inside the window classifies as unparseable
-    (private).
-    """
-    if path.suffix.lower() != ".md":
-        return None, False
-    try:
-        with path.open("rb") as fh:
-            data = fh.read(_CLASSIFY_HEAD_BYTES)
-    except FileNotFoundError:
-        return None, False
-    except OSError:
-        return None, True
-    return data.decode("utf-8", errors="replace"), False
-
-
 @kb_app.command("classify")
 def kb_classify(
     paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
@@ -247,7 +221,7 @@ def kb_classify(
     import json
     import os
 
-    from scout.kb.privacy import FULL_READERS, classify, load_policy, normalize_rel
+    from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
     from scout.kb.reader import resolve_reader
 
     who = resolve_reader(reader, os.environ)
@@ -265,8 +239,7 @@ def kb_classify(
             except ValueError as e:
                 print(f"error: {e}", file=sys.stderr)
                 raise typer.Exit(2) from e
-            text, unreadable = _read_head(root / rel)
-            label = classify(rel, text, policy, unreadable=unreadable)
+            label = label_file(root, rel, policy)
             rows.append(label.to_json())
             lines.append(f"[private] {rel}" if label.visibility == "private" else rel)
     if as_json:
