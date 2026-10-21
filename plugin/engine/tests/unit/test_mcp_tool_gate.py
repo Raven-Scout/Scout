@@ -184,9 +184,44 @@ def test_run_allows_a_listed_tool(vault):
     assert gate_hook.run(stdin=_payload(f"{T}knowledge_search")) is None
 
 
-def test_run_is_silent_outside_scheduled_runs(vault, monkeypatch):
+def test_run_is_silent_outside_scout_runs(vault, monkeypatch):
     monkeypatch.delenv("SCOUT_MODE")
     assert gate_hook.run(stdin=_payload(f"{T}remember")) is None
+
+
+def _transcript(tmp_path: Path, prompt: str) -> Path:
+    t = tmp_path / "transcript.jsonl"
+    t.write_text(json.dumps({"message": {"role": "user", "content": prompt}}) + "\n")
+    return t
+
+
+@pytest.fixture
+def runnerless(tmp_path, monkeypatch):
+    """A vault session with no runner around it: no SCOUT_MODE, no SCOUT_DATA_DIR."""
+    v = tmp_path / "vault"
+    _write(v, {"company_kb": READER})
+    (v / "scout-config.yaml").write_text("user: {}\n")
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    return v
+
+
+def _vault_payload(vault: Path, tool: str, transcript: Path) -> io.StringIO:
+    payload = {"tool_name": tool, "cwd": str(vault / "knowledge-base"), "transcript_path": str(transcript)}
+    return io.StringIO(json.dumps(payload))
+
+
+def test_prompt_attributed_run_in_a_vault_is_gated(runnerless, tmp_path):
+    # A sandbox running the runner's prompt itself: the vault comes from cwd, the mode from the prompt.
+    t = _transcript(tmp_path, "You are Scout, running in RESEARCH mode.")
+    out = gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}knowledge_search", t)) is None
+
+
+def test_interactive_session_in_a_vault_is_not_gated(runnerless, tmp_path):
+    t = _transcript(tmp_path, "what's on my plate today?")
+    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t)) is None
 
 
 @pytest.mark.parametrize("raw", ["not json", "[]", '{"tool_name": 3}', '{"tool_name": "Read"}'])
@@ -226,12 +261,33 @@ def test_hooks_json_runs_the_gate_on_mcp_calls():
     assert 'scoutctl" hook mcp-tool-gate' in _pre_tool_use_command()
 
 
-def test_hook_command_skips_python_outside_scheduled_runs(tmp_path):
-    # With SCOUT_MODE unset the shell guard exits before exec — CLAUDE_PLUGIN_ROOT points nowhere.
-    env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODE"}
+def test_hook_command_skips_python_outside_a_vault(tmp_path):
+    # No SCOUT_DATA_DIR and a cwd in no vault: the shell guard exits before exec — CLAUDE_PLUGIN_ROOT points nowhere.
+    env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
     env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "missing")
-    res = subprocess.run(["sh", "-c", _pre_tool_use_command()], env=env, input="{}", capture_output=True, text=True)
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()], env=env, cwd=tmp_path, input="{}", capture_output=True, text=True
+    )
     assert res.returncode == 0 and res.stdout == ""
+
+
+def test_hook_command_finds_the_vault_from_cwd_and_denies(runnerless, tmp_path):
+    sub = runnerless / "knowledge-base"
+    sub.mkdir()
+    t = _transcript(tmp_path, "Your run mode is `morning-briefing`.")
+    env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()],
+        env=env,
+        cwd=sub,
+        input=_vault_payload(runnerless, f"{T}remember", t).getvalue(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 @pytest.mark.parametrize("custom_file", [None, "schema_version: 1\nconnectors: {}\n"])

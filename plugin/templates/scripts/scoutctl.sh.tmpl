@@ -1,0 +1,47 @@
+#!/bin/bash
+# scripts/scoutctl — the vault's way to call the Scout engine.
+#
+# The brain files run `scripts/scoutctl …` (relative: every session runs in the
+# vault) instead of a bare `scoutctl`, which is only there when the engine put
+# itself on PATH. This finds the engine and runs it against THIS vault:
+#
+#   1. `scoutctl` on PATH (a normal install: same engine as before)
+#   2. the engine this vault was rendered with
+#   3. $CLAUDE_PLUGIN_ROOT/engine/bin/scoutctl
+#   4. the newest Scout plugin in Claude Code's plugin cache
+#
+# SCOUT_DATA_DIR defaults to the folder holding this script's scripts/, not to
+# the path the vault was rendered at, so a vault that moved (or runs inside a
+# sandbox at another path) still finds itself. An explicit SCOUT_DATA_DIR wins.
+
+set -euo pipefail
+
+VAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-$VAULT}"
+
+engine=""
+if engine="$(command -v scoutctl 2>/dev/null)" && [ -x "$engine" ]; then
+    :
+elif [ -x "{{SCOUTCTL_BIN}}" ]; then
+    engine="{{SCOUTCTL_BIN}}"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$CLAUDE_PLUGIN_ROOT/engine/bin/scoutctl" ]; then
+    engine="$CLAUDE_PLUGIN_ROOT/engine/bin/scoutctl"
+else
+    # Claude Code's cache: plugins/cache/<marketplace>/scout/<version>/engine/bin/scoutctl.
+    # The highest version wins (sort -V), whichever marketplace it came from.
+    best="$(
+        for candidate in "$HOME"/.claude/plugins/cache/*/scout/*/engine/bin/scoutctl; do
+            [ -x "$candidate" ] || continue
+            version="${candidate%/engine/bin/scoutctl}"
+            printf '%s\t%s\n' "${version##*/}" "$candidate"
+        done | sort -V -k1,1 | tail -n 1
+    )"
+    engine="${best#*$'\t'}"
+fi
+
+if [ -z "$engine" ] || [ ! -x "$engine" ]; then
+    echo "scripts/scoutctl: no Scout engine found (looked on PATH, at {{SCOUTCTL_BIN}}, in \$CLAUDE_PLUGIN_ROOT and in ~/.claude/plugins/cache)" >&2
+    exit 127
+fi
+
+exec "$engine" "$@"

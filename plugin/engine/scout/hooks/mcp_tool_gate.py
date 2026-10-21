@@ -8,10 +8,14 @@ loose. With ``restrict_tools: true`` in the definition, this hook denies every
 call to that server's tools except the probe and the activity tools the entry
 lists (``custom_connectors.tool_gate``).
 
-  - Acts only in scheduled runs (SCOUT_MODE set); interactive sessions keep
-    Claude Code's own permission prompts. hooks.json checks SCOUT_MODE in the
-    shell, and greps the vault's file for ``restrict_tools``, so Python starts
-    (~0.15 s a call) only in runs of a vault that uses it.
+  - Acts only in Scout runs, as the Stop hooks define them (``run_context``):
+    SCOUT_MODE from a runner, or a session inside a vault whose prompt names a
+    run mode (a sandbox running the runner's prompt itself). Interactive
+    sessions keep Claude Code's own permission prompts.
+  - The vault is the run's: SCOUT_DATA_DIR, else the one containing the
+    session's cwd. hooks.json finds it the same way in the shell and greps its
+    file for ``restrict_tools``, so Python starts (~0.15 s a call) only for
+    sessions in a vault that uses it.
   - Fails closed: a gate that can't be computed denies the call.
   - Prints a PreToolUse deny decision, or nothing to let the call through.
 """
@@ -19,12 +23,12 @@ lists (``custom_connectors.tool_gate``).
 from __future__ import annotations
 
 import json
-import os
 import sys
+from pathlib import Path
 from typing import IO, Any
 
-from scout import paths
 from scout.custom_connectors import GATE_ALL, tool_gate
+from scout.hooks import run_context
 
 
 def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
@@ -52,8 +56,6 @@ def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
 
 def run(*, stdin: IO[str] | None = None) -> dict[str, Any] | None:
     """Read one PreToolUse payload; return the deny decision, or None to allow."""
-    if not os.environ.get("SCOUT_MODE"):
-        return None
     src = stdin if stdin is not None else sys.stdin
     try:
         data = json.load(src)
@@ -63,7 +65,12 @@ def run(*, stdin: IO[str] | None = None) -> dict[str, Any] | None:
     if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
         return None
     try:
-        reason = decide(tool_name, tool_gate(paths.data_dir()))
+        raw_transcript = data.get("transcript_path")
+        transcript = Path(raw_transcript) if isinstance(raw_transcript, str) and raw_transcript else None
+        ctx = run_context.resolve(data, transcript)
+        if ctx.mode is None:
+            return None  # an interactive session: Claude Code's own permission prompts apply
+        reason = decide(tool_name, tool_gate(ctx.vault))
     except Exception as exc:  # noqa: BLE001 — fail closed: an unknown gate denies
         reason = f"Scout's MCP tool gate failed ({exc!r}), so {tool_name} is blocked in this run."
     if reason is None:

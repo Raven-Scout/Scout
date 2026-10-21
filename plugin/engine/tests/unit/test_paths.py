@@ -22,9 +22,47 @@ def test_data_dir_reads_env_var(clean_env: None, tmp_path: Path, monkeypatch: py
     assert paths.data_dir() == tmp_path.resolve()
 
 
-def test_data_dir_falls_back_to_home(clean_env: None) -> None:
+def test_data_dir_falls_back_to_home(clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)  # not inside any vault
     result = paths.data_dir()
     assert result == (Path.home() / "Scout").resolve()
+
+
+def _vault(root: Path) -> Path:
+    (root / "knowledge-base").mkdir(parents=True)
+    (root / "scout-config.yaml").write_text("user:\n  name: Alex\n", encoding="utf-8")
+    return root
+
+
+def test_data_dir_finds_the_vault_the_process_runs_in(
+    clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = _vault(tmp_path / "sandbox" / "vault")
+    monkeypatch.chdir(vault / "knowledge-base")  # any folder inside it
+    assert paths.data_dir() == vault.resolve()
+
+
+def test_data_dir_env_wins_over_the_cwd_vault(clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scheduled runners export SCOUT_DATA_DIR; a vault under cwd must never override it."""
+    monkeypatch.chdir(_vault(tmp_path / "cwd-vault"))
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "env-vault"))
+    assert paths.data_dir() == (tmp_path / "env-vault").resolve()
+    assert paths.data_dir(tmp_path / "explicit") == (tmp_path / "explicit").resolve()
+
+
+def test_data_dir_takes_an_explicit_cwd(clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hooks pass the session's cwd from their payload; the hook process may run elsewhere."""
+    vault = _vault(tmp_path / "vault")
+    monkeypatch.chdir(tmp_path)
+    assert paths.data_dir(cwd=vault / "knowledge-base") == vault.resolve()
+    assert paths.data_dir(cwd=tmp_path) == (Path.home() / "Scout").resolve()
+    assert paths.data_dir(cwd="") == (Path.home() / "Scout").resolve()
+
+
+def test_a_folder_without_scout_config_is_not_a_vault(tmp_path: Path) -> None:
+    (tmp_path / "knowledge-base").mkdir()
+    assert paths.vault_containing(tmp_path) is None
+    assert paths.vault_containing(tmp_path / "missing" / "dir") is None
 
 
 def test_data_dir_expands_tilde(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:

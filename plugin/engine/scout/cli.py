@@ -218,35 +218,33 @@ def kb_classify(
     {"path": ..., "denied": true} for every path, without the file being looked
     at, so a denial says nothing about whether the file exists or what it is.
     """
-    import json
-    import os
+    args = _kb_args("classify", dict(locals()))
 
-    from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
-    from scout.kb.reader import resolve_reader
+    def body(who: str, root: Path) -> object:
+        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+        from scout.kb.read import Output, UsageError
 
-    who = resolve_reader(reader, os.environ)
-    rows: list[dict[str, object]] = []
-    lines: list[str] = []
-    if who not in FULL_READERS:
-        rows = [{"path": p, "denied": True} for p in paths]
-        lines = [f"{p}: denied" for p in paths]
-    else:
-        root = _kb_repo(repo)
+        if who not in FULL_READERS:
+            return Output(
+                data=[{"path": p, "denied": True} for p in paths],
+                lines=[f"{p}: denied" for p in paths],
+                denied=len(paths),
+            )
         policy = load_policy(root)
+        labels = []
         for p in paths:
             try:
                 rel = normalize_rel(root, p)
             except ValueError as e:
-                print(f"error: {e}", file=sys.stderr)
-                raise typer.Exit(2) from e
-            label = label_file(root, rel, policy)
-            rows.append(label.to_json())
-            lines.append(f"[private] {rel}" if label.visibility == "private" else rel)
-    if as_json:
-        print(json.dumps(rows, indent=2))
-    else:
-        for line in lines:
-            print(line)
+                raise UsageError(str(e)) from e
+            labels.append(label_file(root, rel, policy))
+        return Output(
+            data=[label.to_json() for label in labels],
+            lines=[f"[private] {label.path}" if label.visibility == "private" else label.path for label in labels],
+            labels=[label.to_json() for label in labels],
+        )
+
+    _kb_run(args, reader, repo, as_json, body)
 
 
 @kb_app.command("policy")
@@ -262,29 +260,367 @@ def kb_policy(
     Every reader gets the same output: it is configuration (globs, surface ids),
     not note content. --reader is still resolved, so a widening flag is refused.
     """
+    args = _kb_args("policy", dict(locals()))
+
+    def body(_who: str, root: Path) -> object:
+        from scout.kb.privacy import load_policy
+        from scout.kb.read import Output
+
+        data = load_policy(root).to_json()
+        lo = data["local_only"]
+        lines = [
+            "local_only.always:    " + " ".join(lo["always"]),
+            "local_only.default:   " + (" ".join(lo["default"]) or "(none)"),
+            "local_only.sync_allow: " + " ".join(lo["sync_allow"]),
+            "visibility_defaults:",
+            *(f"  {entry['glob']} -> {entry['visibility']}" for entry in data["visibility_defaults"]),
+            "surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]),
+            "surfaces.shared:      " + " ".join(data["surfaces"]["shared"]),
+            "shared_files:         " + (" ".join(data["shared_files"]) or "(none)"),
+            "warnings:             " + (" ".join(data["warnings"]) or "(none)"),
+        ]
+        return Output(data=data, lines=lines)
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
+# ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
+
+_READER_HELP = "owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+_KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
+_SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
+
+
+def _kb_args(command: str, params: dict[str, object]) -> list[str]:
+    """A command's arguments for the audit log's hash: ``[command, "k=v", ...]``."""
+    return [command, *(f"{k}={params[k]}" for k in sorted(params))]
+
+
+def _kb_run(
+    args: list[str],
+    reader: str | None,
+    repo: Path | None,
+    as_json: bool,
+    body: Callable[[str, Path], object],
+    kb_root: str | None = None,
+) -> None:
+    """Resolve the reader and vault, run ``body(reader, vault)`` (a ``scout.kb.read.Output``), print.
+
+    Every call writes its audit line (non-owner readers, spec §7.4), failures
+    too: a refused ``--reader``, a missing argument, a bad pattern or path
+    (exit 2), a KB error, each with ``paths_returned`` 0.
+    """
     import json
     import os
 
-    from scout.kb.privacy import load_policy
+    from scout.errors import KBError
+    from scout.kb.read import Output, UsageError, audit, graph_vault
     from scout.kb.reader import resolve_reader
 
-    resolve_reader(reader, os.environ)
-
-    data = load_policy(_kb_repo(repo)).to_json()
+    vault = graph_vault(_kb_repo(repo), None if repo else kb_root)
+    try:
+        who = resolve_reader(reader, os.environ)
+    except typer.BadParameter:
+        audit(vault, resolve_reader(None, os.environ), args[0], args, Output(data=None))
+        raise
+    try:
+        out = body(who, vault)
+    except UsageError as e:
+        audit(vault, who, args[0], args, Output(data=None))
+        print(f"error: {e}", file=sys.stderr)
+        raise typer.Exit(2) from e
+    except (typer.BadParameter, KBError):
+        audit(vault, who, args[0], args, Output(data=None))
+        raise
+    assert isinstance(out, Output)
+    audit(vault, who, args[0], args, out)
     if as_json:
-        print(json.dumps(data, indent=2))
-        return
-    lo = data["local_only"]
-    print("local_only.always:    " + " ".join(lo["always"]))
-    print("local_only.default:   " + (" ".join(lo["default"]) or "(none)"))
-    print("local_only.sync_allow: " + " ".join(lo["sync_allow"]))
-    print("visibility_defaults:")
-    for entry in data["visibility_defaults"]:
-        print(f"  {entry['glob']} -> {entry['visibility']}")
-    print("surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]))
-    print("surfaces.shared:      " + " ".join(data["surfaces"]["shared"]))
-    print("shared_files:         " + (" ".join(data["shared_files"]) or "(none)"))
-    print("warnings:             " + (" ".join(data["warnings"]) or "(none)"))
+        print(json.dumps(out.data, indent=2, default=str))
+    elif out.raw is not None:
+        sys.stdout.write(out.raw)
+    else:
+        for line in out.lines:
+            print(line)
+    raise typer.Exit(out.code)
+
+
+def _kb_graph_cmd(
+    args: list[str],
+    reader: str | None,
+    repo: Path | None,
+    kb_root: str | None,
+    schema: str | None,
+    as_json: bool,
+    run: Callable[..., object],
+    needs: tuple[tuple[str | None, str], ...] = (),
+) -> None:
+    """``_kb_run`` over the labelled graph: checks ``needs`` (value, name), then ``run(graph, vault)``."""
+
+    def body(who: str, vault: Path) -> object:
+        from scout.kb.read import load_graph
+
+        for value, what in needs:
+            _need(value, what)
+        return run(load_graph(vault, who, kb_root, schema), vault)
+
+    _kb_run(args, reader, repo, as_json, body, kb_root)
+
+
+def _need(value: str | None, what: str) -> str:
+    if not value:
+        raise typer.BadParameter(f"{what} is required")
+    return value
+
+
+_R = typer.Option(None, "--reader", help=_READER_HELP)
+_J = typer.Option(False, "--json", help="Print JSON; every result carries its label.")
+_REPO = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd).")
+_KBR = typer.Option(None, "--kb-root", help=_KB_ROOT_HELP)
+_SCH = typer.Option(None, "--schema", help=_SCHEMA_HELP)
+
+
+@kb_app.command("files")
+def kb_files(
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """List the files the reader may see, labelled (text: [private] prefix)."""
+    args = _kb_args("files", dict(locals()))
+    from scout.kb.read import cmd_files
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_files(vault, who, glob or ()))
+
+
+@kb_app.command("search")
+def kb_search(
+    pattern: str = typer.Argument(..., help="A regex (ripgrep syntax; Python's when rg is absent)."),
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
+    ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern."""
+    args = _kb_args("search", dict(locals()))
+    from scout.kb.read import cmd_search
+
+    _kb_run(
+        args, reader, repo, as_json, lambda who, vault: cmd_search(vault, who, pattern, glob or (), fixed, ignore_case)
+    )
+
+
+@kb_app.command("read")
+def kb_read(
+    path: str = typer.Argument(..., help="A vault file (any spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file."""
+    args = _kb_args("read", dict(locals()))
+    from scout.kb.read import cmd_read
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
+
+
+@kb_app.command("resolve")
+def kb_resolve(
+    name: str = typer.Argument(..., help="A name, alias or slug."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Map a name, alias or slug to its canonical file among visible notes. Exit 1 = no match."""
+    args = _kb_args("resolve", dict(locals()))
+    from scout.kb.read import cmd_resolve
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, vault: cmd_resolve(vault, g.reader, g, name))
+
+
+@kb_app.command("query")
+def kb_query(
+    type_: str | None = typer.Option(None, "--type", help="Entity type."),
+    status: str | None = typer.Option(None, "--status", help="Status."),
+    exclude_status: str | None = typer.Option(None, "--exclude-status", help="Comma-separated statuses to exclude."),
+    domain: str | None = typer.Option(None, "--domain", help="Domain."),
+    deadline_before: str | None = typer.Option(None, "--deadline-before", help="ISO date: deadline <= this."),
+    visibility: str | None = typer.Option(None, "--visibility", help="normal | private."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The ontology query (parser.py query), with the reader filter and labels."""
+    args = _kb_args("query", dict(locals()))
+    from scout.kb.read import cmd_query
+
+    if visibility not in (None, "normal", "private"):
+        visibility_error = typer.BadParameter("use normal or private", param_hint="--visibility")
+
+        def refuse(_who: str, _vault: Path) -> object:
+            raise visibility_error
+
+        _kb_run(args, reader, repo, as_json, refuse, kb_root)
+    filters = {
+        "type": type_,
+        "status": status,
+        "domain": domain,
+        "deadline_before": deadline_before,
+        "exclude_status": exclude_status,
+    }
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_query(g, filters, visibility))
+
+
+@kb_app.command("related")
+def kb_related(
+    name: str | None = typer.Argument(None, help="Entity name."),
+    name_opt: str | None = typer.Option(None, "--name", help="Entity name (parser.py spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Relationships from an entity, each target labelled."""
+    args = _kb_args("related", dict(locals()))
+    from scout.kb.read import cmd_related
+
+    target = name_opt or name
+    run = lambda g, _v: cmd_related(g, str(target))  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((target, "NAME"),))
+
+
+@kb_app.command("traverse")
+def kb_traverse(
+    name: str | None = typer.Argument(None, help="Start entity."),
+    name_opt: str | None = typer.Option(None, "--name", help="Start entity (parser.py spelling)."),
+    hops: int | None = typer.Option(None, "--hops", help="Max hops (default 2)."),
+    rels: str | None = typer.Option(None, "--rels", help="Comma-separated relationship types to follow."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Entities reachable from a start entity (BFS), each labelled."""
+    args = _kb_args("traverse", dict(locals()))
+    from scout.kb.read import cmd_traverse
+
+    start = name_opt or name
+    run = lambda g, _v: cmd_traverse(g, str(start), hops, rels)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((start, "NAME"),))
+
+
+@kb_app.command("path")
+def kb_path(
+    source: str | None = typer.Argument(None, help="Source entity."),
+    target: str | None = typer.Argument(None, help="Target entity."),
+    name_opt: str | None = typer.Option(None, "--name", help="Source entity (parser.py spelling)."),
+    to: str | None = typer.Option(None, "--to", help="Target entity (parser.py spelling)."),
+    hops: int | None = typer.Option(None, "--hops", help="Max hops (default 6)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The shortest typed path between two entities, each node labelled."""
+    args = _kb_args("path", dict(locals()))
+    from scout.kb.read import cmd_path
+
+    src, dst = name_opt or source, to or target
+    run = lambda g, _v: cmd_path(g, str(src), str(dst), hops)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((src, "SOURCE"), (dst, "TARGET")))
+
+
+@kb_app.command("entity")
+def kb_entity(
+    name: str | None = typer.Argument(None, help="Entity name."),
+    name_opt: str | None = typer.Option(None, "--name", help="Entity name (parser.py spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """One entity's frontmatter as JSON, with its _label (parser.py entity)."""
+    args = _kb_args("entity", dict(locals()))
+    from scout.kb.read import cmd_entity
+
+    target = name_opt or name
+    run = lambda g, _v: cmd_entity(g, str(target))  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((target, "NAME"),))
+
+
+@kb_app.command("name-lookup")
+def kb_name_lookup(
+    token: str | None = typer.Argument(None, help="Name token."),
+    token_opt: str | None = typer.Option(None, "--token", help="Name token (parser.py spelling)."),
+    threshold: float = typer.Option(0.7, "--threshold", help="Fuzzy cutoff (0.0-1.0)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Resolve a transcribed name against people and aliases (parser.py name_lookup), labelled."""
+    args = _kb_args("name-lookup", dict(locals()))
+    from scout.kb.read import cmd_name_lookup
+
+    tok = token_opt or token
+    run = lambda g, _v: cmd_name_lookup(g, str(tok), threshold)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((tok, "TOKEN"),))
+
+
+@kb_app.command("export")
+def kb_export(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The whole graph as JSON, each entity with its _label (parser.py export)."""
+    args = _kb_args("export", dict(locals()))
+    from scout.kb.read import cmd_export
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_export(g))
+
+
+@kb_app.command("stats")
+def kb_stats(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Entity and relationship counts (parser.py stats)."""
+    args = _kb_args("stats", dict(locals()))
+    from scout.kb.read import cmd_stats
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_stats(g))
+
+
+@kb_app.command("validate")
+def kb_validate(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Check entities against the schema (parser.py validate), each error labelled."""
+    args = _kb_args("validate", dict(locals()))
+    from scout.kb.read import cmd_validate
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_validate(g))
 
 
 # Top-level command — `connector-health-report` is a script, not a hook

@@ -2,8 +2,9 @@
 
 The engine's ``KnowledgeGraph`` is the one implementation of the vault parser's
 walks: ``name_lookup``, ``traverse``, ``path`` and ``export_json`` are ported
-from ``templates/knowledge-base/ontology/parser.py`` (the reference here: the
-parity tests run it on the same vault), and every entity carries ``_label``,
+from the vault's pre-shim ``parser.py`` (kept byte for byte as
+``tests/fixtures/vault-parser-pre-shim.py.txt``, the reference here: the parity
+tests run it on the same vault; the template is now a shim over ``scoutctl kb``), and every entity carries ``_label``,
 the same label ``scoutctl kb classify`` gives its file. Readers: ``owner`` and
 ``autonomous`` get every entity, labelled; any other reader loads nothing.
 """
@@ -11,6 +12,7 @@ the same label ``scoutctl kb classify`` gives its file. Readers: ``owner`` and
 from __future__ import annotations
 
 import builtins
+import importlib.machinery
 import importlib.util
 import io
 import itertools
@@ -45,7 +47,8 @@ from tests.unit.privacy_vault_helpers import (
     privacy_secrets,
 )
 
-TEMPLATE_PARSER = Path(__file__).resolve().parents[3] / "templates" / "knowledge-base" / "ontology" / "parser.py"
+# The vault parser as it was before it became a shim over scoutctl (#453): the reference.
+LEGACY_PARSER = Path(__file__).resolve().parents[1] / "fixtures" / "vault-parser-pre-shim.py.txt"
 AGENT = "agent:person:priya@example.com"
 
 
@@ -73,7 +76,8 @@ def _graph(vault: Path, reader: str = "owner", kb: str = "knowledge-base") -> Kn
 
 
 def _template(vault: Path) -> Any:
-    spec = importlib.util.spec_from_file_location("privacy_template_parser", TEMPLATE_PARSER)
+    loader = importlib.machinery.SourceFileLoader("privacy_legacy_parser", str(LEGACY_PARSER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec and spec.loader
     module: ModuleType = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -596,12 +600,12 @@ def test_parity_export(pair: tuple[KnowledgeGraph, Any]) -> None:
     assert _strip(json.loads(engine.export_json(indent=4))) == json.loads(template.export_json(indent=4))
 
 
-def test_parity_cli_export_through_the_template(vault: Path) -> None:
-    """The rendered parser's own CLI, run the way a vault runs it, agrees with the engine port."""
+def test_parity_cli_export_through_the_legacy_parser(vault: Path) -> None:
+    """The pre-shim parser's own CLI, run the way a vault ran it, agrees with the engine port."""
     out = subprocess.run(
         [
             sys.executable,
-            str(TEMPLATE_PARSER),
+            str(LEGACY_PARSER),
             "export",
             "--schema",
             str(ENGINE_SCHEMA),

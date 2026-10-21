@@ -1,5 +1,5 @@
 {
-  "description": "Scout connector telemetry, session-token accounting and the restrict_tools MCP gate. Activate only inside scheduled scout runs (each hook short-circuits when SCOUT_MODE is unset; the PreToolUse gate also skips Python unless the vault's connectors.custom.yaml uses restrict_tools). Per #72, per-tool-call accounting was moved out of PostToolUse (which fired one Python cold-start per tool call) into the session-tool-log Stop hook that walks the transcript once at session end.",
+  "description": "Scout connector telemetry, session-token accounting and the restrict_tools MCP gate. Activate only inside scout runs: SCOUT_MODE from the runner, or, for a session started inside a vault without a runner, the run mode its prompt names (scout/hooks/run_context.py). Interactive sessions are skipped. The PreToolUse gate skips Python unless the session's vault (SCOUT_DATA_DIR, else the one containing the working directory) uses restrict_tools in connectors.custom.yaml. Per #72, per-tool-call accounting was moved out of PostToolUse (which fired one Python cold-start per tool call) into the session-tool-log Stop hook that walks the transcript once at session end.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$SCOUT_MODE\" ] || exit 0; grep -qs restrict_tools \"${SCOUT_DATA_DIR:-$HOME/Scout}/connectors.custom.yaml\" || exit 0; exec \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook mcp-tool-gate",
+            "command": "d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=$(dirname \"$d\"); done; fi; grep -qs restrict_tools \"$d/connectors.custom.yaml\" || exit 0; exec \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook mcp-tool-gate",
             "timeout": 10
           }
         ]
