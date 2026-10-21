@@ -3008,10 +3008,17 @@ def _register_bootstrap() -> None:
         cfg = _vault_bootstrap_config(vault)
         renders = {r.file.vault_rel: r for r in managed_renders(cfg)}
         rows = vault_drift.report(vault, {rel: r.text for rel, r in renders.items()})
+        privacy = vault_drift.privacy_drift(vault)
 
         if json_out:
             files = [row.to_json() for row in rows]
-            typer.echo(_json.dumps({"schema_version": 1, "vault": str(vault), "files": files}, indent=2))
+            payload = {
+                "schema_version": 1,
+                "vault": str(vault),
+                "files": files,
+                "privacy": [finding.to_json() for finding in privacy],
+            }
+            typer.echo(_json.dumps(payload, indent=2))
             return
 
         if patch:
@@ -3071,6 +3078,10 @@ def _register_bootstrap() -> None:
             )
             return
 
+        if privacy:
+            typer.echo(f"privacy drift — {len(privacy)} vault file(s) read the vault around the privacy labels:")
+            for finding in privacy:
+                typer.echo(f"  {finding.rule:<18} {finding.path}  {finding.message}")
         if not rows:
             typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
             return

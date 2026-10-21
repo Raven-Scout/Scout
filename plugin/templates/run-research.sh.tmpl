@@ -104,6 +104,13 @@ fi
 # telemetry is ever written (#192, #121).
 export SCOUT_MODE="$MODE"
 
+# A scheduled run reads the vault as the `autonomous` reader (#453, spec §6.2):
+# it sees every note, each labelled, and the privacy phase rule keeps private
+# content off shared surfaces. Set explicitly rather than left to the
+# SCOUT_MODE fallback, so the pre-session caches and every `scoutctl kb` call
+# in the session are labelled for that reader.
+export SCOUT_READER=autonomous
+
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —
 # resolved by the engine (scout/models.py). A resolver failure never blocks the

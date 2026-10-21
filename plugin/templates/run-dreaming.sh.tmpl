@@ -78,6 +78,14 @@ Important:
 
 echo "=== {{INSTANCE_NAME}} Dreaming run starting at $(date) ===" >> "$LOG_FILE"
 
+# A scheduled run reads the vault as the `autonomous` reader (#453, spec §6.2):
+# it sees every note, each labelled, and the privacy phase rule keeps private
+# content off shared surfaces. Set explicitly rather than left to the
+# SCOUT_MODE fallback (exported further down), and before the pre-session
+# caches below, so they and every `scoutctl kb` call in the session are
+# labelled for that reader.
+export SCOUT_READER=autonomous
+
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
 # These write to .scout-cache/ for DREAMING.md to consume.
 PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"

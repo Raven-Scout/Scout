@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from scout import paths
+from scout.kb.privacy import Policy, label_file, load_policy, normalize_rel
 from scout.scripts._config_scan import scan_overrides
 
 # Defaults mirror heartbeat.sh constants so behavior is preserved when no
@@ -357,22 +358,41 @@ def _item_status(path: Path) -> str | None:
     return None  # closing fence found, no status key
 
 
+def _private(vault: Path, path: Path, policy: Policy) -> bool:
+    """Whether ``path`` (inside ``vault``) is labelled private, by the engine's classifier.
+
+    Anything the classifier can't place (a path outside the vault) counts as
+    private: a research run may not take it as a target.
+    """
+    try:
+        rel = normalize_rel(vault, path)
+    except ValueError:
+        return True
+    return label_file(vault, rel, policy).visibility == "private"
+
+
 def research_queue_has_open(vault: Path) -> bool:
-    """True iff the research queue has at least one open item.
+    """True iff the research queue has at least one open item a research run may take.
 
     Current per-file format: any ``knowledge-base/research-queue/*.md`` with
     frontmatter ``status: open`` or ``in-progress``. Falls back to the legacy
     single-file ``research-queue.md`` (``- [ ]`` lines) for pre-migration vaults.
+
+    Private items are ignored (#453, spec §4.2/§6.3): a research run may not
+    research a private entity, so a queue holding only private items gives it
+    nothing to do. The label is the engine classifier's, same as ``scoutctl kb``.
     """
+    policy = load_policy(vault)
     queue_dir = vault / _RESEARCH_QUEUE_DIR_REL
     if queue_dir.is_dir():
         try:
             items = sorted(queue_dir.glob("*.md"))
         except OSError:
             return False
-        return any(_item_status(i) in ("open", "in-progress") for i in items)
+        return any(_item_status(i) in ("open", "in-progress") and not _private(vault, i, policy) for i in items)
     # Legacy single-file fallback (pre-migration vaults only):
-    return research_queue_has_unchecked(vault / _RESEARCH_QUEUE_REL)
+    legacy = vault / _RESEARCH_QUEUE_REL
+    return research_queue_has_unchecked(legacy) and not _private(vault, legacy, policy)
 
 
 def run_budget_check(scoutctl_bin: str | None = None) -> int:
@@ -498,14 +518,16 @@ def launch_runner(runner: Path, *, vault: Path, log_path: Path) -> int:
     Mirrors ``nohup "$RUNNER" >> "$HEARTBEAT_LOG" 2>&1 &`` plus the
     schedule_tick.py runner pattern (start_new_session + DEVNULL stdin).
     ``SCOUT_TRIGGER=heartbeat`` lets the run ledger count heartbeat launches
-    apart from scheduled ones (run-health spec §5.3). Returns the child's PID.
+    apart from scheduled ones (run-health spec §5.3). ``SCOUT_READER=autonomous``
+    makes the run read the vault as the owner's unattended reader (#453, spec
+    §6.2), whatever runner it is. Returns the child's PID.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(
             [str(runner)],
             cwd=str(vault),
-            env={**os.environ, "SCOUT_TRIGGER": "heartbeat"},
+            env={**os.environ, "SCOUT_TRIGGER": "heartbeat", "SCOUT_READER": "autonomous"},
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,

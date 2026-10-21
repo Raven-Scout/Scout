@@ -40,8 +40,9 @@ def _status(directory: Path, on: str) -> dict:
 
 @pytest.fixture
 def tasks(tmp_path: Path) -> Path:
-    d = tmp_path / "recurring-tasks"
-    d.mkdir()
+    # Inside a vault's knowledge-base/, as in a real vault, so each row's privacy label is read (#453).
+    d = tmp_path / "knowledge-base" / "recurring-tasks"
+    d.mkdir(parents=True)
     return d
 
 

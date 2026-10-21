@@ -157,26 +157,15 @@ def test_get_pr_review_requested_uses_gh_search(monkeypatch: pytest.MonkeyPatch)
 # ---------------------------------------------------------------------------
 
 
-def test_personal_tasks_is_empty_without_the_ontology_parser(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ontology parser is optional; its absence must be silent, not fatal."""
+def test_personal_tasks_is_empty_without_a_knowledge_base(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No KB, no tasks: silent, not fatal, and nothing is shelled out (#453: the
+    tasks come from the engine's labelled graph in process, not parser.py)."""
 
     def fail(*_a: object, **_k: object):
-        raise AssertionError("must not shell out when parser.py is absent")
+        raise AssertionError("must not shell out for personal tasks")
 
     monkeypatch.setattr(subprocess, "run", fail)
-    assert psd.get_personal_tasks(scout_dir) == ""
-
-
-def test_personal_tasks_invokes_the_parser_when_present(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    parser = scout_dir / "knowledge-base" / "ontology" / "parser.py"
-    parser.parent.mkdir(parents=True)
-    parser.write_text("# stub\n", encoding="utf-8")
-
-    seen: list[list[str]] = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: seen.append(cmd) or _Proc(0, "- [ ] pay rent"))
-
-    assert psd.get_personal_tasks(scout_dir) == "- [ ] pay rent"
-    assert seen[0] == ["python3", str(parser), "query", "--type", "task"]
+    assert psd.get_personal_tasks(scout_dir) == []
 
 
 # ---------------------------------------------------------------------------

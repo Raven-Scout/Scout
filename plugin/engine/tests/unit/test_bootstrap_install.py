@@ -97,6 +97,20 @@ def test_install_seeds_schedule_yaml(tmp_path):
     assert "schema_version" in schedule.read_text()
 
 
+def test_install_renders_the_autonomous_reader_into_every_runner(tmp_path):
+    """#453 §11.2 "Bootstrap": every engine-rendered runner exports SCOUT_READER=autonomous,
+    and nothing the engine renders is reported as privacy drift."""
+    from scout.scripts import vault_drift
+    from scout.scripts.bootstrap import _CAT1B_RUNNERS
+
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))  # skip_jobs=True
+    for runner, _template in _CAT1B_RUNNERS:
+        assert "\nexport SCOUT_READER=autonomous\n" in (vault / runner).read_text(encoding="utf-8"), runner
+    assert vault_drift.privacy_drift(vault) == []
+
+
 def test_install_writes_assembled_files_and_snapshots(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"

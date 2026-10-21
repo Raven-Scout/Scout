@@ -20,6 +20,13 @@ Discovery exclusions are layered to match the bash:
   - a meeting's dated session files: meetings/<slug>/YYYY-MM-DD[-_. …].md,
     but never its home file meetings/<slug>/<slug>.md
 
+Privacy labels (#453, spec §6.3): the scan is made as the reader the
+environment names (``resolve_reader(None, os.environ)``): ``owner`` in an
+interactive session, ``autonomous`` in a scheduled run. Both see every file,
+and each listed file carries its engine label: a private one is written as
+``- [private] <path>``. A reader that sees nothing (``agent:*``) gets empty
+lists. A file the classifier didn't label is marked private (fail closed).
+
 Hooks must NEVER raise — main() catches all exceptions and returns 0.
 """
 
@@ -39,6 +46,8 @@ from scout.config import resolve_timezone
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
 from scout.kb.frontmatter import frontmatter_block
+from scout.kb.privacy import FULL_READERS
+from scout.kb.reader import resolve_reader
 
 
 def _boundary_zone() -> ZoneInfo:
@@ -445,6 +454,34 @@ def _count_sources(entries: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+_PRIVATE_MARK = "[private] "
+
+
+def _mark(entry: dict[str, Any]) -> str:
+    """``[private] `` for an entry labelled anything but normal.
+
+    ``run`` labels every entry, a file the classifier missed as private; an
+    entry with no ``visibility`` key (a caller building its own) is unmarked.
+    """
+    return "" if entry.get("visibility", "normal") == "normal" else _PRIVATE_MARK
+
+
+def kb_visibility(scout_dir: Path, reader: str) -> dict[str, str]:
+    """``{vault-relative path: visibility}`` of the files under KB_ROOTS ``reader`` may see.
+
+    The engine classifier through the read gate's index, the label ``scoutctl
+    kb files`` prints. Empty for a reader that sees nothing, or when labels
+    can't be read (callers then mark every file private).
+    """
+    from scout.kb.read import visible_files
+
+    try:
+        rows = visible_files(scout_dir, reader, [f"{root}/**" for root in KB_ROOTS])
+    except Exception:
+        return {}
+    return {rel: label.visibility for rel, label in rows}
+
+
 def render_output(
     stale: list[dict[str, Any]],
     no_date: list[dict[str, Any]],
@@ -477,7 +514,7 @@ def render_output(
         lines.append("## STALE — Need reading/audit")
         for entry in stale:
             lines.append(
-                f"- **{entry['rel']}** — {entry['age_hours']}h old "
+                f"- {_mark(entry)}**{entry['rel']}** — {entry['age_hours']}h old "
                 f"(standard: {entry['budget_hours']}h) — last: {entry['datestr']}"
             )
         lines.append("")
@@ -485,13 +522,13 @@ def render_output(
     if no_date:
         lines.append("## NO DATE — Need checking")
         for entry in no_date:
-            lines.append(f"- {entry['rel']}")
+            lines.append(f"- {_mark(entry)}{entry['rel']}")
         lines.append("")
 
     # FRESH section is always written, even when empty (bash line 156 has no guard).
     lines.append("## FRESH — Skip unless feedback signals")
     for entry in fresh:
-        lines.append(f"- {entry['rel']} ({entry['age_hours']}h old)")
+        lines.append(f"- {_mark(entry)}{entry['rel']} ({entry['age_hours']}h old)")
 
     lines.append("")
     lines.append("---")
@@ -529,7 +566,9 @@ def run(
         now = datetime.now(zone)
     now_et = now.strftime("%Y-%m-%d %H:%M %Z")
 
-    files = discover_kb_files(scout_dir)
+    reader = resolve_reader(None, os.environ)
+    files = discover_kb_files(scout_dir) if reader in FULL_READERS else []
+    labels = kb_visibility(scout_dir, reader) if files else {}
     roots = [r for r in KB_ROOTS if (scout_dir / r).is_dir()]
     stale: list[dict[str, Any]] = []
     no_date: list[dict[str, Any]] = []
@@ -542,6 +581,7 @@ def run(
             # One bad file must not block the rest. Treat as NO_DATE.
             label = "NO_DATE"
             details = {"rel": f.relative_to(scout_dir).as_posix()}
+        details["visibility"] = labels.get(details["rel"], "private")
         if label == "STALE":
             stale.append(details)
         elif label == "FRESH":

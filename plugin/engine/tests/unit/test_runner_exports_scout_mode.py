@@ -54,6 +54,23 @@ def test_runner_exports_scout_mode_between_mode_resolution_and_claude_launch(nam
     assert text.count(EXPORT_LINE) == 1, f"{name}: exactly one SCOUT_MODE export expected"
 
 
+READER_EXPORT_LINE = "export SCOUT_READER=autonomous"
+
+
+@pytest.mark.parametrize(("name", "_default_mode"), RUNNERS)
+def test_runner_exports_the_autonomous_reader_before_claude_launch(name: str, _default_mode: str) -> None:
+    """#453 spec §6.2: a scheduled run reads the vault as ``autonomous``, set
+    explicitly next to SCOUT_MODE rather than left to the SCOUT_MODE fallback."""
+    text = (TEMPLATES / name).read_text(encoding="utf-8")
+    assert text.count(READER_EXPORT_LINE) == 1, f"{name}: exactly one SCOUT_READER export expected"
+    reader = text.index(READER_EXPORT_LINE)
+    assert reader < text.index(CLAUDE_LAUNCH)
+    # Before the pre-session caches are built, so they are labelled as this reader
+    # (run-dreaming builds them before it exports SCOUT_MODE).
+    if "PRE_FILTER=" in text:
+        assert reader < text.index("PRE_FILTER=")
+
+
 @pytest.mark.parametrize(("name", "_default_mode"), RUNNERS)
 def test_runner_still_exports_data_dir(name: str, _default_mode: str) -> None:
     """Guard: the engine-package vault resolution export (Plan 5+) stays in place."""
