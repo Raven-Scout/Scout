@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 PY="$ROOT/engine/.venv/bin/python"
 cd "$ROOT"
-[ -x "$PY" ] || { echo "error: engine venv missing — run scripts/install-venv.sh" >&2; exit 1; }
+[ -x "$PY" ] || { echo "error: engine dev venv missing — run: (cd engine && uv venv --python 3.12 && uv pip install -e '.[dev]')" >&2; exit 1; }
 
 # ---------------------------------------------------------------- finalize ----
 if [ "${1:-}" = "--finalize" ]; then
