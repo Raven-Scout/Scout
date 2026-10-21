@@ -418,6 +418,66 @@ def kb_read(
     _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
 
 
+@kb_app.command("delta")
+def kb_delta(
+    since: str = typer.Option(..., "--since", help="A commit (the commits after it) or a duration: 8h, 2d, 1w."),
+    diff: bool = typer.Option(False, "--diff", help="Include each commit's unified diff (may hold private content)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """The vault's commits since a point, newest first, each changed path labelled. Exit 2 = bad --since.
+
+    Paths the reader can't see are removed and commits left with none dropped:
+    an agent reader gets nothing.
+    """
+    args = _kb_args("delta", dict(locals()))
+    from scout.kb.delta import cmd_delta
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_delta(vault, who, since, diff))
+
+
+_SURFACE_HELP = "Where the text goes: a surface id from `kb policy` (slack, web_query ...). Unknown ids are shared."
+
+
+@kb_app.command("check-outbound")
+def kb_check_outbound(
+    file: str = typer.Argument(..., help="The draft to check (e.g. .scout-cache/outbound-draft.md)."),
+    surface: str = typer.Option(..., "--surface", help=_SURFACE_HELP),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help='Print {"ok": bool, "lines": [...]}.'),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check a draft bound for a surface for private content (spec §8.2 matchers).
+
+    Exit 0 (`ok`): it may go. Exit 1: it names or links a private note; prints
+    only the offending line numbers, never what matched. An owner-only surface
+    always passes. Exit 2: the file can't be read, or an agent reader.
+    """
+    args = _kb_args("check-outbound", dict(locals()))
+    from scout.kb.outbound import cmd_check_outbound
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_check_outbound(vault, who, file, surface))
+
+
+@kb_app.command("check-query")
+def kb_check_query(
+    text: str = typer.Argument(..., help="The query text, before it goes to a connector or web search."),
+    surface: str = typer.Option(..., "--surface", help=_SURFACE_HELP),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help='Print {"ok": bool}.'),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check a connector or web query for private content. Exit 1 (`blocked`) = don't send it.
+
+    Prints only `ok` or `blocked`. Exit 2: an agent reader.
+    """
+    args = _kb_args("check-query", dict(locals()))
+    from scout.kb.outbound import cmd_check_query
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_check_query(vault, who, text, surface))
+
+
 @kb_app.command("resolve")
 def kb_resolve(
     name: str = typer.Argument(..., help="A name, alias or slug."),
