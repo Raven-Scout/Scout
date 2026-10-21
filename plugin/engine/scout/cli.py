@@ -3008,6 +3008,11 @@ def setup_cmd(
         help="Install each stable release automatically (engines set up by install.sh or Claude Code). "
         "Default: ask, or on with --yes.",
     ),
+    no_jobs: bool = typer.Option(
+        False,
+        "--no-jobs",
+        help="Register no launchd/cron jobs (passed to `bootstrap auto --no-jobs`): for sandboxes and containers.",
+    ),
 ) -> None:
     """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
     import os
@@ -3042,6 +3047,7 @@ def setup_cmd(
         claude_bin=claude_bin,
         yes=yes,
         auto_update=auto_update,
+        no_jobs=no_jobs,
     )
     raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
 
