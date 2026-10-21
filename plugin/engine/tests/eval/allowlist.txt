@@ -236,3 +236,26 @@ Past
 Renew
 Step
 Tasks
+
+# --- privacy-canary scenario (#453) ---
+After
+Buy
+CANARY
+Copy
+Each
+GATE
+GIFT
+Gateway
+Hi
+Must
+PRIV
+Private
+Quiet
+ROLL
+Rollout
+Sammy  # the privacy fixture alias of the Sam stand-in
+Telegram
+This
+Vendor
+Which
+Wrap

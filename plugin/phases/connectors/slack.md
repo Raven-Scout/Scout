@@ -197,7 +197,7 @@ requires: slack
 
 ## Slack Notification
 
-Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results.
+Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
 
 ### Consolidation Notification (3-5 lines)
 
@@ -246,6 +246,6 @@ Applies to every wrap DM. Two parts:
 ### Notification Rules
 
 - Never include sensitive details in the notification — just summaries and counts.
-- If there are urgent items, mention them by name (briefly) so {{USER_NAME}} knows to check.
+- If there are urgent items, mention them by name (briefly) so {{USER_NAME}} knows to check; a `[private]` item is never named or counted here.
 - Always include where to find the full details: "Full report in {{SCOUT_DIR}}/action-items/"
 - If the run encountered errors or couldn't access a connector, mention it briefly so {{USER_NAME}} knows the run was partial.

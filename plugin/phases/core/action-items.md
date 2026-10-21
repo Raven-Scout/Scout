@@ -355,7 +355,7 @@ grep -nE '^\s*- \[x\]' "$DAILY_FILE" | grep -viE 'recently completed|## ✅' \
 Auto-transcribed sources (Granola, Gemini/Drive auto-notes, Fathom recaps, meeting summaries) frequently mis-hear names. **Never** write a transcribed name into action items, KB, or a DM without first resolving it against the knowledge graph. For every name-shaped token from a transcribed source:
 
 ```bash
-cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py name_lookup --token "<Token>"
+cd {{SCOUT_DIR}} && scripts/scoutctl kb name-lookup "<Token>"
 ```
 
 - **Exact match** → use the matched entity with its `[[people/<slug>]]` wikilink.
@@ -366,11 +366,13 @@ If {{USER_NAME}} corrects a name ("who is X?", "X doesn't exist", "this is hallu
 
 ## Knowledge Graph Personal Tasks
 
-If the ontology parser is set up, query it for personal tasks and deadlines:
+Query the knowledge graph for personal tasks and deadlines:
 
 ```bash
-cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py query --type task --exclude-status "completed,cancelled"
+cd {{SCOUT_DIR}} && scripts/scoutctl kb query --type task --exclude-status "completed,cancelled"
 ```
+
+Each result carries its label; a `[private]` task renders in the daily file as usual (an owner-only surface) and keeps its label into the wrap, where the privacy phase decides which channel may name it.
 
 **Always filter terminal statuses — never query bare `--type task`.** A bare query returns *every* task entity, including ones already finished, so completed work resurfaces on the daily list as if it were still open (the classic regression: a task whose `status` flipped to `completed` weeks ago reappears tomorrow). Pass `--exclude-status "completed,cancelled"` to get the currently-actionable set — task entities use mixed statuses (`open` / `in-progress` / `scheduled` / …), so excluding the terminal ones is more robust than trying to enumerate the live ones. Narrow further with `--domain personal` / `--domain work` when you want a single slice, `--status <s>` for an exact status, and `--deadline-before <ISO-date>` for deadline sweeps.
 

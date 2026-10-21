@@ -20,12 +20,11 @@ Do not mention git setup in your output unless something goes wrong.
 
 ## Using Git History
 
-Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use git history actively during runs:
+Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use the vault's history actively during runs, through `scripts/scoutctl kb delta` (it labels every changed path, so you know which changes are private):
 
-- `git log --oneline -20` — see what recent runs did (avoid duplicate work)
-- `git diff HEAD~1` — inspect what the last run changed
-- `git log --since="8 hours ago" --oneline` — understand what happened today
-- `git show <commit>` — inspect a specific change when you need provenance
+- `scripts/scoutctl kb delta --since 1d` — see what recent runs did (avoid duplicate work)
+- `scripts/scoutctl kb delta --since <commit> --diff` — inspect what changed after a commit
+- `scripts/scoutctl kb delta --since 8h` — understand what happened today
 
 The commit history is as valuable as the files themselves. When verifying KB claims or understanding what was already audited, check git before querying connectors.
 
@@ -34,10 +33,10 @@ The commit history is as valuable as the files themselves. When verifying KB cla
 Interactive sessions ({{INSTANCE_NAME}} work sessions, manual edits, `/scout-work`, audits) commit to the vault between scheduled runs. Those commits are a **primary signal source**, not background noise — a `work [HH:MM]:` commit may already have done the thing an action item is about. Before composing the run summary:
 
 ```bash
-git -C {{SCOUT_DIR}} log --since="<last run timestamp>" --pretty=format:'%h %s' --no-merges
+cd {{SCOUT_DIR}} && scripts/scoutctl kb delta --since <last run's commit, or a duration such as 8h>
 ```
 
-Narrate any non-session commits (anything not authored by this run) in the summary. **Do not assert a "quiet window" / "nothing changed since last run" until this git scan returns zero non-session commits.** A silent delta in the vault contradicts a "quiet" claim and erodes trust.
+Narrate any non-session commits (anything not authored by this run) in the summary. A commit whose paths are all `[private]` is narrated only on owner-only surfaces (the daily file, Telegram), never in the Slack wrap. **Do not assert a "quiet window" / "nothing changed since last run" until this scan returns zero non-session commits.** A silent delta in the vault contradicts a "quiet" claim and erodes trust.
 
 ## GitHub Access via `gh` CLI
 

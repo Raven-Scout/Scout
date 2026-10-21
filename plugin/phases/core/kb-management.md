@@ -36,7 +36,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 
 **Entity files (`people/`, `personal/`, `ontology/entities/`) — Knowledge graph entities**
 - Individual entity files with YAML frontmatter defining typed properties and relationships
-- The frontmatter is machine-readable by the parser at `knowledge-base/ontology/parser.py`
+- The frontmatter is machine-readable: query it with `scripts/scoutctl kb query`, `kb entity`, `kb related` (never by reading the files raw)
 - Relationships use `[[wikilinks]]` in targets: `target: "[[Entity Name]]"`
 - Entity files complement (not replace) `people.md` — the flat table remains the authoritative directory
 - When adding a new person to `people.md`, also create an entity file in `knowledge-base/people/` if they have relationships worth tracking
@@ -175,7 +175,7 @@ Never fan a causal claim out to multiple KB surfaces (project file + people + DM
 
 **Consequential claims carry an inline primary-source citation.** Any claim that — if wrong — would cause {{USER_NAME}} to act on bad information (who owns/built something, a strategy/decision, a status that gates action, an attribution) must cite the specific source inline: "per [Linear PROJ-123 status]", "per [DM from X 2026-05-01]", "per [PR #45 mergedAt]". A bare assertion with no traceable source is treated as `[unverified]`.
 
-**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the KB content written or changed in the last few runs (use `git log`/`git diff` to find it) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them.
+**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the KB content written or changed in the last few runs (`scripts/scoutctl kb delta --since 3d --diff` finds it) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase).
 
 ### Audits Remediate or Hand Off — Never Just Report
 
