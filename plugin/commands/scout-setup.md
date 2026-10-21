@@ -187,6 +187,10 @@ Report the result to the user:
 - If `yellow`: list the warnings; tell the user the system will work but those items want attention.
 - If `red`: list the errors; tell the user setup did not complete cleanly and link to `scoutctl bootstrap doctor` for diagnosis.
 
+Then explain privacy in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by the user and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by default, with no line needed. `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `"$SCOUTCTL" kb policy` shows the effective policy.
+
+If the vault folder held notes before setup, run `"$SCOUTCTL" bootstrap privacy-migrate --json` and, for each entry of `local_only_proposals` (folders that look like trading or brokerage data), ask the user separately whether to keep it on this computer only; for a yes, run `"$SCOUTCTL" bootstrap privacy-migrate --local-only '<glob>'`. Handle `visibility_values` and `private_links` as `/scout-update` Step 3b describes.
+
 If the user wants the first briefing:
 
 ```bash

@@ -121,6 +121,8 @@ final class AppState: ObservableObject {
     // Knowledge Base (browse + edit ~/Scout/knowledge-base/)
     let knowledgeBaseService: KnowledgeBaseService
     let knowledgeBaseWriterBox: KnowledgeBaseWriterBox
+    /// Privacy labels for the KB tree's lock badge, via `scoutctl kb classify`.
+    let knowledgeBasePrivacy: KBPrivacyLabelService
 
     private var previousStatus: [Run.ID: RunStatus] = [:]
     private var cancellables: Set<AnyCancellable> = []
@@ -289,6 +291,12 @@ final class AppState: ObservableObject {
         let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: events)
         let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
         let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
+        let kbPrivacy = KBPrivacyLabelService(
+            scoutctl: scoutctlExe,
+            runner: runner,
+            argumentsPrefix: scoutctlArgsPrefix,
+            vault: kbService.scoutDirectory
+        )
 
         self.fileEvents = events
         self.gitService = git
@@ -314,6 +322,7 @@ final class AppState: ObservableObject {
         self.perFileWriterBox = perFileWriterBox
         self.knowledgeBaseService = kbService
         self.knowledgeBaseWriterBox = kbWriterBox
+        self.knowledgeBasePrivacy = kbPrivacy
         self.scoutDirectory = scoutDir
         self.actionItemsDirectory = actionItemsDir
         self.defaults = defaults

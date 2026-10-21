@@ -297,11 +297,14 @@ def _write_index(path: Path, policy: str, files: dict[str, Any]) -> None:
             tmp.unlink()
 
 
-def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = ()) -> dict[str, Label]:
+def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = (), *, persist: bool = True) -> dict[str, Label]:
     """Every file a listing of ``vault`` (resolved) keeps → its label, through the privacy index.
 
     ``globs`` only decide which plumbing paths are walked (:class:`_Scope`);
     callers filter by them. Index entries for paths this walk leaves out are kept.
+    ``persist=False`` reads the index but never writes it, for a read-only pass
+    that must leave the vault byte-for-byte as it found it (the upgrade's
+    privacy report: repeated upgrades must be idempotent).
     """
     scope = _Scope(policy, globs)
     index_path = vault / ".scout-cache" / INDEX_FILENAME
@@ -338,7 +341,7 @@ def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = ()) -> dict[s
         for rel, entry in old.items():
             if rel not in labels and scope.unwalked(rel):
                 fresh[rel] = entry
-    if not same_policy or fresh != old:
+    if persist and (not same_policy or fresh != old):
         _write_index(index_path, want_policy, fresh)
     return labels
 
