@@ -111,6 +111,14 @@ def hook_session_tool_log() -> None:
     raise typer.Exit(session_tool_log_main())
 
 
+@hook_app.command("mcp-tool-gate")
+def hook_mcp_tool_gate() -> None:
+    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools in scheduled runs."""
+    from scout.hooks.mcp_tool_gate import main as mcp_tool_gate_main
+
+    raise typer.Exit(mcp_tool_gate_main())
+
+
 @hook_app.command("kb-pre-filter")
 def hook_kb_pre_filter(
     session_type: str = typer.Option(
