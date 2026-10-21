@@ -128,7 +128,7 @@ All action items files must include `[[wikilinks]]` to any KB files referenced b
 
 - If today's file does not exist when your session starts, run the deterministic backstop FIRST, then edit on top of the complete file:
   ```bash
-  scoutctl action-items materialize
+  scripts/scoutctl action-items materialize
   ```
   It copies the most recent prior daily file (up to 7 days back) verbatim under a fresh date header and a provisional banner — minus any items it auto-archived as stale (see *Stale Items Auto-Archive* below), which the banner names. Idempotent — a no-op when today's file exists. The runner preambles already call it before every session; this in-session call covers sessions launched outside the runners.
 - **NEVER write a section that points at a previous day's file in lieu of the items.** "Carry forward in full from yesterday — see that file" is FORBIDDEN, no matter how lightweight your session is. This binds every session type — briefing, consolidation, research, dreaming, and any auxiliary session that happens to be the day's first writer.
@@ -142,7 +142,7 @@ All action items files must include `[[wikilinks]]` to any KB files referenced b
 **Prefer a short, meaningful mnemonic** that hints at the task and is easy to cross-reference from other lines (e.g. `[#PLANREV]`, `[#IOTA]`, `[#XI7391]`). When nothing meaningful fits, mint a random one:
 
 ```bash
-PFX=$(scoutctl action-items new-prefix)   # random 4-char fallback id
+PFX=$(scripts/scoutctl action-items new-prefix)   # random 4-char fallback id
 echo "- [ ] [#${PFX}] **${SUBJECT}** ${BODY}" >> "$DAILY_FILE"
 ```
 
@@ -160,7 +160,7 @@ The tag goes **after** the checkbox marker and **before** the bold subject. Exac
 
 **Existing unprefixed lines (legacy carryover):** when you find a task that lacks a `[#TAG]`, give it one on first touch, or run the idempotent one-shot backfill (it leaves already-tagged lines alone):
 ```bash
-scoutctl action-items backfill-prefixes "$DAILY_FILE"
+scripts/scoutctl action-items backfill-prefixes "$DAILY_FILE"
 ```
 
 **Self-check before commit:** every `- [ ]`/`- [x]` line MUST carry a `[#TAG]`. A heuristic grep catches drift:
@@ -245,7 +245,7 @@ The app's topic board reads a few machine sub-bullets that a section can't expre
     - Session: https://claude.ai/code/session_0123
     - Summary: Two PRs, the second needs the first
 
-- Mint the tag with `scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
+- Mint the tag with `scripts/scoutctl action-items new-prefix`, like a task's; it never reuses a topic's tag. When a known root Claude session produced the workstream, it is the topic: put its link in `- Session:` and give each of its tasks `- Topic:` with that tag.
 - Keep the title a short noun phrase and the summary to one line. Update them freely, but copy any other line under the heading byte for byte. The user's own names for topics live in `action-items/topic-names.md`, written only by `scoutctl action-items rename-topic` from the app; never write that file.
 - Remove a topic once none of its tasks has been open for 14 days.
 
@@ -282,7 +282,7 @@ An open item whose block (the task line plus its indented sub-bullets) has not c
 - **Don't refresh text to keep an item alive.** Rewording an item you have no news about defeats the archive. Edit an item only when something about it actually changed.
 - **Age is not a touch.** Never rewrite an item only to update how old or overdue it is, and never add `_re-anchored <date>_` notes: its age follows from its due date. The archive ignores edits that change only dates, times or ages anyway, so they cost a rewrite and keep nothing alive.
 
-To apply the rule to a file that already exists (e.g. after a manual cleanup), run `scoutctl action-items archive-stale` (`--dry-run` lists what would move).
+To apply the rule to a file that already exists (e.g. after a manual cleanup), run `scripts/scoutctl action-items archive-stale` (`--dry-run` lists what would move).
 
 **Every open carried item MUST be rendered as its own `- [ ]` checkbox row in exactly one section.** Summary lines like "…plus the standing backlog (#A, #B, … etc.) — carried unchanged" are **FORBIDDEN** as a substitute for rendering individual items. An `etc.` that hides open items reads as a drop from {{USER_NAME}}'s perspective even when the IDs technically persist inside the prose string.
 
@@ -316,14 +316,14 @@ The count-guard catches *how many* dropped; this catches *which*. Before committ
 Before committing a briefing or consolidation, run:
 
 ```bash
-scoutctl action-items check-review-requests --data-dir {{SCOUT_DIR}}
+scripts/scoutctl action-items check-review-requests --data-dir {{SCOUT_DIR}}
 ```
 
 It lists each review request the runner pre-fetched into `.scout-cache/session-context.json` that today's file does not account for. An item accounts for a request when its line or its `- Refs:` line names the PR as `owner/repo#N` or by its URL. So does a skip line with a reason, or {{USER_NAME}} having dismissed the PR's link. A request sent only to a team counts like any other. Act on the exit code:
 
 - **0:** every request is accounted for. Go on.
 - **1:** for each listed `owner/repo#N`, run `gh pr view N --repo owner/repo --json state,author,headRefName,reviewRequests,isDraft`, classify it with the three-bucket rule in the GitHub connector phase, and place it in its bucket's section with `owner/repo#N` in its `- Refs:` line. A request sent only to a team goes to 🟢 Watching (see *🔴 and 🟡 Are {{USER_NAME}}'s Move*). Only when it should not be an item at all (it merged or closed since the fetch, say), write this line under this run's 🪵 Run notes entry instead: `  - Skipped review request owner/repo#N — <reason>`. On a `weekend-briefing`, the reason may be `weekend scope`: the next weekday consolidation places it. Then run the check again until it exits 0.
-- **2:** it could not check, and says why. If the context file is missing or from another day, run `scoutctl pre-session data <run mode>` once and check again. Otherwise add `review-request check could not run: <its message>` to this run's 🪵 Run notes entry and go on.
+- **2:** it could not check, and says why. If the context file is missing or from another day, run `scripts/scoutctl pre-session data <run mode>` once and check again. Otherwise add `review-request check could not run: <its message>` to this run's 🪵 Run notes entry and go on.
 
 Never edit `session-context.json` to make the check pass.
 
@@ -453,7 +453,7 @@ For each carryover item from the previous action-items file:
 
 This is the file-side counterpart of the wrap-DM continuity line (see the notification phase) — the DM opens with the throughline; this section carries the reasoning.
 
-**Day-planning line.** When the engine advertises `planning_v1` (`scoutctl manifest show`), check today's plan with `scoutctl action-items list --json --with-plan --include-done` (a task checked off after its block still needs its actual time). Add at most one Focus bullet:
+**Day-planning line.** When the engine advertises `planning_v1` (`scripts/scoutctl manifest show`), check today's plan with `scripts/scoutctl action-items list --json --with-plan --include-done` (a task checked off after its block still needs its actual time). Add at most one Focus bullet:
 - items carry a `block:` dated before today with no `actual:` -> `**Log yesterday's actual times**: run /scout-plan review (N blocks)`;
 - otherwise, no open item carries a `block:` dated today -> `**Plan the day**: run /scout-plan (N open to-dos, none scheduled)`.
 
