@@ -89,7 +89,7 @@ Step 1: Read {{SCOUT_DIR}}/SKILL.md in full.
 Step 2: Your run mode is \`$MODE\` (the dispatcher's slot key). Find the matching row of the Run Modes table near the top of SKILL.md and follow it. If the mode is \`manual\`, derive the closest mode from the current day and hour, then follow that row.
 Step 3: Execute the SKILL.md instructions completely — all steps/phases in order.
 Step 4: Commit results to git.
-Step 5: If anything material changed, send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing what was found and changed.
+Step 5: If anything material changed, send the wrap notification summarizing what was found and changed, as SKILL.md's notification sections direct: they name the channel and recipient (in a stock install, Slack Notification, or Telegram Notification when Telegram is set up, which then takes over from Slack). Do not assume Slack: {{USER_NAME}} may have moved the wrap off Slack on purpose, for example because it is an employer-controlled workspace and runs carry personal content, and this prompt must not contradict that. If SKILL.md has no notification section, send nothing and say so in your final message.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
