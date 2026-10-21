@@ -491,3 +491,168 @@ def test_changed_blocks_matches_difflib(old: str, new: str) -> None:
     }
     got = {j for t, _i1, _i2, j1, j2 in changed_blocks(a, b) if t in ("insert", "replace") for j in range(j1, j2)}
     assert len(got) == len(want)
+
+
+# ----- edges: policy sources, scope, renames, the report ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("head", "staged", "widens"),
+    [
+        ("none", "org", True),
+        ("none", ("person:priya@example.com",), True),
+        ("org", ("person:priya@example.com",), False),
+        (("person:priya@example.com",), ("person:priya@example.com", "group:ops"), True),
+        (("person:priya@example.com", "group:ops"), ("group:ops",), False),
+        ("org", "org", False),
+        (("group:ops",), "none", False),
+    ],
+)
+def test_widens(head: object, staged: object, widens: bool) -> None:
+    from scout.kb.lint_privacy import _widens
+
+    assert _widens(head, staged) is widens  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("text", "warnings"),
+    [
+        (None, ()),
+        ("", ()),
+        ("- just\n- a list\n", ("privacy-overlay-unreadable",)),
+        ("privacy: [unclosed\n", ("privacy-overlay-unreadable",)),
+        ("privacy:\n  federation:\n    enabled: true\n", ("federation-reserved",)),
+    ],
+)
+def test_policy_from_config_text(text: str | None, warnings: tuple[str, ...]) -> None:
+    from scout.kb.lint_privacy import policy_from_config_text
+
+    assert policy_from_config_text(text).warnings == warnings
+
+
+def test_a_config_removed_from_the_index_falls_back_to_heads_policy(vault: Path) -> None:
+    """The commit deletes scout-config.yaml from the index: HEAD's policy (trading/** local-only) still applies."""
+    from scout.kb.lint_privacy import _context
+
+    git(vault, "rm", "-q", "--cached", "scout-config.yaml")
+    ctx = _context(vault, {})
+    assert "trading/**" in ctx.policy.local_only
+    assert ctx.policy == ctx.head_policy
+
+
+def test_a_run_may_not_delete_the_config_with_its_privacy_block(vault: Path) -> None:
+    git(vault, "rm", "-q", "--cached", "scout-config.yaml")
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_adding_a_new_config_with_a_privacy_block_is_blocked(tmp_path: Path) -> None:
+    from tests.conftest import KbRepo
+
+    repo = KbRepo(tmp_path / "v")
+    (repo.root / "knowledge-base").mkdir(parents=True)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "t@example.com")
+    repo.git("config", "user.name", "T")
+    repo.stage("README.md", "vault\n")
+    repo.git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+    repo.stage("scout-config.yaml", 'privacy:\n  shared_files_add: ["outbox/**"]\n')
+    assert [(f.path, f.check) for f in privacy_staged(repo.root, env=RUN)] == [
+        ("scout-config.yaml", "privacy-widening")
+    ]
+
+
+def test_a_run_rewriting_an_unparseable_config_is_refused(vault: Path) -> None:
+    stage(vault, "scout-config.yaml", "privacy: [one\n")
+    commit(vault, "broken config")
+    stage(vault, "scout-config.yaml", "privacy: [two\n")
+    with pytest.raises(Exception, match="doesn't parse"):
+        privacy_staged(vault, env=RUN)  # the commit policy itself is unreadable: refused (minor f)
+    assert ("scout-config.yaml", "privacy-overlay-unreadable", False, None) in checks(vault)
+
+
+def test_unparseable_config_texts_compare_by_text() -> None:
+    from scout.kb.lint_privacy import _config_data, _privacy_block
+
+    assert _config_data(None) is None
+    assert _privacy_block(_config_data("a: [x\n")) == _privacy_block(_config_data("a: [x\n"))
+    assert _privacy_block(_config_data("a: [x\n")) != _privacy_block(_config_data("a: [y\n"))
+    assert _privacy_block(_config_data("- a list\n")) != _privacy_block(_config_data("privacy: {}\n"))
+    assert _privacy_block(_config_data("user: {name: Alex}\n")) is None
+
+
+def test_a_staged_note_outside_the_scope_without_federation_scope_is_ignored(vault: Path) -> None:
+    append(vault, "inbox.md", "- Ask Sammy about [[sam]].")
+    assert checks(vault) == []
+    assert checks(vault, RUN) == []
+
+
+def test_a_pure_rename_of_a_draft_adds_no_lines(vault: Path) -> None:
+    append(vault, DRAFT, "See [[sam]]. %%privacy:allow sam%%")
+    append(vault, DRAFT, "Ask Sammy.")  # old, unmarked: stays as it is
+    commit(vault)
+    git(vault, "mv", DRAFT, "drafts/reply-renamed.md")
+    assert checks(vault) == []
+    assert checks(vault, RUN) == []
+
+
+def test_splitting_a_marked_line_in_two_counts_as_adding_a_marker(vault: Path) -> None:
+    from scout.kb.lint_privacy import added_marker_lines
+
+    old = "A [[sam]] %%privacy:allow sam%%\nend"
+    new = "A [[sam]] %%privacy:allow sam%%\nB [[sam]] %%privacy:allow sam%%\nend"
+    assert added_marker_lines(old, new) == [2]
+    # Both lines rewritten: each keeps a target the replaced line had, but the count grew.
+    rewritten = "A2 [[sam]] %%privacy:allow sam%%\nB [[sam]] %%privacy:allow sam%%\nend"
+    assert added_marker_lines(old, rewritten) == [1]
+
+
+def test_a_run_may_delete_lines(vault: Path) -> None:
+    from scout.kb.lint_rules import added_line_numbers
+
+    assert added_line_numbers("a\nb\nc", "a\nc") == set()
+    stage(vault, PRIYA, _read(vault, PRIYA).replace("Engineer at example-org", "", 1))
+    assert checks(vault, RUN) == []
+
+
+def test_report_lists_a_stage_2_overlay_and_skips_missing_and_unreadable_files(vault: Path) -> None:
+    import os
+
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write("  federation:\n    enabled: true\n")
+    (vault / "drafts" / "gone.md").write_text("x\n")
+    git(vault, "add", "drafts/gone.md")
+    (vault / "drafts" / "gone.md").unlink()  # tracked, not on disk
+    locked = vault / "drafts" / "locked.md"
+    locked.write_text("Ask Sammy.\n")
+    locked.chmod(0)
+    try:
+        rep = privacy_report(vault)
+    finally:
+        locked.chmod(0o644)
+    assert ("scout-config.yaml", "federation-reserved", "warn") in rep.problems
+    assert all(rel != "drafts/gone.md" for rel, _n in rep.unmarked)
+    if os.geteuid() != 0:  # root reads a mode-000 file anyway
+        assert ("drafts/locked.md", "file-unreadable", "error") in rep.problems
+        assert all(rel != "drafts/locked.md" for rel, _n in rep.unmarked)
+
+
+def test_uncommitted_paths_before_the_first_commit(tmp_path: Path) -> None:
+    from scout.kb.git_io import uncommitted_paths
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "a.md").write_text("a\n")
+    git(repo, "add", "a.md")
+    (repo / "b.md").write_text("b\n")  # untracked: not a version git knows
+    assert uncommitted_paths(repo) == {"a.md"}
+
+
+def test_the_config_is_always_in_the_privacy_scope() -> None:
+    from scout.kb.lint_config import in_privacy_scope
+
+    assert in_privacy_scope("scout-config.yaml", ())
+    assert in_privacy_scope("knowledge-base/x.md", ())
+    assert not in_privacy_scope("knowledge-base/x.txt", ())
+    assert in_privacy_scope("outbox/x.txt", ("outbox/**",))

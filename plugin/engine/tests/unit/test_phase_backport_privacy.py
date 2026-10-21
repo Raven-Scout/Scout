@@ -140,3 +140,23 @@ def test_a_hunk_planned_for_two_brain_files_is_bundled_once(tmp_path: Path) -> N
     again, _ = _plan(plugin, CLEAN_LINE)
     ((_pf, (_old, new)),) = bundle_files(combine_applied([applied, again]), sections + sections).items()
     assert new.count(CLEAN_LINE) == 1
+
+
+def test_an_applied_result_without_a_fragment_bundles_nothing(tmp_path: Path) -> None:
+    from scout.scripts.phase_backport import HunkResult
+
+    plugin = _plugin(tmp_path)
+    _applied, sections = _plan(plugin, CLEAN_LINE)
+    assert bundle_files([HunkResult("applied", [CLEAN_LINE], anchor="x", retemplatized=[CLEAN_LINE])], sections) == {}
+
+
+def test_a_clean_dry_run_reports_and_writes_nothing(
+    tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = _plugin(tmp_path)
+    before = (plugin / "phases" / "core" / "kb.md").read_text()
+    _brain(vault, plugin, CLEAN_LINE)
+    result = _cli(monkeypatch, vault, plugin)
+    assert result.exit_code == 0, result.output
+    assert "1 applied" in result.output and "dry-run" in result.output
+    assert (plugin / "phases" / "core" / "kb.md").read_text() == before

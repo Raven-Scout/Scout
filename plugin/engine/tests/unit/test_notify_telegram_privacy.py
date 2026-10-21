@@ -159,3 +159,30 @@ def test_main_exits_non_zero(vault: Path, capsys: pytest.CaptureFixture[str]) ->
         rc = notify_telegram.main(["--body", PRIVATE_BODY])
     assert rc == OutboundBlockedError.exit_code
     assert "permit" not in capsys.readouterr().out
+
+
+def test_a_group_send_is_refused_when_the_vault_lookup_errors(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    privacy_secrets(Path.home(), GROUP_CHAT_ID)
+
+    def broken() -> Path:
+        raise OSError("cwd gone")
+
+    monkeypatch.setattr(notify_telegram.paths, "data_dir", broken)
+    with patch("scout.scripts.notify_telegram.requests.post", return_value=_ok()) as post:
+        with pytest.raises(OutboundBlockedError, match="no Scout vault"):
+            send(tier="info", body=CLEAN_BODY)
+    post.assert_not_called()
+
+
+def test_a_failed_event_write_still_drops_the_message(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    privacy_secrets(Path.home(), GROUP_CHAT_ID)
+
+    def full_disk(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(notify_telegram, "append_event", full_disk)
+    with patch("scout.scripts.notify_telegram.requests.post", return_value=_ok()) as post:
+        with pytest.raises(OutboundBlockedError):
+            send(tier="info", body=PRIVATE_BODY)
+    post.assert_not_called()
+    assert _reads(vault)[0]["blocked"] is True

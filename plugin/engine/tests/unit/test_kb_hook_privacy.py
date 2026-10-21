@@ -153,6 +153,82 @@ def test_a_logs_dir_failure_does_not_lift_a_privacy_block(vault: Path, monkeypat
     assert _hook(vault, {})[0] == 1
 
 
+def test_a_failed_event_write_does_not_lift_the_refusal(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.events
+
+    monkeypatch.setattr(lint_privacy, "private_terms", _boom)
+    monkeypatch.setattr(scout.events, "append_event", _boom)
+    _append(vault, DRAFT, "Thanks again!")
+    rc, out = _hook(vault, {"SCOUT_MODE": "morning-briefing"})
+    assert rc == 1 and "[privacy-check-failed]" in out
+    assert _events(vault) == []
+
+
+def test_a_formatting_failure_without_a_privacy_block_fails_open(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint, "format_findings", _boom)
+    _append(vault, "knowledge-base/people/priya.md", "See [[nowhere-at-all]].")  # a warning only
+    rc, out = _hook(vault, {})
+    assert rc == 0
+    assert "could not format the findings (RuntimeError)" in out and "kb-lint: privacy:" not in out
+
+
+def _block_mode_mega_line(vault: Path) -> None:
+    cfg = vault / "scout-config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "kb_lint:\n  mode: block\n", encoding="utf-8")
+    git(vault, "add", "scout-config.yaml")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "block mode")
+    _append(vault, "knowledge-base/people/priya.md", "x" * 1600)  # mega-line: a size/diary block
+
+
+def test_an_override_whose_log_fails_is_still_accepted(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Size/diary bookkeeping fails open: the owner's override stands even if it can't be logged."""
+    from scout.kb import lint
+
+    _block_mode_mega_line(vault)
+    assert _hook(vault, {})[0] == 1  # the size/diary block itself
+    monkeypatch.setattr(lint, "_append_jsonl", _boom)
+    rc, out = _hook(vault, {"SCOUT_LINT_OVERRIDE": "fixing tomorrow"})
+    assert rc == 0
+    assert "could not log the override (RuntimeError)" in out and "override accepted" in out
+
+
+def test_an_override_without_a_logs_dir_is_still_accepted(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    _block_mode_mega_line(vault)
+    monkeypatch.setattr(lint.paths, "logs_dir", _boom)
+    rc, out = _hook(vault, {"SCOUT_LINT_OVERRIDE": "fixing tomorrow"})
+    assert rc == 0
+    assert "could not log the override (OSError)" in out
+
+
+class _BrokenStream(io.StringIO):
+    def write(self, s: str) -> int:
+        raise OSError("stderr closed")
+
+
+def test_a_broken_output_stream_does_not_lift_a_privacy_block(vault: Path) -> None:
+    _append(vault, DRAFT, "See [[sam]].")
+    assert run_hook(vault, env={}, out=_BrokenStream()) == 1
+
+
+def test_privacy_summary_names_rules_files_and_lines_only() -> None:
+    from scout.kb.lint import Finding, _privacy_summary
+
+    findings = [
+        Finding("drafts/a.md", "private-link", True, "line 3 ...", 3),
+        Finding("drafts/a.md", "private-mention", True, "line 5 ...", 5),
+        Finding("knowledge-base/x.md", "privacy-widening", True, "a scheduled run may not ..."),
+        Finding("knowledge-base/y.md", "dangling-link", False, "line 1 ...", 1),
+        Finding("knowledge-base/z.md", "mega-line", True, "line 2 ...", 2),
+    ]
+    assert _privacy_summary(findings) == (
+        "kb-lint: privacy: private-link,private-mention at drafts/a.md:3,5; privacy-widening at knowledge-base/x.md"
+    )
+
+
 def _scoutctl() -> str | None:
     beside = Path(sys.executable).parent / "scoutctl"
     return str(beside) if beside.exists() else shutil.which("scoutctl")

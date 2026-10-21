@@ -959,3 +959,20 @@ def test_doctor_says_nothing_without_blocked_reads(tmp_path):
     report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
     assert report.severity is Severity.GREEN
     assert not [w for w in report.warnings if "privacy" in w]
+
+
+def test_doctor_privacy_count_takes_naive_times_as_utc(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_blocked_count
+
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    now = datetime(2026, 10, 21, 12, 0)  # naive
+    (logs / "kb-reads.jsonl").write_text(
+        _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)  # naive row
+        + _kb_read((now - timedelta(days=2)).replace(tzinfo=UTC).isoformat(), denied=1)
+        + _kb_read((now - timedelta(days=8)).isoformat(), blocked=True)
+    )
+    assert privacy_blocked_count(tmp_path, now=now) == 2
+    assert privacy_blocked_count(tmp_path / "nowhere", now=now) == 0

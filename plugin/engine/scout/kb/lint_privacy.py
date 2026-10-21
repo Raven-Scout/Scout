@@ -109,6 +109,7 @@ _MESSAGES = {
     "privacy-contradiction": "visibility: private with a federation_scope other than none",
     "frontmatter-unparseable": "the frontmatter doesn't parse, so the note counts as private",
     "federation-reserved": "the privacy: block sets a Stage 2 key (federation*); it is ignored in v1",
+    "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy "
     "applies; a scheduled run's commit is refused until it does",
 }
@@ -175,6 +176,8 @@ class _Ctx:
     head_policy: Policy
     disk_policy: Policy
     scheduled: bool
+    config_removed: bool = False  # HEAD has scout-config.yaml, the index doesn't
+    head_config: str | None = None
     _terms: PrivateTerms | None = None
 
     @property
@@ -203,7 +206,15 @@ def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
         commit = head
     else:
         commit = disk
-    return _Ctx(repo=repo, policy=commit, head_policy=head, disk_policy=disk, scheduled=bool(env.get("SCOUT_MODE")))
+    return _Ctx(
+        repo=repo,
+        policy=commit,
+        head_policy=head,
+        disk_policy=disk,
+        scheduled=bool(env.get("SCOUT_MODE")),
+        config_removed=head_text is not None and index_text is None,
+        head_config=head_text,
+    )
 
 
 def _union_terms(ctx: _Ctx) -> PrivateTerms:
@@ -253,6 +264,9 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             if _facts(rel, staged).declared == "none":
                 continue  # R23: a note declaring federation_scope is shared wherever it lives
         out += _file_findings(ctx, sp, staged if staged is not None else staged_text_lossy(repo, rel))
+    if ctx.scheduled and ctx.config_removed and _privacy_block(_config_data(ctx.head_config)) is not None:
+        # Deleting the config drops its privacy: block (staged_paths lists no deletions).
+        out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
     return out
 
 
@@ -407,7 +421,7 @@ def _config_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
                     sp.rel,
                     "privacy-widening",
                     True,
-                    "a scheduled run may not change the privacy: block — leave that to the owner",
+                    _MESSAGES["config-widening"],
                 )
             )
     return out
@@ -445,9 +459,14 @@ def privacy_report(repo: Path) -> PrivacyReport:
         if not path.is_file():
             continue
         label = label_file(repo, rel, policy)
-        for w in label.warnings:
-            if w in LABEL_WARNINGS:
-                rep.problems.append((rel, w, "error" if w == "frontmatter-unparseable" else "warn"))
+        if "file-unreadable" in label.warnings:
+            rep.problems.append((rel, "file-unreadable", "error"))  # private; its text can't be checked
+            continue
+        rep.problems += [
+            (rel, w, "error" if w == "frontmatter-unparseable" else "warn")
+            for w in label.warnings
+            if w in LABEL_WARNINGS
+        ]
         if not label.shared_file:
             continue
         text = path.read_bytes().decode("utf-8", errors="replace")

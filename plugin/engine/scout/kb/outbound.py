@@ -141,14 +141,8 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
-def _frontmatter_names(path: Path) -> list[str]:
-    """``name:``, ``aliases:`` and ``title:`` of a markdown note; [] when it has none or they don't parse."""
-    text, _ = read_head(path)
-    return _names_from_text(text)
-
-
 def _names_from_text(text: str | None) -> list[str]:
-    """:func:`_frontmatter_names` for a note's (leading) text."""
+    """``name:``, ``aliases:`` and ``title:`` of a note's (leading) text; [] when it has none or they don't parse."""
     if text is None:
         return []
     block = classifier_block(text)
