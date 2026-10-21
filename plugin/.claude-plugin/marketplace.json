@@ -3,11 +3,11 @@
   "owner": {
     "name": "Jordan Burger"
   },
-  "description": "Scout for Agnes: read from a vX.Y.Z release-tag checkout, never main. The source resolves against the repository root.",
+  "description": "Marketplace for the Scout autonomous knowledge management plugin",
   "plugins": [
     {
       "name": "scout",
-      "source": "./plugin",
+      "source": "./",
       "description": "Autonomous knowledge management and daily briefing system for Claude Code",
       "version": "0.18.2",
       "author": {

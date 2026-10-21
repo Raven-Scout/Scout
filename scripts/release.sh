@@ -162,7 +162,7 @@ cmd_prepare() {
   today="$(date '+%Y-%m-%d')"
   vers promote "$new" "$today"
   [ "$(vers check)" = "$new" ] || die "versioning check does not report $new after set"
-  git -C "$REPO_ROOT" add .claude-plugin/marketplace.json agnes/.claude-plugin/marketplace.json \
+  git -C "$REPO_ROOT" add .claude-plugin/marketplace.json plugin/.claude-plugin/marketplace.json \
     plugin/.claude-plugin/plugin.json \
     plugin/engine/pyproject.toml plugin/engine/scout/__init__.py \
     apps/macos/Scout.xcodeproj/project.pbxproj plugin/CHANGELOG.md apps/macos/CHANGELOG.md

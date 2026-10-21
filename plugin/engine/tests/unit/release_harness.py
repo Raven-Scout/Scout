@@ -96,9 +96,9 @@ def _seed(root: Path, version: str) -> None:
     )
     _write(
         root,
-        "agnes/.claude-plugin/marketplace.json",
+        "plugin/.claude-plugin/marketplace.json",
         f'{{\n  "name": "scout-plugin",\n  "plugins": [\n    {{\n      "name": "scout",\n'
-        f'      "source": "./plugin",\n      "version": "{version}"\n    }}\n  ]\n}}\n',
+        f'      "source": "./",\n      "version": "{version}"\n    }}\n  ]\n}}\n',
     )
     _write(root, "plugin/engine/pyproject.toml", f'[project]\nname = "scout-engine"\nversion = "{version}"\n')
     _write(root, "plugin/engine/scout/__init__.py", f'__version__ = "{version}"\n')

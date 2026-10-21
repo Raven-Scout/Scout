@@ -9,7 +9,6 @@ on:
       - "install.sh"
       - "apps/macos/scripts/**"
       - ".claude-plugin/**"
-      - "agnes/.claude-plugin/**"
       - ".github/workflows/plugin-lint.yml"
       - ".github/scripts/changed-paths.sh"
       - ".github/scripts/version-bump-only.sh"
@@ -33,7 +32,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|scripts/|apps/macos/scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.claude-plugin/|agnes/\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/(changed-paths|version-bump-only)\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/|install\.sh$|scripts/|apps/macos/scripts/|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.claude-plugin/|\.github/workflows/plugin-lint\.yml$|\.github/scripts/(changed-paths|version-bump-only)\.sh$)'
 
   lint:
     needs: changes
@@ -107,17 +106,15 @@ jobs:
           if plugins[0]["source"] != pinned:
               sys.exit(f"marketplace.json source must be {pinned!r}, got {plugins[0]['source']!r}")
 
-          # The Agnes marketplace (agnes/README.md): the same scout entry with a
-          # plain string source, which Agnes serves from a vX.Y.Z tag checkout.
-          # Its version is guarded by `versioning check` above.
-          agnes = json.load(open("agnes/.claude-plugin/marketplace.json"))
-          agnes_plugins = agnes.get("plugins")
-          if not isinstance(agnes_plugins, list) or len(agnes_plugins) != 1:
-              sys.exit("agnes marketplace.json must list exactly one plugin")
-          entry = agnes_plugins[0]
-          if entry.get("name") != plugins[0]["name"] or entry.get("source") != "./plugin":
-              sys.exit(f"agnes marketplace.json must name {plugins[0]['name']!r} with source './plugin', got "
-                       f"{entry.get('name')!r} / {entry.get('source')!r}")
+          # plugin/.claude-plugin/marketplace.json makes the plugin subtree its own
+          # marketplace root (plugin/README.md: Agnes serves it from a vX.Y.Z tag;
+          # Scout.app bundles it). It must be the root manifest with only the scout
+          # entry, sourced "./". Its version is guarded by `versioning check`.
+          own = json.load(open("plugin/.claude-plugin/marketplace.json"))
+          scout = [dict(p, source="./") for p in plugins if p.get("name") == "scout"]
+          if own != {k: (scout if k == "plugins" else v) for k, v in market.items()}:
+              sys.exit("plugin/.claude-plugin/marketplace.json must be the root marketplace.json with only "
+                       "its scout entry, sourced \"./\"; copy it from the root and set the source")
 
           print("plugin manifests valid")
           PY

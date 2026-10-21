@@ -65,7 +65,7 @@ def test_prepare_bumps_every_version_file_and_both_changelogs(tmp_path):
     for rel in (
         "plugin/.claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json",
-        "agnes/.claude-plugin/marketplace.json",
+        "plugin/.claude-plugin/marketplace.json",
     ):
         assert '"0.15.0"' in (r.root / rel).read_text()
     # The release commit carries every bumped file: nothing is left modified after it.
@@ -413,16 +413,19 @@ def test_release_script_moves_the_branch_the_marketplace_pins():
     assert re.search(r'(?m)^STABLE_BRANCH="stable"$', script)
 
 
-def test_agnes_marketplace_serves_the_same_plugin_from_a_string_source():
-    """agnes/README.md: Agnes serves no files for a git-subdir source, so its manifest uses "./plugin"."""
+def test_the_plugin_subtree_is_its_own_marketplace_root():
+    """plugin/README.md: Agnes serves no files for a git-subdir source, so it reads plugin/ as a marketplace
+    root, whose "./" source is the plugin itself. It is the root manifest with only scout, sourced "./" —
+    byte for byte what apps/macos/scripts/bundle-engine.sh would generate."""
     import json
 
-    root = json.loads((REAL_REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    agnes = json.loads((REAL_REPO / "agnes/.claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    assert len(agnes) == 1
-    assert agnes[0]["source"] == "./plugin"
-    assert (REAL_REPO / agnes[0]["source"] / ".claude-plugin/plugin.json").is_file()
-    assert {k: v for k, v in agnes[0].items() if k != "source"} == {k: v for k, v in root[0].items() if k != "source"}
+    root = json.loads((REAL_REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    own_text = (REAL_REPO / "plugin/.claude-plugin/marketplace.json").read_text(encoding="utf-8")
+    scout = [dict(p, source="./") for p in root["plugins"] if p["name"] == "scout"]
+    expected = {k: (scout if k == "plugins" else v) for k, v in root.items()}
+    assert json.loads(own_text) == expected
+    assert own_text == json.dumps(expected, indent=2) + "\n"
+    assert (REAL_REPO / "plugin" / ".claude-plugin" / "plugin.json").is_file()
 
 
 def test_finalize_targets_the_release_pr_merge_commit(tmp_path):
