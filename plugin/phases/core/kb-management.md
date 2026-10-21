@@ -187,7 +187,7 @@ Applies to **every** audit in every mode — the consolidation KB audit, KG-inte
 
 ### Session Log Row (mandatory every run)
 
-**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `knowledge-base/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `knowledge-base/session-log.md` is the index that links the shards). A run that skips the row leaves the next run blind to what just happened.
+**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `knowledge-base/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `knowledge-base/session-log.md` is the index that links the shards). Append it with Edit/Write on that file (find it with `scripts/scoutctl kb files --glob 'knowledge-base/session-log/*.md'`); never `ls`, `tail` or `grep` `knowledge-base/` or `action-items/context/` to find it. A run that skips the row leaves the next run blind to what just happened.
 
 Row shape, **≤ 500 characters**: date · session type (time, manual/scheduled) · one sentence of material findings with `[[links]]` to the notes changed · commit hash. Write `pending` for the hash pre-commit; back-fill it when possible (dreaming also back-fills `pending`). The detail lives in the notes and the commit message, not the row.
 

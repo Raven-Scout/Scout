@@ -18,7 +18,7 @@ Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer'
 
 ## Step 4b: Session Entry
 
-Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`:
+Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Research | <one sentence: targets researched, key findings, entities updated, with [[links]]> | <commit> |`
 

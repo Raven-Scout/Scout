@@ -20,10 +20,10 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 
 # ~tokens (chars/4) at the last re-pin. Re-pinned: 2026-10-13 (first pin); 2026-10-20: +392 in every
 # mode for git-setup's "Engine Changes: Never in the Live Engine Checkout" (a dreaming run edited the
-# live engine; the rule must reach any scheduled run, research included). 2026-10-21: +1,062 SKILL,
-# +1,018 DREAMING, +1,030 RESEARCH for #453: the always-included privacy rule (phases/core/privacy.md,
-# ~700) plus reading the KB through `scoutctl kb` and the Slack outbound-draft step in the phases.
-PINS = {"SKILL": 41_505, "DREAMING": 18_440, "RESEARCH": 6_177}
+# live engine; the rule must reach any scheduled run, research included). 2026-10-21: +1,254 SKILL,
+# +1,194 DREAMING, +1,113 RESEARCH for #453: the always-included privacy rule (phases/core/privacy.md,
+# ~790) plus reading the KB through `scoutctl kb` and the Slack outbound-draft step in the phases.
+PINS = {"SKILL": 41_697, "DREAMING": 18_616, "RESEARCH": 6_260}
 GROWTH = 0.05
 SHRINK = 0.10
 

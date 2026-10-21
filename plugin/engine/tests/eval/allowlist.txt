@@ -254,6 +254,8 @@ Quiet
 ROLL
 Rollout
 Same
+Confirm
+Final
 Sammy  # the privacy fixture alias of the Sam stand-in
 Telegram
 This

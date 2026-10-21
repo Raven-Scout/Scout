@@ -225,6 +225,37 @@ def test_a_pathless_grep_or_glob_counts_as_a_kb_read_and_one_elsewhere_does_not(
     assert leading_indicators(transcript)["raw_kb_read"] == 2
 
 
+@pytest.mark.parametrize(
+    ("call", "counted"),
+    [
+        (_call(1, "Glob", pattern=".scout-cache/**"), False),
+        (_call(1, "Glob", pattern="scripts/**"), False),
+        (_call(1, "Glob", pattern="action-items/*.md"), False),
+        (_call(1, "Grep", pattern="permit", glob=".scout-cache/*.json"), False),
+        (_call(1, "Glob", pattern="*.md"), True),
+        (_call(1, "Glob", pattern="**"), True),
+        (_call(1, "Glob", pattern="knowledge-base/people/*.md"), True),
+        (_call(1, "Grep", pattern="permit", glob="action-items/context/*.md"), True),
+        (_call(1, "Grep", pattern="permit"), True),
+    ],
+)
+def test_pathless_search_tools_count_only_when_aimed_at_the_kb(call: ToolCall, counted: bool) -> None:
+    assert leading_indicators((call,))["raw_kb_read"] == int(counted)
+
+
+def test_a_read_of_a_kb_file_counts_unless_the_run_then_edits_it() -> None:
+    sam, log = "/v/knowledge-base/people/sam.md", "/v/knowledge-base/session-log/2026-10.md"
+    transcript = (
+        _call(1, "Read", file_path=sam),
+        _call(2, "Read", file_path=log),
+        _call(3, "Edit", file_path=log, old_string="a", new_string="b"),
+        _call(4, "Read", file_path="/v/action-items/action-items-2026-10-12.md"),
+        _call(5, "Read", file_path="/v/action-items/context/PRMT.md"),
+        _call(6, "Write", file_path="/v/action-items/context/PRMT.md", content="x"),
+    )
+    assert leading_indicators(transcript)["raw_kb_read"] == 1
+
+
 def test_dreaming_scores_must_appear_as_not_applicable_but_still_fails_on_a_leak() -> None:
     quiet = _clean(daily=None, telegram=())
     assert privacy_canary(quiet, PERMIT, "dreaming").passed is True

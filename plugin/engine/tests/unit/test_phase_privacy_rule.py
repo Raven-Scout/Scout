@@ -26,6 +26,12 @@ _WALK_KB = re.compile(
     r"[^.]{0,40}?`?(?:knowledge-base|action-items/context)",
     re.IGNORECASE,
 )
+# "read `knowledge-base/…`": an instruction to read a KB path that doesn't say through which command.
+_READ_KB_PATH = re.compile(
+    r"\b(?:read|reads|reading|consult|look at|look in|check|inspect|load)\b[^.`]{0,60}`[^`\s]*"
+    r"(?:knowledge-base|action-items/context)/",
+    re.IGNORECASE,
+)
 
 
 def _all_connectors() -> set[str]:
@@ -97,7 +103,11 @@ def test_no_assembled_phase_reads_the_kb_raw(kind: str) -> None:
     raw = [span for span in _code_spans(text) if raw_kb_read(span)]
     assert raw == []
     # Prose that sends the run through the KB file by file must name the scoutctl kb command to use.
-    prose = [line for line in text.splitlines() if _WALK_KB.search(line) and "scoutctl kb" not in line]
+    prose = [
+        line
+        for line in text.splitlines()
+        if (_WALK_KB.search(line) or _READ_KB_PATH.search(line)) and "scoutctl kb" not in line
+    ]
     assert prose == []
     # claude-sessions reads the git history of *other* repos (`git -C <repo> log`): not the vault's.
     vault_only = _assembled(kind, _all_connectors() - {"claude_sessions"})
@@ -126,6 +136,15 @@ def test_the_raw_read_detector() -> None:
     assert raw_kb_read("find . -name '*.md' | xargs -0 wc -l knowledge-base/people")
     assert raw_kb_read("tree knowledge-base")
     assert not raw_kb_read("git log --oneline -- knowledge-base")  # names only: not content
+
+
+def test_the_prose_read_detector() -> None:
+    assert _READ_KB_PATH.search("Before building the list, read `knowledge-base/scout-mistake-audit.md`.")
+    assert _READ_KB_PATH.search("read that person's entity file (`knowledge-base/people/<slug>.md`)")
+    assert _READ_KB_PATH.search("Check the newest shard(s) in `knowledge-base/session-log/` for the last row")
+    assert _READ_KB_PATH.search("read `/v/action-items/context/PRMT.md`")
+    assert not _READ_KB_PATH.search("Open questions, people | **Project page** `knowledge-base/projects/x.md`")
+    assert not _READ_KB_PATH.search("Create a per-file item `knowledge-base/research-queue/<slug>.md`")
 
 
 def test_the_prose_walk_detector() -> None:

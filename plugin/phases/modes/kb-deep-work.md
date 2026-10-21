@@ -248,7 +248,7 @@ The summary should describe what was improved: e.g., "deep dive on project-alpha
 
 ### Step 2f: Track Work
 
-Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`:
+Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Dreaming | <one sentence: the headline result, with [[links]] to the notes changed> | <commit> |`
 
