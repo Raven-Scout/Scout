@@ -13,6 +13,8 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from scout.cli import app
+from scout.kb import delta as delta_mod
+from scout.kb import git_io
 from scout.kb.delta import Commit, delta
 from scout.kb.ontology import clear_frontmatter_cache
 from scout.kb.read import UsageError
@@ -119,6 +121,48 @@ def test_delta_file_now_private_is_private(tmp_path: Path) -> None:
     assert _vis(normal) == {PRIYA: "private"}
 
 
+def test_diff_is_limited_to_the_given_paths(vault: Path) -> None:
+    head = git_io.log_commits(vault, since_sha=git_io.resolve_commit(vault, "HEAD~3"))
+    mixed = next(c for c in head if c.subject == "private and normal")
+    only_rollout = git_io.commit_diff(vault, mixed, [ROLLOUT])
+    assert ROLLOUT in only_rollout and BILLING not in only_rollout
+    assert BILLING in git_io.commit_diff(vault, mixed, [ROLLOUT, BILLING])
+    assert git_io.commit_diff(vault, mixed, []) == ""
+
+
+def test_blob_head_reads_only_the_head(tmp_path: Path) -> None:
+    vault = build_privacy_vault(tmp_path)
+    (vault / "big.md").write_text("x" * 200_000, encoding="utf-8")
+    _commit(vault, "big")
+    assert git_io.blob_head(vault, "HEAD", "big.md", 1000) == b"x" * 1000
+    assert git_io.blob_head(vault, "HEAD", "no-such.md", 1000) is None
+    assert git_io.blob_head(vault, "HEAD", PRIYA, 10**6) == (vault / PRIYA).read_bytes()
+
+
+def test_unreadable_blob_is_private(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_args: object) -> bytes:
+        raise git_io.BlobUnreadable("x")
+
+    monkeypatch.setattr(delta_mod, "blob_head", boom)
+    (normal, mixed, _private) = delta(vault, "owner", "HEAD~3", with_diff=False)
+    assert _vis(normal) == {PRIYA: "private"}
+    assert mixed.paths[1][1].visibility_source == "forced"
+
+
+def test_shallow_clone_boundary_is_flagged(tmp_path: Path) -> None:
+    vault = build_privacy_vault(tmp_path / "src")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", "--depth", "2", f"file://{vault}", str(clone))
+    commits = delta(clone, "owner", "1w", with_diff=True)
+    assert [c.subject for c in commits] == ["normal only", "private and normal"]
+    top, boundary = commits
+    assert _vis(top) == {PRIYA: "normal"} and not top.shallow_boundary
+    # not a root that added every file: flagged, with no paths and no diff
+    assert boundary.shallow_boundary and boundary.paths == [] and boundary.diff is None
+    text = kb(clone, "delta", "--since", "1w").stdout
+    assert "shallow clone boundary" in text
+
+
 # ----- CLI -----------------------------------------------------------------------------
 
 
@@ -131,7 +175,8 @@ def test_cli_delta_json_and_text(vault: Path, reader: str) -> None:
     private = rows[-1]
     assert {p["path"]: p["label"]["visibility"] for p in private["paths"]} == {PERMIT: "private", SAM: "private"}
     assert private["diff"] is None
-    assert set(private) == {"sha", "subject", "author", "paths", "diff"}
+    assert set(private) == {"sha", "subject", "author", "paths", "diff", "shallow_boundary"}
+    assert private["shallow_boundary"] is False
 
     text = kb(vault, "delta", "--since", "HEAD~3", reader=reader).stdout.splitlines()
     assert f"  [private] {SAM}" in text and f"  {PRIYA}" in text

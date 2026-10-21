@@ -120,6 +120,58 @@ def test_marker_allows_only_its_own_target_and_only_for_lint(vault: Path) -> Non
     assert outbound.find_mentions(text, terms, allow_markers=False) == [1, 2, 3]
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Ask _Sammy_ now",  # Slack italics
+        "Ask __Sammy__ now",
+        "see sammy_notes",
+        "| a | [[sam\\|Sam]] |",  # a wikilink in a table, pipe escaped
+        "task renew permit is due",  # separators normalised
+        "task_renew_permit is due",
+        "Task-Renew_Permit is due",
+        "q=Sammy%20contract",  # URL-encoded
+        "q=task%2Drenew%2Dpermit",
+        "q=contract+Sammy",
+    ],
+)
+def test_matcher_bypasses_closed(vault: Path, line: str) -> None:
+    terms = outbound.private_terms(vault, load_policy(vault))
+    assert outbound.find_mentions(f"{CLEAN}\n{line}", terms, allow_markers=False) == [2]
+
+
+def test_term_split_by_line_break_reports_every_line(vault: Path) -> None:
+    terms = outbound.private_terms(vault, load_policy(vault))
+    assert outbound.find_mentions(f"{CLEAN}\nplease renew the task\npermit soon", terms, allow_markers=False) == []
+    assert outbound.find_mentions(f"{CLEAN}\nfiled under task-renew-\npermit soon", terms, allow_markers=False) == [
+        2,
+        3,
+    ]
+    # with markers, a split term is allowed only when every line it spans carries one
+    one = "task %%privacy:allow task-renew-permit%%\nrenew permit"
+    both = "task %%privacy:allow task-renew-permit%%\nrenew permit %%privacy:allow task-renew-permit%%"
+    assert outbound.find_mentions(one, terms, allow_markers=True) == [1, 2]
+    assert outbound.find_mentions(both, terms, allow_markers=True) == []
+
+
+def test_multi_word_unicode_terms(tmp_path: Path) -> None:
+    vault = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    (vault / "knowledge-base" / "people" / "jose-lee.md").write_text(
+        "---\nname: José Lee\ntype: person\nvisibility: private\naliases: [Straße Kid, Mary Jane]\n---\n",
+        encoding="utf-8",
+    )
+    terms = outbound.private_terms(vault, load_policy(vault))
+    hits = [
+        "Call José\nLee tomorrow",  # 1-2: split by a line break
+        "STRASSE KID is here",  # 3: full case folding
+        "Mary-Jane said hi",  # 4: separators
+        "q=Jos%C3%A9+Lee",  # 5: URL-decoded
+        "Josélee and Mary Janet don't count",  # 6
+    ]
+    assert outbound.find_mentions("\n".join(hits), terms, allow_markers=False) == [1, 2, 3, 4, 5]
+
+
 def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     own = build_privacy_vault(tmp_path)
     outbound.clear_cache()

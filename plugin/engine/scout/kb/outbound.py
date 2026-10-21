@@ -8,19 +8,25 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
 **Private terms** (:func:`private_terms`) are built from every file labelled
 ``private`` (owner view, so every private file):
 
-- whole-word, case-insensitive *terms*: the file's slug (its name without the
-  extension), and for a markdown note its frontmatter ``name:``, ``aliases:``
-  and ``title:`` (spec §4.2 counts the title as private content), each kept
-  only when it has 4 or more characters. A word boundary is "not a letter,
-  digit or underscore" on each side, so ``Sammy.`` and ``(Sammy)`` match and
-  ``Sammyson`` doesn't; a multi-word term matches across any run of
-  whitespace (``Pri  Pri Two``).
-- *wikilinks*: ``[[target]]``, ``[[target|display]]``, ``[[target#heading]]``,
-  ``![[target]]`` and ``[[path/to/target]]`` whose target is, case-insensitively,
-  the note's slug, file name, ``name:``, an alias, or its vault path (or a
-  trailing part of it), with or without ``.md``. A link is a hit whatever the
-  length of its target, so ``[[sam]]`` hits although ``sam`` is too short to be
-  a term.
+- whole-word *terms*: the file's slug (its name without the extension), and
+  for a markdown note its frontmatter ``name:``, ``aliases:`` and ``title:``
+  (spec §4.2 counts the title as private content; ruling R17), each kept only
+  when it has 4 or more characters.
+- *wikilinks*: ``[[target]]``, ``[[target|display]]`` (``\\|`` inside a table
+  too), ``[[target#heading]]``, ``![[target]]`` and ``[[path/to/target]]``
+  whose target is the note's slug, file name, ``name:``, an alias, or its vault
+  path (or a trailing part of it), with or without ``.md``. A link is a hit
+  whatever the length of its target, so ``[[sam]]`` hits although ``sam`` is
+  too short to be a term.
+
+**How terms match.** Text and terms are compared under full Unicode case
+folding (``STRASSE`` matches ``Straße``). A term's boundary is anything but a
+letter or digit, so ``_Sammy_`` (Slack italics), ``sammy_notes``, ``Sammy.``
+and ``(Sammy)`` all match and ``Sammyson`` doesn't. The parts of a term match
+across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
+``task_renew_permit``, ``Mary-Jane`` for ``Mary Jane``), so matching runs over
+the whole text, and a term split over a line break reports every line it
+spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``).
 
 The result is a :class:`PrivateTerms`, grouped per private note, so a lint
 marker can allow one note's hits and not another's. It is cached per process,
@@ -29,8 +35,9 @@ added note is picked up by the next call.
 
 **Markers.** With ``allow_markers=True`` (lint only), a same-line
 ``%%privacy:allow <slug>%%`` allows that line's hits that refer to that one
-private note. Sends pass ``allow_markers=False``: a marker is not a send pass
-(spec §8.2), and since the marker itself names the slug, such a line is a hit.
+private note (a term spanning lines only when every line carries the marker).
+Sends pass ``allow_markers=False``: a marker is not a send pass (spec §8.2),
+and since the marker itself names the slug, such a line is a hit.
 
 A result is only ever line numbers: no function here returns the matched term,
 the note or its path to a caller that would print it.
@@ -38,12 +45,14 @@ the note or its path to a caller that would print it.
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_plus
 
 import yaml
 
@@ -61,16 +70,22 @@ from scout.kb.read import Output, UsageError, all_labels, policy_hash
 MIN_TERM_CHARS = 4
 
 _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
-_MARKER = re.compile(r"%%\s*privacy:allow\s+([^%\s]+)\s*%%", re.IGNORECASE)
+_MARKER = re.compile(r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%", re.IGNORECASE)
+_SEP = r"[-_\s]+"
+_SPLIT = re.compile(_SEP)
+# Not a letter or digit on either side: `_` and punctuation are boundaries.
+_BEFORE = r"(?<![^\W_])"
+_AFTER = r"(?![^\W_])"
 
 
 @dataclass(frozen=True)
 class PrivateNote:
     """One private file's matchable forms.
 
-    ``terms`` are the whole-word terms (4+ characters); ``link_keys`` the
-    case-folded names a wikilink may use; ``link_path`` the case-folded vault
-    path without ``.md``.
+    ``terms`` are the whole-word terms (4+ characters, as written);
+    ``link_keys`` the case-folded names a wikilink may use; ``link_path`` the
+    case-folded vault path without ``.md``; ``pattern`` matches any term in
+    case-folded text.
     """
 
     path: str
@@ -79,9 +94,6 @@ class PrivateNote:
     link_keys: frozenset[str]
     link_path: str
     pattern: re.Pattern[str] | None
-
-    def mentioned_in(self, line: str) -> bool:
-        return self.pattern is not None and self.pattern.search(line) is not None
 
     def linked_by(self, target: str) -> bool:
         """``target`` (already case-folded, heading, display and ``.md`` stripped) names this note."""
@@ -104,10 +116,15 @@ class PrivateTerms:
 
 
 def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
-    parts = sorted({r"\s+".join(re.escape(w) for w in t.split()) for t in terms}, key=len, reverse=True)
+    """One pattern for ``terms`` over case-folded text (module docstring)."""
+    parts: set[str] = set()
+    for t in terms:
+        words = [w for w in _SPLIT.split(t.casefold()) if w]
+        if words:
+            parts.add(_SEP.join(re.escape(w) for w in words))
     if not parts:
         return None
-    return re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
+    return re.compile(_BEFORE + "(?:" + "|".join(sorted(parts, key=len, reverse=True)) + ")" + _AFTER)
 
 
 def _strings(value: Any) -> list[str]:
@@ -193,25 +210,45 @@ def private_terms(vault: Path, policy: Policy) -> PrivateTerms:
 
 
 def _link_target(inner: str) -> str:
-    """A wikilink's target, case-folded: display text, heading/block ref and ``.md`` dropped."""
-    target = inner.split("|", 1)[0].split("#", 1)[0].strip().strip("/")
+    """A wikilink's target, case-folded: display text (``|`` or a table's ``\\|``),
+    heading/block ref and ``.md`` dropped."""
+    target = inner.split("|", 1)[0].rstrip("\\").split("#", 1)[0].strip().strip("/")
     return _strip_md(target).casefold()
 
 
-def _line_hits(line: str, terms: PrivateTerms) -> set[str]:
-    """Paths of the private notes ``line`` refers to."""
-    hit: set[str] = set()
-    targets = [_link_target(m.group(1)) for m in _WIKILINK.finditer(line)]
-    targets = [t for t in targets if t]
-    if targets:
+def _fold(text: str) -> tuple[str, list[int] | None]:
+    """``text`` case-folded, and for each folded character the index of the
+    character it came from (None when folding kept every length)."""
+    folded = text.casefold()
+    if len(folded) == len(text):  # casefold never shortens a character
+        return folded, None
+    out: list[str] = []
+    origin: list[int] = []
+    for i, ch in enumerate(text):
+        cf = ch.casefold()
+        out.append(cf)
+        origin.extend([i] * len(cf))
+    return "".join(out), origin
+
+
+def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
+    """``(note path, first line, last line)`` (0-based lines of ``text``) of every term and link hit."""
+    folded, origin = _fold(text)
+    starts = [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
+
+    def line(pos: int) -> int:
+        return bisect.bisect_right(starts, origin[pos] if origin is not None else pos) - 1
+
+    found: list[tuple[str, int, int]] = []
+    targets = [(line(m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
+    for n, target in targets:
+        if target:
+            found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
+    if terms.any_term is not None and terms.any_term.search(folded):
         for note in terms.notes:
-            if any(note.linked_by(t) for t in targets):
-                hit.add(note.path)
-    if terms.any_term is not None and terms.any_term.search(line):
-        for note in terms.notes:
-            if note.path not in hit and note.mentioned_in(line):
-                hit.add(note.path)
-    return hit
+            if note.pattern is not None:
+                found += [(note.path, line(m.start()), line(m.end() - 1)) for m in note.pattern.finditer(folded)]
+    return found
 
 
 def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> list[int]:
@@ -223,20 +260,26 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
     """
     if not terms:
         return []
-    lines: list[int] = []
-    for n, raw in enumerate(text.split("\n"), 1):
-        line = raw.removesuffix("\r")
-        allowed: set[str] = set()
-        if allow_markers:
-            allowed = {m.group(1).casefold() for m in _MARKER.finditer(line)}
-            line = _MARKER.sub(" ", line)
-        hits = _line_hits(line, terms)
-        if allowed:
-            by_path = {note.path: note for note in terms.notes}
-            hits = {p for p in hits if by_path[p].slug.casefold() not in allowed}
-        if hits:
-            lines.append(n)
-    return lines
+    lines = text.split("\n")
+    allowed: list[set[str]] = [set() for _ in lines]
+    if allow_markers:
+        for i, ln in enumerate(lines):
+            allowed[i] = {m.group(1).casefold() for m in _MARKER.finditer(ln)}
+        text = _MARKER.sub(lambda m: " " * len(m.group(0)), text)  # keeps every offset
+        lines = text.split("\n")
+    slugs = {note.path: note.slug.casefold() for note in terms.notes}
+    hits = _hits(text, terms)
+    for i, ln in enumerate(lines):  # each line once more, URL-decoded
+        decoded = unquote_plus(ln)
+        if decoded != ln:
+            hits += [(p, i, i) for p, _, _ in _hits(decoded, terms)]
+    out: set[int] = set()
+    for path, first, last in hits:
+        span = range(first, last + 1)
+        if all(slugs[path] in allowed[n] for n in span):
+            continue
+        out.update(n + 1 for n in span)
+    return sorted(out)
 
 
 def is_owner_only(policy: Policy, surface: str) -> bool:

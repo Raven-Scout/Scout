@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -306,16 +307,80 @@ def commit_changes(repo: Path, commit: LogCommit) -> list[Change]:
     return changes
 
 
-def commit_diff(repo: Path, commit: LogCommit) -> str:
-    """``commit``'s unified diff against its first parent (binary files as git
-    summarises them; bad UTF-8 replaced)."""
+def commit_diff(repo: Path, commit: LogCommit, paths: Sequence[str]) -> str:
+    """``commit``'s unified diff against its first parent, limited to ``paths``
+    (binary files as git summarises them; bad UTF-8 replaced). No paths, no diff."""
+    if not paths:
+        return ""
     proc = git_bytes(
-        repo, "diff-tree", "-p", "-M", "--no-color", "--no-commit-id", "--relative", *_tree_range(commit), check=True
+        repo,
+        "diff-tree",
+        "-p",
+        "-M",
+        "--no-color",
+        "--no-commit-id",
+        "--relative",
+        *_tree_range(commit),
+        "--",
+        *(f":(literal){p}" for p in paths),
+        check=True,
     )
     return _text(proc.stdout)
 
 
+class BlobUnreadable(Exception):
+    """A path exists at a revision but its content couldn't be read."""
+
+
 def blob_head(repo: Path, rev: str, rel: str, limit: int) -> bytes | None:
-    """The first ``limit`` bytes of ``rel`` at ``rev``, or None when it isn't there."""
-    proc = git_bytes(repo, "cat-file", "blob", f"{rev}:./{rel}")
-    return proc.stdout[:limit] if proc.returncode == 0 else None
+    """The first ``limit`` bytes of ``rel`` at ``rev`` (only those are read), or
+    None when it isn't there. ``BlobUnreadable`` when it is there and reading fails."""
+    spec = f"{rev}:./{rel}"
+    if git_bytes(repo, "cat-file", "-e", spec).returncode != 0:
+        return None
+    try:
+        proc = subprocess.Popen(
+            ["git", "cat-file", "blob", spec], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+    except OSError as e:
+        raise BlobUnreadable(rel) from e
+    assert proc.stdout is not None
+    try:
+        data = proc.stdout.read(limit)
+    finally:
+        proc.stdout.close()
+    if len(data) < limit:
+        if proc.wait() != 0:
+            raise BlobUnreadable(rel)
+    else:  # the head is all we need
+        proc.kill()
+        proc.wait()
+    return data
+
+
+def shallow_boundaries(repo: Path) -> frozenset[str]:
+    """Commits whose parents a shallow clone cut off (empty in a full clone)."""
+    proc = git_bytes(repo, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+    if proc.returncode != 0:
+        return frozenset()
+    try:
+        text = Path(_text(proc.stdout).strip()).read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return frozenset()
+    return frozenset(line.strip() for line in text.splitlines() if line.strip())
+
+
+def recorded_parent(repo: Path, sha: str) -> str | None:
+    """The first parent written in ``sha``'s commit object when that parent's
+    tree is present locally (a shallow boundary hides it from ``git log``), else None."""
+    proc = git_bytes(repo, "cat-file", "commit", sha)
+    if proc.returncode != 0:
+        return None
+    for line in _text(proc.stdout).split("\n"):
+        if not line:
+            break  # end of the header
+        if line.startswith("parent "):
+            parent = line.split()[1]
+            ok = git_bytes(repo, "cat-file", "-e", f"{parent}^{{tree}}").returncode == 0
+            return parent if ok else None
+    return None
