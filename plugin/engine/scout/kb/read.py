@@ -63,6 +63,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -512,6 +513,26 @@ def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[t
         for rel, label in sorted(labels.items())
         if visible_to(label, reader) and (not globs or any(glob_match(g, rel) for g in globs))
     ]
+
+
+def visibility_map(vault: Path, reader: str, globs: Sequence[str], *, who: str = "scout") -> dict[str, str]:
+    """``{vault-relative path: "normal" | "private"}`` of the files ``reader`` may see under ``globs``.
+
+    For the engine's pre-built caches (#453, spec §6.3). Empty for a reader that
+    sees nothing. If the labels can't be read it fails closed: it returns ``{}``,
+    so every caller (which treats a path missing from the map as private) marks
+    everything private, and writes one stderr line naming ``who`` and the
+    exception type. It never prints the exception's text, which could name a
+    private file.
+    """
+    try:
+        return {rel: label.visibility for rel, label in visible_files(vault, reader, globs)}
+    except Exception as e:
+        print(
+            f"{who}: privacy labels unavailable ({type(e).__name__}); every file is marked private",
+            file=sys.stderr,
+        )
+        return {}
 
 
 # ----- search -----------------------------------------------------------------------

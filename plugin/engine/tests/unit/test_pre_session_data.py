@@ -165,10 +165,10 @@ def test_gather_returns_empty_when_no_git_no_gh(tmp_path: Path, monkeypatch: pyt
 
     ctx = gather("briefing", scout_dir=scout_dir)
     assert ctx.session_type == "briefing"
-    assert ctx.git_recent == ""
+    assert ctx.git_recent == []
     assert ctx.pr_authored == []
     assert ctx.pr_review_requested == []
-    assert ctx.personal_tasks == ""
+    assert ctx.personal_tasks == []
 
 
 def test_gather_calls_gh_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,15 +205,15 @@ def test_write_context_round_trip(tmp_path: Path) -> None:
     ctx = SessionContext(
         generated_at="2026-05-28T12:00:00",
         session_type="briefing",
-        git_recent="abc 123\n",
-        kb_file_dates={"knowledge-base/foo.md": "May 1"},
+        git_recent=[{"sha": "abc123", "subject": "s", "visibility": "normal", "paths": [], "line": "abc123 s"}],
+        kb_file_dates={"knowledge-base/foo.md": {"last_updated": "May 1", "visibility": "normal"}},
         pr_authored=[{"number": 1}],
         pr_review_requested=[{"number": 2}],
-        personal_tasks="task list",
+        personal_tasks=[{"name": "t", "path": "knowledge-base/t.md", "visibility": "normal"}],
     )
     out = tmp_path / "session-context.json"
     write_context(ctx, out)
     parsed = json.loads(out.read_text())
     assert parsed["session_type"] == "briefing"
     assert parsed["pr_authored"] == [{"number": 1}]
-    assert parsed["kb_file_dates"]["knowledge-base/foo.md"] == "May 1"
+    assert parsed["kb_file_dates"]["knowledge-base/foo.md"] == {"last_updated": "May 1", "visibility": "normal"}

@@ -4,7 +4,7 @@ The event payload is written to ``.scout-cache/trigger-events/<...>.json``
 and its path exported as ``$SCOUT_TRIGGER_EVENT_PATH`` (spec Open Question
 #3) so the skill can read what fired it. The runner (default
 ``run-scout.sh``, same contract as scheduled slots) is spawned detached
-with ``SCOUT_FORCE_MODE=<skill>``.
+with ``SCOUT_FORCE_MODE=<skill>`` and ``SCOUT_READER=autonomous`` (#453).
 """
 
 from __future__ import annotations
@@ -78,6 +78,9 @@ def run(
     env["SCOUT_DATA_DIR"] = str(vault)
     env["SCOUT_TRIGGER_ID"] = trigger.id
     env["SCOUT_TRIGGER_EVENT_PATH"] = str(payload_path)
+    # The run reads the vault as the owner's unattended reader (#453, spec §6.2),
+    # whatever runner the trigger names (a vault-local one may not export it).
+    env["SCOUT_READER"] = "autonomous"
 
     pid = spawn([str(vault / runner)], env)
     return {"skill": skill, "runner": runner, "pid": pid, "event_payload_path": str(payload_path)}

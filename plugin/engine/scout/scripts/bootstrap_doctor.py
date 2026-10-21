@@ -437,7 +437,7 @@ def _has_markers(path: Path) -> bool:
 
 
 def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
-    """Vault edits to plugin-owned files, as (warnings, notes).
+    """Vault edits to plugin-owned files, as (warnings, notes), plus privacy drift.
 
     A conflict is a warning: the vault runs an older version of a plugin-owned
     file until it is resolved. An edit upgrades keep, and a copy the first
@@ -476,6 +476,8 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
             f"{', '.join(parked)} — compare with `scoutctl bootstrap drift --diff`, dismiss "
             f"with `scoutctl bootstrap drift --resolve <file>`"
         )
+    # Vault-local runners and scripts that read around the privacy labels (#453).
+    warnings.extend(f"privacy: {finding.message}" for finding in vault_drift.privacy_drift(vault))
     return warnings, notes
 
 
