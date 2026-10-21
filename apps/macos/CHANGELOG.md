@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **The Knowledge Base tree shows a lock on private notes** (Raven-Scout/Scout#453; `Scout/KnowledgeBase/KBPrivacyLabels.swift`, `Scout/KnowledgeBase/Views/KBTreeView.swift`, `Scout/KnowledgeBase/Views/KnowledgeBaseView.swift`, `Scout/Shell/AppState.swift`). A note labelled `private` (its `visibility:` line, or a path default such as `knowledge-base/personal/`) gets a small lock next to its name. The app doesn't read frontmatter for this: it asks the engine, `scoutctl kb classify --reader owner --json`, for the files in open folders, up to 200 files per call. Each label is cached by the file's modification date, size and inode, so after a reparse only changed files are asked about again. A changed `scout-config.yaml` (its `privacy:` overlay can relabel any file) drops the cache. When `scoutctl` fails, the tree shows no locks and the exit code is logged (stderr only as private log data). An engine without `kb classify` (exit 2 or "No such command") isn't asked again until the `scoutctl` executable changes.
+
 ## [0.18.3] - 2026-10-21
 
 ## [0.18.2] - 2026-10-20

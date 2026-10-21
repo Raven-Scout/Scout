@@ -2678,6 +2678,82 @@ def _register_bootstrap() -> None:
                 typer.echo(f"resolved: {r.name} — sidecar removed; the next upgrade merges it again")
         raise typer.Exit(code=1 if failed else 0)
 
+    @bootstrap_app.command("privacy-migrate")
+    def cli_bootstrap_privacy_migrate(
+        set_private: list[str] = typer.Option(
+            [],
+            "--set-private",
+            help="Rewrite this note's non-standard visibility: value to `private` (only that line). Repeatable.",
+        ),
+        local_only: list[str] = typer.Option(
+            [],
+            "--local-only",
+            help="Add this glob (e.g. 'trading/**') to scout-config.yaml → privacy.local_only_add. Repeatable.",
+        ),
+        json_out: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Per-note privacy migration (#453). Without options: a read-only report.
+
+        Lists notes whose visibility: value isn't normal/private (they already
+        count as private), lines of shared files that link or name a private
+        note (file and line only), and trading/brokerage folders to keep on this
+        computer. --set-private and --local-only make the changes the owner
+        agreed to; they refuse a scheduled or autonomous caller (exit 2).
+        Exit 1 when a --set-private note was refused. A reader other than owner
+        or autonomous (SCOUT_READER=agent:…) gets exit 2 and no output.
+        """
+        import json as _json
+        import os as _os
+
+        from scout import paths as _paths
+        from scout.kb.privacy import FULL_READERS
+        from scout.kb.reader import resolve_reader
+        from scout.scripts import privacy_migrate as pm
+
+        # The report names private notes' paths: an agent reader gets nothing at all.
+        if resolve_reader(None, _os.environ) not in FULL_READERS:
+            raise typer.Exit(2)
+
+        vault = _paths.data_dir()
+        if not set_private and not local_only:
+            rep = pm.report(vault)
+            if json_out:
+                typer.echo(_json.dumps(rep.to_json(), indent=2, sort_keys=True))
+            else:
+                for line in rep.lines():
+                    typer.echo(line)
+            raise typer.Exit(0)
+
+        why = pm.headless_reason(_os.environ)
+        if why:
+            typer.echo(
+                f"refused: {why}. Only the owner, in an interactive /scout-update, may change notes "
+                "or the privacy overlay; nothing was changed.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+        outcomes: list[dict[str, str]] = []
+        added: list[str] = []
+        try:
+            for path in set_private:
+                outcome, reason = pm.set_private(vault, path)
+                outcomes.append({"path": path, "outcome": outcome, "reason": reason})
+            if local_only:
+                added = pm.add_local_only(vault, local_only)
+        except ValueError as e:
+            typer.echo(f"refused: {e}", err=True)
+            raise typer.Exit(2) from e
+        if json_out:
+            typer.echo(_json.dumps({"set_private": outcomes, "local_only_added": added}, indent=2, sort_keys=True))
+        else:
+            for o in outcomes:
+                tail = f" — {o['reason']}" if o["reason"] else ""
+                typer.echo(f"{o['outcome']}: {o['path']}{tail}", err=o["outcome"] == "refused")
+            for g in local_only:
+                typer.echo(f"{'added' if g.strip() in added else 'already local-only'}: {g.strip()}")
+        raise typer.Exit(1 if any(o["outcome"] == "refused" for o in outcomes) else 0)
+
     @bootstrap_app.command("doctor")
     def cli_bootstrap_doctor(
         no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip launchd registration check"),
