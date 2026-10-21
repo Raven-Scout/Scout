@@ -1883,6 +1883,69 @@ def _register_model() -> None:
 _register_model()
 
 
+def _register_brain() -> None:
+    """scoutctl brain {slice,check}: the per-mode view of SKILL.md a scheduled run reads (#84)."""
+
+    brain_app = typer.Typer(help="The brain files a scheduled run reads (SKILL/DREAMING/RESEARCH.md).")
+    app.add_typer(brain_app, name="brain")
+
+    def _vault(vault_opt: str) -> Path:
+        from scout import paths as _paths
+
+        return Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
+
+    @brain_app.command("slice")
+    def cli_brain_slice(
+        slot: str = typer.Option("", "--slot", help="The run's slot key (the runners pass $MODE)."),
+        kind: str = typer.Option("SKILL", "--kind", help="SKILL | DREAMING | RESEARCH"),
+        vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+    ) -> None:
+        """Write the slot's slice of <KIND>.md to .scout-cache/brain/ and print the file the run reads.
+
+        A briefing slot keeps the briefing-only blocks and drops the consolidation-only
+        ones, and the reverse. Prints the live file instead (and removes any stale slice)
+        when the slot is manual or unknown, the file has no markers, or the markers are
+        damaged; one line on stderr says which. Always exits 0: a run is never blocked.
+        """
+        from scout.scripts.brain_slice import write_slice
+
+        read, line = write_slice(_vault(vault_opt), kind.upper(), slot or None)
+        typer.echo(line, err=True)
+        typer.echo(str(read))
+
+    @brain_app.command("check")
+    def cli_brain_check(
+        vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+    ) -> None:
+        """Check SKILL.md's mode markers and show what each mode's run would read.
+
+        Exit 1 when the markers are damaged: runs then read the whole file, as before markers.
+        """
+        from scout.scripts.brain_slice import SLICE_CLASSES, MarkerError, slice_text
+
+        live = _vault(vault_opt) / "SKILL.md"
+        try:
+            text = live.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            typer.echo(f"{live}: unreadable: {e}", err=True)
+            raise typer.Exit(code=2) from e
+        typer.echo(f"SKILL.md: ~{len(text) // 4} tokens")
+        try:
+            cuts = {cls: slice_text(text, cls) for cls in sorted(SLICE_CLASSES)}
+        except MarkerError as e:
+            typer.echo(f"markers damaged, every run reads the whole file: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        for cls, cut in cuts.items():
+            typer.echo(
+                f"{cls}: ~{len(cut.text) // 4} tokens ({cut.dropped_blocks} of {cut.marked_blocks} blocks dropped)"
+            )
+        if not next(iter(cuts.values())).marked_blocks:
+            typer.echo("no markers: every run reads the whole file")
+
+
+_register_brain()
+
+
 def _register_triggers() -> None:
     """scoutctl trigger {list,show,validate,reload,test,fire-now,stats}.
 

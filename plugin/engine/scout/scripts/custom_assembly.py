@@ -38,6 +38,7 @@ class CustomSection:
     template: Path
     raw_body: str  # CONNECTOR_* filled, brain-file vars still as {{VARS}}
     rendered_body: str  # fully rendered — what lands in the brain file
+    mode: tuple[str, ...] = ()  # the template's `mode:` (SKILL marks a section only one of its modes runs)
 
 
 def _load_templates(plugin_root: Path) -> dict[str, tuple[Path, PhaseSection]]:
@@ -139,5 +140,5 @@ def render_custom_sections(
 
             raw = _CONNECTOR_VAR_RE.sub(_fill, template.body)
             rendered = render_template(raw, {**vars_, **_input_vars(c, inputs)})
-            out.append(CustomSection(key, activity, path, raw, rendered))
+            out.append(CustomSection(key, activity, path, raw, rendered, tuple(template.mode)))
     return out

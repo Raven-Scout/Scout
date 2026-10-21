@@ -1,0 +1,28 @@
+# busy-briefing: busy-weekday's vault and connectors as a morning briefing (#84, spec
+# docs/superpowers/specs/2026-10-13-static-instruction-trim-design.md §8.3). A briefing run reads
+# SKILL.md's briefing slice, so this covers the view busy-weekday (a consolidation) doesn't. The
+# review-request audit is in no_drop's ref:example-org/widgets#12.
+mode: morning-briefing
+files_from: busy-weekday
+weekdays_only: true
+personas: [slack, linear, calendar]
+checks: [placement, no_drop, demotion]
+
+# Same seeds and expectations as busy-weekday: a briefing places and steps down items alike.
+expected_placement:
+  QUOTA: [🔴, 🟡]
+  BILL: [🟢]
+  DOCS: [🟡]
+  DEPR: [🟢]
+  OVRD: [🟡]
+  "ref:example-org/widgets#12": [🔴, 🟡]
+  "ref:example-org/widgets#20": [🔴, 🟡]
+  "ref:example-org/widgets#21": [🔴, 🟡]
+  "ref:example-org/widgets#22": [🟢]
+  "ref:example-org/api#40": [🟢]
+  "ref:PROJ-1210": [🟢]
+  "ref:PROJ-1211": [🟡]
+
+expected_demotion: {OVRD: step_down, LATE: hold, PARK: park}
+
+expected_closures: [LCHK]

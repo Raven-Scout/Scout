@@ -114,6 +114,20 @@ def test_plan_backport_applies_clean_hunk():
     assert r.retemplatized == ["New generic guard rule."]
 
 
+def test_plan_backport_never_carries_mode_markers_into_phases():
+    """#84: markers are assembly output. A vault rule added after a block's open marker
+    still maps to its section, and the markers themselves are never a hunk."""
+    raw = "### Step 2-pre\n\nScan markers under {{SCOUT_DIR}}.\nThen score files."
+    sec = _section(raw)
+    marked = f"intro\n\n<!-- scout:only briefing -->\n{sec.rendered_body}\n\n<!-- /scout:only -->\nnext\n"
+    unmarked_snapshot = f"intro\n\n{sec.rendered_body}\n\nnext\n"
+    live = marked.replace("Then score files.", "Then score files.\nNew generic guard rule.")
+    for snapshot in (marked, unmarked_snapshot):  # a vault upgraded with markers, or one about to be
+        results = plan_backport(snapshot, live, [sec], VARS)
+        assert [(r.status, r.added) for r in results] == [("applied", ["New generic guard rule."])]
+    assert plan_backport(unmarked_snapshot, marked, [sec], VARS) == []
+
+
 def test_plan_backport_needs_review_when_risky_value_present():
     # An added line carrying "Alex" can't be safely auto-written into a public
     # template (would leak instance data) -> needs-review, never applied.

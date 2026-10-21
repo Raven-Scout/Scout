@@ -146,6 +146,14 @@ For each open PR, note:
 - How long it's been open
 - Any CI checks failing
 
+---
+phase: connector
+name: github
+slot: query
+mode: [consolidation, briefing]
+requires: github
+---
+
 ### PRs Requesting {{USER_NAME}}'s Review
 
 ```bash
@@ -169,6 +177,14 @@ gh pr view N --repo R --json author,headRefName,reviewRequests,isDraft
 3. **Requested via team only → shared queue (softer).** {{USER_NAME}} is *not* a named `reviewRequests` user but one of their **Team** entries is. Any teammate can satisfy it — present it as a team review queue item, distinct from a direct personal request, and don't escalate it as if only {{USER_NAME}} can clear it. It is 🟢 Watching until nobody on the team has picked it up for 2 working days, then 🟡 (the same rule in the action-items phase).
 
 Only buckets 2 and 3 are review action items; bucket 1 belongs with {{USER_NAME}}'s own open work. When in doubt between a direct vs team request, check whether `{{GITHUB_USERNAME}}` is a named `reviewRequests` user. Every bucket still ends as an item with the PR's `owner/repo#N` in its `- Refs:` line, or as a skip line with a reason; see **No silent drops** in the Inbound Scan.
+
+---
+phase: connector
+name: github
+slot: query
+mode: [briefing]
+requires: github
+---
 
 ### Recent Comments on Open PRs
 

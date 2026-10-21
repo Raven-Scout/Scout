@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from scout.custom_connectors import CustomConnector
+from scout.scripts.brain_slice import strip_markers
 from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.phase_assembly import parse_phase_file, render_template, select_sections
 
@@ -235,9 +236,13 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
       - ``applied``      — pure insertion, mapped to one section, no risky vars, round-trip ✓
       - ``needs-review`` — modified line (diff 'replace'), ambiguous anchor, risky var present, or round-trip miss
       - ``unmapped``     — anchor in no phase section (vault-only drift)
+
+    Mode markers (``brain_slice``) are assembly output, not phase text: they are
+    stripped from both sides first, so they never back-port into ``phases/`` and
+    never become a hunk's anchor.
     """
     results: list[HunkResult] = []
-    for hunk in diff_hunks(snapshot, live):
+    for hunk in diff_hunks(strip_markers(snapshot), strip_markers(live)):
         if not hunk.anchor:
             results.append(HunkResult("needs-review", hunk.added, reason="no anchor (insertion at section start)"))
             continue
