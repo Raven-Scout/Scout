@@ -82,7 +82,7 @@ GRAPH_CLASSES = pytest.mark.parametrize(
 
 @GRAPH_CLASSES
 def test_entity_with_a_dashed_comment_stays_in_the_graph(tmp_path: Path, graph_class: type) -> None:
-    kb = tmp_path / "kb"
+    kb = tmp_path / "knowledge-base"  # a vault layout: the engine finds the vault from it
     kb.mkdir()
     (kb / "example-suite.md").write_text(PROVENANCE_ENTITY)
     graph = graph_class(schema_path=str(_schema(tmp_path)), kb_root=str(kb)).load()

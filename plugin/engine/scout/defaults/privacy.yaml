@@ -1,0 +1,38 @@
+schema_version: 1
+
+# Paths that never leave the laptop. Gitignore-style globs, vault-relative.
+local_only:
+  always:            # machine plumbing; the overlay can't remove these
+    - ".scout-logs/**"
+    - ".scout-cache/**"
+    - ".claude/**"
+    - ".venv/**"
+    - ".obsidian/**"
+    - ".pytest_cache/**"
+    - ".mcp.json"
+    - ".env*"
+    - ".scout-state/**"           # per-machine runtime state, except sync_allow
+  default: []        # no user content by default (D6). The overlay adds paths with
+                     # `local_only_add:`; the link step adds trading/brokerage paths there.
+  sync_allow:        # carve-outs from .scout-state/
+    - ".scout-state/schedule.yaml"
+    - ".scout-state/id-map.json"
+    - ".scout-state/privacy-policy.json"
+
+# Path defaults for notes with no `visibility:` key. First match wins.
+visibility_defaults:
+  - {glob: "knowledge-base/personal/**", visibility: private}
+  - {glob: ".scout-inbox/**",            visibility: private}
+
+# Where output may go (§4.2). Ids are the ones phases and send commands use.
+surfaces:
+  owner_only: [vault, app, telegram_private_chat, agnes_owner_conversation, agnes_personal_memory, vault_sync]
+  shared: [slack, connector_write, connector_query, web_query, agnes_shared, agnes_memory_promotion, peer_agent, public_repo, telegram_group_chat]
+
+# Vault files whose content is meant to leave (lint class `shared`, §8.2).
+shared_files:
+  - "drafts/**"
+
+# Stage 2 adds `federation_ceilings`, `federation_defaults` and
+# `federation.enabled` (§12.3). v1 ignores those keys in an overlay with a
+# `federation-reserved` warning, so nobody can believe they turned sharing on.

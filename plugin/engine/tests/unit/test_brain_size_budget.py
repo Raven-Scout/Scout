@@ -18,8 +18,10 @@ from scout.scripts.phase_assembly import parse_phase_file
 
 PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 
-# ~tokens (chars/4) at the last re-pin. Re-pinned: 2026-10-13 (first pin).
-PINS = {"SKILL": 40_050, "DREAMING": 16_970, "RESEARCH": 4_755}
+# ~tokens (chars/4) at the last re-pin. Re-pinned: 2026-10-13 (first pin); 2026-10-20: +392 in every
+# mode for git-setup's "Engine Changes: Never in the Live Engine Checkout" (a dreaming run edited the
+# live engine; the rule must reach any scheduled run, research included).
+PINS = {"SKILL": 40_443, "DREAMING": 17_422, "RESEARCH": 5_147}
 GROWTH = 0.05
 SHRINK = 0.10
 

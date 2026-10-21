@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import takewhile
 from pathlib import Path
 
+from scout.engine_checkout import WORKTREES_HINT, checkout_state
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
 from scout.scripts.bootstrap_lock import is_lock_held_by_live_pid
@@ -1229,8 +1230,64 @@ def token_findings(found: list[Finding], *, vault: Path, home: Path | None, now:
     return out
 
 
+def engine_findings(*, home: Path | None) -> list[Finding]:
+    """A dev-managed engine checkout that scheduled runs would execute unreviewed.
+
+    A dev engine is an editable install, so its working tree is what the next scheduled run
+    executes, and a checkout off main or a release tag blocks the upgrade. Scheduled runs once
+    branched and edited that checkout directly; engine edits belong in a clone under
+    ~/.scout-worktrees/ (phases/core/git-setup.md). Other managers own their engine trees.
+    """
+    from scout.scripts.engine_pointer import read_pointer
+
+    pointer = read_pointer(home=home or Path.home())
+    if pointer is None or pointer.managed_by != "dev":
+        return []
+    st = checkout_state(Path(pointer.engine_root))
+    if st is None:
+        return []
+    found = []
+    if st.changes:
+        named = st.changes[0] if len(st.changes) == 1 else f"e.g. {st.changes[0]}"
+        found.append(
+            Finding(
+                id="engine.dirty",
+                severity="yellow",
+                since=None,
+                summary=(
+                    f"The engine checkout scheduled runs use ({st.root}) has {len(st.changes)} uncommitted "
+                    f"change(s) ({named}): they run in every scheduled run, unreviewed, and block upgrades."
+                ),
+                fix=(
+                    f"Save the work as a branch or PR from a clone under {WORKTREES_HINT}, then in Terminal: "
+                    f"git -C {st.root} status (and restore each file)"
+                ),
+                source="git",
+            )
+        )
+    if st.off_release:
+        where = f"branch {st.branch}" if st.branch else "a detached HEAD"
+        found.append(
+            Finding(
+                id="engine.off_release",
+                severity="yellow",
+                since=None,
+                summary=(
+                    f"The engine checkout scheduled runs use ({st.root}) is on {where}, not main or a release "
+                    f"tag, so upgrades can't move it."
+                ),
+                fix=(
+                    f"Push any work on it from a clone under {WORKTREES_HINT}, then in Terminal: "
+                    f"git -C {st.root} switch main"
+                ),
+                source="git",
+            )
+        )
+    return found
+
+
 def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = None) -> RunHealth:
-    """``home`` locates the stored Claude token (default: the real home)."""
+    """``home`` locates the stored Claude token and the engine pointer (default: the real home)."""
     now = now or datetime.now(UTC)
     rows = with_log_reset(read_outcomes(vault), vault)
     found = token_findings(ledger_findings(rows, vault=vault, now=now), vault=vault, home=home, now=now)
@@ -1242,4 +1299,5 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
         vault, loaded[0] if loaded else None, rows, fires, now=now, paused_since=pause.began if pause else None
     )
     updates = update_findings(vault, read_updates(vault), now=now)
-    return build_report(found + sched + lanes + updates, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
+    engine = engine_findings(home=home)
+    return build_report(found + sched + lanes + updates + engine, now=now, last_ok_at=_last_ok_at(rows), slots=slots)

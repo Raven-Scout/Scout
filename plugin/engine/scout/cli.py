@@ -195,6 +195,90 @@ def kb_install_hook(
     print(f"Installed: {path}")
 
 
+@kb_app.command("classify")
+def kb_classify(
+    paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print each file's privacy label (visibility, local-only, shared). Exit 2 = bad path or reader.
+
+    owner and autonomous readers get labels. An agent reader gets
+    {"path": ..., "denied": true} for every path, without the file being looked
+    at, so a denial says nothing about whether the file exists or what it is.
+    """
+    import json
+    import os
+
+    from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+    from scout.kb.reader import resolve_reader
+
+    who = resolve_reader(reader, os.environ)
+    rows: list[dict[str, object]] = []
+    lines: list[str] = []
+    if who not in FULL_READERS:
+        rows = [{"path": p, "denied": True} for p in paths]
+        lines = [f"{p}: denied" for p in paths]
+    else:
+        root = _kb_repo(repo)
+        policy = load_policy(root)
+        for p in paths:
+            try:
+                rel = normalize_rel(root, p)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                raise typer.Exit(2) from e
+            label = label_file(root, rel, policy)
+            rows.append(label.to_json())
+            lines.append(f"[private] {rel}" if label.visibility == "private" else rel)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for line in lines:
+            print(line)
+
+
+@kb_app.command("policy")
+def kb_policy(
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print the effective privacy policy: engine default plus the vault's scout-config.yaml overlay.
+
+    Every reader gets the same output: it is configuration (globs, surface ids),
+    not note content. --reader is still resolved, so a widening flag is refused.
+    """
+    import json
+    import os
+
+    from scout.kb.privacy import load_policy
+    from scout.kb.reader import resolve_reader
+
+    resolve_reader(reader, os.environ)
+
+    data = load_policy(_kb_repo(repo)).to_json()
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return
+    lo = data["local_only"]
+    print("local_only.always:    " + " ".join(lo["always"]))
+    print("local_only.default:   " + (" ".join(lo["default"]) or "(none)"))
+    print("local_only.sync_allow: " + " ".join(lo["sync_allow"]))
+    print("visibility_defaults:")
+    for entry in data["visibility_defaults"]:
+        print(f"  {entry['glob']} -> {entry['visibility']}")
+    print("surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]))
+    print("surfaces.shared:      " + " ".join(data["surfaces"]["shared"]))
+    print("shared_files:         " + (" ".join(data["shared_files"]) or "(none)"))
+    print("warnings:             " + (" ".join(data["warnings"]) or "(none)"))
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -421,6 +505,11 @@ def pre_session_data_cmd(
     from scout.scripts.pre_session_data import main as psd_main
 
     raise typer.Exit(psd_main(session_type))
+
+
+def _read_text_arg(path: str | Path) -> str:
+    """The UTF-8 text of a file argument; ``-`` reads stdin."""
+    return sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
 
 
 def _register_connectors() -> None:
@@ -688,8 +777,7 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import Outcome
 
         try:
-            text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
-            return _yaml.safe_load(text), None
+            return _yaml.safe_load(_read_text_arg(file)), None
         except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
             return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
 
@@ -1651,10 +1739,23 @@ def _register_notify() -> None:
             "--tier",
             help="info (silent) | action_required (loud)",
         ),
-        body: str = typer.Option(
-            ...,
+        body: str | None = typer.Option(
+            None,
             "--body",
-            help="Message body. Newlines preserved.",
+            help="Message body. Newlines preserved. Exactly one of --body / --body-file.",
+        ),
+        body_file: Path | None = typer.Option(
+            None,
+            "--body-file",
+            help="Read the message body from this UTF-8 file ('-' = stdin) instead of --body (keeps it off the shell).",
+        ),
+        parse_mode: str = typer.Option(
+            "none",
+            "--parse-mode",
+            help=(
+                "none (plain text) | html (Telegram HTML: <b> <i> <u> <s> <a href> <code> <pre> "
+                "<blockquote>; escape <, >, & in text). A body Telegram can't parse is resent as plain text."
+            ),
         ),
         dry_run: bool = typer.Option(
             False,
@@ -1679,10 +1780,23 @@ def _register_notify() -> None:
         from scout.errors import ConfigError as _ConfigError
         from scout.scripts.notify_telegram import DuplicateSendError, send
 
+        if body is not None and body_file is None:
+            text = body
+        elif body is None and body_file is not None:
+            try:
+                text = _read_text_arg(body_file)
+            except (OSError, UnicodeDecodeError) as e:
+                typer.echo(f"scoutctl notify telegram: could not read --body-file {body_file}: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        else:
+            typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
+            raise typer.Exit(code=1)
+
         try:
             ev = send(
                 tier=tier,
-                body=body,
+                body=text,
+                parse_mode=parse_mode,
                 dry_run=dry_run,
                 allow_duplicate=allow_duplicate,
                 receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
@@ -2573,8 +2687,11 @@ def _register_bootstrap() -> None:
             typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
 
 
-def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
-    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed)."""
+def _vault_bootstrap_config(vault: Path, *, plugin_root: Path | None = None) -> BootstrapConfig:
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed).
+
+    ``plugin_root`` defaults to this engine's own plugin dir.
+    """
     import yaml as _yaml
 
     from scout import __version__
@@ -2584,7 +2701,9 @@ def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
         typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
         raise typer.Exit(code=2)
     try:
-        return config_from_vault(vault, plugin_root=Path(__file__).parent.parent.parent, plugin_version=__version__)
+        return config_from_vault(
+            vault, plugin_root=plugin_root or Path(__file__).parent.parent.parent, plugin_version=__version__
+        )
     except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
         typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
         raise typer.Exit(code=ConfigError.exit_code) from e
@@ -2604,6 +2723,12 @@ def _register_phases() -> None:
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
         vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+        plugin_root_opt: str = typer.Option(
+            "",
+            "--plugin-root",
+            help="Plugin dir of the checkout to read and write phases/ in, e.g. a clone under "
+            "~/.scout-worktrees/<name>/plugin (default: this engine's own)",
+        ),
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
@@ -2612,9 +2737,12 @@ def _register_phases() -> None:
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
         sidecaring. Default is a read-only report; --apply writes the ✓ hunks.
-        Never commits, pushes, or opens a PR — the operator does that.
+        --apply refuses to write into the engine scheduled runs use (the engine
+        pointer's root): pass --plugin-root to a separate clone instead. Never
+        commits, pushes, or opens a PR — the operator does that.
         """
         from scout import paths as _paths
+        from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
             apply_section_edits,
@@ -2624,9 +2752,16 @@ def _register_phases() -> None:
         )
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
-        cfg = _vault_bootstrap_config(vault)
-        vars_ = _template_vars(cfg)
+        plugin_root = Path(plugin_root_opt).expanduser() if plugin_root_opt else None
+        if plugin_root is not None and not (plugin_root / "phases").is_dir():
+            typer.echo(f"scoutctl phases backport: {plugin_root} has no phases/ directory", err=True)
+            raise typer.Exit(code=2)
+        cfg = _vault_bootstrap_config(vault, plugin_root=plugin_root)
         phases_root = cfg.plugin_root / "phases"
+        if apply and (why := refuse_live_engine_write(phases_root, home=Path.home())):
+            typer.echo(f"scoutctl phases backport: {why}", err=True)
+            raise typer.Exit(code=2)
+        vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]

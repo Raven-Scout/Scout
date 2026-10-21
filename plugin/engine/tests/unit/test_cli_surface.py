@@ -1223,6 +1223,88 @@ def test_phases_backport_apply_writes_the_applied_hunks(vault: Path, monkeypatch
     assert "EDITED BODY" in fragment.read_text()
 
 
+def _point_engine_at(engine_root: Path) -> None:
+    """Write the engine pointer (into the hermetic HOME) naming ``engine_root`` as the live engine."""
+    from scout.scripts.engine_pointer import EnginePointer, write_pointer
+
+    write_pointer(
+        EnginePointer(
+            version="0.1.0",
+            engine_root=str(engine_root),
+            python="/x/python",
+            scoutctl="/x/scoutctl",
+            vault="/x/Scout",
+            managed_by="dev",
+            written_at="2026-10-20T00:00:00Z",
+        ),
+        home=Path.home(),
+    )
+
+
+def _one_owed_skill_hunk(vault: Path) -> None:
+    _write_vault_config(vault)
+    snap_dir = vault / ".scout-state" / "last-assembled"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "SKILL.md").write_text("# SKILL\n\nold\n", encoding="utf-8")
+    (vault / "SKILL.md").write_text("# SKILL\n\nnew\n", encoding="utf-8")
+
+
+def test_phases_backport_apply_refuses_the_engine_scheduled_runs_use(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--apply writes phases/ of the engine running it by default. When that is the engine
+    launchd runs (the pointer's engine_root), the edit would run live, unreviewed: refuse."""
+    _one_owed_skill_hunk(vault)
+    _point_engine_at(Path(cli.__file__).parent.parent.parent)
+    planned: list[object] = []
+    monkeypatch.setattr("scout.scripts.phase_backport.plan_backport", lambda *a, **k: planned.append(a) or [])
+
+    result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply"])
+    assert result.exit_code == 2, result.output
+    assert "refusing to write into the engine scheduled runs use" in result.output
+    assert "--plugin-root" in result.output and "~/.scout-worktrees/" in result.output
+    assert planned == []
+
+
+def test_phases_backport_dry_run_of_the_live_engine_is_allowed(vault: Path) -> None:
+    _one_owed_skill_hunk(vault)
+    _point_engine_at(Path(cli.__file__).parent.parent.parent)
+    result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL"])
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in result.stdout
+
+
+def test_phases_backport_plugin_root_reads_and_writes_that_checkout(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--plugin-root points the back-port at a separate clone, so --apply is allowed there
+    even while the live engine is the one running the command."""
+    _one_owed_skill_hunk(vault)
+    _point_engine_at(Path(cli.__file__).parent.parent.parent)
+    clone = tmp_path / "clone" / "plugin"
+    (clone / "phases").mkdir(parents=True)
+    seen: dict[str, Path] = {}
+
+    def fake_sections(phases_root: Path, *a, **k):
+        seen["phases_root"] = phases_root
+        return []
+
+    monkeypatch.setattr("scout.scripts.phase_backport.build_rendered_sections", fake_sections)
+    monkeypatch.setattr("scout.scripts.phase_backport.plan_backport", lambda *a, **k: [])
+
+    result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply", "--plugin-root", str(clone)])
+    assert result.exit_code == 0, result.output
+    assert seen["phases_root"] == clone / "phases"
+    assert "Applied 0 hunk(s) to phases/." in result.stdout
+
+
+def test_phases_backport_plugin_root_must_hold_phases(vault: Path, tmp_path: Path) -> None:
+    _one_owed_skill_hunk(vault)
+    result = runner.invoke(cli.app, ["phases", "backport", "--plugin-root", str(tmp_path / "nowhere")])
+    assert result.exit_code == 2
+    assert "has no phases/ directory" in result.output
+
+
 def test_phases_backport_renders_needs_review_and_unmapped_rows(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_vault_config(vault)
     snap_dir = vault / ".scout-state" / "last-assembled"
