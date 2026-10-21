@@ -199,6 +199,8 @@ requires: slack
 
 Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results.
 
+**Skip this DM when SKILL.md also has a Telegram Notification section:** the wrap then goes to Telegram only (see that section).
+
 ### Consolidation Notification (3-5 lines)
 
 Keep it tight. Example format:
