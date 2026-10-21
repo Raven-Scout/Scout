@@ -6,6 +6,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`/scout-update` normalises legacy `visibility:` markers, reports private links in shared files, and makes trading/brokerage folders local-only, each with the owner's OK** (#453; `engine/scout/scripts/privacy_migrate.py`, `engine/scout/scripts/bootstrap.py`, `engine/scout/cli.py`, `commands/scout-update.md`, `commands/scout-setup.md`; spec §3.1, §4.3, §5.1, §7.2, §10 P5, D6, D10). `scoutctl bootstrap privacy-migrate` prints a read-only report (`--json` too) with three lists:
+  - **Legacy markers.** Notes whose `visibility:` value is something other than `normal`/`private` (`PRIVATE while drafting`). They already count as private. `--set-private <path>` rewrites that one value to `private` and changes no other line; it keeps the key's spacing, a trailing comment and the line ending. It refuses a note with no `visibility:` key (Scout never writes defaults into frontmatter), a value over several lines, and any rewrite that wouldn't parse back as exactly that change. A note already `normal` or `private` is left alone.
+  - **Private links in shared files.** Lines of shared files (`drafts/**`, a declared `federation_scope`) that link or name a private note, as file and line numbers only, using kb-lint's matcher (`%%privacy:allow%%` markers honoured).
+  - **The link step.** Folders whose name has a trading or brokerage word (`trading`, `brokerage`, `broker`, `investments`, `portfolio`, …; `agentic-trading` matches, `trade-show` doesn't), proposed as `<folder>/**` unless already local-only. `--local-only <glob>` appends it to `scout-config.yaml → privacy.local_only_add`, editing the list in place so every comment survives. It is append-only and idempotent. An inline value (`local_only_add: []`) or an odd layout falls back to re-dumping the `privacy:` block, with a warning that comments inside it may be lost; the result is checked to load back with no duplicate keys.
+
+  `--set-private` and `--local-only` refuse a scheduled or autonomous caller (`SCOUT_MODE` set, or a reader other than `owner`) with exit 2. A reader other than `owner`/`autonomous` (`SCOUT_READER=agent:…`) gets exit 2 and no output, report included, since it names private notes' paths. `/scout-update` explains `visibility` in one paragraph (the `personal/` and `.scout-inbox/` defaults, `federation_scope` reserved, `scoutctl kb policy`), reads the report, and asks the owner per note and per path before each write; `/scout-setup` gives the same paragraph. `bootstrap upgrade` prints the report on stderr and changes nothing, so a headless upgrade (self-update, Scout.app) only reports.
+
+  **Upgrade:** nothing changes until the owner agrees to each change in `/scout-update`. Agree to the local-only proposals before the first sync to Agnes, so trading data never leaves the laptop. A declined proposal is asked again on the next update. Follow-up: the link step proposes folders only, so a root-level file such as `TRADING.md` isn't proposed; add it by hand with `--local-only TRADING.md` if it should stay local.
+
 ## [0.18.3] - 2026-10-21
 
 ### Added
