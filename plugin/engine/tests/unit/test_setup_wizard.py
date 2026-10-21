@@ -465,6 +465,52 @@ def test_cli_setup_forwards_claude_bin_flag(monkeypatch, tmp_path):
     assert auto[auto.index("--claude-bin") + 1] == "/opt/homebrew/bin/claude"
 
 
+def test_no_jobs_is_forwarded_to_bootstrap_install(tmp_path):
+    """`setup --no-jobs` registers no launchd/cron jobs, like `bootstrap auto --no-jobs`."""
+    deps, calls = _deps(tmp_path)
+    p = Scripted(["", "", "", "", "", "U1", "", "20", ""])
+    assert sw.run_setup(_opts(tmp_path, no_jobs=True), p, deps) == 0
+    assert "--no-jobs" in calls[0]
+    assert any("No scheduled jobs were installed" in s for s in p.said)
+    assert not any("first scheduled run" in s for s in p.said)
+
+
+def test_no_jobs_is_forwarded_to_bootstrap_upgrade(tmp_path):
+    deps, calls = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    assert sw.run_setup(_opts(tmp_path, no_jobs=True), Scripted([]), deps) == 0
+    assert calls[0][:2] == ["bootstrap", "auto"]
+    assert "--no-jobs" in calls[0]
+
+
+def test_no_jobs_omitted_from_both_argvs_by_default(tmp_path):
+    deps, calls = _deps(tmp_path)
+    sw.run_setup(_opts(tmp_path), Scripted(["", "", "", "", "", "U1", "", "20", "", "n"]), deps)
+    deps_up, calls_up = _deps(tmp_path, plan=AutoAction.UPGRADE)
+    sw.run_setup(_opts(tmp_path), Scripted([]), deps_up)
+    assert "--no-jobs" not in calls[0]
+    assert "--no-jobs" not in calls_up[0]
+
+
+def test_cli_setup_forwards_no_jobs_flag(monkeypatch, tmp_path):
+    """`scoutctl setup --yes --no-jobs` parses, and the argv it hands `bootstrap
+    auto` is one the real `bootstrap auto` accepts (checked with --dry-run, which
+    writes nothing)."""
+    vault_path = tmp_path / "MyScout"
+    deps, calls = _deps(tmp_path)
+    monkeypatch.setattr("scout.setup_wizard.default_deps", lambda claude_bin="": deps)
+
+    result = CliRunner().invoke(
+        app,
+        ["setup", "--vault", str(vault_path), "--yes", "--name", "Alex", "--email", "alex@example.com"]
+        + ["--connectors", "calendar", "--no-first-run", "--no-jobs"],
+    )
+    assert result.exit_code == 0, result.output
+    auto = calls[0]
+    assert "--no-jobs" in auto
+    assert sw.invoke_scoutctl([*auto, "--claude-bin", "/bin/echo", "--dry-run"]) == 0
+    assert not vault_path.exists()
+
+
 # ---------------------------------------------------------------------------
 # Extra coverage: no-briefing-slot message, _float_ok's ValueError branch,
 # the email re-ask loop.
