@@ -240,6 +240,78 @@ def test_a_stage_2_overlay_key_warns(vault: Path) -> None:
     assert checks(vault) == [("scout-config.yaml", "federation-reserved", False, None)]
 
 
+# ----- the commit, not the working tree ----------------------------------------------
+
+
+def test_an_unstaged_overlay_can_not_make_a_staged_mention_safe(vault: Path) -> None:
+    n = append(vault, DRAFT, "Remember task-renew-permit before Friday.")
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:  # unstaged
+        fh.write('  visibility_defaults:\n    - {glob: "knowledge-base/personal/**", visibility: normal}\n')
+    assert checks(vault) == [(DRAFT, "private-mention", True, n)]
+
+
+def test_an_unstaged_edit_making_sam_normal_does_not_lift_the_block(vault: Path) -> None:
+    n = append(vault, DRAFT, "See [[sam]] for the details.")
+    (vault / SAM).write_text(_read(vault, SAM).replace("visibility: private", "visibility: normal"))  # unstaged
+    assert checks(vault) == [(DRAFT, "private-link", True, n)]
+
+
+def test_a_staged_note_made_normal_still_counts_as_private(vault: Path) -> None:
+    n = append(vault, DRAFT, "See [[sam]] for the details.")
+    stage(vault, SAM, _read(vault, SAM).replace("visibility: private", "visibility: normal"))
+    assert (DRAFT, "private-link", True, n) in checks(vault)
+
+
+def test_a_note_private_only_in_the_index_counts(vault: Path) -> None:
+    stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nvisibility: private\n", 1))
+    (vault / PRIYA).write_text(_read(vault, PRIYA).replace("visibility: private\n", ""))  # disk: normal again
+    n = append(vault, DRAFT, "See [[priya]] about it.")
+    assert checks(vault) == [(DRAFT, "private-link", True, n)]
+
+
+# ----- a file that becomes shared --------------------------------------------------
+
+
+def test_a_note_renamed_into_drafts_has_every_line_checked(vault: Path) -> None:
+    git(vault, "mv", PRIYA, "drafts/x.md")
+    found = checks(vault)
+    assert found and all(f[:3] == ("drafts/x.md", "private-link", True) for f in found)
+
+
+def test_a_note_given_a_federation_scope_has_every_line_checked(vault: Path) -> None:
+    stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
+    found = checks(vault)
+    assert found and all(f[:3] == (PRIYA, "private-link", True) for f in found)
+
+
+def test_a_federation_scope_note_outside_the_kb_is_shared(vault: Path) -> None:
+    """Ruling R23: a staged .md declaring federation_scope is checked wherever it lives."""
+    stage(vault, "notes/outside.md", "---\nfederation_scope: org\n---\nSee [[sam]].\n")
+    assert checks(vault) == [("notes/outside.md", "private-link", True, 4)]
+    assert checks(vault, RUN) == [
+        ("notes/outside.md", "privacy-widening", True, None),
+        ("notes/outside.md", "private-link", True, 4),
+    ]
+
+
+# ----- git can't hide a line ----------------------------------------------------------
+
+
+def test_a_nul_byte_does_not_hide_a_line(vault: Path) -> None:
+    path = vault / DRAFT
+    path.write_bytes(path.read_bytes() + b"bin\x00ary\nSee [[sam]].\n")
+    git(vault, "add", "--", DRAFT)
+    found = checks(vault)
+    assert [f[1] for f in found] == ["private-link"]
+
+
+@pytest.mark.parametrize("attr", ["drafts/** -diff", "drafts/** binary", "*.md -text"])
+def test_gitattributes_do_not_hide_a_line(vault: Path, attr: str) -> None:
+    stage(vault, ".gitattributes", attr + "\n")
+    n = append(vault, DRAFT, "See [[sam]].")
+    assert checks(vault) == [(DRAFT, "private-link", True, n)]
+
+
 # ----- the widening guard (scheduled runs) ----------------------------------------
 
 
@@ -268,7 +340,7 @@ def test_a_run_may_not_move_a_private_note_out_of_its_private_folder(vault: Path
 
 
 def test_a_run_may_not_set_or_widen_federation_scope(vault: Path) -> None:
-    stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
+    stage(vault, PLAIN, "---\nfederation_scope: org\n---\n" + _read(vault, PLAIN))
     stage(
         vault,
         "knowledge-base/projects/widget/notes.md",
@@ -277,8 +349,8 @@ def test_a_run_may_not_set_or_widen_federation_scope(vault: Path) -> None:
         ),
     )
     assert checks(vault, RUN) == [
-        (PRIYA, "privacy-widening", True, None),
         ("knowledge-base/projects/widget/notes.md", "privacy-widening", True, None),
+        (PLAIN, "privacy-widening", True, None),
     ]
 
 
@@ -297,6 +369,31 @@ def test_a_run_may_not_add_a_marker(vault: Path) -> None:
     n = append(vault, PRIYA, "Works with Alex. %%privacy:allow priya%%")
     assert checks(vault, RUN) == [(PRIYA, "privacy-widening", True, n)]
     assert checks(vault) == []
+
+
+def test_a_run_may_reedit_a_line_that_keeps_the_owners_marker(vault: Path) -> None:
+    append(vault, DRAFT, "See [[sam]] soon. %%privacy:allow sam%%")
+    commit(vault)
+    stage(vault, DRAFT, _read(vault, DRAFT).replace("See [[sam]] soon.", "See [[sam]] today."))
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_move_a_marker_to_a_new_line(vault: Path) -> None:
+    append(vault, PRIYA, "Old line. %%privacy:allow priya%%")
+    commit(vault)
+    n = append(vault, PRIYA, "New line. %%privacy:allow priya%%")
+    assert checks(vault, RUN) == [(PRIYA, "privacy-widening", True, n)]
+
+
+def test_a_run_commit_with_an_unparseable_config_is_refused(vault: Path) -> None:
+    from scout.kb.lint_privacy import PolicyUnreadable
+
+    stage(vault, "scout-config.yaml", "privacy: [unclosed\n")
+    with pytest.raises(PolicyUnreadable):
+        privacy_staged(vault, env=RUN)
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-check-failed]" in out
+    assert ("scout-config.yaml", "privacy-overlay-unreadable", False, None) in checks(vault)
 
 
 def test_a_run_may_not_touch_the_privacy_block(vault: Path) -> None:
@@ -339,10 +436,14 @@ def test_report_lists_unparseable_frontmatter_as_an_error(vault: Path) -> None:
     assert "error" in line and "frontmatter-unparseable" in line
 
 
-def test_allow_marker_regex() -> None:
-    assert re.fullmatch(ALLOW_MARKER_RE, "%%privacy:allow task-renew-permit%%")
-    assert re.search(ALLOW_MARKER_RE, "x %%privacy:allow sam.notes_2%% y").group(1) == "sam.notes_2"  # type: ignore[union-attr]
-    assert not re.search(ALLOW_MARKER_RE, "%%privacy:allow Sam%%")
+def test_allow_marker_regex_is_the_matchers_own() -> None:
+    """One definition (scout.kb.outbound): case-insensitive, spaces or tabs around the parts."""
+    assert ALLOW_MARKER_RE == outbound.ALLOW_MARKER_RE
+    marker = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
+    assert marker.fullmatch("%%privacy:allow task-renew-permit%%")
+    assert marker.search("x %% privacy:allow\tsam.notes_2 %% y").group(1) == "sam.notes_2"  # type: ignore[union-attr]
+    assert marker.search("%%PRIVACY:ALLOW Sam%%").group(1) == "Sam"  # type: ignore[union-attr]
+    assert not marker.search("%%privacy:allow%%")
 
 
 def test_hook_findings_are_logged_without_content(vault: Path) -> None:

@@ -521,25 +521,28 @@ def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
     or malformed rows are skipped; a timestamp without a zone is taken as UTC.
     """
     log = vault / ".scout-logs" / "kb-reads.jsonl"
-    try:
-        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0
     cutoff = now - PRIVACY_WINDOW
     if cutoff.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=UTC)
     count = 0
-    for line in lines:
-        try:
-            row = json.loads(line)
-            ts = datetime.fromisoformat(row["ts"])
-            hit = row.get("blocked") is True or int(row.get("paths_denied") or 0) > 0
-        except (ValueError, KeyError, TypeError, AttributeError):
-            continue
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        if hit and ts >= cutoff:
-            count += 1
+    try:
+        with log.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:  # streamed: the log only grows
+                # Cheap pre-filter on read_log's sorted-key rows: neither blocked nor denied → skip unparsed.
+                if '"blocked": true' not in line and '"paths_denied": 0,' in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    ts = datetime.fromisoformat(row["ts"])
+                    hit = row.get("blocked") is True or int(row.get("paths_denied") or 0) > 0
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                if hit and ts >= cutoff:
+                    count += 1
+    except OSError:
+        return 0
     return count
 
 

@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import html
 import json
 import os
 import re
@@ -232,7 +233,7 @@ def _guard_vault() -> Path | None:
     return vault if (vault / paths.VAULT_MARKER).is_file() else None
 
 
-def _check_shared(body: str, surface: str) -> None:
+def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
     """Refuse a body that names a private note (spec §8.4); records the block, never the content.
 
     Raises :class:`OutboundBlockedError` on a hit, and when no vault can be
@@ -248,7 +249,11 @@ def _check_shared(body: str, surface: str) -> None:
             "refused — the target is a group or channel, and no Scout vault was found to check the message "
             "against (run inside the vault, or set SCOUT_DATA_DIR)"
         )
-    lines = check_outbound(vault, body, surface)
+    found = set(check_outbound(vault, body, surface))
+    if parse_mode == "html":
+        # What Telegram shows: tags stripped, entities decoded (`Sam<b></b>my`, `&#83;ammy`).
+        found |= set(check_outbound(vault, html.unescape(_TAG_RE.sub("", body)), surface))
+    lines = sorted(found)
     if not lines:
         return
     try:
@@ -679,7 +684,7 @@ def send(
     chat_id = _read_secret("telegram-chat-id")
     surface = target_surface(chat_id)
     if surface != PRIVATE_CHAT:
-        _check_shared(body, surface)  # a dry run too: it shows what would be sent
+        _check_shared(body, surface, parse_mode)  # a dry run too: it shows what would be sent
 
     now = now or datetime.now(UTC)
     ts = _iso(now)

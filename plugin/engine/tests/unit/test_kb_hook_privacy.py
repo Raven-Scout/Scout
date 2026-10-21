@@ -1,8 +1,7 @@
 """The pre-commit hook's privacy path fails closed (#453, spec §8.3).
 
-The size/diary lint fails open on purpose (a broken engine must not stop a
-run from saving its work). The privacy checks don't: if the privacy checker
-itself errors, the commit is refused. A scheduled run's refusal writes the
+If the privacy checker itself errors, the commit is refused; the hook script
+also refuses when scoutctl can't run at all (``test_kb_hook.py``). A scheduled run's refusal writes the
 run-health event ``privacy.check_failed``; an interactive one names the error
 class and points to ``scoutctl doctor``. Neither prints note content.
 """
@@ -95,14 +94,31 @@ def test_a_crash_in_the_size_lint_still_reports_a_privacy_block(vault: Path, mon
     assert rc == 1 and "[private-link]" in out
 
 
-def test_a_crash_in_the_size_lint_alone_still_fails_open(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unchanged: with no privacy finding, a size-lint crash propagates (the hook allows it)."""
+def test_a_crash_in_the_size_lint_alone_propagates(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no privacy finding, a size-lint crash reaches cli.main (exit 70), which the hook refuses."""
     from scout.kb import lint
 
     monkeypatch.setattr(lint, "lint_staged", _boom)
     _append(vault, DRAFT, "Thanks again!")
     with pytest.raises(RuntimeError):
         _hook(vault, {})
+
+
+def test_a_logging_failure_does_not_lift_a_privacy_block(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint, "_append_jsonl", _boom)
+    _append(vault, DRAFT, "See [[sam]].")
+    rc, out = _hook(vault, {})
+    assert rc == 1 and "[private-link]" in out
+
+
+def test_a_logs_dir_failure_does_not_lift_a_privacy_block(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint.paths, "logs_dir", _boom)
+    _append(vault, DRAFT, "See [[sam]].")
+    assert _hook(vault, {})[0] == 1
 
 
 def _scoutctl() -> str | None:

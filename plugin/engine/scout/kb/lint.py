@@ -457,9 +457,9 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
-    # The privacy pass runs first and on its own: it fails closed, where the
-    # size/diary lint below fails open (an exception reaches cli.main, and the
-    # hook script lets the commit through).
+    # The privacy pass runs first and on its own, so its verdict stands even if
+    # the size/diary lint below crashes. Such a crash reaches cli.main (exit 70),
+    # and the hook script refuses the commit as "could not run" (ruling R22).
     privacy = _privacy_pass(repo, env)
     cfg: LintConfig | None
     try:
@@ -472,15 +472,27 @@ def run_hook(
     result.findings[:0] = privacy
     if not result.findings:
         return 0
-    logs = paths.logs_dir(main_root(repo))
+    hard = any(_hard(f) for f in result.findings)
+    lint_mode = cfg.mode if cfg else None
     ts = (now or datetime.now(UTC)).isoformat()
     run_mode = env.get("SCOUT_MODE", "interactive")
-    _append_jsonl(
-        logs / "kb-lint.jsonl",
-        [{"ts": ts, "mode": run_mode, "lint_mode": cfg.mode if cfg else None, **asdict(f)} for f in result.findings],
-    )
-    print(format_findings(result, cfg), file=out)
-    if any(_hard(f) for f in result.findings):
+    # A privacy block never depends on its bookkeeping: if logging or printing
+    # fails, the block still stands (an exception here would reach cli.main).
+    try:
+        logs = paths.logs_dir(main_root(repo))
+        _append_jsonl(
+            logs / "kb-lint.jsonl",
+            [{"ts": ts, "mode": run_mode, "lint_mode": lint_mode, **asdict(f)} for f in result.findings],
+        )
+    except Exception:
+        if not hard:
+            raise
+    try:
+        print(format_findings(result, cfg), file=out)
+    except Exception:
+        if not hard:
+            raise
+    if hard:
         return 1
     if not result.blocking or cfg is None or cfg.mode == "report":
         return 0

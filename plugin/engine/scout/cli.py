@@ -3171,6 +3171,7 @@ def _register_phases() -> None:
             build_rendered_sections,
             bundle_files,
             bundle_privacy_hits,
+            combine_applied,
             plan_backport,
         )
 
@@ -3190,19 +3191,26 @@ def _register_phases() -> None:
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
 
-        # The plugin repo is public (#453, spec §8.4): a bundle naming a private
-        # note is refused, dry run or not, before anything is reported or written.
-        refused: list[tuple[Path, list[int]]] = []
+        # Plan every kind once. A hunk in a core fragment shows up in each brain
+        # file that assembles it; the bundle applies it once.
+        plans: list[tuple[str, list, list]] = []
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
             if not snap.exists() or not live.exists():
+                missing = "snapshot" if not snap.exists() else "live"
+                typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
             sections = build_rendered_sections(
                 phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
             )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
-            bundle = bundle_files([r for r in results if r.status == "applied"], sections)
-            refused += bundle_privacy_hits(vault, bundle)
+            plans.append((k, sections, results))
+        all_applied = combine_applied([[r for r in results if r.status == "applied"] for _k, _s, results in plans])
+        bundle = bundle_files(all_applied, [s for _k, sections, _r in plans for s in sections])
+
+        # The plugin repo is public (#453, spec §8.4): a bundle naming a private
+        # note is refused, dry run or not, before anything is reported or written.
+        refused = bundle_privacy_hits(vault, bundle)
         if refused:
             typer.echo(
                 "scoutctl phases backport: refused — the back-port names a private note of this vault, and the "
@@ -3214,17 +3222,7 @@ def _register_phases() -> None:
                 typer.echo(f"  {pf}: {where} (as it would be written)", err=True)
             raise typer.Exit(code=1)
 
-        total_applied = 0
-        for k in kinds:
-            snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
-            if not snap.exists() or not live.exists():
-                missing = "snapshot" if not snap.exists() else "live"
-                typer.echo(f"{k}: skip — missing {missing} file", err=True)
-                continue
-            sections = build_rendered_sections(
-                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
-            )
-            results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
+        for k, _sections, results in plans:
             applied = [r for r in results if r.status == "applied"]
             review = [r for r in results if r.status == "needs-review"]
             unmapped = [r for r in results if r.status == "unmapped"]
@@ -3243,11 +3241,11 @@ def _register_phases() -> None:
                 snippet = (r.added[0][:60] + "…") if r.added else ""
                 typer.echo(f"  ✗ unmapped     {r.reason}  «{snippet}»")
 
-            if apply and applied:
-                for pf, (_old, text) in bundle_files(applied, sections).items():
-                    pf.write_text(text, encoding="utf-8")
-                    typer.echo(f"  → wrote {pf}")
-                total_applied += len(applied)
+        total_applied = len(all_applied) if apply else 0
+        if apply:
+            for pf, (_old, text) in bundle.items():
+                pf.write_text(text, encoding="utf-8")
+                typer.echo(f"  → wrote {pf}")
 
         if apply:
             typer.echo(

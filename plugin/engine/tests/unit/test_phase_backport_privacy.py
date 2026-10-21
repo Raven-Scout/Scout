@@ -18,7 +18,13 @@ from typer.testing import CliRunner
 from scout.cli import app
 from scout.kb import outbound
 from scout.kb.ontology import clear_frontmatter_cache
-from scout.scripts.phase_backport import build_rendered_sections, bundle_files, bundle_privacy_hits, plan_backport
+from scout.scripts.phase_backport import (
+    build_rendered_sections,
+    bundle_files,
+    bundle_privacy_hits,
+    combine_applied,
+    plan_backport,
+)
 from tests.unit.privacy_vault_helpers import build_privacy_vault
 
 VARS = {"USER_EMAIL": "alex@example.com", "SCOUT_DIR": "/home/alex/vault"}
@@ -126,3 +132,11 @@ def test_the_cli_applies_a_clean_bundle(tmp_path: Path, vault: Path, monkeypatch
     result = _cli(monkeypatch, vault, plugin, "--apply")
     assert result.exit_code == 0, result.output
     assert CLEAN_LINE in (plugin / "phases" / "core" / "kb.md").read_text()
+
+
+def test_a_hunk_planned_for_two_brain_files_is_bundled_once(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    applied, sections = _plan(plugin, CLEAN_LINE)
+    again, _ = _plan(plugin, CLEAN_LINE)
+    ((_pf, (_old, new)),) = bundle_files(combine_applied([applied, again]), sections + sections).items()
+    assert new.count(CLEAN_LINE) == 1

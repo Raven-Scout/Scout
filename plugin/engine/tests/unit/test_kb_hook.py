@@ -56,26 +56,47 @@ def test_hook_passes_through_block(tmp_path) -> None:
     assert _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 1))).returncode == 1
 
 
-def test_hook_fails_open_on_internal_error(tmp_path) -> None:
+def _run_hook_script_env(tmp_path: Path, scoutctl: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    script = tmp_path / "pre-commit"
+    script.write_text(render_hook(scoutctl))
+    script.chmod(0o755)
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp"), **extra}
+    return subprocess.run([str(script)], capture_output=True, text=True, env=env)
+
+
+def _refused_interactively(proc: subprocess.CompletedProcess[str]) -> None:
+    assert proc.returncode == 1
+    lines = [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")]
+    assert lines[-3:] == [
+        "kb-lint: privacy check could not run",
+        "kb-lint: run `scoutctl doctor` to see why",
+        "kb-lint: `git commit --no-verify` skips the check; it is the owner's last resort",
+    ]
+
+
+def test_hook_fails_closed_on_internal_error(tmp_path) -> None:
+    """Ruling R22 (#453, spec §8.3): a check that could not run refuses the commit."""
     proc = _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 70, prints_kb_lint=False)))
-    assert proc.returncode == 0
-    assert "internal error" in proc.stderr
-
-
-def test_hook_fails_open_when_scoutctl_missing(tmp_path) -> None:
-    proc = _run_hook_script(tmp_path, str(tmp_path / "nope"))
-    assert proc.returncode == 0
-    assert "not found" in proc.stderr
-
-
-def test_hook_fails_open_on_exit_1_with_no_kb_lint_output(tmp_path) -> None:
-    """A crash before cli.main()'s try block (e.g. an ImportError at import
-    time) exits 1 with no 'kb-lint:' line — that is a fail-closed internal
-    error, not a legitimate block, so the hook must still allow the commit."""
-    proc = _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 1, prints_kb_lint=False)))
-    assert proc.returncode == 0
-    assert "failed unexpectedly" in proc.stderr
+    _refused_interactively(proc)
     assert "called" in proc.stderr
+
+
+def test_hook_fails_closed_when_scoutctl_missing(tmp_path) -> None:
+    _refused_interactively(_run_hook_script(tmp_path, str(tmp_path / "nope")))
+
+
+def test_hook_fails_closed_on_exit_1_with_no_kb_lint_output(tmp_path) -> None:
+    """A crash before cli.main()'s try block (an ImportError at import time)
+    exits 1 with no 'kb-lint:' line: the check didn't run, so the commit is refused."""
+    proc = _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 1, prints_kb_lint=False)))
+    _refused_interactively(proc)
+    assert "called" in proc.stderr
+
+
+def test_hook_in_a_run_refuses_without_the_owner_hints(tmp_path) -> None:
+    proc = _run_hook_script_env(tmp_path, str(tmp_path / "nope"), SCOUT_MODE="morning-briefing")
+    assert proc.returncode == 1
+    assert proc.stderr.strip().splitlines() == ["kb-lint: privacy check could not run"]
 
 
 def test_hook_scoutctl_path_with_space_and_dollar(tmp_path) -> None:

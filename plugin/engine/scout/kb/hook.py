@@ -1,15 +1,23 @@
 """Install the vault's git pre-commit hook, which runs `scoutctl kb lint --staged`.
 
-The hook fails OPEN: a missing scoutctl, or any exit other than 0 (allow) / 1
-(block), lets the commit through with a warning — a broken engine must never
-stop a scheduled run from saving its work.
+The hook FAILS CLOSED (#453, spec §8.3, ruling R22). The privacy checks
+inside ``kb lint --staged`` keep private notes out of shared files, so a
+commit the check could not look at is refused: a missing scoutctl, a crash
+before ``cli.main`` (exit 1 with no ``kb-lint:`` line), or any exit other
+than 0 (pass) or 1 with a ``kb-lint:`` verdict. The hook then prints
+``kb-lint: privacy check could not run``. A scheduled run's commit fails and
+the run's retry/park handling applies; an interactive commit also gets a
+pointer to ``scoutctl doctor`` and the reminder that ``git commit --no-verify``
+is the owner's own last resort (runs must never use it).
 
-The privacy checks inside ``kb lint --staged`` (#453, spec §8.3) fail CLOSED
-instead: ``scout.kb.lint.run_hook`` runs them in their own ``try``, and a
-privacy checker that errors becomes a blocking ``kb-lint:`` finding (exit 1),
-which this script passes through like any other block. Only an engine that
-can't start at all (no scoutctl, a crash before ``cli.main``) still lets the
-commit through.
+Inside scoutctl, ``scout.kb.lint.run_hook`` runs the privacy checks first, in
+their own ``try``: a privacy checker that errors becomes a blocking
+``kb-lint:`` finding. The size and diary checks behind them still only report
+in ``report`` mode, but an engine crash in them now refuses the commit too.
+
+Install, upgrade and migrate (``bootstrap``'s git-hook stage) and
+``scoutctl kb install-hook`` rewrite a Scout-managed hook, so ``/scout-update``
+brings every vault the current script.
 """
 
 from __future__ import annotations
@@ -25,33 +33,40 @@ MARKER = "# scout-managed: kb-lint pre-commit hook"
 
 _TEMPLATE = """#!/bin/sh
 {marker}
-# Installed by `scoutctl kb install-hook`. Blocks commits that grow an over-budget
-# KB file or add run-diary headings. See `scoutctl kb lint --help`.
+# Installed by `scoutctl kb install-hook`. Blocks commits that put a private
+# note into a shared file, scheduled-run commits that widen privacy, and (in
+# block mode) commits that grow an over-budget KB file or add run-diary
+# headings. See `scoutctl kb lint --help`.
+#
+# Fails CLOSED (#453): if the check can't run (no scoutctl, an engine crash,
+# any exit but 0 or a 'kb-lint:' verdict with 1), the commit is refused.
 SCOUTCTL={scoutctl}
+
+cannot_run() {{
+  echo "kb-lint: privacy check could not run" >&2
+  if [ -z "$SCOUT_MODE" ]; then
+    echo "kb-lint: run \\`scoutctl doctor\\` to see why" >&2
+    echo "kb-lint: \\`git commit --no-verify\\` skips the check; it is the owner's last resort" >&2
+  fi
+  exit 1
+}}
+
 if [ ! -x "$SCOUTCTL" ]; then
   SCOUTCTL="$(command -v scoutctl 2>/dev/null)"
 fi
 if [ -z "$SCOUTCTL" ]; then
-  echo "kb-lint: scoutctl not found — skipping the KB check" >&2
-  exit 0
+  cannot_run
 fi
 output="$("$SCOUTCTL" kb lint --staged 2>&1)"
 rc=$?
-if [ "$rc" -eq 1 ] && ! printf '%s\\n' "$output" | grep -q '^kb-lint:'; then
-  # A crash before cli.main()'s try block (e.g. an ImportError at import
-  # time) exits 1 with no 'kb-lint:' line — the one fail-closed path left.
-  # Treat it like any other internal error: never block a commit on a
-  # broken engine.
-  [ -n "$output" ] && printf '%s\\n' "$output" >&2
-  echo "kb-lint: scoutctl failed unexpectedly — allowing the commit" >&2
+[ -n "$output" ] && printf '%s\\n' "$output" >&2
+if [ "$rc" -eq 0 ]; then
   exit 0
 fi
-[ -n "$output" ] && printf '%s\\n' "$output" >&2
-if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
-  exit "$rc"
+if [ "$rc" -eq 1 ] && printf '%s\\n' "$output" | grep -q '^kb-lint:'; then
+  exit 1
 fi
-echo "kb-lint: scoutctl exited $rc (internal error) — allowing the commit" >&2
-exit 0
+cannot_run
 """
 
 

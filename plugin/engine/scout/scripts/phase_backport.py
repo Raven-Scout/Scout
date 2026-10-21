@@ -335,6 +335,24 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
     return results
 
 
+def combine_applied(per_kind: list[list[HunkResult]]) -> list[HunkResult]:
+    """The applied hunks of every brain file, each edit once.
+
+    A core fragment is assembled into more than one brain file, so the same
+    vault edit can be planned once per kind: same fragment, section, anchor
+    and lines. Applying it twice would duplicate the lines.
+    """
+    seen: set[tuple[Path | None, str | None, str | None, tuple[str, ...]]] = set()
+    out: list[HunkResult] = []
+    for results in per_kind:
+        for r in results:
+            key = (r.phase_file, r.section_name, r.anchor, tuple(r.retemplatized or ()))
+            if key not in seen:
+                seen.add(key)
+                out.append(r)
+    return out
+
+
 def bundle_files(applied: list[HunkResult], sections: list[RenderedSection]) -> dict[Path, tuple[str, str]]:
     """The back-port bundle: each phase file the ``applied`` hunks edit → ``(current text, text to write)``.
 
@@ -357,16 +375,6 @@ def bundle_files(applied: list[HunkResult], sections: list[RenderedSection]) -> 
     return bundle
 
 
-def _added_line_numbers(old: str, new: str) -> set[int]:
-    """1-based numbers of the lines of ``new`` that aren't in ``old`` (inserted or changed)."""
-    sm = difflib.SequenceMatcher(a=old.split("\n"), b=new.split("\n"), autojunk=False)
-    out: set[int] = set()
-    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
-        if tag in ("insert", "replace"):
-            out.update(range(j1 + 1, j2 + 1))
-    return out
-
-
 def bundle_privacy_hits(vault: Path, bundle: dict[Path, tuple[str, str]]) -> list[tuple[Path, list[int]]]:
     """``(phase file, line numbers)`` of the bundle's added lines that name a private note of ``vault``.
 
@@ -375,11 +383,12 @@ def bundle_privacy_hits(vault: Path, bundle: dict[Path, tuple[str, str]]) -> lis
     happens to be a private slug isn't refused for it. Line numbers only: the
     caller must not print the lines.
     """
+    from scout.kb.lint_rules import added_line_numbers
     from scout.kb.outbound import check_outbound
 
     hits: list[tuple[Path, list[int]]] = []
     for pf, (old, new) in sorted(bundle.items()):
-        added = _added_line_numbers(old, new)
+        added = added_line_numbers(old, new)
         lines = [n for n in check_outbound(vault, new, "public_repo") if n in added]
         if lines:
             hits.append((pf, lines))

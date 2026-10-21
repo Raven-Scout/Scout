@@ -101,6 +101,17 @@ def test_a_group_chat_drops_a_message_naming_a_private_note(vault: Path) -> None
     assert "permit" not in json.dumps(row)
 
 
+@pytest.mark.parametrize(
+    "body", ["Ask <b>Sam</b>my about it.", "Remember task&#45;renew&#45;permit.", "Ask Sa<i></i>mmy."]
+)
+def test_html_mode_checks_what_telegram_shows(vault: Path, body: str) -> None:
+    privacy_secrets(Path.home(), GROUP_CHAT_ID)
+    with patch("scout.scripts.notify_telegram.requests.post", return_value=_ok()) as post:
+        with pytest.raises(OutboundBlockedError):
+            send(tier="info", body=body, parse_mode="html")
+    post.assert_not_called()
+
+
 def test_a_dry_run_to_a_group_is_checked_too(vault: Path) -> None:
     privacy_secrets(Path.home(), GROUP_CHAT_ID)
     with pytest.raises(OutboundBlockedError):

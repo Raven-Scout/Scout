@@ -70,7 +70,11 @@ from scout.kb.read import Output, UsageError, all_labels, policy_hash
 MIN_TERM_CHARS = 4
 
 _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
-_MARKER = re.compile(r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%", re.IGNORECASE)
+# The one definition of the lint override marker (spec §8.2): ``%%privacy:allow <slug>%%``,
+# case-insensitive, any spaces or tabs around the parts. Lint re-exports it.
+ALLOW_MARKER_RE = r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%"
+ALLOW_MARKER = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
+_MARKER = ALLOW_MARKER
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
 # Not a letter or digit on either side: `_` and punctuation are boundaries.
@@ -140,6 +144,11 @@ def _strings(value: Any) -> list[str]:
 def _frontmatter_names(path: Path) -> list[str]:
     """``name:``, ``aliases:`` and ``title:`` of a markdown note; [] when it has none or they don't parse."""
     text, _ = read_head(path)
+    return _names_from_text(text)
+
+
+def _names_from_text(text: str | None) -> list[str]:
+    """:func:`_frontmatter_names` for a note's (leading) text."""
     if text is None:
         return []
     block = classifier_block(text)
@@ -162,11 +171,21 @@ def _strip_md(name: str) -> str:
 
 
 def _note(vault: Path, rel: str) -> PrivateNote:
+    return note_from_text(rel, read_head(vault / rel)[0])
+
+
+def note_from_text(rel: str, text: str | None) -> PrivateNote:
+    """The matchable forms of the private file ``rel`` whose (leading) text is ``text``.
+
+    For a version of a note that isn't on disk: the one at ``HEAD`` or in the
+    index (the lint checks the commit, spec §8.2). ``text`` is None for a
+    non-markdown file (slug only).
+    """
     name = rel.rsplit("/", 1)[-1]
     slug = _strip_md(name) if name.lower().endswith(".md") else Path(name).stem
     names = [slug]
     if name.lower().endswith(".md"):
-        names += _frontmatter_names(vault / rel)
+        names += _names_from_text(text)
     terms = tuple(dict.fromkeys(n for n in names if len(n) >= MIN_TERM_CHARS))
     keys = {n.casefold() for n in names} | {name.casefold(), _strip_md(name).casefold()}
     return PrivateNote(
@@ -203,10 +222,18 @@ def private_terms(vault: Path, policy: Policy) -> PrivateTerms:
     cached = _CACHE.get(str(root))
     if cached is not None and cached[0] == signature:
         return cached[1]
-    notes = tuple(_note(root, rel) for rel in private)
-    terms = PrivateTerms(notes=notes, any_term=_term_regex(t for n in notes for t in n.terms))
+    terms = terms_of(_note(root, rel) for rel in private)
     _CACHE[str(root)] = (signature, terms)
     return terms
+
+
+def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
+    """A :class:`PrivateTerms` over ``notes``, duplicates (same path and forms) dropped."""
+    seen: dict[tuple[str, tuple[str, ...], frozenset[str]], PrivateNote] = {}
+    for n in notes:
+        seen.setdefault((n.path, n.terms, n.link_keys), n)
+    kept = tuple(seen.values())
+    return PrivateTerms(notes=kept, any_term=_term_regex(t for n in kept for t in n.terms))
 
 
 def _link_target(inner: str) -> str:

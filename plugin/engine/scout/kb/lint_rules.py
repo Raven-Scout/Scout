@@ -8,6 +8,7 @@ narrative belongs in the commit message.
 
 from __future__ import annotations
 
+import difflib
 import re
 
 from scout.ids import leading_prefix_pattern
@@ -73,4 +74,22 @@ def wikilink_targets(text: str) -> list[str]:
         if target.endswith("\\"):
             target = target[:-1].rstrip()
         out.append(target)
+    return out
+
+
+def added_line_numbers(old: str | None, new: str) -> set[int]:
+    """1-based numbers of the lines of ``new`` that aren't in ``old`` (inserted or changed).
+
+    Computed in Python (``difflib``), not from ``git diff``, so git's binary
+    heuristics and ``.gitattributes`` can't hide a line. ``old`` None (no
+    earlier version) makes every line added.
+    """
+    lines = new.split("\n")
+    if old is None:
+        return set(range(1, len(lines) + 1))
+    sm = difflib.SequenceMatcher(a=old.split("\n"), b=lines, autojunk=False)
+    out: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+        if tag in ("insert", "replace"):
+            out.update(range(j1 + 1, j2 + 1))
     return out
