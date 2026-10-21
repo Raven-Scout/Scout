@@ -629,3 +629,184 @@ def test_upgrade_stage_never_writes_the_privacy_index(vault: Path) -> None:
     _stage_privacy_report(vault)
     _stage_privacy_report(vault)
     assert _cache_snapshot(vault) == warm  # a stale index is read, never rewritten
+
+
+# ----- --accept: the owner's P5 consent marker ----------------------------------------
+
+MARKER = ".scout-state/privacy-migrate.json"
+
+
+def _accepted() -> dict[str, object] | None:
+    accepted = json.loads(cli("--json").output)["accepted"]
+    assert accepted is None or isinstance(accepted, dict)
+    return accepted
+
+
+def test_accept_writes_the_marker_with_its_fields_and_mode(vault: Path) -> None:
+    import scout
+
+    result = cli("--accept")
+    assert result.exit_code == 0, result.output
+    marker = vault / MARKER
+    assert marker.stat().st_mode & 0o777 == 0o600
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    assert set(data) == {"schema", "engine_version", "accepted_at", "report_sha256"}
+    assert data["schema"] == 1
+    assert data["engine_version"] == scout.__version__
+    assert data["accepted_at"].endswith("Z") and "T" in data["accepted_at"]
+    assert data["report_sha256"] == pm.decision_sha256(pm.report(vault))
+    assert len(data["report_sha256"]) == 64
+    assert [p.name for p in (vault / ".scout-state").iterdir()] == ["privacy-migrate.json"]
+    assert data["accepted_at"] in result.output
+    _no_private_content(result.output)
+    # Re-accepting replaces the marker and keeps its mode.
+    assert cli("--accept", "--json").exit_code == 0
+    assert marker.stat().st_mode & 0o777 == 0o600
+
+
+def test_decision_sha_covers_only_the_outstanding_decisions() -> None:
+    a = pm.MigrationReport(visibility_values=["b.md", "a.md"], local_only_proposals=["trading/**"])
+    b = pm.MigrationReport(
+        visibility_values=["a.md", "b.md"],
+        private_links=[("drafts/x.md", [3])],
+        local_only_proposals=["trading/**"],
+    )
+    assert pm.decision_sha256(a) == pm.decision_sha256(b)
+    canonical = json.dumps(
+        {"local_only_proposals": ["trading/**"], "visibility_values": ["a.md", "b.md"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert pm.decision_sha256(a) == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    assert pm.decision_sha256(pm.MigrationReport()) != pm.decision_sha256(a)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"SCOUT_MODE": "dreaming"}, {"SCOUT_READER": "autonomous"}, {"SCOUT_MODE": "x", "SCOUT_READER": "owner"}],
+)
+def test_accept_refuses_a_headless_caller(vault: Path, env: dict[str, str]) -> None:
+    before = _snapshot(vault)
+    result = cli("--accept", env=env)
+    assert result.exit_code == 2, result.output
+    assert "owner" in result.output
+    assert not (vault / MARKER).exists()
+    assert _snapshot(vault) == before
+
+
+def test_accept_gives_an_agent_reader_nothing(vault: Path) -> None:
+    result = cli("--accept", env={"SCOUT_READER": "agent:person:priya@example.com"})
+    assert result.exit_code == 2
+    assert result.output == ""
+    assert not (vault / MARKER).exists()
+
+
+def test_accept_is_its_own_action(vault: Path) -> None:
+    before = _snapshot(vault)
+    result = cli("--accept", "--set-private", DRAFT)
+    assert result.exit_code == 2
+    assert _snapshot(vault) == before
+
+
+def test_accept_writes_nothing_when_the_report_fails(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: object, **_k: object) -> list[str]:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(pm, "local_only_proposals", boom)
+    result = cli("--accept")
+    assert result.exit_code == 1
+    assert "nothing was recorded" in result.output
+    assert not (vault / MARKER).exists()
+
+
+def test_accept_never_writes_the_privacy_index(vault: Path) -> None:
+    _no_overlay(vault)
+    assert cli("--accept").exit_code == 0
+    assert not (vault / ".scout-cache").exists()
+
+
+def test_a_failed_marker_write_leaves_no_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_a: object, **_k: object) -> None:
+        raise OSError("no space")
+
+    monkeypatch.setattr(pm.os, "replace", fail)
+    with pytest.raises(OSError):
+        pm.accept(vault)
+    assert list((vault / ".scout-state").iterdir()) == []
+
+
+def test_accepted_is_current_right_after_and_lapses_on_a_new_legacy_note(vault: Path) -> None:
+    assert _accepted() is None
+    text = cli().output
+    assert "not accepted" in text and "/scout-update" in text
+    assert cli("--accept").exit_code == 0
+    acc = _accepted()
+    assert acc is not None and acc["current"] is True
+    marker = json.loads((vault / MARKER).read_text(encoding="utf-8"))
+    assert {k: acc[k] for k in ("accepted_at", "engine_version", "report_sha256")} == {
+        k: marker[k] for k in ("accepted_at", "engine_version", "report_sha256")
+    }
+    assert f"accepted at {marker['accepted_at']}" in cli().output
+
+    _write(vault, "knowledge-base/topics/misc/new-legacy.md", "---\nvisibility: secret\n---\nBody.\n")
+    clear_frontmatter_cache()
+    outbound.clear_cache()
+    acc = _accepted()
+    assert acc is not None and acc["current"] is False
+    text = cli().output
+    assert "out of date" in text and "asked again" in text and "/scout-update" in text
+
+
+def test_accepted_lapses_when_a_trading_folder_appears(vault: Path) -> None:
+    assert cli("--accept").exit_code == 0
+    (vault / "Brokerage Statements").mkdir()
+    (vault / "Brokerage Statements/2026-09.md").write_text("Stand-in.\n", encoding="utf-8")
+    acc = _accepted()
+    assert acc is not None and acc["current"] is False
+
+
+def test_editing_a_shared_draft_keeps_acceptance_current(vault: Path) -> None:
+    assert cli("--accept").exit_code == 0
+    path = vault / SHARED_DRAFT
+    path.write_text(path.read_text(encoding="utf-8") + "\nLoop in [[sam]] first.\n", encoding="utf-8")
+    outbound.clear_cache()
+    data = json.loads(cli("--json").output)
+    assert data["private_links"]  # the informational list changed...
+    assert data["accepted"]["current"] is True  # ...and consent still holds
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"not json",
+        b"[]",
+        b'{"schema": 2, "engine_version": "1", "accepted_at": "x", "report_sha256": "y"}',
+        b'{"schema": 1, "engine_version": "1", "accepted_at": "x"}',
+        b'{"schema": 1, "engine_version": 1, "accepted_at": "x", "report_sha256": "y"}',
+        b"\xff\xfe",
+        None,  # a directory where the file should be
+    ],
+)
+def test_an_unreadable_or_garbage_marker_reads_as_not_accepted(vault: Path, content: bytes | None) -> None:
+    marker = vault / MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if content is None:
+        marker.mkdir()
+    else:
+        marker.write_bytes(content)
+    assert pm.read_marker(vault) is None
+    assert _accepted() is None
+
+
+def test_acceptance_lines() -> None:
+    assert "not accepted" in pm.acceptance_line(None)
+    ok = {"accepted_at": "2026-10-21T09:00:00Z", "engine_version": "0", "report_sha256": "a", "current": True}
+    assert pm.acceptance_line(ok) == "privacy consent: accepted at 2026-10-21T09:00:00Z"
+    stale = pm.acceptance_line({**ok, "current": False})
+    assert "out of date" in stale and "asked again" in stale and "/scout-update" in stale
+
+
+def test_the_marker_is_local_only_under_the_engine_policy() -> None:
+    from scout.kb.privacy import classify
+
+    assert classify(MARKER, None, load_policy(None)).local_only is True

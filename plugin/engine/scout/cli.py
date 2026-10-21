@@ -2690,6 +2690,11 @@ def _register_bootstrap() -> None:
             "--local-only",
             help="Add this glob (e.g. 'trading/**') to scout-config.yaml → privacy.local_only_add. Repeatable.",
         ),
+        accept: bool = typer.Option(
+            False,
+            "--accept",
+            help="Record that the owner has answered every proposal (.scout-state/privacy-migrate.json).",
+        ),
         json_out: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:
         """Per-note privacy migration (#453). Without options: a read-only report.
@@ -2697,10 +2702,14 @@ def _register_bootstrap() -> None:
         Lists notes whose visibility: value isn't normal/private (they already
         count as private), lines of shared files that link or name a private
         note (file and line only), and trading/brokerage folders to keep on this
-        computer. --set-private and --local-only make the changes the owner
-        agreed to; they refuse a scheduled or autonomous caller (exit 2).
-        Exit 1 when a --set-private note was refused. A reader other than owner
-        or autonomous (SCOUT_READER=agent:…) gets exit 2 and no output.
+        computer, plus whether the owner's consent is recorded and current.
+        --set-private and --local-only make the changes the owner agreed to;
+        --accept (on its own) records that the owner has answered every
+        proposal, which hosts such as Agnes check before linking the vault. All
+        three refuse a scheduled or autonomous caller (exit 2). Exit 1 when a
+        --set-private note was refused or the report for --accept failed. A
+        reader other than owner or autonomous (SCOUT_READER=agent:…) gets exit 2
+        and no output.
         """
         import json as _json
         import os as _os
@@ -2715,23 +2724,44 @@ def _register_bootstrap() -> None:
             raise typer.Exit(2)
 
         vault = _paths.data_dir()
-        if not set_private and not local_only:
+        if not set_private and not local_only and not accept:
             rep = pm.report(vault)
+            accepted = pm.acceptance(vault, rep)
             if json_out:
-                typer.echo(_json.dumps(rep.to_json(), indent=2, sort_keys=True))
+                typer.echo(_json.dumps({**rep.to_json(), "accepted": accepted}, indent=2, sort_keys=True))
             else:
                 for line in rep.lines():
                     typer.echo(line)
+                typer.echo(pm.acceptance_line(accepted))
             raise typer.Exit(0)
 
         why = pm.headless_reason(_os.environ)
         if why:
             typer.echo(
-                f"refused: {why}. Only the owner, in an interactive /scout-update, may change notes "
-                "or the privacy overlay; nothing was changed.",
+                f"refused: {why}. Only the owner, in an interactive /scout-update, may change notes, "
+                "the privacy overlay or the privacy consent; nothing was changed.",
                 err=True,
             )
             raise typer.Exit(2)
+
+        if accept:
+            if set_private or local_only:
+                typer.echo("refused: run --accept on its own, after the other changes; nothing was changed.", err=True)
+                raise typer.Exit(2)
+            try:
+                marker = pm.accept(vault)
+            except Exception as e:  # the report or the write failed: no marker
+                typer.echo(
+                    f"refused: the privacy migration report couldn't be computed or recorded "
+                    f"({type(e).__name__}); nothing was recorded.",
+                    err=True,
+                )
+                raise typer.Exit(1) from e
+            if json_out:
+                typer.echo(_json.dumps(marker, indent=2, sort_keys=True))
+            else:
+                typer.echo(f"accepted: privacy migration consent recorded at {marker['accepted_at']}")
+            raise typer.Exit(0)
 
         outcomes: list[dict[str, str]] = []
         added: list[str] = []

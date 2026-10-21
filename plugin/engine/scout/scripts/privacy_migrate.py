@@ -21,12 +21,18 @@ Three things an existing vault needs once ``visibility`` means something:
 path and then calls them through ``scoutctl bootstrap privacy-migrate``. The
 upgrade pipeline only prints the report (``bootstrap._stage_privacy_report``).
 
+Once the owner has answered every proposal, :func:`accept` records it in
+``.scout-state/privacy-migrate.json`` (local-only). Hosts such as Agnes check
+that marker, and that it is still current (:func:`acceptance`), before linking
+the vault.
+
 Nothing here prints a private note's title, name or content: (a) lists paths,
 (b) lists shared files with line numbers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -35,6 +41,7 @@ import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -477,3 +484,106 @@ def report(vault: Path, *, persist: bool = True) -> MigrationReport:
         private_links=private_links_in_shared(vault, persist=persist),
         local_only_proposals=local_only_proposals(vault),
     )
+
+
+# ----- the owner's consent marker -------------------------------------------------------
+
+MARKER_NAME = "privacy-migrate.json"
+MARKER_SCHEMA = 1
+_MARKER_STRINGS = ("engine_version", "accepted_at", "report_sha256")
+
+
+def marker_path(vault: Path) -> Path:
+    """``.scout-state/privacy-migrate.json``. Local-only: ``.scout-state/**`` minus ``sync_allow``."""
+    return paths.state_dir(vault.resolve()) / MARKER_NAME
+
+
+def decision_sha256(rep: MigrationReport) -> str:
+    """sha256 of what the owner decided on: the outstanding legacy-visibility notes and local-only proposals.
+
+    The hashed value is the canonical JSON (sorted keys, no whitespace) of
+    ``{"local_only_proposals": [globs], "visibility_values": [paths]}``, each
+    list sorted. ``private_links`` is left out on purpose: it is informational
+    (nothing to approve), and it changes whenever a draft is edited, which must
+    not invalidate the owner's consent. A new legacy-visibility note or a new
+    trading folder changes the hash, so the owner is asked again.
+    """
+    decided = {
+        "local_only_proposals": sorted(rep.local_only_proposals),
+        "visibility_values": sorted(rep.visibility_values),
+    }
+    canonical = json.dumps(decided, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Atomic write of a new or existing file, mode 0600."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def accept(vault: Path) -> dict[str, Any]:
+    """Record that the owner has been through the P5 migration; return the marker written.
+
+    Computes the report with ``persist=False`` (no privacy-index write) before
+    touching anything, so a report that fails writes nothing. The caller checks
+    :func:`headless_reason` first: this records the owner's consent.
+    """
+    from scout import __version__
+
+    rep = report(vault, persist=False)
+    marker = {
+        "schema": MARKER_SCHEMA,
+        "engine_version": __version__,
+        "accepted_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "report_sha256": decision_sha256(rep),
+    }
+    _write_private(marker_path(vault), (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return marker
+
+
+def read_marker(vault: Path) -> dict[str, Any] | None:
+    """The consent marker, or None when it is missing, unreadable or not a schema-1 marker."""
+    try:
+        data = json.loads(marker_path(vault).read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != MARKER_SCHEMA:
+        return None
+    if not all(isinstance(data.get(k), str) for k in _MARKER_STRINGS):
+        return None
+    return data
+
+
+def acceptance(vault: Path, rep: MigrationReport) -> dict[str, Any] | None:
+    """The report's ``accepted`` field: None without a readable marker, else the marker plus ``current``.
+
+    ``current`` is true only when the marker's hash equals :func:`decision_sha256`
+    of ``rep`` (the report as it is now). False means the owner must be asked again.
+    """
+    marker = read_marker(vault)
+    if marker is None:
+        return None
+    out: dict[str, Any] = {k: marker[k] for k in _MARKER_STRINGS}
+    out["current"] = marker["report_sha256"] == decision_sha256(rep)
+    return out
+
+
+def acceptance_line(accepted: Mapping[str, Any] | None) -> str:
+    """One line for the text report."""
+    if accepted is None:
+        return "privacy consent: not accepted; run /scout-update with the owner present"
+    if not accepted["current"]:
+        return (
+            f"privacy consent: out of date (accepted at {accepted['accepted_at']}, the report has changed since); "
+            "the owner must be asked again: run /scout-update"
+        )
+    return f"privacy consent: accepted at {accepted['accepted_at']}"
