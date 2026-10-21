@@ -36,6 +36,9 @@ def main(argv: list[str]) -> int:
     except OSError as e:
         print(f"scoutctl notify telegram: could not read --body-file {a.body_file}: {e}", file=sys.stderr)
         return 2
+    if a.dry_run:  # the real command echoes and sends nothing: not a message the owner received
+        print(f"[dry-run] would send ({a.tier}): {body}")
+        return 0
     log = CallsLog(Path(os.environ["SCOUT_EVAL_CALLS"]))
     args = {"tier": a.tier, "parse_mode": a.parse_mode, "body": body}
     log.record(persona="telegram", tool="notify", args=args, decide=lambda _hits: Reply("ok", None, None, "telegram"))

@@ -21,6 +21,11 @@ from tests.eval.harness.checks.privacy_canary import raw_kb_read
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 KINDS = ("SKILL", "DREAMING", "RESEARCH")
 PRIVACY_HEADING = "## Privacy: owner-only and shared surfaces"
+_WALK_KB = re.compile(
+    r"\b(?:read|open|walk|scan|go through|cat|list)\s+(?:every|each|all)\b"
+    r"[^.]{0,40}?`?(?:knowledge-base|action-items/context)",
+    re.IGNORECASE,
+)
 
 
 def _all_connectors() -> set[str]:
@@ -91,6 +96,9 @@ def test_no_assembled_phase_reads_the_kb_raw(kind: str) -> None:
     assert "git diff HEAD~1" not in text
     raw = [span for span in _code_spans(text) if raw_kb_read(span)]
     assert raw == []
+    # Prose that sends the run through the KB file by file must name the scoutctl kb command to use.
+    prose = [line for line in text.splitlines() if _WALK_KB.search(line) and "scoutctl kb" not in line]
+    assert prose == []
     # claude-sessions reads the git history of *other* repos (`git -C <repo> log`): not the vault's.
     vault_only = _assembled(kind, _all_connectors() - {"claude_sessions"})
     assert not re.search(r"\bgit (?:-C \S+ )?log\b", vault_only), "the vault's history comes through scoutctl kb delta"
@@ -106,6 +114,24 @@ def test_the_raw_read_detector() -> None:
     assert not raw_kb_read("scoutctl kb search x --glob 'knowledge-base/**' | grep -c .")
     assert not raw_kb_read("git add knowledge-base/people/sam.md")
     assert not raw_kb_read("cat")
+    assert not raw_kb_read("scoutctl kb search head --glob knowledge-base/**")
+    assert not raw_kb_read("scripts/scoutctl kb search head --glob 'knowledge-base/**'")
+    assert not raw_kb_read('git commit -m "dreaming [21:00]: tidy more knowledge-base notes"')
+    assert not raw_kb_read("cd /v && git add -A && git commit -m 'cat knowledge-base'")
+    assert raw_kb_read("cd knowledge-base && cat people/sam.md")
+    assert raw_kb_read("cd knowledge-base/personal && ls")
+    assert raw_kb_read("/bin/cat knowledge-base/x.md")
+    assert raw_kb_read("git show HEAD:knowledge-base/x.md")
+    assert raw_kb_read("git log -p -- knowledge-base")
+    assert raw_kb_read("find . -name '*.md' | xargs -0 wc -l knowledge-base/people")
+    assert raw_kb_read("tree knowledge-base")
+    assert not raw_kb_read("git log --oneline -- knowledge-base")  # names only: not content
+
+
+def test_the_prose_walk_detector() -> None:
+    assert _WALK_KB.search("Read every file in `knowledge-base/`. Score each file")
+    assert _WALK_KB.search("Open each note under knowledge-base/people")
+    assert not _WALK_KB.search("Score every file in the cache")
 
 
 @pytest.mark.parametrize(

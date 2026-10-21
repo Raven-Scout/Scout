@@ -27,7 +27,7 @@ from .checks.daily import body_budget, context_note, no_collapse, waiting_format
 from .checks.demotion import demotion
 from .checks.no_drop import no_drop
 from .checks.placement import placement
-from .checks.privacy_canary import PrivacyOutputs, privacy_canary, privacy_hygiene
+from .checks.privacy_canary import PrivacyOutputs, owner_surfaces_required, privacy_canary, privacy_hygiene
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
 from .mcp_config import write_mcp_config
@@ -205,18 +205,32 @@ def read_outputs(vault: Path, calls_log: Path, today: date) -> RunOutputs:
 OUTBOUND_DRAFT = ".scout-cache/outbound-draft.md"  # phases/core/privacy.md
 
 
+class GitReadError(Exception):
+    """git couldn't answer; never read as "nothing changed"."""
+
+
 def _git_lines(vault: Path, *args: str) -> list[str]:
     done = subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True)
-    return done.stdout.split("\n") if done.returncode == 0 else []
+    if done.returncode != 0:
+        raise GitReadError(f"git {' '.join(args)}: exit {done.returncode}: {done.stderr.strip()[:200]}")
+    return [line for line in done.stdout.split("\n") if line]
 
 
-def drafts_changed(vault: Path) -> dict[str, str]:
-    """``drafts/`` files this run added or changed (committed or not), against the fixture commit."""
-    root = [r for r in _git_lines(vault, "rev-list", "--max-parents=0", "HEAD") if r]
-    changed = _git_lines(vault, "diff", "--name-only", root[0], "--", "drafts") if root else []
-    changed += _git_lines(vault, "ls-files", "--others", "--exclude-standard", "--", "drafts")
+def drafts_changed(vault: Path) -> dict[str, str] | None:
+    """``drafts/`` files this run added or changed (committed or not), against the fixture commit.
+
+    None when git can't say, so the check scores it as unknown rather than as no change.
+    """
+    try:
+        root = _git_lines(vault, "rev-list", "--max-parents=0", "HEAD")
+        if not root:
+            return None
+        changed = _git_lines(vault, "diff", "--name-only", root[0], "--", "drafts")
+        changed += _git_lines(vault, "ls-files", "--others", "--exclude-standard", "--", "drafts")
+    except GitReadError:
+        return None
     return {rel: (vault / rel).read_text(encoding="utf-8", errors="replace") for rel in sorted(set(changed))
-            if rel and (vault / rel).is_file()}  # fmt: skip
+            if (vault / rel).is_file()}  # fmt: skip
 
 
 def read_privacy_outputs(
@@ -241,6 +255,17 @@ def read_privacy_outputs(
     )
 
 
+def _score_one(
+    name: str, scenario: Scenario, vault: Path, today: date, calls_log: Path, transcript: Sequence[ToolCall]
+) -> CheckResult:
+    """The privacy checks, which read only what a run sent and ran (and the daily file, when its mode owns it)."""
+    if name == "privacy_hygiene":
+        return privacy_hygiene(transcript)
+    return privacy_canary(
+        read_privacy_outputs(vault, calls_log, today, transcript), scenario.permit_canary, scenario.mode
+    )
+
+
 def _score(
     scenario: Scenario,
     vault: Path,
@@ -253,7 +278,16 @@ def _score(
     if today_file.is_file() and CARRY_BANNER in today_file.read_text(encoding="utf-8"):
         # The runner carried yesterday's file in verbatim and the session never rewrote it:
         # scoring that would credit the session with yesterday's placements and no drops.
-        return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
+        # A run that doesn't own the daily file (dreaming) is still scored on what it sent and ran.
+        keep = {"privacy_hygiene"} | (set() if owner_surfaces_required(scenario.mode) else {"privacy_canary"})
+        if not keep & set(scenario.checks):
+            return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
+        return tuple(
+            _score_one(name, scenario, vault, today, calls_log, transcript)
+            if name in keep
+            else CheckResult(name, None, ("not_enriched",))
+            for name in scenario.checks
+        )
     today_items = _items(today_file)
     out = read_outputs(vault, calls_log, today)
     up = [p for p in scenario.personas if p not in scenario.personas_down]
@@ -268,10 +302,8 @@ def _score(
         "dropoff_caught": lambda: dropoff_caught(
             scenario.dropped_tags, today_items, out.wrap, review_added=out.review_added
         ),
-        "privacy_canary": lambda: privacy_canary(
-            read_privacy_outputs(vault, calls_log, today, transcript), scenario.permit_canary
-        ),
-        "privacy_hygiene": lambda: privacy_hygiene(transcript),
+        "privacy_canary": lambda: _score_one("privacy_canary", scenario, vault, today, calls_log, transcript),
+        "privacy_hygiene": lambda: _score_one("privacy_hygiene", scenario, vault, today, calls_log, transcript),
     }
     results = []
     for name in scenario.checks:
@@ -315,7 +347,7 @@ def run_sample(
     build_vault(
         vault,
         today=today,
-        scenario_dir=scenario.path,
+        scenario_dir=scenario.files,
         claude_bin=str(SHIM),
         connectors=scenario.connectors,
         max_budget=budget,
@@ -349,7 +381,7 @@ def run_sample(
     runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["bash", str(vault / "run-scout.sh")],
+            ["bash", str(vault / scenario.runner)],
             cwd=vault,
             env=env,
             stdout=log,

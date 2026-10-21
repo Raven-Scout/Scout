@@ -205,7 +205,7 @@ Keep it tight. Example format:
 
 ```
 Scout consolidation complete.
-- Action items: X new, Y completed, Z carried forward
+- Action items: X new, Y completed, Z carried forward (non-private items only)
 - KB audited: [list of files checked/updated]
 - Urgent: [any urgent items, or "none"]
 ```
@@ -218,7 +218,7 @@ Slightly more detail. Example format:
 Scout morning briefing ready.
 *Today's focus:* [the 1–2 things today is really about — the throughline from recent work to now]
 - Today's meetings: [count] ([first meeting time])
-- Action items: X urgent, Y to-do, Z watching
+- Action items: X urgent, Y to-do, Z watching (non-private items only)
 - New since yesterday: [brief summary of new items]
 - KB areas updated: [list]
 - Review queue: [count] items pending your review

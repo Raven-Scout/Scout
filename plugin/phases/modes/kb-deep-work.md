@@ -92,7 +92,7 @@ Commit any entity file changes from this step before proceeding to file scoring.
 
 ### Step 2a: Score All KB Files
 
-Read every file in `knowledge-base/`. Score each file on four dimensions (0-3 each). Total possible score: 12. Higher scores = higher priority for work.
+Score every file in `knowledge-base/`. Start from the caches (`.scout-cache/kb-filter.md`, `.scout-cache/vault-freshness.md`); list the rest with `scripts/scoutctl kb files --glob 'knowledge-base/**'` (labelled) and read a file with `scripts/scoutctl kb read <path>`. Score each file on four dimensions (0-3 each). Total possible score: 12. Higher scores = higher priority for work.
 
 #### Dimension 1: Staleness (0-3)
 

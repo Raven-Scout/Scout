@@ -26,7 +26,12 @@ def _scenario_dir(name: str | None) -> Path | None:
     path = SCENARIOS_DIR / name
     if not path.is_dir():
         raise ValueError(f"unknown scenario {name!r} (looked in {SCENARIOS_DIR})")
-    return path
+    from .scenario import load_scenario
+
+    try:
+        return load_scenario(name).files  # a variant's overlays live in its files_from scenario
+    except (FileNotFoundError, KeyError):
+        return path
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
