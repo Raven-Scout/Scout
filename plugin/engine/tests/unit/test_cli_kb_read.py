@@ -823,3 +823,61 @@ def test_a_parse_without_an_exact_json_form_is_not_stored(own_vault: Path) -> No
     assert "fm" not in entry and entry["label"]["visibility"] == "normal"
     clear_frontmatter_cache()
     assert "nan-note" in kb_read.load_graph(own_vault, "owner").entities
+
+
+@pytest.mark.parametrize(
+    ("alias", "broken"),
+    [
+        ("x: &r [1, *r]", [1, None]),
+        ("x: &r {k: *r, j: 2}", {"k": None, "j": 2}),
+        ("x: &r [[*r]]", [[None]]),
+    ],
+)
+def test_cyclic_alias_entity_does_not_crash(own_vault: Path, alias: str, broken: Any) -> None:
+    """SafeLoader accepts a cyclic alias: every graph command keeps working, cold and warm.
+
+    The back-reference becomes null in the entity (no JSON form has a cycle).
+    """
+    note = own_vault / "knowledge-base" / "topics" / "misc" / "cycle.md"
+    note.write_text(f"---\nname: cycle-note\ntype: task\n{alias}\n---\n", encoding="utf-8")
+    _settle(own_vault)
+    for _ in range(2):  # cold, then warm (from the index)
+        clear_frontmatter_cache()
+        graph = kb_read.load_graph(own_vault, "owner")
+        assert graph.entities["cycle-note"]["x"] == broken
+        assert graph.label_of("cycle-note")["visibility"] == "normal"
+        for args in (["query", "--type", "task"], ["query", "--type", "task", "--json"], ["export"]):
+            result = kb(own_vault, *args, reader="owner")
+            assert result.exit_code == 0, (args, result.output)
+            assert "cycle-note" in result.output
+        result = kb(own_vault, "entity", "cycle-note", reader="owner")
+        assert result.exit_code == 0, result.output
+    data = json.loads((own_vault / ".scout-cache" / kb_read.INDEX_FILENAME).read_text(encoding="utf-8"))
+    entry = data["files"]["knowledge-base/topics/misc/cycle.md"]
+    assert entry["label"]["visibility"] == "normal"
+
+
+@pytest.mark.parametrize("alias", ["&r [*r]", "&r {k: *r}", "&r [[1, *r]]"])
+def test_a_cyclic_value_is_never_stored(own_vault: Path, alias: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defence in depth: the encoder refuses a cycle, and ``put`` then stores no parse."""
+    value = yaml.safe_load(f"name: x\ntype: topic\nv: {alias}\n")
+    with pytest.raises(kb_read._NotJSON):
+        kb_read._enc(value)
+    store = kb_read.IndexStore(own_vault, kb_read.load_policy(own_vault))
+    old = time.time_ns() - 86_400 * 10**9
+    store.put("knowledge-base/x.md", (old, old, 1, 1), own_vault / "knowledge-base" / "x.md", None, value)
+    assert "fm" not in store.files["knowledge-base/x.md"]
+
+
+def test_shared_anchor_round_trips() -> None:
+    value = yaml.safe_load("name: x\ntype: topic\na: &s [1, {k: v}]\nb: *s\nc: [*s, *s]\n")
+    back = kb_read._dec(json.loads(json.dumps(kb_read._enc(value))))
+    assert back == value
+
+
+def test_index_is_owner_only(own_vault: Path) -> None:
+    _settle(own_vault)
+    kb_read.load_graph(own_vault, "owner")
+    kb_read.visible_files(own_vault, "owner")
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    assert index.stat().st_mode & 0o777 == 0o600

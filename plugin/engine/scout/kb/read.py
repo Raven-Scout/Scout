@@ -285,9 +285,13 @@ def _write_index(path: Path, policy: str, files: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({**_index_header(policy), "files": files}), encoding="utf-8")
+        # Owner-only: entries hold private notes' frontmatter.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({**_index_header(policy), "files": files}))
+        os.chmod(tmp, 0o600)  # a stale temp file of ours may predate the mode
         os.replace(tmp, path)
-    except OSError:
+    except (OSError, ValueError, TypeError, RecursionError):
         with contextlib.suppress(OSError):
             tmp.unlink()
 
@@ -355,8 +359,13 @@ class _NotJSON(Exception):
     pass
 
 
-def _enc(v: Any) -> Any:
-    """``v`` (what ``yaml.safe_load`` yields) as JSON; ``_NotJSON`` when it has no exact form."""
+def _enc(v: Any, _path: frozenset[int] = frozenset()) -> Any:
+    """``v`` (what ``yaml.safe_load`` yields) as JSON; ``_NotJSON`` when it has no exact form.
+
+    A cyclic alias (``x: &r [*r]``, which ``SafeLoader`` accepts) has none:
+    ``_path`` holds the containers being encoded, and meeting one again raises.
+    A shared anchor that isn't a cycle is encoded once per use.
+    """
     t = type(v)
     if v is None or t in (bool, int, str):
         return v
@@ -364,23 +373,24 @@ def _enc(v: Any) -> Any:
         if not math.isfinite(v):
             raise _NotJSON
         return v
-    if t is list:
-        return [_enc(x) for x in v]
-    if t is dict:
-        if _TAG not in v and all(type(k) is str for k in v):
-            return {k: _enc(x) for k, x in v.items()}
-        return {_TAG: "map", "v": [[_enc(k), _enc(x)] for k, x in v.items()]}
     if t is datetime.datetime:
         return {_TAG: "datetime", "v": v.isoformat()}
     if t is datetime.date:
         return {_TAG: "date", "v": v.isoformat()}
     if t is bytes:
         return {_TAG: "bytes", "v": base64.b64encode(v).decode("ascii")}
-    if t is set:
-        return {_TAG: "set", "v": [_enc(x) for x in v]}
-    if t is tuple:
-        return {_TAG: "tuple", "v": [_enc(x) for x in v]}
-    raise _NotJSON
+    if t not in (list, dict, set, tuple):
+        raise _NotJSON
+    if id(v) in _path:
+        raise _NotJSON  # a cycle
+    inner = _path | {id(v)}
+    if t is list:
+        return [_enc(x, inner) for x in v]
+    if t is dict:
+        if _TAG not in v and all(type(k) is str for k in v):
+            return {k: _enc(x, inner) for k, x in v.items()}
+        return {_TAG: "map", "v": [[_enc(k, inner), _enc(x, inner)] for k, x in v.items()]}
+    return {_TAG: "set" if t is set else "tuple", "v": [_enc(x, inner) for x in v]}
 
 
 def _dec(v: Any) -> Any:
@@ -474,8 +484,8 @@ class IndexStore:
                 encoded = _enc(frontmatter)
                 if _dec(encoded) == frontmatter:  # lossless, or not stored
                     new["fm"] = encoded
-            except _NotJSON:
-                pass
+            except (_NotJSON, RecursionError, ValueError, TypeError, KeyError):
+                pass  # no exact stored form: the entry carries no "fm" and the file is parsed each time
         if new != entry:
             self.files[rel] = new
             self.dirty = True

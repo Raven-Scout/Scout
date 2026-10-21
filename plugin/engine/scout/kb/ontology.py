@@ -127,6 +127,38 @@ def find_vault(kb_root: str | Path) -> Path:
     )
 
 
+_CONTAINERS = (list, dict, set, tuple)
+
+
+def _cyclic(v: Any, path: frozenset[int] = frozenset()) -> bool:
+    """Whether ``v`` reaches itself (``x: &r [*r]``: ``SafeLoader`` builds such a value)."""
+    if not isinstance(v, _CONTAINERS):
+        return False
+    if id(v) in path:
+        return True
+    inner = path | {id(v)}
+    items = (x for kv in v.items() for x in kv) if isinstance(v, dict) else v
+    return any(_cyclic(x, inner) for x in items)
+
+
+def _break_cycles(v: Any, path: frozenset[int] = frozenset()) -> Any:
+    """A copy of ``v`` with each reference back to an enclosing container replaced by None.
+
+    No JSON form (``kb query --json``, ``export``) or stored parse has a cycle;
+    an entity whose frontmatter has one keeps everything else.
+    """
+    if not isinstance(v, _CONTAINERS):
+        return v
+    if id(v) in path:
+        return None
+    inner = path | {id(v)}
+    if isinstance(v, dict):
+        return {k: _break_cycles(x, inner) for k, x in v.items()}  # keys are hashable: no cycle through them
+    if isinstance(v, list):
+        return [_break_cycles(x, inner) for x in v]
+    return type(v)(_break_cycles(x, inner) for x in v)
+
+
 class _Labeller:
     """Vault-relative paths and labels for one ``load()``: the policy is loaded once.
 
@@ -358,7 +390,10 @@ class KnowledgeGraph:
             # The classifier reads the same lines nearly always (no BOM, the
             # fence inside its window): reuse this parse rather than YAML-parse twice.
             same = classifier_block(head) == block
-            frontmatter[_FACTS_KEY] = facts_from_frontmatter(frontmatter) if same else note_facts(head)
+            facts = facts_from_frontmatter(frontmatter) if same else note_facts(head)
+            if _cyclic(frontmatter):  # facts come from the parse as is, like the classifier's
+                frontmatter = _break_cycles(frontmatter)
+            frontmatter[_FACTS_KEY] = facts
         return frontmatter
 
     def _resolve_wikilink(self, text: str) -> str:
