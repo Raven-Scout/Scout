@@ -1113,5 +1113,39 @@
     "frontmatter_text": "---\nname: bom-own-line\ntype: topic\n\ufeff\nvisibility: normal\n---\nA U+FEFF alone on a line inside the block: SafeLoader rejects the block; libyaml skips it.\n",
     "path": "knowledge-base/topics/misc/bom-own-line.md",
     "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/block-scalar-comment.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: block-scalar-comment\ntype: topic\nvisibility: normal\nnote: |#c\n  text\n---\nA comment right after a block-scalar header: SafeLoader rejects the block; libyaml parses it.\n",
+    "path": "knowledge-base/topics/misc/block-scalar-comment.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/flow-explicit-key.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: flow-explicit-key\ntype: topic\nvisibility: normal\ntags: [? ]\n---\nAn empty explicit key in a flow sequence: SafeLoader parses it; libyaml rejects the block.\n",
+    "path": "knowledge-base/topics/misc/flow-explicit-key.md",
+    "policy_overlay": null
   }
 ]

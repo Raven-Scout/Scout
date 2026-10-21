@@ -39,7 +39,7 @@ import time
 from collections import deque
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -78,9 +78,10 @@ from scout.kb.privacy import (
 # would otherwise keep the old key. It is re-read until it settles (git's
 # "racily clean" rule).
 #
-# Only within one process: nothing in the engine loads the graph from a fresh
-# process often enough to pay for an on-disk cache and its cross-session
-# invalidation.
+# This cache lives only within one process. A command that loads the graph from
+# a fresh process (``scoutctl kb query`` and the other graph commands) passes a
+# ``store`` instead: the stat-keyed privacy index (``scout.kb.read``), which
+# keeps each file's facts and parsed frontmatter across processes (ruling R15c).
 _StatKey = tuple[int, int, int, int]
 _FrontmatterCache = dict[str, tuple[_StatKey, bytes]]
 _CACHE: dict[str, _FrontmatterCache] = {}
@@ -179,15 +180,40 @@ class _Labeller:
         return label_from_facts(self.rel(path), facts, self.policy).to_json()
 
 
+class FrontmatterStore(Protocol):
+    """A cross-process cache of each file's parse, keyed by vault-relative path and stat key.
+
+    ``get`` returns ``(facts, frontmatter)`` stored for exactly that key, else
+    None; ``frontmatter`` is a fresh copy (``load()`` mutates it), or None for a
+    file that isn't an entity. ``put`` records a parse ``load()`` just made:
+    ``facts`` is None when the file isn't an entity (the store derives them).
+    Both are pure-``SafeLoader`` results, so labels never depend on the cache.
+    """
+
+    def get(self, rel: str, key: _StatKey) -> tuple[NoteFacts, dict[str, Any] | None] | None: ...
+
+    def put(
+        self, rel: str, key: _StatKey, path: Path, facts: NoteFacts | None, frontmatter: dict[str, Any] | None
+    ) -> None: ...
+
+
 class KnowledgeGraph:
     """Markdown-native knowledge graph with YAML frontmatter entities."""
 
     def __init__(
-        self, schema_path: str, kb_root: str, *, reader: str = "owner", vault: Path | str | None = None
+        self,
+        schema_path: str,
+        kb_root: str,
+        *,
+        reader: str = "owner",
+        vault: Path | str | None = None,
+        store: FrontmatterStore | None = None,
     ) -> None:
         self.schema_path = schema_path
         self.kb_root = kb_root
         self.reader = reader
+        # The cross-process parse cache (FrontmatterStore); None uses the per-process one.
+        self.store = store
         # The vault labels are relative to; None finds it from kb_root on load (find_vault).
         self.vault = Path(vault) if vault is not None else None
         # A reader that sees nothing gets no schema read either: nothing under
@@ -231,7 +257,10 @@ class KnowledgeGraph:
         current: _FrontmatterCache = {}
 
         for md_file in Path(self.kb_root).rglob("*.md"):
-            frontmatter = self._cached_frontmatter(md_file, previous, current)
+            if self.store is not None:
+                frontmatter = self._stored_frontmatter(md_file, labeller.rel(md_file), self.store)
+            else:
+                frontmatter = self._cached_frontmatter(md_file, previous, current)
             if not frontmatter or "name" not in frontmatter or "type" not in frontmatter:
                 continue
 
@@ -254,9 +283,31 @@ class KnowledgeGraph:
                     if inverse:
                         self.relationships.append({"source": target, "type": inverse, "target": name})
 
-        with _CACHE_LOCK:
-            _CACHE[root_key] = current
+        if self.store is None:
+            with _CACHE_LOCK:
+                _CACHE[root_key] = current
         return self
+
+    def _stored_frontmatter(self, path: Path, rel: str, store: FrontmatterStore) -> dict[str, Any] | None:
+        """``_extract_frontmatter`` through ``store`` (the privacy index), keyed by ``rel``."""
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        key = _stat_key(st)  # stat before read, as in _cached_frontmatter
+        hit = store.get(rel, key)
+        if hit is not None:
+            facts, frontmatter = hit
+            if frontmatter is not None:
+                frontmatter[_FACTS_KEY] = facts
+            return frontmatter
+        frontmatter = self._extract_frontmatter(path)
+        popped = frontmatter.pop(_FACTS_KEY, None) if isinstance(frontmatter, dict) else None
+        parsed = popped if isinstance(popped, NoteFacts) else None
+        store.put(rel, key, path, parsed, frontmatter)
+        if isinstance(frontmatter, dict) and parsed is not None:
+            frontmatter[_FACTS_KEY] = parsed
+        return frontmatter
 
     def _cached_frontmatter(
         self, path: Path, previous: _FrontmatterCache, current: _FrontmatterCache

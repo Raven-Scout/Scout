@@ -3,7 +3,9 @@
 The spec's budget: ``kb files`` and ``kb query`` under 300 ms warm on a 3,000-file
 vault. "Warm" is the second call with nothing changed: ``visible_files`` reads its
 labels from the stat-keyed ``.scout-cache/privacy-index.json`` (no note is opened),
-and the query reuses ``KnowledgeGraph``'s per-process frontmatter cache.
+and the query's graph loads each entity's stored parse from the same index (ruling
+R15c: frontmatter is parsed only with pure ``SafeLoader``, so the index is what
+keeps a fresh process fast).
 
 CI asserts the work as well as the time: a warm listing opens no note. Two
 timings: in process, and the commands as processes (`scoutctl kb files`,

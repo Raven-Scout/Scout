@@ -14,20 +14,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from scout.kb import privacy
+from scout.kb import read as kb_read
 from scout.kb.ontology import KnowledgeGraph, clear_frontmatter_cache
 from scout.kb.privacy import classify, policy_from_overlay
 from tests.unit.test_kb_privacy import _ROWS
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "privacy-corpus.json"
 
-EXPECTED_SHA256 = "5b78bb65c0cd6a5a10529ee7d27234873ab861e1d6e2a9f4de5beefe84cede68"
+EXPECTED_SHA256 = "14fa35bd828e8fcaefa8295e8fc2caac44f35e8d36bc2a19f03fa37eb12b4f2e"
 
 _CASES: list[dict[str, Any]] = json.loads(CORPUS.read_text(encoding="utf-8")) if CORPUS.exists() else []
 
@@ -70,50 +72,66 @@ def test_corpus_matches_canonical_checksum() -> None:
     )
 
 
-# ----- labels don't depend on libyaml (ruling R15) ------------------------------------
+# ----- labels never use libyaml (ruling R15c) -----------------------------------------
+#
+# Labels are what pure ``yaml.safe_load`` gives (the Agnes indexer mirrors it).
+# libyaml's CSafeLoader disagrees with it on inputs no guard can enumerate, so
+# nothing on the label path may use it: with ``yaml.CSafeLoader`` made to raise,
+# every corpus case and the graph's labels still come out as expected.
 
-_LIBYAML = getattr(yaml, "__with_libyaml__", False)
+_LOADER_EDGE_CASES = [
+    "knowledge-base/topics/misc/tab-after-colon.md",
+    "knowledge-base/topics/misc/surrogate-escape.md",
+    "knowledge-base/topics/misc/bom-line-start.md",
+    "knowledge-base/topics/misc/bom-own-line.md",
+    "knowledge-base/topics/misc/block-scalar-comment.md",
+    "knowledge-base/topics/misc/flow-explicit-key.md",
+]
 
 
-@pytest.mark.skipif(not _LIBYAML, reason="PyYAML built without libyaml")
+class _NoLibyaml:
+    def __init__(self, *_: Any, **__: Any) -> None:
+        raise AssertionError("yaml.CSafeLoader used on the label path")
+
+
+@pytest.fixture
+def no_libyaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(yaml, "CSafeLoader", _NoLibyaml, raising=False)
+    monkeypatch.setattr(yaml, "CLoader", _NoLibyaml, raising=False)
+
+
 @pytest.mark.parametrize("case", _CASES, ids=[_id(c) for c in _CASES])
-def test_label_is_the_same_with_or_without_libyaml(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Through the real decision function (``frontmatter_loader``), with libyaml on and off."""
+def test_labels_never_use_libyaml(case: dict[str, Any], no_libyaml: None) -> None:
     policy = policy_from_overlay(case["policy_overlay"])
-    monkeypatch.setattr(privacy, "_FM_LOADER", yaml.CSafeLoader)
-    with_c = classify(case["path"], case["frontmatter_text"], policy)
-    monkeypatch.setattr(privacy, "_FM_LOADER", yaml.SafeLoader)
-    pure = classify(case["path"], case["frontmatter_text"], policy)
-    assert with_c == pure
-    assert with_c.to_json() == case["expected_label"]
+    assert classify(case["path"], case["frontmatter_text"], policy).to_json() == case["expected_label"]
 
 
-@pytest.mark.skipif(not _LIBYAML, reason="PyYAML built without libyaml")
-def test_libyaml_is_used_only_where_the_loaders_agree() -> None:
-    assert privacy.frontmatter_loader("name: x\ntype: topic\n") is yaml.CSafeLoader
-    for text in (
-        "visibility:\tnormal\n",  # tab
-        'title: "a\\ud800"\n',  # backslash escape
-        "name: x\n\ufefftype: topic\n",  # U+FEFF opening a line
-        "name: x\n\ufeff\nvisibility: normal\n",  # U+FEFF alone on a line
-        "title: café\n",  # any non-ASCII
-        "tag: !\n",  # bare tag: C gives '', Python None
-        "tag: !!str 1\n",
-    ):
-        assert privacy.frontmatter_loader(text) is yaml.SafeLoader, repr(text)
+def test_no_engine_module_names_a_libyaml_loader() -> None:
+    """A loader bound at import time (``X = yaml.CSafeLoader``) would escape the fixture above."""
+    import scout
+
+    pkg = Path(scout.__file__).parent
+    names = ("CSafeLoader", "CLoader", "CBaseLoader", "CFullLoader", "CUnsafeLoader", "__with_libyaml__")
+    hits = [
+        f"{py.relative_to(pkg)}: {n}" for py in sorted(pkg.rglob("*.py")) for n in names if n in py.read_text("utf-8")
+    ]
+    assert hits == []
 
 
-@pytest.mark.parametrize(
-    "rel",
-    [
-        "knowledge-base/topics/misc/tab-after-colon.md",
-        "knowledge-base/topics/misc/surrogate-escape.md",
-        "knowledge-base/topics/misc/bom-line-start.md",
-        "knowledge-base/topics/misc/bom-own-line.md",
-    ],
-)
-def test_graph_parses_the_loader_edge_cases_like_the_classifier(tmp_path: Path, rel: str) -> None:
-    """KnowledgeGraph uses the same loader choice: an unparseable block isn't an entity, a parsed one is."""
+def test_loader_edge_cases_are_in_the_corpus() -> None:
+    have = {c["path"] for c in _CASES}
+    assert set(_LOADER_EDGE_CASES) <= have
+
+
+@pytest.mark.parametrize("via_index", [False, True], ids=["process-cache", "privacy-index"])
+@pytest.mark.parametrize("rel", _LOADER_EDGE_CASES)
+def test_graph_parses_the_loader_edge_cases_like_the_classifier(
+    tmp_path: Path, rel: str, via_index: bool, no_libyaml: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KnowledgeGraph parses as pure SafeLoader: an unparseable block isn't an entity, a parsed one is.
+
+    Through the privacy index too, cold and then warm (the stored parse).
+    """
     (case,) = [c for c in _CASES if c["path"] == rel]
     note = tmp_path / rel
     note.parent.mkdir(parents=True)
@@ -121,8 +139,20 @@ def test_graph_parses_the_loader_edge_cases_like_the_classifier(tmp_path: Path, 
     schema = tmp_path / "schema.yaml"
     schema.write_text("entity_types: {}\n", encoding="utf-8")
     (tmp_path / "scout-config.yaml").write_text("user:\n  name: Alex\n", encoding="utf-8")
+    old = time.time() - 86_400  # settled, so the index stores it
+    os.utime(note, (old, old))
     clear_frontmatter_cache()
-    graph = KnowledgeGraph(str(schema), str(tmp_path / "knowledge-base")).load()
+    if via_index:
+        kb_read.load_graph(tmp_path, "owner", schema=str(schema))  # cold: stores the parse
+        clear_frontmatter_cache()
+
+        def no_parse(self: KnowledgeGraph, path: Path) -> None:
+            raise AssertionError(f"warm load parsed {path}")
+
+        monkeypatch.setattr(KnowledgeGraph, "_extract_frontmatter", no_parse)
+        graph = kb_read.load_graph(tmp_path, "owner", schema=str(schema))
+    else:
+        graph = KnowledgeGraph(str(schema), str(tmp_path / "knowledge-base")).load()
     labels = {e["_label"]["path"]: e["_label"] for e in graph.entities.values()}
     # The reference: an entity exactly when pure yaml.safe_load gives a mapping with name and type.
     try:
@@ -134,3 +164,5 @@ def test_graph_parses_the_loader_edge_cases_like_the_classifier(tmp_path: Path, 
     assert (rel in labels) == is_entity
     if is_entity:
         assert labels[rel] == case["expected_label"]
+        (entity,) = graph.entities.values()
+        assert {k: v for k, v in entity.items() if not k.startswith("_")} == reference

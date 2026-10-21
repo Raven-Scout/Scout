@@ -72,30 +72,20 @@ SCHEMA_VERSION = 1
 # mismatch, so a stale label can never outlive the rules that made it.
 CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader (ruling R15)
 
-# libyaml's C parser when PyYAML was built with it (about 10x faster on a big
-# KB), else the pure-Python one. Labels must be what pure ``yaml.safe_load``
-# gives (the Agnes indexer mirrors it), and the two scanners disagree on tabs
-# (``visibility:\tnormal``: C parses it, Python rejects it, which is private)
-# and on backslash escapes (``"\ud800"``: the reverse), and a fuzz found more
-# (a U+FEFF inside the block: C rejects it; a bare ``!`` tag: C gives '', Python
-# None). So the C loader is used only for a pure-ASCII block with no tab, no
-# backslash and no ``!`` (:func:`frontmatter_loader`); anything else goes
-# through SafeLoader. Every frontmatter parse on the label
-# path (the classifier and ``KnowledgeGraph``) goes through
-# :func:`load_frontmatter_yaml`, so the two always agree.
-_FM_LOADER: Any = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) else yaml.SafeLoader
 
-
-def frontmatter_loader(text: str) -> Any:
-    """The YAML loader for a frontmatter block: libyaml only where it agrees with SafeLoader."""
-    if not text.isascii() or "\t" in text or "\\" in text or "!" in text:
-        return yaml.SafeLoader
-    return _FM_LOADER
-
-
+# Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
+# loader (ruling R15c): labels must be exactly what pure
+# ``yaml.safe_load`` gives (the Agnes indexer mirrors it), and the two scanners
+# disagree on more inputs than a guard can enumerate (a tab after a colon, a
+# backslash escape, a U+FEFF in the block, a comment right after a block-scalar
+# header, ``?`` in a flow collection, bare tags ...), in both directions. Speed
+# comes from the stat-keyed privacy index instead (``scout.kb.read``), which
+# stores each file's facts and, for the graph, its parsed frontmatter. Every
+# frontmatter parse on the label path (the classifier and ``KnowledgeGraph``)
+# goes through :func:`load_frontmatter_yaml`.
 def load_frontmatter_yaml(text: str) -> Any:
-    """``yaml.safe_load`` of a frontmatter block (libyaml when that gives the same result)."""
-    return yaml.load(text, Loader=frontmatter_loader(text))
+    """``yaml.safe_load`` of a frontmatter block: pure ``SafeLoader``, never libyaml."""
+    return yaml.safe_load(text)  # pure SafeLoader, never the C loader
 
 
 VISIBILITIES = ("normal", "private")

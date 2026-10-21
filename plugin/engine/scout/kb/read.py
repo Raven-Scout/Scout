@@ -23,15 +23,17 @@ prints.
 
 **The privacy index.** One entry per file: its stat key (mtime_ns, ctime_ns,
 size, inode), its :class:`~scout.kb.privacy.NoteFacts` (what its own text says)
-and its label. The header records a hash of the effective policy: when the
-policy changes, labels are recomputed from the stored facts without reading any
-file. It also records :data:`~scout.kb.privacy.CLASSIFIER_VERSION` and the
-engine version: after an upgrade the whole index is rebuilt from the files, so
-facts an older classifier stored can't keep labelling a file (fail closed). A
-torn or foreign index, or a malformed entry, is ignored and rebuilt; an
-unwritable one only costs speed. A file modified less than 2 s before the walk
-isn't stored (a coarse-timestamp filesystem could keep its key across a
-same-size rewrite), as in the connector-calls index (#80).
+and its label; once a graph command has loaded it, also its parsed frontmatter
+(``"fm"``, below), so a fresh process's graph parses nothing. The header
+records a hash of the effective policy: when the policy changes, labels are
+recomputed from the stored facts without reading any file. It also records
+:data:`~scout.kb.privacy.CLASSIFIER_VERSION` and the engine version: after an
+upgrade the whole index is rebuilt from the files, so facts an older classifier
+stored can't keep labelling a file (fail closed). A torn or foreign index, or a
+malformed entry, is ignored and rebuilt; an unwritable one only costs speed. A
+file modified less than 2 s before the walk isn't stored (a coarse-timestamp
+filesystem could keep its key across a same-size rewrite), as in the
+connector-calls index (#80).
 
 **The walk.** Directory symlinks are never followed (the ``knowledge_base``
 alias would list every note twice; another could leave the vault) and symlinked
@@ -53,8 +55,10 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -88,7 +92,7 @@ from scout.kb.privacy import (
 from scout.kb.read_log import log_event
 
 INDEX_FILENAME = "privacy-index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3  # 3: entries may carry the graph's parsed frontmatter ("fm")
 SEARCH_BATCH = 500
 ENGINE_SCHEMA = Path(__file__).with_name("schema.yaml")
 _RACY_WINDOW_NS = 2_000_000_000
@@ -314,11 +318,14 @@ def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = ()) -> dict[s
             if facts is not None and same_policy:
                 label = _label_from_json(entry.get("label"), rel)
         if label is None:
+            kept: dict[str, Any] = {}
             if facts is None:
                 text, unreadable = read_head(vault / rel)
                 facts = note_facts(text, unreadable=unreadable)
+            elif isinstance(entry, dict) and "fm" in entry:
+                kept["fm"] = entry["fm"]  # same bytes: the graph's parse still holds
             label = label_from_facts(rel, facts, policy)
-            entry = {"key": key, "facts": _facts_json(facts), "label": label.to_json()}
+            entry = {"key": key, "facts": _facts_json(facts), "label": label.to_json(), **kept}
         labels[rel] = label
         if now - st.st_mtime_ns > _RACY_WINDOW_NS:
             fresh[rel] = entry
@@ -329,6 +336,154 @@ def all_labels(vault: Path, policy: Policy, globs: Sequence[str] = ()) -> dict[s
     if not same_policy or fresh != old:
         _write_index(index_path, want_policy, fresh)
     return labels
+
+
+# ----- the graph's parses in the index (ruling R15c) ---------------------------------
+#
+# ``scoutctl kb query`` and the other graph commands run in a fresh process, so
+# ``KnowledgeGraph``'s per-process cache is always cold there, and pure-Python
+# ``SafeLoader`` on every entity would miss the §10 budget. Their graph keeps
+# its parse in the privacy index instead, next to the file's facts and label
+# under the same stat key: ``"fm"`` is the entity's frontmatter mapping (null
+# for a file that isn't an entity) in a lossless JSON form. Only what
+# ``SafeLoader`` gives is stored, so a warm graph is exactly the cold one.
+
+_TAG = "\x00"  # a JSON object holding this key is an encoded non-JSON value
+
+
+class _NotJSON(Exception):
+    pass
+
+
+def _enc(v: Any) -> Any:
+    """``v`` (what ``yaml.safe_load`` yields) as JSON; ``_NotJSON`` when it has no exact form."""
+    t = type(v)
+    if v is None or t in (bool, int, str):
+        return v
+    if t is float:
+        if not math.isfinite(v):
+            raise _NotJSON
+        return v
+    if t is list:
+        return [_enc(x) for x in v]
+    if t is dict:
+        if _TAG not in v and all(type(k) is str for k in v):
+            return {k: _enc(x) for k, x in v.items()}
+        return {_TAG: "map", "v": [[_enc(k), _enc(x)] for k, x in v.items()]}
+    if t is datetime.datetime:
+        return {_TAG: "datetime", "v": v.isoformat()}
+    if t is datetime.date:
+        return {_TAG: "date", "v": v.isoformat()}
+    if t is bytes:
+        return {_TAG: "bytes", "v": base64.b64encode(v).decode("ascii")}
+    if t is set:
+        return {_TAG: "set", "v": [_enc(x) for x in v]}
+    if t is tuple:
+        return {_TAG: "tuple", "v": [_enc(x) for x in v]}
+    raise _NotJSON
+
+
+def _dec(v: Any) -> Any:
+    """The inverse of :func:`_enc`; ``ValueError``/``TypeError``/``KeyError`` on a malformed value."""
+    if isinstance(v, list):
+        return [_dec(x) for x in v]
+    if not isinstance(v, dict):
+        return v
+    tag = v.get(_TAG)
+    if tag is None:
+        return {k: _dec(x) for k, x in v.items()}
+    body = v["v"]
+    if tag == "map":
+        return {_dec(k): _dec(x) for k, x in body}
+    if tag == "datetime":
+        return datetime.datetime.fromisoformat(body)
+    if tag == "date":
+        return datetime.date.fromisoformat(body)
+    if tag == "bytes":
+        return base64.b64decode(body, validate=True)
+    if tag == "set":
+        return {_dec(x) for x in body}
+    if tag == "tuple":
+        return tuple(_dec(x) for x in body)
+    raise ValueError(f"unknown tag {tag!r}")
+
+
+def _is_entity(frontmatter: Any) -> bool:
+    return isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter
+
+
+class IndexStore:
+    """The privacy index as a :class:`~scout.kb.ontology.FrontmatterStore` for one graph load.
+
+    Reads the index once; :meth:`flush` writes it back when a load added
+    anything. A different policy relabels every stored entry from its facts.
+    """
+
+    def __init__(self, vault: Path, policy: Policy) -> None:
+        self.path = vault / ".scout-cache" / INDEX_FILENAME
+        self.vault = vault
+        self.policy = policy
+        self.policy_hash = policy_hash(policy)
+        old_policy, files = _read_index(self.path)
+        self.files: dict[str, Any] = dict(files)
+        self.dirty = False
+        if old_policy != self.policy_hash and self.files:
+            for rel, entry in list(self.files.items()):
+                facts = _facts_from_json(entry.get("facts")) if isinstance(entry, dict) else None
+                if facts is None:
+                    del self.files[rel]
+                else:
+                    entry["label"] = label_from_facts(rel, facts, policy).to_json()
+            self.dirty = True
+
+    def get(self, rel: str, key: tuple[int, ...]) -> tuple[NoteFacts, dict[str, Any] | None] | None:
+        entry = self.files.get(rel)
+        if not isinstance(entry, dict) or entry.get("key") != list(key) or "fm" not in entry:
+            return None
+        facts = _facts_from_json(entry.get("facts"))
+        if facts is None:
+            return None
+        try:
+            frontmatter = _dec(entry["fm"])
+        except (ValueError, TypeError, KeyError):
+            return None
+        if frontmatter is not None and not _is_entity(frontmatter):
+            return None
+        return facts, frontmatter
+
+    def put(
+        self, rel: str, key: tuple[int, ...], path: Path, facts: NoteFacts | None, frontmatter: dict[str, Any] | None
+    ) -> None:
+        if time.time_ns() - key[0] <= _RACY_WINDOW_NS:  # key[0] is mtime_ns
+            return
+        entry = self.files.get(rel)
+        if facts is None and isinstance(entry, dict) and entry.get("key") == list(key):
+            facts = _facts_from_json(entry.get("facts"))
+        if facts is None:
+            text, unreadable = read_head(path)
+            facts = note_facts(text, unreadable=unreadable)
+        new: dict[str, Any] = {
+            "key": list(key),
+            "facts": _facts_json(facts),
+            "label": label_from_facts(rel, facts, self.policy).to_json(),
+        }
+        if not _is_entity(frontmatter):
+            new["fm"] = None
+        else:
+            try:
+                encoded = _enc(frontmatter)
+                if _dec(encoded) == frontmatter:  # lossless, or not stored
+                    new["fm"] = encoded
+            except _NotJSON:
+                pass
+        if new != entry:
+            self.files[rel] = new
+            self.dirty = True
+
+    def flush(self) -> None:
+        if self.dirty:
+            _write_index(self.path, self.policy_hash, self.files)
+            self.dirty = False
 
 
 def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[tuple[str, Label]]:
@@ -530,10 +685,17 @@ def load_graph(vault: Path, reader: str, kb_root: str | None = None, schema: str
     if schema is None:
         own = kb / "ontology" / "schema.yaml"
         schema = str(own if reader in FULL_READERS and own.is_file() else ENGINE_SCHEMA)
+    store = None
+    if reader in FULL_READERS:
+        root = vault.resolve()
+        store = IndexStore(root, load_policy(root))
     try:
-        return KnowledgeGraph(schema, str(kb), reader=reader, vault=vault).load()
+        graph = KnowledgeGraph(schema, str(kb), reader=reader, vault=vault, store=store).load()
     except ValueError as e:  # kb_root outside the vault
         raise KBError(f"KB root {kb} is not inside the vault {vault}") from e
+    if store is not None:
+        store.flush()
+    return graph
 
 
 def _public(entity: Mapping[str, Any]) -> dict[str, Any]:

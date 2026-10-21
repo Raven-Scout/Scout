@@ -10,6 +10,7 @@ without ``rg``, binary and non-UTF-8 files, and the audit log.
 from __future__ import annotations
 
 import builtins
+import datetime
 import io
 import json
 import os
@@ -19,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner, Result
 
 from scout.cli import app
 from scout.kb import read as kb_read
-from scout.kb.ontology import clear_frontmatter_cache
+from scout.kb.ontology import KnowledgeGraph, clear_frontmatter_cache
 from scout.kb.privacy import Label
 from scout.kb.read_log import LOG_FIELDS, log_event
 from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
@@ -744,3 +746,80 @@ def test_failed_calls_are_audited(own_vault: Path) -> None:
     assert (rows[6]["paths_returned"], rows[6]["paths_denied"]) == (0, 1)
     raw = (own_vault / ".scout-logs" / "kb-reads.jsonl").read_text(encoding="utf-8")
     assert "unclosed" not in raw and "outside" not in raw and "sam" not in raw.lower()
+
+
+# ----- the graph's parses in the index (ruling R15c) -----------------------------------
+
+
+def _graph_json(vault: Path) -> str:
+    return kb_read.load_graph(vault, "owner").export_json()
+
+
+def _no_parse(self: KnowledgeGraph, path: Path) -> None:
+    raise AssertionError(f"warm load parsed {path}")
+
+
+def test_graph_reuses_the_index_across_processes(own_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh process's graph comes from the index: no note parsed, same entities and labels."""
+    _settle(own_vault)
+    cold = _graph_json(own_vault)
+    kb_read.visible_files(own_vault, "owner")  # a listing in between keeps the stored parses
+    data = json.loads((own_vault / ".scout-cache" / kb_read.INDEX_FILENAME).read_text(encoding="utf-8"))
+    assert data["files"][SAM]["fm"]["name"]
+
+    clear_frontmatter_cache()  # a new process: only the index is warm
+    with monkeypatch.context() as m:
+        m.setattr(KnowledgeGraph, "_extract_frontmatter", _no_parse)
+        assert _graph_json(own_vault) == cold
+        # a policy change relabels the stored parses without parsing again
+        config = own_vault / "scout-config.yaml"
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "  visibility_defaults:\n    - {glob: 'knowledge-base/**', visibility: private}\n",
+            encoding="utf-8",
+        )
+        relabelled = json.loads(_graph_json(own_vault))
+    assert relabelled != json.loads(cold)
+    sources = {e["_label"]["visibility_source"] for e in relabelled["entities"].values()}
+    assert "path_default" in sources and "default" not in sources
+    clear_frontmatter_cache()
+    (own_vault / ".scout-cache" / kb_read.INDEX_FILENAME).unlink()
+    assert json.loads(_graph_json(own_vault)) == relabelled  # the same, parsed from the files
+
+
+def test_tampered_stored_parse_is_parsed_again(own_vault: Path) -> None:
+    _settle(own_vault)
+    cold = _graph_json(own_vault)
+    index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
+    data = json.loads(index.read_text(encoding="utf-8"))
+    data["files"][SAM]["fm"] = {"\x00": "bogus", "v": 1}
+    index.write_text(json.dumps(data), encoding="utf-8")
+    clear_frontmatter_cache()
+    assert _graph_json(own_vault) == cold
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"name": "x", "type": "topic", "created": datetime.date(2026, 1, 2)},
+        {"name": "x", "type": "topic", "at": yaml.safe_load("t: 2026-01-02 03:04:05.5+02:00")["t"]},
+        {"name": "x", "type": "topic", "tags": [{None: None}], 1: [True, 1, 1.5, "1"]},
+        {"name": "x", "type": "topic", "\x00": "a NUL key", "blob": b"\x00\xff", "s": {1, "a"}, "p": [("k", 2)]},
+    ],
+)
+def test_stored_parse_is_lossless(value: dict[Any, Any]) -> None:
+    back = kb_read._dec(json.loads(json.dumps(kb_read._enc(value))))
+    assert back == value
+    assert [type(v) for v in back.values()] == [type(v) for v in value.values()]
+
+
+def test_a_parse_without_an_exact_json_form_is_not_stored(own_vault: Path) -> None:
+    note = own_vault / "knowledge-base" / "topics" / "misc" / "nan.md"
+    note.write_text("---\nname: nan-note\ntype: topic\nscore: .nan\n---\n", encoding="utf-8")
+    _settle(own_vault)
+    _graph_json(own_vault)
+    data = json.loads((own_vault / ".scout-cache" / kb_read.INDEX_FILENAME).read_text(encoding="utf-8"))
+    entry = data["files"]["knowledge-base/topics/misc/nan.md"]
+    assert "fm" not in entry and entry["label"]["visibility"] == "normal"
+    clear_frontmatter_cache()
+    assert "nan-note" in kb_read.load_graph(own_vault, "owner").entities
