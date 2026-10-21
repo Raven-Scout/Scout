@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,3 +204,183 @@ def _parse_changed_lines(diff_text: str, want_rel: str | None) -> tuple[list[tup
 def tracked_files(repo: Path) -> list[str]:
     out = git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
     return sorted({p for p in out.split("\0") if p})
+
+
+# ----- history, for `scoutctl kb delta` (#453) -----------------------------------------
+
+
+def git_bytes(repo: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[bytes]:
+    """``git`` with raw bytes out: history holds files that aren't UTF-8."""
+    return subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=repo, check=check, capture_output=True)
+
+
+def _text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class Change:
+    """One changed path of a commit: ``status`` is git's letter (A, M, D, R, T ...);
+    ``old_path`` is the source of a rename, else None."""
+
+    status: str
+    path: str
+    old_path: str | None = None
+
+
+@dataclass(frozen=True)
+class LogCommit:
+    sha: str
+    parent: str | None  # the first parent; None for a root commit
+    author: str
+    subject: str
+
+
+def resolve_commit(repo: Path, rev: str) -> str | None:
+    """The commit ``rev`` names, or None (an option-like ``rev`` never reaches git as an option)."""
+    if not rev or rev.startswith("-"):
+        return None
+    proc = git_bytes(repo, "rev-parse", "--verify", "-q", "--end-of-options", f"{rev}^{{commit}}")
+    sha = _text(proc.stdout).strip()
+    return sha if proc.returncode == 0 and sha else None
+
+
+def log_commits(repo: Path, *, since_sha: str | None = None, since_date: str | None = None) -> list[LogCommit]:
+    """Commits reachable from HEAD, newest first: those after ``since_sha``
+    (``since_sha..HEAD``), or those since ``since_date`` (``git log --since``).
+    Empty when HEAD doesn't exist."""
+    if not _has_head(repo):
+        return []
+    args = ["log", "-z", "--format=%H%x1f%P%x1f%an%x1f%s"]
+    if since_date is not None:
+        args += [f"--since={since_date}", "HEAD"]
+    else:
+        args.append(f"{since_sha}..HEAD")
+    proc = git_bytes(repo, *args, check=True)
+    commits: list[LogCommit] = []
+    for record in _text(proc.stdout).split("\0"):
+        record = record.lstrip("\n")
+        if not record:
+            continue
+        sha, parents, author, subject = [*record.split("\x1f", 3), "", "", ""][:4]
+        first = parents.split()[0] if parents.split() else None
+        commits.append(LogCommit(sha=sha, parent=first, author=author, subject=subject))
+    return commits
+
+
+def _tree_range(commit: LogCommit) -> list[str]:
+    """``diff-tree`` arguments for a commit against its first parent (a merge
+    shows what it brought into the first-parent line; a root, everything)."""
+    return [commit.parent, commit.sha] if commit.parent else ["--root", commit.sha]
+
+
+def commit_changes(repo: Path, commit: LogCommit) -> list[Change]:
+    """The paths ``commit`` changed against its first parent, renames detected.
+
+    Paths are relative to ``repo`` (``--relative``): a vault that is a folder
+    of a bigger repository sees only its own paths."""
+    proc = git_bytes(
+        repo,
+        "diff-tree",
+        "-r",
+        "-z",
+        "-M",
+        "--name-status",
+        "--no-commit-id",
+        "--relative",
+        *_tree_range(commit),
+        check=True,
+    )
+    parts = [p for p in _text(proc.stdout).split("\0") if p]
+    changes: list[Change] = []
+    i = 0
+    while i < len(parts):
+        status = parts[i][:1]
+        if status in ("R", "C") and i + 2 < len(parts):
+            changes.append(Change(status, parts[i + 2], parts[i + 1] if status == "R" else None))
+            i += 3
+        elif i + 1 < len(parts):
+            changes.append(Change(status, parts[i + 1]))
+            i += 2
+        else:
+            break
+    return changes
+
+
+def commit_diff(repo: Path, commit: LogCommit, paths: Sequence[str]) -> str:
+    """``commit``'s unified diff against its first parent, limited to ``paths``
+    (binary files as git summarises them; bad UTF-8 replaced). No paths, no diff."""
+    if not paths:
+        return ""
+    proc = git_bytes(
+        repo,
+        "diff-tree",
+        "-p",
+        "-M",
+        "--no-color",
+        "--no-commit-id",
+        "--relative",
+        *_tree_range(commit),
+        "--",
+        *(f":(literal){p}" for p in paths),
+        check=True,
+    )
+    return _text(proc.stdout)
+
+
+class BlobUnreadable(Exception):
+    """A path exists at a revision but its content couldn't be read."""
+
+
+def blob_head(repo: Path, rev: str, rel: str, limit: int) -> bytes | None:
+    """The first ``limit`` bytes of ``rel`` at ``rev`` (only those are read), or
+    None when it isn't there. ``BlobUnreadable`` when it is there and reading fails."""
+    spec = f"{rev}:./{rel}"
+    if git_bytes(repo, "cat-file", "-e", spec).returncode != 0:
+        return None
+    try:
+        proc = subprocess.Popen(
+            ["git", "cat-file", "blob", spec], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+    except OSError as e:
+        raise BlobUnreadable(rel) from e
+    assert proc.stdout is not None
+    try:
+        data = proc.stdout.read(limit)
+    finally:
+        proc.stdout.close()
+    if len(data) < limit:
+        if proc.wait() != 0:
+            raise BlobUnreadable(rel)
+    else:  # the head is all we need
+        proc.kill()
+        proc.wait()
+    return data
+
+
+def shallow_boundaries(repo: Path) -> frozenset[str]:
+    """Commits whose parents a shallow clone cut off (empty in a full clone)."""
+    proc = git_bytes(repo, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+    if proc.returncode != 0:
+        return frozenset()
+    try:
+        text = Path(_text(proc.stdout).strip()).read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return frozenset()
+    return frozenset(line.strip() for line in text.splitlines() if line.strip())
+
+
+def recorded_parent(repo: Path, sha: str) -> str | None:
+    """The first parent written in ``sha``'s commit object when that parent's
+    tree is present locally (a shallow boundary hides it from ``git log``), else None."""
+    proc = git_bytes(repo, "cat-file", "commit", sha)
+    if proc.returncode != 0:
+        return None
+    for line in _text(proc.stdout).split("\n"):
+        if not line:
+            break  # end of the header
+        if line.startswith("parent "):
+            parent = line.split()[1]
+            ok = git_bytes(repo, "cat-file", "-e", f"{parent}^{{tree}}").returncode == 0
+            return parent if ok else None
+    return None

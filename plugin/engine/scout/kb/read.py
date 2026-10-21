@@ -733,6 +733,9 @@ class Output:
     ``lines`` are printed one ``print()`` each (so ``"\\nN result(s)."`` gives
     the template's blank line); ``raw``, when set, is written as is instead.
     ``labels`` are the labels of the paths returned (the audit log counts them).
+    ``surface`` and ``blocked`` are a ``check-outbound``/``check-query`` call's
+    surface and verdict, for the audit log (a blocked check is logged for every
+    reader, ``owner`` included).
     """
 
     data: Any
@@ -741,6 +744,8 @@ class Output:
     denied: int = 0
     code: int = 0
     raw: str | None = None
+    surface: str | None = None
+    blocked: bool = False
 
 
 def _labels_json(labels: Sequence[Label]) -> list[Mapping[str, Any]]:
@@ -973,10 +978,10 @@ def audit(vault: Path, reader: str, command: str, args: Sequence[str], out: Outp
         vault,
         reader=reader,
         command=command,
-        surface=None,
+        surface=out.surface,
         args=args,
         returned=len(paths),
         denied=out.denied,
         private_paths=sum(1 for label in paths.values() if label.get("visibility") == "private"),
-        blocked=False,
+        blocked=out.blocked,
     )
