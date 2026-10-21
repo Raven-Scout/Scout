@@ -111,6 +111,9 @@ def test_run_skill_writes_payload_and_spawns_runner(fake_data_dir: Path):
     assert env["SCOUT_FORCE_MODE"] == "scout-dream"
     assert env["SCOUT_TRIGGER_ID"] == "internal_dream"
     assert env["SCOUT_DATA_DIR"] == str(fake_data_dir)
+    # A trigger-fired run reads the vault as the owner's unattended reader (#453, spec §6.2),
+    # even when the trigger names a vault-local runner that exports nothing.
+    assert env["SCOUT_READER"] == "autonomous"
 
     payload_path = Path(env["SCOUT_TRIGGER_EVENT_PATH"])
     assert payload_path.exists()

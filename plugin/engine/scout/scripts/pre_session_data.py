@@ -36,6 +36,7 @@ from typing import Any
 from scout import config as scout_config
 from scout import paths
 from scout.kb.privacy import FULL_READERS
+from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
 
 OUTPUT_FILENAME = "session-context.json"
@@ -43,7 +44,8 @@ KB_DATES_CACHE_FILENAME = "kb-dates.cache.json"
 # Kept as a named export for back-compat; the runtime default is the
 # CONFIGURED zone (tz_name=None -> scout.config.resolve_timezone, #207).
 DEFAULT_TZ = scout_config.DEFAULT_TIMEZONE
-DEFAULT_GIT_LOG_LOOKBACK = "12 hours ago"
+# A `scoutctl kb delta --since` duration (<n>h, <n>d or <n>w).
+DEFAULT_GIT_LOG_LOOKBACK = "12h"
 PR_LIST_LIMIT = 10
 # `--review-requested @me` expands team membership, so the list runs longer than
 # the authored one, and `action-items check-review-requests` only sees what is
@@ -70,7 +72,8 @@ _LAST_UPDATED_RE = re.compile(
 class SessionContext:
     generated_at: str
     session_type: str
-    git_recent: str = ""
+    # The vault's commits since DEFAULT_GIT_LOG_LOOKBACK, newest first, labelled (see get_git_recent).
+    git_recent: list[dict[str, Any]] = field(default_factory=list)
     # {path: {"last_updated": ..., "visibility": "normal" | "private"}}
     kb_file_dates: dict[str, dict[str, str]] = field(default_factory=dict)
     pr_authored: list[dict] = field(default_factory=list)
@@ -214,10 +217,35 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 10) -> str:
     return proc.stdout.strip()
 
 
-def get_git_recent(scout_dir: Path, since: str = DEFAULT_GIT_LOG_LOOKBACK) -> str:
-    if not (scout_dir / ".git").is_dir():
-        return ""
-    return _run(["git", "log", "--oneline", f"--since={since}"], cwd=scout_dir, timeout=5)
+def get_git_recent(
+    scout_dir: Path, since: str = DEFAULT_GIT_LOG_LOOKBACK, reader: str | None = None
+) -> list[dict[str, Any]]:
+    """The vault's commits since ``since``, each labelled, from ``scout.kb.delta``.
+
+    Was ``git log --oneline``, whose subjects can name private notes with no
+    label. Each row is ``{"sha", "subject", "visibility", "paths": [{"path",
+    "visibility"}], "line"}``. A commit is ``private`` when any path it touched
+    is, or when its paths are unknown (a shallow-clone boundary). ``line`` is
+    the text form, prefixed ``[private] `` for a private commit. Empty for a
+    reader that sees nothing, without a ``.git`` dir, and on any failure.
+    """
+    from scout.kb.delta import delta
+
+    who = reader if reader is not None else resolve_reader(None, os.environ)
+    if who not in FULL_READERS or not (scout_dir / ".git").exists():
+        return []
+    try:
+        commits = delta(scout_dir, who, since, with_diff=False)
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for c in commits:
+        paths = [{"path": p, "visibility": label.visibility} for p, label in c.paths]
+        private = c.shallow_boundary or any(p["visibility"] != "normal" for p in paths)
+        visibility = "private" if private else "normal"
+        line = f"{'[private] ' if private else ''}{c.sha[:7]} {c.subject}"
+        rows.append({"sha": c.sha, "subject": c.subject, "visibility": visibility, "paths": paths, "line": line})
+    return rows
 
 
 def _gh_json(args: list[str], timeout: int = 10) -> list[dict]:
@@ -264,22 +292,6 @@ def get_pr_review_requested() -> list[dict]:
             str(REVIEW_REQUEST_LIMIT),
         ]
     )
-
-
-def kb_visibility(scout_dir: Path, reader: str) -> dict[str, str]:
-    """``{vault-relative path: visibility}`` of the KB files ``reader`` may see.
-
-    The engine classifier through the read gate's index (``scout.kb.read``),
-    the label ``scoutctl kb files`` prints. Empty for a reader that sees
-    nothing, or when the labels can't be read: callers treat a path missing
-    from the map as private (fail closed).
-    """
-    from scout.kb.read import visible_files
-
-    try:
-        return {rel: label.visibility for rel, label in visible_files(scout_dir, reader, ["knowledge-base/**"])}
-    except Exception:
-        return {}
 
 
 def get_personal_tasks(scout_dir: Path, reader: str | None = None) -> list[dict[str, Any]]:
@@ -341,7 +353,7 @@ def gather(
             scout_dir=target,
             cache_path=paths.cache_dir(target) / KB_DATES_CACHE_FILENAME,
         )
-        labels = kb_visibility(target, reader)
+        labels = visibility_map(target, reader, ["knowledge-base/**"], who="pre-session-data")
         kb_dates = {
             rel: {"last_updated": when, "visibility": labels.get(rel, "private")} for rel, when in dates.items()
         }
@@ -349,8 +361,7 @@ def gather(
     return SessionContext(
         generated_at=generated_at,
         session_type=session_type,
-        # Commit subjects can name private notes: nothing for a reader that sees none.
-        git_recent=get_git_recent(target) if full else "",
+        git_recent=get_git_recent(target, reader=reader),
         kb_file_dates=kb_dates,
         pr_authored=get_pr_authored(),
         pr_review_requested=get_pr_review_requested(),
@@ -407,7 +418,6 @@ __all__ = [
     "get_personal_tasks",
     "get_pr_authored",
     "get_pr_review_requested",
-    "kb_visibility",
     "main",
     "run",
     "write_context",

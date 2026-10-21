@@ -88,24 +88,33 @@ def test_git_recent_is_empty_without_a_git_dir(scout_dir: Path, monkeypatch: pyt
         raise AssertionError("git must not run without a .git dir")
 
     monkeypatch.setattr(subprocess, "run", fail)
-    assert psd.get_git_recent(scout_dir) == ""
+    assert psd.get_git_recent(scout_dir) == []
 
 
-def test_git_recent_reads_the_oneline_log(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_git_recent_reads_the_labelled_delta(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#453: the commits come from `scout.kb.delta` as the run's reader, with the default lookback."""
+    import scout.kb.delta as delta_mod
+
     (scout_dir / ".git").mkdir()
-    seen: list[list[str]] = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: seen.append(cmd) or _Proc(0, "abc1234 update people.md\n"))
-    assert psd.get_git_recent(scout_dir) == "abc1234 update people.md"
-    assert seen[0][:3] == ["git", "log", "--oneline"]
-    assert seen[0][3] == f"--since={psd.DEFAULT_GIT_LOG_LOOKBACK}"
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(delta_mod, "delta", lambda vault, reader, since, with_diff: seen.append((reader, since)) or [])
+    monkeypatch.setenv("SCOUT_MODE", "briefing")
+    assert psd.get_git_recent(scout_dir) == []
+    assert seen == [("autonomous", psd.DEFAULT_GIT_LOG_LOOKBACK)]
+    psd.get_git_recent(scout_dir, since="3d")
+    assert seen[-1][1] == "3d"
 
 
-def test_git_recent_honours_a_custom_since(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_git_recent_is_empty_when_the_delta_fails(scout_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.kb.delta as delta_mod
+
     (scout_dir / ".git").mkdir()
-    seen: list[list[str]] = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: seen.append(cmd) or _Proc(0, ""))
-    psd.get_git_recent(scout_dir, since="3 days ago")
-    assert "--since=3 days ago" in seen[0]
+
+    def boom(*_a: object, **_k: object):
+        raise RuntimeError("not a repo")
+
+    monkeypatch.setattr(delta_mod, "delta", boom)
+    assert psd.get_git_recent(scout_dir) == []
 
 
 # ---------------------------------------------------------------------------

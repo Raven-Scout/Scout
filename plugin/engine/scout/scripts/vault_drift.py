@@ -663,15 +663,21 @@ def report(vault: Path, renders: dict[str, str]) -> list[DriftRow]:
 
 # --------------------------------------------------------------- privacy ----
 
-# A runner passes when it exports either variable (spec §6.2: SCOUT_MODE alone
-# already resolves to the autonomous reader), or sets SCOUT_READER inline.
+# A runner passes when a non-comment line exports SCOUT_MODE (spec §6.2: it
+# resolves to the autonomous reader) or SCOUT_READER=autonomous. An inline
+# `SCOUT_READER=owner claude …`, any other exported reader, or a commented-out
+# export doesn't count.
 _READER_EXPORT_RE = re.compile(
-    r"^[ \t]*(?:export|declare[ \t]+-x)[ \t]+(?:[^\n#]*[ \t])?SCOUT_(?:READER|MODE)\b|\bSCOUT_READER=",
+    r"^[ \t]*(?:export|declare[ \t]+-x)[ \t]+(?:[^\n#]*[ \t])?"
+    r"(?:SCOUT_MODE\b|SCOUT_READER=([\"']?)autonomous\1(?=[ \t;]|$))",
     re.MULTILINE,
 )
 _KB_REF_RE = re.compile(r"knowledge[-_]base")
 _RAW_READ_RE = re.compile(r"\brglob\(|\bglob\(|\bopen\(|\bos\.walk\(|\.read_text\(|\.read_bytes\(")
+_SHELL_READ_RE = re.compile(r"(?:^|[\s;|&(`$])(?:cat|grep|rg|find|ls)\b")
 _GATE_RE = re.compile(r"scoutctl['\",\s]+kb\b")
+_SHELL_SUFFIXES = frozenset({".sh", ".bash"})
+_SKIP_DIRS = frozenset({".venv", "node_modules", "__pycache__"})
 _SCAN_BYTES = 1 << 20
 
 
@@ -689,8 +695,8 @@ class PrivacyDrift:
 
 def _runner_message(rel: str) -> str:
     return (
-        f"{rel} exports neither SCOUT_READER nor SCOUT_MODE, so the session it starts reads the vault "
-        "as the owner instead of as a scheduled run, and its reads aren't marked as unattended. "
+        f"{rel} doesn't export SCOUT_READER=autonomous or SCOUT_MODE, so the session it starts doesn't read "
+        "the vault as a scheduled run, and its reads aren't marked as unattended. "
         "Add these two lines before it launches claude: "
         '`export SCOUT_MODE="<run-name>"` and `export SCOUT_READER=autonomous`.'
     )
@@ -716,16 +722,40 @@ def _head_text(path: Path) -> str | None:
     return data.decode("utf-8", "replace")
 
 
+def _is_shell(path: Path, text: str) -> bool:
+    if path.suffix in _SHELL_SUFFIXES:
+        return True
+    first = text.split("\n", 1)[0]
+    return first.startswith("#!") and re.search(r"\b(?:ba|z|k|da)?sh\b", first) is not None
+
+
+def _reads_kb_raw(path: Path, text: str) -> bool:
+    """Whether a vault script reads the knowledge base around ``scoutctl kb`` (heuristic)."""
+    if _GATE_RE.search(text) or not _KB_REF_RE.search(text):
+        return False
+    if _is_shell(path, text):
+        # A non-comment line that runs cat/grep/rg/find/ls on the knowledge base.
+        return any(
+            _KB_REF_RE.search(line) and _SHELL_READ_RE.search(line)
+            for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+    return _RAW_READ_RE.search(text) is not None
+
+
 def privacy_drift(vault: Path) -> list[PrivacyDrift]:
     """Vault-local runners and scripts that bypass the privacy reader or labels.
 
-    * every ``run-*.sh`` at the vault root that exports neither
-      ``SCOUT_READER`` nor ``SCOUT_MODE`` (spec §6.2);
+    * every ``run-*.sh`` at the vault root without a non-comment
+      ``export SCOUT_MODE`` or ``export SCOUT_READER=autonomous`` (spec §6.2);
     * every file under ``scripts/`` the engine doesn't render (it has no
-      last-render record) that mentions the knowledge base, reads files
-      (``rglob``/``glob``/``open(``/``os.walk``/``read_text``), and never
-      calls ``scoutctl kb``: a heuristic for the vault-local enrichment
-      generator (spec §6.3).
+      last-render record) that reads the knowledge base and never calls
+      ``scoutctl kb``: Python-style reads (``rglob``/``glob``/``open(``/
+      ``os.walk``/``read_text``) anywhere in the file, or, in a shell script,
+      a line running ``cat``/``grep``/``rg``/``find``/``ls`` on
+      ``knowledge-base`` (a heuristic for the vault-local enrichment
+      generator, spec §6.3). ``.venv``, ``node_modules`` and ``__pycache__``
+      folders are skipped.
 
     Read-only. Messages name the path and the fix, never the file's content.
     """
@@ -737,11 +767,15 @@ def privacy_drift(vault: Path) -> list[PrivacyDrift]:
             found.append(PrivacyDrift(rel, "runner-no-reader", _runner_message(rel)))
     scripts = vault / "scripts"
     if scripts.is_dir():
-        for path in sorted(p for p in scripts.rglob("*") if p.is_file() and not p.is_symlink()):
+        for path in sorted(scripts.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
+                continue
             rel = _rel(vault, path)
             if snapshot_path(vault, rel).is_file():
                 continue  # engine-rendered: the engine keeps it compliant
             text = _head_text(path)
-            if text is not None and _KB_REF_RE.search(text) and _RAW_READ_RE.search(text) and not _GATE_RE.search(text):
+            if text is not None and _reads_kb_raw(path, text):
                 found.append(PrivacyDrift(rel, "script-raw-kb-read", _script_message(rel)))
     return found

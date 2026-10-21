@@ -47,6 +47,7 @@ from scout.events import Event, now_iso
 from scout.ids import new_ulid
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.privacy import FULL_READERS
+from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
 
 
@@ -466,22 +467,6 @@ def _mark(entry: dict[str, Any]) -> str:
     return "" if entry.get("visibility", "normal") == "normal" else _PRIVATE_MARK
 
 
-def kb_visibility(scout_dir: Path, reader: str) -> dict[str, str]:
-    """``{vault-relative path: visibility}`` of the files under KB_ROOTS ``reader`` may see.
-
-    The engine classifier through the read gate's index, the label ``scoutctl
-    kb files`` prints. Empty for a reader that sees nothing, or when labels
-    can't be read (callers then mark every file private).
-    """
-    from scout.kb.read import visible_files
-
-    try:
-        rows = visible_files(scout_dir, reader, [f"{root}/**" for root in KB_ROOTS])
-    except Exception:
-        return {}
-    return {rel: label.visibility for rel, label in rows}
-
-
 def render_output(
     stale: list[dict[str, Any]],
     no_date: list[dict[str, Any]],
@@ -568,7 +553,7 @@ def run(
 
     reader = resolve_reader(None, os.environ)
     files = discover_kb_files(scout_dir) if reader in FULL_READERS else []
-    labels = kb_visibility(scout_dir, reader) if files else {}
+    labels = visibility_map(scout_dir, reader, [f"{r}/**" for r in KB_ROOTS], who="kb-pre-filter") if files else {}
     roots = [r for r in KB_ROOTS if (scout_dir / r).is_dir()]
     stale: list[dict[str, Any]] = []
     no_date: list[dict[str, Any]] = []

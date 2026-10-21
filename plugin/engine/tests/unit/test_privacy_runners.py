@@ -156,9 +156,63 @@ def test_session_context_is_empty_for_an_agent_reader(
     ctx = _context(vault)
     assert ctx["personal_tasks"] == []
     assert ctx["kb_file_dates"] == {}
-    assert ctx["git_recent"] == ""
+    assert ctx["git_recent"] == []
     text = json.dumps(ctx)
     assert not any(c in text for c in CANARIES.values())
+
+
+def test_session_context_git_recent_is_labelled_from_kb_delta(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, no_network: None
+) -> None:
+    """Commit subjects can name private notes: each commit carries its paths'
+    labels, and one touching any private path is marked private (#453)."""
+    _as(monkeypatch, vault, mode="briefing")
+    commits = {c["subject"]: c for c in _context(vault)["git_recent"]}
+    private_only = commits["private only"]
+    assert private_only["visibility"] == "private"
+    assert {p["path"]: p["visibility"] for p in private_only["paths"]} == {
+        PERMIT: "private",
+        "knowledge-base/people/sam.md": "private",
+    }
+    assert private_only["line"].startswith("[private] ")
+    assert commits["private and normal"]["visibility"] == "private"
+    assert commits["private and normal"]["line"].startswith("[private] ")
+    normal = commits["normal only"]
+    assert normal["visibility"] == "normal"
+    assert normal["paths"] == [{"path": "knowledge-base/people/priya.md", "visibility": "normal"}]
+    assert not normal["line"].startswith("[private]")
+
+
+def _break_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.kb.read as read_mod
+
+    def boom(*_a: object, **_k: object) -> list:
+        raise RuntimeError("index unreadable")
+
+    monkeypatch.setattr(read_mod, "visible_files", boom)
+
+
+def test_unreadable_labels_mark_every_session_context_path_private(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, no_network: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _as(monkeypatch, vault, mode="briefing")
+    _dated(vault)
+    _break_labels(monkeypatch)
+    dates = _context(vault)["kb_file_dates"]
+    assert dates and {d["visibility"] for d in dates.values()} == {"private"}
+    err = capsys.readouterr().err
+    assert "privacy labels unavailable" in err and "RuntimeError" in err
+
+
+def test_unreadable_labels_mark_every_kb_filter_file_private(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _as(monkeypatch, vault, mode="briefing")
+    _dated(vault)
+    _break_labels(monkeypatch)
+    listed = [ln for ln in _kb_filter(vault).splitlines() if ln.startswith("- ")]
+    assert listed and all(ln.startswith("- [private] ") for ln in listed), listed
+    assert "privacy labels unavailable" in capsys.readouterr().err
 
 
 # ----- kb-filter.md -------------------------------------------------------------------
@@ -247,6 +301,22 @@ def _drift_vault(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (v / "scripts" / "unrelated.sh").write_text("#!/bin/bash\nfind . -name '*.log'\n", encoding="utf-8")
+    # Runners that only look compliant: an inline (unexported) owner reader, a commented export.
+    (v / "run-inline.sh").write_text("#!/bin/bash\nSCOUT_READER=owner claude -p go\n", encoding="utf-8")
+    (v / "run-commented.sh").write_text("#!/bin/bash\n# export SCOUT_MODE=x\nclaude -p go\n", encoding="utf-8")
+    (v / "run-owner.sh").write_text("#!/bin/bash\nexport SCOUT_READER=owner\n", encoding="utf-8")
+    # Shell readers of the KB.
+    (v / "scripts" / "people.sh").write_text(
+        '#!/bin/bash\n# CANARY-PRIV-8X8X\nfor f in knowledge-base/people/*.md; do cat "$f"; done\n', encoding="utf-8"
+    )
+    (v / "scripts" / "grep-kb.bash").write_text("rg -l Sam knowledge_base/\n", encoding="utf-8")
+    (v / "scripts" / "people-ok.sh").write_text(
+        "#!/bin/bash\nscoutctl kb files --glob 'knowledge-base/people/**' | cat\n", encoding="utf-8"
+    )
+    # Tooling folders under scripts/ are never scanned.
+    for junk in (".venv/lib/x.py", "node_modules/pkg/index.py", "__pycache__/enrich.py"):
+        (v / "scripts" / junk).parent.mkdir(parents=True, exist_ok=True)
+        (v / "scripts" / junk).write_text("open('knowledge-base/a.md').read_text()\n", encoding="utf-8")
     # An engine-rendered script (it has a last-render record) is the engine's to keep compliant.
     managed = "scripts/kb-shard-log.py"
     (v / managed).write_text("import os\nos.walk('knowledge-base')\n", encoding="utf-8")
@@ -259,7 +329,7 @@ def _drift_vault(tmp_path: Path) -> Path:
 def test_drift_reports_a_runner_without_the_reader_exports(tmp_path: Path) -> None:
     findings = vault_drift.privacy_drift(_drift_vault(tmp_path))
     runners = [f for f in findings if f.rule == "runner-no-reader"]
-    assert [f.path for f in runners] == ["run-extra.sh"]
+    assert [f.path for f in runners] == ["run-commented.sh", "run-extra.sh", "run-inline.sh", "run-owner.sh"]
     msg = runners[0].message
     assert "export SCOUT_READER=autonomous" in msg and "export SCOUT_MODE=" in msg
     assert "CANARY" not in msg and "claude -p" not in msg
@@ -268,10 +338,11 @@ def test_drift_reports_a_runner_without_the_reader_exports(tmp_path: Path) -> No
 def test_drift_reports_a_vault_script_reading_the_kb_without_scoutctl_kb(tmp_path: Path) -> None:
     findings = vault_drift.privacy_drift(_drift_vault(tmp_path))
     scripts = [f for f in findings if f.rule == "script-raw-kb-read"]
-    assert [f.path for f in scripts] == ["scripts/enrich.py"]
+    assert [f.path for f in scripts] == ["scripts/enrich.py", "scripts/grep-kb.bash", "scripts/people.sh"]
     msg = scripts[0].message
     assert "scoutctl kb files" in msg and "visibility" in msg
     assert "CANARY" not in msg and "rglob" not in msg
+    assert all("CANARY" not in f.message and "cat " not in f.message for f in scripts)
 
 
 def test_doctor_warns_about_privacy_drift(tmp_path: Path) -> None:
@@ -408,11 +479,3 @@ def test_enrichment_question_from_a_private_note_is_routed_owner_only(vault: Pat
         assert all(surface_class(policy, c) == "owner_only" for c in channels)
         assert "slack" not in channels
     assert _enrichment_questions(vault, AGENT) == []
-
-
-def test_the_stand_in_reads_only_through_the_gate() -> None:
-    """The stand-in itself would pass the drift check: no raw KB reads."""
-    import inspect
-
-    src = inspect.getsource(_enrichment_questions)
-    assert "rglob" not in src and "open(" not in src and "os.walk" not in src
