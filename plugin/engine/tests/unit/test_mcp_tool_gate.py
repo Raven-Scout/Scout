@@ -184,8 +184,20 @@ def test_run_allows_a_listed_tool(vault):
     assert gate_hook.run(stdin=_payload(f"{T}knowledge_search")) is None
 
 
-def test_run_is_silent_outside_scout_runs(vault, monkeypatch):
+def test_run_gates_without_scout_mode(vault, monkeypatch):
+    # Gating never depends on whether the session is a run.
     monkeypatch.delenv("SCOUT_MODE")
+    out = gate_hook.run(stdin=_payload(f"{T}remember"))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_session_outside_any_vault_is_not_gated(tmp_path, monkeypatch):
+    # No SCOUT_DATA_DIR and no vault above cwd: no ~/Scout fallback, nothing applies.
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    payload = {"tool_name": f"{T}remember", "cwd": str(tmp_path)}
+    assert gate_hook.run(stdin=io.StringIO(json.dumps(payload))) is None
+    monkeypatch.chdir(tmp_path)
     assert gate_hook.run(stdin=_payload(f"{T}remember")) is None
 
 
@@ -219,9 +231,12 @@ def test_prompt_attributed_run_in_a_vault_is_gated(runnerless, tmp_path):
     assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}knowledge_search", t)) is None
 
 
-def test_interactive_session_in_a_vault_is_not_gated(runnerless, tmp_path):
+def test_interactive_session_in_a_restrict_tools_vault_is_gated(runnerless, tmp_path):
+    # A prompt with no run-mode line (an interactive session, or a launcher that lost it) is gated all the same.
     t = _transcript(tmp_path, "what's on my plate today?")
-    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t)) is None
+    out = gate_hook.run(stdin=_vault_payload(runnerless, f"{T}remember", t))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert gate_hook.run(stdin=_vault_payload(runnerless, f"{T}knowledge_search", t)) is None
 
 
 @pytest.mark.parametrize("raw", ["not json", "[]", '{"tool_name": 3}', '{"tool_name": "Read"}'])
@@ -274,7 +289,7 @@ def test_hook_command_skips_python_outside_a_vault(tmp_path):
 def test_hook_command_finds_the_vault_from_cwd_and_denies(runnerless, tmp_path):
     sub = runnerless / "knowledge-base"
     sub.mkdir()
-    t = _transcript(tmp_path, "Your run mode is `morning-briefing`.")
+    t = _transcript(tmp_path, "an interactive question")
     env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
     res = subprocess.run(

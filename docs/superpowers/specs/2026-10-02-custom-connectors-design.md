@@ -125,7 +125,7 @@ connectors:
 | `notes` | no | Free text appended to every rendered section for this connector. |
 | `needs_user_input` | no | List of input names (`^[a-z][a-z0-9_]*$`); values are collected by the wizard and stored in `scout-config.yaml` `connectors.inputs` as `<key>__<name>` (§3). Rendered as `{{INPUT_<NAME>}}`. |
 | `required_in_types` | no | Slot types where a failure is critical. Default `[]` — a custom connector never pages unless opted in. |
-| `restrict_tools` | no | `true` limits the server, in Scout runs (runner or prompt-attributed, as the Stop hooks count them), to the MCP tools this entry lists (probe + activity tools): the `scoutctl hook mcp-tool-gate` PreToolUse hook denies the server's other tools. For a server whose credential can write (a full-access personal token), since runs use `--permission-mode auto` with no `--allowedTools`. Needs `server`. Default `false`. *(Added after v0.18.2.)* |
+| `restrict_tools` | no | `true` limits the server, in every session in the vault (runs and interactive sessions alike), to the MCP tools this entry lists (probe + activity tools): the `scoutctl hook mcp-tool-gate` PreToolUse hook denies the server's other tools. For a server whose credential can write (a full-access personal token), since runs use `--permission-mode auto` with no `--allowedTools`. Needs `server`. Default `false`. *(Added after v0.18.2.)* |
 
 ### Invariants (enforced by validation)
 

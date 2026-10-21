@@ -8,14 +8,17 @@ loose. With ``restrict_tools: true`` in the definition, this hook denies every
 call to that server's tools except the probe and the activity tools the entry
 lists (``custom_connectors.tool_gate``).
 
-  - Acts only in Scout runs, as the Stop hooks define them (``run_context``):
-    SCOUT_MODE from a runner, or a session inside a vault whose prompt names a
-    run mode (a sandbox running the runner's prompt itself). Interactive
-    sessions keep Claude Code's own permission prompts.
-  - The vault is the run's: SCOUT_DATA_DIR, else the one containing the
-    session's cwd. hooks.json finds it the same way in the shell and greps its
-    file for ``restrict_tools``, so Python starts (~0.15 s a call) only for
-    sessions in a vault that uses it.
+  - Acts in EVERY session in a vault that uses ``restrict_tools`` — a runner's
+    run, a sandbox running the runner's prompt, and an interactive session
+    alike. Whether a session is a run depends on prompt wording (``run_context``),
+    which a launcher or template change can lose and the model's own inputs can
+    influence, so it is used for accounting only, never for this gate. A
+    connector that needs writes is defined without ``restrict_tools``.
+  - The vault is SCOUT_DATA_DIR, else the one containing the session's cwd; a
+    session in no vault is not gated (no ``~/Scout`` fallback). hooks.json
+    finds it the same way in the shell and greps its file for
+    ``restrict_tools``, so Python starts (~0.15 s a call) only for sessions in
+    a vault that uses it.
   - Fails closed: a gate that can't be computed denies the call.
   - Prints a PreToolUse deny decision, or nothing to let the call through.
 """
@@ -23,12 +26,13 @@ lists (``custom_connectors.tool_gate``).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import IO, Any
 
+from scout import paths
 from scout.custom_connectors import GATE_ALL, tool_gate
-from scout.hooks import run_context
 
 
 def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
@@ -39,7 +43,7 @@ def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
     server = parts[1] if len(parts) >= 3 else ""
     if GATE_ALL in gate:
         return (
-            "Scout could not read connectors.custom.yaml, so every MCP tool is blocked in this run "
+            "Scout could not read connectors.custom.yaml, so every MCP tool is blocked in this session "
             "(a connector there restricts its tools). Carry on without MCP tools; "
             "`scoutctl connectors custom list` shows the problem."
         )
@@ -54,6 +58,16 @@ def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
     )
 
 
+def session_vault(payload: dict[str, Any]) -> Path | None:
+    """SCOUT_DATA_DIR, else the vault containing the session's cwd (the payload's, else ours), else None."""
+    env = os.environ.get("SCOUT_DATA_DIR")
+    if env:
+        return paths.resolve_path(env)
+    cwd = payload.get("cwd")
+    start = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+    return paths.vault_containing(start)
+
+
 def run(*, stdin: IO[str] | None = None) -> dict[str, Any] | None:
     """Read one PreToolUse payload; return the deny decision, or None to allow."""
     src = stdin if stdin is not None else sys.stdin
@@ -65,14 +79,12 @@ def run(*, stdin: IO[str] | None = None) -> dict[str, Any] | None:
     if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
         return None
     try:
-        raw_transcript = data.get("transcript_path")
-        transcript = Path(raw_transcript) if isinstance(raw_transcript, str) and raw_transcript else None
-        ctx = run_context.resolve(data, transcript)
-        if ctx.mode is None:
-            return None  # an interactive session: Claude Code's own permission prompts apply
-        reason = decide(tool_name, tool_gate(ctx.vault))
+        vault = session_vault(data)
+        if vault is None:
+            return None  # not in a vault: no connectors.custom.yaml applies
+        reason = decide(tool_name, tool_gate(vault))
     except Exception as exc:  # noqa: BLE001 — fail closed: an unknown gate denies
-        reason = f"Scout's MCP tool gate failed ({exc!r}), so {tool_name} is blocked in this run."
+        reason = f"Scout's MCP tool gate failed ({exc!r}), so {tool_name} is blocked in this session."
     if reason is None:
         return None
     return {
