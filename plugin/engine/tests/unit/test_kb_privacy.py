@@ -630,3 +630,40 @@ def test_classify_unreadable_is_private_forced(policy: Policy) -> None:
     label = classify("knowledge-base/people/sam.md", None, policy, unreadable=True)
     assert (label.visibility, label.visibility_source, label.warnings) == ("private", "forced", ("file-unreadable",))
     assert classify("knowledge-base/people/sam.md", None, policy).visibility == "normal"
+
+
+# ----- reading files: read_head / label_file (one reader for every caller) -------
+
+
+def test_read_head_non_markdown_and_missing_use_path_defaults(tmp_path: Path) -> None:
+    (tmp_path / "scan.txt").write_text("---\nvisibility: private\n---\n", encoding="utf-8")
+    assert privacy.read_head(tmp_path / "scan.txt") == (None, False)
+    assert privacy.read_head(tmp_path / "gone.md") == (None, False)
+
+
+def test_read_head_unreadable_markdown(tmp_path: Path) -> None:
+    (tmp_path / "dir.md").mkdir()
+    assert privacy.read_head(tmp_path / "dir.md") == (None, True)
+
+
+def test_read_head_decodes_with_replacement_and_caps_the_window(tmp_path: Path) -> None:
+    p = tmp_path / "n.md"
+    p.write_bytes(b"---\nvisibility: private\ntitle: \xff\n---\n" + b"x" * (privacy.HEAD_BYTES * 2))
+    text, unreadable = privacy.read_head(p)
+    assert not unreadable and text is not None
+    assert "�" in text
+    assert text.endswith("x") and text.count("x") == privacy.HEAD_BYTES - len(
+        "---\nvisibility: private\ntitle: \xff\n---\n"
+    )
+    assert privacy.decode_head(p.read_bytes()) == text
+
+
+def test_label_file_matches_classify(tmp_path: Path, policy: Policy) -> None:
+    note = tmp_path / "knowledge-base" / "personal" / "t.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\nname: t\ntype: task\n---\n", encoding="utf-8")
+    rel = "knowledge-base/personal/t.md"
+    assert privacy.label_file(tmp_path, rel, policy) == classify(rel, note.read_text(encoding="utf-8"), policy)
+    assert privacy.label_file(tmp_path, "knowledge-base/personal/gone.md", policy).visibility_source == "path_default"
+    (tmp_path / "x.md").mkdir()
+    assert privacy.label_file(tmp_path, "x.md", policy).warnings == ("file-unreadable",)
