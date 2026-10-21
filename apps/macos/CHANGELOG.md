@@ -6,6 +6,8 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-10-21
+
 ## [0.18.2] - 2026-10-20
 
 ### Added
