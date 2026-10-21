@@ -363,3 +363,248 @@ def test_upgrade_stage_never_fails_the_upgrade(
     monkeypatch.setattr(pm, "report", boom)
     bootstrap._stage_privacy_report(vault)
     assert "privacy" in capsys.readouterr().err
+
+
+# ----- edge and refusal paths -----------------------------------------------------
+
+
+def _write(vault: Path, rel: str, data: str | bytes) -> Path:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, bytes):
+        path.write_bytes(data)
+    else:
+        path.write_text(data, encoding="utf-8")
+    return path
+
+
+def test_frontmatter_that_is_not_a_mapping_or_not_yaml_is_none() -> None:
+    assert pm._frontmatter("---\n- a\n- b\n---\n") is None
+    assert pm._frontmatter("---\nkey: [unclosed\n---\n") is None
+    assert pm._frontmatter("no fence\n") is None
+
+
+def test_a_bad_federation_scope_alone_is_not_a_legacy_visibility(vault: Path) -> None:
+    # `visibility-value` also fires for an unparseable federation_scope; with no
+    # odd visibility: value the note isn't listed.
+    _write(vault, "knowledge-base/topics/misc/scoped.md", "---\nfederation_scope: everyone\n---\n")
+    assert pm.odd_visibility_notes(vault) == [DRAFT]
+
+
+def test_a_note_that_vanishes_mid_scan_is_skipped(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = Path.read_bytes
+
+    def flaky(self: Path) -> bytes:
+        if self.name == "draft.md":
+            raise OSError("gone")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    assert pm.odd_visibility_notes(vault) == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "data", "reason"),
+    [
+        ("knowledge-base/topics/misc/notes.txt", "visibility: secret\n", "not a markdown note"),
+        ("knowledge-base/topics/misc/missing.md", None, "not a markdown note"),
+        ("knowledge-base/topics/misc/latin1.md", b"---\nvisibility: s\xe9cret\n---\n", "not UTF-8"),
+        ("knowledge-base/topics/misc/nokey.md", "---\ntitle: No key\n---\n", "never adds one"),
+        (
+            "knowledge-base/topics/misc/twice.md",
+            "---\nvisibility: secret\nvisibility: hidden\n---\n",
+            "unambiguously",
+        ),
+    ],
+)
+def test_set_private_refuses(vault: Path, rel: str, data: str | bytes | None, reason: str) -> None:
+    if data is not None:
+        _write(vault, rel, data)
+    before = _snapshot(vault)
+    outcome, why = pm.set_private(vault, rel)
+    assert outcome == "refused" and reason in why
+    assert _snapshot(vault) == before
+
+
+def test_set_private_rewrites_a_quoted_value_without_keeping_its_text(vault: Path) -> None:
+    rel = "knowledge-base/topics/misc/quoted.md"
+    _write(vault, rel, '---\nvisibility: "secret # not a comment"\ntitle: Q\n---\n')
+    assert pm.set_private(vault, rel) == ("rewritten", "")
+    assert (vault / rel).read_text(encoding="utf-8") == "---\nvisibility: private\ntitle: Q\n---\n"
+
+
+def test_a_failed_write_leaves_the_note_and_no_temp_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(src: str, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pm.os, "replace", boom)
+    before = (vault / DRAFT).read_bytes()
+    with pytest.raises(OSError, match="disk full"):
+        pm.set_private(vault, DRAFT)
+    assert (vault / DRAFT).read_bytes() == before
+    assert not [p for p in (vault / DRAFT).parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_no_shared_files_means_no_links(tmp_path: Path) -> None:
+    # The fixture's widget notes declare a federation_scope (shared); a bare vault has none.
+    bare = tmp_path / "bare"
+    _write(bare, "knowledge-base/people/sam.md", "---\nvisibility: private\n---\nSam.\n")
+    _write(bare, "knowledge-base/topics/plain.md", "Mentions Sam's [[sam]] note.\n")
+    assert pm.private_links_in_shared(bare) == []
+
+
+def test_shared_files_that_are_binary_or_unreadable_are_skipped(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write(vault, "drafts/scan.bin", b"\x00\x01 [[sam]] Sammy")
+    _write(vault, "drafts/gone.md", "Loop in [[sam]].\n")
+    real = Path.read_bytes
+
+    def flaky(self: Path) -> bytes:
+        if self.name == "gone.md":
+            raise OSError("gone")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    assert pm.private_links_in_shared(vault) == []
+
+
+def test_a_private_shared_file_is_not_matched_against_its_own_name(vault: Path) -> None:
+    _write(vault, "drafts/secret-plan.md", "---\nvisibility: private\n---\n\nThe secret-plan.\nAsk [[sam]].\n")
+    assert pm.private_links_in_shared(vault) == [("drafts/secret-plan.md", [6])]
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        # A flow-style privacy block can't be edited in place.
+        ("user:\n  name: Alex\nprivacy: {shared_files_add: [public/**]}\n", {"shared_files_add": ["public/**"]}),
+        # A privacy key holding only comments.
+        ("user:\n  name: Alex\nprivacy:\n  # nothing yet\n", {}),
+    ],
+)
+def test_link_step_falls_back_for_layouts_it_cannot_edit(
+    vault: Path, config: str, expected: dict[str, list[str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(vault, "scout-config.yaml", config)
+    assert pm.add_local_only(vault, ["trading/**"]) == ["trading/**"]
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert pm._load(text)["privacy"] == {**expected, "local_only_add": ["trading/**"]}
+    assert pm._load(text)["user"] == {"name": "Alex"}
+    assert "comments inside it may be lost" in capsys.readouterr().err
+
+
+def test_link_step_edits_a_file_without_a_final_newline(vault: Path) -> None:
+    _write(vault, "scout-config.yaml", "privacy:\n  shared_files_add:\n    - public/**")
+    pm.add_local_only(vault, ["trading/**"])
+    assert pm._load((vault / "scout-config.yaml").read_text(encoding="utf-8"))["privacy"] == {
+        "shared_files_add": ["public/**"],
+        "local_only_add": ["trading/**"],
+    }
+    _write(vault, "scout-config.yaml", "privacy:\n  local_only_add:\n    - taxes/**")
+    pm.add_local_only(vault, ["trading/**"])
+    assert pm._load((vault / "scout-config.yaml").read_text(encoding="utf-8"))["privacy"] == {
+        "local_only_add": ["taxes/**", "trading/**"]
+    }
+
+
+def test_link_step_appends_to_a_list_followed_by_another_key(vault: Path) -> None:
+    _write(
+        vault,
+        "scout-config.yaml",
+        "privacy:\n  local_only_add:\n    - taxes/**  # mine\n  shared_files_add:\n    - public/**\n",
+    )
+    pm.add_local_only(vault, ["trading/**"])
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert "# mine" in text
+    assert pm._load(text)["privacy"] == {
+        "local_only_add": ["taxes/**", "trading/**"],
+        "shared_files_add": ["public/**"],
+    }
+
+
+def test_link_step_fills_an_empty_block_key(vault: Path) -> None:
+    _write(vault, "scout-config.yaml", "privacy:\n  # trading data stays here\n  local_only_add:\n")
+    pm.add_local_only(vault, ["trading/**"])
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert "# trading data stays here" in text
+    assert pm._load(text) == {"privacy": {"local_only_add": ["trading/**"]}}
+
+
+def test_link_step_writes_a_config_that_holds_only_comments_or_is_missing(vault: Path) -> None:
+    _write(vault, "scout-config.yaml", "# empty for now\n")
+    pm.add_local_only(vault, ["trading/**"])
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert text.startswith("# empty for now\n")
+    assert pm._load(text) == {"privacy": {"local_only_add": ["trading/**"]}}
+
+    (vault / "scout-config.yaml").unlink()
+    pm.add_local_only(vault, ["trading/**"])
+    assert pm._load((vault / "scout-config.yaml").read_text(encoding="utf-8")) == {
+        "privacy": {"local_only_add": ["trading/**"]}
+    }
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ("- a\n- b\n", "isn't a mapping"),
+        ("privacy:\n  - trading/**\n", "privacy isn't a mapping"),
+        ("privacy:\n  local_only_add: trading/**\n", "isn't a list of globs"),
+        ("privacy:\n  local_only_add:\n    - 1\n", "isn't a list of globs"),
+    ],
+)
+def test_link_step_refuses_a_config_it_cannot_read(vault: Path, config: str, message: str) -> None:
+    _write(vault, "scout-config.yaml", config)
+    with pytest.raises(ValueError, match=message):
+        pm.add_local_only(vault, ["trading/**"])
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == config
+    result = cli("--local-only", "trading/**")
+    assert result.exit_code == 2 and message in result.output
+
+
+def test_link_step_raises_when_no_rewrite_loads_back(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.scripts import bootstrap
+
+    config = _no_overlay(vault)
+    monkeypatch.setattr(pm, "_insert_globs", lambda _text, _new: None)
+    monkeypatch.setattr(bootstrap, "_dump_keeping_comments", lambda _text, _data: "privacy: [broken\n")
+    with pytest.raises(RuntimeError, match="could not write"):
+        pm.add_local_only(vault, ["trading/**"])
+    assert config.read_text(encoding="utf-8") == CONFIG_NO_PRIVACY
+
+
+def test_strict_load_handles_an_unhashable_key() -> None:
+    assert pm._load("? [a, b]\n: 1\n") is None  # PyYAML can't hash a list key: unparseable
+
+
+def test_report_lines_for_each_list_alone() -> None:
+    assert pm.MigrationReport().lines() == ["privacy migration: nothing to do"]
+    links = pm.MigrationReport(private_links=[("drafts/a.md", [2, 5])]).lines()
+    assert links[0].startswith("private links: 1 shared file(s)")
+    assert "  drafts/a.md: lines 2, 5" in links
+    single = pm.MigrationReport(private_links=[("drafts/a.md", [2])]).lines()
+    assert "  drafts/a.md: line 2" in single
+    proposals = pm.MigrationReport(local_only_proposals=["trading/**"]).lines()
+    assert proposals[0].startswith("local-only:") and "  trading/**" in proposals
+
+
+def test_cli_write_json_and_a_refused_note(vault: Path) -> None:
+    _no_overlay(vault)
+    result = cli("--set-private", DRAFT, "--local-only", "trading/**", "--json")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data == {
+        "set_private": [{"path": DRAFT, "outcome": "rewritten", "reason": ""}],
+        "local_only_added": ["trading/**"],
+    }
+    again = cli("--set-private", "knowledge-base/topics/misc/plain.md", "--local-only", "trading/**")
+    assert again.exit_code == 1
+    assert "refused: knowledge-base/topics/misc/plain.md" in again.output
+    assert "already local-only: trading/**" in again.output
+
+
+def test_upgrade_stage_is_silent_when_there_is_nothing_to_do(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from scout.scripts.bootstrap import _stage_privacy_report
+
+    pm.set_private(vault, DRAFT)  # the fixture's only legacy marker; trading/** is already local-only
+    _stage_privacy_report(vault)
+    assert capsys.readouterr().err == ""

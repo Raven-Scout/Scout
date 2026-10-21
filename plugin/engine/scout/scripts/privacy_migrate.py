@@ -177,7 +177,7 @@ def set_private(vault: Path, path: str | Path) -> tuple[Outcome, str]:
 
     lines = text.splitlines(keepends=True)
     end = next((i for i, ln in enumerate(lines[1:], 1) if ln.rstrip() == FENCE), None)
-    if end is None:
+    if end is None:  # pragma: no cover - _frontmatter() above already needs the closing fence
         return "refused", "no closing frontmatter fence"
     hits = [i for i in range(1, end) if _VISIBILITY_LINE.match(lines[i]) and lines[i].startswith("visibility")]
     if len(hits) != 1:
