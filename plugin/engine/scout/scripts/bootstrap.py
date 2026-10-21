@@ -1256,6 +1256,31 @@ def _stage_migrations(cfg: BootstrapConfig) -> None:
     migrate_perfile(cfg.vault)
 
 
+def _stage_privacy_report(vault: Path) -> None:
+    """Print the per-note privacy migration report on stderr (#453, spec §10 P5). Never edits.
+
+    Legacy ``visibility:`` values, private links in shared files, and
+    trading/brokerage folders to make local-only. Changing any of them needs the
+    owner: ``/scout-update`` asks per note and per path and then runs
+    ``scoutctl bootstrap privacy-migrate --set-private`` / ``--local-only``.
+    A headless upgrade (self-update, the app) gets this report and nothing else.
+    A failure here never fails the upgrade.
+    """
+    from scout.scripts import privacy_migrate
+
+    try:
+        # persist=False: no privacy-index write, so repeated upgrades stay byte-identical.
+        rep = privacy_migrate.report(vault, persist=False)
+    except Exception as e:  # noqa: BLE001 - a report must never fail the upgrade
+        print(f"warning: privacy migration report skipped ({type(e).__name__}: {e})", file=sys.stderr)
+        return
+    if not rep:
+        return
+    print("privacy migration (nothing was changed; review it with the owner in /scout-update):", file=sys.stderr)
+    for line in rep.lines():
+        print(f"  {line}", file=sys.stderr)
+
+
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
     """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
     _refuse_interrupted_install(cfg.vault)
@@ -1296,6 +1321,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_git_init(cfg)
         _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
+        _stage_privacy_report(cfg.vault)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)

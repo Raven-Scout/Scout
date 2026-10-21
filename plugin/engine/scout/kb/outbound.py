@@ -208,10 +208,14 @@ def _stat(path: Path) -> tuple[int, int, int] | None:
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
-def private_terms(vault: Path, policy: Policy) -> PrivateTerms:
-    """The private notes' terms and link keys in ``vault`` under ``policy`` (see the module docstring)."""
+def private_terms(vault: Path, policy: Policy, *, persist: bool = True) -> PrivateTerms:
+    """The private notes' terms and link keys in ``vault`` under ``policy`` (see the module docstring).
+
+    ``persist=False`` never writes the privacy index (:func:`scout.kb.read.all_labels`).
+    """
     root = vault.resolve()
-    private = sorted(rel for rel, label in all_labels(root, policy).items() if label.visibility == "private")
+    labels = all_labels(root, policy, persist=persist)
+    private = sorted(rel for rel, label in labels.items() if label.visibility == "private")
     signature = (policy_hash(policy), tuple((rel, _stat(root / rel)) for rel in private))
     cached = _CACHE.get(str(root))
     if cached is not None and cached[0] == signature:

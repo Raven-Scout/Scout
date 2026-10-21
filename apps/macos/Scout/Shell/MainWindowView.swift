@@ -112,7 +112,7 @@ struct MainWindowView: View {
                 .environmentObject(appState.researchDocumentService)
                 .environmentObject(appState.perFileWriterBox)
         case .knowledgeBase:
-            KnowledgeBaseView(pendingNote: $appState.pendingKBNote)
+            KnowledgeBaseView(pendingNote: $appState.pendingKBNote, privacy: appState.knowledgeBasePrivacy)
                 .environmentObject(appState.knowledgeBaseService)
                 .environmentObject(appState.knowledgeBaseWriterBox)
         case .settings:
