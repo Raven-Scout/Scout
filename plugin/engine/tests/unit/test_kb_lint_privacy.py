@@ -452,3 +452,42 @@ def test_hook_findings_are_logged_without_content(vault: Path) -> None:
     rows = [json.loads(ln) for ln in (vault / ".scout-logs" / "kb-lint.jsonl").read_text().splitlines()]
     assert [r["check"] for r in rows] == ["private-mention"]
     assert_no_private_words(json.dumps(rows))
+
+
+# ----- added lines stay cheap on long files ---------------------------------------------
+
+
+def test_a_one_line_edit_in_a_30k_line_file_is_fast() -> None:
+    import time
+
+    from scout.kb.lint_privacy import added_marker_lines
+    from scout.kb.lint_rules import added_line_numbers
+
+    old_lines = [f"line {i} of the session log" for i in range(30_000)]
+    new_lines = list(old_lines)
+    new_lines[15_000] = "line 15000 edited %%privacy:allow sam%%"
+    old, new = "\n".join(old_lines), "\n".join(new_lines)
+    start = time.perf_counter()
+    assert added_line_numbers(old, new) == {15_001}
+    assert added_marker_lines(old, new) == [15_001]
+    assert time.perf_counter() - start < 2.0
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("a\nb\nc", "a\nx\nc"), ("a\nb", "a\nb\nc"), ("a\nb", "z\na\nb"), ("a\na\na", "a\na"), ("", "x"), ("x", "")],
+)
+def test_changed_blocks_matches_difflib(old: str, new: str) -> None:
+    import difflib
+
+    from scout.kb.lint_rules import changed_blocks
+
+    a, b = old.split("\n"), new.split("\n")
+    want = {
+        j
+        for t, _i1, _i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes()
+        if t in ("insert", "replace")
+        for j in range(j1, j2)
+    }
+    got = {j for t, _i1, _i2, j1, j2 in changed_blocks(a, b) if t in ("insert", "replace") for j in range(j1, j2)}
+    assert len(got) == len(want)

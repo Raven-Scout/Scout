@@ -94,14 +94,46 @@ def test_a_crash_in_the_size_lint_still_reports_a_privacy_block(vault: Path, mon
     assert rc == 1 and "[private-link]" in out
 
 
-def test_a_crash_in_the_size_lint_alone_propagates(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no privacy finding, a size-lint crash reaches cli.main (exit 70), which the hook refuses."""
+def test_a_crash_in_the_size_lint_alone_fails_open(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §8.3: only privacy fails closed. A size/diary crash with a clean privacy pass allows the commit."""
     from scout.kb import lint
 
     monkeypatch.setattr(lint, "lint_staged", _boom)
     _append(vault, DRAFT, "Thanks again!")
-    with pytest.raises(RuntimeError):
-        _hook(vault, {})
+    rc, out = _hook(vault, {})
+    assert rc == 0
+    assert "kb-lint: size/diary check failed (RuntimeError) — not blocking" in out
+    assert "CANARY" not in out
+
+
+def test_a_crash_in_the_lint_config_alone_fails_open(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint, "load_lint_config", _boom)
+    _append(vault, DRAFT, "Thanks again!")
+    assert _hook(vault, {})[0] == 0
+
+
+def test_a_logging_failure_without_a_privacy_block_fails_open(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint, "_append_jsonl", _boom)
+    _append(vault, "knowledge-base/people/priya.md", "See [[nowhere-at-all]].")  # a dangling-link warning
+    rc, out = _hook(vault, {})
+    assert rc == 0
+    assert "could not write .scout-logs/kb-lint.jsonl (RuntimeError)" in out
+    assert "[dangling-link]" in out
+
+
+def test_a_formatting_failure_still_shows_the_privacy_block(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import lint
+
+    monkeypatch.setattr(lint, "format_findings", _boom)
+    _append(vault, DRAFT, "See [[sam]].")
+    rc, out = _hook(vault, {})
+    assert rc == 1
+    assert "kb-lint: privacy: private-link at drafts/reply-to-priya.md:" in out
+    assert "Sammy" not in out and "[[sam" not in out
 
 
 def test_a_logging_failure_does_not_lift_a_privacy_block(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

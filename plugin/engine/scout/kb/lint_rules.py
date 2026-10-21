@@ -77,19 +77,37 @@ def wikilink_targets(text: str) -> list[str]:
     return out
 
 
+def changed_blocks(a: list[str], b: list[str]) -> list[tuple[str, int, int, int, int]]:
+    """``difflib`` opcodes of ``a`` → ``b`` other than ``equal``, with indexes into the full lists.
+
+    The common prefix and suffix are trimmed first, so a localized edit in a
+    long file costs time linear in its length, not ``SequenceMatcher``'s
+    quadratic worst case over the whole file.
+    """
+    lo = 0
+    limit = min(len(a), len(b))
+    while lo < limit and a[lo] == b[lo]:
+        lo += 1
+    hi = 0
+    while hi < limit - lo and a[len(a) - 1 - hi] == b[len(b) - 1 - hi]:
+        hi += 1
+    mid_a, mid_b = a[lo : len(a) - hi], b[lo : len(b) - hi]
+    sm = difflib.SequenceMatcher(a=mid_a, b=mid_b, autojunk=False)
+    return [(tag, i1 + lo, i2 + lo, j1 + lo, j2 + lo) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal"]
+
+
 def added_line_numbers(old: str | None, new: str) -> set[int]:
     """1-based numbers of the lines of ``new`` that aren't in ``old`` (inserted or changed).
 
-    Computed in Python (``difflib``), not from ``git diff``, so git's binary
-    heuristics and ``.gitattributes`` can't hide a line. ``old`` None (no
-    earlier version) makes every line added.
+    Computed in Python (:func:`changed_blocks`), not from ``git diff``, so
+    git's binary heuristics and ``.gitattributes`` can't hide a line. ``old``
+    None (no earlier version) makes every line added.
     """
     lines = new.split("\n")
     if old is None:
         return set(range(1, len(lines) + 1))
-    sm = difflib.SequenceMatcher(a=old.split("\n"), b=lines, autojunk=False)
     out: set[int] = set()
-    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+    for tag, _i1, _i2, j1, j2 in changed_blocks(old.split("\n"), lines):
         if tag in ("insert", "replace"):
             out.update(range(j1 + 1, j2 + 1))
     return out

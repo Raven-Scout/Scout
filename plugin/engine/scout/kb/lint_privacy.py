@@ -50,7 +50,6 @@ import dataclasses
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +66,7 @@ from scout.kb.git_io import (
 )
 from scout.kb.lint import Finding
 from scout.kb.lint_config import CONFIG_FILE, glob_match, in_privacy_scope
-from scout.kb.lint_rules import added_line_numbers
+from scout.kb.lint_rules import added_line_numbers, changed_blocks
 from scout.kb.outbound import (
     ALLOW_MARKER_RE,
     PrivateNote,
@@ -102,7 +101,8 @@ LABEL_WARNINGS = ("visibility-value", "privacy-contradiction", "frontmatter-unpa
 
 _HINT_ALLOW = "remove it, or (owner only) add %%privacy:allow <note-slug>%% on that line"
 _MESSAGES = {
-    "private-link": "line {n} links a private note, and this file is shared — " + _HINT_ALLOW,
+    "private-link": "line {n} links a private note, and this file is shared — " + _HINT_ALLOW + " (a note made "
+    "normal in this same commit still counts as private: commit that change first)",
     "private-mention": "line {n} names a private note, and this file is shared — " + _HINT_ALLOW,
     "visibility-value": "visibility isn't normal/private (the note counts as private), "
     "or federation_scope doesn't parse (it counts as none)",
@@ -312,8 +312,7 @@ def added_marker_lines(old: str | None, new: str) -> list[int]:
     new_lines = new.split("\n")
     old_lines = old.split("\n") if old is not None else []
     out: set[int] = set()
-    sm = SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+    for tag, i1, i2, j1, j2 in changed_blocks(old_lines, new_lines):
         if tag not in ("insert", "replace"):
             continue
         before: set[str] = set().union(*(marker_slugs(ln) for ln in old_lines[i1:i2]))

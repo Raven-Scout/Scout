@@ -457,41 +457,42 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
-    # The privacy pass runs first and on its own, so its verdict stands even if
-    # the size/diary lint below crashes. Such a crash reaches cli.main (exit 70),
-    # and the hook script refuses the commit as "could not run" (ruling R22).
+    # The privacy pass runs first and on its own, and fails closed (spec §8.3):
+    # its verdict stands whatever happens below. The size/diary lint and all
+    # the bookkeeping fail OPEN, as the hook always has: a crash there is
+    # reported and never blocks. So scoutctl exits 70 (internal error) only
+    # when the privacy check itself couldn't run, and the hook refuses that.
     privacy = _privacy_pass(repo, env)
-    cfg: LintConfig | None
+    hard = any(_hard(f) for f in privacy)
+    cfg: LintConfig | None = None
+    result = LintResult()
     try:
         cfg = load_lint_config(repo)
         result = lint_staged(repo, cfg)
-    except Exception:
-        if not any(_hard(f) for f in privacy):
-            raise
+    except Exception as e:  # noqa: BLE001 - fail open (spec §8.3)
         cfg, result = None, LintResult()
+        _say(out, f"kb-lint: size/diary check failed ({type(e).__name__}) — not blocking")
     result.findings[:0] = privacy
     if not result.findings:
         return 0
-    hard = any(_hard(f) for f in result.findings)
     lint_mode = cfg.mode if cfg else None
     ts = (now or datetime.now(UTC)).isoformat()
     run_mode = env.get("SCOUT_MODE", "interactive")
-    # A privacy block never depends on its bookkeeping: if logging or printing
-    # fails, the block still stands (an exception here would reach cli.main).
+    logs: Path | None = None
     try:
         logs = paths.logs_dir(main_root(repo))
         _append_jsonl(
             logs / "kb-lint.jsonl",
             [{"ts": ts, "mode": run_mode, "lint_mode": lint_mode, **asdict(f)} for f in result.findings],
         )
-    except Exception:
-        if not hard:
-            raise
+    except Exception as e:  # noqa: BLE001 - bookkeeping never decides a verdict
+        _say(out, f"kb-lint: could not write .scout-logs/kb-lint.jsonl ({type(e).__name__})")
     try:
         print(format_findings(result, cfg), file=out)
-    except Exception:
-        if not hard:
-            raise
+    except Exception as e:  # noqa: BLE001
+        _say(out, f"kb-lint: could not format the findings ({type(e).__name__})")
+        if hard:
+            _say(out, _privacy_summary(result.findings))
     if hard:
         return 1
     if not result.blocking or cfg is None or cfg.mode == "report":
@@ -499,10 +500,39 @@ def run_hook(
     reason = env.get(OVERRIDE_ENV, "").strip()
     if reason:
         files = sorted({f.path for f in result.blocking})
-        _append_jsonl(logs / "lint-overrides.log", [{"ts": ts, "mode": run_mode, "files": files, "reason": reason}])
-        print(f"kb-lint: override accepted ({reason}) — logged to .scout-logs/lint-overrides.log", file=out)
+        try:
+            if logs is None:
+                raise OSError("no logs directory")
+            _append_jsonl(logs / "lint-overrides.log", [{"ts": ts, "mode": run_mode, "files": files, "reason": reason}])
+        except Exception as e:  # noqa: BLE001
+            _say(out, f"kb-lint: could not log the override ({type(e).__name__})")
+        _say(out, f"kb-lint: override accepted ({reason}) — logged to .scout-logs/lint-overrides.log")
         return 0
     return 1
+
+
+def _say(out: TextIO, line: str) -> None:
+    """Print one line; a broken stream never changes the hook's verdict."""
+    try:
+        print(line, file=out)
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _privacy_summary(findings: list[Finding]) -> str:
+    """``kb-lint: privacy: <rule ids> at <file>:<lines>; …`` for the hard findings (no content)."""
+    by_file: dict[str, tuple[set[str], set[int]]] = {}
+    for f in findings:
+        if _hard(f):
+            rules, lines = by_file.setdefault(f.path, (set(), set()))
+            rules.add(f.check)
+            if f.line:
+                lines.add(f.line)
+    parts = []
+    for path, (rules, lines) in sorted(by_file.items()):
+        where = f"{path}:{','.join(str(n) for n in sorted(lines))}" if lines else path
+        parts.append(f"{','.join(sorted(rules))} at {where}")
+    return "kb-lint: privacy: " + "; ".join(parts)
 
 
 def override_count(logs_dir: Path, *, days: int, now: datetime) -> int:

@@ -12,8 +12,11 @@ is the owner's own last resort (runs must never use it).
 
 Inside scoutctl, ``scout.kb.lint.run_hook`` runs the privacy checks first, in
 their own ``try``: a privacy checker that errors becomes a blocking
-``kb-lint:`` finding. The size and diary checks behind them still only report
-in ``report`` mode, but an engine crash in them now refuses the commit too.
+``kb-lint:`` finding. The size and diary checks behind them, and the lint's
+own logging, still fail OPEN (spec §8.3): a crash there prints
+``kb-lint: size/diary check failed (<Error>) — not blocking`` and the
+verdict is the privacy pass's alone. So scoutctl exits with an internal error
+only when the privacy check couldn't run, which is what this script refuses.
 
 Install, upgrade and migrate (``bootstrap``'s git-hook stage) and
 ``scoutctl kb install-hook`` rewrite a Scout-managed hook, so ``/scout-update``
