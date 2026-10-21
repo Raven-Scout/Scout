@@ -1269,7 +1269,8 @@ def _stage_privacy_report(vault: Path) -> None:
     from scout.scripts import privacy_migrate
 
     try:
-        rep = privacy_migrate.report(vault)
+        # persist=False: no privacy-index write, so repeated upgrades stay byte-identical.
+        rep = privacy_migrate.report(vault, persist=False)
     except Exception as e:  # noqa: BLE001 - a report must never fail the upgrade
         print(f"warning: privacy migration report skipped ({type(e).__name__}: {e})", file=sys.stderr)
         return

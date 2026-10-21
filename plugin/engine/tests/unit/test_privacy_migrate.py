@@ -357,7 +357,7 @@ def test_upgrade_stage_never_fails_the_upgrade(
 ) -> None:
     from scout.scripts import bootstrap
 
-    def boom(_vault: Path) -> pm.MigrationReport:
+    def boom(_vault: Path, *, persist: bool = True) -> pm.MigrationReport:
         raise OSError("disk on fire")
 
     monkeypatch.setattr(pm, "report", boom)
@@ -608,3 +608,24 @@ def test_upgrade_stage_is_silent_when_there_is_nothing_to_do(vault: Path, capsys
     pm.set_private(vault, DRAFT)  # the fixture's only legacy marker; trading/** is already local-only
     _stage_privacy_report(vault)
     assert capsys.readouterr().err == ""
+
+
+def _cache_snapshot(vault: Path) -> dict[str, bytes]:
+    cache = vault / ".scout-cache"
+    return {str(p.relative_to(vault)): p.read_bytes() for p in sorted(cache.rglob("*")) if p.is_file()}
+
+
+def test_upgrade_stage_never_writes_the_privacy_index(vault: Path) -> None:
+    """Repeated upgrades must be byte-identical: the report reads labels without persisting them."""
+    from scout.scripts.bootstrap import _stage_privacy_report
+
+    _no_overlay(vault)
+    _stage_privacy_report(vault)
+    assert not (vault / ".scout-cache").exists()  # a cold vault: nothing created
+    pm.report(vault)  # the CLI report does persist the index
+    warm = _cache_snapshot(vault)
+    assert warm
+    (vault / "knowledge-base/topics/misc/plain.md").write_text("Edited.\n", encoding="utf-8")
+    _stage_privacy_report(vault)
+    _stage_privacy_report(vault)
+    assert _cache_snapshot(vault) == warm  # a stale index is read, never rewritten

@@ -114,7 +114,7 @@ def _frontmatter(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def odd_visibility_notes(vault: Path) -> list[str]:
+def odd_visibility_notes(vault: Path, *, persist: bool = True) -> list[str]:
     """Vault-relative paths of notes whose ``visibility:`` is set to anything but ``normal``/``private``.
 
     Sorted. A note whose frontmatter doesn't parse isn't listed (kb-lint
@@ -122,7 +122,7 @@ def odd_visibility_notes(vault: Path) -> list[str]:
     """
     root = vault.resolve()
     out: list[str] = []
-    for rel, label in sorted(all_labels(root, load_policy(root)).items()):
+    for rel, label in sorted(all_labels(root, load_policy(root), persist=persist).items()):
         if not rel.lower().endswith(".md") or "visibility-value" not in label.warnings:
             continue
         try:
@@ -208,7 +208,7 @@ def set_private(vault: Path, path: str | Path) -> tuple[Outcome, str]:
 # ----- (b) private links in shared files ---------------------------------------------
 
 
-def private_links_in_shared(vault: Path) -> list[tuple[str, list[int]]]:
+def private_links_in_shared(vault: Path, *, persist: bool = True) -> list[tuple[str, list[int]]]:
     """``(shared file, 1-based line numbers)`` for every shared file that links or names a private note.
 
     Same matcher as kb-lint (``outbound.find_mentions``, ``%%privacy:allow%%``
@@ -217,11 +217,11 @@ def private_links_in_shared(vault: Path) -> list[tuple[str, list[int]]]:
     """
     root = vault.resolve()
     policy = load_policy(root)
-    labels = all_labels(root, policy)
+    labels = all_labels(root, policy, persist=persist)
     shared = sorted(rel for rel, label in labels.items() if label.shared_file)
     if not shared:
         return []
-    terms = private_terms(root, policy)
+    terms = private_terms(root, policy, persist=persist)
     out: list[tuple[str, list[int]]] = []
     for rel in shared:
         try:
@@ -466,10 +466,14 @@ class MigrationReport:
         return out
 
 
-def report(vault: Path) -> MigrationReport:
-    """(a), (b) and (c) for ``vault``. Read-only."""
+def report(vault: Path, *, persist: bool = True) -> MigrationReport:
+    """(a), (b) and (c) for ``vault``. Read-only for notes and config.
+
+    ``persist=False`` also leaves the privacy index (``.scout-cache/``) alone,
+    so the pass changes no file at all (the upgrade stage passes it).
+    """
     return MigrationReport(
-        visibility_values=odd_visibility_notes(vault),
-        private_links=private_links_in_shared(vault),
+        visibility_values=odd_visibility_notes(vault, persist=persist),
+        private_links=private_links_in_shared(vault, persist=persist),
         local_only_proposals=local_only_proposals(vault),
     )
