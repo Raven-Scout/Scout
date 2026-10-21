@@ -61,6 +61,58 @@ def test_unknown_scenario_is_an_error() -> None:
     assert (SCENARIOS_DIR / "busy-weekday").is_dir()
 
 
+def _scenario_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> str:
+    """A throwaway scenario dir (a copy of busy-weekday's yaml plus ``extra``) under a patched SCENARIOS_DIR."""
+    import tests.eval.harness.scenario as scenario_mod
+
+    root = tmp_path / "scenarios"
+    (root / "probe").mkdir(parents=True)
+    text = (SCENARIOS_DIR / "busy-weekday" / "scenario.yaml").read_text(encoding="utf-8")
+    (root / "probe" / "scenario.yaml").write_text(text + "\n" + extra + "\n", encoding="utf-8")
+    monkeypatch.setattr(scenario_mod, "SCENARIOS_DIR", root)
+    return "probe"
+
+
+@pytest.mark.parametrize(("raw", "budget"), [("", None), ("budget: 4", "4"), ("budget: '2.5'", "2.5")])
+def test_a_scenario_budget_is_optional_and_kept_as_a_usd_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str, budget: str | None
+) -> None:
+    assert load_scenario(_scenario_with(tmp_path, monkeypatch, raw)).budget == budget
+
+
+@pytest.mark.parametrize(
+    "raw", ["budget: 0", "budget: -1", "budget: lots", "budget: true", "budget: .inf", "budget: [4]"]
+)
+def test_a_scenario_budget_must_be_a_positive_number(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    with pytest.raises(ValueError, match="budget must be a positive USD amount"):
+        load_scenario(_scenario_with(tmp_path, monkeypatch, raw))
+
+
+@pytest.mark.parametrize(("scenario_budget", "arg", "used"), [(None, None, "3"), ("6", None, "6"), ("6", "2", "2")])
+def test_the_runner_uses_the_scenario_budget_else_the_default(
+    tmp_path: Path, busy, monkeypatch: pytest.MonkeyPatch, scenario_budget: str | None, arg: str | None, used: str
+) -> None:
+    import dataclasses
+
+    import tests.eval.harness.runner as runner_mod
+
+    seen: dict[str, str] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_build_vault(*_a: object, max_budget: str, **_k: object) -> None:
+        seen["max_budget"] = max_budget
+        raise Stop
+
+    monkeypatch.setattr(runner_mod, "build_vault", fake_build_vault)
+    scenario = dataclasses.replace(busy, budget=scenario_budget)
+    kwargs = {} if arg is None else {"budget": arg}
+    with pytest.raises(Stop):
+        run_sample(scenario, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path, real_claude="x", **kwargs)
+    assert runner_mod.DEFAULT_BUDGET == "3" and seen["max_budget"] == used
+
+
 def test_plan_describes_what_will_start(busy) -> None:
     plan = session_plan([busy], reps=3, opus=False, many=False)
     assert plan.sessions == 3

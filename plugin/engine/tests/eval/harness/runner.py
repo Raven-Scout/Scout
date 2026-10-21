@@ -334,7 +334,7 @@ def run_sample(
     results_root: Path,
     real_claude: str,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-    budget: str = DEFAULT_BUDGET,
+    budget: str | None = None,  # None: the scenario's budget:, else DEFAULT_BUDGET
     hook_grace_s: int = HOOK_GRACE_S,
     arm: str = "head",
     cli_version: str = "",
@@ -350,7 +350,7 @@ def run_sample(
         scenario_dir=scenario.files,
         claude_bin=str(SHIM),
         connectors=scenario.connectors,
-        max_budget=budget,
+        max_budget=budget or scenario.budget or DEFAULT_BUDGET,
         checkout=checkout,
         scheduler_tick=datetime.now(UTC),
     )

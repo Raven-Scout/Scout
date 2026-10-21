@@ -256,6 +256,21 @@ def test_a_read_of_a_kb_file_counts_unless_the_run_then_edits_it() -> None:
     assert leading_indicators(transcript)["raw_kb_read"] == 1
 
 
+@pytest.mark.parametrize(
+    ("path", "counted"),
+    [
+        ("/v/knowledge-base/ontology/schema.yaml", False),
+        ("/v/knowledge-base/ontology/parser.py", False),
+        ("/v/knowledge_base/ontology/schema.yaml", False),
+        ("/v/knowledge-base/ontology/../people/sam.md", True),  # normalised: a note, not tooling
+        ("/v/knowledge-base/people/ontology/sam.md", True),
+        ("/v/knowledge-base/ontology.md", True),
+    ],
+)
+def test_a_read_of_the_ontology_tooling_is_not_a_raw_kb_read(path: str, counted: bool) -> None:
+    assert leading_indicators((_call(1, "Read", file_path=path),))["raw_kb_read"] == int(counted)
+
+
 def test_dreaming_scores_must_appear_as_not_applicable_but_still_fails_on_a_leak() -> None:
     quiet = _clean(daily=None, telegram=())
     assert privacy_canary(quiet, PERMIT, "dreaming").passed is True
@@ -293,6 +308,7 @@ def test_the_privacy_scenarios_cover_briefing_consolidation_and_dreaming(name: s
     assert set(sc.checks) == {"privacy_canary", "privacy_hygiene"}
     assert sc.files == load_scenario("privacy-canary").path
     assert sc.script == sc.files / "connectors.yaml"
+    assert sc.budget == ("6" if mode == "dreaming" else "4")
 
 
 def test_a_variant_builds_from_its_files_from_scenario(tmp_path: Path) -> None:
