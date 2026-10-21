@@ -3,6 +3,13 @@
 The hook fails OPEN: a missing scoutctl, or any exit other than 0 (allow) / 1
 (block), lets the commit through with a warning — a broken engine must never
 stop a scheduled run from saving its work.
+
+The privacy checks inside ``kb lint --staged`` (#453, spec §8.3) fail CLOSED
+instead: ``scout.kb.lint.run_hook`` runs them in their own ``try``, and a
+privacy checker that errors becomes a blocking ``kb-lint:`` finding (exit 1),
+which this script passes through like any other block. Only an engine that
+can't start at all (no scoutctl, a crash before ``cli.main``) still lets the
+commit through.
 """
 
 from __future__ import annotations

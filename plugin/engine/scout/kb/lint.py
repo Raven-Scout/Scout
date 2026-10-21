@@ -364,18 +364,34 @@ def over_budget(repo: Path, cfg: LintConfig) -> list[tuple[str, int, int]]:
     return rows
 
 
-def format_findings(result: LintResult, cfg: LintConfig) -> str:
-    lines = [f"kb-lint: {len(result.blocking)} blocking, {len(result.warnings)} warning(s) (mode: {cfg.mode})"]
+# Privacy checks (#453, spec §8.2/§8.3; scout.kb.lint_privacy) that block in
+# every mode and ignore SCOUT_LINT_OVERRIDE.
+PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+
+
+def _hard(f: Finding) -> bool:
+    return f.blocking and f.check in PRIVACY_BLOCKING
+
+
+def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
+    mode = cfg.mode if cfg is not None else "?"
+    lines = [f"kb-lint: {len(result.blocking)} blocking, {len(result.warnings)} warning(s) (mode: {mode})"]
     for f in result.findings:
         mark = "✗" if f.blocking else "!"
         where = f"{f.path}:{f.line}" if f.line else f.path
         lines.append(f"  {mark} {where} [{f.check}] {f.message}")
-    if result.blocking and cfg.mode == "block":
+    soft = [f for f in result.blocking if not _hard(f)]
+    if any(_hard(f) for f in result.blocking):
+        lines.append(
+            "Commit blocked by the privacy checks: they block in every lint mode, and "
+            f"{OVERRIDE_ENV} does not apply to them."
+        )
+    if soft and mode == "block":
         lines.append(
             "Commit blocked. Fix the files above — or, only after two failed attempts, re-run with "
             f'{OVERRIDE_ENV}="<reason>" (logged; the next dreaming run must clean it up).'
         )
-    elif result.blocking:
+    elif soft:
         lines.append("(report mode — not blocking; findings logged to .scout-logs/kb-lint.jsonl)")
     return "\n".join(lines)
 
@@ -387,6 +403,51 @@ def _append_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
+    """The refusal for a privacy checker that errored (spec §8.3).
+
+    Names the error class only: an exception's text can quote file content (a
+    YAML error does). A scheduled run's refusal also writes the run-health
+    event ``privacy.check_failed``; failing to write it doesn't lift the refusal.
+    """
+    name = type(err).__name__
+    run = env.get("SCOUT_MODE")
+    if not run:
+        return Finding(
+            "(privacy)",
+            "privacy-check-failed",
+            True,
+            f"the privacy check failed ({name}), so the commit is refused — run `scoutctl doctor` to see why",
+        )
+    try:
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(main_root(repo)),
+            kind="privacy.check_failed",
+            source="hook:kb-lint",
+            payload={"error": name, "mode": run},
+        )
+    except Exception:  # noqa: BLE001, S110 - the refusal stands without the event
+        pass
+    return Finding(
+        "(privacy)",
+        "privacy-check-failed",
+        True,
+        f"the privacy check failed ({name}), so the commit is refused (run-health event privacy.check_failed)",
+    )
+
+
+def _privacy_pass(repo: Path, env: Mapping[str, str]) -> list[Finding]:
+    """``scout.kb.lint_privacy`` over the staged changes; an error is a blocking finding (fail closed)."""
+    try:
+        from scout.kb.lint_privacy import privacy_staged
+
+        return privacy_staged(repo, env=env)
+    except Exception as e:  # noqa: BLE001 - fail closed (spec §8.3)
+        return [_privacy_failed(repo, env, e)]
+
+
 def run_hook(
     repo: Path,
     *,
@@ -396,8 +457,19 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
-    cfg = load_lint_config(repo)
-    result = lint_staged(repo, cfg)
+    # The privacy pass runs first and on its own: it fails closed, where the
+    # size/diary lint below fails open (an exception reaches cli.main, and the
+    # hook script lets the commit through).
+    privacy = _privacy_pass(repo, env)
+    cfg: LintConfig | None
+    try:
+        cfg = load_lint_config(repo)
+        result = lint_staged(repo, cfg)
+    except Exception:
+        if not any(_hard(f) for f in privacy):
+            raise
+        cfg, result = None, LintResult()
+    result.findings[:0] = privacy
     if not result.findings:
         return 0
     logs = paths.logs_dir(main_root(repo))
@@ -405,10 +477,12 @@ def run_hook(
     run_mode = env.get("SCOUT_MODE", "interactive")
     _append_jsonl(
         logs / "kb-lint.jsonl",
-        [{"ts": ts, "mode": run_mode, "lint_mode": cfg.mode, **asdict(f)} for f in result.findings],
+        [{"ts": ts, "mode": run_mode, "lint_mode": cfg.mode if cfg else None, **asdict(f)} for f in result.findings],
     )
     print(format_findings(result, cfg), file=out)
-    if not result.blocking or cfg.mode == "report":
+    if any(_hard(f) for f in result.findings):
+        return 1
+    if not result.blocking or cfg is None or cfg.mode == "report":
         return 0
     reason = env.get(OVERRIDE_ENV, "").strip()
     if reason:

@@ -153,7 +153,9 @@ def kb_lint(
     staged: bool = typer.Option(
         False, "--staged", help="Check the staged diff (what the pre-commit hook runs). Default."
     ),
-    report: bool = typer.Option(False, "--report", help="Rank tracked KB files that are over budget."),
+    report: bool = typer.Option(
+        False, "--report", help="Rank over-budget KB files; list privacy markers and problems."
+    ),
     top: int = typer.Option(20, "--top", help="Rows to show with --report."),
     lossless_rev: str | None = typer.Option(None, "--lossless-rev", help="Old revision for the lossless check."),
     lossless_path: str | None = typer.Option(
@@ -177,11 +179,14 @@ def kb_lint(
     if report:
         from scout.kb.lint import over_budget
         from scout.kb.lint_config import load_lint_config
+        from scout.kb.lint_privacy import format_report, privacy_report
 
         rows = over_budget(root, load_lint_config(root))
         print(f"{len(rows)} file(s) over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
+        for line in format_report(privacy_report(root)):
+            print(line)
         raise typer.Exit(0)
     from scout.kb.lint import run_hook
 
@@ -2182,7 +2187,7 @@ def _register_notify() -> None:
         import requests as _requests
 
         from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import DuplicateSendError, send
+        from scout.scripts.notify_telegram import DuplicateSendError, OutboundBlockedError, send
 
         if body is not None and body_file is None:
             text = body
@@ -2215,6 +2220,9 @@ def _register_notify() -> None:
                 err=True,
             )
             raise typer.Exit(code=DuplicateSendError.exit_code) from e
+        except OutboundBlockedError as e:
+            typer.echo(f"scoutctl notify telegram: {e}", err=True)
+            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
         except _ConfigError as e:
             # Map ScoutError exit codes at the command boundary so the CLI
             # surface stays consistent with cli.main()'s ScoutError handler.
@@ -3160,9 +3168,9 @@ def _register_phases() -> None:
         from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
-            apply_section_edits,
-            apply_to_phase_text,
             build_rendered_sections,
+            bundle_files,
+            bundle_privacy_hits,
             plan_backport,
         )
 
@@ -3181,6 +3189,31 @@ def _register_phases() -> None:
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
+
+        # The plugin repo is public (#453, spec §8.4): a bundle naming a private
+        # note is refused, dry run or not, before anything is reported or written.
+        refused: list[tuple[Path, list[int]]] = []
+        for k in kinds:
+            snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
+            if not snap.exists() or not live.exists():
+                continue
+            sections = build_rendered_sections(
+                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
+            )
+            results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
+            bundle = bundle_files([r for r in results if r.status == "applied"], sections)
+            refused += bundle_privacy_hits(vault, bundle)
+        if refused:
+            typer.echo(
+                "scoutctl phases backport: refused — the back-port names a private note of this vault, and the "
+                "plugin repo is public. Remove it from the vault's brain file (or genericize it) and re-run:",
+                err=True,
+            )
+            for pf, lines in refused:
+                where = ("lines " if len(lines) > 1 else "line ") + ", ".join(str(n) for n in lines)
+                typer.echo(f"  {pf}: {where} (as it would be written)", err=True)
+            raise typer.Exit(code=1)
+
         total_applied = 0
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
@@ -3211,27 +3244,7 @@ def _register_phases() -> None:
                 typer.echo(f"  ✗ unmapped     {r.reason}  «{snippet}»")
 
             if apply and applied:
-                sec_by_key = {(s.phase_file, s.section_name): s for s in sections}
-                by_file: dict[Path, list] = {}
-                for r in applied:
-                    # applied hunks always round-tripped into a fragment, so
-                    # phase_file is set; narrow the Path | None for the type checker.
-                    if r.phase_file is None:
-                        continue
-                    by_file.setdefault(r.phase_file, []).append(r)
-                for pf, rs in by_file.items():
-                    text = pf.read_text(encoding="utf-8")
-                    by_section: dict[str, list] = {}
-                    for r in rs:
-                        by_section.setdefault(r.section_name, []).append(r)
-                    for section_name, srs in by_section.items():
-                        sec = sec_by_key[(pf, section_name)]
-                        # applied hunks always carry a resolved anchor + retemplatized
-                        # body; assert the invariant so it's explicit (and type-safe).
-                        edits = [(r.anchor, r.retemplatized) for r in srs]
-                        assert all(a is not None and t is not None for a, t in edits)
-                        edited_body = apply_section_edits(sec.raw_body, sec.rendered_body, edits)
-                        text = apply_to_phase_text(text, sec.raw_body, edited_body)
+                for pf, (_old, text) in bundle_files(applied, sections).items():
                     pf.write_text(text, encoding="utf-8")
                     typer.echo(f"  → wrote {pf}")
                 total_applied += len(applied)

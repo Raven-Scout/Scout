@@ -6,6 +6,7 @@ diagnostic via `scoutctl bootstrap doctor`. Never mutates the vault.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import plistlib
@@ -14,7 +15,7 @@ import shlex
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -510,6 +511,49 @@ def _check_heartbeat_config(*, vault: Path) -> list[str]:
     return load_config_with_issues(vault / "scout-config.yaml")[1]
 
 
+PRIVACY_WINDOW = timedelta(days=7)
+
+
+def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
+    """Blocked outbound checks and denied reads in ``.scout-logs/kb-reads.jsonl`` over the last 7 days (#453, §7.4).
+
+    A row counts when it is ``blocked`` or denied at least one path. Unreadable
+    or malformed rows are skipped; a timestamp without a zone is taken as UTC.
+    """
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return 0
+    cutoff = now - PRIVACY_WINDOW
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    count = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+            ts = datetime.fromisoformat(row["ts"])
+            hit = row.get("blocked") is True or int(row.get("paths_denied") or 0) > 0
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if hit and ts >= cutoff:
+            count += 1
+    return count
+
+
+def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
+    n = privacy_blocked_count(vault, now=now or datetime.now(UTC))
+    if not n:
+        return []
+    return [
+        f"privacy: {n} blocked outbound check(s) or denied read(s) in the last 7 days "
+        "(.scout-logs/kb-reads.jsonl) — a run reached for a shared surface with private content; "
+        "the content was held back, but check what the runs were trying to send"
+    ]
+
+
 def run_doctor(
     *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
 ) -> DoctorReport:
@@ -627,6 +671,7 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_privacy_audit(vault=vault, now=now))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

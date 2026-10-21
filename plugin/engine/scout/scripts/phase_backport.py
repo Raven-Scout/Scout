@@ -335,6 +335,57 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
     return results
 
 
+def bundle_files(applied: list[HunkResult], sections: list[RenderedSection]) -> dict[Path, tuple[str, str]]:
+    """The back-port bundle: each phase file the ``applied`` hunks edit → ``(current text, text to write)``.
+
+    Exactly what ``--apply`` writes. Reads each phase file once.
+    """
+    sec_by_key = {(s.phase_file, s.section_name): s for s in sections}
+    by_file: dict[Path, dict[str, list[HunkResult]]] = {}
+    for r in applied:
+        if r.phase_file is None or r.section_name is None:
+            continue  # an applied hunk always round-tripped into a fragment
+        by_file.setdefault(r.phase_file, {}).setdefault(r.section_name, []).append(r)
+    bundle: dict[Path, tuple[str, str]] = {}
+    for pf, by_section in by_file.items():
+        old = text = pf.read_text(encoding="utf-8")
+        for section_name, rs in by_section.items():
+            sec = sec_by_key[(pf, section_name)]
+            edits = [(r.anchor, r.retemplatized) for r in rs if r.anchor is not None and r.retemplatized is not None]
+            text = apply_to_phase_text(text, sec.raw_body, apply_section_edits(sec.raw_body, sec.rendered_body, edits))
+        bundle[pf] = (old, text)
+    return bundle
+
+
+def _added_line_numbers(old: str, new: str) -> set[int]:
+    """1-based numbers of the lines of ``new`` that aren't in ``old`` (inserted or changed)."""
+    sm = difflib.SequenceMatcher(a=old.split("\n"), b=new.split("\n"), autojunk=False)
+    out: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+        if tag in ("insert", "replace"):
+            out.update(range(j1 + 1, j2 + 1))
+    return out
+
+
+def bundle_privacy_hits(vault: Path, bundle: dict[Path, tuple[str, str]]) -> list[tuple[Path, list[int]]]:
+    """``(phase file, line numbers)`` of the bundle's added lines that name a private note of ``vault``.
+
+    ``check_outbound(..., "public_repo")`` (#453, spec §8.4): the plugin repo is
+    public. Only added lines count, so a fragment that already used a word that
+    happens to be a private slug isn't refused for it. Line numbers only: the
+    caller must not print the lines.
+    """
+    from scout.kb.outbound import check_outbound
+
+    hits: list[tuple[Path, list[int]]] = []
+    for pf, (old, new) in sorted(bundle.items()):
+        added = _added_line_numbers(old, new)
+        lines = [n for n in check_outbound(vault, new, "public_repo") if n in added]
+        if lines:
+            hits.append((pf, lines))
+    return hits
+
+
 def apply_section_edits(raw_body: str, rendered_body: str, edits: list[tuple[str, list[str]]]) -> str:
     """Apply multiple ``(anchor, new_lines)`` inserts to one section's raw body.
 

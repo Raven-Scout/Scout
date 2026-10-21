@@ -282,6 +282,30 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
     return sorted(out)
 
 
+def marker_slugs(line: str) -> set[str]:
+    """Case-folded targets of the ``%%privacy:allow <slug>%%`` markers on ``line`` (as find_mentions reads them)."""
+    return {m.group(1).casefold() for m in _MARKER.finditer(line)}
+
+
+def markers(line: str) -> list[str]:
+    """The targets of the markers on ``line``, as written (``kb lint --report``)."""
+    return [m.group(1) for m in _MARKER.finditer(line)]
+
+
+def linked_slugs(line: str, terms: PrivateTerms) -> set[str]:
+    """Case-folded slugs of the private notes a ``[[wikilink]]`` on ``line`` resolves to.
+
+    Lint uses it to tell a ``private-link`` from a ``private-mention``; the
+    slugs never reach its output.
+    """
+    out: set[str] = set()
+    for m in _WIKILINK.finditer(line.casefold()):
+        target = _link_target(m.group(1))
+        if target:
+            out |= {note.slug.casefold() for note in terms.notes if note.linked_by(target)}
+    return out
+
+
 def is_owner_only(policy: Policy, surface: str) -> bool:
     return surface_class(policy, surface) == "owner_only"
 

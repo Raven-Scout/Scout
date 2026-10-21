@@ -54,6 +54,25 @@ def _any(globs: tuple[str, ...], rel: str) -> bool:
     return any(glob_match(g, rel) for g in globs)
 
 
+CONFIG_FILE = "scout-config.yaml"
+
+
+def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
+    """Whether the privacy checks (#453, spec §8.2) look at ``rel``.
+
+    Wider than :meth:`LintConfig.in_scope`: markdown under ``knowledge-base/``
+    and ``action-items/`` (exclude globs don't apply: they are size-lint
+    tuning), every file matching a ``shared_files`` glob whatever its suffix,
+    and ``scout-config.yaml`` (the widening guard watches its ``privacy:``
+    block).
+    """
+    if rel == CONFIG_FILE:
+        return True
+    if rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES):
+        return True
+    return _any(shared_files, rel)
+
+
 @dataclass(frozen=True)
 class Budget:
     glob: str

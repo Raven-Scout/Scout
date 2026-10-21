@@ -115,10 +115,37 @@ def changed_lines(repo: Path, rel: str, head_rel: str | None = None) -> tuple[li
     destination side (``+++ b/<rel>``) are parsed.
     """
     if head_rel and head_rel != rel:
-        out = git(repo, "diff", "--cached", "-M", "-U0", "--no-color", "--no-ext-diff", "--", head_rel, rel).stdout
+        out = git(repo, *_DIFF, "-M", "--", head_rel, rel).stdout
         return _parse_changed_lines(out, rel)
-    out = git(repo, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--", rel).stdout
+    out = git(repo, *_DIFF, "--", rel).stdout
     return _parse_changed_lines(out, None)
+
+
+_DIFF = ("diff", "--cached", "-U0", "--no-color", "--no-ext-diff")
+
+
+# Lossy readers for the privacy checks (#453): text that isn't UTF-8 is decoded
+# with replacement characters instead of raising, so a stray byte can neither
+# crash the (fail-closed) privacy pass nor hide a line from it.
+
+
+def staged_text_lossy(repo: Path, rel: str) -> str:
+    """``rel``'s staged content, bad UTF-8 replaced."""
+    return _text(git_bytes(repo, "show", f":{rel}", check=True).stdout)
+
+
+def head_text_lossy(repo: Path, rel: str) -> str | None:
+    """``rel``'s content at HEAD (bad UTF-8 replaced), or None when it (or HEAD) does not exist."""
+    proc = git_bytes(repo, "show", f"HEAD:{rel}")
+    return _text(proc.stdout) if proc.returncode == 0 else None
+
+
+def changed_lines_lossy(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
+    """:func:`changed_lines`' added lines, bad UTF-8 replaced."""
+    if head_rel and head_rel != rel:
+        out = _text(git_bytes(repo, *_DIFF, "-M", "--", head_rel, rel, check=True).stdout)
+        return _parse_changed_lines(out, rel)[0]
+    return _parse_changed_lines(_text(git_bytes(repo, *_DIFF, "--", rel, check=True).stdout), None)[0]
 
 
 def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
