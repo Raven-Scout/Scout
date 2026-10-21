@@ -21,7 +21,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **Runs get a sanctioned way to find and read context notes.** Where the phases say to edit `action-items/context/<TAG>.md`, and where `kb-management` bans `ls`, they now name `scoutctl kb files --glob 'action-items/context/*.md'` to list them and `scoutctl kb read <path>` to read one. The privacy rule says to orient from `.scout-cache/session-context.json`, never `ls`, `find`, `cat` or Glob.
   - **A private item keeps its title on owner-only surfaces.** The daily file, context notes and Telegram copy the title exactly as written: no paraphrase, no "(private)" tag.
   - **Consolidation keeps today's personal tasks.** It reads `personal_tasks` from `.scout-cache/session-context.json` and keeps each task whose surface window covers today in the daily file, private ones included.
-  - **Eval harness.** A scenario may set `budget:` (a positive USD amount, else the runner's `$3` default): `privacy-canary` and `privacy-canary-consolidation` use 4, `privacy-canary-dreaming` 6. `privacy_hygiene` no longer counts a Read of `knowledge-base/ontology/` (`schema.yaml`, `parser.py`: tooling, not notes) as a raw KB read.
+  - **Eval harness.** A scenario may set `budget:` (a positive USD amount, else the runner's `$3` default): `privacy-canary` and `privacy-canary-consolidation` use 4, `privacy-canary-dreaming` 6. `privacy_hygiene` no longer counts a Read of `knowledge-base/ontology/schema.yaml` or `parser.py` (tooling, not notes) as a raw KB read; entity notes under `ontology/entities/` still count. Each sample's `meta.json`, and an aborted sample's reason, record the budget it ran with.
 
 ## [0.18.3] - 2026-10-21
 

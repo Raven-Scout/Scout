@@ -288,8 +288,10 @@ def test_a_session_that_ends_in_an_error_is_aborted_not_scored(
     result = run_sample(
         busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
     )
-    assert result.aborted == {"reason": "error_max_budget_usd"}
+    assert result.aborted == {"reason": "error_max_budget_usd", "budget_usd": "3"}  # the cap it hit
     assert result.checks == ()
+    meta = json.loads((result.result_dir / "meta.json").read_text())
+    assert meta["budget_usd"] == "3" and meta["aborted"] == result.aborted
 
 
 def test_a_session_that_never_rewrote_todays_file_is_not_scored_as_a_pass(

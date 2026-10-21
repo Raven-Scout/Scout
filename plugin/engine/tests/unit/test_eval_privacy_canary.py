@@ -265,6 +265,8 @@ def test_a_read_of_a_kb_file_counts_unless_the_run_then_edits_it() -> None:
         ("/v/knowledge-base/ontology/../people/sam.md", True),  # normalised: a note, not tooling
         ("/v/knowledge-base/people/ontology/sam.md", True),
         ("/v/knowledge-base/ontology.md", True),
+        ("/v/knowledge-base/ontology/entities/x.md", True),  # entity notes live here and can be private
+        ("/v/knowledge-base/ontology/schema.yml", False),
     ],
 )
 def test_a_read_of_the_ontology_tooling_is_not_a_raw_kb_read(path: str, counted: bool) -> None:
