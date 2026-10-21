@@ -93,6 +93,15 @@ Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Ra
 
 **Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
+### Hosts that serve a checkout (Agnes)
+
+`plugin/` is a marketplace root of its own: `plugin/.claude-plugin/marketplace.json` lists `scout` with source `"./"`, the plugin itself. It is for a host that serves plugin files from a checkout of this repository and can't follow the root marketplace's `git-subdir` source, such as Agnes. Register it like this:
+
+- **Pin a release tag, `vX.Y.Z`. Never `main` or a branch.** A local source serves whatever tree is checked out; on `main` that is unreleased code carrying the last release's version. The tag gives you what the root marketplace's `stable` pin gives Claude Code.
+- **Read the manifest from `plugin/`** (Agnes: `manifest_dir: plugin`, `ref: vX.Y.Z`), so `"./"` resolves to `plugin/`.
+
+It is the root manifest with only `scout`, sourced `"./"`. Its version is one of the release's version files (`versioning check` and `scripts/release.sh` cover it), and Scout.app's engine bundle ships the same file. Claude Code users keep the root marketplace.
+
 ## Quick Start
 
 The one-line installer above is the recommended path. Under the hood, Scout is distributed as a Claude Code plugin via a built-in marketplace catalog (`.claude-plugin/marketplace.json`); to install it by hand instead:

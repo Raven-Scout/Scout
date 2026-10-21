@@ -16,6 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[4]
 MANIFESTS = (
     ".claude-plugin/marketplace.json",
+    "plugin/.claude-plugin/marketplace.json",
     "plugin/.claude-plugin/plugin.json",
     "plugin/engine/pyproject.toml",
     "plugin/engine/scout/__init__.py",
@@ -66,7 +67,5 @@ def test_stamping_a_new_version_commits_every_manifest(tmp_path):
     assert _git(root, "log", "-1", "--format=%s") == f"e2e: stamp {new}"
     assert _git(root, "status", "--porcelain") == ""
     assert json.loads((root / "plugin/.claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"] == new
-    assert (
-        json.loads((root / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"][0]["version"]
-        == new
-    )
+    for marketplace in (".claude-plugin/marketplace.json", "plugin/.claude-plugin/marketplace.json"):
+        assert json.loads((root / marketplace).read_text(encoding="utf-8"))["plugins"][0]["version"] == new

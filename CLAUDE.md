@@ -21,12 +21,19 @@ first.** The two have different languages, test runners, and release flows.
   get the latest release, never `main`'s tip. Only `release.sh finalize` moves
   `stable`. Never point the entry back at `"./plugin"`, and never push `stable`
   by hand except to run the recovery command `finalize` prints.
+- **`plugin/.claude-plugin/marketplace.json` makes `plugin/` its own marketplace
+  root**: the root manifest with only the scout entry, sourced `"./"`. Hosts
+  that serve a checkout and can't follow `git-subdir` (Agnes) read it from a
+  `vX.Y.Z` tag, never `main` (see `plugin/README.md`), and Scout.app's engine
+  bundle ships it (`bundle-engine.sh` fails if it differs from what it would
+  generate). Its version is a release version file like the others; when the
+  root entry changes, change this one to match, keeping `"./"`.
 - **Everything the plugin needs at runtime must stay under `plugin/`.**
   `CLAUDE_PLUGIN_ROOT` resolves to the materialized `plugin/` subtree only; a
   plugin file that reaches outside it is broken for every installed user, and
   nothing in this repo will tell you.
 - **One version, one tag, one release.** Scout's app and plugin share one version `X.Y.Z`. It lives in
-  `plugin/.claude-plugin/plugin.json`, the root `marketplace.json`, `plugin/engine/pyproject.toml`,
+  `plugin/.claude-plugin/plugin.json`, the root `marketplace.json`, `plugin/.claude-plugin/marketplace.json`, `plugin/engine/pyproject.toml`,
   `plugin/engine/scout/__init__.py`, and every `MARKETING_VERSION` in `apps/macos/Scout.xcodeproj`;
   `versioning check` (CI: `contract`) fails on drift. From v0.16.0 every release is ONE tag `vX.Y.Z`, cut
   with `scripts/release.sh prepare` then `finalize`; release candidates are `vX.Y.Z-rc.N`, cut with `rc` from
