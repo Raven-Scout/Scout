@@ -1,0 +1,27 @@
+{
+  "name": "scout-plugin",
+  "owner": {
+    "name": "Jordan Burger"
+  },
+  "description": "Scout for Agnes: read from a vX.Y.Z release-tag checkout, never main. The source resolves against the repository root.",
+  "plugins": [
+    {
+      "name": "scout",
+      "source": "./plugin",
+      "description": "Autonomous knowledge management and daily briefing system for Claude Code",
+      "version": "0.18.2",
+      "author": {
+        "name": "Jordan Burger"
+      },
+      "homepage": "https://github.com/Raven-Scout/Scout",
+      "repository": "https://github.com/Raven-Scout/Scout",
+      "keywords": [
+        "knowledge-management",
+        "briefing",
+        "automation",
+        "scheduling",
+        "obsidian"
+      ]
+    }
+  ]
+}

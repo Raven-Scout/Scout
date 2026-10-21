@@ -54,7 +54,7 @@ def test_harness_shadows_every_signing_and_publishing_tool(tmp_path):
         assert found and found.startswith(str(tmp_path / "stubs")), tool
 
 
-def test_prepare_bumps_all_five_places_and_both_changelogs(tmp_path):
+def test_prepare_bumps_every_version_file_and_both_changelogs(tmp_path):
     r = make_repo(tmp_path)
     done = r.run("prepare", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode == 0, done.stderr
@@ -62,8 +62,14 @@ def test_prepare_bumps_all_five_places_and_both_changelogs(tmp_path):
     assert _git(r.root, "log", "-1", "--format=%s") == "release: v0.15.0"
     pbx = (r.root / "apps/macos/Scout.xcodeproj/project.pbxproj").read_text()
     assert pbx.count("MARKETING_VERSION = 0.15.0;") == 4
-    for rel in ("plugin/.claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    for rel in (
+        "plugin/.claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json",
+        "agnes/.claude-plugin/marketplace.json",
+    ):
         assert '"0.15.0"' in (r.root / rel).read_text()
+    # The release commit carries every bumped file: nothing is left modified after it.
+    assert _git(r.root, "status", "--porcelain", "--untracked-files=no") == ""
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
         text = (r.root / rel).read_text()
         assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
@@ -405,6 +411,18 @@ def test_release_script_moves_the_branch_the_marketplace_pins():
     }
     script = (REAL_REPO / "scripts/release.sh").read_text(encoding="utf-8")
     assert re.search(r'(?m)^STABLE_BRANCH="stable"$', script)
+
+
+def test_agnes_marketplace_serves_the_same_plugin_from_a_string_source():
+    """agnes/README.md: Agnes serves no files for a git-subdir source, so its manifest uses "./plugin"."""
+    import json
+
+    root = json.loads((REAL_REPO / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"]
+    agnes = json.loads((REAL_REPO / "agnes/.claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"]
+    assert len(agnes) == 1
+    assert agnes[0]["source"] == "./plugin"
+    assert (REAL_REPO / agnes[0]["source"] / ".claude-plugin/plugin.json").is_file()
+    assert {k: v for k, v in agnes[0].items() if k != "source"} == {k: v for k, v in root[0].items() if k != "source"}
 
 
 def test_finalize_targets_the_release_pr_merge_commit(tmp_path):

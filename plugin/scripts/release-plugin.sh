@@ -82,6 +82,7 @@ echo "Prepared plugin/v$NEW on $BRANCH"
 
 git -C "$REPO_ROOT" add \
         .claude-plugin/marketplace.json \
+        agnes/.claude-plugin/marketplace.json \
         plugin/.claude-plugin/plugin.json \
         plugin/engine/pyproject.toml \
         plugin/engine/scout/__init__.py \
