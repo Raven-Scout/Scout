@@ -18,6 +18,12 @@ Layout inside the vault::
 Everything the doctor and ``scoutctl bootstrap drift`` report is derived from
 these files, so there is no second record to drift out of step with them.
 
+``privacy_drift`` is a separate, read-only scan of the vault's *own* scripts
+(#453, spec §6.2/§6.3): a vault-local runner that sets neither ``SCOUT_READER``
+nor ``SCOUT_MODE``, and a vault script that reads the knowledge base without
+``scoutctl kb``. The engine can't edit those files, so it reports them with the
+fix.
+
 Design: docs/superpowers/specs/2026-09-30-upgrade-keeps-vault-edits-design.md
 """
 
@@ -653,3 +659,123 @@ def report(vault: Path, renders: dict[str, str]) -> list[DriftRow]:
             )
         )
     return rows
+
+
+# --------------------------------------------------------------- privacy ----
+
+# A runner passes when a non-comment line exports SCOUT_MODE (spec §6.2: it
+# resolves to the autonomous reader) or SCOUT_READER=autonomous. An inline
+# `SCOUT_READER=owner claude …`, any other exported reader, or a commented-out
+# export doesn't count.
+_READER_EXPORT_RE = re.compile(
+    r"^[ \t]*(?:export|declare[ \t]+-x)[ \t]+(?:[^\n#]*[ \t])?"
+    r"(?:SCOUT_MODE\b|SCOUT_READER=([\"']?)autonomous\1(?=[ \t;]|$))",
+    re.MULTILINE,
+)
+_KB_REF_RE = re.compile(r"knowledge[-_]base")
+_RAW_READ_RE = re.compile(r"\brglob\(|\bglob\(|\bopen\(|\bos\.walk\(|\.read_text\(|\.read_bytes\(")
+_SHELL_READ_RE = re.compile(r"(?:^|[\s;|&(`$])(?:cat|grep|rg|find|ls)\b")
+_GATE_RE = re.compile(r"scoutctl['\",\s]+kb\b")
+_SHELL_SUFFIXES = frozenset({".sh", ".bash"})
+_SKIP_DIRS = frozenset({".venv", "node_modules", "__pycache__"})
+_SCAN_BYTES = 1 << 20
+
+
+@dataclass(frozen=True)
+class PrivacyDrift:
+    """A vault-local file that reads the vault around the privacy labels."""
+
+    path: str  # vault-relative
+    rule: str  # "runner-no-reader" | "script-raw-kb-read"
+    message: str  # names the path and the fix; never the file's content
+
+    def to_json(self) -> dict[str, Any]:
+        return {"path": self.path, "rule": self.rule, "message": self.message}
+
+
+def _runner_message(rel: str) -> str:
+    return (
+        f"{rel} doesn't export SCOUT_READER=autonomous or SCOUT_MODE, so the session it starts doesn't read "
+        "the vault as a scheduled run, and its reads aren't marked as unattended. "
+        "Add these two lines before it launches claude: "
+        '`export SCOUT_MODE="<run-name>"` and `export SCOUT_READER=autonomous`.'
+    )
+
+
+def _script_message(rel: str) -> str:
+    return (
+        f"{rel} reads the knowledge base directly, not through `scoutctl kb`, so what it produces carries "
+        "no privacy labels. Read it through `scoutctl kb files` (and `scoutctl kb read`), and tag each item "
+        "it produces with its source file's visibility; send an item from a private file only to an "
+        "owner-only channel (the daily file, Telegram to your private chat), never Slack (#453)."
+    )
+
+
+def _head_text(path: Path) -> str | None:
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(_SCAN_BYTES)
+    except OSError:
+        return None
+    if b"\0" in data:
+        return None  # binary
+    return data.decode("utf-8", "replace")
+
+
+def _is_shell(path: Path, text: str) -> bool:
+    if path.suffix in _SHELL_SUFFIXES:
+        return True
+    first = text.split("\n", 1)[0]
+    return first.startswith("#!") and re.search(r"\b(?:ba|z|k|da)?sh\b", first) is not None
+
+
+def _reads_kb_raw(path: Path, text: str) -> bool:
+    """Whether a vault script reads the knowledge base around ``scoutctl kb`` (heuristic)."""
+    if _GATE_RE.search(text) or not _KB_REF_RE.search(text):
+        return False
+    if _is_shell(path, text):
+        # A non-comment line that runs cat/grep/rg/find/ls on the knowledge base.
+        return any(
+            _KB_REF_RE.search(line) and _SHELL_READ_RE.search(line)
+            for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+    return _RAW_READ_RE.search(text) is not None
+
+
+def privacy_drift(vault: Path) -> list[PrivacyDrift]:
+    """Vault-local runners and scripts that bypass the privacy reader or labels.
+
+    * every ``run-*.sh`` at the vault root without a non-comment
+      ``export SCOUT_MODE`` or ``export SCOUT_READER=autonomous`` (spec §6.2);
+    * every file under ``scripts/`` the engine doesn't render (it has no
+      last-render record) that reads the knowledge base and never calls
+      ``scoutctl kb``: Python-style reads (``rglob``/``glob``/``open(``/
+      ``os.walk``/``read_text``) anywhere in the file, or, in a shell script,
+      a line running ``cat``/``grep``/``rg``/``find``/``ls`` on
+      ``knowledge-base`` (a heuristic for the vault-local enrichment
+      generator, spec §6.3). ``.venv``, ``node_modules`` and ``__pycache__``
+      folders are skipped.
+
+    Read-only. Messages name the path and the fix, never the file's content.
+    """
+    found: list[PrivacyDrift] = []
+    for runner in sorted(vault.glob("run-*.sh")):
+        text = _head_text(runner) if runner.is_file() else None
+        if text is not None and not _READER_EXPORT_RE.search(text):
+            rel = _rel(vault, runner)
+            found.append(PrivacyDrift(rel, "runner-no-reader", _runner_message(rel)))
+    scripts = vault / "scripts"
+    if scripts.is_dir():
+        for path in sorted(scripts.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
+                continue
+            rel = _rel(vault, path)
+            if snapshot_path(vault, rel).is_file():
+                continue  # engine-rendered: the engine keeps it compliant
+            text = _head_text(path)
+            if text is not None and _reads_kb_raw(path, text):
+                found.append(PrivacyDrift(rel, "script-raw-kb-read", _script_message(rel)))
+    return found

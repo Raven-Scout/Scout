@@ -63,6 +63,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -514,6 +515,26 @@ def visible_files(vault: Path, reader: str, globs: Sequence[str] = ()) -> list[t
     ]
 
 
+def visibility_map(vault: Path, reader: str, globs: Sequence[str], *, who: str = "scout") -> dict[str, str]:
+    """``{vault-relative path: "normal" | "private"}`` of the files ``reader`` may see under ``globs``.
+
+    For the engine's pre-built caches (#453, spec §6.3). Empty for a reader that
+    sees nothing. If the labels can't be read it fails closed: it returns ``{}``,
+    so every caller (which treats a path missing from the map as private) marks
+    everything private, and writes one stderr line naming ``who`` and the
+    exception type. It never prints the exception's text, which could name a
+    private file.
+    """
+    try:
+        return {rel: label.visibility for rel, label in visible_files(vault, reader, globs)}
+    except Exception as e:
+        print(
+            f"{who}: privacy labels unavailable ({type(e).__name__}); every file is marked private",
+            file=sys.stderr,
+        )
+        return {}
+
+
 # ----- search -----------------------------------------------------------------------
 
 
@@ -733,6 +754,9 @@ class Output:
     ``lines`` are printed one ``print()`` each (so ``"\\nN result(s)."`` gives
     the template's blank line); ``raw``, when set, is written as is instead.
     ``labels`` are the labels of the paths returned (the audit log counts them).
+    ``surface`` and ``blocked`` are a ``check-outbound``/``check-query`` call's
+    surface and verdict, for the audit log (a blocked check is logged for every
+    reader, ``owner`` included).
     """
 
     data: Any
@@ -741,6 +765,8 @@ class Output:
     denied: int = 0
     code: int = 0
     raw: str | None = None
+    surface: str | None = None
+    blocked: bool = False
 
 
 def _labels_json(labels: Sequence[Label]) -> list[Mapping[str, Any]]:
@@ -973,10 +999,10 @@ def audit(vault: Path, reader: str, command: str, args: Sequence[str], out: Outp
         vault,
         reader=reader,
         command=command,
-        surface=None,
+        surface=out.surface,
         args=args,
         returned=len(paths),
         denied=out.denied,
         private_paths=sum(1 for label in paths.values() if label.get("visibility") == "private"),
-        blocked=False,
+        blocked=out.blocked,
     )

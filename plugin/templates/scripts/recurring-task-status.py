@@ -33,6 +33,11 @@ Cadence DSL (subset implemented in v1):
     quarterly:cycle-start
     yearly:<MM-DD>            e.g. yearly:06-15  (name days, birthdays, renewals)
 
+Privacy (#453): each row carries its entity file's `visibility`, from the Scout
+engine (in process, else `scoutctl kb files --json`); a private task's name is
+printed as `[private] <name>`. Without either, rows are `unknown` and marked
+[private]. A reader that sees nothing (SCOUT_READER=agent:...) gets no rows.
+
 Surface-window DSL (subset):
     T-0 morning  -> show on the due day itself
     T-1 day      -> show 1 day before
@@ -94,7 +99,9 @@ _run_under_a_python_with_yaml()
 import argparse
 import calendar
 import json
+import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
@@ -132,6 +139,89 @@ class TaskStatus:
     priority: str = ""
     reason: str = ""
     feeds: list = field(default_factory=list)
+    visibility: str = "normal"
+
+
+# ----- privacy labels (#453) ---------------------------------------------------
+# Every row carries its file's visibility from the Scout engine's classifier:
+# in process when this Python can import the engine, else from
+# `scoutctl kb files --json` (SCOUTCTL_BIN, then PATH). With neither, every row
+# is `unknown` and printed as [private]: fail closed, never silently unlabelled.
+
+
+def reader_sees_nothing() -> bool:
+    """True when SCOUT_READER names a reader that may see no file (an agent, or
+    a malformed value). Mirrors scout.kb.reader.resolve_reader (spec §6.2):
+    only `owner` and `autonomous` see the vault."""
+    reader = os.environ.get("SCOUT_READER")
+    return reader is not None and reader not in ("owner", "autonomous")
+
+
+def visibility_map(vault: Path, globs: list) -> "dict | None":
+    """{vault-relative path: "normal" | "private"} for the files matching `globs`,
+    or None when no label source works (the caller marks every row unknown)."""
+    try:
+        from scout.kb.read import visible_files
+        from scout.kb.reader import resolve_reader
+    except ImportError:
+        pass
+    else:
+        try:
+            reader = resolve_reader(None, os.environ)
+            return {rel: label.visibility for rel, label in visible_files(vault, reader, globs)}
+        except Exception:
+            return None
+    import shutil
+
+    scoutctl = os.environ.get("SCOUTCTL_BIN") or shutil.which("scoutctl")
+    if not scoutctl:
+        return None
+    argv = [scoutctl, "kb", "files", "--json", "--repo", str(vault)]
+    for glob in globs:
+        argv += ["--glob", glob]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+        rows = json.loads(proc.stdout) if proc.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    out = {}
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            label = row.get("label") if isinstance(row.get("label"), dict) else {}
+            out[row["path"]] = "normal" if label.get("visibility") == "normal" else "private"
+    return out
+
+
+def row_visibility(labels: "dict | None", rel: str) -> str:
+    """A row's visibility: its label, `private` when the label source skipped it, `unknown` with no source."""
+    if labels is None:
+        return "unknown"
+    return labels.get(rel, "private")
+
+
+def private_mark(visibility: str) -> str:
+    return "" if visibility == "normal" else "[private] "
+
+
+def warn_unlabelled(script: str) -> None:
+    print(
+        f"{script}: can't read privacy labels (the Scout engine isn't importable here and scoutctl wasn't "
+        "found or failed); every row is marked [private]. Put scoutctl on PATH or set SCOUTCTL_BIN.",
+        file=sys.stderr,
+    )
+
+
+def vault_of(directory: Path) -> Path:
+    """The vault holding `directory`: the parent of its `knowledge-base`
+    ancestor, else $SCOUT_DATA_DIR, else this script's vault."""
+    resolved = directory.resolve()
+    for parent in (resolved, *resolved.parents):
+        if parent.name == "knowledge-base":
+            return parent.parent
+    env = os.environ.get("SCOUT_DATA_DIR")
+    return Path(env) if env else Path(__file__).resolve().parent.parent
 
 
 def parse_frontmatter(path: Path) -> dict:
@@ -471,14 +561,31 @@ def main() -> int:
 
     seen_slugs: set[str] = set()
     rows: list[TaskStatus] = []
-    for path in sorted(root.glob("*.md")):
+    vault = vault_of(root)
+    paths = [] if reader_sees_nothing() else sorted(root.glob("*.md"))
+    labels = None
+    if paths:
+        try:
+            scope = root.resolve().relative_to(vault.resolve()).as_posix()
+        except ValueError:
+            scope = None
+        labels = visibility_map(vault, [f"{scope}/**"]) if scope else None
+        if labels is None:
+            warn_unlabelled("recurring-task-status")
+    for path in paths:
         entity = parse_frontmatter(path)
         if entity.get("type") != "recurring_task":
             continue
         if entity.get("status") and str(entity["status"]).lower() not in ("open", "active"):
             continue
         seen_slugs.add(path.stem)
-        rows.append(compute_status(entity, today, overrides.get(path.stem)))
+        row = compute_status(entity, today, overrides.get(path.stem))
+        try:
+            rel = path.resolve().relative_to(vault.resolve()).as_posix()
+        except ValueError:
+            rel = ""
+        row.visibility = row_visibility(labels, rel)
+        rows.append(row)
 
     for slug in overrides:
         if slug not in seen_slugs:
@@ -506,7 +613,7 @@ def main() -> int:
     for r in rows:
         missed = f"**{r.windows_missed}**" if r.windows_missed else "0"
         print(
-            f"| {r.name} | **{r.status}** | {missed} | {r.cadence} | {r.next_due or '—'} | "
+            f"| {private_mark(r.visibility)}{r.name} | **{r.status}** | {missed} | {r.cadence} | {r.next_due or '—'} | "
             f"{r.surface_window} | {r.last_completed or '—'} | {r.reason} |"
         )
     return 0
