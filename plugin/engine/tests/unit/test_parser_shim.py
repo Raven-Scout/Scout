@@ -202,6 +202,132 @@ def test_shim_imports_nothing_outside_the_stdlib() -> None:
     assert "import yaml" not in text and "from scout" not in text and "import scout" not in text
 
 
+_IMPORT_ONLY = """
+import os, sys, importlib.util
+shim, kb = sys.argv[1], sys.argv[2]
+opened = []
+def hook(event, args):
+    if event == "open" and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        opened.append(os.path.abspath(os.fsdecode(args[0])))
+sys.addaudithook(hook)
+spec = importlib.util.spec_from_file_location("parser", shim)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+bad = sorted(m for m in sys.modules if m.split(".")[0] in ("scout", "yaml"))
+pyc = os.path.join(os.path.dirname(os.path.abspath(shim)), "__pycache__") + os.sep
+touched = [p for p in opened if p.startswith(kb) and p != os.path.abspath(shim) and not p.startswith(pyc)]
+print(bad, touched)
+"""
+
+
+def test_importing_the_shim_reads_nothing_and_needs_no_engine(vault: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", _IMPORT_ONLY, str(_rendered(vault)), str(vault / "knowledge-base")],
+        capture_output=True,
+        text=True,
+        cwd=vault,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[] []"
+
+
+# ----- the Python API: `from parser import KnowledgeGraph` (compat class) ---------------
+
+
+def _load_module(path: Path, name: str) -> Any:
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader(name, str(path))
+    spec = spec_from_loader(name, loader)
+    assert spec is not None
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _api_results(graph: Any) -> dict[str, Any]:
+    return {
+        "entities": graph.entities,
+        "relationships": graph.relationships,
+        "entity": [graph.entity("sam"), graph.entity("priya"), graph.entity("nobody")],
+        "query": [
+            graph.query(),
+            graph.query(type="task"),
+            graph.query(type="task", domain="personal"),
+            graph.query(exclude_status="completed,cancelled"),
+            graph.query(deadline_before="2999-01-01"),
+        ],
+        "related": [graph.related("priya"), graph.related("nobody")],
+        "export": json.loads(graph.export_json()),
+        "validate": graph.validate(),
+        "name_lookup": [graph.name_lookup("Sam"), graph.name_lookup("Pryia", distance_threshold=0.5)],
+        "traverse": [graph.traverse("priya"), graph.traverse("priya", max_hops=1, rel_types={"works_with"})],
+        "path": [graph.path("priya", "sam"), graph.path("priya", "priya"), graph.path("priya", "nobody")],
+    }
+
+
+@pytest.mark.parametrize("env", [{}, {"SCOUT_MODE": "briefing"}], ids=["owner", "autonomous"])
+def test_python_api_matches_the_pre_shim_class(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    from scout.kb.ontology import clear_frontmatter_cache
+
+    for key in [k for k in os.environ if k.startswith("SCOUT_")]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    kb_root = str(vault / "knowledge-base")
+    schema = str(vault / "knowledge-base" / "ontology" / "schema.yaml")
+    clear_frontmatter_cache()
+    shim = _load_module(_rendered(vault), "vault_parser_shim")
+    graph = shim.KnowledgeGraph(schema_path=schema, kb_root=kb_root).load()
+    assert graph.reader == ("autonomous" if env else "owner")
+    assert graph.entity("sam")["_label"]["visibility"] == "private"
+    assert all("_label" in e for e in graph.entities.values())
+    old = _load_module(LEGACY, "vault_parser_pre_shim").KnowledgeGraph(schema_path=schema, kb_root=kb_root).load()
+    assert _strip_labels(_api_results(graph)) == _api_results(old)
+
+
+def test_python_api_gives_an_agent_nothing(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_READER", "agent:person:priya@example.com")
+    shim = _load_module(_rendered(vault), "vault_parser_shim_agent")
+    graph = shim.KnowledgeGraph(
+        schema_path=str(vault / "knowledge-base" / "ontology" / "schema.yaml"), kb_root=str(vault / "knowledge-base")
+    ).load()
+    assert graph.entities == {} and graph.relationships == []
+    assert graph.query() == [] and graph.entity("sam") is None
+    assert json.loads(graph.export_json()) == {"entities": {}, "relationships": []}
+
+
+_NO_ENGINE = """
+import sys, importlib.util
+sys.path = [p for p in sys.path if "site-packages" not in p and "engine" not in p]
+spec = importlib.util.spec_from_file_location("parser", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sys.modules["parser"] = mod
+assert "scout" not in sys.modules
+try:
+    from parser import KnowledgeGraph
+except ImportError as e:
+    print("ImportError:", e)
+else:
+    print("imported", KnowledgeGraph)
+"""
+
+
+def test_python_api_without_the_engine_names_scoutctl(vault: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _NO_ENGINE, str(_rendered(vault))],
+        capture_output=True,
+        text=True,
+        cwd=vault,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("ImportError:") and "scoutctl kb" in result.stdout
+
+
 # ----- parity: pre-shim parser vs shim → scoutctl, labels removed ----------------------
 
 PARITY: list[list[str]] = [

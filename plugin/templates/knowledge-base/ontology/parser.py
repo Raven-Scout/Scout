@@ -19,16 +19,78 @@ narrow the reader `SCOUT_READER` / `SCOUT_MODE` set. If `scoutctl` isn't on
 PATH this exits non-zero without reading the knowledge base: there is no
 unlabelled fallback.
 
-This file imports only the standard library. Python callers should use
-`scout.kb.ontology.KnowledgeGraph`, or `scoutctl kb ... --json`.
+Python callers: `from knowledge_base.ontology.parser import KnowledgeGraph`
+still works, with the old constructor `KnowledgeGraph(schema_path=..., kb_root=...)`
+and methods (load, entity, query, related, export_json, validate, name_lookup,
+traverse, path, to_networkx). It is the engine's `scout.kb.ontology.KnowledgeGraph`
+for the ambient reader (`SCOUT_READER`; else `autonomous` when `SCOUT_MODE` is
+set; else `owner`), so each entity carries `_label` and an agent reader gets an
+empty graph. The class is looked up only when a caller asks for it: importing
+this file imports only the standard library and reads nothing, and the command
+line never needs the engine importable. Without the engine, asking for
+`KnowledgeGraph` raises ImportError; use `scoutctl kb ... --json` instead.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import shutil
 import sys
+from typing import Any
+
+_COMPAT: dict[str, Any] = {}
+
+
+def _knowledge_graph_class() -> Any:
+    """The engine-backed `KnowledgeGraph` with the pre-shim constructor (built once)."""
+    if "KnowledgeGraph" in _COMPAT:
+        return _COMPAT["KnowledgeGraph"]
+    try:
+        ontology = importlib.import_module("scout.kb.ontology")
+        reader_mod = importlib.import_module("scout.kb.reader")
+    except ImportError as exc:
+        raise ImportError(
+            "knowledge_base.ontology.parser.KnowledgeGraph needs the Scout engine (the `scout` package), "
+            "which isn't importable here. The knowledge graph runs in the engine and labels private notes; "
+            "use `scoutctl kb query|entity|related|export ... --json` instead, or run this script with the "
+            "engine's Python."
+        ) from exc
+
+    class KnowledgeGraph(ontology.KnowledgeGraph):  # type: ignore[misc, name-defined]
+        """The pre-shim parser's class, served by the engine: same methods, plus `_label`."""
+
+        def __init__(self, schema_path: str, kb_root: str) -> None:
+            reader = reader_mod.resolve_reader(None, os.environ)
+            super().__init__(schema_path, kb_root, reader=reader)
+
+        def to_networkx(self) -> Any:
+            """A networkx.MultiDiGraph of the loaded (labelled) entities; needs networkx."""
+            try:
+                import networkx as nx
+            except ImportError as exc:
+                raise RuntimeError(
+                    "networkx not installed — traverse()/path() work without it; "
+                    "only to_networkx() needs `pip install networkx`."
+                ) from exc
+            g = nx.MultiDiGraph()
+            for name, ent in self.entities.items():
+                g.add_node(name, type=ent.get("type"))
+            for r in self.relationships:
+                g.add_edge(r["source"], r["target"], type=r["type"])
+            return g
+
+    KnowledgeGraph.__module__ = __name__
+    _COMPAT["KnowledgeGraph"] = KnowledgeGraph
+    return KnowledgeGraph
+
+
+def __getattr__(name: str) -> Any:
+    """`KnowledgeGraph` on first use (PEP 562), so importing this file needs no engine."""
+    if name == "KnowledgeGraph":
+        return _knowledge_graph_class()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 COMMANDS = ["validate", "export", "query", "entity", "related", "stats", "name_lookup", "traverse", "path"]
 SUBCOMMAND = {"name_lookup": "name-lookup"}
