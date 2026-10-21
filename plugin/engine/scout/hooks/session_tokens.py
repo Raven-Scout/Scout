@@ -45,60 +45,15 @@ from scout.events import Event, now_iso
 from scout.hooks import run_context
 from scout.ids import new_ulid
 
-# PRICING: $ per 1M tokens. The family rows are the published rates as of
-# 2026-04-22 (verbatim from sum-session-tokens.sh:21-23): they price a model
-# no row below names. Phase 2 makes this table irrelevant — quota utilization
-# replaces dollar display.
+# PRICING: $ per 1M tokens. Verify against https://www.anthropic.com/pricing
+# before shipping; these are the published rates as of 2026-04-22 (verbatim
+# from sum-session-tokens.sh:21-23). Phase 2 makes this table irrelevant —
+# quota utilization replaces dollar display.
 PRICING_USD_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "claude-opus": {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_create": 18.75},
     "claude-sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_create": 3.75},
     "claude-haiku": {"input": 0.80, "output": 4.00, "cache_read": 0.08, "cache_create": 1.00},
 }
-
-
-def _rates(input_: float, output: float, cache_read: float) -> dict[str, float]:
-    # Cache writes: 1.25x input for the 5-minute TTL, 2x for the 1-hour TTL.
-    return {
-        "input": input_,
-        "output": output,
-        "cache_read": cache_read,
-        "cache_create": input_ * 1.25,
-        "cache_create_1h": input_ * 2,
-    }
-
-
-# Per-model rates, $ per 1M tokens, from Anthropic's first-party API price list
-# (checked 2026-10-21). Cache reads are 0.1x input unless the list says
-# otherwise. The longest matching prefix wins, so `claude-opus-5` doesn't price
-# `claude-opus-5-5`. A model none of these name falls back to its family row
-# above. Check: the 2026-10-20 sandbox research run (Opus 5.5; 132,619 input,
-# 33,041 output, 2.55M cache-read, 154k cache-write tokens) prices at $2.47,
-# what the host billed it.
-MODEL_PRICING_USD_PER_M_TOKENS: dict[str, dict[str, float]] = {
-    "claude-fable-5-1": _rates(10.00, 50.00, 0.25),
-    "claude-mythos-5-1": _rates(10.00, 50.00, 0.25),
-    "claude-fable-5": _rates(10.00, 50.00, 1.00),
-    "claude-opus-5-5": _rates(4.00, 20.00, 0.20),
-    "claude-opus-5": _rates(5.00, 25.00, 0.50),
-    "claude-opus-4-8": _rates(5.00, 25.00, 0.50),
-    "claude-opus-4-7": _rates(5.00, 25.00, 0.50),
-    "claude-opus-4-6": _rates(5.00, 25.00, 0.50),
-    "claude-sonnet-5-5": _rates(2.00, 10.00, 0.20),
-    "claude-sonnet-5": _rates(2.00, 10.00, 0.20),
-    "claude-sonnet-4-6": _rates(3.00, 15.00, 0.30),
-    "claude-haiku-5-5": _rates(0.10, 0.50, 0.01),  # prompts up to 100K tokens
-    "claude-haiku-4-5": _rates(1.00, 5.00, 0.10),
-}
-
-
-def _model_rates(model: str | None) -> dict[str, float]:
-    """The rates for one turn's model: the longest matching model prefix, else its family row."""
-    if model:
-        matches = [p for p in MODEL_PRICING_USD_PER_M_TOKENS if model.startswith(p)]
-        if matches:
-            return MODEL_PRICING_USD_PER_M_TOKENS[max(matches, key=len)]
-    return PRICING_USD_PER_M_TOKENS[_model_family(model)]
-
 
 # Polling for transcript flush. Bash line 61: 6 attempts × 0.5s = 3s ceiling.
 # On the happy path the first attempt finds usage and we never sleep.
@@ -123,10 +78,10 @@ def _model_family(model: str | None) -> str:
 
 
 def _is_known_model(model: str) -> bool:
-    """Whether `model` matches a known family or a priced model (non-empty)."""
+    """Whether `model` matches one of the three known families (non-empty)."""
     if not model:
         return False
-    return any(model.startswith(p) for p in (*PRICING_USD_PER_M_TOKENS, *MODEL_PRICING_USD_PER_M_TOKENS))
+    return any(model.startswith(p) for p in PRICING_USD_PER_M_TOKENS)
 
 
 def _utc_ts() -> str:
@@ -240,22 +195,14 @@ def _compute_cost_usd(turns: list[dict[str, Any]]) -> float:
     for t in turns:
         msg = t.get("message") or {}
         usage = msg.get("usage") or {}
-        rates = _model_rates(msg.get("model"))
+        family = _model_family(msg.get("model"))
+        rates = PRICING_USD_PER_M_TOKENS[family]
         i = usage.get("input_tokens") or 0
         o = usage.get("output_tokens") or 0
         cr = usage.get("cache_read_input_tokens") or 0
         cc = usage.get("cache_creation_input_tokens") or 0
-        # A 1-hour cache write costs more than a 5-minute one; Claude Code's usage
-        # splits them under cache_creation. Without the split, all are 5-minute.
-        split = usage.get("cache_creation")
-        cc_1h = (split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
-        cc_1h = min(cc_1h, cc)
         total += (
-            i * rates["input"]
-            + o * rates["output"]
-            + cr * rates["cache_read"]
-            + (cc - cc_1h) * rates["cache_create"]
-            + cc_1h * rates.get("cache_create_1h", rates["cache_create"])
+            i * rates["input"] + o * rates["output"] + cr * rates["cache_read"] + cc * rates["cache_create"]
         ) / 1_000_000
     return total
 

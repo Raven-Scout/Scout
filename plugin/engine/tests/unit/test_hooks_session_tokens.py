@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from scout.events import Event
-from scout.hooks.session_tokens import _compute_cost_usd, _is_known_model, _model_family, _model_rates, run
+from scout.hooks.session_tokens import _model_family, run
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -398,54 +398,3 @@ def test_main_returns_zero_even_on_garbage_stdin(monkeypatch, tmp_path):
 
     rc = main()
     assert rc == 0
-
-
-# -- per-model rates -----------------------------------------------------------
-
-
-def _turn(model: str, **usage: object) -> dict:
-    return {"message": {"role": "assistant", "model": model, "usage": usage}}
-
-
-def test_a_real_opus_5_5_run_prices_at_what_it_was_billed():
-    """The 2026-10-20 sandbox research run: the host billed $2.472 for these tokens.
-
-    The family table priced it at ~$11.19 (Opus 4-era $15/$75), which would have
-    made the budget gate skip runs it should do.
-    """
-    turn = _turn(
-        "claude-opus-5-5",
-        input_tokens=132_619,
-        output_tokens=33_041,
-        cache_read_input_tokens=2_550_000,
-        cache_creation_input_tokens=154_000,
-    )
-    assert _compute_cost_usd([turn]) == pytest.approx(2.472, abs=0.01)
-
-
-def test_the_longest_model_prefix_wins_and_unlisted_models_use_their_family():
-    assert _model_rates("claude-opus-5-5")["input"] == 4.00
-    assert _model_rates("claude-opus-5")["input"] == 5.00
-    assert _model_rates("claude-sonnet-5-5")["output"] == 10.00
-    assert _model_rates("claude-haiku-5-5")["cache_read"] == 0.01
-    assert _model_rates("claude-fable-5-1")["cache_read"] == 0.25
-    assert _model_rates("claude-fable-5")["cache_read"] == 1.00
-    assert _model_rates("claude-opus-4-5-20251015")["input"] == 15.00  # no listed rate: family row
-    assert _model_rates(None)["input"] == 15.00
-
-
-def test_one_hour_cache_writes_cost_double_the_input_rate():
-    split = _turn(
-        "claude-sonnet-5-5",
-        cache_creation_input_tokens=1_000_000,
-        cache_creation={"ephemeral_5m_input_tokens": 400_000, "ephemeral_1h_input_tokens": 600_000},
-    )
-    # 400k at 1.25 x $2, 600k at 2 x $2
-    assert _compute_cost_usd([split]) == pytest.approx(0.4 * 2.5 + 0.6 * 4.0)
-    unsplit = _turn("claude-sonnet-5-5", cache_creation_input_tokens=1_000_000)
-    assert _compute_cost_usd([unsplit]) == pytest.approx(2.5)
-
-
-def test_newer_model_ids_are_not_unknown():
-    assert _is_known_model("claude-fable-5-1")
-    assert not _is_known_model("gpt-4-turbo")
