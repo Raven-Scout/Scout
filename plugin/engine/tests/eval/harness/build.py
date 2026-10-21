@@ -5,7 +5,9 @@ Three layers, built fresh for every sample:
 1. the skeleton from this checkout's own ``bootstrap.install()``, so brain
    files, runners and scripts are always the code under test;
 2. the hand-written base overlay in ``tests/eval/vault/``;
-3. the scenario's own ``vault/`` overlay.
+3. the scenario's own ``vault/`` overlay;
+4. the scenario's ``brain/<KIND>.md``, appended to that built brain file (a
+   vault-local brain edit, such as a Telegram copy of the wrap).
 
 Overlay text files have their date macros rendered, in contents and in path
 components. The result is committed as a one-commit git repo.
@@ -73,6 +75,17 @@ def _overlay(src: Path, dest: Path, today: date) -> None:
         shutil.copymode(path, target)
 
 
+def _append_brain(src: Path, dest: Path, today: date) -> None:
+    """Append ``src/<KIND>.md`` to the vault's built ``<KIND>.md``, date macros rendered."""
+    for path in sorted(src.glob("*.md")) if src.is_dir() else []:
+        target = dest / path.name
+        if not target.is_file():
+            raise FileNotFoundError(f"scenario brain append {path.name}: the vault has no {path.name}")
+        text = render_dates(path.read_text(encoding="utf-8"), today)
+        _check_rendered(f"brain/{path.name}", text)
+        target.write_text(target.read_text(encoding="utf-8").rstrip("\n") + "\n\n" + text, encoding="utf-8")
+
+
 def _git_env(today: date) -> dict[str, str]:
     """Fixed identity and config, and no inherited GIT_* (a hook's GIT_DIR would redirect the commit)."""
     stamp = f"{today.isoformat()}T06:00:00+00:00"
@@ -123,6 +136,8 @@ def build_vault(
     _overlay(BASE_OVERLAY, dest, today)
     if scenario_dir is not None and (scenario_dir / "vault").is_dir():
         _overlay(scenario_dir / "vault", dest, today)
+    if scenario_dir is not None:
+        _append_brain(scenario_dir / "brain", dest, today)
     (dest / "knowledge-base.md").write_text(render_dates(generate_index(), today), encoding="utf-8")
     if scheduler_tick is not None:
         _seed_scheduler_tick(dest, scheduler_tick)

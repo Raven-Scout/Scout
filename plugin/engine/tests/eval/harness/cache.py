@@ -48,7 +48,7 @@ def cache_key(checkout: Checkout, scenario: Scenario, *, model: str, cli_version
     """``weekday`` (0 = Monday) because phases branch on the day: a Monday base isn't a Tuesday head's baseline."""
     parts = [
         content_hash([checkout.plugin_root / d for d in ARM_DIRS]),
-        content_hash([scenario.path]),
+        content_hash(list(dict.fromkeys([scenario.path, scenario.files]))),
         content_hash([EVAL_ROOT / d for d in HARNESS_DIRS]),
         HARNESS_VERSION,
         model,

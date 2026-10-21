@@ -19,8 +19,8 @@ Before doing anything else, read the caches that the runner script generated bef
 | Cache file | What's in it | Replaces |
 |---|---|---|
 | `.scout-cache/kb-filter.md` | Per-file staleness: which KB files are stale, fresh, or undated, with ages | Walking every KB file to check "Last updated" headers |
-| `.scout-cache/vault-freshness.md` | The same files ranked by their last git commit against their freshness budget, plus files whose claimed "Last verified" date disagrees with git | Running `git log` per file to see what actually changed |
-| `.scout-cache/session-context.json` | Recent git log, open PRs, PR review requests, KB file dates, open personal tasks | Running `git log`, `gh pr list`, `gh search prs`, parser queries |
+| `.scout-cache/vault-freshness.md` | The same files ranked by their last git commit against their freshness budget, plus files whose claimed "Last verified" date disagrees with git | Walking the vault's history per file to see what actually changed |
+| `.scout-cache/session-context.json` | Recent vault commits (labelled rows, as `scripts/scoutctl kb delta` prints them), open PRs, PR review requests, KB file dates, open personal tasks (each labelled) | Running `scripts/scoutctl kb delta`, `gh pr list`, `gh search prs`, `scripts/scoutctl kb query` |
 | `.scout-cache/cc-sessions.md` | Non-{{INSTANCE_NAME}} Claude Code sessions from the last 24h: project paths, first prompts, files touched | Manually discovering + parsing `~/.claude/projects/*/**.jsonl` |
 
 Prefer these caches over live tool calls during scoring. Fall back to live queries only when a cache is missing, obviously stale, or you need deeper detail (e.g., full PR diff, full session transcript).
@@ -32,7 +32,7 @@ Prefer these caches over live tool calls during scoring. Fall back to live queri
 Before scoring files, search all `.md` files under `{{SCOUT_DIR}}` for {{USER_NAME}}'s inline comment markers:
 
 ```bash
-grep -rn '//==<<' {{SCOUT_DIR}} --include='*.md'
+cd {{SCOUT_DIR}} && scripts/scoutctl kb search --fixed '//==<<' --glob '**/*.md'
 ```
 
 **Comment format:** `//==<< comment >>==//`
@@ -59,11 +59,11 @@ Below N=5, keep the resolve-each behavior above.
 
 ### Step 2-ontology: Knowledge Graph Integrity Check
 
-Before scoring individual files, run the knowledge graph parser for structural checks:
+Before scoring individual files, run the knowledge graph checks:
 
 ```bash
-cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py validate
-cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py stats
+cd {{SCOUT_DIR}} && scripts/scoutctl kb validate
+cd {{SCOUT_DIR}} && scripts/scoutctl kb stats
 ```
 
 **Schema validation errors to act on:**
@@ -80,19 +80,19 @@ cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py stats
 **Personal task staleness detection:**
 
 ```bash
-cd {{SCOUT_DIR}} && python knowledge-base/ontology/parser.py query --type task
+cd {{SCOUT_DIR}} && scripts/scoutctl kb query --type task --exclude-status "completed,cancelled"
 ```
 
 For each personal task entity (`domain: personal`, `status: open`):
-- **Stale task** = open personal task with `created_date` older than 7 days, no activity, AND no `surface_rule` currently muting it. Flag in the notification: "Still open: [task name] — done?" A task intentionally muted by its `surface_rule` (default `do_not_surface`, no window covering today, no `always_visible_if` firing) is **not** stale — it is deliberately backgrounded; do not flag it.
+- **Stale task** = open personal task with `created_date` older than 7 days, no activity, AND no `surface_rule` currently muting it. Flag it: "Still open: [task name] — done?" (a `[private]` task only in the daily file or Telegram, never Slack). A task intentionally muted by its `surface_rule` (default `do_not_surface`, no window covering today, no `always_visible_if` firing) is **not** stale — it is deliberately backgrounded; do not flag it.
 - **Deadline approaching** = task with `deadline` within 3 days. Escalate priority to 🔴 in the entity file if not already.
-- **Completion signal check** = if `completion_signal: gmail_confirmation`, check Gmail for matching confirmation. Auto-resolve if found (set `status: completed`, add `completed_date`).
+- **Completion signal check** = if `completion_signal: gmail_confirmation`, check Gmail for matching confirmation, with a query that passes `scripts/scoutctl kb check-query` (no private names in it). Auto-resolve if found (set `status: completed`, add `completed_date`).
 
 Commit any entity file changes from this step before proceeding to file scoring.
 
 ### Step 2a: Score All KB Files
 
-Read every file in `knowledge-base/`. Score each file on four dimensions (0-3 each). Total possible score: 12. Higher scores = higher priority for work.
+Score every file in `knowledge-base/`. Start from the caches (`.scout-cache/kb-filter.md`, `.scout-cache/vault-freshness.md`); list the rest with `scripts/scoutctl kb files --glob 'knowledge-base/**'` (labelled) and read a file with `scripts/scoutctl kb read <path>`. Score each file on four dimensions (0-3 each). Total possible score: 12. Higher scores = higher priority for work.
 
 #### Dimension 1: Staleness (0-3)
 
@@ -186,7 +186,7 @@ Based on the scoring distribution, select a work mode:
 - Fix broken and missing `[[wikilinks]]` across the KB.
 - Verify the KB graph: every file reachable from `knowledge-base.md`, no orphans.
 - Apply verification levels (`[single-source]`, `[unverified]`, etc.) to claims that lack them.
-- **Knowledge graph integrity:** Run `python knowledge-base/ontology/parser.py validate` and fix any errors. Create missing entity files for people/projects that have relationships but no entity file. Add missing relationships to existing entity files.
+- **Knowledge graph integrity:** Run `scripts/scoutctl kb validate` and fix any errors. Create missing entity files for people/projects that have relationships but no entity file. Add missing relationships to existing entity files.
 - Goal: make the KB navigable and trustworthy.
 
 **Validation Pass** (when the score distribution is flat — nothing critically stale, no strong feedback signal pointing at a specific gap). **This is the default idle-night mode.** Once the KB is large, the marginal dreaming hour is better spent confirming that what's already in it is still true than adding more — so when in doubt between Gap Hunt and Validation Pass, choose Validation Pass. The deliverable is **existing claims re-grounded against live sources — corrected, downgraded, or confirmed — NOT new sections or entities.**
@@ -248,7 +248,7 @@ The summary should describe what was improved: e.g., "deep dive on project-alpha
 
 ### Step 2f: Track Work
 
-Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`:
+Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Dreaming | <one sentence: the headline result, with [[links]] to the notes changed> | <commit> |`
 

@@ -18,7 +18,7 @@ Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer'
 
 ## Step 4b: Session Entry
 
-Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`:
+Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Research | <one sentence: targets researched, key findings, entities updated, with [[links]]> | <commit> |`
 
@@ -47,7 +47,7 @@ Send a brief DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing:
 3. Entities updated
 4. Actionable insights (if any)
 
-Keep it concise — 5-8 lines max. The value is in the KB updates, not the summary.
+Keep it concise — 5-8 lines max. The value is in the KB updates, not the summary. Send it through the privacy phase's outbound-draft step (`.scout-cache/outbound-draft.md`, `scripts/scoutctl kb check-outbound` with `--surface slack`, send only on exit 0).
 
 ---
 

@@ -17,7 +17,7 @@ This is the self-improvement loop. Harvest feedback from {{USER_NAME}}'s reactio
 Read the bot's DM conversation with {{USER_NAME}} using `slack_read_channel` with channel_id `{{USER_SLACK_ID}}`.
 
 **Determine the time window:**
-1. Check the newest shard(s) in `knowledge-base/session-log/` for the last dreaming row.
+1. Check the newest shard(s) in `knowledge-base/session-log/` for the last dreaming row (`scripts/scoutctl kb files --glob 'knowledge-base/session-log/*.md'`, then `scripts/scoutctl kb read <shard>`).
 2. If a previous dreaming entry exists, look back to that timestamp.
 3. If no previous dreaming entry exists (first run), look back 24 hours from now.
 
@@ -52,7 +52,7 @@ Categorize every piece of harvested feedback into one of these signal types:
 
 ### Step 1c: Cross-Reference with Mistake Audit
 
-Read `knowledge-base/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
+Read the mistake audit with `scripts/scoutctl kb read knowledge-base/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
 
 **If the signal matches an existing pattern in the mistake audit:**
 - Increment the occurrence count for that pattern.
