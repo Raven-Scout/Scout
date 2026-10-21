@@ -65,6 +65,29 @@ from scout.kb.lint_config import glob_match
 
 SCHEMA_VERSION = 1
 
+# The classifier's own version. Bump it on ANY change to what classify(),
+# note_facts() or label_from_facts() return for a given input (a new rule, a
+# changed default, a different YAML parse): caches of labels or NoteFacts (the
+# kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
+# mismatch, so a stale label can never outlive the rules that made it.
+CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader (ruling R15)
+
+
+# Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
+# loader (ruling R15c): labels must be exactly what pure
+# ``yaml.safe_load`` gives (the Agnes indexer mirrors it), and the two scanners
+# disagree on more inputs than a guard can enumerate (a tab after a colon, a
+# backslash escape, a U+FEFF in the block, a comment right after a block-scalar
+# header, ``?`` in a flow collection, bare tags ...), in both directions. Speed
+# comes from the stat-keyed privacy index instead (``scout.kb.read``), which
+# stores each file's facts and, for the graph, its parsed frontmatter. Every
+# frontmatter parse on the label path (the classifier and ``KnowledgeGraph``)
+# goes through :func:`load_frontmatter_yaml`.
+def load_frontmatter_yaml(text: str) -> Any:
+    """``yaml.safe_load`` of a frontmatter block: pure ``SafeLoader``, never libyaml."""
+    return yaml.safe_load(text)  # pure SafeLoader, never the C loader
+
+
 VISIBILITIES = ("normal", "private")
 Visibility = Literal["normal", "private"]
 VisibilitySource = Literal["frontmatter", "path_default", "default", "forced"]
@@ -371,7 +394,7 @@ def _frontmatter(text: str | None) -> dict[str, Any] | None:
     if block is None:
         raise _Unparseable
     try:
-        data = yaml.safe_load("\n".join(block))
+        data = load_frontmatter_yaml("\n".join(block))
     except yaml.YAMLError as e:
         raise _Unparseable from e
     if data is None:

@@ -13,10 +13,17 @@ Phase 1 of the usage-and-connector-health design. Pricing is a static table
 quota utilization and the table becomes irrelevant.
 
 Environment:
-  SCOUT_MODE             — set by runner scripts. Falls back to "manual"
-                           (note: differs from connector_log which short-circuits
-                           when unset).
+  SCOUT_MODE             — set by runner scripts. Without it, the mode named in
+                           the run prompt when the session runs in a vault
+                           (scout.hooks.run_context), else "manual" (note:
+                           differs from connector_log which short-circuits when
+                           unset).
   SESSION_TOKENS_TRACKER — override tracker path (used by tests / parity bats).
+
+The vault is $SCOUT_DATA_DIR, else the one containing the payload's ``cwd``,
+else ~/Scout. A run whose mode came from its prompt has no runner to record its
+cost, so this hook also writes its spend to .scout-logs/usage-tracker.jsonl,
+where the budget gate reads it (``record_run_cost``).
 
 Hooks must NEVER raise — main() catches all exceptions and returns 0.
 """
@@ -35,6 +42,7 @@ from typing import IO, Any
 from scout import paths
 from scout.config import resolve_timezone
 from scout.events import Event, now_iso
+from scout.hooks import run_context
 from scout.ids import new_ulid
 
 # PRICING: $ per 1M tokens. Verify against https://www.anthropic.com/pricing
@@ -81,26 +89,26 @@ def _utc_ts() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _local_ts() -> str:
+def _local_ts(vault: Path | None = None) -> str:
     """Configured-zone timestamp like '2026-04-28 16:00 EDT' (#207).
 
     The emitted JSONL field stays named ``ts_et`` — it is a persisted schema
     key that downstream consumers grep for; only the zone became configurable.
     """
-    return datetime.now(resolve_timezone()).strftime("%Y-%m-%d %H:%M %Z")
+    return datetime.now(resolve_timezone(vault)).strftime("%Y-%m-%d %H:%M %Z")
 
 
-def _tracker_path() -> Path:
+def _tracker_path(vault: Path | None = None) -> Path:
     """Resolve the session-tokens.jsonl path.
 
     Precedence:
       1. SESSION_TOKENS_TRACKER env var (override; used by parity tests).
-      2. paths.data_dir() / .scout-logs / session-tokens.jsonl (default).
+      2. <vault> / .scout-logs / session-tokens.jsonl (default; vault defaults to paths.data_dir()).
     """
     override = os.environ.get("SESSION_TOKENS_TRACKER")
     if override:
         return Path(override).expanduser()
-    return paths.data_dir() / ".scout-logs" / "session-tokens.jsonl"
+    return (vault or paths.data_dir()) / ".scout-logs" / "session-tokens.jsonl"
 
 
 def _zero_row(
@@ -227,9 +235,9 @@ def _first_unknown_model(turns: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _append_row(record: dict[str, Any]) -> None:
+def _append_row(record: dict[str, Any], vault: Path | None = None) -> None:
     """Append one compact JSON line to the tracker. Best-effort — never raises."""
-    tracker = _tracker_path()
+    tracker = _tracker_path(vault)
     try:
         tracker.parent.mkdir(parents=True, exist_ok=True)
         with tracker.open("a", encoding="utf-8") as f:
@@ -237,6 +245,61 @@ def _append_row(record: dict[str, Any]) -> None:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
         pass
+
+
+# usage-tracker.jsonl rows this hook writes carry this source (write-session-cost.sh writes
+# "session" and "runner").
+USAGE_SOURCE = "session-tokens"
+
+
+def record_run_cost(vault: Path, *, mode: str, session_id: str, cost_usd: float, model: str) -> float:
+    """Add this session's spend to the vault's usage tracker; return the amount added.
+
+    For runs with no runner around them (the mode came from the prompt): nothing else
+    records what they cost, and the budget gate (scout.scripts.budget_check) sums
+    ``budget_spent`` over this file. The Stop hook fires at the end of every turn with the
+    session's running total, so each row carries only what is new since this session's
+    earlier rows. Best-effort — never raises.
+    """
+    tracker = vault / ".scout-logs" / "usage-tracker.jsonl"
+    already = 0.0
+    try:
+        with tracker.open("r", encoding="utf-8") as f:
+            for raw in f:
+                try:
+                    prior = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(prior, dict)
+                    and prior.get("source") == USAGE_SOURCE
+                    and prior.get("session_id") == session_id
+                ):
+                    already += float(prior.get("budget_spent") or 0)
+    except (OSError, TypeError, ValueError):
+        pass
+    delta = round(cost_usd - already, 6)
+    if delta <= 0:
+        return 0.0
+    row: dict[str, Any] = {
+        "ts": _utc_ts(),
+        "ts_local": _local_ts(),
+        "type": mode,
+        "budget_cap": 0,
+        "budget_spent": delta,
+        "exit_code": 0,
+        "source": USAGE_SOURCE,
+        "session_id": session_id,
+    }
+    if model:
+        row["model"] = model
+    try:
+        tracker.parent.mkdir(parents=True, exist_ok=True)
+        with tracker.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except OSError:
+        return 0.0
+    return delta
 
 
 def _make_event(record: dict[str, Any]) -> Event:
@@ -269,30 +332,22 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     session_id = str(payload.get("session_id") or "")
     transcript_path_str = str(payload.get("transcript_path") or "")
     cwd = str(payload.get("cwd") or "")
-    scout_mode = os.environ.get("SCOUT_MODE") or "manual"
+    transcript_path = Path(transcript_path_str).expanduser() if transcript_path_str else None
+    if transcript_path is not None and not transcript_path.is_file():
+        transcript_path = None
+    ctx = run_context.resolve(payload, transcript_path)
+    scout_mode = ctx.mode or "manual"
 
-    # Guard 1: missing / empty transcript path (bash line 40 `[ -z ... ]`).
-    if not transcript_path_str:
+    # Guard 1 + 2: missing / empty transcript path (bash line 40 `[ -z ... ]`), or no such
+    # file. Don't poll — go straight to the error row.
+    if transcript_path is None:
         record = _zero_row(
             session_id=session_id,
             scout_mode=scout_mode,
             cwd=cwd,
             error="transcript_not_found",
         )
-        _append_row(record)
-        return _make_event(record)
-
-    transcript_path = Path(transcript_path_str).expanduser()
-
-    # Guard 2: file doesn't exist. Don't poll — go straight to the error row.
-    if not transcript_path.is_file():
-        record = _zero_row(
-            session_id=session_id,
-            scout_mode=scout_mode,
-            cwd=cwd,
-            error="transcript_not_found",
-        )
-        _append_row(record)
+        _append_row(record, ctx.vault)
         return _make_event(record)
 
     # File exists but may still be flushing; poll up to ~3s for usage turns.
@@ -304,7 +359,7 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
             cwd=cwd,
             error="no_usage_turns",
         )
-        _append_row(record)
+        _append_row(record, ctx.vault)
         return _make_event(record)
 
     # Vectorize the four token sums in a single pass.
@@ -326,7 +381,7 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
 
     record = {
         "ts": _utc_ts(),
-        "ts_et": _local_ts(),
+        "ts_et": _local_ts(ctx.vault),
         "session_id": session_id,
         "scout_mode": scout_mode,
         "cwd": cwd,
@@ -340,7 +395,9 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
         "duration_ms": 0,  # reserved; bash always writes 0
         "error": error,
     }
-    _append_row(record)
+    _append_row(record, ctx.vault)
+    if ctx.mode and ctx.mode_source == run_context.SOURCE_PROMPT and session_id:
+        record_run_cost(ctx.vault, mode=ctx.mode, session_id=session_id, cost_usd=cost_usd, model=primary)
     return _make_event(record)
 
 

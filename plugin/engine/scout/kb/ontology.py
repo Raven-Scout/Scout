@@ -39,7 +39,7 @@ import time
 from collections import deque
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -53,6 +53,7 @@ from scout.kb.privacy import (
     decode_head,
     facts_from_frontmatter,
     label_from_facts,
+    load_frontmatter_yaml,
     load_policy,
     normalize_rel,
     note_facts,
@@ -77,9 +78,10 @@ from scout.kb.privacy import (
 # would otherwise keep the old key. It is re-read until it settles (git's
 # "racily clean" rule).
 #
-# Only within one process: nothing in the engine loads the graph from a fresh
-# process often enough to pay for an on-disk cache and its cross-session
-# invalidation.
+# This cache lives only within one process. A command that loads the graph from
+# a fresh process (``scoutctl kb query`` and the other graph commands) passes a
+# ``store`` instead: the stat-keyed privacy index (``scout.kb.read``), which
+# keeps each file's facts and parsed frontmatter across processes (ruling R15c).
 _StatKey = tuple[int, int, int, int]
 _FrontmatterCache = dict[str, tuple[_StatKey, bytes]]
 _CACHE: dict[str, _FrontmatterCache] = {}
@@ -123,6 +125,38 @@ def find_vault(kb_root: str | Path) -> Path:
         f"can't find the vault for KB root {kb_root}: no parent folder has a knowledge-base/ holding it "
         "or a scout-config.yaml; pass vault= explicitly"
     )
+
+
+_CONTAINERS = (list, dict, set, tuple)
+
+
+def _cyclic(v: Any, path: frozenset[int] = frozenset()) -> bool:
+    """Whether ``v`` reaches itself (``x: &r [*r]``: ``SafeLoader`` builds such a value)."""
+    if not isinstance(v, _CONTAINERS):
+        return False
+    if id(v) in path:
+        return True
+    inner = path | {id(v)}
+    items = (x for kv in v.items() for x in kv) if isinstance(v, dict) else v
+    return any(_cyclic(x, inner) for x in items)
+
+
+def _break_cycles(v: Any, path: frozenset[int] = frozenset()) -> Any:
+    """A copy of ``v`` with each reference back to an enclosing container replaced by None.
+
+    No JSON form (``kb query --json``, ``export``) or stored parse has a cycle;
+    an entity whose frontmatter has one keeps everything else.
+    """
+    if not isinstance(v, _CONTAINERS):
+        return v
+    if id(v) in path:
+        return None
+    inner = path | {id(v)}
+    if isinstance(v, dict):
+        return {k: _break_cycles(x, inner) for k, x in v.items()}  # keys are hashable: no cycle through them
+    if isinstance(v, list):
+        return [_break_cycles(x, inner) for x in v]
+    return type(v)(_break_cycles(x, inner) for x in v)
 
 
 class _Labeller:
@@ -178,15 +212,40 @@ class _Labeller:
         return label_from_facts(self.rel(path), facts, self.policy).to_json()
 
 
+class FrontmatterStore(Protocol):
+    """A cross-process cache of each file's parse, keyed by vault-relative path and stat key.
+
+    ``get`` returns ``(facts, frontmatter)`` stored for exactly that key, else
+    None; ``frontmatter`` is a fresh copy (``load()`` mutates it), or None for a
+    file that isn't an entity. ``put`` records a parse ``load()`` just made:
+    ``facts`` is None when the file isn't an entity (the store derives them).
+    Both are pure-``SafeLoader`` results, so labels never depend on the cache.
+    """
+
+    def get(self, rel: str, key: _StatKey) -> tuple[NoteFacts, dict[str, Any] | None] | None: ...
+
+    def put(
+        self, rel: str, key: _StatKey, path: Path, facts: NoteFacts | None, frontmatter: dict[str, Any] | None
+    ) -> None: ...
+
+
 class KnowledgeGraph:
     """Markdown-native knowledge graph with YAML frontmatter entities."""
 
     def __init__(
-        self, schema_path: str, kb_root: str, *, reader: str = "owner", vault: Path | str | None = None
+        self,
+        schema_path: str,
+        kb_root: str,
+        *,
+        reader: str = "owner",
+        vault: Path | str | None = None,
+        store: FrontmatterStore | None = None,
     ) -> None:
         self.schema_path = schema_path
         self.kb_root = kb_root
         self.reader = reader
+        # The cross-process parse cache (FrontmatterStore); None uses the per-process one.
+        self.store = store
         # The vault labels are relative to; None finds it from kb_root on load (find_vault).
         self.vault = Path(vault) if vault is not None else None
         # A reader that sees nothing gets no schema read either: nothing under
@@ -230,7 +289,10 @@ class KnowledgeGraph:
         current: _FrontmatterCache = {}
 
         for md_file in Path(self.kb_root).rglob("*.md"):
-            frontmatter = self._cached_frontmatter(md_file, previous, current)
+            if self.store is not None:
+                frontmatter = self._stored_frontmatter(md_file, labeller.rel(md_file), self.store)
+            else:
+                frontmatter = self._cached_frontmatter(md_file, previous, current)
             if not frontmatter or "name" not in frontmatter or "type" not in frontmatter:
                 continue
 
@@ -253,9 +315,31 @@ class KnowledgeGraph:
                     if inverse:
                         self.relationships.append({"source": target, "type": inverse, "target": name})
 
-        with _CACHE_LOCK:
-            _CACHE[root_key] = current
+        if self.store is None:
+            with _CACHE_LOCK:
+                _CACHE[root_key] = current
         return self
+
+    def _stored_frontmatter(self, path: Path, rel: str, store: FrontmatterStore) -> dict[str, Any] | None:
+        """``_extract_frontmatter`` through ``store`` (the privacy index), keyed by ``rel``."""
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        key = _stat_key(st)  # stat before read, as in _cached_frontmatter
+        hit = store.get(rel, key)
+        if hit is not None:
+            facts, frontmatter = hit
+            if frontmatter is not None:
+                frontmatter[_FACTS_KEY] = facts
+            return frontmatter
+        frontmatter = self._extract_frontmatter(path)
+        popped = frontmatter.pop(_FACTS_KEY, None) if isinstance(frontmatter, dict) else None
+        parsed = popped if isinstance(popped, NoteFacts) else None
+        store.put(rel, key, path, parsed, frontmatter)
+        if isinstance(frontmatter, dict) and parsed is not None:
+            frontmatter[_FACTS_KEY] = parsed
+        return frontmatter
 
     def _cached_frontmatter(
         self, path: Path, previous: _FrontmatterCache, current: _FrontmatterCache
@@ -274,7 +358,7 @@ class KnowledgeGraph:
             return pickle.loads(hit[1])
         frontmatter = self._extract_frontmatter(path)
         if time.time_ns() - st.st_mtime_ns > _RACY_WINDOW_NS:
-            # safe_load yields only plain types (dict, list, str, numbers, dates), all picklable.
+            # The safe loader yields only plain types (dict, list, str, numbers, dates), all picklable.
             current[str(path)] = (key, pickle.dumps(frontmatter, protocol=pickle.HIGHEST_PROTOCOL))
         return frontmatter
 
@@ -298,7 +382,7 @@ class KnowledgeGraph:
             return None
 
         try:
-            frontmatter = yaml.safe_load("\n".join(block))
+            frontmatter = load_frontmatter_yaml("\n".join(block))
         except yaml.YAMLError:
             return None
         if isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter:
@@ -306,7 +390,10 @@ class KnowledgeGraph:
             # The classifier reads the same lines nearly always (no BOM, the
             # fence inside its window): reuse this parse rather than YAML-parse twice.
             same = classifier_block(head) == block
-            frontmatter[_FACTS_KEY] = facts_from_frontmatter(frontmatter) if same else note_facts(head)
+            facts = facts_from_frontmatter(frontmatter) if same else note_facts(head)
+            if _cyclic(frontmatter):  # facts come from the parse as is, like the classifier's
+                frontmatter = _break_cycles(frontmatter)
+            frontmatter[_FACTS_KEY] = facts
         return frontmatter
 
     def _resolve_wikilink(self, text: str) -> str:

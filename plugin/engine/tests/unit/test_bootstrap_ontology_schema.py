@@ -10,6 +10,7 @@ Every install here passes ``skip_jobs=True``: no test registers launchd/cron job
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from importlib.resources import files
@@ -45,9 +46,16 @@ def _packaged() -> str:
 
 
 def _validate(vault: Path) -> subprocess.CompletedProcess[str]:
-    """Run the vault's parser.py the way sessions do: no --schema, no --kb-root."""
+    """Run the vault's parser.py the way sessions do: no --schema, no --kb-root.
+
+    parser.py is a shim that execs ``scoutctl kb`` (#453), so the venv's
+    ``scoutctl`` goes first on PATH, as it is in a session.
+    """
     parser = vault / "knowledge-base" / "ontology" / "parser.py"
-    return subprocess.run([sys.executable, str(parser), "validate"], capture_output=True, text=True, check=False)
+    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return subprocess.run(
+        [sys.executable, str(parser), "validate"], capture_output=True, text=True, check=False, env=env
+    )
 
 
 def test_install_seeds_the_packaged_schema_and_parser_validates(tmp_path: Path) -> None:

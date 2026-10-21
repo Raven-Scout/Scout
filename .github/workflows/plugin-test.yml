@@ -104,6 +104,13 @@ jobs:
         run: uv venv --python ${{ matrix.python }}
       - name: Install
         run: uv pip install -e ".[${{ matrix.extras }}]"
+      # `scoutctl kb search` runs ripgrep when it is on PATH (#453); with it
+      # installed the real-rg tests run instead of skipping. The Python
+      # fallback is covered either way (the tests hide rg to reach it).
+      - name: Install ripgrep
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install ripgrep; else sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi
+          rg --version
       - name: Pytest (parallel)
         run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=20 ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
       - name: Pytest (perf, serial)

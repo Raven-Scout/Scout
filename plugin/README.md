@@ -280,7 +280,7 @@ Additional context about Jane...
 
 ### Parser
 
-The knowledge graph parser (`knowledge-base/ontology/parser.py`) provides a CLI and Python API:
+The knowledge graph parser (`knowledge-base/ontology/parser.py`) is a command-line shim over `scoutctl kb`, which runs the graph in the engine and labels every result: private notes print with a `[private] ` marker (and `_label` in JSON). Without `scoutctl` on PATH it refuses to run rather than read the KB unlabelled. Python code uses `scout.kb.ontology.KnowledgeGraph`.
 
 ```bash
 # Validate all entities against the schema
