@@ -645,8 +645,8 @@ class KnowledgeGraph:
         vault-relative path as ``entity``), and each relationship target that
         resolves to no entity, unless the schema's ``validation:`` block lists
         it. A dangling target listed under ``known_gaps`` lands in
-        ``self.known_gaps`` (``entity``, ``type``, ``target``, ``reason``)
-        instead of the errors.
+        ``self.known_gaps`` (``entity``, ``type``, ``target``, ``reason``;
+        sorted by target, then entity) instead of the errors.
         """
         errors: list[dict[str, str]] = []
         external, gaps, provenance = self._validation_config()
@@ -701,6 +701,8 @@ class KnowledgeGraph:
                         "message": f"Dangling relationship target: {rel['type']} → '{target}' (no such entity)",
                     }
                 )
+        # Stable across filesystems: the walk order (and so relationship order) is not.
+        self.known_gaps.sort(key=lambda g: (g["target"], g["entity"], g["type"]))
         return errors
 
     def _matches_filters(self, entity: dict[str, Any], filters: dict[str, Any]) -> bool:
