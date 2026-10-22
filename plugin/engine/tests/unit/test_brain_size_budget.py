@@ -26,16 +26,18 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # live engine; the rule must reach any scheduled run, research included). 2026-10-21: +1,254 SKILL,
 # +1,194 DREAMING, +1,113 RESEARCH for #453: the always-included privacy rule (phases/core/privacy.md,
 # ~790) plus reading the KB through `scoutctl kb` and the Slack outbound-draft step in the phases.
-# 2026-10-21 (#84 Phase A): SKILL +982 = +762 already on main from #481 (Telegram wrap channel) and
-# #502 (owner-only surfaces), plus ~220 for the 34 `scout:only` marker lines; RESEARCH +239 from
-# #481/#502. New: the slices runs read, SKILL/briefing (-7.6% of the unmarked SKILL.md) and
+# 2026-10-21 (#453 eval follow-up): +189 SKILL, +109 DREAMING, +70 RESEARCH for listing/reading context
+# notes via `scoutctl kb files|read`, exact private titles on owner-only surfaces, and consolidation
+# keeping `personal_tasks`; the pins also absorb drift already on main (+762 SKILL, +239 RESEARCH).
+# 2026-10-22 (#84 Phase A): SKILL +220 for the 34 `scout:only` marker lines (unmarked it is still
+# 42,648). New: the slices runs read, SKILL/briefing (-7.6% of the unmarked SKILL.md) and
 # SKILL/consolidation (-7.2%; it keeps GitHub's review-request bucket rules, now their own section).
 PINS = {
-    "SKILL": 42_679,
-    "SKILL/briefing": 39_226,
-    "SKILL/consolidation": 39_388,
-    "DREAMING": 18_616,
-    "RESEARCH": 6_499,
+    "SKILL": 42_868,
+    "SKILL/briefing": 39_414,
+    "SKILL/consolidation": 39_577,
+    "DREAMING": 18_725,
+    "RESEARCH": 6_569,
 }
 GROWTH = 0.05
 SHRINK = 0.10

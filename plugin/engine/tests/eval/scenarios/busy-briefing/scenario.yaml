@@ -7,6 +7,7 @@ files_from: busy-weekday
 weekdays_only: true
 personas: [slack, linear, calendar]
 checks: [placement, no_drop, demotion]
+budget: 4  # dollars, as privacy-canary: the $3 default cut some 2026-10-21 briefing runs short
 
 # Same seeds and expectations as busy-weekday: a briefing places and steps down items alike.
 expected_placement:

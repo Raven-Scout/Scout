@@ -86,8 +86,25 @@ def test_every_brain_file_carries_the_privacy_rule(kind: str, connectors: set[st
         "visibility: private",
         "denied",
         "never drops the wrap",
+        "scoutctl kb read <path>",  # the sanctioned read of a note the run isn't editing
+        "copy its title exactly as written",  # owner-only surfaces: no paraphrase, no "(private)" tag
     ):
         assert needle in rule, needle
+
+
+CONTEXT_NOTES_LIST = "scripts/scoutctl kb files --glob 'action-items/context/*.md'"
+
+
+@pytest.mark.parametrize("kind", ["SKILL", "DREAMING"])
+def test_runs_that_edit_context_notes_are_told_how_to_list_them(kind: str) -> None:
+    """The 2026-10-21 eval: runs reached for `ls action-items/context/` with no sanctioned listing named."""
+    assert CONTEXT_NOTES_LIST in _assembled(kind, _all_connectors())
+
+
+def test_consolidation_keeps_the_personal_tasks_from_session_context() -> None:
+    text = _assembled("SKILL", _all_connectors())
+    (line,) = [ln for ln in text.splitlines() if "`personal_tasks`" in ln]
+    assert ".scout-cache/session-context.json" in line and "daily file" in line
 
 
 def test_the_privacy_phase_applies_to_every_mode() -> None:
