@@ -334,7 +334,7 @@ def run_sample(
     results_root: Path,
     real_claude: str,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-    budget: str = DEFAULT_BUDGET,
+    budget: str | None = None,  # None: the scenario's budget:, else DEFAULT_BUDGET
     hook_grace_s: int = HOOK_GRACE_S,
     arm: str = "head",
     cli_version: str = "",
@@ -343,6 +343,7 @@ def run_sample(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     result_dir = results_root / f"{scenario.name}-{arm}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
     vault = result_dir / "vault"
+    effective_budget = budget or scenario.budget or DEFAULT_BUDGET
     result_dir.mkdir(parents=True)
     build_vault(
         vault,
@@ -350,7 +351,7 @@ def run_sample(
         scenario_dir=scenario.files,
         claude_bin=str(SHIM),
         connectors=scenario.connectors,
-        max_budget=budget,
+        max_budget=effective_budget,
         checkout=checkout,
         scheduler_tick=datetime.now(UTC),
     )
@@ -415,7 +416,8 @@ def run_sample(
     if aborted is None and (metrics is None or (metrics.model is None and metrics.result_subtype is None)):
         aborted = {"reason": "no_session", "detail": "no init or result event; see runner.log and claude.stderr"}
     if aborted is None and metrics is not None and metrics.result_subtype not in (None, "success"):
-        aborted = {"reason": metrics.result_subtype}  # e.g. error_max_budget_usd: the session didn't finish
+        # e.g. error_max_budget_usd: the session didn't finish; say which cap it hit
+        aborted = {"reason": metrics.result_subtype, "budget_usd": effective_budget}
     (result_dir / "runner-exit.json").write_text(json.dumps({"exit": runner_exit}), encoding="utf-8")
     transcript = metrics.calls if metrics is not None else ()
     checks = () if aborted else _score(scenario, vault, today, yesterday, result_dir / "calls.jsonl", transcript)
@@ -432,6 +434,7 @@ def run_sample(
         "today": today.isoformat(),
         "started_at": started_at,
         "checkout": {"label": checkout.label, "commit": checkout.commit} if checkout else None,
+        "budget_usd": effective_budget,
         "aborted": aborted,
     }
     (result_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

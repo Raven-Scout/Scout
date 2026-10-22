@@ -54,7 +54,8 @@ def test_an_aborted_sample_round_trips_with_its_reason(
         real_claude=str(fake),
     )  # fmt: skip
     loaded = load_sample(ran.result_dir)
-    assert loaded.aborted == {"reason": "error_max_budget_usd"}
+    assert loaded.aborted == {"reason": "error_max_budget_usd", "budget_usd": "3"}  # the cap it hit
+    assert loaded.meta["budget_usd"] == "3"
     assert loaded == ran
 
 
