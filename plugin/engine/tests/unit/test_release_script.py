@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -469,6 +470,23 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     _merge_release(r)
     assert r.run("finalize", "v0.15.0", extra_env={"FAKE_APPCAST": "1"}).returncode == 0
     assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
+
+
+def test_finalize_attaches_the_install_manifest(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    assert r.run("finalize", "v0.15.0").returncode == 0
+    assert "scout-release.json" in next(c for c in r.calls() if c.startswith("gh release create"))
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
+
+
+def test_an_rc_manifest_names_the_rc_tag_and_the_version_it_carries(tmp_path):
+    r = make_repo(tmp_path)
+    assert r.run("prepare", "0.15.0").returncode == 0
+    assert r.run("rc", "v0.15.0-rc.1").returncode == 0
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0-rc.1"}
 
 
 def test_refuses_before_the_release_pr_merged(tmp_path):
