@@ -324,6 +324,21 @@ When the user has answered every note and path above (or all three lists were em
 
 Run these writes only while the user is here answering. A scheduled run, the app or a self-update gets this report on stderr from `bootstrap upgrade` and changes nothing; `--set-private` and `--local-only` refuse them.
 
+## Step 3c: Wrap channels (Slack and Telegram)
+
+Read `~/Scout/scout-config.yaml`. Skip this step unless `connectors.enabled` lists both `slack` and `telegram`.
+
+- If there is no `notify.wrap_channels`, tell the user once: every run's wrap notification now goes to both channels, a Slack DM (non-private items only) and their private Telegram chat. In 0.18.3, Telegram replaced the Slack DM instead. Ask whether to keep both, or to send the wrap only to Telegram (as in 0.18.3) or only to Slack. For a one-channel answer, add this block with the Edit tool, keeping everything else in the file, and then run Step 2's `bootstrap upgrade` again so the brain files drop the other channel's section:
+
+  ```yaml
+  notify:
+    wrap_channels: [telegram]   # or [slack]
+  ```
+
+- If `notify.wrap_channels` is set, say which channels get the wrap and move on.
+
+If Step 2's upgrade failed with a `notify.wrap_channels` error, the value is misspelt or empty. Only `slack` and `telegram` are accepted. Fix it with the user, then re-run the upgrade.
+
 ## Step 4: Offer the tools Scout doesn't read yet
 
 ```bash

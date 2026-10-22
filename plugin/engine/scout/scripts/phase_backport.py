@@ -17,6 +17,7 @@ assembly, file writes, and reporting.
 from __future__ import annotations
 
 import difflib
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,6 +132,7 @@ def build_rendered_sections(
     *,
     custom: dict[str, CustomConnector] | None = None,
     inputs: dict[str, str] | None = None,
+    wrap_channels: Collection[str] | None = None,
 ) -> list[RenderedSection]:
     """Assemble the per-section provenance for ``kind``, mirroring ``_assemble``.
 
@@ -154,7 +156,9 @@ def build_rendered_sections(
                 sections = parse_phase_file(phase_file)
             except (ValueError, yaml.YAMLError):
                 continue
-            for s in select_sections(sections, enabled_connectors=enabled_connectors, modes=modes):
+            for s in select_sections(
+                sections, enabled_connectors=enabled_connectors, modes=modes, wrap_channels=wrap_channels
+            ):
                 out.append(
                     RenderedSection(
                         phase_file=phase_file,
