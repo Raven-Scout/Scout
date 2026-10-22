@@ -112,8 +112,8 @@ def test_windows_missed_is_zero_without_a_completion_on_record(tasks: Path) -> N
 def test_markdown_table_has_a_missed_column(tasks: Path) -> None:
     _entity(tasks, "weekly-update", cadence="weekly:friday", last_completed_date="2026-05-01")
     table = _run(tasks, "2026-05-20").stdout
-    assert "| Name | Status | Missed | Cadence |" in table
-    assert "| weekly-update | **upcoming** | **2** | weekly:friday |" in table
+    assert "| Name | Status | Owner | Missed | Cadence |" in table
+    assert "| weekly-update | **upcoming** | — | **2** | weekly:friday |" in table
 
 
 @pytest.mark.parametrize(

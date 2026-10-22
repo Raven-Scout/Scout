@@ -16,6 +16,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
   **Upgrade:** nothing changes until the owner agrees to each change in `/scout-update`. Agree to the local-only proposals before the first sync to Agnes, so trading data never leaves the laptop. A declined proposal is asked again on the next update. Follow-up: the link step proposes folders only, so a root-level file such as `TRADING.md` isn't proposed; add it by hand with `--local-only TRADING.md` if it should stay local.
 
+### Changed
+- **`recurring-task-status.py` says who does each recurring task, and a due cadence someone else does is no longer the vault owner's 🔴** (`templates/scripts/recurring-task-status.py`, `phases/core/action-items.md`, `engine/scout/kb/schema.yaml`). A `recurring_task` can record its author in `observed_author` or `last_completed_by`, but nothing read them, so every `due` cadence became the owner's urgent item even when a teammate writes it. Each row now has `owner`, `owner_source` and `owner_is_user` (`observed_author` wins; a trailing `# …` note on the value is ignored), matched against `user.name`, its first word alone, `user.email`, and the `github_username` / `user_slack_id` connector inputs in `scout-config.yaml`. The table gains an Owner column, and a list under it names each `due`/`overdue` row that isn't the owner's, private mark first. The status itself doesn't change, so a lapsed cadence stays visible; the action-items phase makes it a 🟢 Watching item waiting on its owner. Without a readable `scout-config.yaml` every row stays the owner's, with a warning. **Upgrade:** a vault that already patched this script by hand gets a 3-way merge on its next `/scout-update`; check `scoutctl bootstrap drift` afterwards.
+
 ## [0.18.3] - 2026-10-21
 
 ### Added

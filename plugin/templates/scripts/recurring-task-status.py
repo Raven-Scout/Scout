@@ -38,6 +38,12 @@ engine (in process, else `scoutctl kb files --json`); a private task's name is
 printed as `[private] <name>`. Without either, rows are `unknown` and marked
 [private]. A reader that sees nothing (SCOUT_READER=agent:...) gets no rows.
 
+Owner: each row names who does the task, from the entity's `observed_author`,
+else its `last_completed_by`, and says whether that is the vault owner (matched
+against scout-config.yaml's user and connector identities). A `due`/`overdue`
+row someone else owns stays `due`, but is listed under the table as theirs: a
+🟢 Watching item, never the vault owner's 🔴.
+
 Surface-window DSL (subset):
     T-0 morning  -> show on the due day itself
     T-1 day      -> show 1 day before
@@ -139,6 +145,11 @@ class TaskStatus:
     priority: str = ""
     reason: str = ""
     feeds: list = field(default_factory=list)
+    # Who does this task, per the entity's own `observed_author` / `last_completed_by`
+    # (see resolve_owner). Empty when the entity records neither: the vault owner's.
+    owner: str = ""
+    owner_source: str = ""
+    owner_is_user: bool = True
     visibility: str = "normal"
 
 
@@ -424,8 +435,87 @@ def count_missed_windows(cadence: str, last_completed: Optional[date], today: da
     return missed
 
 
+# ----- owner ---------------------------------------------------------------------
+# A recurring task is not always the vault owner's to do: a weekly project update
+# may be written by a teammate. Entities record that as `observed_author` /
+# `last_completed_by`; without reading them, every `due` row became the vault
+# owner's 🔴 however clearly the entity said someone else does it.
+
+
+@dataclass(frozen=True)
+class VaultUser:
+    """The vault owner: their `user.name` (the brain files' USER_NAME),
+    and every form of their identity, casefolded."""
+
+    name: str = ""
+    forms: frozenset = frozenset()
+
+    @property
+    def label(self) -> str:
+        return self.name or "the vault owner"
+
+
+UNKNOWN_USER = VaultUser()
+
+
+def _mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def vault_user(vault: Path) -> VaultUser:
+    """The vault owner from `<vault>/scout-config.yaml`: `user.name`, its first word
+    alone, `user.email`, and the `github_username` / `user_slack_id` connector inputs.
+
+    The first word matches only a bare first name, never another person's full
+    name that happens to share it. An unreadable config gives no forms, and then
+    every row stays the vault owner's (main warns).
+    """
+    try:
+        cfg = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return UNKNOWN_USER
+    if not isinstance(cfg, dict):
+        return UNKNOWN_USER
+    user = _mapping(cfg.get("user"))
+    inputs = _mapping(_mapping(cfg.get("connectors")).get("inputs"))
+    name = str(user.get("name") or "").strip()
+    candidates = [
+        name,
+        name.split()[0] if name else "",
+        user.get("email"),
+        inputs.get("github_username"),
+        inputs.get("user_slack_id"),
+    ]
+    forms = frozenset(str(c).strip().casefold() for c in candidates if c and str(c).strip())
+    return VaultUser(name, forms)
+
+
+def resolve_owner(entity: dict, user: VaultUser) -> tuple[str, str, bool]:
+    """(owner, the field it came from, whether it is the vault owner) for an entity.
+
+    `observed_author` wins over `last_completed_by`: the former is a run's standing
+    judgement from the whole authorship history, the latter only the most recent
+    completion, which one guest update can flip. A value can carry an inline
+    `# …` note after the name (YAML drops it only when unquoted), so only the
+    text before the first `#` counts. With neither field, or without the vault
+    owner's identity to compare against, the task stays the vault owner's.
+    """
+    for key in ("observed_author", "last_completed_by"):
+        raw = entity.get(key)
+        if raw is None:
+            continue
+        name = str(raw).split("#", 1)[0].strip().strip("\"'").strip()
+        if not name:
+            continue
+        return name, key, not user.forms or name.casefold() in user.forms
+    return "", "", True
+
+
 def compute_status(
-    entity: dict, today: date, last_completed_override: Optional[str] = None
+    entity: dict,
+    today: date,
+    last_completed_override: Optional[str] = None,
+    user: VaultUser = UNKNOWN_USER,
 ) -> TaskStatus:
     name = entity.get("name", "?")
     cadence = entity.get("cadence", "")
@@ -497,6 +587,16 @@ def compute_status(
     if missed:
         reason = (reason + " " if reason else "") + f"[{missed} cadence window(s) missed since {last_completed}]"
 
+    owner, owner_source, owner_is_user = resolve_owner(entity, user)
+    # `status` stays as computed: a lapsed cadence is still lapsed whoever owns it,
+    # and hiding the row would hide that. What the owner changes is the tier the
+    # caller gives it: someone else's next step is 🟢 Watching, not the user's 🔴.
+    if not owner_is_user:
+        reason = (reason + " " if reason else "") + (
+            f"[not {user.label}'s — {owner_source}: {owner}; a 🟢 Watching item waiting on {owner}, "
+            f"never a 🔴 for {user.label}]"
+        )
+
     return TaskStatus(
         name=name,
         cadence=cadence,
@@ -509,6 +609,9 @@ def compute_status(
         priority=entity.get("priority", ""),
         reason=reason,
         feeds=feeds,
+        owner=owner,
+        owner_source=owner_source,
+        owner_is_user=owner_is_user,
     )
 
 
@@ -572,6 +675,7 @@ def main() -> int:
         labels = visibility_map(vault, [f"{scope}/**"]) if scope else None
         if labels is None:
             warn_unlabelled("recurring-task-status")
+    user = vault_user(vault)
     for path in paths:
         entity = parse_frontmatter(path)
         if entity.get("type") != "recurring_task":
@@ -579,13 +683,20 @@ def main() -> int:
         if entity.get("status") and str(entity["status"]).lower() not in ("open", "active"):
             continue
         seen_slugs.add(path.stem)
-        row = compute_status(entity, today, overrides.get(path.stem))
+        row = compute_status(entity, today, overrides.get(path.stem), user)
         try:
             rel = path.resolve().relative_to(vault.resolve()).as_posix()
         except ValueError:
             rel = ""
         row.visibility = row_visibility(labels, rel)
         rows.append(row)
+
+    if not user.forms and any(r.owner for r in rows):
+        print(
+            f"recurring-task-status: can't read the vault owner's name or email from {vault / 'scout-config.yaml'}; "
+            "every row is treated as theirs, whoever its owner field names.",
+            file=sys.stderr,
+        )
 
     for slug in overrides:
         if slug not in seen_slugs:
@@ -608,14 +719,26 @@ def main() -> int:
         return 0
 
     print(f"# recurring-task-status — {today.isoformat()}\n")
-    print("| Name | Status | Missed | Cadence | Next due | Surface window | Last completed | Reason |")
-    print("|------|--------|--------|---------|----------|----------------|----------------|--------|")
+    print("| Name | Status | Owner | Missed | Cadence | Next due | Surface window | Last completed | Reason |")
+    print("|------|--------|-------|--------|---------|----------|----------------|----------------|--------|")
     for r in rows:
         missed = f"**{r.windows_missed}**" if r.windows_missed else "0"
+        owner = r.owner or "—"
+        if not r.owner_is_user:
+            owner = f"**{r.owner}** (not {user.label})"
         print(
-            f"| {private_mark(r.visibility)}{r.name} | **{r.status}** | {missed} | {r.cadence} | {r.next_due or '—'} | "
-            f"{r.surface_window} | {r.last_completed or '—'} | {r.reason} |"
+            f"| {private_mark(r.visibility)}{r.name} | **{r.status}** | {owner} | {missed} | {r.cadence} | "
+            f"{r.next_due or '—'} | {r.surface_window} | {r.last_completed or '—'} | {r.reason} |"
         )
+
+    others = [r for r in rows if not r.owner_is_user and r.status in ("due", "overdue")]
+    if others:
+        print(
+            f"\n⚠️  {len(others)} `due`/`overdue` row(s) above are not {user.label}'s to do. Each is a 🟢 Watching "
+            f"item waiting on its owner — never a 🔴 or 🟡 action item for {user.label}:"
+        )
+        for r in others:
+            print(f"  - `{private_mark(r.visibility)}{r.name}` → {r.owner} ({r.owner_source})")
     return 0
 
 
