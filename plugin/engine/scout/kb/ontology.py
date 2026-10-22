@@ -26,6 +26,26 @@ ported from the vault's ``knowledge-base/ontology/parser.py`` (rendered from
 classify`` gives that file. ``reader`` is an already-resolved reader
 (``resolve_reader``); ``owner`` and ``autonomous`` get every entity, labelled,
 and any other reader gets an empty graph: ``load()`` lists and opens nothing.
+
+**What a mature vault's parser grew, generically** (so such a vault can run the
+shim without losing behaviour its scheduled runs rely on):
+
+- ``load()`` is two passes: every entity first, then each relationship target
+  resolved against them by display name, ``[[slug|Display]]`` pipe alias,
+  filename stem or path form (``[[people/sam]]``), then declared ``aliases:``.
+  A stem or alias two entities share stays unindexed, and an entity's real
+  ``name`` always beats another's alias.
+- Files matching the schema's ``graph.exclude`` globs (KB-relative; default
+  ``projects/**/archive/**``) are skipped, so an archived snapshot can't
+  shadow the live entity.
+- A file whose frontmatter isn't valid YAML is kept in ``parse_errors``, and
+  ``validate()`` reports it rather than dropping it silently.
+- ``validate()`` checks that every relationship target resolves. The vault's
+  ``schema.yaml`` ``validation:`` block lists the exceptions:
+  ``external_references`` (real things never modelled), ``known_gaps``
+  (``{target: reason}``, reviewed and accepted; reported in ``known_gaps``,
+  not as errors) and ``provenance_relationship_types`` (targets are pointers
+  to dated artifacts, not entities).
 """
 
 from __future__ import annotations
@@ -37,6 +57,7 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Collection
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
@@ -45,6 +66,7 @@ import yaml
 
 from scout.errors import KBError, KBSchemaError
 from scout.kb.frontmatter import frontmatter_block
+from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
     FULL_READERS,
     NoteFacts,
@@ -88,6 +110,13 @@ _CACHE: dict[str, _FrontmatterCache] = {}
 _CACHE_LOCK = threading.Lock()
 _RACY_WINDOW_NS = 2_000_000_000
 _FACTS_KEY = "__scout_privacy_facts__"
+# A file whose frontmatter block isn't valid YAML parses to {PARSE_ERROR_KEY: message}
+# (so the per-process cache keeps the failure too); ``load()`` records it in ``parse_errors``.
+PARSE_ERROR_KEY = "__scout_parse_error__"
+
+# KB-relative globs ``load()`` skips when the schema sets no ``graph.exclude``:
+# verbatim pre-restructure snapshots repeat the live page's name and type.
+DEFAULT_EXCLUDE = ("projects/**/archive/**",)
 
 
 def clear_frontmatter_cache() -> None:
@@ -98,6 +127,34 @@ def clear_frontmatter_cache() -> None:
 
 def _stat_key(st: os.stat_result) -> _StatKey:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+def _yaml_error_text(exc: yaml.YAMLError) -> str:
+    """What went wrong and where (a file line), without the source snippet PyYAML
+    quotes: that snippet is the note's own text, and may be private."""
+    if not isinstance(exc, yaml.MarkedYAMLError):
+        return type(exc).__name__
+    text = "; ".join(p for p in (exc.context, exc.problem) if p) or type(exc).__name__
+    mark = exc.problem_mark or exc.context_mark
+    # The mark counts from the block's first line, which is the file's line 2.
+    return f"{text} (line {mark.line + 2}, column {mark.column + 1})" if mark else text
+
+
+def _str_set(value: Any, key: str) -> set[str]:
+    if value is None:
+        return set()
+    if not isinstance(value, list):
+        raise KBSchemaError(f"KB schema: validation.{key} must be a list")
+    return {str(v) for v in value}
+
+
+def parse_lookup_types(raw: str | None) -> set[str]:
+    """``--lookup-type`` as :meth:`KnowledgeGraph.name_lookup` ``types``: ``any`` is
+    the empty set (every type); otherwise a comma-separated list; default ``person``."""
+    text = (raw or "person").strip().lower()
+    if text == "any":
+        return set()
+    return {t.strip() for t in text.split(",") if t.strip()} or {"person"}
 
 
 _KB_DIRS = ("knowledge-base", "knowledge_base")
@@ -253,6 +310,12 @@ class KnowledgeGraph:
         self.schema: dict[str, Any] = self._load_schema() if self._full else {}
         self.entities: dict[str, dict[str, Any]] = {}
         self.relationships: list[dict[str, str]] = []
+        # Files whose frontmatter isn't valid YAML: path (vault-relative), error, _source_path, _label.
+        self.parse_errors: list[dict[str, Any]] = []
+        # Set by validate(): dangling targets the vault's schema accepts as known gaps.
+        self.known_gaps: list[dict[str, str]] = []
+        self._slug_index: dict[str, str] = {}
+        self._alias_index: dict[str, str] = {}
         self._adj: dict[str, list[tuple[str, str]]] | None = None
 
     @property
@@ -271,15 +334,24 @@ class KnowledgeGraph:
     def load(self) -> KnowledgeGraph:
         """Walk all .md files in kb_root, extract frontmatter, build graph.
 
-        Each entity gets ``_source_path`` and ``_label``. A reader outside
-        ``FULL_READERS`` gets an empty graph and nothing is read. ``KBError``
-        when no ``vault`` was given and :func:`find_vault` finds none.
+        Two passes: every entity first, then each relationship target resolved
+        against them (:meth:`_resolve_target`). Files matching the schema's
+        ``graph.exclude`` are skipped; a malformed frontmatter block lands in
+        ``parse_errors``. Each entity gets ``_source_path`` and ``_label``. A
+        reader outside ``FULL_READERS`` gets an empty graph and nothing is
+        read. ``KBError`` when no ``vault`` was given and :func:`find_vault`
+        finds none.
         """
         self.entities = {}
         self.relationships = []
+        self.parse_errors = []
+        self.known_gaps = []
+        self._slug_index = {}
+        self._alias_index = {}
         self._adj = None
         if not self._full:
             return self
+        exclude = self._exclude_globs()
 
         labeller = _Labeller(self.kb_root, self.vault)
         root_key = os.path.abspath(self.kb_root)
@@ -288,11 +360,30 @@ class KnowledgeGraph:
         # Rebuilt each load, so files deleted since the last one drop out.
         current: _FrontmatterCache = {}
 
+        pending: list[tuple[str, Any]] = []
         for md_file in Path(self.kb_root).rglob("*.md"):
+            if exclude:
+                tail = md_file.relative_to(self.kb_root).as_posix()
+                if any(glob_match(g, tail) for g in exclude):
+                    continue
             if self.store is not None:
                 frontmatter = self._stored_frontmatter(md_file, labeller.rel(md_file), self.store)
             else:
                 frontmatter = self._cached_frontmatter(md_file, previous, current)
+            if isinstance(frontmatter, dict) and PARSE_ERROR_KEY in frontmatter:
+                facts = frontmatter.get(_FACTS_KEY)
+                if not isinstance(facts, NoteFacts):
+                    text, unreadable = read_head(md_file)
+                    facts = note_facts(text, unreadable=unreadable)
+                self.parse_errors.append(
+                    {
+                        "path": labeller.rel(md_file),
+                        "error": str(frontmatter[PARSE_ERROR_KEY]),
+                        "_source_path": str(md_file),
+                        "_label": labeller.label(md_file, facts),
+                    }
+                )
+                continue
             if not frontmatter or "name" not in frontmatter or "type" not in frontmatter:
                 continue
 
@@ -305,9 +396,12 @@ class KnowledgeGraph:
             frontmatter["_label"] = labeller.label(md_file, facts)
             raw_relationships = frontmatter.pop("relationships", [])
             self.entities[name] = frontmatter
+            pending.append((name, raw_relationships))
 
+        self._build_indexes()
+        for name, raw_relationships in pending:
             for rel in raw_relationships or []:
-                target = self._resolve_wikilink(rel.get("target", ""))
+                target = self._resolve_target(rel.get("target", ""))
                 rel_type = rel.get("type", "")
                 if target and rel_type:
                     self.relationships.append({"source": name, "type": rel_type, "target": target})
@@ -368,7 +462,8 @@ class KnowledgeGraph:
         One read feeds both the entity (the whole file, strict UTF-8, newlines
         as text mode reads them) and, for a mapping, the file's privacy facts
         under ``_FACTS_KEY`` for an entity (the classifier's head window, from the same
-        bytes; ``load()`` pops it).
+        bytes; ``load()`` pops it). A block that isn't valid YAML gives
+        ``{PARSE_ERROR_KEY: message}`` (with its facts).
         """
         try:
             data = path.read_bytes()
@@ -383,8 +478,8 @@ class KnowledgeGraph:
 
         try:
             frontmatter = load_frontmatter_yaml("\n".join(block))
-        except yaml.YAMLError:
-            return None
+        except yaml.YAMLError as e:
+            return {PARSE_ERROR_KEY: _yaml_error_text(e), _FACTS_KEY: note_facts(decode_head(data))}
         if isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter:
             head = decode_head(data)
             # The classifier reads the same lines nearly always (no BOM, the
@@ -397,9 +492,88 @@ class KnowledgeGraph:
         return frontmatter
 
     def _resolve_wikilink(self, text: str) -> str:
-        """Extract entity name from '[[Name]]' syntax."""
+        """The inner text of '[[...]]' syntax (a pipe alias kept intact)."""
         match = re.search(r"\[\[(.+?)]]", text)
         return match.group(1) if match else text
+
+    def _exclude_globs(self) -> tuple[str, ...]:
+        """The schema's ``graph.exclude`` (KB-relative globs), else :data:`DEFAULT_EXCLUDE`."""
+        graph = self.schema.get("graph") if isinstance(self.schema, dict) else None
+        if not isinstance(graph, dict) or "exclude" not in graph:
+            return DEFAULT_EXCLUDE
+        globs = graph["exclude"]
+        if globs is None:
+            return ()
+        if not isinstance(globs, list):
+            raise KBSchemaError(f"KB schema at {self.schema_path}: graph.exclude must be a list of globs")
+        return tuple(str(g) for g in globs)
+
+    def _build_indexes(self) -> None:
+        """Index entities by filename stem and by declared ``aliases:``.
+
+        A stem or alias two entities share is left unindexed: a target never
+        resolves to the wrong entity. An alias equal to some entity's ``name``
+        is skipped: real names win.
+        """
+        slugs: dict[str, str] = {}
+        aliases: dict[str, str] = {}
+        clashes: set[str] = set()
+        alias_clashes: set[str] = set()
+        for name, entity in self.entities.items():
+            stem = Path(entity.get("_source_path", "")).stem
+            if stem:
+                if slugs.get(stem, name) != name:
+                    clashes.add(stem)
+                slugs.setdefault(stem, name)
+            declared = entity.get("aliases") or []
+            if not isinstance(declared, list):
+                continue
+            for alias in declared:
+                key = alias.strip() if isinstance(alias, str) else ""
+                if not key or key in self.entities:
+                    continue
+                if aliases.get(key, name) != name:
+                    alias_clashes.add(key)
+                aliases.setdefault(key, name)
+        self._slug_index = {k: v for k, v in slugs.items() if k not in clashes}
+        self._alias_index = {k: v for k, v in aliases.items() if k not in alias_clashes}
+
+    @staticmethod
+    def _lookup(index: dict[str, str], text: str) -> str | None:
+        """``text`` in ``index`` as written, else by its last path segment (``people/sam`` → ``sam``)."""
+        text = text.strip()
+        if not text:
+            return None
+        base = text.split("/")[-1].strip()
+        if base.endswith(".md"):
+            base = base[:-3]
+        return index.get(text) or index.get(base)
+
+    def _resolve_target(self, raw: str) -> str:
+        """A relationship target as an entity's display-name key, when it names one.
+
+        In order: the display name (``[[Sam Rivera]]``); for a pipe alias
+        ``[[people/sam|Sam Rivera]]`` the right side as a name, then the left
+        as a slug, then either as a declared alias; a filename stem or path
+        (``[[sam]]``, ``[[people/sam]]``); a declared alias. Anything else is
+        returned as written (the right side of a pipe alias), and
+        ``validate()`` reports it as dangling.
+        """
+        text = self._resolve_wikilink(raw)
+        if not text or text in self.entities:
+            return text
+        if "|" in text:
+            left, _, right = text.partition("|")
+            left, right = left.strip(), right.strip()
+            if right in self.entities:
+                return right
+            found = (
+                self._lookup(self._slug_index, left)
+                or self._lookup(self._alias_index, right)
+                or self._lookup(self._alias_index, left)
+            )
+            return found or right or left
+        return self._lookup(self._slug_index, text) or self._lookup(self._alias_index, text) or text
 
     def entity(self, name: str) -> dict[str, Any] | None:
         """Get an entity by name. Returns None if not found."""
@@ -448,9 +622,35 @@ class KnowledgeGraph:
             default=str,
         )
 
+    def _validation_config(self) -> tuple[set[str], dict[str, str], set[str]]:
+        """The schema's ``validation:`` block: external references, known gaps, provenance types."""
+        block = self.schema.get("validation") if isinstance(self.schema, dict) else None
+        if block is None:
+            return set(), {}, set()
+        if not isinstance(block, dict):
+            raise KBSchemaError(f"KB schema at {self.schema_path}: validation must be a mapping")
+        gaps = block.get("known_gaps") or {}
+        if not isinstance(gaps, dict):
+            raise KBSchemaError(f"KB schema at {self.schema_path}: validation.known_gaps must map target to reason")
+        return (
+            _str_set(block.get("external_references"), "external_references"),
+            {str(k): "" if v is None else str(v) for k, v in gaps.items()},
+            _str_set(block.get("provenance_relationship_types"), "provenance_relationship_types"),
+        )
+
     def validate(self) -> list[dict[str, str]]:
-        """Validate all entities against the schema. Returns list of errors."""
+        """Validate all entities against the schema. Returns list of errors.
+
+        Beyond the schema checks: each file in ``parse_errors`` (its
+        vault-relative path as ``entity``), and each relationship target that
+        resolves to no entity, unless the schema's ``validation:`` block lists
+        it. A dangling target listed under ``known_gaps`` lands in
+        ``self.known_gaps`` (``entity``, ``type``, ``target``, ``reason``)
+        instead of the errors.
+        """
         errors: list[dict[str, str]] = []
+        external, gaps, provenance = self._validation_config()
+        self.known_gaps = []
         entity_types = self.schema.get("entity_types", {})
         rel_types = self.schema.get("relationship_types", {})
 
@@ -478,6 +678,29 @@ class KnowledgeGraph:
             if not has_rels:
                 errors.append({"entity": name, "message": "Orphaned entity — no relationships"})
 
+        for pe in self.parse_errors:
+            errors.append({"entity": pe["path"], "message": f"YAML parse failure: {pe['error']}"})
+
+        seen: set[tuple[str, str, str]] = set()
+        for rel in self.relationships:
+            target = rel["target"]
+            if rel["type"] in provenance or target in self.entities or target in external:
+                continue
+            key = (rel["source"], rel["type"], target)
+            if key in seen:
+                continue
+            seen.add(key)
+            if target in gaps:
+                self.known_gaps.append(
+                    {"entity": rel["source"], "type": rel["type"], "target": target, "reason": gaps[target]}
+                )
+            else:
+                errors.append(
+                    {
+                        "entity": rel["source"],
+                        "message": f"Dangling relationship target: {rel['type']} → '{target}' (no such entity)",
+                    }
+                )
         return errors
 
     def _matches_filters(self, entity: dict[str, Any], filters: dict[str, Any]) -> bool:
@@ -492,7 +715,9 @@ class KnowledgeGraph:
                 if not birthday:
                     return False
                 try:
-                    month = int(str(birthday).split("-")[1])
+                    # YYYY-MM-DD, or MM-DD (--MM-DD) when the year isn't known.
+                    parts = str(birthday).lstrip("-").split("-")
+                    month = int(parts[1] if len(parts) >= 3 else parts[0])
                     if month != value:
                         return False
                 except (IndexError, ValueError):
@@ -520,8 +745,14 @@ class KnowledgeGraph:
         token: str,
         max_results: int = 5,
         distance_threshold: float = 0.7,
+        types: Collection[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Resolve a transcribed name token against ``type: person`` entities.
+        """Resolve a transcribed name token against entities of ``types``.
+
+        ``types`` defaults to ``{"person"}``; an empty collection searches
+        every type (``--lookup-type any``: speech-to-text garbles company and
+        product names as often as people's). Each candidate carries its
+        entity ``type``.
 
         Call before writing any transcript-derived name into action items, the
         KB or a DM. Returns ranked candidates: treat ``match_strength ==
@@ -537,11 +768,12 @@ class KnowledgeGraph:
         token_lower = token.lower().strip()
         if not token_lower:
             return []
+        wanted = {"person"} if types is None else set(types)
 
         candidates: list[dict[str, Any]] = []
 
         for entity_name, entity in self.entities.items():
-            if entity.get("type") != "person":
+            if wanted and entity.get("type") not in wanted:
                 continue
 
             slug = Path(entity.get("_source_path", "")).stem
@@ -574,6 +806,7 @@ class KnowledgeGraph:
                     {
                         "name": entity_name,
                         "slug": slug,
+                        "type": entity.get("type", ""),
                         "match_strength": best_strength,
                         "matched_field": best_field,
                         "score": round(best_score, 3),
