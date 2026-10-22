@@ -324,6 +324,27 @@ def test_a_run_may_not_make_a_private_note_normal(vault: Path) -> None:
     assert checks(vault) == []
 
 
+def test_the_autonomous_reader_alone_makes_a_commit_a_run(vault: Path) -> None:
+    """Ruling R27: the widening guard and the fail-closed path share one predicate."""
+    from scout.kb.lint import is_scheduled
+
+    env = {"SCOUT_READER": "autonomous"}
+    assert is_scheduled(env)
+    stage(vault, SAM, _read(vault, SAM).replace("visibility: private", "visibility: normal"))
+    assert checks(vault, env) == [(SAM, "privacy-widening", True, None)]
+    assert checks(vault, {"SCOUT_READER": "owner"}) == []
+
+
+@pytest.mark.parametrize(
+    ("env", "run"),
+    [({}, False), ({"SCOUT_MODE": ""}, False), ({"SCOUT_MODE": "dreaming"}, True), ({"SCOUT_READER": "owner"}, False)],
+)
+def test_is_scheduled(env: dict[str, str], run: bool) -> None:
+    from scout.kb.lint import is_scheduled
+
+    assert is_scheduled(env) is run
+
+
 def test_a_run_may_not_drop_the_visibility_line_of_a_private_personal_note(vault: Path) -> None:
     stage(
         vault, PERMIT, _read(vault, PERMIT).replace("domain: personal\n", "domain: personal\nvisibility: private\n", 1)

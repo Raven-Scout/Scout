@@ -25,8 +25,9 @@ Rules:
   same-line ``%%privacy:allow <slug>%%`` (:data:`ALLOW_MARKER_RE`) allows
   that line's hits on that one note. These block in every lint mode, and
   ``SCOUT_LINT_OVERRIDE`` doesn't apply.
-- ``privacy-widening`` (**block**, scheduled runs only, i.e. ``SCOUT_MODE``
-  set): the commit makes a private note normal, drops the ``visibility``
+- ``privacy-widening`` (**block**, scheduled runs only: ``SCOUT_MODE`` set
+  or the reader ``autonomous``, :func:`scout.kb.lint.is_scheduled`): the
+  commit makes a private note normal, drops the ``visibility``
   line of a note that was ``private`` where its path default is private too,
   sets or widens ``federation_scope``, adds a marker (a line whose marker
   targets aren't among those of the lines it replaces, or more markers per
@@ -64,7 +65,7 @@ from scout.kb.git_io import (
     tracked_files,
     uncommitted_paths,
 )
-from scout.kb.lint import Finding
+from scout.kb.lint import Finding, is_scheduled
 from scout.kb.lint_config import CONFIG_FILE, glob_match, in_privacy_scope
 from scout.kb.lint_rules import added_line_numbers, changed_blocks
 from scout.kb.outbound import (
@@ -211,7 +212,7 @@ def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
         policy=commit,
         head_policy=head,
         disk_policy=disk,
-        scheduled=bool(env.get("SCOUT_MODE")),
+        scheduled=is_scheduled(env),
         config_removed=head_text is not None and index_text is None,
         head_config=head_text,
     )
