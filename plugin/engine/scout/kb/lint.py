@@ -403,22 +403,22 @@ def _append_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+PRIVACY_UNAVAILABLE = "kb-lint: privacy check could not run"
+
+
+def is_scheduled(env: Mapping[str, str]) -> bool:
+    """A scheduled run's commit: ``SCOUT_MODE`` is set, or the reader is ``autonomous``."""
+    return bool(env.get("SCOUT_MODE")) or env.get("SCOUT_READER", "").strip() == "autonomous"
+
+
 def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
-    """The refusal for a privacy checker that errored (spec §8.3).
+    """A scheduled run's refusal when the privacy checker errored (spec §8.3).
 
     Names the error class only: an exception's text can quote file content (a
-    YAML error does). A scheduled run's refusal also writes the run-health
-    event ``privacy.check_failed``; failing to write it doesn't lift the refusal.
+    YAML error does). Also writes the run-health event ``privacy.check_failed``;
+    failing to write it doesn't lift the refusal.
     """
     name = type(err).__name__
-    run = env.get("SCOUT_MODE")
-    if not run:
-        return Finding(
-            "(privacy)",
-            "privacy-check-failed",
-            True,
-            f"the privacy check failed ({name}), so the commit is refused — run `scoutctl doctor` to see why",
-        )
     try:
         from scout.events import append_event
 
@@ -426,7 +426,7 @@ def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Findi
             paths.logs_dir(main_root(repo)),
             kind="privacy.check_failed",
             source="hook:kb-lint",
-            payload={"error": name, "mode": run},
+            payload={"error": name, "mode": env.get("SCOUT_MODE") or env.get("SCOUT_READER")},
         )
     except Exception:  # noqa: BLE001, S110 - the refusal stands without the event
         pass
@@ -438,14 +438,53 @@ def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Findi
     )
 
 
-def _privacy_pass(repo: Path, env: Mapping[str, str]) -> list[Finding]:
-    """``scout.kb.lint_privacy`` over the staged changes; an error is a blocking finding (fail closed)."""
+def privacy_unavailable_warning(reason: str) -> str:
+    return (
+        f"kb-lint: WARNING: the privacy check could not run ({reason}); this commit was NOT checked "
+        "for private links in shared files. Run scoutctl doctor."
+    )
+
+
+def _privacy_unavailable(repo: Path, out: TextIO, reason: str) -> None:
+    """The owner's interactive commit goes on unchecked: a loud warning and an audit row (Jordan, 2026-10-22)."""
+    _say(out, PRIVACY_UNAVAILABLE)
+    _say(out, privacy_unavailable_warning(reason))
+    try:
+        from scout.kb.read_log import log_event
+
+        log_event(
+            main_root(repo),
+            reader="owner",
+            command="kb lint --staged",
+            surface=None,
+            args=None,
+            returned=0,
+            denied=0,
+            private_paths=0,
+            blocked=False,
+            event="privacy.check_unavailable",
+        )
+    except Exception:  # noqa: BLE001, S110 - the audit row never fails the commit
+        pass
+
+
+def _privacy_pass(repo: Path, env: Mapping[str, str], out: TextIO) -> list[Finding]:
+    """``scout.kb.lint_privacy`` over the staged changes.
+
+    If it errors, a scheduled run's commit gets a blocking finding (fail
+    closed); the owner's interactive commit gets a warning and an audit row,
+    and no finding (ruling, Jordan 2026-10-22).
+    """
     try:
         from scout.kb.lint_privacy import privacy_staged
 
         return privacy_staged(repo, env=env)
-    except Exception as e:  # noqa: BLE001 - fail closed (spec §8.3)
-        return [_privacy_failed(repo, env, e)]
+    except Exception as e:  # noqa: BLE001 - spec §8.3
+        if is_scheduled(env):
+            _say(out, PRIVACY_UNAVAILABLE)
+            return [_privacy_failed(repo, env, e)]
+        _privacy_unavailable(repo, out, type(e).__name__)
+        return []
 
 
 def run_hook(
@@ -457,12 +496,12 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
-    # The privacy pass runs first and on its own, and fails closed (spec §8.3):
-    # its verdict stands whatever happens below. The size/diary lint and all
-    # the bookkeeping fail OPEN, as the hook always has: a crash there is
-    # reported and never blocks. So scoutctl exits 70 (internal error) only
-    # when the privacy check itself couldn't run, and the hook refuses that.
-    privacy = _privacy_pass(repo, env)
+    # The privacy pass runs first and on its own: its verdict stands whatever
+    # happens below. If it can't run, a scheduled run's commit is refused and
+    # the owner's goes on with a warning and an audit row (spec §8.3; Jordan,
+    # 2026-10-22). The size/diary lint and all the bookkeeping fail OPEN, as
+    # the hook always has: a crash there is reported and never blocks.
+    privacy = _privacy_pass(repo, env, out)
     hard = any(_hard(f) for f in privacy)
     cfg: LintConfig | None = None
     result = LintResult()

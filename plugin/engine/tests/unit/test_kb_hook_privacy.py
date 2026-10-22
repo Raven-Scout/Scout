@@ -1,9 +1,10 @@
-"""The pre-commit hook's privacy path fails closed (#453, spec §8.3).
+"""The pre-commit hook when the privacy check can't run (#453, spec §8.3; Jordan, 2026-10-22).
 
-If the privacy checker itself errors, the commit is refused; the hook script
-also refuses when scoutctl can't run at all (``test_kb_hook.py``). A scheduled run's refusal writes the
-run-health event ``privacy.check_failed``; an interactive one names the error
-class and points to ``scoutctl doctor``. Neither prints note content.
+If the privacy checker itself errors, a scheduled run's commit is refused with
+the run-health event ``privacy.check_failed``; the owner's interactive commit
+goes on with a loud warning and a ``privacy.check_unavailable`` audit row, and
+the size/diary verdict is the result. The shell template does the same when
+scoutctl can't run at all (``test_kb_hook.py``). Nothing prints note content.
 """
 
 from __future__ import annotations
@@ -56,14 +57,66 @@ def _events(vault: Path) -> list[dict[str, object]]:
     return rows
 
 
-def test_a_checker_error_refuses_an_interactive_commit(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _reads(vault: Path) -> list[dict[str, object]]:
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    return [json.loads(ln) for ln in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_a_checker_error_lets_the_owner_commit_with_a_warning_and_a_row(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(lint_privacy, "private_terms", _boom)
     _append(vault, DRAFT, "Thanks again!")
     rc, out = _hook(vault, {})
-    assert rc == 1
-    assert "kb-lint:" in out and "RuntimeError" in out and "scoutctl doctor" in out
+    assert rc == 0
+    lines = out.splitlines()
+    i = lines.index("kb-lint: privacy check could not run")
+    assert lines[i + 1] == (
+        "kb-lint: WARNING: the privacy check could not run (RuntimeError); this commit was NOT checked "
+        "for private links in shared files. Run scoutctl doctor."
+    )
     assert "CANARY" not in out
     assert _events(vault) == []
+    (row,) = _reads(vault)
+    assert row["event"] == "privacy.check_unavailable" and row["reader"] == "owner"
+    assert row["args_hash"] is None and row["blocked"] is False and row["command"] == "kb lint --staged"
+
+
+def test_an_owner_commit_with_the_check_down_still_gets_the_size_verdict(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = vault / "scout-config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "kb_lint:\n  mode: block\n", encoding="utf-8")
+    git(vault, "add", "scout-config.yaml")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "block mode")
+    monkeypatch.setattr(lint_privacy, "load_policy", _boom)
+    _append(vault, "knowledge-base/people/priya.md", "x" * 1600)  # mega-line: a size/diary block
+    rc, out = _hook(vault, {})
+    assert rc == 1 and "[mega-line]" in out and "WARNING" in out
+    assert "[privacy-check-failed]" not in out
+
+
+def test_a_failed_audit_row_never_fails_the_owner_commit(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb import read_log
+
+    monkeypatch.setattr(lint_privacy, "private_terms", _boom)
+    monkeypatch.setattr(read_log, "log_event", _boom)
+    _append(vault, DRAFT, "Thanks again!")
+    assert _hook(vault, {})[0] == 0
+
+
+@pytest.mark.parametrize("env", [{"SCOUT_MODE": "morning-briefing"}, {"SCOUT_READER": "autonomous"}])
+def test_a_checker_error_refuses_a_scheduled_commit(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    monkeypatch.setattr(lint_privacy, "load_policy", _boom)
+    _append(vault, "knowledge-base/people/priya.md", "More notes.")
+    rc, out = _hook(vault, env)
+    assert rc == 1 and "[privacy-check-failed]" in out
+    assert "kb-lint: privacy check could not run" in out.splitlines()
+    assert "WARNING" not in out and _reads(vault) == []
+    (event,) = _events(vault)
+    assert event["payload"] == {"error": "RuntimeError", "mode": env.get("SCOUT_MODE", "autonomous")}
 
 
 def test_a_checker_error_refuses_a_run_commit_with_an_event(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,13 +129,6 @@ def test_a_checker_error_refuses_a_run_commit_with_an_event(vault: Path, monkeyp
     assert event["kind"] == "privacy.check_failed"
     assert event["payload"] == {"error": "RuntimeError", "mode": "morning-briefing"}
     assert "CANARY" not in json.dumps(event)
-
-
-def test_a_policy_load_error_refuses_too(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lint_privacy, "load_policy", _boom)
-    _append(vault, "knowledge-base/people/priya.md", "More notes.")
-    rc, out = _hook(vault, {})
-    assert rc == 1 and "RuntimeError" in out
 
 
 def test_a_crash_in_the_size_lint_still_reports_a_privacy_block(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

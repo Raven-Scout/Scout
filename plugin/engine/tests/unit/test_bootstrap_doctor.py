@@ -976,3 +976,30 @@ def test_doctor_privacy_count_takes_naive_times_as_utc(tmp_path):
     )
     assert privacy_blocked_count(tmp_path, now=now) == 2
     assert privacy_blocked_count(tmp_path / "nowhere", now=now) == 0
+
+
+def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_audit_counts
+
+    _populate_minimal_vault(tmp_path)
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    # The shell template's row, as it prints it, and an old one.
+    row = (
+        '{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
+        '"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
+        '"scout_mode": null, "surface": null, "ts": "%s"}\n'
+    )
+    (logs / "kb-reads.jsonl").write_text(
+        row % (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + row % (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)
+    )
+    assert privacy_audit_counts(tmp_path, now=now) == (1, 1)
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.YELLOW
+    (line,) = [w for w in report.warnings if "privacy check could not run" in w]
+    assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line

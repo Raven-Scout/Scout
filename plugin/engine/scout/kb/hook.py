@@ -1,22 +1,23 @@
 """Install the vault's git pre-commit hook, which runs `scoutctl kb lint --staged`.
 
-The hook FAILS CLOSED (#453, spec §8.3, ruling R22). The privacy checks
-inside ``kb lint --staged`` keep private notes out of shared files, so a
-commit the check could not look at is refused: a missing scoutctl, a crash
-before ``cli.main`` (exit 1 with no ``kb-lint:`` line), or any exit other
-than 0 (pass) or 1 with a ``kb-lint:`` verdict. The hook then prints
-``kb-lint: privacy check could not run``. A scheduled run's commit fails and
-the run's retry/park handling applies; an interactive commit also gets a
-pointer to ``scoutctl doctor`` and the reminder that ``git commit --no-verify``
-is the owner's own last resort (runs must never use it).
+When the privacy check can't run (#453, spec §8.3; Jordan, 2026-10-22): a
+missing scoutctl, a crash before ``cli.main`` (exit 1 with no ``kb-lint:``
+line), or any exit other than 0 (pass) or 1 with a ``kb-lint:`` verdict, the
+hook prints ``kb-lint: privacy check could not run`` and then:
 
-Inside scoutctl, ``scout.kb.lint.run_hook`` runs the privacy checks first, in
-their own ``try``: a privacy checker that errors becomes a blocking
-``kb-lint:`` finding. The size and diary checks behind them, and the lint's
-own logging, still fail OPEN (spec §8.3): a crash there prints
-``kb-lint: size/diary check failed (<Error>) — not blocking`` and the
-verdict is the privacy pass's alone. So scoutctl exits with an internal error
-only when the privacy check couldn't run, which is what this script refuses.
+- **a scheduled run's commit is refused** (``SCOUT_MODE`` set, or
+  ``SCOUT_READER=autonomous``); the run's retry/park handling applies;
+- **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
+  naming the problem and ``scoutctl doctor``, and an audit row
+  (``event: "privacy.check_unavailable"``, no content) appended to
+  ``.scout-logs/kb-reads.jsonl``, which the doctor counts.
+
+Inside scoutctl, ``scout.kb.lint.run_hook`` does the same for a privacy
+checker that errors: a blocking ``privacy-check-failed`` finding (plus the
+``privacy.check_failed`` event) for a run, the warning and the audit row for
+the owner. The size and diary checks, and the lint's own logging, always fail
+OPEN: a crash there prints ``kb-lint: size/diary check failed (<Error>) — not
+blocking``.
 
 Install, upgrade and migrate (``bootstrap``'s git-hook stage) and
 ``scoutctl kb install-hook`` rewrite a Scout-managed hook, so ``/scout-update``
@@ -41,24 +42,49 @@ _TEMPLATE = """#!/bin/sh
 # block mode) commits that grow an over-budget KB file or add run-diary
 # headings. See `scoutctl kb lint --help`.
 #
-# Fails CLOSED (#453): if the check can't run (no scoutctl, an engine crash,
-# any exit but 0 or a 'kb-lint:' verdict with 1), the commit is refused.
+# If the check can't run (no scoutctl, an engine crash, any exit but 0 or a
+# 'kb-lint:' verdict with 1): a scheduled run's commit is refused; the owner's
+# commit goes on with a warning and an audit row (#453, spec 8.3).
 SCOUTCTL={scoutctl}
+
+scheduled() {{
+  [ -n "$SCOUT_MODE" ] || [ "$SCOUT_READER" = "autonomous" ]
+}}
+
+audit_unavailable() {{
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$common" ]; then
+    root="$(dirname "$common")"
+  else
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  fi
+  ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+  ROW='{{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
+  ROW="$ROW"'"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
+  ROW="$ROW"'"scout_mode": null, "surface": null, "ts": "'"$ts"'"}}'
+  (
+    umask 077
+    mkdir -p "$root/.scout-logs" &&
+      printf '%s\\n' "$ROW" >>"$root/.scout-logs/kb-reads.jsonl"
+  ) 2>/dev/null || true
+}}
 
 cannot_run() {{
   echo "kb-lint: privacy check could not run" >&2
-  if [ -z "$SCOUT_MODE" ]; then
-    echo "kb-lint: run \\`scoutctl doctor\\` to see why" >&2
-    echo "kb-lint: \\`git commit --no-verify\\` skips the check; it is the owner's last resort" >&2
+  if scheduled; then
+    exit 1
   fi
-  exit 1
+  echo "kb-lint: WARNING: the privacy check could not run ($1); this commit was NOT checked" \\
+    "for private links in shared files. Run scoutctl doctor." >&2
+  audit_unavailable
+  exit 0
 }}
 
 if [ ! -x "$SCOUTCTL" ]; then
   SCOUTCTL="$(command -v scoutctl 2>/dev/null)"
 fi
 if [ -z "$SCOUTCTL" ]; then
-  cannot_run
+  cannot_run "scoutctl not found"
 fi
 output="$("$SCOUTCTL" kb lint --staged 2>&1)"
 rc=$?
@@ -69,7 +95,7 @@ fi
 if [ "$rc" -eq 1 ] && printf '%s\\n' "$output" | grep -q '^kb-lint:'; then
   exit 1
 fi
-cannot_run
+cannot_run "engine error $rc"
 """
 
 
