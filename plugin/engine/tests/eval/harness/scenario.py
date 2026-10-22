@@ -11,6 +11,7 @@ uses that one's ``connectors.yaml``, ``fixtures/``, ``vault/`` and ``brain/``.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,7 @@ class Scenario:
     expected_demotion: dict[str, str] = field(default_factory=dict)
     permit_canary: str = ""  # privacy_canary: the private task's token that must reach owner-only surfaces
     files_from: Path | None = None  # another scenario's dir holding connectors.yaml, fixtures/, vault/, brain/
+    budget: str | None = None  # the session's --max-budget-usd; None means the runner's DEFAULT_BUDGET
 
     @property
     def files(self) -> Path:
@@ -63,6 +65,20 @@ class Scenario:
     def connectors(self) -> frozenset[str]:
         """Enabled connectors: one per persona, plus github (always served by the fake gh)."""
         return frozenset({PERSONA_CONNECTORS[p] for p in self.personas} | {"github"})
+
+
+def _budget(name: str, raw: object) -> str | None:
+    """``budget:`` is a positive USD amount (``4``, ``"2.5"``); absent means the runner's default."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    try:
+        value = float(text) if isinstance(raw, int | float | str) and not isinstance(raw, bool) else math.nan
+    except ValueError:
+        value = math.nan
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(f"scenario {name!r}: budget must be a positive USD amount, got {raw!r}")
+    return text
 
 
 def load_scenario(name: str) -> Scenario:
@@ -93,4 +109,5 @@ def load_scenario(name: str) -> Scenario:
         expected_demotion={str(k): str(v) for k, v in (raw.get("expected_demotion") or {}).items()},
         permit_canary=str(raw.get("permit_canary") or ""),
         files_from=files_from,
+        budget=_budget(name, raw.get("budget")),
     )

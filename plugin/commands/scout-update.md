@@ -320,6 +320,8 @@ It has three lists. Skip any that is empty; if all are, say "No privacy migratio
 - `private_links`: shared files (`drafts/`, anything meant to leave) that link or name a private note, by line number. Read the lines to the user by number only and suggest removing the reference, or adding `%%privacy:allow <slug>%%` on that line when it is meant. Don't edit these files yourself.
 - `local_only_proposals`: folders that look like trading or brokerage data (`trading/**`). Local-only paths never leave this computer: no sync, no cloud run reads them. Ask about **each path separately** ("Keep `<glob>` on this computer only?"). Only for a yes, run `"$SCOUTCTL" bootstrap privacy-migrate --local-only '<glob>'`; it appends to `scout-config.yaml → privacy.local_only_add` and keeps every comment. A no writes nothing, so the next update asks again. The user can add any other path the same way.
 
+When the user has answered every note and path above (or all three lists were empty), run `"$SCOUTCTL" bootstrap privacy-migrate --accept` to record their consent, which hosts such as Agnes check before linking the vault.
+
 Run these writes only while the user is here answering. A scheduled run, the app or a self-update gets this report on stderr from `bootstrap upgrade` and changes nothing; `--set-private` and `--local-only` refuse them.
 
 ## Step 4: Offer the tools Scout doesn't read yet

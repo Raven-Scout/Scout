@@ -23,7 +23,10 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # live engine; the rule must reach any scheduled run, research included). 2026-10-21: +1,254 SKILL,
 # +1,194 DREAMING, +1,113 RESEARCH for #453: the always-included privacy rule (phases/core/privacy.md,
 # ~790) plus reading the KB through `scoutctl kb` and the Slack outbound-draft step in the phases.
-PINS = {"SKILL": 41_697, "DREAMING": 18_616, "RESEARCH": 6_260}
+# 2026-10-21 (#453 eval follow-up): +189 SKILL, +109 DREAMING, +70 RESEARCH for listing/reading context
+# notes via `scoutctl kb files|read`, exact private titles on owner-only surfaces, and consolidation
+# keeping `personal_tasks`; the pins also absorb drift already on main (+762 SKILL, +239 RESEARCH).
+PINS = {"SKILL": 42_648, "DREAMING": 18_725, "RESEARCH": 6_569}
 GROWTH = 0.05
 SHRINK = 0.10
 
