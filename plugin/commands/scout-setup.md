@@ -124,6 +124,13 @@ Connected tools:
 
 Confirm with the user: "Proceed with these connectors? Or pause to enable more first?"
 
+If both Slack and Telegram are enabled, tell the user that every run's wrap notification goes to both: a Slack DM (non-private items only, since Slack is a shared workspace) and their private Telegram chat. If they want it on one channel only, then after Step 4 add this block to `~/Scout/scout-config.yaml` (use the Edit tool and keep everything else in the file), and run `/scout-update` so the brain files are rebuilt without the other channel's section:
+
+```yaml
+notify:
+  wrap_channels: [slack]   # or [telegram]
+```
+
 ---
 
 ## Step 3: Auto-update and budgets
