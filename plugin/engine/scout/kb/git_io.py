@@ -115,15 +115,52 @@ def changed_lines(repo: Path, rel: str, head_rel: str | None = None) -> tuple[li
     destination side (``+++ b/<rel>``) are parsed.
     """
     if head_rel and head_rel != rel:
-        out = git(repo, "diff", "--cached", "-M", "-U0", "--no-color", "--no-ext-diff", "--", head_rel, rel).stdout
+        out = git(repo, *_DIFF, "-M", "--", head_rel, rel).stdout
         return _parse_changed_lines(out, rel)
-    out = git(repo, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--", rel).stdout
+    out = git(repo, *_DIFF, "--", rel).stdout
     return _parse_changed_lines(out, None)
 
 
-def added_lines(repo: Path, rel: str, head_rel: str | None = None) -> list[tuple[int, str]]:
-    """Added lines only — see ``changed_lines``."""
-    return changed_lines(repo, rel, head_rel)[0]
+_DIFF = ("diff", "--cached", "-U0", "--no-color", "--no-ext-diff")
+
+
+# Lossy readers for the privacy checks (#453). Blobs are read raw (``cat-file``:
+# no textconv, no diff driver, no .gitattributes ``binary``/``-diff``) and text
+# that isn't UTF-8 is decoded with replacement characters instead of raising,
+# so neither a stray byte nor an attribute can crash the (fail-closed) privacy
+# pass or hide a line from it.
+
+
+def index_text_lossy(repo: Path, rel: str) -> str | None:
+    """``rel``'s content in the index (bad UTF-8 replaced), or None when it isn't there."""
+    proc = git_bytes(repo, "cat-file", "blob", f":{rel}")
+    return _text(proc.stdout) if proc.returncode == 0 else None
+
+
+def staged_text_lossy(repo: Path, rel: str) -> str:
+    """``rel``'s staged content, bad UTF-8 replaced (it must be in the index)."""
+    return _text(git_bytes(repo, "cat-file", "blob", f":{rel}", check=True).stdout)
+
+
+def head_text_lossy(repo: Path, rel: str) -> str | None:
+    """``rel``'s content at HEAD (bad UTF-8 replaced), or None when it (or HEAD) does not exist."""
+    proc = git_bytes(repo, "cat-file", "blob", f"HEAD:{rel}")
+    return _text(proc.stdout) if proc.returncode == 0 else None
+
+
+def _names(repo: Path, *args: str) -> set[str]:
+    proc = git_bytes(repo, *args)
+    return {p for p in _text(proc.stdout).split("\0") if p} if proc.returncode == 0 else set()
+
+
+def uncommitted_paths(repo: Path) -> set[str]:
+    """Every path whose working-tree, index or HEAD versions differ (renames as both sides)."""
+    paths = _names(repo, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff")
+    if _has_head(repo):
+        paths |= _names(repo, "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff")
+    else:
+        paths |= _names(repo, "ls-files", "-z", "--cached")
+    return paths
 
 
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
