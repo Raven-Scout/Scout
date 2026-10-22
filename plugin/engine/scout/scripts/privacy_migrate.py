@@ -536,6 +536,12 @@ def accept(vault: Path) -> dict[str, Any]:
     Computes the report with ``persist=False`` (no privacy-index write) before
     touching anything, so a report that fails writes nothing. The caller checks
     :func:`headless_reason` first: this records the owner's consent.
+
+    A declined proposal is the owner's decision, so accepting after a "no" is
+    valid. The decline is recorded rather than silent: ``declined_local_only``
+    lists the local-only proposals still outstanding at acceptance (the ones the
+    owner said no to). A host (e.g. Agnes R1) may require
+    ``declined_local_only == []`` before linking the vault.
     """
     from scout import __version__
 
@@ -545,6 +551,7 @@ def accept(vault: Path) -> dict[str, Any]:
         "engine_version": __version__,
         "accepted_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "report_sha256": decision_sha256(rep),
+        "declined_local_only": sorted(rep.local_only_proposals),
     }
     _write_private(marker_path(vault), (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     return marker
@@ -554,11 +561,14 @@ def read_marker(vault: Path) -> dict[str, Any] | None:
     """The consent marker, or None when it is missing, unreadable or not a schema-1 marker."""
     try:
         data = json.loads(marker_path(vault).read_bytes().decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, ValueError, RecursionError):  # ValueError covers UnicodeDecodeError and JSONDecodeError
         return None
     if not isinstance(data, dict) or data.get("schema") != MARKER_SCHEMA:
         return None
     if not all(isinstance(data.get(k), str) for k in _MARKER_STRINGS):
+        return None
+    declined = data.get("declined_local_only")
+    if not isinstance(declined, list) or not all(isinstance(g, str) for g in declined):
         return None
     return data
 
@@ -568,12 +578,17 @@ def acceptance(vault: Path, rep: MigrationReport) -> dict[str, Any] | None:
 
     ``current`` is true only when the marker's hash equals :func:`decision_sha256`
     of ``rep`` (the report as it is now). False means the owner must be asked again.
+    ``declined_local_only`` is what the owner declined at acceptance;
+    ``outstanding_local_only`` is the live proposal list. A host may require
+    ``declined_local_only == []`` before linking.
     """
     marker = read_marker(vault)
     if marker is None:
         return None
     out: dict[str, Any] = {k: marker[k] for k in _MARKER_STRINGS}
     out["current"] = marker["report_sha256"] == decision_sha256(rep)
+    out["declined_local_only"] = list(marker["declined_local_only"])
+    out["outstanding_local_only"] = list(rep.local_only_proposals)
     return out
 
 
@@ -581,9 +596,11 @@ def acceptance_line(accepted: Mapping[str, Any] | None) -> str:
     """One line for the text report."""
     if accepted is None:
         return "privacy consent: not accepted; run /scout-update with the owner present"
+    n = len(accepted["declined_local_only"])
+    declined = f"{n} local-only proposal{'' if n == 1 else 's'} declined"
     if not accepted["current"]:
         return (
-            f"privacy consent: out of date (accepted at {accepted['accepted_at']}, the report has changed since); "
-            "the owner must be asked again: run /scout-update"
+            f"privacy consent: out of date (accepted at {accepted['accepted_at']}, {declined}, "
+            "the report has changed since); the owner must be asked again: run /scout-update"
         )
-    return f"privacy consent: accepted at {accepted['accepted_at']}"
+    return f"privacy consent: accepted at {accepted['accepted_at']}; {declined}"

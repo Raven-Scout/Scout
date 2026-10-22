@@ -650,7 +650,8 @@ def test_accept_writes_the_marker_with_its_fields_and_mode(vault: Path) -> None:
     marker = vault / MARKER
     assert marker.stat().st_mode & 0o777 == 0o600
     data = json.loads(marker.read_text(encoding="utf-8"))
-    assert set(data) == {"schema", "engine_version", "accepted_at", "report_sha256"}
+    assert set(data) == {"schema", "engine_version", "accepted_at", "report_sha256", "declined_local_only"}
+    assert data["declined_local_only"] == []
     assert data["schema"] == 1
     assert data["engine_version"] == scout.__version__
     assert data["accepted_at"].endswith("Z") and "T" in data["accepted_at"]
@@ -701,11 +702,32 @@ def test_accept_gives_an_agent_reader_nothing(vault: Path) -> None:
     assert not (vault / MARKER).exists()
 
 
-def test_accept_is_its_own_action(vault: Path) -> None:
+@pytest.mark.parametrize("other", [("--set-private", DRAFT), ("--local-only", "trading/**")])
+def test_accept_is_its_own_action(vault: Path, other: tuple[str, str]) -> None:
+    _no_overlay(vault)
     before = _snapshot(vault)
-    result = cli("--accept", "--set-private", DRAFT)
+    result = cli("--accept", *other)
     assert result.exit_code == 2
     assert _snapshot(vault) == before
+    assert not (vault / MARKER).exists()
+
+
+def test_accepting_after_a_decline_records_the_decline(vault: Path) -> None:
+    _no_overlay(vault)  # trading/** is now proposed; the owner says no
+    assert pm.local_only_proposals(vault) == ["trading/**"]
+    assert cli("--accept").exit_code == 0
+    marker = json.loads((vault / MARKER).read_text(encoding="utf-8"))
+    assert marker["declined_local_only"] == ["trading/**"]
+    acc = _accepted()
+    assert acc is not None and acc["current"] is True
+    assert acc["declined_local_only"] == ["trading/**"]
+    assert acc["outstanding_local_only"] == ["trading/**"]
+    assert "1 local-only proposal declined" in cli().output
+    # Agreeing later changes the decision set: consent must be given again.
+    assert cli("--local-only", "trading/**").exit_code == 0
+    acc = _accepted()
+    assert acc is not None and acc["current"] is False
+    assert acc["declined_local_only"] == ["trading/**"] and acc["outstanding_local_only"] == []
 
 
 def test_accept_writes_nothing_when_the_report_fails(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -783,7 +805,10 @@ def test_editing_a_shared_draft_keeps_acceptance_current(vault: Path) -> None:
         b'{"schema": 2, "engine_version": "1", "accepted_at": "x", "report_sha256": "y"}',
         b'{"schema": 1, "engine_version": "1", "accepted_at": "x"}',
         b'{"schema": 1, "engine_version": 1, "accepted_at": "x", "report_sha256": "y"}',
+        b'{"schema": 1, "engine_version": "1", "accepted_at": "x", "report_sha256": "y"}',
+        b'{"schema": 1, "engine_version": "1", "accepted_at": "x", "report_sha256": "y", "declined_local_only": [1]}',
         b"\xff\xfe",
+        b"[" * 100000,
         None,  # a directory where the file should be
     ],
 )
@@ -800,8 +825,17 @@ def test_an_unreadable_or_garbage_marker_reads_as_not_accepted(vault: Path, cont
 
 def test_acceptance_lines() -> None:
     assert "not accepted" in pm.acceptance_line(None)
-    ok = {"accepted_at": "2026-10-21T09:00:00Z", "engine_version": "0", "report_sha256": "a", "current": True}
-    assert pm.acceptance_line(ok) == "privacy consent: accepted at 2026-10-21T09:00:00Z"
+    ok = {
+        "accepted_at": "2026-10-21T09:00:00Z",
+        "engine_version": "0",
+        "report_sha256": "a",
+        "current": True,
+        "declined_local_only": [],
+    }
+    want = "privacy consent: accepted at 2026-10-21T09:00:00Z; 0 local-only proposals declined"
+    assert pm.acceptance_line(ok) == want
+    two = pm.acceptance_line({**ok, "declined_local_only": ["a/**", "b/**"]})
+    assert two.endswith("2 local-only proposals declined")
     stale = pm.acceptance_line({**ok, "current": False})
     assert "out of date" in stale and "asked again" in stale and "/scout-update" in stale
 
