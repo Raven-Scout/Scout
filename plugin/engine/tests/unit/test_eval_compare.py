@@ -14,7 +14,7 @@ import pytest
 
 from tests.eval.harness.build import PLUGIN_ROOT, build_vault
 from tests.eval.harness.checkout import Checkout, CheckoutError, base_checkout, head_checkout
-from tests.eval.harness.runner import load_sample, run_sample
+from tests.eval.harness.runner import DEFAULT_BUDGET, load_sample, run_sample
 from tests.eval.harness.scenario import load_scenario
 from tests.unit.test_eval_runner import FAKE_CLAUDE
 
@@ -49,13 +49,14 @@ def test_an_aborted_sample_round_trips_with_its_reason(
     tmp_path: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EVAL_FAKE_SUBTYPE", "error_max_budget_usd")
+    busy = load_scenario("busy-weekday")
     ran = run_sample(
-        load_scenario("busy-weekday"), today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r",
-        real_claude=str(fake),
+        busy, today=MONDAY, rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(fake),
     )  # fmt: skip
     loaded = load_sample(ran.result_dir)
-    assert loaded.aborted == {"reason": "error_max_budget_usd", "budget_usd": "3"}  # the cap it hit
-    assert loaded.meta["budget_usd"] == "3"
+    cap = busy.budget or DEFAULT_BUDGET  # the scenario's own budget, else the harness default
+    assert loaded.aborted == {"reason": "error_max_budget_usd", "budget_usd": cap}  # the cap it hit
+    assert loaded.meta["budget_usd"] == cap
     assert loaded == ran
 
 

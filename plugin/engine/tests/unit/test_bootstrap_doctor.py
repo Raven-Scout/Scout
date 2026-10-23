@@ -72,6 +72,24 @@ def test_a_pending_brain_sidecar_says_upgrades_skip_the_file(tmp_path):
     assert "scoutctl bootstrap resolve DREAMING.md" in warning
 
 
+def test_damaged_skill_mode_markers_are_yellow(tmp_path):
+    """#84: a hand-resolved merge that leaves a `scout:only` block open costs every run its
+    slice; only the run log would say so otherwise."""
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / "SKILL.md").write_text("# SKILL\n\n<!-- scout:only briefing -->\n## Query\nq\n")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.YELLOW
+    (warning,) = [w for w in report.warnings if "mode markers" in w]
+    assert "never closed" in warning and "scoutctl brain check" in warning
+
+
+def test_intact_or_absent_skill_mode_markers_stay_green(tmp_path):
+    _populate_minimal_vault(tmp_path)  # a restructured SKILL.md without markers: read whole, as before
+    assert run_doctor(vault=tmp_path, check_jobs=False).severity is Severity.GREEN
+    (tmp_path / "SKILL.md").write_text("# SKILL\n\n<!-- scout:only briefing -->\n## Query\nq\n\n<!-- /scout:only -->\n")
+    assert run_doctor(vault=tmp_path, check_jobs=False).severity is Severity.GREEN
+
+
 def test_a_marker_free_proposal_is_not_offered_as_an_mv(tmp_path):
     """A sidecar without markers is the plugin's whole version: moving it into
     place would replace the vault's brain, so the hint is review + resolve."""

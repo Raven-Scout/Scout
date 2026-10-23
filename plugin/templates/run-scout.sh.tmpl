@@ -82,10 +82,26 @@ export SCOUT_MODE="$MODE"
 # in the session are labelled for that reader.
 export SCOUT_READER=autonomous
 
-# The prompt instructs Claude to read SKILL.md and execute it
+# The brain file this run reads (#84): SKILL.md cut down to this slot's mode —
+# a briefing run skips the consolidation-only sections and the reverse — written
+# to .scout-cache/brain/SKILL.md. `brain slice` prints the live SKILL.md instead
+# for a manual run, a file without mode markers or damaged markers (saying why in
+# this log), so a failure here only costs the saving, never a rule.
+BRAIN="$SCOUT_DIR/SKILL.md"
+SLICED="$("$SCOUTCTL_BIN" brain slice --kind SKILL --slot "$MODE" 2>>"$LOG_FILE" || true)"
+if [ -n "$SLICED" ] && [ -f "$SLICED" ]; then
+    BRAIN="$SLICED"
+fi
+BRAIN_NOTE=""
+if [ "$BRAIN" != "$SCOUT_DIR/SKILL.md" ]; then
+    BRAIN_NOTE="
+That file is {{SCOUT_DIR}}/SKILL.md without the sections other run modes use: a read-only view, rebuilt before every run. Wherever these steps or the brain file say SKILL.md, they mean this view, except for edits: change SKILL.md itself, never the view."
+fi
+
+# The prompt instructs Claude to read the brain file and execute it
 PROMPT="You are {{INSTANCE_NAME}}, an autonomous knowledge management system. Your working directory is {{SCOUT_DIR}}.
 
-Step 1: Read {{SCOUT_DIR}}/SKILL.md in full.
+Step 1: Read $BRAIN in full.$BRAIN_NOTE
 Step 2: Your run mode is \`$MODE\` (the dispatcher's slot key). Find the matching row of the Run Modes table near the top of SKILL.md and follow it. If the mode is \`manual\`, derive the closest mode from the current day and hour, then follow that row.
 Step 3: Execute the SKILL.md instructions completely — all steps/phases in order.
 Step 4: Commit results to git.

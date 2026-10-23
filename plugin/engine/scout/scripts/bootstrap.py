@@ -29,7 +29,7 @@ import yaml
 
 from scout import config as scout_config
 from scout import custom_connectors, yaml_blocks
-from scout.scripts import brain_merge, vault_drift
+from scout.scripts import brain_merge, brain_slice, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
     acquire_lock_with_wait,
@@ -502,8 +502,10 @@ def _assemble(
     """
     vars_ = _template_vars(cfg)
     phases_root = cfg.plugin_root / "phases"
-    bodies: list[str] = [brain_merge.assembly_header(kind, cfg.vault)]
-    # Index in `bodies` of the first shipped section whose slot is `deep-research`.
+    # (rendered body, marker classes): a section only some of the target's modes run is
+    # wrapped in `scout:only` markers, so a run can read just its own mode's slice (#84).
+    entries: list[tuple[str, tuple[str, ...] | None]] = []
+    # Index in `entries` of the first shipped section whose slot is `deep-research`.
     deep_research_at: int | None = None
     # Map assembly target → which modes this assembly is consumed by.
     # SKILL.md is read by BOTH briefing- and consolidation-type runs (run-scout.sh
@@ -545,12 +547,12 @@ def _assemble(
             )
             for s in kept:
                 if deep_research_at is None and s.slot == "deep-research":
-                    deep_research_at = len(bodies)
-                bodies.append(render_template(s.body, vars_))
+                    deep_research_at = len(entries)
+                entries.append((render_template(s.body, vars_), brain_slice.only_classes(s.mode, target_modes)))
     if custom is None:
         custom = load_custom(cfg)
-    custom_bodies = [
-        section.rendered_body
+    custom_entries = [
+        (section.rendered_body, brain_slice.only_classes(list(section.mode), target_modes))
         for section in render_custom_sections(
             cfg.plugin_root, kind, custom, cfg.enabled_connectors, vars_, cfg.connector_inputs
         )
@@ -558,10 +560,10 @@ def _assemble(
     # RESEARCH: lookups go just before Deep Research, where queries happen (commit-notify sorts
     # first alphabetically). With no such section, and for SKILL/DREAMING, they are appended.
     if kind == "RESEARCH" and deep_research_at is not None:
-        bodies[deep_research_at:deep_research_at] = custom_bodies
+        entries[deep_research_at:deep_research_at] = custom_entries
     else:
-        bodies.extend(custom_bodies)
-    return "\n\n".join(bodies)
+        entries.extend(custom_entries)
+    return "\n\n".join([brain_merge.assembly_header(kind, cfg.vault), *brain_slice.join_marked(entries)])
 
 
 def _snapshot_dir(cfg: BootstrapConfig) -> Path:

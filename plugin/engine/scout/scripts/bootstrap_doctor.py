@@ -436,6 +436,33 @@ def _has_markers(path: Path) -> bool:
         return False
 
 
+def _check_skill_mode_markers(skill: Path) -> list[str]:
+    """A warning when SKILL.md's `scout:only` mode markers (#84) are damaged.
+
+    A merge resolved by hand can leave one unbalanced. Runs then fall back to the
+    whole file, which keeps every rule but loses the per-mode saving, and say so
+    only in the run log. A file with no markers at all (a vault that restructured
+    its SKILL.md) is fine: runs read it whole, as before markers. A file with
+    conflict markers is reported on its own.
+    """
+    from scout.scripts.brain_slice import MarkerError, slice_text
+
+    try:
+        text = skill.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []  # a missing brain file is a cat-1 error, reported on its own
+    if has_conflict_markers(text):
+        return []
+    try:
+        slice_text(text, "briefing")
+    except MarkerError as e:
+        return [
+            f"SKILL.md mode markers are damaged ({e}) — briefing and consolidation runs read the whole "
+            "file until they are fixed: `scoutctl brain check` shows what each mode reads"
+        ]
+    return []
+
+
 def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
     """Vault edits to plugin-owned files, as (warnings, notes), plus privacy drift.
 
@@ -597,6 +624,7 @@ def run_doctor(
                 f"{live_name} has conflict markers (<<<<<<< / >>>>>>>) from an unfinished merge — "
                 f"upgrades leave {live_name} as is until they are removed"
             )
+    warnings.extend(_check_skill_mode_markers(vault / "SKILL.md"))
     # A sidecar removed without `bootstrap resolve`: the proposal behind it is
     # still on record, so the next upgrade merges or proposes from the old base.
     for kind in BRAIN_KINDS:

@@ -134,9 +134,12 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    # Before the session the runner asks the engine for the run's model; after
-    # it, for the connector-health roll-up. Both against this vault.
+    # Before the session the runner asks the engine for its mode's slice of SKILL.md
+    # (run-scout only, #84) and for the run's model; after it, for the
+    # connector-health roll-up. All against this vault.
+    slice_call = [f"{vault} brain slice --kind SKILL --slot {slot}"] if template == "run-scout.sh.tmpl" else []
     assert calls.read_text(encoding="utf-8").splitlines() == [
+        *slice_call,
         f"{vault} model resolve --slot {slot}",
         f"{vault} connector-health-report",
     ]

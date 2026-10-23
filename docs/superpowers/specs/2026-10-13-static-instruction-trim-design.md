@@ -1,6 +1,6 @@
 # Static-instruction trim (#84) — design
 
-**Status:** draft for coordinator review · 2026-10-13 · issue Raven-Scout/Scout#84
+**Status:** Phase A built 2026-10-21 (§11); Phase B skipped (decision 2026-10-13) · issue Raven-Scout/Scout#84
 **Scope:** `plugin/` only (assembly, runner template, eval harness). No `phases/` rule text changes in Phase A.
 
 ## 1. Headline: what this can and cannot buy
@@ -303,3 +303,32 @@ the whole file until it is marked.
 3. *(optional)* W3 deferrals, one PR per block. Each includes an eval compare.
 4. *(optional)* W2 weekend class, plus a weekend eval scenario.
 5. *(optional)* W4 history trim.
+
+## 11. Phase A as built (2026-10-21)
+
+Step 1 landed as #458. Step 2 (W1) follows §4, with these differences:
+
+- **The close marker goes after the blank line that ends its section**, at the start of
+  the next one, not straight after the section text. On the upgrade's own
+  `three_way_merge`, the §4.1 layout conflicts when a vault appended a rule to the
+  end of a marked section, the commonest vault edit. This layout merges that cleanly,
+  and the rule stays inside its block. An insertion exactly where a marker goes
+  (a heading edit, a new section next to a marked one) still meets a sidecar. Tests pin
+  both cases.
+- **One `phases/` change, frontmatter only.** The §7 cross-reference test found that the
+  GitHub Inbound Scan (both modes) sends review requests to the three-bucket rule under
+  *PRs Requesting …'s Review*, which sat in the briefing-only GitHub Query. That
+  subsection is now its own section with `mode: [consolidation, briefing]`. Its text is
+  unchanged, and the unmarked assembly is byte-identical to before.
+- **`brain slice` prints the file the run reads** (the slice, or the live `SKILL.md`),
+  rather than copying `SKILL.md` on fallback, and removes a stale slice whenever it
+  writes none. The slice opens with a one-line "read-only view, edit SKILL.md" note.
+- **Added:** `scoutctl brain check` (what each mode reads; exit 1 on damaged markers), a
+  doctor warning for damaged markers, and a safety-rule test. The test checks that the
+  privacy rule and its `check-outbound`/`check-query` gates, the write protocol, the
+  live-engine rule and the review-request rules are in full in every run that applies
+  them.
+- `weekend-briefing` reads the briefing slice (W2 is Phase B).
+
+Measured with every shipped connector enabled: SKILL.md ~42.5k tokens; briefing slice
+~39.2k (−7.6%); consolidation slice ~39.4k (−7.2%, it keeps the review-request rule).
