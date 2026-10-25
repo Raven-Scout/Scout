@@ -186,6 +186,24 @@ for p in "${STAGE[@]}"; do
 done
 [ "${#COMMIT[@]}" -gt 0 ] || die 4 "nothing staged from the given paths — no commit made"
 
+# A clock string is a measurement, and this is the moment it can be taken: the
+# mutex is held, the paths are staged, the commit is the next thing to happen.
+# A run that composes `[19:5x]` at 18:54 writes a fabricated freshness
+# guarantee, and later runs grep these labels to date a claim (Pattern #276).
+# Only an AHEAD label is rewritten; behind is what an honestly-early `date`
+# reading looks like. Best-effort by design — a missing python3 or a broken
+# checker must never cost the commit.
+if command -v python3 >/dev/null 2>&1 && [ -f scripts/clock-stamp-check.py ]; then
+  STAMP_RC=0
+  FIXED="$(python3 scripts/clock-stamp-check.py --fix-subject "$MSG" 2>/dev/null)" || STAMP_RC=$?
+  # 10 is the checker's "I changed it"; 0 means the stamp was already honest or
+  # there was none to read. Any other code is a broken checker — ignore it.
+  if [ "$STAMP_RC" -eq 10 ] && [ -n "$FIXED" ]; then
+    echo "git-safe-commit: corrected a commit stamp that was ahead of the clock" >&2
+    MSG="$FIXED"
+  fi
+fi
+
 # A pathspec-scoped commit, not a bare `git commit`: the bare form writes the
 # whole index, so anything a peer left staged would ride along.
 git commit -q -m "$MSG" -- "${COMMIT[@]}" || die 5 "git commit failed"

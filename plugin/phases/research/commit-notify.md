@@ -11,10 +11,12 @@ requires: null
 ## Step 4a: Commit
 
 ```bash
-git -C "{{SCOUT_DIR}}" add -A && git -C "{{SCOUT_DIR}}" commit -m "research [HH:MM]: <summary of targets researched and key findings>"
+{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: <summary of targets researched and key findings>" knowledge-base/ action-items/ <any other path THIS run touched>
 ```
 
-Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
+**Never `git add -A`.** A concurrently-running scheduled session shares this working tree, and `-A` stages *its* half-written files into your commit — or, worse, commits a deletion it was in the middle of making. The helper refuses `-A` (exit 2), takes a cross-session mutex, and clears provably-stale git locks. The directory pathspecs above are broad enough that nothing this lane writes can be stranded; add any path outside them explicitly.
+
+Read the timestamp from `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` immediately before you write it, and never advance one by reasoning — the helper corrects a stamp that is ahead of the machine's clock and prints what it changed.
 
 ## Step 4b: Session Entry
 
