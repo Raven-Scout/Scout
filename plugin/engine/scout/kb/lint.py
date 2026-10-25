@@ -407,15 +407,19 @@ PRIVACY_UNAVAILABLE = "kb-lint: privacy check could not run"
 
 
 def is_scheduled(env: Mapping[str, str]) -> bool:
-    """Whether a commit is a scheduled run's: ``SCOUT_MODE`` is non-empty, or the resolved reader is ``autonomous``.
+    """Whether a commit counts as a scheduled run's (ruling R27): fail closed.
 
-    The one predicate (ruling R27) for both the widening guard
-    (``scout.kb.lint_privacy``) and the fail-closed path when the privacy check
-    can't run; the hook template's ``scheduled()`` mirrors it.
+    True when ``SCOUT_MODE`` is non-empty, or the resolved reader isn't the
+    owner: ``autonomous``, any ``agent:*``, and a set ``SCOUT_READER`` that
+    isn't exactly ``owner`` (empty or malformed, which ``resolve_reader``
+    turns into the no-rights ``agent:invalid``). Nothing unknown is ever taken
+    for the owner. The one predicate for the widening guard
+    (``scout.kb.lint_privacy``) and the refusal when the privacy check can't
+    run; the hook template's ``scheduled()`` mirrors it.
     """
     from scout.kb.reader import resolve_reader
 
-    return bool(env.get("SCOUT_MODE")) or resolve_reader(None, env) == "autonomous"
+    return bool(env.get("SCOUT_MODE")) or resolve_reader(None, env) != "owner"
 
 
 def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
