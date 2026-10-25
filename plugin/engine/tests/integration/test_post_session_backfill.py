@@ -84,3 +84,43 @@ def test_backfill_adds_prefix_and_commits_once(vault: Path) -> None:
     assert r2.returncode == 0, r2.stderr
     after2 = _git(vault, "rev-list", "--count", "HEAD").strip()
     assert after2 == after, "second run must be a no-op"
+
+
+def test_does_not_commit_a_dying_sessions_wreckage(vault: Path) -> None:
+    """A session that dies mid-write must not have its truncation committed.
+
+    Regression for the 2026-10-24 data loss: a briefing died on a network error
+    after rewriting the daily file down to its run-notes section and before
+    writing the item list back. This script then staged all of action-items/
+    and committed the 807-line deletion under "chore: backfill prefixes".
+    backfill-prefixes itself had changed nothing.
+    """
+    candidate = Path(sys.executable).with_name("scoutctl")
+    scoutctl = str(candidate) if candidate.exists() else shutil.which("scoutctl")
+    if not scoutctl:
+        pytest.skip("scoutctl console script not found (looked next to sys.executable and on PATH)")
+    script = _render(TEMPLATE, vault, scoutctl)
+    daily = vault / "action-items" / "action-items-2026-06-04.md"
+    daily_path = str(daily)
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault)}
+
+    # Prefix everything first, so the second invocation is a genuine no-op and
+    # the only pending change is the one the dead session left behind.
+    subprocess.run([str(script), daily_path], env=env, capture_output=True, text=True, check=True)
+    assert not _git(vault, "status", "--porcelain", "--", "action-items").strip()
+
+    before = _git(vault, "rev-list", "--count", "HEAD").strip()
+    survivor = daily.read_text(encoding="utf-8")
+    daily.write_text("## 🪵 Run notes & connector availability\n- the run died here\n", encoding="utf-8")
+
+    r = subprocess.run([str(script), daily_path], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+    after = _git(vault, "rev-list", "--count", "HEAD").strip()
+    assert after == before, "a truncation the backfill did not make must not be committed"
+    assert _git(vault, "status", "--porcelain", "--", "action-items").strip(), (
+        "the truncation must stay visible in the working tree, not be buried in a commit"
+    )
+    assert "leaving pre-existing uncommitted changes alone" in r.stderr
+    committed = _git(vault, "show", "HEAD:action-items/action-items-2026-06-04.md")
+    assert committed == survivor, "the committed daily file must still hold the item list"
