@@ -52,9 +52,9 @@ Use `gcal_list_events` to get all events for today. For each meeting:
 - Check if meeting notes or transcripts are available from other connectors (Granola, Drive)
 - Flag meetings that haven't happened yet — these provide context for the briefing ("{{USER_NAME}} has a meeting with X about Y at 2 PM")
 
-### Yesterday's Meetings (Consolidation)
+### Yesterday's Meetings
 
-For consolidation runs, also pull yesterday's meetings. Meetings from yesterday are the most likely source of unprocessed action items:
+Also pull yesterday's meetings: they are the most likely source of unprocessed action items. Transcripts from other connectors are the primary source; the calendar gives the meeting list to check them against:
 - Check if transcripts or notes exist for these meetings
 - Cross-reference attendees with `people.md`
 - Any meeting that happened but has no notes/transcript anywhere should be flagged as a gap
@@ -74,32 +74,10 @@ The today's-meetings table is a recurring source of two bugs: wrong wall-clock t
 2. **Assert every row against a fresh same-run query.** Call `list_events` for today's window **in this run**, and assert each table row's displayed time matches the live event start to the minute. If the table is carried from a prior run without a fresh `list_events` this run, every time cell must be flagged `[carried]`.
 3. **Phantom detection.** Every carried row must match a live event by `id`/`recurringEventId` in this run's `list_events` result. Rows with no live match must be removed or marked `[unverified — not on calendar this run]` with the query timestamp.
 
----
-phase: connector
-name: calendar
-slot: query
-mode: [briefing]
-requires: calendar
----
+### On a Briefing, Also
 
-## Calendar Query — Briefing Data Gathering
-
-### Today's Schedule
-
-Use `gcal_list_events` to get today's full calendar. For each event, note:
-- Time and duration
-- Title and description
-- Attendees (cross-reference with `people.md`)
-- Whether it's recurring or one-off
-- Any preparation needed (check if there are linked documents, agendas, or open issues related to the meeting topic)
-
-### Yesterday's Meetings
-
-Pull yesterday's meetings to check for unprocessed action items. If meeting transcripts are available from other connectors, they'll be the primary source — but the calendar provides the meeting list to check against.
-
-### Upcoming Context
-
-Note any significant meetings in the next 2-3 days that {{USER_NAME}} should prepare for. Flag these in the briefing if preparation is needed (e.g., "You have a design review Thursday — the PR for feature X should be ready by then").
+- For each of today's events, also note its duration, whether it's recurring or one-off, and any prep it needs (linked documents, agendas, open issues on its topic).
+- **Upcoming context:** note significant meetings in the next 2–3 days that {{USER_NAME}} should prepare for, and flag them in the briefing when prep is needed (e.g., "You have a design review Thursday — the PR for feature X should be ready by then").
 
 ---
 phase: connector

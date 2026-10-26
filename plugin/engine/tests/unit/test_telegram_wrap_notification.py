@@ -102,7 +102,7 @@ def test_wrap_channels_leave_slack_scans_alone() -> None:
     )
     slots = {s.slot for s in kept}
     assert "notification" not in slots
-    assert {"outbound-scan", "inbound-scan", "query", "cross-check", "update"} <= slots
+    assert {"outbound-scan", "inbound-scan", "cross-check", "update"} <= slots
 
 
 def test_parse_wrap_channels_accepts_known_channels() -> None:

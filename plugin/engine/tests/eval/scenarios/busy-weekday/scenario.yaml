@@ -4,6 +4,7 @@ mode: morning-consolidation
 weekdays_only: true
 personas: [slack, linear, calendar]
 checks: [placement, no_drop, context_note, waiting_format, no_collapse, body_budget, demotion]
+budget: 5  # dollars: base samples cost ~$3.94 in #507's compare; the $3 default cuts them short
 
 # Tag (an item in yesterday's file) or ref: (an item this run should create) → allowed sections.
 expected_placement:

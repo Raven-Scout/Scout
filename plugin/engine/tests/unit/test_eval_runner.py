@@ -14,7 +14,7 @@ import pytest
 
 from tests._waits import wait_until
 from tests.eval.harness.plan import PlanRefused, session_plan
-from tests.eval.harness.runner import run_sample
+from tests.eval.harness.runner import DEFAULT_BUDGET, run_sample
 from tests.eval.harness.scenario import SCENARIOS_DIR, load_scenario
 from tests.eval.harness.verdicts import hit_limit
 
@@ -63,12 +63,14 @@ def test_unknown_scenario_is_an_error() -> None:
 
 
 def _scenario_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> str:
-    """A throwaway scenario dir (a copy of busy-weekday's yaml plus ``extra``) under a patched SCENARIOS_DIR."""
+    """A throwaway scenario dir (a copy of busy-weekday's yaml, without its own budget, plus ``extra``)
+    under a patched SCENARIOS_DIR."""
     import tests.eval.harness.scenario as scenario_mod
 
     root = tmp_path / "scenarios"
     (root / "probe").mkdir(parents=True)
-    text = (SCENARIOS_DIR / "busy-weekday" / "scenario.yaml").read_text(encoding="utf-8")
+    raw = (SCENARIOS_DIR / "busy-weekday" / "scenario.yaml").read_text(encoding="utf-8")
+    text = "".join(line for line in raw.splitlines(keepends=True) if not line.startswith("budget:"))
     (root / "probe" / "scenario.yaml").write_text(text + "\n" + extra + "\n", encoding="utf-8")
     monkeypatch.setattr(scenario_mod, "SCENARIOS_DIR", root)
     return "probe"
@@ -311,10 +313,11 @@ def test_a_session_that_ends_in_an_error_is_aborted_not_scored(
     result = run_sample(
         busy, today=_utc_today(), rep=1, model="sonnet", results_root=tmp_path / "r", real_claude=str(_fake(tmp_path))
     )
-    assert result.aborted == {"reason": "error_max_budget_usd", "budget_usd": "3"}  # the cap it hit
+    cap = busy.budget or DEFAULT_BUDGET  # the scenario's own budget, else the harness default
+    assert result.aborted == {"reason": "error_max_budget_usd", "budget_usd": cap}  # the cap it hit
     assert result.checks == ()
     meta = json.loads((result.result_dir / "meta.json").read_text())
-    assert meta["budget_usd"] == "3" and meta["aborted"] == result.aborted
+    assert meta["budget_usd"] == cap and meta["aborted"] == result.aborted
 
 
 def test_a_session_that_never_rewrote_todays_file_is_not_scored_as_a_pass(

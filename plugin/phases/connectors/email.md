@@ -90,37 +90,8 @@ After drilling, log coverage as `thread <id> drilled, last-message <timestamp>, 
 
 **Snippet-vs-state guardrail (compose-time):** before writing or carrying any action item that cites an email thread, the most recent message you've actually *read* on that thread must be ≤ 1 run-window old (the consolidation lookback, or 24h for a briefing). If it's older, drill again. If the drilled state contradicts the carried framing (thread says "approved" while the carried item says "awaiting approval"), update the action item and log the divergence in the mistake audit.
 
----
-phase: connector
-name: email
-slot: query
-mode: [briefing]
-requires: email
----
+### On a Briefing, Also
 
-## Email Query — Briefing Data Gathering
-
-### Inbox Check
-
-Use `gmail_search_messages` to pull recent inbox messages (past 24 hours). Apply the same cold outreach filter as the inbound scan — do not surface unsolicited sales or vendor marketing.
-
-Focus on:
-1. Unread emails from known contacts
-2. Emails requiring a response (questions, requests, approvals)
-3. Emails with deadlines or time-sensitive content
-4. Thread updates where {{USER_NAME}} is an active participant
-
-### Sent Mail Check
-
-Also search sent mail from the past 24 hours using `from:{{USER_EMAIL}}`. This reveals:
-- What {{USER_NAME}} already handled via email
-- Active threads where {{USER_NAME}} is waiting for a reply
-- Deliverables sent (which may correspond to completed action items)
-
-### Synthesis
-
-For each email finding:
-- Is this a new request needing action? (candidate action item)
-- Is this an update on something tracked in the KB? (update the relevant project file)
-- Is this something {{USER_NAME}} already handled? (evidence for marking items Done)
-- Is this FYI only? (note context but no action item)
+- Use the past 24 hours as the window. Put first: unread emails from known contacts, emails that need a response (questions, requests, approvals), emails with deadlines, and thread updates where {{USER_NAME}} is active.
+- Search sent mail from the past 24 hours too (`from:{{USER_EMAIL}}`; the Outbound Scan runs only on consolidations), ignoring automated replies and marketing sends. It shows what {{USER_NAME}} already handled, threads waiting on a reply, and deliverables sent.
+- Sort each finding: a new request (candidate action item), an update on something tracked (update its KB note), something already handled (evidence for Done), or FYI only.

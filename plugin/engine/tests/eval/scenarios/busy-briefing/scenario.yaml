@@ -1,0 +1,29 @@
+# busy-briefing: busy-weekday's vault and connectors as a morning briefing (#84). #507's eval found
+# briefings skipping the connector sections their mode row didn't name; this scores a briefing on
+# the same seeds as busy-weekday (a consolidation). The review-request audit is in no_drop's
+# ref:example-org/widgets#12.
+mode: morning-briefing
+files_from: busy-weekday
+weekdays_only: true
+personas: [slack, linear, calendar]
+checks: [placement, no_drop, demotion]
+budget: 5  # dollars, as busy-weekday: routed briefings do that scenario's scan work
+
+# Same seeds and expectations as busy-weekday: a briefing places and steps down items alike.
+expected_placement:
+  QUOTA: [🔴, 🟡]
+  BILL: [🟢]
+  DOCS: [🟡]
+  DEPR: [🟢]
+  OVRD: [🟡]
+  "ref:example-org/widgets#12": [🔴, 🟡]
+  "ref:example-org/widgets#20": [🔴, 🟡]
+  "ref:example-org/widgets#21": [🔴, 🟡]
+  "ref:example-org/widgets#22": [🟢]
+  "ref:example-org/api#40": [🟢]
+  "ref:PROJ-1210": [🟢]
+  "ref:PROJ-1211": [🟡]
+
+expected_demotion: {OVRD: step_down, LATE: hold, PARK: park}
+
+expected_closures: [LCHK]

@@ -26,7 +26,9 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # 2026-10-21 (#453 eval follow-up): +189 SKILL, +109 DREAMING, +70 RESEARCH for listing/reading context
 # notes via `scoutctl kb files|read`, exact private titles on owner-only surfaces, and consolidation
 # keeping `personal_tasks`; the pins also absorb drift already on main (+762 SKILL, +239 RESEARCH).
-PINS = {"SKILL": 42_648, "DREAMING": 18_725, "RESEARCH": 6_569}
+# 2026-10-26 (#84 follow-up to #507): −1,169 SKILL (42,851 → 41,682 measured) for folding each
+# connector's briefing-only Query section into its Inbound Scan; the Run Modes rows now name every step.
+PINS = {"SKILL": 41_682, "DREAMING": 18_725, "RESEARCH": 6_569}
 GROWTH = 0.05
 SHRINK = 0.10
 

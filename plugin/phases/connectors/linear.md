@@ -53,36 +53,11 @@ Check for new comments on {{USER_NAME}}'s assigned issues. Comments may contain:
 - Blockers or dependency changes
 - Review feedback
 
----
-phase: connector
-name: linear
-slot: query
-mode: [briefing]
-requires: linear
----
+### On a Briefing, Also
 
-## Linear Query — Briefing Data Gathering
-
-### All Assigned Issues
-
-Use `list_issues` to get all issues currently assigned to {{USER_NAME}}. For each issue, note:
-- **Title and identifier** (e.g., PROJ-123)
-- **Current status** (Backlog, To Do, In Progress, In Review, Done)
-- **Priority** (Urgent, High, Medium, Low, None)
-- **Project/parent** if applicable
-- **Recent updates** — any comments or status changes in the past 24 hours
-- **Labels/tags** that indicate category or urgency
-
-### New Issues Since Yesterday
-
-Filter for issues created in the past 24 hours in {{USER_NAME}}'s teams/projects. Even issues not assigned to {{USER_NAME}} may be relevant context (e.g., a teammate's bug report that affects {{USER_NAME}}'s project).
-
-### Priority Check
-
-Flag any issues that are:
-- **Urgent priority** and not yet In Progress
-- **High priority** and stuck in the same status for more than 2 days
-- **Blocked** (has a "blocked" label or comment indicating a blocker)
+- **All assigned issues** (`list_issues` assigned to {{USER_NAME}}): identifier and title, status, priority, project or parent, labels, and any comment or status change in the past 24 hours.
+- **New issues** created in the past 24 hours in {{USER_NAME}}'s teams and projects, assigned or not: a teammate's bug report can affect {{USER_NAME}}'s project.
+- **Priority check:** flag Urgent issues not yet In Progress, High ones stuck in one status for more than 2 days, and blocked ones (a "blocked" label or a comment naming a blocker).
 
 ---
 phase: connector

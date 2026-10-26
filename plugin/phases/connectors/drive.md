@@ -48,33 +48,8 @@ For each relevant document found:
 - **Decisions** documented
 - **Whether this relates to a known project** (link to KB project file)
 
----
-phase: connector
-name: drive
-slot: query
-mode: [briefing]
-requires: drive
----
+### On a Briefing, Also
 
-## Google Drive Query — Briefing Data Gathering
-
-### Recent Meeting Notes
-
-Use `search_files` to find recently modified meeting notes or documents (past 24 hours). Search for:
-- Files with "meeting notes," "agenda," "minutes" in the title
-- Files in shared folders associated with active projects
-- Files recently shared with {{USER_NAME}}
-
-### Complement Transcript Tools
-
-Drive documents may complement what transcript tools capture. For today's briefing:
-1. Check if any of yesterday's meetings have associated Google Docs with notes
-2. If a transcript exists AND a Drive doc exists for the same meeting, use both sources
-3. If only a Drive doc exists (no transcript), treat the doc as the primary meeting record
-4. If only a transcript exists (no Drive doc), the transcript is the primary source
-
-### Collaborative Documents
-
-Check for documents where multiple people have been making edits — these indicate active collaborative work and may contain action items, decisions, or context updates that don't appear in any other connector.
-
-Use `read_file_content` for documents that appear particularly relevant to current projects or action items.
+- Use the past 24 hours as the window. Search for titles with "meeting notes," "agenda" or "minutes," files in shared folders of active projects, and files recently shared with {{USER_NAME}}.
+- For yesterday's meetings, look for an associated doc: a doc with no transcript is the primary meeting record.
+- Check documents several people have been editing: active collaborative work often carries action items, decisions or context no other connector shows. Read the relevant ones with `read_file_content`.

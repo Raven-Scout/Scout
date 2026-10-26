@@ -102,36 +102,11 @@ For each inbound message found, note:
 
 Remember: every inbound item is a *candidate* action item, not a confirmed one. It must pass the cross-check before becoming a To Do.
 
----
-phase: connector
-name: slack
-slot: query
-mode: [briefing]
-requires: slack
----
+### On a Briefing, Also
 
-## Slack Query — Briefing Data Gathering
-
-Gather Slack context for the briefing. Check the past 24 hours of activity.
-
-### Inbound — What Needs Attention
-
-1. **DMs to {{USER_NAME}}**: Search for recent DMs received. Prioritize messages from frequent contacts and anyone in `people.md`.
-2. **Mentions**: Search for `<@{{USER_SLACK_ID}}>` mentions across channels in the past 24 hours.
-3. **Key channels**: Read recent messages in channels listed in `channels.md` that are marked as high-priority. Look for anything actionable even if {{USER_NAME}} wasn't tagged.
-
-### Outbound — What's Already Handled
-
-4. **Messages FROM {{USER_NAME}}**: Search for messages sent by {{USER_NAME}} in the past 24 hours. This reveals what's already been dealt with — critical for avoiding stale action items.
-5. **Thread participation**: Check threads where {{USER_NAME}} has replied. If {{USER_NAME}} replied in a thread about a topic, that topic is likely in-progress or handled.
-
-### Synthesis
-
-For each finding, note whether it's:
-- A new request needing action
-- An update on an existing project/issue (link to KB file)
-- Something {{USER_NAME}} already handled (evidence from outbound search)
-- FYI/context only (no action needed)
+- Use the past 24 hours as the window. Put DMs from people in `people.md` and frequent contacts first, and read recent messages in the channels `channels.md` marks high-priority, tagged or not.
+- Search {{USER_NAME}}'s own messages and thread replies from the past 24 hours too (the Outbound Scan runs only on consolidations; **Both Scans Required** applies): they show what's already handled, which keeps stale items off the list.
+- Sort each finding: a new request, an update on a tracked project or issue (link its KB note), something already handled (cite the outbound message), or FYI only.
 
 ---
 phase: connector

@@ -65,33 +65,8 @@ Note all meeting attendees. Cross-reference with `people.md` and add any new peo
 
 If a document-store connector (e.g. Google Drive) is also connected, apply its bidirectional meeting cross-check hard rule: for every meeting surfaced here, search the document store for notes in the meeting's ±2h window — and note explicitly when only one side has the meeting. Transcript-only coverage silently loses the meetings that were documented but not recorded.
 
----
-phase: connector
-name: granola
-slot: query
-mode: [briefing]
-requires: granola
----
+### On a Briefing, Also
 
-## Granola Query — Briefing Data Gathering
-
-### Recent Meeting Notes
-
-Use `list_meetings` to check for recent meetings (past 24 hours) with available transcripts. For each meeting:
-
-1. Pull the transcript using `get_meeting_transcript`
-2. Extract action items and commitments (apply the same "signals, not facts" principle)
-3. Note decisions that affect current projects
-4. Identify any follow-up meetings that were discussed
-
-### Cross-Reference with Calendar
-
-Compare the list of meetings with transcripts against the calendar. Look for gaps:
-- Meetings on the calendar that have no transcript (may need manual notes, or the meeting was cancelled)
-- Transcripts for meetings not on the calendar (ad-hoc calls, informal meetings)
-
-When both a transcript and calendar entry exist for the same meeting, use both for richer context: the calendar provides attendees and timing, the transcript provides content.
-
-### Context for Today's Meetings
-
-If today's calendar has meetings with attendees or topics that appeared in recent transcripts, note the connection. This helps {{USER_NAME}} prepare: "You're meeting with X again today — in yesterday's call, you committed to Y."
+- Use the past 24 hours as the window.
+- **Calendar gaps:** note calendar meetings with no transcript (no notes, or cancelled) and transcripts for meetings not on the calendar (ad-hoc calls). When both exist, take attendees and timing from the calendar and the content from the transcript.
+- **Today's meetings:** if a meeting today has attendees or topics from recent transcripts, say so ("You're meeting with X again today — in yesterday's call, you committed to Y").

@@ -44,42 +44,9 @@ Note all meeting attendees from the `calendar_invitees` field and transcript spe
 
 If a meeting involves someone {{USER_NAME}} is preparing to meet again, use `mcp__fathom__find_person` with `recorded_by: "anyone"` to pull up prior meeting history with that person. This enriches the people KB and helps with meeting prep.
 
----
-phase: connector
-name: fathom
-slot: query
-mode: [briefing]
-requires: fathom
----
+### On a Briefing, Also
 
-## Fathom Query — Briefing Data Gathering
-
-### Recent Meeting Notes
-
-Use `mcp__fathom__list_meetings` with `created_after` set to 24 hours ago, `include_summary: true`, and `include_action_items: true` to check for recent meetings.
-
-For each meeting:
-
-1. Review the AI summary via the listing (or call `mcp__fathom__get_meeting_summary` for more detail)
-2. Pull the full transcript with `mcp__fathom__get_meeting_transcript` if the summary is insufficient for action item extraction
-3. Extract action items and commitments (apply the same "signals, not facts" principle)
-4. Note decisions that affect current projects
-5. Identify any follow-up meetings that were discussed
-
-Limit full transcript pulls to at most 3 meetings per run — transcripts are large. Prioritize meetings that appear most actionable based on their summaries.
-
-### Topic Search for Active Projects
-
-If there are active projects in the KB, use `mcp__fathom__search_meetings` with relevant project keywords and `recorded_by: "anyone"` to find recent discussions that may not have been captured yet. Limit to `created_after` of the last briefing run to avoid reprocessing.
-
-### Cross-Reference with Calendar
-
-Compare the list of meetings with transcripts against the calendar. Look for gaps:
-- Meetings on the calendar that have no Fathom recording (may need manual notes, or the meeting was cancelled, or recording was not enabled)
-- Fathom recordings for meetings not on the calendar (ad-hoc calls, informal meetings)
-
-When both a transcript and calendar entry exist for the same meeting, use both for richer context: the calendar provides attendees and timing, the transcript provides content.
-
-### Context for Today's Meetings
-
-If today's calendar has meetings with attendees or topics that appeared in recent Fathom recordings, note the connection. Use `mcp__fathom__find_person` with `recorded_by: "anyone"` to pull meeting history with today's attendees. This helps {{USER_NAME}} prepare: "You're meeting with X again today — in yesterday's call, you committed to Y."
+- Use the past 24 hours as the window (`created_after` 24 hours ago). Pull at most 3 full transcripts per run, the most actionable by their summaries first; `mcp__fathom__get_meeting_summary` gives more than the listing.
+- **Topic search:** for active KB projects, `mcp__fathom__search_meetings` with project keywords, `recorded_by: "anyone"` and `created_after` the last briefing run finds discussions not yet captured.
+- **Calendar gaps:** note calendar meetings with no recording (no notes, cancelled, or not recorded) and recordings not on the calendar (ad-hoc calls). When both exist, take attendees and timing from the calendar and the content from the transcript.
+- **Today's meetings:** if a meeting today has attendees or topics from recent recordings, say so ("You're meeting with X again today — in yesterday's call, you committed to Y"). `mcp__fathom__find_person` with `recorded_by: "anyone"` pulls the history.

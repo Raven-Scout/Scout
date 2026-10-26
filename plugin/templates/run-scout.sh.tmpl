@@ -89,9 +89,9 @@ export SCOUT_READER=autonomous
 # The prompt instructs Claude to read SKILL.md and execute it
 PROMPT="You are {{INSTANCE_NAME}}, an autonomous knowledge management system. Your working directory is {{SCOUT_DIR}}.
 
-Step 1: Read {{SCOUT_DIR}}/SKILL.md in full.
+Step 1: Read {{SCOUT_DIR}}/SKILL.md in full from the top through its KB WRITE PROTOCOL section: those rules apply to every run.
 Step 2: Your run mode is \`$MODE\` (the dispatcher's slot key). Find the matching row of the Run Modes table near the top of SKILL.md and follow it. If the mode is \`manual\`, derive the closest mode from the current day and hour, then follow that row.
-Step 3: Execute the SKILL.md instructions completely — all steps/phases in order.
+Step 3: Execute every step that row names, in order. Before each one, read its section of SKILL.md in full (find it by its heading): the sections hold rules the step must follow.
 Step 4: Commit results to git.
 Step 5: If anything material changed, send the wrap notification summarizing what was found and changed, as SKILL.md's notification sections direct: they name the channel and recipient. Send every notification section SKILL.md has (in a stock install, Slack Notification and, when Telegram is set up, Telegram Notification as well; the vault's notify.wrap_channels setting decides which are there). Do not assume Slack: {{USER_NAME}} may have moved the wrap off Slack on purpose, for example because it is an employer-controlled workspace and runs carry personal content, and this prompt must not contradict that. If SKILL.md has no notification section, send nothing and say so in your final message.
 
