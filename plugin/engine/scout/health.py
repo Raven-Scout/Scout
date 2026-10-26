@@ -28,7 +28,11 @@ from scout.update_outcomes import UpdateOutcome
 from scout.update_outcomes import read as read_updates
 
 SEVERITY_ORDER = {"note": 0, "yellow": 1, "red": 2}
-SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant"})
+SKIP_OUTCOMES = frozenset({"skipped_lock", "skipped_budget", "skipped_redundant", "skipped_lease"})
+# A vault linked to Agnes skips a run it can't take the Repository Writer Lease
+# for (R2): failure_class lease_held (Agnes holds it) or lease_unavailable.
+LEASE_SKIP = "skipped_lease"
+LEASE_UNAVAILABLE_RED = 3
 
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
@@ -467,6 +471,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
             )
 
     cutoff = now - LOCK_SKIP_WINDOW
+    findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -476,6 +481,64 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                 since=None,
                 summary=f"{len(lock_skips)} runs skipped in the last 24 h because another session held the vault lock.",
                 fix="A long-running session is holding the vault lock; check .scout-logs/ for a run that took hours.",
+                source="ledger",
+            )
+        )
+    return findings
+
+
+def _trailing_lease_unavailable(rows: list[OutcomeRow]) -> list[OutcomeRow]:
+    """The newest run-or-lease-skip rows that skipped as lease_unavailable, oldest first.
+
+    Lock, budget and redundancy skips are passed over: they say nothing about
+    whether Agnes answers. Any run, or a lease_held skip, ends the streak.
+    """
+    streak: list[OutcomeRow] = []
+    for r in reversed(rows):
+        if r.outcome in SKIP_OUTCOMES and r.outcome != LEASE_SKIP:
+            continue
+        if r.outcome != LEASE_SKIP or r.failure_class != "lease_unavailable":
+            break
+        streak.append(r)
+    return streak[::-1]
+
+
+def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> list[Finding]:
+    """Runs a linked vault skipped over the Repository Writer Lease (Agnes R2)."""
+    findings: list[Finding] = []
+    streak = _trailing_lease_unavailable(rows)
+    if streak:
+        log = _run_log(vault, streak[-1])
+        findings.append(
+            Finding(
+                id="lease.unavailable",
+                severity="red" if len(streak) >= LEASE_UNAVAILABLE_RED else "yellow",
+                since=streak[0].finished_at,
+                summary=(
+                    f"The last {len(streak)} scheduled run(s) were skipped: Agnes couldn't grant the repository "
+                    "writer lease, so Scout didn't write the vault."
+                ),
+                fix=(
+                    "Check the network and the Agnes login: scoutctl repo lease status. Runs resume on their own "
+                    "once Agnes answers; scoutctl repo unlink returns to lease-free runs."
+                ),
+                source="ledger",
+                log=str(log) if log else None,
+            )
+        )
+    held = [r for r in rows if r.outcome == LEASE_SKIP and r.failure_class == "lease_held" and r.finished_at >= cutoff]
+    if held:
+        slots = ", ".join(sorted({r.slot for r in held}))
+        findings.append(
+            Finding(
+                id="lease.held",
+                severity="note",
+                since=None,
+                summary=(
+                    f"{len(held)} run(s) skipped in the last 24 h because Agnes held the repository writer lease "
+                    f"(an Agnes-hosted run): {slots}."
+                ),
+                fix="Nothing to fix if Agnes runs that work. To stop the overlap, give each slot one place to run.",
                 source="ledger",
             )
         )

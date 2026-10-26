@@ -12,6 +12,10 @@
 #   scout_redundant_wait_guard  0 = run; 1 = a session of this kind just did
 #                               this run's work, so skip it (#218)
 #   scout_record_skip <outcome> record a deliberate skip in the run ledger
+#   scout_lease_acquire         0 = run: the Repository Writer Lease is ours
+#                               (released on EXIT), or the vault isn't linked to
+#                               Agnes; 1 = skip, SCOUT_LEASE_SKIP says why
+#                               (lease_held | lease_unavailable)
 #
 # Env knobs:
 #   SCOUT_LOCK_WAIT_SECS=1800       how long a busy lock is waited for
@@ -27,6 +31,7 @@
 #                                   Default: enforce for dreaming and research,
 #                                   warn for scout (briefing and consolidation
 #                                   are different work).
+#   SCOUT_LEASE_RENEW_SECS=300      how often the keepalive renews the lease
 
 # scoutctl takes this same lock (bootstrap install|upgrade|resolve, connectors
 # custom add|remove — engine/scout/scripts/bootstrap_lock.py), so this file
@@ -307,6 +312,11 @@ _scout_take_guard() {
     ( set -C; : > "$LOCK_GUARD" ) 2>/dev/null
 }
 
+_scout_on_exit() {
+    _scout_lease_release
+    _scout_release_lock
+}
+
 _scout_release_lock() {
     # If the lock was reaped and taken over while we ran, it is not ours to remove.
     if [ "$(_scout_lock_pid)" = "$$" ]; then
@@ -400,7 +410,7 @@ scout_lock_acquire() {
         if [ "$left" -gt "$LOCK_POLL_SECS" ]; then left="$LOCK_POLL_SECS"; fi
         sleep "$left"
     done
-    trap _scout_release_lock EXIT
+    trap _scout_on_exit EXIT
     # Where this run logs, so waiters can see it progress. Best effort.
     { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
     if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
@@ -469,4 +479,67 @@ scout_redundant_wait_guard() {
     fi
     echo "=== Note: a $RUNNER_KIND run (slot $w_slot, log $w_log) finished ok ${ago}s ago — running anyway ===" >> "$LOG_FILE"
     return 0
+}
+
+# The Repository Writer Lease (Agnes R2; spec "Scout in Agnes" §5, §8.8). A
+# vault linked to an Agnes Personal Knowledge Repository (scoutctl repo link)
+# is written by one place at a time: this computer or a run in Agnes. So a run
+# takes the lease after the session lock and before it writes anything, a
+# keepalive renews it while the run lives, and the EXIT trap gives it back
+# before the session lock. When Agnes holds it (an Agnes-hosted run) the run is
+# skipped as lease_held; when Agnes can't grant it (unreachable, an expired PAT,
+# a broken engine) it is skipped as lease_unavailable, since a run that can't
+# take the lease can't know whether Agnes is writing. An unlinked vault makes
+# no lease call at all.
+#
+# The lease token never passes through this shell: scoutctl keeps it in a 0600
+# file outside the vault, keyed by the run id, which is all this shell knows.
+# A runner killed before its trap runs leaves the keepalive, which releases the
+# lease once the runner's PID is gone; if both die, the next run here releases
+# it from that file, and Agnes ends it at its TTL in any case.
+SCOUT_LEASE_RUN_ID=""
+SCOUT_LEASE_KEEPALIVE_PID=""
+SCOUT_LEASE_SKIP=""
+
+scout_lease_acquire() {
+    local rc=0 run_id
+    [ -f "$SCOUT_DIR/.scout-state/repo-sync.json" ] || return 0
+    run_id="$RUNNER_KIND-$MODE-$(date +%Y%m%dT%H%M%S)-$$"
+    if [ ! -x "${SCOUTCTL_BIN:-}" ]; then
+        echo "=== This vault is linked to Agnes, but scoutctl is missing at ${SCOUTCTL_BIN:-?}: can't take the repository lease — skipping (lease_unavailable) ===" >> "$LOG_FILE"
+        SCOUT_LEASE_SKIP=lease_unavailable
+        return 1
+    fi
+    "$SCOUTCTL_BIN" repo lease acquire --run-id "$run_id" --what "$MODE" --pid "$$" >> "$LOG_FILE" 2>&1 || rc=$?
+    case "$rc" in
+        0)
+            SCOUT_LEASE_RUN_ID="$run_id"
+            "$SCOUTCTL_BIN" repo lease keepalive --run-id "$run_id" --parent-pid "$$" </dev/null >> "$LOG_FILE" 2>&1 &
+            SCOUT_LEASE_KEEPALIVE_PID=$!
+            return 0
+            ;;
+        5)
+            return 0
+            ;;
+        3)
+            echo "=== Agnes holds the repository lease — skipping this run (lease_held) ===" >> "$LOG_FILE"
+            SCOUT_LEASE_SKIP=lease_held
+            ;;
+        *)
+            echo "=== Couldn't take the repository lease from Agnes (scoutctl exit $rc) — skipping this run (lease_unavailable) ===" >> "$LOG_FILE"
+            SCOUT_LEASE_SKIP=lease_unavailable
+            ;;
+    esac
+    return 1
+}
+
+_scout_lease_release() {
+    [ -n "$SCOUT_LEASE_RUN_ID" ] || return 0
+    "$SCOUTCTL_BIN" repo lease release --run-id "$SCOUT_LEASE_RUN_ID" >> "$LOG_FILE" 2>&1 || true
+    SCOUT_LEASE_RUN_ID=""
+    if [ -n "$SCOUT_LEASE_KEEPALIVE_PID" ]; then
+        kill "$SCOUT_LEASE_KEEPALIVE_PID" 2>/dev/null || true
+        wait "$SCOUT_LEASE_KEEPALIVE_PID" 2>/dev/null || true
+        SCOUT_LEASE_KEEPALIVE_PID=""
+    fi
 }

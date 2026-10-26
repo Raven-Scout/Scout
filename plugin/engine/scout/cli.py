@@ -19,6 +19,7 @@ from scout import __version__
 from scout.errors import ConfigError, ScoutError
 
 if TYPE_CHECKING:
+    from scout.repo_sync import AgnesHost
     from scout.scripts.bootstrap import BootstrapConfig
 
 # Reserved for non-ScoutError exceptions escaping app(). Kept distinct
@@ -3700,6 +3701,166 @@ def _register_repo() -> None:
         except RepoSyncError as e:
             _fail(e, as_json)
         _done(result, as_json)
+
+    lease_app = typer.Typer(
+        help="The Repository Writer Lease: runs take it, so this computer and Agnes never write at once."
+    )
+    repo_app.add_typer(lease_app, name="lease")
+
+    def _lease_host() -> tuple[Path, AgnesHost]:
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token
+
+        vault = _paths.data_dir()
+        state = load_state(vault)
+        if state is None:
+            raise RepoSyncError("not_linked", "this vault isn't linked; no lease is needed")
+        return vault, AgnesHost(state.agnes_url, load_token(vault))
+
+    def _run_id(run_id: str) -> str:
+        from scout.repo_lease import RUN_ID_RE
+
+        if not RUN_ID_RE.fullmatch(run_id):
+            raise typer.BadParameter("letters, digits and . _ : - only, at most 120", param_hint="--run-id")
+        return run_id
+
+    @lease_app.command("acquire")
+    def cli_repo_lease_acquire(
+        run_id: str = typer.Option(
+            ..., "--run-id", help="This run's id, e.g. scout-morning-briefing-20261025T0800-4242."
+        ),
+        what: str = typer.Option("scheduled run", "--what", help="What the run is, for the holder label Agnes shows."),
+        pid: int = typer.Option(0, "--pid", help="The runner's PID, watched by the keepalive. Default: the parent."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Take the lease for one scheduled run; the token goes to the lease file, never to stdout.
+
+        Exit 0: held (or the vault isn't linked: exit 5). Exit 3: Agnes or
+        another process holds it, so skip the run (lease_held). Exit 4: Agnes
+        can't grant it now, so skip the run (lease_unavailable).
+        """
+        import json as _json
+        import os as _os
+
+        from scout import repo_lease
+        from scout.repo_sync import RepoSyncError
+
+        run_id = _run_id(run_id)
+        try:
+            vault, host = _lease_host()
+            lease, notes = repo_lease.acquire_for_run(
+                vault,
+                host,
+                run_id=run_id,
+                what=what,
+                pid=pid or _os.getppid(),
+                wait_s=repo_lease.env_secs(repo_lease.SYNC_WAIT_SECS_ENV, repo_lease.DEFAULT_SYNC_WAIT_SECS),
+                poll_s=repo_lease.env_secs(repo_lease.POLL_SECS_ENV, repo_lease.DEFAULT_POLL_SECS),
+            )
+        except RepoSyncError as e:
+            if e.code == "not_linked":
+                code, outcome = 5, "not_linked"
+            elif e.code == repo_lease.HELD_CODE:
+                code, outcome = 3, "lease_held"
+            else:
+                code, outcome = 4, "lease_unavailable"
+            if as_json:
+                typer.echo(_json.dumps({"ok": False, "outcome": outcome, "code": e.code, "message": e.message}))
+            else:
+                holder = f" Held by {repo_lease.holder_text(e)}." if e.code == repo_lease.HELD_CODE else ""
+                typer.echo(f"lease: {outcome} ({e.code}): {e.message}{holder}", err=True)
+            raise typer.Exit(code) from e
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, "outcome": "held", "notes": notes, **lease.public()}, sort_keys=True))
+            return
+        for note in notes:
+            typer.echo(f"lease: {note}")
+        typer.echo(
+            f"lease: held by {lease.holder_label} (generation {lease.generation}, until {lease.expires_at})"
+            + (", taken over from an expired holder" if lease.took_over else "")
+        )
+
+    @lease_app.command("keepalive")
+    def cli_repo_lease_keepalive(
+        run_id: str = typer.Option(..., "--run-id", help="The run whose lease to renew."),
+        parent_pid: int = typer.Option(..., "--parent-pid", help="The runner's PID; when it is gone, release."),
+    ) -> None:
+        """Renew a run's lease every five minutes while its runner lives; release it if the runner dies first."""
+        import signal
+
+        from scout import repo_lease
+        from scout.repo_sync import RepoSyncError
+
+        run_id = _run_id(run_id)
+        stopping: list[int] = []
+        signal.signal(signal.SIGTERM, lambda signum, _frame: stopping.append(signum))
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        try:
+            vault, host = _lease_host()
+        except RepoSyncError as e:
+            typer.echo(f"lease keepalive: {e.message}", err=True)
+            raise typer.Exit(4) from e
+        why = repo_lease.keepalive(
+            vault,
+            host,
+            run_id=run_id,
+            parent_pid=parent_pid,
+            renew_s=repo_lease.env_secs(repo_lease.RENEW_SECS_ENV, repo_lease.DEFAULT_RENEW_SECS),
+            poll_s=repo_lease.env_secs(repo_lease.POLL_SECS_ENV, repo_lease.DEFAULT_POLL_SECS),
+            log=lambda m: typer.echo(m, err=True),
+            stop=lambda: bool(stopping),
+        )
+        typer.echo(f"lease keepalive: {why}", err=True)
+
+    @lease_app.command("release")
+    def cli_repo_lease_release(
+        run_id: str = typer.Option(..., "--run-id", help="The run whose lease to give back."),
+    ) -> None:
+        """Give back a run's lease. Exit 0 also when there was none; 4 when Agnes can't be reached (it then expires)."""
+        from scout import repo_lease
+        from scout.repo_sync import RepoSyncError
+
+        run_id = _run_id(run_id)
+        try:
+            vault, host = _lease_host()
+            if repo_lease.release(vault, host, run_id):
+                typer.echo(f"lease: released run {run_id}'s lease")
+        except RepoSyncError as e:
+            if e.code == "not_linked":
+                return
+            typer.echo(f"lease: release failed ({e.code}): {e.message}; Agnes lets it expire", err=True)
+            raise typer.Exit(4) from e
+
+    @lease_app.command("status")
+    def cli_repo_lease_status(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
+        """Who holds the lease, on Agnes and in this computer's lease file. Never the token."""
+        import json as _json
+
+        from scout import repo_lease
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            vault, host = _lease_host()
+            local = repo_lease.load(vault)
+            remote = host.lease_status()
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        doc = {"ok": True, "agnes": remote, "local": local.public() if local else None}
+        if as_json:
+            typer.echo(_json.dumps(doc, indent=2, sort_keys=True, default=str))
+            return
+        if remote.get("held") and not remote.get("expired"):
+            typer.echo(
+                f"Agnes: held by {remote.get('holder_kind')} ({remote.get('holder_label') or '-'}), "
+                f"generation {remote.get('generation')}, until {remote.get('expires_at')}"
+            )
+        else:
+            typer.echo("Agnes: free" + (" (the last lease expired)" if remote.get("expired") else ""))
+        typer.echo(f"Pushes need the lease: {'yes' if remote.get('enforced') else 'not yet'}")
+        if local:
+            typer.echo(
+                f"This computer: {local.owner} {local.run_id} (pid {local.pid}){' — LOST' if local.lost else ''}"
+            )
 
 
 _register_repo()

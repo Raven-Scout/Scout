@@ -56,6 +56,39 @@ class FakeHost:
     def git_env(self) -> dict[str, str]:
         return {}
 
+    lease: dict | None = None
+    generation = 0
+    lease_calls: list[str]
+
+    def _lease_call(self, what: str) -> None:
+        self.__dict__.setdefault("lease_calls", []).append(what)
+
+    def lease_acquire(self, holder_ref: str, holder_label: str) -> dict:
+        """Agnes's §5 semantics: free → granted; same holder → a new token; anyone else → 409."""
+        self._lease_call("acquire")
+        held = self.lease
+        if held is not None and held["holder_ref"] != holder_ref:
+            raise rs.RepoSyncError(
+                "repository_lease_held", "held", {"holder": {"holder_kind": "agnes", "holder_label": held["label"]}}
+            )
+        if held is None:
+            self.generation += 1
+        token = f"lease-{self.generation}-{len(self.lease_calls)}"
+        self.lease = {"holder_ref": holder_ref, "label": holder_label, "token": token}
+        return {"token": token, "generation": self.generation, "expires_at": "2026-10-25T08:20:00Z", "held": True}
+
+    def lease_renew(self, token: str) -> dict:
+        self._lease_call("renew")
+        if self.lease is None or self.lease["token"] != token:
+            raise rs.RepoSyncError("repository_lease_lost", "lost")
+        return {"generation": self.generation, "expires_at": "2026-10-25T08:40:00Z", "held": True}
+
+    def lease_release(self, token: str) -> None:
+        self._lease_call("release")
+        if self.lease is None or self.lease["token"] != token:
+            raise rs.RepoSyncError("repository_lease_lost", "lost")
+        self.lease = None
+
 
 def _bare_git(bare: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(bare), *args], check=True, capture_output=True, text=True).stdout
