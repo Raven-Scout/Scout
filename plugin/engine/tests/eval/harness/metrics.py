@@ -62,6 +62,10 @@ class SampleMetrics:
     # assistant turns after each read: every later turn re-reads it from cache.
     brain_tokens: int | None = None
     brain_token_turns: int | None = None
+    # The API retries claude logged (`system/api_retry`), and the result's text when the
+    # session ended in an error (`is_error`), e.g. "API Error: Can't reach the API server".
+    api_retries: int | None = None
+    api_error: str | None = None
 
 
 def _position(seq: int, total: int) -> float:
@@ -90,6 +94,7 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
     brain_reads: list[tuple[int, int]] = []
     init: dict[str, Any] = {}
     result: dict[str, Any] = {}
+    retries = 0
     skipped = 0
     for line in lines:
         if not line.strip():
@@ -105,6 +110,8 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
         kind = event.get("type")
         if kind == "system" and event.get("subtype") == "init":
             init = event
+        elif kind == "system" and event.get("subtype") == "api_retry":
+            retries += 1
         elif kind == "assistant":
             message = event.get("message") or {}
             if message.get("id"):
@@ -149,6 +156,8 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
         cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
         brain_tokens=sum(tokens for tokens, _ in brain_reads),
         brain_token_turns=sum(tokens * (len(message_ids) - seen) for tokens, seen in brain_reads),
+        api_retries=retries,
+        api_error=str(result.get("result") or "unknown error") if result.get("is_error") else None,
     )
 
 
