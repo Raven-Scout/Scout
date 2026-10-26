@@ -95,7 +95,8 @@ def _cli(monkeypatch: pytest.MonkeyPatch, vault: Path, plugin: Path, *args: str)
     import scout.cli as cli
     from scout.scripts import bootstrap
 
-    cfg = SimpleNamespace(plugin_root=plugin, enabled_connectors=set(), connector_inputs={})
+    # Mirrors BootstrapConfig: wrap_channels None = every enabled wrap channel (#514).
+    cfg = SimpleNamespace(plugin_root=plugin, enabled_connectors=set(), connector_inputs={}, wrap_channels=None)
     monkeypatch.setattr(cli, "_vault_bootstrap_config", lambda *_a, **_k: cfg)
     monkeypatch.setattr(bootstrap, "_template_vars", lambda _cfg: VARS)
     monkeypatch.setattr(bootstrap, "load_custom", lambda _cfg: {})
