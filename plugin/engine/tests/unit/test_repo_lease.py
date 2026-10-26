@@ -508,3 +508,34 @@ def test_releases_agnes_cannot_hear(
         _commit(linked, "knowledge-base/people/priya.md", "y\n", "edit")
         assert rs.sync(linked, host).pushed
     assert rl.load(linked) is None
+
+
+def test_the_machine_id_survives_a_host_rename(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "MacBook-Pro-10.local")
+    first = rl.machine_ref()
+    monkeypatch.setattr(socket, "gethostname", lambda: "Mac")
+    assert rl.machine_ref() == first and rl.machine_label() == "Mac"
+    path = Path.home() / ".scout-secrets" / "agnes-knowledge-repo" / rl.MACHINE_ID_FILE
+    assert path.stat().st_mode & 0o777 == 0o600
+    path.write_text("not-an-id\n", encoding="utf-8")
+    path.unlink()
+    assert rl.machine_ref() != first
+    assert rl.run_holder_ref("r1") == f"laptop:{rl.machine_ref()}:r1"
+
+
+def test_two_processes_creating_the_machine_id_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    path = Path.home() / ".scout-secrets" / "agnes-knowledge-repo" / rl.MACHINE_ID_FILE
+    real_link = os.link
+
+    def other_process_won(src: str, dst: str) -> None:
+        path.write_text("0123456789ab\n", encoding="utf-8")
+        monkeypatch.setattr(os, "link", real_link)
+        raise FileExistsError(dst)
+
+    monkeypatch.setattr(os, "link", other_process_won)
+    assert rl.machine_ref() == "0123456789ab"
+    assert not list(path.parent.glob("*.tmp"))

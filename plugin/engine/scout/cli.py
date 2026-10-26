@@ -3768,7 +3768,7 @@ def _register_repo() -> None:
                 typer.echo(_json.dumps({"ok": False, "outcome": outcome, "code": e.code, "message": e.message}))
             else:
                 holder = f" Held by {repo_lease.holder_text(e)}." if e.code == repo_lease.HELD_CODE else ""
-                typer.echo(f"lease: {outcome} ({e.code}): {e.message}{holder}", err=True)
+                typer.echo(f"lease: {outcome} ({e.code}): {e.message.rstrip('.')}.{holder}", err=True)
             raise typer.Exit(code) from e
         if as_json:
             typer.echo(_json.dumps({"ok": True, "outcome": "held", "notes": notes, **lease.public()}, sort_keys=True))

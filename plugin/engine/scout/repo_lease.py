@@ -33,10 +33,10 @@ after its TTL in any case.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import time
 from collections.abc import Callable, Iterator
@@ -51,6 +51,7 @@ from scout.sessions.cli_home import pid_alive
 
 SCHEMA_VERSION = 1
 LEASE_SUFFIX = ".lease.json"
+MACHINE_ID_FILE = "machine.id"
 LOST_CODES = frozenset({"repository_lease_lost", "repository_lease_not_held"})
 HELD_CODE = "repository_lease_held"
 RUN_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,120}")
@@ -136,7 +137,32 @@ def forget(vault: Path, token: str) -> None:
 
 
 def machine_ref() -> str:
-    return hashlib.sha256(socket.gethostname().encode()).hexdigest()[:12]
+    """A random id for this computer, kept next to the leases.
+
+    The host name is no id: macOS renames it with the network it joins, and
+    a run's holder ref must stay the same for the whole run.
+    """
+    p = Path.home() / ".scout-secrets" / "agnes-knowledge-repo" / MACHINE_ID_FILE
+    try:
+        found = p.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        found = ""
+    if re.fullmatch(r"[0-9a-f]{12}", found):
+        return found
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(p.parent, 0o700)
+    new = secrets.token_hex(6)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(new + "\n")
+    try:
+        os.link(tmp, p)
+    except FileExistsError:
+        return machine_ref()
+    finally:
+        tmp.unlink(missing_ok=True)
+    return new
 
 
 def machine_label() -> str:
@@ -320,7 +346,8 @@ def keepalive(
             return "gone"
         if clock() >= due:
             try:
-                renew(vault, host, run_id)
+                renewed = renew(vault, host, run_id)
+                log(f"lease keepalive: renewed run {run_id}'s lease until {renewed.expires_at}")
                 due = clock() + renew_s
             except RepoSyncError as e:
                 if e.code in LOST_CODES:
