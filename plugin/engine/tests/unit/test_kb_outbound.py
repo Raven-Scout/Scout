@@ -307,3 +307,9 @@ def test_blocked_check_writes_log_event(tmp_path: Path) -> None:
     assert row["reader"] == "owner"
     raw = (vault / ".scout-logs" / "kb-reads.jsonl").read_text(encoding="utf-8")
     assert "Sammy" not in raw and "contract" not in raw
+
+
+def test_linked_slugs_ignores_links_without_a_target(vault: Path) -> None:
+    terms = outbound.private_terms(vault, load_policy(vault))
+    assert outbound.linked_slugs("[[#Open questions]] and [[ ]]", terms) == set()
+    assert outbound.linked_slugs("[[#heading]] then [[Sammy]]", terms) == {"sam"}

@@ -49,33 +49,130 @@ def _run_hook_script(tmp_path: Path, scoutctl: str) -> subprocess.CompletedProce
     script.write_text(render_hook(scoutctl))
     script.chmod(0o755)
     env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
-    return subprocess.run([str(script)], capture_output=True, text=True, env=env)
+    # Run outside any git repo, so a "could not run" audit row can't land in the developer's checkout.
+    return subprocess.run([str(script)], capture_output=True, text=True, env=env, cwd=tmp_path)
 
 
 def test_hook_passes_through_block(tmp_path) -> None:
     assert _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 1))).returncode == 1
 
 
-def test_hook_fails_open_on_internal_error(tmp_path) -> None:
-    proc = _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 70, prints_kb_lint=False)))
+# ----- when the check can't run (#453, spec §8.3; Jordan, 2026-10-22: option B) -------------
+
+UNAVAILABLE = "kb-lint: privacy check could not run"
+
+
+def _git_vault(tmp_path: Path) -> Path:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    subprocess.run(["git", "init", "-q", str(vault)], check=True)
+    return vault
+
+
+def _run_in_vault(vault: Path, scoutctl: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    script = vault.parent / "pre-commit"
+    script.write_text(render_hook(scoutctl))
+    script.chmod(0o755)
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp"), **extra}
+    return subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, env=env, cwd=vault)
+
+
+def _scenario(tmp_path: Path, which: str) -> tuple[str, str]:
+    """(scoutctl path, the reason the warning names)."""
+    if which == "missing":
+        return str(tmp_path / "nope"), "scoutctl not found"
+    if which == "exit-70":
+        return str(_fake_scoutctl(tmp_path, 70, prints_kb_lint=False)), "engine error 70"
+    return str(_fake_scoutctl(tmp_path, 1, prints_kb_lint=False)), "engine error 1"  # a crash before cli.main
+
+
+SCENARIOS = ["missing", "exit-70", "exit-1-no-verdict"]
+
+
+@pytest.mark.parametrize("which", SCENARIOS)
+@pytest.mark.parametrize("run_env", [{"SCOUT_MODE": "morning-briefing"}, {"SCOUT_READER": "autonomous"}])
+def test_a_run_commit_is_refused_when_the_check_cant_run(tmp_path, which: str, run_env: dict[str, str]) -> None:
+    vault = _git_vault(tmp_path)
+    scoutctl, _reason = _scenario(tmp_path, which)
+    proc = _run_in_vault(vault, scoutctl, **run_env)
+    assert proc.returncode == 1
+    assert [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")] == [UNAVAILABLE]
+    assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
+
+
+@pytest.mark.parametrize("which", SCENARIOS)
+def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(tmp_path, which: str) -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    vault = _git_vault(tmp_path)
+    scoutctl, reason = _scenario(tmp_path, which)
+    proc = _run_in_vault(vault, scoutctl, SCOUT_READER="owner")
     assert proc.returncode == 0
-    assert "internal error" in proc.stderr
+    lines = [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")]
+    assert lines == [
+        UNAVAILABLE,
+        f"kb-lint: WARNING: the privacy check could not run ({reason}); this commit was NOT checked "
+        "for private links in shared files. Run scoutctl doctor.",
+    ]
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    (row,) = [json.loads(ln) for ln in log.read_text().splitlines()]
+    ts = datetime.fromisoformat(row.pop("ts"))
+    assert ts.utcoffset() == timedelta(0) and abs(datetime.now(UTC) - ts) < timedelta(minutes=5)
+    assert row == {
+        "reader": "owner",
+        "command": "kb lint --staged",
+        "surface": None,
+        "args_hash": None,
+        "paths_returned": 0,
+        "paths_denied": 0,
+        "private_paths": 0,
+        "blocked": False,
+        "scout_mode": None,
+        "event": "privacy.check_unavailable",
+    }
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
-def test_hook_fails_open_when_scoutctl_missing(tmp_path) -> None:
+def test_the_audit_row_goes_to_the_main_vault_from_a_linked_worktree(tmp_path) -> None:
+    vault = _git_vault(tmp_path)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(vault),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        check=True,
+    )
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(vault), "worktree", "add", "-q", str(wt)], check=True)
+    proc = _run_in_vault(wt, str(tmp_path / "nope"))
+    assert proc.returncode == 0
+    assert (vault / ".scout-logs" / "kb-reads.jsonl").exists()
+    assert not (wt / ".scout-logs").exists()
+
+
+def test_a_failed_audit_write_never_fails_the_owner_commit(tmp_path) -> None:
+    vault = _git_vault(tmp_path)
+    (vault / ".scout-logs").write_text("a file where the directory should be")
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 0
+    assert "WARNING" in proc.stderr
+
+
+def test_outside_a_git_repo_the_owner_commit_still_goes_on(tmp_path) -> None:
     proc = _run_hook_script(tmp_path, str(tmp_path / "nope"))
-    assert proc.returncode == 0
-    assert "not found" in proc.stderr
-
-
-def test_hook_fails_open_on_exit_1_with_no_kb_lint_output(tmp_path) -> None:
-    """A crash before cli.main()'s try block (e.g. an ImportError at import
-    time) exits 1 with no 'kb-lint:' line — that is a fail-closed internal
-    error, not a legitimate block, so the hook must still allow the commit."""
-    proc = _run_hook_script(tmp_path, str(_fake_scoutctl(tmp_path, 1, prints_kb_lint=False)))
-    assert proc.returncode == 0
-    assert "failed unexpectedly" in proc.stderr
-    assert "called" in proc.stderr
+    assert proc.returncode == 0 and UNAVAILABLE in proc.stderr
+    assert not (tmp_path / ".scout-logs").exists()
 
 
 def test_hook_scoutctl_path_with_space_and_dollar(tmp_path) -> None:
