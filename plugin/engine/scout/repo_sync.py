@@ -32,8 +32,10 @@ A push sends only what a mirror commit reaches, so a Local-Only blob is never
 packed. The commit map is ``.scout-state/repo-sync.json`` (gitignored); the
 Agnes token is kept outside the vault, in ``~/.scout-secrets/``.
 
-R1 never takes the Repository Writer Lease (R2 does). A push to a repository
-that enforces a lease is refused by Agnes and reported.
+Every push goes up under the Repository Writer Lease (R2, ``scout.repo_lease``):
+a sync during a scheduled run reuses the run's lease, read from this computer's
+lease file, and any other sync or link takes the lease for itself and gives it
+back when it is done.
 """
 
 from __future__ import annotations
@@ -76,6 +78,8 @@ MIRROR_REF = "refs/scout-mirror/main"
 REMOTE_REF = "refs/scout-mirror/remote"
 REMOTE_BRANCH = "refs/heads/main"
 REPLAY_TRAILER = "Scout-Mirror-Commit"
+LEASE_TOKEN_HEADER = "X-Agnes-Lease-Token"
+LEASE_GENERATION_HEADER = "X-Agnes-Lease-Generation"
 
 # A real vault syncs only once the engine has the per-note privacy guard that
 # stops a scheduled run from un-privating a note right before it syncs (#504:
@@ -133,10 +137,11 @@ TRADING_NAME_PARTS = (
 class RepoSyncError(Exception):
     """A refusal or failure, with a stable code for ``--json`` callers."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, detail: Mapping[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = dict(detail or {})
 
 
 # ----- path rules ---------------------------------------------------------------------
@@ -537,6 +542,12 @@ class Host(Protocol):
 
     def git_env(self) -> dict[str, str]: ...
 
+    def lease_acquire(self, holder_ref: str, holder_label: str) -> dict[str, Any]: ...
+
+    def lease_renew(self, token: str) -> dict[str, Any]: ...
+
+    def lease_release(self, token: str) -> None: ...
+
 
 class AgnesHost:
     """The Agnes REST + git smart HTTP contract (Agnes A1/A2), authenticated with the owner's PAT."""
@@ -546,14 +557,17 @@ class AgnesHost:
         self._token = token
         self._timeout = timeout
 
-    def _call(self, method: str, path: str, body: Any = None) -> Any:
+    def _call(self, method: str, path: str, body: Any = None, *, lease_token: str | None = None) -> Any:
         import requests
 
+        headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
+        if lease_token is not None:
+            headers[LEASE_TOKEN_HEADER] = lease_token
         try:
             resp = requests.request(
                 method,
                 f"{self.base_url}{path}",
-                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
+                headers=headers,
                 json=body,
                 timeout=self._timeout,
             )
@@ -567,11 +581,26 @@ class AgnesHost:
                 "Agnes answered 404: the Personal Knowledge Repository is off for this account "
                 "(the knowledge_repository switch, or you are outside its rollout groups)",
             )
+        if resp.status_code == 409:
+            raise self._conflict(resp, method, path)
         if resp.status_code >= 400:
             raise RepoSyncError(
                 "host_error", f"Agnes answered {resp.status_code} to {method} {path}: {resp.text[:300]}"
             )
         return resp.json() if resp.content else None
+
+    @staticmethod
+    def _conflict(resp: Any, method: str, path: str) -> RepoSyncError:
+        """A 409 carries ``{"detail": {"code", "message", "holder"?}}``; anything else is a host error."""
+        try:
+            detail = (resp.json() or {}).get("detail")
+        except ValueError:
+            detail = None
+        if not isinstance(detail, dict) or not isinstance(detail.get("code"), str):
+            return RepoSyncError("host_error", f"Agnes answered 409 to {method} {path}: {resp.text[:300]}")
+        holder = detail.get("holder") if isinstance(detail.get("holder"), dict) else {}
+        message = str(detail.get("message") or detail["code"])
+        return RepoSyncError(detail["code"], f"Agnes refused: {message}", {"holder": holder})
 
     @staticmethod
     def _status(data: Mapping[str, Any]) -> HostStatus:
@@ -604,6 +633,35 @@ class AgnesHost:
             "GIT_CONFIG_KEY_1": "credential.helper",
             "GIT_CONFIG_VALUE_1": "",
         }
+
+    def lease_acquire(self, holder_ref: str, holder_label: str) -> dict[str, Any]:
+        body = {"holder_kind": "laptop", "holder_ref": holder_ref, "holder_label": holder_label}
+        return dict(self._call("POST", "/api/me/knowledge-repository/lease", body))
+
+    def lease_renew(self, token: str) -> dict[str, Any]:
+        return dict(self._call("POST", "/api/me/knowledge-repository/lease/renew", lease_token=token))
+
+    def lease_release(self, token: str) -> None:
+        self._call("DELETE", "/api/me/knowledge-repository/lease", lease_token=token)
+
+    def lease_status(self) -> dict[str, Any]:
+        return dict(self._call("GET", "/api/me/knowledge-repository/lease"))
+
+
+def lease_git_env(env: Mapping[str, str], token: str, generation: int) -> dict[str, str]:
+    """*env* plus the two lease headers every push to an enforced repository carries (Agnes §5).
+
+    They go in as more ``GIT_CONFIG_KEY_n``/``GIT_CONFIG_VALUE_n`` pairs, never
+    on git's command line, so the token stays off the process list.
+    """
+    out = dict(env)
+    n = int(out.get("GIT_CONFIG_COUNT") or 0)
+    for header in (f"{LEASE_TOKEN_HEADER}: {token}", f"{LEASE_GENERATION_HEADER}: {generation}"):
+        out[f"GIT_CONFIG_KEY_{n}"] = "http.extraHeader"
+        out[f"GIT_CONFIG_VALUE_{n}"] = header
+        n += 1
+    out["GIT_CONFIG_COUNT"] = str(n)
+    return out
 
 
 # ----- state ----------------------------------------------------------------------------------
@@ -864,8 +922,9 @@ def fetch_remote(vault: Path, host: Host, clone_url: str) -> str:
 _REFUSAL = re.compile(r"\b(local_only_path_pushed|secret_file_pushed|repository_\w+)\b")
 
 
-def push(vault: Path, host: Host, clone_url: str, rev: str) -> None:
-    proc = git(vault, "push", "--porcelain", clone_url, f"{rev}:{REMOTE_BRANCH}", env=host.git_env(), check=False)
+def push(vault: Path, host: Host, clone_url: str, rev: str, lease: tuple[str, int] | None = None) -> None:
+    env = host.git_env() if lease is None else lease_git_env(host.git_env(), *lease)
+    proc = git(vault, "push", "--porcelain", clone_url, f"{rev}:{REMOTE_BRANCH}", env=env, check=False)
     if proc.returncode != 0:
         m = _REFUSAL.search(proc.stdout + proc.stderr)
         code = m.group(1) if m else "push_failed"
@@ -971,7 +1030,10 @@ def link(
     message = f"Scout: link snapshot of {head[:12]}\n\nEarlier history stays on the laptop.\n"
     snapshot = _commit_tree(vault, tree, [existing] if existing else [], message, meta.env())
     check_mirror_commits(vault, rules, [snapshot])
-    push(vault, host, status.clone_url, snapshot)
+    from scout import repo_lease
+
+    with repo_lease.for_push(vault, host) as lease:
+        push(vault, host, status.clone_url, snapshot, lease)
 
     save_state(
         vault,
@@ -1117,6 +1179,21 @@ def sync(
     policy = load_policy(vault)
     overlay_gate(policy)
 
+    from scout import repo_lease
+
+    with repo_lease.for_push(vault, host) as lease:
+        return _sync_under_lease(vault, host, state, policy, confirm_sync, progress, lease)
+
+
+def _sync_under_lease(
+    vault: Path,
+    host: Host,
+    state: LinkState,
+    policy: Policy,
+    confirm_sync: Sequence[str],
+    progress: Callable[[str], None] | None,
+    lease: tuple[str, int],
+) -> Result:
     status = host.status()
     if not status.exists:
         raise RepoSyncError(
@@ -1207,7 +1284,7 @@ def sync(
 
     if pushes:
         check_mirror_commits(vault, rules, [m for _, m in pushes])
-        push(vault, host, status.clone_url, pushes[-1][1])
+        push(vault, host, status.clone_url, pushes[-1][1], lease)
         for c, m in pushes:
             state.pairs.append({"laptop": c, "mirror": m, "kind": "push"})
         state.last_mirror = pushes[-1][1]

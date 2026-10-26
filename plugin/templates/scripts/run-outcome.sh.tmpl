@@ -20,8 +20,11 @@
 #     scripts/run-outcome.sh clear-stale-locks
 #
 # <outcome> is given only for a deliberate skip (#401): skipped_lock (another
-# session held the vault lock), skipped_budget (the budget check said no) or
-# skipped_redundant. A runner records its skip before it exits, so a fired slot
+# session held the vault lock), skipped_budget (the budget check said no),
+# skipped_redundant, or a Repository Writer Lease skip of a vault linked to
+# Agnes (R2): lease_held (Agnes holds the lease) or lease_unavailable (Agnes
+# couldn't grant it). A lease skip is recorded as outcome skipped_lease with the
+# reason as its failure_class. A runner records its skip before it exits, so a fired slot
 # always leaves a row and `scoutctl health` can tell "fired and skipped" from
 # "fired and vanished". Anything else is ignored, and the row's outcome is ok or
 # failed from the exit code. An older helper ignores the extra argument.
@@ -155,8 +158,10 @@ cmd_record() {
     local mode="${1:-unknown}" code="${2:-0}" started="${3:-0}" log="${4:-}" outcome="${5:-}"
     local finished duration klass resets_at="" commits="" newest=""
     case "$code" in ''|*[!0-9]*) code=1 ;; esac
+    local lease_class=""
     case "$outcome" in
         skipped_lock|skipped_budget|skipped_redundant) ;;
+        lease_held|lease_unavailable) lease_class="$outcome"; outcome="skipped_lease"; code=0 ;;
         *) if [ "$code" -eq 0 ]; then outcome="ok"; else outcome="failed"; fi ;;
     esac
     case "$started" in ''|*[!0-9]*) started=0 ;; esac
@@ -164,6 +169,7 @@ cmd_record() {
     duration=$(( finished - started ))
     [ "$duration" -lt 0 ] && duration=0
     klass="$(classify_failure "$log" "$code")"
+    [ -n "$lease_class" ] && klass="$lease_class"
     # A usage limit that names its reset ("… limit · resets 2:10pm (Europe/Prague)")
     # lifts on its own; record when, so run health can say when Scout resumes (#407).
     # Optional: no engine, or no time it can read, leaves resets_at out of the row.

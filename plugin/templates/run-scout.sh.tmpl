@@ -66,6 +66,10 @@ if ! scout_redundant_wait_guard; then
     scout_record_skip skipped_redundant
     exit 0
 fi
+if ! scout_lease_acquire; then
+    scout_record_skip "$SCOUT_LEASE_SKIP"
+    exit 0
+fi
 
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
 # session-tokens — see hooks/hooks.json) see it inside the claude child
