@@ -335,9 +335,29 @@ def test_the_autonomous_reader_alone_makes_a_commit_a_run(vault: Path) -> None:
     assert checks(vault, {"SCOUT_READER": "owner"}) == []
 
 
+@pytest.mark.parametrize("reader", ["agent:person:priya@example.com", "agent:group:eng", "garbage", ""])
+def test_an_agent_or_malformed_reader_is_checked_for_widening(vault: Path, reader: str) -> None:
+    """``resolve_reader`` fails such a reader closed (#490), so the guard does too."""
+    stage(vault, SAM, _read(vault, SAM).replace("visibility: private", "visibility: normal"))
+    assert checks(vault, {"SCOUT_READER": reader}) == [(SAM, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
 @pytest.mark.parametrize(
     ("env", "run"),
-    [({}, False), ({"SCOUT_MODE": ""}, False), ({"SCOUT_MODE": "dreaming"}, True), ({"SCOUT_READER": "owner"}, False)],
+    [
+        ({}, False),
+        ({"SCOUT_MODE": ""}, False),
+        ({"SCOUT_READER": ""}, True),
+        ({"SCOUT_READER": "owner "}, True),
+        ({"SCOUT_READER": "owner"}, False),
+        ({"SCOUT_MODE": "dreaming"}, True),
+        ({"SCOUT_MODE": "dreaming", "SCOUT_READER": "owner"}, True),
+        ({"SCOUT_READER": "autonomous"}, True),
+        ({"SCOUT_READER": " Autonomous "}, True),
+        ({"SCOUT_READER": "agent:person:priya@example.com"}, True),
+        ({"SCOUT_READER": "garbage"}, True),
+    ],
 )
 def test_is_scheduled(env: dict[str, str], run: bool) -> None:
     from scout.kb.lint import is_scheduled

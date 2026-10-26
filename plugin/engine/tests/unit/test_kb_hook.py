@@ -90,7 +90,18 @@ SCENARIOS = ["missing", "exit-70", "exit-1-no-verdict"]
 
 
 @pytest.mark.parametrize("which", SCENARIOS)
-@pytest.mark.parametrize("run_env", [{"SCOUT_MODE": "morning-briefing"}, {"SCOUT_READER": "autonomous"}])
+@pytest.mark.parametrize(
+    "run_env",
+    [
+        {"SCOUT_MODE": "morning-briefing"},
+        {"SCOUT_READER": "autonomous"},
+        {"SCOUT_READER": " Autonomous "},
+        {"SCOUT_READER": "agent:person:priya@example.com"},
+        {"SCOUT_READER": "garbage"},
+        {"SCOUT_READER": ""},
+        {"SCOUT_READER": "owner", "SCOUT_MODE": "dreaming"},
+    ],
+)
 def test_a_run_commit_is_refused_when_the_check_cant_run(tmp_path, which: str, run_env: dict[str, str]) -> None:
     vault = _git_vault(tmp_path)
     scoutctl, _reason = _scenario(tmp_path, which)
@@ -101,13 +112,16 @@ def test_a_run_commit_is_refused_when_the_check_cant_run(tmp_path, which: str, r
 
 
 @pytest.mark.parametrize("which", SCENARIOS)
-def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(tmp_path, which: str) -> None:
+@pytest.mark.parametrize("owner_env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
+def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(
+    tmp_path, which: str, owner_env: dict[str, str]
+) -> None:
     import json
     from datetime import UTC, datetime, timedelta
 
     vault = _git_vault(tmp_path)
     scoutctl, reason = _scenario(tmp_path, which)
-    proc = _run_in_vault(vault, scoutctl, SCOUT_READER="owner")
+    proc = _run_in_vault(vault, scoutctl, **owner_env)
     assert proc.returncode == 0
     lines = [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")]
     assert lines == [

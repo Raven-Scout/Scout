@@ -6,7 +6,8 @@ line), or any exit other than 0 (pass) or 1 with a ``kb-lint:`` verdict, the
 hook prints ``kb-lint: privacy check could not run`` and then:
 
 - **a scheduled run's commit is refused** (``SCOUT_MODE`` set, or
-  ``SCOUT_READER=autonomous``); the run's retry/park handling applies;
+  ``SCOUT_READER`` set to anything but exactly ``owner``); the run's retry/park
+  handling applies;
 - **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
   naming the problem and ``scoutctl doctor``, and an audit row
   (``event: "privacy.check_unavailable"``, no content) appended to
@@ -48,7 +49,7 @@ _TEMPLATE = """#!/bin/sh
 SCOUTCTL={scoutctl}
 
 scheduled() {{
-  [ -n "$SCOUT_MODE" ] || [ "$SCOUT_READER" = "autonomous" ]
+  [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }}
 }}
 
 audit_unavailable() {{

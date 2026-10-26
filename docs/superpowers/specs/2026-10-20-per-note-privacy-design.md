@@ -553,7 +553,8 @@ owner may change their own notes.
 The pre-commit hook fails open today on purpose (`scout/kb/hook.py`). The
 privacy checks get their own path for when they can't run: the privacy
 checker errors, `scoutctl` is missing, or the engine crashes. A scheduled
-run's commit (`SCOUT_MODE` set, or `SCOUT_READER=autonomous`) is **refused**,
+run's commit (`SCOUT_MODE` set, or `SCOUT_READER` set to anything but exactly
+`owner`, which fails closed as in §4.1) is **refused**,
 with a run-health event (`privacy.check_failed`) where the engine can emit
 one, and the run's retry/park handling applies. An interactive commit
 **proceeds**, with a loud warning that it was not checked and a pointer to
