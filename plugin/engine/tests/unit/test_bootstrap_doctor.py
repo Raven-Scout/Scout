@@ -925,3 +925,99 @@ def test_runner_claude_bin_skipped_without_runner(tmp_path):
     from scout.scripts.bootstrap_doctor import _check_runner_claude_bin
 
     assert _check_runner_claude_bin(vault=tmp_path) == ([], [])
+
+
+# ---------- privacy: blocked outbound checks and denied reads (#453, spec §7.4) ----------
+
+
+def _kb_read(ts: str, *, blocked: bool = False, denied: int = 0) -> str:
+    row = {
+        "ts": ts,
+        "reader": "autonomous",
+        "command": "check-outbound",
+        "surface": "slack",
+        "args_hash": "0" * 64,
+        "paths_returned": 0,
+        "paths_denied": denied,
+        "private_paths": 0,
+        "blocked": blocked,
+        "scout_mode": "morning-briefing",
+    }
+    return json.dumps(row) + "\n"
+
+
+def test_doctor_counts_blocked_and_denied_kb_reads_of_the_last_7_days(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    _populate_minimal_vault(tmp_path)
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    (logs / "kb-reads.jsonl").write_text(
+        _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)
+        + _kb_read((now - timedelta(days=2)).isoformat(), denied=3)
+        + _kb_read((now - timedelta(days=3)).isoformat())  # neither: not counted
+        + _kb_read((now - timedelta(days=9)).isoformat(), blocked=True)  # too old
+        + "not json\n"
+    )
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.YELLOW
+    (line,) = [w for w in report.warnings if "privacy" in w]
+    assert "2 " in line and "7 days" in line and "kb-reads.jsonl" in line
+
+
+def test_doctor_says_nothing_without_blocked_reads(tmp_path):
+    from datetime import UTC, datetime
+
+    _populate_minimal_vault(tmp_path)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    (logs / "kb-reads.jsonl").write_text(_kb_read(now.isoformat()))
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.GREEN
+    assert not [w for w in report.warnings if "privacy" in w]
+
+
+def test_doctor_privacy_count_takes_naive_times_as_utc(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_blocked_count
+
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    now = datetime(2026, 10, 21, 12, 0)  # naive
+    (logs / "kb-reads.jsonl").write_text(
+        _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)  # naive row
+        + _kb_read((now - timedelta(days=2)).replace(tzinfo=UTC).isoformat(), denied=1)
+        + _kb_read((now - timedelta(days=8)).isoformat(), blocked=True)
+    )
+    assert privacy_blocked_count(tmp_path, now=now) == 2
+    assert privacy_blocked_count(tmp_path / "nowhere", now=now) == 0
+
+
+def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from scout.scripts.bootstrap_doctor import privacy_audit_counts
+
+    _populate_minimal_vault(tmp_path)
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    logs = tmp_path / ".scout-logs"
+    logs.mkdir()
+    # The shell template's row, as it prints it, and an old one.
+    row = (
+        '{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
+        '"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
+        '"scout_mode": null, "surface": null, "ts": "%s"}\n'
+    )
+    (logs / "kb-reads.jsonl").write_text(
+        row % (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + row % (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        + _kb_read((now - timedelta(days=1)).isoformat(), blocked=True)
+    )
+    assert privacy_audit_counts(tmp_path, now=now) == (1, 1)
+    report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
+    assert report.severity is Severity.YELLOW
+    (line,) = [w for w in report.warnings if "privacy check could not run" in w]
+    assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line

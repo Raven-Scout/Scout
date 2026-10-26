@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
@@ -153,7 +153,9 @@ def kb_lint(
     staged: bool = typer.Option(
         False, "--staged", help="Check the staged diff (what the pre-commit hook runs). Default."
     ),
-    report: bool = typer.Option(False, "--report", help="Rank tracked KB files that are over budget."),
+    report: bool = typer.Option(
+        False, "--report", help="Rank over-budget KB files; list privacy markers and problems."
+    ),
     top: int = typer.Option(20, "--top", help="Rows to show with --report."),
     lossless_rev: str | None = typer.Option(None, "--lossless-rev", help="Old revision for the lossless check."),
     lossless_path: str | None = typer.Option(
@@ -177,11 +179,14 @@ def kb_lint(
     if report:
         from scout.kb.lint import over_budget
         from scout.kb.lint_config import load_lint_config
+        from scout.kb.lint_privacy import format_report, privacy_report
 
         rows = over_budget(root, load_lint_config(root))
         print(f"{len(rows)} file(s) over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
+        for line in format_report(privacy_report(root)):
+            print(line)
         raise typer.Exit(0)
     from scout.kb.lint import run_hook
 
@@ -2245,7 +2250,7 @@ def _register_notify() -> None:
         import requests as _requests
 
         from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import DuplicateSendError, send
+        from scout.scripts.notify_telegram import DuplicateSendError, OutboundBlockedError, send
 
         if body is not None and body_file is None:
             text = body
@@ -2278,6 +2283,9 @@ def _register_notify() -> None:
                 err=True,
             )
             raise typer.Exit(code=DuplicateSendError.exit_code) from e
+        except OutboundBlockedError as e:
+            typer.echo(f"scoutctl notify telegram: {e}", err=True)
+            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
         except _ConfigError as e:
             # Map ScoutError exit codes at the command boundary so the CLI
             # surface stays consistent with cli.main()'s ScoutError handler.
@@ -3329,9 +3337,10 @@ def _register_phases() -> None:
         from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
-            apply_section_edits,
-            apply_to_phase_text,
             build_rendered_sections,
+            bundle_files,
+            bundle_privacy_hits,
+            combine_applied,
             plan_backport,
         )
 
@@ -3350,7 +3359,10 @@ def _register_phases() -> None:
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
-        total_applied = 0
+
+        # Plan every kind once. A hunk in a core fragment shows up in each brain
+        # file that assembles it; the bundle applies it once.
+        plans: list[tuple[str, list, list]] = []
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
             if not snap.exists() or not live.exists():
@@ -3361,6 +3373,25 @@ def _register_phases() -> None:
                 phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
             )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
+            plans.append((k, sections, results))
+        all_applied = combine_applied([[r for r in results if r.status == "applied"] for _k, _s, results in plans])
+        bundle = bundle_files(all_applied, [s for _k, sections, _r in plans for s in sections])
+
+        # The plugin repo is public (#453, spec §8.4): a bundle naming a private
+        # note is refused, dry run or not, before anything is reported or written.
+        refused = bundle_privacy_hits(vault, bundle)
+        if refused:
+            typer.echo(
+                "scoutctl phases backport: refused — the back-port names a private note of this vault, and the "
+                "plugin repo is public. Remove it from the vault's brain file (or genericize it) and re-run:",
+                err=True,
+            )
+            for pf, lines in refused:
+                where = ("lines " if len(lines) > 1 else "line ") + ", ".join(str(n) for n in lines)
+                typer.echo(f"  {pf}: {where} (as it would be written)", err=True)
+            raise typer.Exit(code=1)
+
+        for k, _sections, results in plans:
             applied = [r for r in results if r.status == "applied"]
             review = [r for r in results if r.status == "needs-review"]
             unmapped = [r for r in results if r.status == "unmapped"]
@@ -3379,31 +3410,11 @@ def _register_phases() -> None:
                 snippet = (r.added[0][:60] + "…") if r.added else ""
                 typer.echo(f"  ✗ unmapped     {r.reason}  «{snippet}»")
 
-            if apply and applied:
-                sec_by_key = {(s.phase_file, s.section_name): s for s in sections}
-                by_file: dict[Path, list] = {}
-                for r in applied:
-                    # applied hunks always round-tripped into a fragment, so
-                    # phase_file is set; narrow the Path | None for the type checker.
-                    if r.phase_file is None:
-                        continue
-                    by_file.setdefault(r.phase_file, []).append(r)
-                for pf, rs in by_file.items():
-                    text = pf.read_text(encoding="utf-8")
-                    by_section: dict[str, list] = {}
-                    for r in rs:
-                        by_section.setdefault(r.section_name, []).append(r)
-                    for section_name, srs in by_section.items():
-                        sec = sec_by_key[(pf, section_name)]
-                        # applied hunks always carry a resolved anchor + retemplatized
-                        # body; assert the invariant so it's explicit (and type-safe).
-                        edits = [(r.anchor, r.retemplatized) for r in srs]
-                        assert all(a is not None and t is not None for a, t in edits)
-                        edited_body = apply_section_edits(sec.raw_body, sec.rendered_body, edits)
-                        text = apply_to_phase_text(text, sec.raw_body, edited_body)
-                    pf.write_text(text, encoding="utf-8")
-                    typer.echo(f"  → wrote {pf}")
-                total_applied += len(applied)
+        total_applied = len(all_applied) if apply else 0
+        if apply:
+            for pf, (_old, text) in bundle.items():
+                pf.write_text(text, encoding="utf-8")
+                typer.echo(f"  → wrote {pf}")
 
         if apply:
             typer.echo(
@@ -3626,6 +3637,146 @@ def setup_cmd(
         no_jobs=no_jobs,
     )
     raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
+
+
+def _register_repo() -> None:
+    repo_app = typer.Typer(
+        help="Sync this vault with your Agnes Personal Knowledge Repository; local-only paths stay on this computer."
+    )
+    app.add_typer(repo_app, name="repo")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _done(result: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.repo_sync import Result
+
+        assert isinstance(result, Result)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        for note in result.notes:
+            typer.echo(note)
+        if result.replayed:
+            typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
+        if result.action != "unlink":
+            typer.echo(
+                f"pushed {len(result.pushed)} commit(s)"
+                + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
+                + (f"; {result.stripped} local-only file(s) kept on this computer" if result.stripped else "")
+            )
+
+    @repo_app.command("link")
+    def cli_repo_link(
+        agnes_url: str = typer.Option(..., "--agnes-url", help="Your Agnes instance, e.g. https://agnes.example.com"),
+        token_file: Path | None = typer.Option(
+            None, "--token-file", help="A file holding your Agnes personal access token. Default: ask for it."
+        ),
+        confirm_sync: list[str] = typer.Option(
+            [],
+            "--confirm-sync",
+            help="Sync this trading-looking path anyway, exactly as link lists it (e.g. TRADING.md). Repeatable.",
+        ),
+        replace_remote: bool = typer.Option(
+            False, "--replace-remote", help="The Agnes repository has history: put this vault's HEAD on top of it."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link this vault to your Agnes Personal Knowledge Repository and push its first snapshot.
+
+        Refuses a vault that hasn't been through /scout-update's privacy step, an
+        unreadable scout-config.yaml, and trading-looking paths that aren't
+        local-only or confirmed. Turns OTLP content export off for the vault.
+        """
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, link, save_token
+
+        vault = _paths.data_dir()
+        try:
+            if token_file is not None:
+                token = token_file.expanduser().read_text(encoding="utf-8").strip()
+            else:
+                token = typer.prompt("Agnes personal access token", hide_input=True).strip()
+            if not token:
+                raise RepoSyncError("token_missing", "refused: no token given")
+            result = link(
+                vault,
+                AgnesHost(agnes_url, token),
+                agnes_url=agnes_url,
+                confirm_sync=confirm_sync,
+                replace_remote=replace_remote,
+            )
+            save_token(vault, token)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except OSError as e:
+            _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), as_json)
+        _done(result, as_json)
+
+    @repo_app.command("sync")
+    def cli_repo_sync(
+        confirm_sync: list[str] = typer.Option(
+            [], "--confirm-sync", help="Sync this trading-looking path anyway, exactly as listed. Repeatable."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Replay commits made in Agnes onto this vault, then push this vault's new commits (filtered).
+
+        Refuses while scoutctl kb policy warns privacy-overlay-unreadable.
+        Never pushes a local-only path: the union of this vault's effective
+        policy and the list Agnes keeps for you.
+        """
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token, sync
+
+        vault = _paths.data_dir()
+        try:
+            state = load_state(vault)
+            if state is None:
+                raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
+            host = AgnesHost(state.agnes_url, load_token(vault))
+            result = sync(vault, host, confirm_sync=confirm_sync, progress=lambda m: typer.echo(m, err=True))
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _done(result, as_json)
+
+    @repo_app.command("unlink")
+    def cli_repo_unlink(
+        delete_remote: bool = typer.Option(
+            False, "--delete-remote", help="Also delete the repository on Agnes (it can't be undone)."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Forget the link on this computer: the commit map, the stored token and the mirror refs."""
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token, unlink
+
+        vault = _paths.data_dir()
+        try:
+            host = None
+            if delete_remote:
+                state = load_state(vault)
+                if state is None:
+                    raise RepoSyncError("not_linked", "refused: this vault isn't linked")
+                host = AgnesHost(state.agnes_url, load_token(vault))
+            result = unlink(vault, host, delete_remote=delete_remote)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _done(result, as_json)
+
+
+_register_repo()
 
 
 def main() -> None:

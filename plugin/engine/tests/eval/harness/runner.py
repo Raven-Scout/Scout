@@ -35,7 +35,7 @@ from .metrics import SampleMetrics, ToolCall, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
 from .scenario import Scenario
 
-DEFAULT_TIMEOUT_S = 1200
+DEFAULT_TIMEOUT_S = 1800  # a busy consolidation on a slow network ran past 1200 s (#84)
 DEFAULT_BUDGET = "3"
 HOOK_GRACE_S = 300  # the runner's own pre- and post-session steps
 # The shell steps phases run (live samples' denials named echo, mkdir and python). The

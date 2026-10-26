@@ -7,7 +7,10 @@ JSON line to ``<vault>/.scout-logs/kb-reads.jsonl`` with exactly
 
 The log holds no content: the arguments are a SHA-256 hash, and the paths a
 call returned, was denied, or returned as private are counts, not paths, so not
-even a private note's slug reaches the log. A failure to write it never fails
+even a private note's slug reaches the log. A row may carry one more key,
+``event``, for something that isn't a read: ``privacy.check_unavailable``
+marks an owner's commit the privacy check could not look at (the pre-commit
+hook writes it, from Python or from the shell template). A failure to write it never fails
 the read: it costs a warning on stderr.
 """
 
@@ -47,27 +50,35 @@ def log_event(
     reader: str,
     command: str,
     surface: str | None,
-    args: Sequence[str],
+    args: Sequence[str] | None,
     returned: int,
     denied: int,
     private_paths: int,
     blocked: bool,
+    event: str | None = None,
 ) -> None:
-    """Append one audit line, unless this is an unblocked ``owner`` call."""
-    if reader == "owner" and not blocked:
+    """Append one audit line, unless this is an unblocked ``owner`` call with no ``event``.
+
+    ``event`` marks a row that records something other than a read, such as
+    ``privacy.check_unavailable`` (an owner's commit the privacy check could not
+    look at); it is added to the row as ``event``. ``args=None`` logs a null hash.
+    """
+    if reader == "owner" and not blocked and event is None:
         return
-    row = {
+    row: dict[str, object] = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "reader": reader,
         "command": command,
         "surface": surface,
-        "args_hash": args_hash(args),
+        "args_hash": args_hash(args) if args is not None else None,
         "paths_returned": int(returned),
         "paths_denied": int(denied),
         "private_paths": int(private_paths),
         "blocked": bool(blocked),
         "scout_mode": os.environ.get("SCOUT_MODE") or None,
     }
+    if event is not None:
+        row["event"] = event
     path = vault / ".scout-logs" / LOG_NAME
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
