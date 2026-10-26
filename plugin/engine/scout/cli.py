@@ -3307,7 +3307,13 @@ def _register_phases() -> None:
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
             sections = build_rendered_sections(
-                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
+                phases_root,
+                k,
+                vars_,
+                cfg.enabled_connectors,
+                custom=custom,
+                inputs=cfg.connector_inputs,
+                wrap_channels=cfg.wrap_channels,
             )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
             plans.append((k, sections, results))
