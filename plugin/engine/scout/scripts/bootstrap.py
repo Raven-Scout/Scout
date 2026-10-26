@@ -40,7 +40,9 @@ from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
+    WRAP_CHANNELS,
     parse_phase_file,
+    parse_wrap_channels,
     render_template,
     select_sections,
 )
@@ -67,6 +69,10 @@ class BootstrapConfig:
     # Install-time auto-update preference from /scout-setup. None = not asked:
     # leave scout-config.yaml's auto_update block untouched.
     auto_update: bool | None = None
+    # scout-config.yaml's notify.wrap_channels: which enabled wrap channels
+    # (phase_assembly.WRAP_CHANNELS) get the wrap notification section.
+    # None = all of them.
+    wrap_channels: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         # Vaults configured before a probe-key rename (gmail → email) carry the
@@ -542,6 +548,7 @@ def _assemble(
                 sections,
                 enabled_connectors=cfg.enabled_connectors,
                 modes=target_modes,
+                wrap_channels=cfg.wrap_channels,
             )
             for s in kept:
                 if deep_research_at is None and s.slot == "deep-research":
@@ -756,7 +763,8 @@ def config_from_vault(
     Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
     the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError,
     and ValueError when the file parses but isn't shaped as a mapping (top level, or
-    its instance/user/connectors blocks, or connectors.inputs).
+    its instance/user/connectors/notify blocks, or connectors.inputs), or when
+    notify.wrap_channels isn't a non-empty list of known wrap channels.
     """
     existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     if existing is None:
@@ -778,6 +786,14 @@ def config_from_vault(
     inputs = connectors.get("inputs")
     if inputs is not None and not isinstance(inputs, dict):
         raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
+    enabled = set(connectors.get("enabled") or [])
+    wrap_channels = parse_wrap_channels(_submapping("notify").get("wrap_channels"))
+    if wrap_channels is not None and not wrap_channels & normalize_connector_keys(enabled):
+        print(
+            f"warning: scout-config.yaml: notify.wrap_channels ({', '.join(sorted(wrap_channels))}) "
+            f"names no enabled connector among {', '.join(WRAP_CHANNELS)}: runs will send no wrap notification",
+            file=sys.stderr,
+        )
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,
@@ -788,11 +804,12 @@ def config_from_vault(
         timezone=existing.get("timezone") or "",  # "" = follow the host (#279)
         platform=existing.get("platform", "macos"),
         plugin_version=plugin_version,
-        enabled_connectors=set(connectors.get("enabled") or []),
+        enabled_connectors=enabled,
         connector_inputs=dict(inputs or {}),
         skip_jobs=skip_jobs,
         skip_claude=skip_claude,
         managed_by=managed_by,
+        wrap_channels=wrap_channels,
     )
 
 

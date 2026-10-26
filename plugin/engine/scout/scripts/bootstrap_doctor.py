@@ -6,6 +6,7 @@ diagnostic via `scoutctl bootstrap doctor`. Never mutates the vault.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import plistlib
@@ -14,7 +15,7 @@ import shlex
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -510,6 +511,73 @@ def _check_heartbeat_config(*, vault: Path) -> list[str]:
     return load_config_with_issues(vault / "scout-config.yaml")[1]
 
 
+PRIVACY_WINDOW = timedelta(days=7)
+
+
+UNCHECKED_EVENT = "privacy.check_unavailable"
+
+
+def privacy_audit_counts(vault: Path, *, now: datetime) -> tuple[int, int]:
+    """``(blocked or denied, unchecked commits)`` in ``.scout-logs/kb-reads.jsonl`` over the last 7 days.
+
+    #453, spec §7.4 and §8.3. A row is *blocked or denied* when it is
+    ``blocked`` or denied at least one path, and an *unchecked commit* when its
+    ``event`` is ``privacy.check_unavailable`` (the owner committed while the
+    privacy check couldn't run). Unreadable or malformed rows are skipped; a
+    timestamp without a zone is taken as UTC.
+    """
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    cutoff = now - PRIVACY_WINDOW
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    blocked = unchecked = 0
+    try:
+        with log.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:  # streamed: the log only grows
+                # Cheap pre-filter on the sorted-key rows: nothing to count → skip unparsed.
+                if '"blocked": true' not in line and '"paths_denied": 0,' in line and UNCHECKED_EVENT not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    ts = datetime.fromisoformat(row["ts"])
+                    hit = row.get("blocked") is True or int(row.get("paths_denied") or 0) > 0
+                    gap = row.get("event") == UNCHECKED_EVENT
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                if ts < cutoff:
+                    continue
+                blocked += hit
+                unchecked += gap
+    except OSError:
+        return 0, 0
+    return blocked, unchecked
+
+
+def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
+    """Every row :func:`privacy_audit_counts` counts, of both kinds."""
+    return sum(privacy_audit_counts(vault, now=now))
+
+
+def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
+    blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
+    out: list[str] = []
+    if blocked:
+        out.append(
+            f"privacy: {blocked} blocked outbound check(s) or denied read(s) in the last 7 days "
+            "(.scout-logs/kb-reads.jsonl) — a run reached for a shared surface with private content; "
+            "the content was held back, but check what the runs were trying to send"
+        )
+    if unchecked:
+        out.append(
+            f"privacy: {unchecked} commit(s) in the last 7 days were made while the privacy check could not run "
+            "(.scout-logs/kb-reads.jsonl) — they were NOT checked for private links in shared files; fix what "
+            "this doctor reports about scoutctl, then review drafts/ and other shared files"
+        )
+    return out
+
+
 def run_doctor(
     *, vault: Path, check_jobs: bool = True, home: Path | None = None, now: datetime | None = None
 ) -> DoctorReport:
@@ -627,6 +695,7 @@ def run_doctor(
 
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
+    warnings.extend(_check_privacy_audit(vault=vault, now=now))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

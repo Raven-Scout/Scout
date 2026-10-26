@@ -551,13 +551,17 @@ note whose path default is private, sets or widens `federation_scope`, adds a
 owner may change their own notes.
 
 The pre-commit hook fails open today on purpose (`scout/kb/hook.py`). The
-privacy checks get their own **fail-closed** path: if the privacy checker
-itself errors, the commit is refused. A scheduled run's commit is refused
-with a run-health event (`privacy.check_failed`), and the run's retry/park
-handling applies. An interactive commit is refused with the error and a
-pointer to `scoutctl doctor`; `git commit --no-verify` remains the owner's
-own last resort, as for any hook. The phase rule forbids `--no-verify` for
-runs, and the eval flags it.
+privacy checks get their own path for when they can't run: the privacy
+checker errors, `scoutctl` is missing, or the engine crashes. A scheduled
+run's commit (`SCOUT_MODE` set, or `SCOUT_READER` set to anything but exactly
+`owner`, which fails closed as in §4.1) is **refused**,
+with a run-health event (`privacy.check_failed`) where the engine can emit
+one, and the run's retry/park handling applies. An interactive commit
+**proceeds**, with a loud warning that it was not checked and a pointer to
+`scoutctl doctor`, and an audit row (`event: "privacy.check_unavailable"`, no
+content) in `.scout-logs/kb-reads.jsonl`, which the doctor counts (§7.4)
+(Jordan, 2026-10-22). The size and diary checks stay fail-open. The phase
+rule forbids `--no-verify` for runs, and the eval flags it.
 
 ### 8.4 Sends the engine makes
 
@@ -863,7 +867,7 @@ These are the author's calls within Jordan's rulings:
   for lint (§4.2, §5.3).
 - Strict lint checks added or changed lines only. The marker passes a line
   into a shared file but not through `check-outbound` (§8.2).
-- The privacy checker fails closed for every commit (§8.3).
+- When the privacy checker can't run, a scheduled run's commit is refused and an interactive commit proceeds with a loud warning and an audit row (§8.3; Jordan, 2026-10-22).
 - Runs narrow only by writing new private notes or by proposing in the review
   queue, never by flipping an existing note (§7.2).
 - Back-port bundles get `check-outbound --surface public_repo` (§8.4).

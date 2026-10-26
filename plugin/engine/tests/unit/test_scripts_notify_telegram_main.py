@@ -21,7 +21,7 @@ from scout.errors import ConfigError
 from scout.scripts import notify_telegram
 
 FAKE_TOKEN = "1234567:FAKE-TOKEN-DO-NOT-USE"
-FAKE_CHAT_ID = "-1009999999999"
+FAKE_CHAT_ID = "9999999999"  # a private chat: group targets are privacy-checked (#453)
 
 
 def _write_secret(path: Path, value: str) -> None:

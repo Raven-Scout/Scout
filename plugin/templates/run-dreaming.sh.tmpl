@@ -58,6 +58,10 @@ if ! scout_redundant_wait_guard; then
     scout_record_skip skipped_redundant
     exit 0
 fi
+if ! scout_lease_acquire; then
+    scout_record_skip "$SCOUT_LEASE_SKIP"
+    exit 0
+fi
 
 # The prompt instructs Claude to read DREAMING.md and execute it
 PROMPT="You are {{INSTANCE_NAME}} running in DREAMING mode — the evening self-improvement and KB deep work session. Your working directory is {{SCOUT_DIR}}.
@@ -67,7 +71,7 @@ Step 2: Execute Phase 1 (Feedback Processing) completely.
 Step 3: Execute Phase 2 (KB Deep Work) completely.
 Step 4: Execute Phase 3 (Wishlist) completely.
 Step 5: Commit results to git.
-Step 6: Send the wrap notification summarizing feedback processed and KB work done, through the channel and recipient that DREAMING.md's notification section names, or SKILL.md's when DREAMING.md has none (a stock DREAMING.md has none; SKILL.md's are Slack Notification and, when Telegram is set up, Telegram Notification, which then takes over from Slack). Do not assume Slack. If neither file has a notification section, send nothing and say so in your final message.
+Step 6: Send the wrap notification summarizing feedback processed and KB work done, through the channel and recipient that DREAMING.md's notification section names, or SKILL.md's when DREAMING.md has none (a stock DREAMING.md has none; SKILL.md's are Slack Notification and, when Telegram is set up, Telegram Notification as well). Send every one that is there. Do not assume Slack. If neither file has a notification section, send nothing and say so in your final message.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).

@@ -10,10 +10,35 @@ based on which connectors the user has enabled.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+# Connectors whose ``slot: notification`` section carries the run's wrap message.
+# With no ``notify.wrap_channels`` in scout-config.yaml, every enabled one gets it.
+WRAP_CHANNELS = ("slack", "telegram")
+
+
+def parse_wrap_channels(value: object) -> frozenset[str] | None:
+    """Validate scout-config.yaml's ``notify.wrap_channels``.
+
+    ``None`` (key unset) means "every enabled wrap channel". Otherwise it must be
+    a non-empty list drawn from ``WRAP_CHANNELS``; anything else raises
+    ``ValueError`` so a typo can't silently drop the wrap.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"notify.wrap_channels must be a non-empty list of {', '.join(WRAP_CHANNELS)}; got {value!r}")
+    unknown = [v for v in value if v not in WRAP_CHANNELS]
+    if unknown:
+        raise ValueError(
+            f"notify.wrap_channels: unknown channel(s) {', '.join(map(repr, unknown))}; "
+            f"expected any of {', '.join(WRAP_CHANNELS)}"
+        )
+    return frozenset(value)
 
 
 @dataclass(frozen=True)
@@ -112,6 +137,7 @@ def select_sections(
     enabled_connectors: set[str],
     slot: str | None = None,
     modes: set[str] | None = None,
+    wrap_channels: Collection[str] | None = None,
 ) -> list[PhaseSection]:
     """Filter sections by connector, slot, and mode.
 
@@ -120,6 +146,9 @@ def select_sections(
       - ``slot`` is None OR matches the section's slot
       - ``modes`` is None OR the section's mode is empty (applies to every
         target) OR the section's mode list intersects ``modes``
+      - ``wrap_channels`` is None OR the section is not a wrap section (a
+        ``notification`` slot gated on a ``WRAP_CHANNELS`` connector) OR its
+        connector is one of ``wrap_channels``
 
     The ``modes`` filter exists so a phase declared ``mode: [briefing]``
     doesn't leak into a DREAMING.md assembly. Empty/absent mode means
@@ -129,6 +158,13 @@ def select_sections(
     out: list[PhaseSection] = []
     for s in sections:
         if s.requires is not None and s.requires not in enabled_connectors:
+            continue
+        if (
+            wrap_channels is not None
+            and s.slot == "notification"
+            and s.requires in WRAP_CHANNELS
+            and s.requires not in wrap_channels
+        ):
             continue
         if slot is not None and s.slot != slot:
             continue

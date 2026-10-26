@@ -35,7 +35,7 @@ from .metrics import SampleMetrics, ToolCall, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
 from .scenario import Scenario
 
-DEFAULT_TIMEOUT_S = 1200
+DEFAULT_TIMEOUT_S = 1800  # a busy consolidation on a slow network ran past 1200 s (#84)
 DEFAULT_BUDGET = "3"
 HOOK_GRACE_S = 300  # the runner's own pre- and post-session steps
 # The shell steps phases run (live samples' denials named echo, mkdir and python). The
@@ -418,6 +418,10 @@ def run_sample(
     if aborted is None and metrics is not None and metrics.result_subtype not in (None, "success"):
         # e.g. error_max_budget_usd: the session didn't finish; say which cap it hit
         aborted = {"reason": metrics.result_subtype, "budget_usd": effective_budget}
+    if aborted is None and metrics is not None and metrics.api_error is not None:
+        # claude gave up on the API (retries exhausted, no network): its result still says
+        # "success". A harness failure, never a score: the run did not do the work.
+        aborted = {"reason": "api_error", "detail": metrics.api_error[:200], "api_retries": metrics.api_retries}
     (result_dir / "runner-exit.json").write_text(json.dumps({"exit": runner_exit}), encoding="utf-8")
     transcript = metrics.calls if metrics is not None else ()
     checks = () if aborted else _score(scenario, vault, today, yesterday, result_dir / "calls.jsonl", transcript)

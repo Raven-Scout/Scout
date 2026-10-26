@@ -308,6 +308,20 @@ Personal task entities (`knowledge-base/personal/task-*.md`) track non-work item
 - `completion_signal: gmail_confirmation` — auto-resolve when a matching email appears
 - `status: open/completed` — tracked across daily action items
 
+## Sync with Agnes (Personal Knowledge Repository)
+
+Agnes can host a private copy of the vault, which Agnes calls your **Personal Knowledge Repository**: only you can fetch or push it, not an Agnes admin. `scoutctl repo` keeps it in step:
+
+- `scoutctl repo link --agnes-url https://agnes.example.com` asks for an Agnes personal access token and keeps it in `~/.scout-secrets/`, outside the vault. It creates the repository if needed and pushes one snapshot of the vault's HEAD; earlier history stays on this computer. It also turns OTLP content export off for sessions in the vault (`.claude/settings.json`).
+- `scoutctl repo sync` replays commits made in Agnes onto the vault, one vault commit each, then pushes one Agnes commit per new vault commit.
+- `scoutctl repo unlink` forgets the link here (`--delete-remote` also deletes the repository on Agnes).
+
+**What never leaves this computer:** machine plumbing (`.scout-logs/`, `.scout-cache/`, `.claude/`, `.venv/`, `.obsidian/`, `.mcp.json`, `.env*`, most of `.scout-state/`), secret files (`*.pem`, `id_rsa*`, `.scout-secrets/`), every `privacy.local_only_add` path in `scout-config.yaml` (trading folders, once `/scout-update` asked you), and every path Agnes keeps on your Local-Only list. Personal notes and the inbox do sync, marked private: only you and your own runs see them. Each pushed commit carries `.scout-state/privacy-policy.json`, the effective privacy policy plus every file's label, which Agnes indexes by.
+
+**One writer at a time.** Agnes lets one place write the repository at a time, this computer or a run in Agnes, through its **Repository Writer Lease**. Once the vault is linked, every scheduled run takes the lease before it writes anything, renews it every five minutes while it runs, and gives it back when it ends, on an error too. If Agnes holds it (an Agnes-hosted run), the run is skipped and recorded as `lease_held`. If Agnes can't be reached, the run is skipped as `lease_unavailable`: a run that can't take the lease can't tell whether Agnes is writing. Both show in `scoutctl health` (`lease.held`, `lease.unavailable`) next to the other run outcomes. Link and sync push under the lease too: a `scoutctl repo sync` during a scheduled run uses that run's lease rather than asking for another, because Agnes ends the old lease when the same holder asks again. The lease token lives in `~/.scout-secrets/agnes-knowledge-repo/<vault id>.lease.json` (mode 600), never in the vault or on a command line. `scoutctl repo lease status` says who holds it. A run killed before it gives the lease back has it released by its keepalive or the next run, and Agnes ends it after 20 minutes in any case. An unlinked vault never asks for the lease.
+
+**Link refuses** until `/scout-update` has walked you through the privacy step, while `scout-config.yaml` can't be read, and while a root-level file or a folder that looks like trading or brokerage data (`TRADING.md`, `portfolio.csv`, `brokerage/`) would sync: make it local-only (`scoutctl bootstrap privacy-migrate --local-only '<path>'`) or confirm it once with `--confirm-sync '<path>'`. Sync re-checks the last two every time.
+
 ## Budget System
 
 Scout includes a budget tracking and rate limit detection system:

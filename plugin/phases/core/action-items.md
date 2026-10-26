@@ -417,7 +417,7 @@ python3 scripts/recurring-task-status.py --date "<today>" \
 
 For each entity the script returns:
 
-1. **`due` / `overdue`** → **mandatory** action item. 🔴 when `surface_window` is `T-0 morning` or the item is `overdue` (for its first 2 days past due; then *Past-Due Tasks Step Down* applies); 🟡 when the window is wider than 24h. Link `[[recurring-tasks/<name>]]`. `domain: personal` ones go in the Personal section.
+1. **`due` / `overdue`** → **mandatory** action item. 🔴 when `surface_window` is `T-0 morning` or the item is `overdue` (for its first 2 days past due; then *Past-Due Tasks Step Down* applies); 🟡 when the window is wider than 24h. Link `[[recurring-tasks/<name>]]`. `domain: personal` ones go in the Personal section. **Unless someone else does it:** a row whose Owner reads `(not {{USER_NAME}})` (JSON `owner_is_user: false`; the list under the table names each one) is a 🟢 Watching item waiting on that owner, per *🔴 and 🟡 Are {{USER_NAME}}'s Move*. The owner comes from the entity's `observed_author`, else its `last_completed_by`.
 2. **`done`** (completion evidence satisfied for this cadence window) → surface as ✅ Recently Completed, not a TODO.
 3. **`surfacing`** (inside the window, not yet the due day) → 🟡 heads-up.
 4. **`upcoming` / `unknown`** → no action item.
