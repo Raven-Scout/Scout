@@ -147,6 +147,8 @@ Or run interactive sessions in the current conversation:
 /scout-meta-review    # System-level audit — are sessions running, is the mistake audit trending well, are proposals flowing?
 ```
 
+Ask about a project, person, meeting or decision in a session opened in your vault ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale.
+
 ## How It Works
 
 Six session types, split into **scheduled background sessions** (Briefing, Consolidation, Dreaming, Research) and **interactive conversation sessions** (Work, Meta Review):
@@ -358,6 +360,7 @@ scout-plugin/
     scout-consolidation/    -- Launch a consolidation session (background)
     scout-dream/            -- Launch a dreaming session (background)
     scout-research/         -- Launch a research session (background)
+    scout-ask/              -- Answer questions from the KB (interactive; triggers on its own)
   phases/
     core/                   -- Always included (git, KB management, action items, inbox, meetings)
     connectors/             -- One per tool (Slack, Calendar, Linear, etc.)
