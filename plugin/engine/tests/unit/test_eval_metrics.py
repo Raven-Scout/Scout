@@ -21,7 +21,7 @@ from tests.eval.harness.metrics import (
 
 GOLDEN = Path(__file__).resolve().parents[1] / "eval" / "golden" / "stream-basic.jsonl"
 VAULT = "/tmp/eval/vault"
-NEW_FIELDS = {"cache_creation_tokens", "brain_tokens", "brain_token_turns"}
+NEW_FIELDS = {"cache_creation_tokens", "brain_tokens", "brain_token_turns", "api_retries", "api_error"}
 
 
 @pytest.fixture(scope="module")
@@ -154,3 +154,22 @@ def test_metrics_stored_before_the_brain_fields_still_load() -> None:
     old = {k: v for k, v in asdict(parse_stream([])).items() if k not in NEW_FIELDS}
     loaded = metrics_from_dict(old)
     assert (loaded.cache_creation_tokens, loaded.brain_tokens, loaded.brain_token_turns) == (None, None, None)
+    assert (loaded.api_retries, loaded.api_error) == (None, None)
+
+
+def test_a_session_that_gave_up_on_the_api_says_so() -> None:
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "mcp_servers": []}),
+        *(json.dumps({"type": "system", "subtype": "api_retry", "attempt": n, "max_retries": 10}) for n in (1, 2, 3)),
+        json.dumps({"type": "assistant", "message": {"id": "s1", "model": "<synthetic>",
+                    "content": [{"type": "text", "text": "API Error: Can't reach the API server"}]}}),
+        json.dumps({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1,
+                    "total_cost_usd": 0, "result": "API Error: Can't reach the API server"}),
+    ]  # fmt: skip
+    m = parse_stream(lines)
+    assert m.result_subtype == "success"  # what claude reports, so the subtype alone can't tell
+    assert (m.api_retries, m.api_error) == (3, "API Error: Can't reach the API server")
+
+
+def test_a_clean_session_has_no_api_error(m) -> None:
+    assert (m.api_retries, m.api_error) == (0, None)

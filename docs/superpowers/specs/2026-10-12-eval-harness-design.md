@@ -510,6 +510,10 @@ repeats `auth.expired`), plus everything in 7.1. "The wrap names the expired log
   aborts (no session, a crash, `mcp_leak`) are harness failures: they still block the verdict and
   stop new launches. A truncated base sample is never cached. Before this, one head timeout on a
   slow network voided a whole 12-session compare twice.
+- **A session that lost the API is a harness failure (2026-10-25, #84).** claude ends a run whose
+  API retries ran out with subtype `success` and `is_error: true`, so the subtype alone read it as
+  done. The harness now aborts it as `api_error`, never scores it, and every report shows an
+  `API retries` row so retry noise is visible next to the metrics it skews.
 
 **First live compare** (2026-10-12, Sonnet, N=1 per arm, base `origin/main` against a branch with
 identical phases): the report gave placement 0/1 on base and 1/1 on head, verdict `need N≥2`.
