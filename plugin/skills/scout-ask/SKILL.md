@@ -1,13 +1,13 @@
 ---
 name: scout-ask
-description: Use when the user asks what the state of something is (a project, initiative, person, decision, meeting, or open thread) and a Scout vault is present. Also use when the user asks what Scout knows about a topic. Do not use when the user explicitly asks for a live search of Slack, Linear, GitHub, or Gmail; that is a request for the live source, not for the KB.
+description: Use when the working directory is a Scout vault (it has `knowledge-base/` and `action-items/`) and the user asks about the state of a project, initiative, person, decision, meeting or open thread ("where are we on X", "what's going on with Y", "who is Z", "what's on my plate"), or what Scout knows about a topic. Do not use for code, PR, CI or branch questions in a code repository (including Scout's own source), when no vault is present, or when the user asks for a live Slack, Linear, GitHub or Gmail search.
 ---
 
 # Asking Scout
 
 Scout has already done the investigation. Every KB file is a synthesis that a prior session built from live connectors and stamped with the date it was verified. Answering is **retrieval against a canonical file**, not a fresh investigation, and the vault is laid out so one file holds the answer.
 
-Work the three steps in order. Most questions are done after step 2.
+Work the three steps in order. Most questions are done after step 2. Every path below is relative to the vault root.
 
 ## 1. Resolve the entity to its canonical file
 
@@ -26,10 +26,10 @@ Use the map below for other entity types. When the entity resolves to a file, yo
 **When nothing matches**, search the entity files rather than the vault:
 
 ```bash
-rg -l -i "<entity>" knowledge-base/projects knowledge-base/topics knowledge-base/people knowledge-base/ontology/entities
+rg -l -i "<entity>" knowledge-base/projects knowledge-base/topics knowledge-base/sources knowledge-base/people knowledge-base/ontology/entities
 ```
 
-`knowledge-base/knowledge-base.md` is the root index, not a router for questions. Read its navigation table if you need one; never read the whole file. On vaults set up before session history moved to `knowledge-base/session-log/`, it still carries every session row and runs to hundreds of thousands of tokens, so a full read will not fit. Reach it only through a scoped `rg` with line numbers, and only after the entity files come up empty.
+Never read `knowledge-base/knowledge-base.md` whole: on older vaults it runs to hundreds of thousands of tokens. Reach it only through a scoped `rg` with line numbers, after the entity files come up empty.
 
 ## 2. Read the freshness gate, then answer
 
@@ -53,11 +53,12 @@ When you do, **use the reference the KB already recorded**: every synthesis cite
 | Question | Canonical file |
 |---|---|
 | Project / initiative status | `knowledge-base/projects/<slug>/<slug>.md` |
-| A durable topic that is not a project | `knowledge-base/topics/topics.md`, then the topic file it links |
-| A person | `knowledge-base/people/<name>.md`, then `knowledge-base/people.md`. These carry roster facts (role, team, contact) and a seeded `works_on` list that under-reports current work; for what they are *actually* on now, name the projects it lists and read those project files |
+| A durable topic that is not a project | `knowledge-base/topics/topics.md`, then the domain index `topics/<domain>/<domain>.md` and the topic note it links |
+| A decision, or what was said in a specific meeting, doc or thread | `knowledge-base/sources/<YYYY-MM>/<YYYY-MM-DD>-<slug>.md` (one source note per event; `knowledge-base/sources/sources.md` indexes them) |
+| A person | `knowledge-base/people/<name>.md`, then `knowledge-base/people.md`. Roster facts only; for current work, read the project files in its `works_on` |
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
 | A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
-| What Scout did recently | `knowledge-base/session-log/<YYYY-MM>.md` (this month's shard) |
+| What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; read the newest part |
 | Typed / graph query | `python3 knowledge-base/ontology/parser.py query --type task --status open` (`--help` for traverse, related, path) |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |
@@ -68,6 +69,6 @@ When you do, **use the reference the KB already recorded**: every synthesis cite
 |---|---|
 | `ls` the vault root to orient | Go straight to the map; the layout is fixed |
 | Vault-wide `grep` for the entity | `ls knowledge-base/projects/` and match the slug |
-| Re-querying Linear/GitHub to confirm what the file states | Check the freshness gate; a same-day timestamp is the confirmation |
+| Re-querying Linear/GitHub to confirm what the file states | Check the freshness gate; a recently verified timestamp is the confirmation |
 | Loading MCP connector schemas before reading the KB | Read the file first; most questions never need a connector |
 | Reading `knowledge-base/knowledge-base.md` to find where something lives | Entity files, then a scoped `rg` |
