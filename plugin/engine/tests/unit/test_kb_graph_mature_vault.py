@@ -165,6 +165,18 @@ def test_archived_snapshots_do_not_shadow_the_live_entity(tmp_path: Path) -> Non
     assert g.entities["Widget"]["_source_path"] == str(live)
 
 
+@pytest.mark.parametrize("cwd, kb_root", [("vault", "knowledge-base"), ("vault/knowledge-base", ".")])
+def test_exclude_globs_match_with_a_relative_kb_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cwd: str, kb_root: str
+) -> None:
+    vault = _vault(tmp_path)
+    _note(vault, "projects/widget/widget.md", "name: Widget\ntype: project\nstatus: active\n")
+    _note(vault, "projects/widget/archive/old.md", "name: Old Widget\ntype: project\nstatus: stale\n")
+    monkeypatch.chdir(tmp_path / cwd)
+    g = KnowledgeGraph(schema_path=_schema(vault), kb_root=kb_root, vault=vault).load()
+    assert set(g.entities) == {"Widget"}
+
+
 def test_the_schema_sets_its_own_exclude_globs(tmp_path: Path) -> None:
     vault = _vault(tmp_path, {"graph": {"exclude": ["snapshots/**"]}})
     _note(vault, "projects/widget/archive/widget.md", "name: Widget\ntype: project\nstatus: stale\n")

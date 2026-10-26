@@ -253,10 +253,17 @@ class _Labeller:
             self._dir_ok[parent] = ok
         return ok
 
+    def _tail(self, s: str) -> str:
+        return s[len(self._prefix) :] if s.startswith(self._prefix) else os.path.relpath(s, self.kb_root)
+
+    def tail(self, path: Path) -> str:
+        """``path`` (a walk result under the KB root) relative to the root, ``/``-separated."""
+        return self._tail(str(path)).replace(os.sep, "/")
+
     def rel(self, path: Path) -> str:
         """``path`` (a walk result under the KB root) as a vault-relative label path."""
         s = str(path)
-        tail = s[len(self._prefix) :] if s.startswith(self._prefix) else os.path.relpath(s, self.kb_root)
+        tail = self._tail(s)
         fast = f"{self.kb_rel}/{tail.replace(os.sep, '/')}"
         if self._plain(s, tail):
             return fast
@@ -363,7 +370,7 @@ class KnowledgeGraph:
         pending: list[tuple[str, Any]] = []
         for md_file in Path(self.kb_root).rglob("*.md"):
             if exclude:
-                tail = md_file.relative_to(self.kb_root).as_posix()
+                tail = labeller.tail(md_file)
                 if any(glob_match(g, tail) for g in exclude):
                     continue
             if self.store is not None:
