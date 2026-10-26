@@ -66,7 +66,7 @@ Step 2: Execute Phase 1 (Select Research Targets) — check the \`research-queue
 Step 3: Execute Phase 2 (Deep Research) — web search, docs, APIs for each target.
 Step 4: Execute Phase 3 (Knowledge Integration) — update entity files, extend ontology.
 Step 5: Commit results to git.
-Step 6: Send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing what was researched and key findings.
+Step 6: Send the wrap notification summarizing what was researched and key findings, through the channel and recipient that each of RESEARCH.md's notification steps names, sending every one it has (in a stock install, Step 4d: Slack Notification and, when Telegram is set up, Step 4d: Telegram Notification as well), or SKILL.md's notification section when RESEARCH.md has none. Do not assume Slack. If neither file has one, send nothing and say so in your final message.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
@@ -103,6 +103,13 @@ fi
 # without this export every scheduled run looks interactive and no connector
 # telemetry is ever written (#192, #121).
 export SCOUT_MODE="$MODE"
+
+# A scheduled run reads the vault as the `autonomous` reader (#453, spec §6.2):
+# it sees every note, each labelled, and the privacy phase rule keeps private
+# content off shared surfaces. Set explicitly rather than left to the
+# SCOUT_MODE fallback, so the pre-session caches and every `scoutctl kb` call
+# in the session are labelled for that reader.
+export SCOUT_READER=autonomous
 
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —

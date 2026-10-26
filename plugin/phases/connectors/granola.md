@@ -46,12 +46,14 @@ Two traps that produce invented deliverables:
 
 A "✅ transcript captured" / "notes available for [meeting]" line is **not** extraction — it is a breadcrumb that silently drops the meeting's substance. For every meeting {{USER_NAME}} attended where a transcript exists, you MUST produce the substantive extraction above (action items, decisions, commitments-by-others, deadlines, open questions) or an explicit "reviewed — no actionable content (reason)" note. A bare capture/availability breadcrumb is forbidden as the only output for an attended meeting.
 
-**Pre-commit self-check:** before committing, grep the run's notes/KB/action-items for transcript breadcrumb rows that carry no extracted substance:
+**Pre-commit self-check:** before committing, search the run's notes/KB/action-items for transcript breadcrumb rows that carry no extracted substance:
 
 ```bash
-grep -rniE 'transcript (captured|available)|notes (captured|available)' "$DAILY_FILE" {{SCOUT_DIR}}/knowledge-base 2>/dev/null \
-  && echo "WARN: transcript breadcrumb(s) above — confirm each has substantive extraction, not just a capture note" >&2
+cd {{SCOUT_DIR}} && scripts/scoutctl kb search -i 'transcript (captured|available)|notes (captured|available)' \
+  --glob "action-items/$(basename "$DAILY_FILE")" --glob 'knowledge-base/**'
 ```
+
+Every match it prints is a breadcrumb: confirm each has substantive extraction, not just a capture note.
 
 If a flagged meeting has no decisions/commitments/follow-ups recorded near it, go back and extract them (or record the explicit no-content note) before commit.
 

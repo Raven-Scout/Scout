@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
@@ -111,6 +111,14 @@ def hook_session_tool_log() -> None:
     raise typer.Exit(session_tool_log_main())
 
 
+@hook_app.command("mcp-tool-gate")
+def hook_mcp_tool_gate() -> None:
+    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools in scheduled runs."""
+    from scout.hooks.mcp_tool_gate import main as mcp_tool_gate_main
+
+    raise typer.Exit(mcp_tool_gate_main())
+
+
 @hook_app.command("kb-pre-filter")
 def hook_kb_pre_filter(
     session_type: str = typer.Option(
@@ -145,7 +153,9 @@ def kb_lint(
     staged: bool = typer.Option(
         False, "--staged", help="Check the staged diff (what the pre-commit hook runs). Default."
     ),
-    report: bool = typer.Option(False, "--report", help="Rank tracked KB files that are over budget."),
+    report: bool = typer.Option(
+        False, "--report", help="Rank over-budget KB files; list privacy markers and problems."
+    ),
     top: int = typer.Option(20, "--top", help="Rows to show with --report."),
     lossless_rev: str | None = typer.Option(None, "--lossless-rev", help="Old revision for the lossless check."),
     lossless_path: str | None = typer.Option(
@@ -169,11 +179,14 @@ def kb_lint(
     if report:
         from scout.kb.lint import over_budget
         from scout.kb.lint_config import load_lint_config
+        from scout.kb.lint_privacy import format_report, privacy_report
 
         rows = over_budget(root, load_lint_config(root))
         print(f"{len(rows)} file(s) over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
+        for line in format_report(privacy_report(root)):
+            print(line)
         raise typer.Exit(0)
     from scout.kb.lint import run_hook
 
@@ -193,6 +206,486 @@ def kb_install_hook(
         print(str(e), file=sys.stderr)
         raise typer.Exit(1) from e
     print(f"Installed: {path}")
+
+
+@kb_app.command("classify")
+def kb_classify(
+    paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print each file's privacy label (visibility, local-only, shared). Exit 2 = bad path or reader.
+
+    owner and autonomous readers get labels. An agent reader gets
+    {"path": ..., "denied": true} for every path, without the file being looked
+    at, so a denial says nothing about whether the file exists or what it is.
+    """
+    args = _kb_args("classify", dict(locals()))
+
+    def body(who: str, root: Path) -> object:
+        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+        from scout.kb.read import Output, UsageError
+
+        if who not in FULL_READERS:
+            return Output(
+                data=[{"path": p, "denied": True} for p in paths],
+                lines=[f"{p}: denied" for p in paths],
+                denied=len(paths),
+            )
+        policy = load_policy(root)
+        labels = []
+        for p in paths:
+            try:
+                rel = normalize_rel(root, p)
+            except ValueError as e:
+                raise UsageError(str(e)) from e
+            labels.append(label_file(root, rel, policy))
+        return Output(
+            data=[label.to_json() for label in labels],
+            lines=[f"[private] {label.path}" if label.visibility == "private" else label.path for label in labels],
+            labels=[label.to_json() for label in labels],
+        )
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
+@kb_app.command("policy")
+def kb_policy(
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Print the effective privacy policy: engine default plus the vault's scout-config.yaml overlay.
+
+    Every reader gets the same output: it is configuration (globs, surface ids),
+    not note content. --reader is still resolved, so a widening flag is refused.
+    """
+    args = _kb_args("policy", dict(locals()))
+
+    def body(_who: str, root: Path) -> object:
+        from scout.kb.privacy import load_policy
+        from scout.kb.read import Output
+
+        data = load_policy(root).to_json()
+        lo = data["local_only"]
+        lines = [
+            "local_only.always:    " + " ".join(lo["always"]),
+            "local_only.default:   " + (" ".join(lo["default"]) or "(none)"),
+            "local_only.sync_allow: " + " ".join(lo["sync_allow"]),
+            "visibility_defaults:",
+            *(f"  {entry['glob']} -> {entry['visibility']}" for entry in data["visibility_defaults"]),
+            "surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]),
+            "surfaces.shared:      " + " ".join(data["surfaces"]["shared"]),
+            "shared_files:         " + (" ".join(data["shared_files"]) or "(none)"),
+            "warnings:             " + (" ".join(data["warnings"]) or "(none)"),
+        ]
+        return Output(data=data, lines=lines)
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
+# ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
+
+_READER_HELP = "owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+_KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
+_SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
+
+
+def _kb_args(command: str, params: dict[str, object]) -> list[str]:
+    """A command's arguments for the audit log's hash: ``[command, "k=v", ...]``."""
+    return [command, *(f"{k}={params[k]}" for k in sorted(params))]
+
+
+def _kb_run(
+    args: list[str],
+    reader: str | None,
+    repo: Path | None,
+    as_json: bool,
+    body: Callable[[str, Path], object],
+    kb_root: str | None = None,
+) -> None:
+    """Resolve the reader and vault, run ``body(reader, vault)`` (a ``scout.kb.read.Output``), print.
+
+    Every call writes its audit line (non-owner readers, spec §7.4), failures
+    too: a refused ``--reader``, a missing argument, a bad pattern or path
+    (exit 2), a KB error, each with ``paths_returned`` 0.
+    """
+    import json
+    import os
+
+    from scout.errors import KBError
+    from scout.kb.read import Output, UsageError, audit, graph_vault
+    from scout.kb.reader import resolve_reader
+
+    vault = graph_vault(_kb_repo(repo), None if repo else kb_root)
+    try:
+        who = resolve_reader(reader, os.environ)
+    except typer.BadParameter:
+        audit(vault, resolve_reader(None, os.environ), args[0], args, Output(data=None))
+        raise
+    try:
+        out = body(who, vault)
+    except UsageError as e:
+        audit(vault, who, args[0], args, Output(data=None))
+        print(f"error: {e}", file=sys.stderr)
+        raise typer.Exit(2) from e
+    except (typer.BadParameter, KBError):
+        audit(vault, who, args[0], args, Output(data=None))
+        raise
+    assert isinstance(out, Output)
+    audit(vault, who, args[0], args, out)
+    if as_json:
+        print(json.dumps(out.data, indent=2, default=str))
+    elif out.raw is not None:
+        sys.stdout.write(out.raw)
+    else:
+        for line in out.lines:
+            print(line)
+    raise typer.Exit(out.code)
+
+
+def _kb_graph_cmd(
+    args: list[str],
+    reader: str | None,
+    repo: Path | None,
+    kb_root: str | None,
+    schema: str | None,
+    as_json: bool,
+    run: Callable[..., object],
+    needs: tuple[tuple[str | None, str], ...] = (),
+) -> None:
+    """``_kb_run`` over the labelled graph: checks ``needs`` (value, name), then ``run(graph, vault)``."""
+
+    def body(who: str, vault: Path) -> object:
+        from scout.kb.read import load_graph
+
+        for value, what in needs:
+            _need(value, what)
+        return run(load_graph(vault, who, kb_root, schema), vault)
+
+    _kb_run(args, reader, repo, as_json, body, kb_root)
+
+
+def _need(value: str | None, what: str) -> str:
+    if not value:
+        raise typer.BadParameter(f"{what} is required")
+    return value
+
+
+_R = typer.Option(None, "--reader", help=_READER_HELP)
+_J = typer.Option(False, "--json", help="Print JSON; every result carries its label.")
+_REPO = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd).")
+_KBR = typer.Option(None, "--kb-root", help=_KB_ROOT_HELP)
+_SCH = typer.Option(None, "--schema", help=_SCHEMA_HELP)
+
+
+@kb_app.command("files")
+def kb_files(
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """List the files the reader may see, labelled (text: [private] prefix)."""
+    args = _kb_args("files", dict(locals()))
+    from scout.kb.read import cmd_files
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_files(vault, who, glob or ()))
+
+
+@kb_app.command("search")
+def kb_search(
+    pattern: str = typer.Argument(..., help="A regex (ripgrep syntax; Python's when rg is absent)."),
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
+    ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern."""
+    args = _kb_args("search", dict(locals()))
+    from scout.kb.read import cmd_search
+
+    _kb_run(
+        args, reader, repo, as_json, lambda who, vault: cmd_search(vault, who, pattern, glob or (), fixed, ignore_case)
+    )
+
+
+@kb_app.command("read")
+def kb_read(
+    path: str = typer.Argument(..., help="A vault file (any spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file."""
+    args = _kb_args("read", dict(locals()))
+    from scout.kb.read import cmd_read
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
+
+
+@kb_app.command("delta")
+def kb_delta(
+    since: str = typer.Option(..., "--since", help="A commit (the commits after it) or a duration: 8h, 2d, 1w."),
+    diff: bool = typer.Option(False, "--diff", help="Include each commit's unified diff (may hold private content)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """The vault's commits since a point, newest first, each changed path labelled. Exit 2 = bad --since.
+
+    Paths the reader can't see are removed and commits left with none dropped:
+    an agent reader gets nothing.
+    """
+    args = _kb_args("delta", dict(locals()))
+    from scout.kb.delta import cmd_delta
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_delta(vault, who, since, diff))
+
+
+_SURFACE_HELP = "Where the text goes: a surface id from `kb policy` (slack, web_query ...). Unknown ids are shared."
+
+
+@kb_app.command("check-outbound")
+def kb_check_outbound(
+    file: str = typer.Argument(..., help="The draft to check (e.g. .scout-cache/outbound-draft.md)."),
+    surface: str = typer.Option(..., "--surface", help=_SURFACE_HELP),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help='Print {"ok": bool, "lines": [...]}.'),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check a draft bound for a surface for private content (spec §8.2 matchers).
+
+    Exit 0 (`ok`): it may go. Exit 1: it names or links a private note; prints
+    only the offending line numbers, never what matched. An owner-only surface
+    always passes. Exit 2: the file can't be read, or an agent reader.
+    """
+    args = _kb_args("check-outbound", dict(locals()))
+    from scout.kb.outbound import cmd_check_outbound
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_check_outbound(vault, who, file, surface))
+
+
+@kb_app.command("check-query")
+def kb_check_query(
+    text: str = typer.Argument(..., help="The query text, before it goes to a connector or web search."),
+    surface: str = typer.Option(..., "--surface", help=_SURFACE_HELP),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help='Print {"ok": bool}.'),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check a connector or web query for private content. Exit 1 (`blocked`) = don't send it.
+
+    Prints only `ok` or `blocked`. Exit 2: an agent reader.
+    """
+    args = _kb_args("check-query", dict(locals()))
+    from scout.kb.outbound import cmd_check_query
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_check_query(vault, who, text, surface))
+
+
+@kb_app.command("resolve")
+def kb_resolve(
+    name: str = typer.Argument(..., help="A name, alias or slug."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Map a name, alias or slug to its canonical file among visible notes. Exit 1 = no match."""
+    args = _kb_args("resolve", dict(locals()))
+    from scout.kb.read import cmd_resolve
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, vault: cmd_resolve(vault, g.reader, g, name))
+
+
+@kb_app.command("query")
+def kb_query(
+    type_: str | None = typer.Option(None, "--type", help="Entity type."),
+    status: str | None = typer.Option(None, "--status", help="Status."),
+    exclude_status: str | None = typer.Option(None, "--exclude-status", help="Comma-separated statuses to exclude."),
+    domain: str | None = typer.Option(None, "--domain", help="Domain."),
+    deadline_before: str | None = typer.Option(None, "--deadline-before", help="ISO date: deadline <= this."),
+    visibility: str | None = typer.Option(None, "--visibility", help="normal | private."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The ontology query (parser.py query), with the reader filter and labels."""
+    args = _kb_args("query", dict(locals()))
+    from scout.kb.read import cmd_query
+
+    if visibility not in (None, "normal", "private"):
+        visibility_error = typer.BadParameter("use normal or private", param_hint="--visibility")
+
+        def refuse(_who: str, _vault: Path) -> object:
+            raise visibility_error
+
+        _kb_run(args, reader, repo, as_json, refuse, kb_root)
+    filters = {
+        "type": type_,
+        "status": status,
+        "domain": domain,
+        "deadline_before": deadline_before,
+        "exclude_status": exclude_status,
+    }
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_query(g, filters, visibility))
+
+
+@kb_app.command("related")
+def kb_related(
+    name: str | None = typer.Argument(None, help="Entity name."),
+    name_opt: str | None = typer.Option(None, "--name", help="Entity name (parser.py spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Relationships from an entity, each target labelled."""
+    args = _kb_args("related", dict(locals()))
+    from scout.kb.read import cmd_related
+
+    target = name_opt or name
+    run = lambda g, _v: cmd_related(g, str(target))  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((target, "NAME"),))
+
+
+@kb_app.command("traverse")
+def kb_traverse(
+    name: str | None = typer.Argument(None, help="Start entity."),
+    name_opt: str | None = typer.Option(None, "--name", help="Start entity (parser.py spelling)."),
+    hops: int | None = typer.Option(None, "--hops", help="Max hops (default 2)."),
+    rels: str | None = typer.Option(None, "--rels", help="Comma-separated relationship types to follow."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Entities reachable from a start entity (BFS), each labelled."""
+    args = _kb_args("traverse", dict(locals()))
+    from scout.kb.read import cmd_traverse
+
+    start = name_opt or name
+    run = lambda g, _v: cmd_traverse(g, str(start), hops, rels)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((start, "NAME"),))
+
+
+@kb_app.command("path")
+def kb_path(
+    source: str | None = typer.Argument(None, help="Source entity."),
+    target: str | None = typer.Argument(None, help="Target entity."),
+    name_opt: str | None = typer.Option(None, "--name", help="Source entity (parser.py spelling)."),
+    to: str | None = typer.Option(None, "--to", help="Target entity (parser.py spelling)."),
+    hops: int | None = typer.Option(None, "--hops", help="Max hops (default 6)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The shortest typed path between two entities, each node labelled."""
+    args = _kb_args("path", dict(locals()))
+    from scout.kb.read import cmd_path
+
+    src, dst = name_opt or source, to or target
+    run = lambda g, _v: cmd_path(g, str(src), str(dst), hops)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((src, "SOURCE"), (dst, "TARGET")))
+
+
+@kb_app.command("entity")
+def kb_entity(
+    name: str | None = typer.Argument(None, help="Entity name."),
+    name_opt: str | None = typer.Option(None, "--name", help="Entity name (parser.py spelling)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """One entity's frontmatter as JSON, with its _label (parser.py entity)."""
+    args = _kb_args("entity", dict(locals()))
+    from scout.kb.read import cmd_entity
+
+    target = name_opt or name
+    run = lambda g, _v: cmd_entity(g, str(target))  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((target, "NAME"),))
+
+
+@kb_app.command("name-lookup")
+def kb_name_lookup(
+    token: str | None = typer.Argument(None, help="Name token."),
+    token_opt: str | None = typer.Option(None, "--token", help="Name token (parser.py spelling)."),
+    threshold: float = typer.Option(0.7, "--threshold", help="Fuzzy cutoff (0.0-1.0)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Resolve a transcribed name against people and aliases (parser.py name_lookup), labelled."""
+    args = _kb_args("name-lookup", dict(locals()))
+    from scout.kb.read import cmd_name_lookup
+
+    tok = token_opt or token
+    run = lambda g, _v: cmd_name_lookup(g, str(tok), threshold)  # noqa: E731
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((tok, "TOKEN"),))
+
+
+@kb_app.command("export")
+def kb_export(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """The whole graph as JSON, each entity with its _label (parser.py export)."""
+    args = _kb_args("export", dict(locals()))
+    from scout.kb.read import cmd_export
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_export(g))
+
+
+@kb_app.command("stats")
+def kb_stats(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Entity and relationship counts (parser.py stats)."""
+    args = _kb_args("stats", dict(locals()))
+    from scout.kb.read import cmd_stats
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_stats(g))
+
+
+@kb_app.command("validate")
+def kb_validate(
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Check entities against the schema (parser.py validate), each error labelled."""
+    args = _kb_args("validate", dict(locals()))
+    from scout.kb.read import cmd_validate
+
+    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_validate(g))
 
 
 # Top-level command — `connector-health-report` is a script, not a hook
@@ -421,6 +914,11 @@ def pre_session_data_cmd(
     from scout.scripts.pre_session_data import main as psd_main
 
     raise typer.Exit(psd_main(session_type))
+
+
+def _read_text_arg(path: str | Path) -> str:
+    """The UTF-8 text of a file argument; ``-`` reads stdin."""
+    return sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
 
 
 def _register_connectors() -> None:
@@ -688,8 +1186,7 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import Outcome
 
         try:
-            text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8")
-            return _yaml.safe_load(text), None
+            return _yaml.safe_load(_read_text_arg(file)), None
         except (OSError, UnicodeDecodeError, _yaml.YAMLError) as e:
             return None, Outcome("invalid", issues=[Issue("definition", f"could not be read: {e}")])
 
@@ -1651,10 +2148,23 @@ def _register_notify() -> None:
             "--tier",
             help="info (silent) | action_required (loud)",
         ),
-        body: str = typer.Option(
-            ...,
+        body: str | None = typer.Option(
+            None,
             "--body",
-            help="Message body. Newlines preserved.",
+            help="Message body. Newlines preserved. Exactly one of --body / --body-file.",
+        ),
+        body_file: Path | None = typer.Option(
+            None,
+            "--body-file",
+            help="Read the message body from this UTF-8 file ('-' = stdin) instead of --body (keeps it off the shell).",
+        ),
+        parse_mode: str = typer.Option(
+            "none",
+            "--parse-mode",
+            help=(
+                "none (plain text) | html (Telegram HTML: <b> <i> <u> <s> <a href> <code> <pre> "
+                "<blockquote>; escape <, >, & in text). A body Telegram can't parse is resent as plain text."
+            ),
         ),
         dry_run: bool = typer.Option(
             False,
@@ -1677,12 +2187,25 @@ def _register_notify() -> None:
         import requests as _requests
 
         from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import DuplicateSendError, send
+        from scout.scripts.notify_telegram import DuplicateSendError, OutboundBlockedError, send
+
+        if body is not None and body_file is None:
+            text = body
+        elif body is None and body_file is not None:
+            try:
+                text = _read_text_arg(body_file)
+            except (OSError, UnicodeDecodeError) as e:
+                typer.echo(f"scoutctl notify telegram: could not read --body-file {body_file}: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        else:
+            typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
+            raise typer.Exit(code=1)
 
         try:
             ev = send(
                 tier=tier,
-                body=body,
+                body=text,
+                parse_mode=parse_mode,
                 dry_run=dry_run,
                 allow_duplicate=allow_duplicate,
                 receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
@@ -1697,6 +2220,9 @@ def _register_notify() -> None:
                 err=True,
             )
             raise typer.Exit(code=DuplicateSendError.exit_code) from e
+        except OutboundBlockedError as e:
+            typer.echo(f"scoutctl notify telegram: {e}", err=True)
+            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
         except _ConfigError as e:
             # Map ScoutError exit codes at the command boundary so the CLI
             # surface stays consistent with cli.main()'s ScoutError handler.
@@ -2160,6 +2686,112 @@ def _register_bootstrap() -> None:
                 typer.echo(f"resolved: {r.name} — sidecar removed; the next upgrade merges it again")
         raise typer.Exit(code=1 if failed else 0)
 
+    @bootstrap_app.command("privacy-migrate")
+    def cli_bootstrap_privacy_migrate(
+        set_private: list[str] = typer.Option(
+            [],
+            "--set-private",
+            help="Rewrite this note's non-standard visibility: value to `private` (only that line). Repeatable.",
+        ),
+        local_only: list[str] = typer.Option(
+            [],
+            "--local-only",
+            help="Add this glob (e.g. 'trading/**') to scout-config.yaml → privacy.local_only_add. Repeatable.",
+        ),
+        accept: bool = typer.Option(
+            False,
+            "--accept",
+            help="Record that the owner has answered every proposal (.scout-state/privacy-migrate.json).",
+        ),
+        json_out: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Per-note privacy migration (#453). Without options: a read-only report.
+
+        Lists notes whose visibility: value isn't normal/private (they already
+        count as private), lines of shared files that link or name a private
+        note (file and line only), and trading/brokerage folders to keep on this
+        computer, plus whether the owner's consent is recorded and current.
+        --set-private and --local-only make the changes the owner agreed to;
+        --accept (on its own) records that the owner has answered every
+        proposal, which hosts such as Agnes check before linking the vault. All
+        three refuse a scheduled or autonomous caller (exit 2). Exit 1 when a
+        --set-private note was refused or the report for --accept failed. A
+        reader other than owner or autonomous (SCOUT_READER=agent:…) gets exit 2
+        and no output.
+        """
+        import json as _json
+        import os as _os
+
+        from scout import paths as _paths
+        from scout.kb.privacy import FULL_READERS
+        from scout.kb.reader import resolve_reader
+        from scout.scripts import privacy_migrate as pm
+
+        # The report names private notes' paths: an agent reader gets nothing at all.
+        if resolve_reader(None, _os.environ) not in FULL_READERS:
+            raise typer.Exit(2)
+
+        vault = _paths.data_dir()
+        if not set_private and not local_only and not accept:
+            rep = pm.report(vault)
+            accepted = pm.acceptance(vault, rep)
+            if json_out:
+                typer.echo(_json.dumps({**rep.to_json(), "accepted": accepted}, indent=2, sort_keys=True))
+            else:
+                for line in rep.lines():
+                    typer.echo(line)
+                typer.echo(pm.acceptance_line(accepted))
+            raise typer.Exit(0)
+
+        why = pm.headless_reason(_os.environ)
+        if why:
+            typer.echo(
+                f"refused: {why}. Only the owner, in an interactive /scout-update, may change notes, "
+                "the privacy overlay or the privacy consent; nothing was changed.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+        if accept:
+            if set_private or local_only:
+                typer.echo("refused: run --accept on its own, after the other changes; nothing was changed.", err=True)
+                raise typer.Exit(2)
+            try:
+                marker = pm.accept(vault)
+            except Exception as e:  # the report or the write failed: no marker
+                typer.echo(
+                    f"refused: the privacy migration report couldn't be computed or recorded "
+                    f"({type(e).__name__}); nothing was recorded.",
+                    err=True,
+                )
+                raise typer.Exit(1) from e
+            if json_out:
+                typer.echo(_json.dumps(marker, indent=2, sort_keys=True))
+            else:
+                typer.echo(f"accepted: privacy migration consent recorded at {marker['accepted_at']}")
+            raise typer.Exit(0)
+
+        outcomes: list[dict[str, str]] = []
+        added: list[str] = []
+        try:
+            for path in set_private:
+                outcome, reason = pm.set_private(vault, path)
+                outcomes.append({"path": path, "outcome": outcome, "reason": reason})
+            if local_only:
+                added = pm.add_local_only(vault, local_only)
+        except ValueError as e:
+            typer.echo(f"refused: {e}", err=True)
+            raise typer.Exit(2) from e
+        if json_out:
+            typer.echo(_json.dumps({"set_private": outcomes, "local_only_added": added}, indent=2, sort_keys=True))
+        else:
+            for o in outcomes:
+                tail = f" — {o['reason']}" if o["reason"] else ""
+                typer.echo(f"{o['outcome']}: {o['path']}{tail}", err=o["outcome"] == "refused")
+            for g in local_only:
+                typer.echo(f"{'added' if g.strip() in added else 'already local-only'}: {g.strip()}")
+        raise typer.Exit(1 if any(o["outcome"] == "refused" for o in outcomes) else 0)
+
     @bootstrap_app.command("doctor")
     def cli_bootstrap_doctor(
         no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip launchd registration check"),
@@ -2498,10 +3130,17 @@ def _register_bootstrap() -> None:
         cfg = _vault_bootstrap_config(vault)
         renders = {r.file.vault_rel: r for r in managed_renders(cfg)}
         rows = vault_drift.report(vault, {rel: r.text for rel, r in renders.items()})
+        privacy = vault_drift.privacy_drift(vault)
 
         if json_out:
             files = [row.to_json() for row in rows]
-            typer.echo(_json.dumps({"schema_version": 1, "vault": str(vault), "files": files}, indent=2))
+            payload = {
+                "schema_version": 1,
+                "vault": str(vault),
+                "files": files,
+                "privacy": [finding.to_json() for finding in privacy],
+            }
+            typer.echo(_json.dumps(payload, indent=2))
             return
 
         if patch:
@@ -2561,6 +3200,10 @@ def _register_bootstrap() -> None:
             )
             return
 
+        if privacy:
+            typer.echo(f"privacy drift — {len(privacy)} vault file(s) read the vault around the privacy labels:")
+            for finding in privacy:
+                typer.echo(f"  {finding.rule:<18} {finding.path}  {finding.message}")
         if not rows:
             typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
             return
@@ -2573,8 +3216,11 @@ def _register_bootstrap() -> None:
             typer.echo("turn the edits into a plugin PR: scoutctl bootstrap drift --patch > fix.patch")
 
 
-def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
-    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed)."""
+def _vault_bootstrap_config(vault: Path, *, plugin_root: Path | None = None) -> BootstrapConfig:
+    """A BootstrapConfig for ``vault`` from its scout-config.yaml (exit 2 if absent; ConfigError's if malformed).
+
+    ``plugin_root`` defaults to this engine's own plugin dir.
+    """
     import yaml as _yaml
 
     from scout import __version__
@@ -2584,7 +3230,9 @@ def _vault_bootstrap_config(vault: Path) -> BootstrapConfig:
         typer.echo(f"no vault at {vault} — run /scout-setup", err=True)
         raise typer.Exit(code=2)
     try:
-        return config_from_vault(vault, plugin_root=Path(__file__).parent.parent.parent, plugin_version=__version__)
+        return config_from_vault(
+            vault, plugin_root=plugin_root or Path(__file__).parent.parent.parent, plugin_version=__version__
+        )
     except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
         typer.echo(f"scout-config.yaml is malformed: {e}", err=True)
         raise typer.Exit(code=ConfigError.exit_code) from e
@@ -2604,6 +3252,12 @@ def _register_phases() -> None:
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
         vault_opt: str = typer.Option("", "--vault", help="Vault path (default: the resolved Scout data dir)"),
+        plugin_root_opt: str = typer.Option(
+            "",
+            "--plugin-root",
+            help="Plugin dir of the checkout to read and write phases/ in, e.g. a clone under "
+            "~/.scout-worktrees/<name>/plugin (default: this engine's own)",
+        ),
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
@@ -2612,26 +3266,40 @@ def _register_phases() -> None:
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
         sidecaring. Default is a read-only report; --apply writes the ✓ hunks.
-        Never commits, pushes, or opens a PR — the operator does that.
+        --apply refuses to write into the engine scheduled runs use (the engine
+        pointer's root): pass --plugin-root to a separate clone instead. Never
+        commits, pushes, or opens a PR — the operator does that.
         """
         from scout import paths as _paths
+        from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
         from scout.scripts.phase_backport import (
-            apply_section_edits,
-            apply_to_phase_text,
             build_rendered_sections,
+            bundle_files,
+            bundle_privacy_hits,
+            combine_applied,
             plan_backport,
         )
 
         vault = Path(vault_opt).expanduser() if vault_opt else _paths.data_dir()
-        cfg = _vault_bootstrap_config(vault)
-        vars_ = _template_vars(cfg)
+        plugin_root = Path(plugin_root_opt).expanduser() if plugin_root_opt else None
+        if plugin_root is not None and not (plugin_root / "phases").is_dir():
+            typer.echo(f"scoutctl phases backport: {plugin_root} has no phases/ directory", err=True)
+            raise typer.Exit(code=2)
+        cfg = _vault_bootstrap_config(vault, plugin_root=plugin_root)
         phases_root = cfg.plugin_root / "phases"
+        if apply and (why := refuse_live_engine_write(phases_root, home=Path.home())):
+            typer.echo(f"scoutctl phases backport: {why}", err=True)
+            raise typer.Exit(code=2)
+        vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
         kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
-        total_applied = 0
+
+        # Plan every kind once. A hunk in a core fragment shows up in each brain
+        # file that assembles it; the bundle applies it once.
+        plans: list[tuple[str, list, list]] = []
         for k in kinds:
             snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
             if not snap.exists() or not live.exists():
@@ -2639,9 +3307,34 @@ def _register_phases() -> None:
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
                 continue
             sections = build_rendered_sections(
-                phases_root, k, vars_, cfg.enabled_connectors, custom=custom, inputs=cfg.connector_inputs
+                phases_root,
+                k,
+                vars_,
+                cfg.enabled_connectors,
+                custom=custom,
+                inputs=cfg.connector_inputs,
+                wrap_channels=cfg.wrap_channels,
             )
             results = plan_backport(snap.read_text(encoding="utf-8"), live.read_text(encoding="utf-8"), sections, vars_)
+            plans.append((k, sections, results))
+        all_applied = combine_applied([[r for r in results if r.status == "applied"] for _k, _s, results in plans])
+        bundle = bundle_files(all_applied, [s for _k, sections, _r in plans for s in sections])
+
+        # The plugin repo is public (#453, spec §8.4): a bundle naming a private
+        # note is refused, dry run or not, before anything is reported or written.
+        refused = bundle_privacy_hits(vault, bundle)
+        if refused:
+            typer.echo(
+                "scoutctl phases backport: refused — the back-port names a private note of this vault, and the "
+                "plugin repo is public. Remove it from the vault's brain file (or genericize it) and re-run:",
+                err=True,
+            )
+            for pf, lines in refused:
+                where = ("lines " if len(lines) > 1 else "line ") + ", ".join(str(n) for n in lines)
+                typer.echo(f"  {pf}: {where} (as it would be written)", err=True)
+            raise typer.Exit(code=1)
+
+        for k, _sections, results in plans:
             applied = [r for r in results if r.status == "applied"]
             review = [r for r in results if r.status == "needs-review"]
             unmapped = [r for r in results if r.status == "unmapped"]
@@ -2660,31 +3353,11 @@ def _register_phases() -> None:
                 snippet = (r.added[0][:60] + "…") if r.added else ""
                 typer.echo(f"  ✗ unmapped     {r.reason}  «{snippet}»")
 
-            if apply and applied:
-                sec_by_key = {(s.phase_file, s.section_name): s for s in sections}
-                by_file: dict[Path, list] = {}
-                for r in applied:
-                    # applied hunks always round-tripped into a fragment, so
-                    # phase_file is set; narrow the Path | None for the type checker.
-                    if r.phase_file is None:
-                        continue
-                    by_file.setdefault(r.phase_file, []).append(r)
-                for pf, rs in by_file.items():
-                    text = pf.read_text(encoding="utf-8")
-                    by_section: dict[str, list] = {}
-                    for r in rs:
-                        by_section.setdefault(r.section_name, []).append(r)
-                    for section_name, srs in by_section.items():
-                        sec = sec_by_key[(pf, section_name)]
-                        # applied hunks always carry a resolved anchor + retemplatized
-                        # body; assert the invariant so it's explicit (and type-safe).
-                        edits = [(r.anchor, r.retemplatized) for r in srs]
-                        assert all(a is not None and t is not None for a, t in edits)
-                        edited_body = apply_section_edits(sec.raw_body, sec.rendered_body, edits)
-                        text = apply_to_phase_text(text, sec.raw_body, edited_body)
-                    pf.write_text(text, encoding="utf-8")
-                    typer.echo(f"  → wrote {pf}")
-                total_applied += len(applied)
+        total_applied = len(all_applied) if apply else 0
+        if apply:
+            for pf, (_old, text) in bundle.items():
+                pf.write_text(text, encoding="utf-8")
+                typer.echo(f"  → wrote {pf}")
 
         if apply:
             typer.echo(
@@ -2865,6 +3538,11 @@ def setup_cmd(
         help="Install each stable release automatically (engines set up by install.sh or Claude Code). "
         "Default: ask, or on with --yes.",
     ),
+    no_jobs: bool = typer.Option(
+        False,
+        "--no-jobs",
+        help="Register no launchd/cron jobs (passed to `bootstrap auto --no-jobs`): for sandboxes and containers.",
+    ),
 ) -> None:
     """Set up Scout in a terminal: your details, connectors, the vault, the schedule."""
     import os
@@ -2899,8 +3577,149 @@ def setup_cmd(
         claude_bin=claude_bin,
         yes=yes,
         auto_update=auto_update,
+        no_jobs=no_jobs,
     )
     raise typer.Exit(code=run_setup(opts, prompter, default_deps(claude_bin)))
+
+
+def _register_repo() -> None:
+    repo_app = typer.Typer(
+        help="Sync this vault with your Agnes Personal Knowledge Repository; local-only paths stay on this computer."
+    )
+    app.add_typer(repo_app, name="repo")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _done(result: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.repo_sync import Result
+
+        assert isinstance(result, Result)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        for note in result.notes:
+            typer.echo(note)
+        if result.replayed:
+            typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
+        if result.action != "unlink":
+            typer.echo(
+                f"pushed {len(result.pushed)} commit(s)"
+                + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
+                + (f"; {result.stripped} local-only file(s) kept on this computer" if result.stripped else "")
+            )
+
+    @repo_app.command("link")
+    def cli_repo_link(
+        agnes_url: str = typer.Option(..., "--agnes-url", help="Your Agnes instance, e.g. https://agnes.example.com"),
+        token_file: Path | None = typer.Option(
+            None, "--token-file", help="A file holding your Agnes personal access token. Default: ask for it."
+        ),
+        confirm_sync: list[str] = typer.Option(
+            [],
+            "--confirm-sync",
+            help="Sync this trading-looking path anyway, exactly as link lists it (e.g. TRADING.md). Repeatable.",
+        ),
+        replace_remote: bool = typer.Option(
+            False, "--replace-remote", help="The Agnes repository has history: put this vault's HEAD on top of it."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link this vault to your Agnes Personal Knowledge Repository and push its first snapshot.
+
+        Refuses a vault that hasn't been through /scout-update's privacy step, an
+        unreadable scout-config.yaml, and trading-looking paths that aren't
+        local-only or confirmed. Turns OTLP content export off for the vault.
+        """
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, link, save_token
+
+        vault = _paths.data_dir()
+        try:
+            if token_file is not None:
+                token = token_file.expanduser().read_text(encoding="utf-8").strip()
+            else:
+                token = typer.prompt("Agnes personal access token", hide_input=True).strip()
+            if not token:
+                raise RepoSyncError("token_missing", "refused: no token given")
+            result = link(
+                vault,
+                AgnesHost(agnes_url, token),
+                agnes_url=agnes_url,
+                confirm_sync=confirm_sync,
+                replace_remote=replace_remote,
+            )
+            save_token(vault, token)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except OSError as e:
+            _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), as_json)
+        _done(result, as_json)
+
+    @repo_app.command("sync")
+    def cli_repo_sync(
+        confirm_sync: list[str] = typer.Option(
+            [], "--confirm-sync", help="Sync this trading-looking path anyway, exactly as listed. Repeatable."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Replay commits made in Agnes onto this vault, then push this vault's new commits (filtered).
+
+        Refuses while scoutctl kb policy warns privacy-overlay-unreadable.
+        Never pushes a local-only path: the union of this vault's effective
+        policy and the list Agnes keeps for you.
+        """
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token, sync
+
+        vault = _paths.data_dir()
+        try:
+            state = load_state(vault)
+            if state is None:
+                raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
+            host = AgnesHost(state.agnes_url, load_token(vault))
+            result = sync(vault, host, confirm_sync=confirm_sync, progress=lambda m: typer.echo(m, err=True))
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _done(result, as_json)
+
+    @repo_app.command("unlink")
+    def cli_repo_unlink(
+        delete_remote: bool = typer.Option(
+            False, "--delete-remote", help="Also delete the repository on Agnes (it can't be undone)."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Forget the link on this computer: the commit map, the stored token and the mirror refs."""
+        from scout import paths as _paths
+        from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token, unlink
+
+        vault = _paths.data_dir()
+        try:
+            host = None
+            if delete_remote:
+                state = load_state(vault)
+                if state is None:
+                    raise RepoSyncError("not_linked", "refused: this vault isn't linked")
+                host = AgnesHost(state.agnes_url, load_token(vault))
+            result = unlink(vault, host, delete_remote=delete_remote)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _done(result, as_json)
+
+
+_register_repo()
 
 
 def main() -> None:

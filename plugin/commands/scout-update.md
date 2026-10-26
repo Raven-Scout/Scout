@@ -292,6 +292,53 @@ If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKI
   templated, so upgrades leave them untouched — and every upgrade re-renders the
   custom connectors' sections from the current templates.
 
+## Step 3b: Per-note privacy — legacy markers and local-only trading paths
+
+First tell the user, in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by them and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by default, with no line needed (`visibility: normal` on one of them opts it out). `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `scoutctl kb policy` shows the effective policy, including the paths that never leave this computer.
+
+Then read the migration report. It never changes anything:
+
+```bash
+NEW_ROOT=""
+if [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin"           # legacy single-repo scout-plugin clone
+elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude-plugin/plugin.json" ]; then
+  NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
+fi
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+[ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
+NEW_ROOT="${NEW_ROOT%/}"
+[ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
+SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
+"$SCOUTCTL" bootstrap privacy-migrate --json
+```
+
+It has three lists. Skip any that is empty; if all are, say "No privacy migration needed."
+
+- `visibility_values`: notes whose `visibility:` line holds something other than `normal`/`private` (`PRIVATE while drafting`, `secret`). They already count as private. Ask the user about **each note separately** ("`<path>` has a non-standard `visibility:` value and is treated as private. Rewrite it to `visibility: private`?"). Only for a yes, run `"$SCOUTCTL" bootstrap privacy-migrate --set-private '<path>'`; it changes that one line and nothing else. A `refused:` line names why (a value over several lines, say): tell the user to edit that line by hand. Never offer to rewrite a value to `normal`, and never add a `visibility:` line to a note that has none.
+- `private_links`: shared files (`drafts/`, anything meant to leave) that link or name a private note, by line number. Read the lines to the user by number only and suggest removing the reference, or adding `%%privacy:allow <slug>%%` on that line when it is meant. Don't edit these files yourself.
+- `local_only_proposals`: folders that look like trading or brokerage data (`trading/**`). Local-only paths never leave this computer: no sync, no cloud run reads them. Ask about **each path separately** ("Keep `<glob>` on this computer only?"). Only for a yes, run `"$SCOUTCTL" bootstrap privacy-migrate --local-only '<glob>'`; it appends to `scout-config.yaml → privacy.local_only_add` and keeps every comment. A no writes nothing, so the next update asks again. The user can add any other path the same way.
+
+When the user has answered every note and path above (or all three lists were empty), run `"$SCOUTCTL" bootstrap privacy-migrate --accept` to record their consent, which hosts such as Agnes check before linking the vault.
+
+Run these writes only while the user is here answering. A scheduled run, the app or a self-update gets this report on stderr from `bootstrap upgrade` and changes nothing; `--set-private` and `--local-only` refuse them.
+
+## Step 3c: Wrap channels (Slack and Telegram)
+
+Read `~/Scout/scout-config.yaml`. Skip this step unless `connectors.enabled` lists both `slack` and `telegram`.
+
+- If there is no `notify.wrap_channels`, tell the user once: every run's wrap notification now goes to both channels, a Slack DM (non-private items only) and their private Telegram chat. In 0.18.3, Telegram replaced the Slack DM instead. Ask whether to keep both, or to send the wrap only to Telegram (as in 0.18.3) or only to Slack. For a one-channel answer, add this block with the Edit tool, keeping everything else in the file, and then run Step 2's `bootstrap upgrade` again so the brain files drop the other channel's section:
+
+  ```yaml
+  notify:
+    wrap_channels: [telegram]   # or [slack]
+  ```
+
+- If `notify.wrap_channels` is set, say which channels get the wrap and move on.
+
+If Step 2's upgrade failed with a `notify.wrap_channels` error, the value is misspelt or empty. Only `slack` and `telegram` are accepted. Fix it with the user, then re-run the upgrade.
+
 ## Step 4: Offer the tools Scout doesn't read yet
 
 ```bash

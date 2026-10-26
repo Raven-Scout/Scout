@@ -32,6 +32,11 @@ Usage:
 The vault is $SCOUT_DATA_DIR, or else the directory this script is installed in
 (<vault>/scripts/). Read-only: it never writes KB files, only stdout and --out.
 Standard library only, so it runs under any python3.
+
+Privacy (#453): each row carries its file's `visibility`, from the Scout engine
+(in process, else `scoutctl kb files --json`); a private file is listed as
+`[private] <path>`. Without either, rows are `unknown` and marked [private]. A
+reader that sees nothing (SCOUT_READER=agent:...) gets no rows.
 """
 
 from __future__ import annotations
@@ -97,6 +102,77 @@ CLAIM_AHEAD_DAYS = 3
 CLAIM_SCAN_LINES = 40
 
 STATUSES = ("ok", "stale", "very-stale", "untracked")
+
+
+# ----- privacy labels (#453) ---------------------------------------------------
+# Every row carries its file's visibility from the Scout engine's classifier:
+# in process when this Python can import the engine, else from
+# `scoutctl kb files --json` (SCOUTCTL_BIN, then PATH). With neither, every row
+# is `unknown` and printed as [private]: fail closed, never silently unlabelled.
+
+
+def reader_sees_nothing() -> bool:
+    """True when SCOUT_READER names a reader that may see no file (an agent, or
+    a malformed value). Mirrors scout.kb.reader.resolve_reader (spec §6.2):
+    only `owner` and `autonomous` see the vault."""
+    reader = os.environ.get("SCOUT_READER")
+    return reader is not None and reader not in ("owner", "autonomous")
+
+
+def visibility_map(vault: Path, globs: list) -> "dict | None":
+    """{vault-relative path: "normal" | "private"} for the files matching `globs`,
+    or None when no label source works (the caller marks every row unknown)."""
+    try:
+        from scout.kb.read import visible_files
+        from scout.kb.reader import resolve_reader
+    except ImportError:
+        pass
+    else:
+        try:
+            reader = resolve_reader(None, os.environ)
+            return {rel: label.visibility for rel, label in visible_files(vault, reader, globs)}
+        except Exception:
+            return None
+    import shutil
+
+    scoutctl = os.environ.get("SCOUTCTL_BIN") or shutil.which("scoutctl")
+    if not scoutctl:
+        return None
+    argv = [scoutctl, "kb", "files", "--json", "--repo", str(vault)]
+    for glob in globs:
+        argv += ["--glob", glob]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+        rows = json.loads(proc.stdout) if proc.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    out = {}
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            label = row.get("label") if isinstance(row.get("label"), dict) else {}
+            out[row["path"]] = "normal" if label.get("visibility") == "normal" else "private"
+    return out
+
+
+def row_visibility(labels: "dict | None", rel: str) -> str:
+    """A row's visibility: its label, `private` when the label source skipped it, `unknown` with no source."""
+    if labels is None:
+        return "unknown"
+    return labels.get(rel, "private")
+
+
+def private_mark(visibility: str) -> str:
+    return "" if visibility == "normal" else "[private] "
+
+
+def warn_unlabelled(script: str) -> None:
+    print(
+        f"{script}: can't read privacy labels (the Scout engine isn't importable here and scoutctl wasn't "
+        "found or failed); every row is marked [private]. Put scoutctl on PATH or set SCOUTCTL_BIN.",
+        file=sys.stderr,
+    )
 
 
 def vault_dir() -> Path:
@@ -241,12 +317,18 @@ def classify_divergence(commit_day: date, claimed: date | None) -> tuple[str, in
 def scan(vault: Path, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     kb = vault / "knowledge-base"
+    if reader_sees_nothing() or not kb.is_dir():
+        return []
+    labels = visibility_map(vault, ["knowledge-base/**"])
+    if labels is None:
+        warn_unlabelled("vault-freshness")
     commits = last_commits(vault)
     rows: list[dict] = []
-    for path in sorted(kb.rglob("*.md")) if kb.is_dir() else []:
+    for path in sorted(kb.rglob("*.md")):
         if not is_ranked(path.relative_to(kb).parts):
             continue
         rel = path.relative_to(vault).as_posix()
+        visibility = row_visibility(labels, rel)
         budget = freshness_hours(path, vault)
         commit = commits.get(rel)
         if commit is None:
@@ -262,6 +344,7 @@ def scan(vault: Path, now: datetime | None = None) -> list[dict]:
                     "claimed_date": None,
                     "divergence": "no-claim",
                     "claim_delta_days": 0,
+                    "visibility": visibility,
                 }
             )
             continue
@@ -288,6 +371,7 @@ def scan(vault: Path, now: datetime | None = None) -> list[dict]:
                 "claimed_date": claimed.isoformat() if claimed else None,
                 "divergence": divergence,
                 "claim_delta_days": delta,
+                "visibility": visibility,
             }
         )
     # Most overdue first; untracked files have no age to rank on and go last.
@@ -302,6 +386,10 @@ DIVERGENCE_LABEL = {
 }
 
 
+def _file_cell(row: dict) -> str:
+    return private_mark(row.get("visibility", "unknown")) + row["file"]
+
+
 def render_table(rows: list[dict]) -> str:
     lines = [
         "| File | Last commit | Age | Budget | Overdue | Status |",
@@ -309,12 +397,12 @@ def render_table(rows: list[dict]) -> str:
     ]
     for r in rows:
         if r["age_hours"] is None:
-            lines.append(f"| {r['file']} | — | — | {r['budget_hours']}h | — | {BADGE[r['status']]} |")
+            lines.append(f"| {_file_cell(r)} | — | — | {r['budget_hours']}h | — | {BADGE[r['status']]} |")
             continue
         over_d = r["overdue_hours"] / 24
         over = f"+{over_d:.1f}d" if r["overdue_hours"] > 0 else f"{over_d:.1f}d"
         lines.append(
-            f"| {r['file']} | {r['last_commit']} (`{r['hash']}`) | {r['age_hours'] / 24:.1f}d "
+            f"| {_file_cell(r)} | {r['last_commit']} (`{r['hash']}`) | {r['age_hours'] / 24:.1f}d "
             f"| {r['budget_hours'] // 24 or 1}d | {over} | {BADGE[r['status']]} |"
         )
     return "\n".join(lines)
@@ -328,7 +416,7 @@ def render_divergence_table(rows: list[dict]) -> str:
     for r in rows:
         d = r["claim_delta_days"]
         lines.append(
-            f"| {r['file']} | {r['claimed_date']} | {r['last_commit']} (`{r['hash']}`) "
+            f"| {_file_cell(r)} | {r['claimed_date']} | {r['last_commit']} (`{r['hash']}`) "
             f"| {'+' if d > 0 else ''}{d}d | {DIVERGENCE_LABEL[r['divergence']]} |"
         )
     return "\n".join(lines)

@@ -75,6 +75,13 @@ fi
 # telemetry is ever written (#192, #121).
 export SCOUT_MODE="$MODE"
 
+# A scheduled run reads the vault as the `autonomous` reader (#453, spec §6.2):
+# it sees every note, each labelled, and the privacy phase rule keeps private
+# content off shared surfaces. Set explicitly rather than left to the
+# SCOUT_MODE fallback, so the pre-session caches and every `scoutctl kb` call
+# in the session are labelled for that reader.
+export SCOUT_READER=autonomous
+
 # The prompt instructs Claude to read SKILL.md and execute it
 PROMPT="You are {{INSTANCE_NAME}}, an autonomous knowledge management system. Your working directory is {{SCOUT_DIR}}.
 
@@ -82,7 +89,7 @@ Step 1: Read {{SCOUT_DIR}}/SKILL.md in full.
 Step 2: Your run mode is \`$MODE\` (the dispatcher's slot key). Find the matching row of the Run Modes table near the top of SKILL.md and follow it. If the mode is \`manual\`, derive the closest mode from the current day and hour, then follow that row.
 Step 3: Execute the SKILL.md instructions completely — all steps/phases in order.
 Step 4: Commit results to git.
-Step 5: If anything material changed, send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing what was found and changed.
+Step 5: If anything material changed, send the wrap notification summarizing what was found and changed, as SKILL.md's notification sections direct: they name the channel and recipient. Send every notification section SKILL.md has (in a stock install, Slack Notification and, when Telegram is set up, Telegram Notification as well; the vault's notify.wrap_channels setting decides which are there). Do not assume Slack: {{USER_NAME}} may have moved the wrap off Slack on purpose, for example because it is an employer-controlled workspace and runs carry personal content, and this prompt must not contradict that. If SKILL.md has no notification section, send nothing and say so in your final message.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).

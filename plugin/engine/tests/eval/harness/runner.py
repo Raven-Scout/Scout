@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -26,14 +27,15 @@ from .checks.daily import body_budget, context_note, no_collapse, waiting_format
 from .checks.demotion import demotion
 from .checks.no_drop import no_drop
 from .checks.placement import placement
+from .checks.privacy_canary import PrivacyOutputs, owner_surfaces_required, privacy_canary, privacy_hygiene
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
 from .mcp_config import write_mcp_config
-from .metrics import SampleMetrics, metrics_from_dict, parse_stream
+from .metrics import SampleMetrics, ToolCall, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
 from .scenario import Scenario
 
-DEFAULT_TIMEOUT_S = 1200
+DEFAULT_TIMEOUT_S = 1800  # a busy consolidation on a slow network ran past 1200 s (#84)
 DEFAULT_BUDGET = "3"
 HOOK_GRACE_S = 300  # the runner's own pre- and post-session steps
 # The shell steps phases run (live samples' denials named echo, mkdir and python). The
@@ -200,14 +202,92 @@ def read_outputs(vault: Path, calls_log: Path, today: date) -> RunOutputs:
     return RunOutputs(notes, "\n".join(wraps) if wraps else None, run_notes, review_added, calls)
 
 
+OUTBOUND_DRAFT = ".scout-cache/outbound-draft.md"  # phases/core/privacy.md
+
+
+class GitReadError(Exception):
+    """git couldn't answer; never read as "nothing changed"."""
+
+
+def _git_lines(vault: Path, *args: str) -> list[str]:
+    done = subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise GitReadError(f"git {' '.join(args)}: exit {done.returncode}: {done.stderr.strip()[:200]}")
+    return [line for line in done.stdout.split("\n") if line]
+
+
+def drafts_changed(vault: Path) -> dict[str, str] | None:
+    """``drafts/`` files this run added or changed (committed or not), against the fixture commit.
+
+    None when git can't say, so the check scores it as unknown rather than as no change.
+    """
+    try:
+        root = _git_lines(vault, "rev-list", "--max-parents=0", "HEAD")
+        if not root:
+            return None
+        changed = _git_lines(vault, "diff", "--name-only", root[0], "--", "drafts")
+        changed += _git_lines(vault, "ls-files", "--others", "--exclude-standard", "--", "drafts")
+    except GitReadError:
+        return None
+    return {rel: (vault / rel).read_text(encoding="utf-8", errors="replace") for rel in sorted(set(changed))
+            if (vault / rel).is_file()}  # fmt: skip
+
+
+def read_privacy_outputs(
+    vault: Path, calls_log: Path, today: date, transcript: Sequence[ToolCall] = ()
+) -> PrivacyOutputs:
+    rows: list[dict[str, Any]] = []
+    if calls_log.exists():
+        for line in calls_log.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    daily = vault / "action-items" / f"action-items-{today.isoformat()}.md"
+    draft = vault / OUTBOUND_DRAFT
+    return PrivacyOutputs(
+        daily=daily.read_text(encoding="utf-8") if daily.is_file() else None,
+        telegram=tuple(str((r.get("args") or {}).get("body", "")) for r in rows if r.get("persona") == "telegram"),
+        slack_draft=draft.read_text(encoding="utf-8") if draft.is_file() else None,
+        connector_calls=tuple(r for r in rows if r.get("persona") != "telegram"),
+        drafts_changed=drafts_changed(vault),
+        transcript=tuple(transcript),
+    )
+
+
+def _score_one(
+    name: str, scenario: Scenario, vault: Path, today: date, calls_log: Path, transcript: Sequence[ToolCall]
+) -> CheckResult:
+    """The privacy checks, which read only what a run sent and ran (and the daily file, when its mode owns it)."""
+    if name == "privacy_hygiene":
+        return privacy_hygiene(transcript)
+    return privacy_canary(
+        read_privacy_outputs(vault, calls_log, today, transcript), scenario.permit_canary, scenario.mode
+    )
+
+
 def _score(
-    scenario: Scenario, vault: Path, today: date, yesterday: list[ActionItem], calls_log: Path
+    scenario: Scenario,
+    vault: Path,
+    today: date,
+    yesterday: list[ActionItem],
+    calls_log: Path,
+    transcript: Sequence[ToolCall] = (),
 ) -> tuple[CheckResult, ...]:
     today_file = vault / "action-items" / f"action-items-{today.isoformat()}.md"
     if today_file.is_file() and CARRY_BANNER in today_file.read_text(encoding="utf-8"):
         # The runner carried yesterday's file in verbatim and the session never rewrote it:
         # scoring that would credit the session with yesterday's placements and no drops.
-        return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
+        # A run that doesn't own the daily file (dreaming) is still scored on what it sent and ran.
+        keep = {"privacy_hygiene"} | (set() if owner_surfaces_required(scenario.mode) else {"privacy_canary"})
+        if not keep & set(scenario.checks):
+            return tuple(CheckResult(name, None, ("not_enriched",)) for name in scenario.checks)
+        return tuple(
+            _score_one(name, scenario, vault, today, calls_log, transcript)
+            if name in keep
+            else CheckResult(name, None, ("not_enriched",))
+            for name in scenario.checks
+        )
     today_items = _items(today_file)
     out = read_outputs(vault, calls_log, today)
     up = [p for p in scenario.personas if p not in scenario.personas_down]
@@ -222,6 +302,8 @@ def _score(
         "dropoff_caught": lambda: dropoff_caught(
             scenario.dropped_tags, today_items, out.wrap, review_added=out.review_added
         ),
+        "privacy_canary": lambda: _score_one("privacy_canary", scenario, vault, today, calls_log, transcript),
+        "privacy_hygiene": lambda: _score_one("privacy_hygiene", scenario, vault, today, calls_log, transcript),
     }
     results = []
     for name in scenario.checks:
@@ -252,7 +334,7 @@ def run_sample(
     results_root: Path,
     real_claude: str,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-    budget: str = DEFAULT_BUDGET,
+    budget: str | None = None,  # None: the scenario's budget:, else DEFAULT_BUDGET
     hook_grace_s: int = HOOK_GRACE_S,
     arm: str = "head",
     cli_version: str = "",
@@ -261,14 +343,15 @@ def run_sample(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     result_dir = results_root / f"{scenario.name}-{arm}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
     vault = result_dir / "vault"
+    effective_budget = budget or scenario.budget or DEFAULT_BUDGET
     result_dir.mkdir(parents=True)
     build_vault(
         vault,
         today=today,
-        scenario_dir=scenario.path,
+        scenario_dir=scenario.files,
         claude_bin=str(SHIM),
         connectors=scenario.connectors,
-        max_budget=budget,
+        max_budget=effective_budget,
         checkout=checkout,
         scheduler_tick=datetime.now(UTC),
     )
@@ -299,7 +382,7 @@ def run_sample(
     runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["bash", str(vault / "run-scout.sh")],
+            ["bash", str(vault / scenario.runner)],
             cwd=vault,
             env=env,
             stdout=log,
@@ -333,9 +416,11 @@ def run_sample(
     if aborted is None and (metrics is None or (metrics.model is None and metrics.result_subtype is None)):
         aborted = {"reason": "no_session", "detail": "no init or result event; see runner.log and claude.stderr"}
     if aborted is None and metrics is not None and metrics.result_subtype not in (None, "success"):
-        aborted = {"reason": metrics.result_subtype}  # e.g. error_max_budget_usd: the session didn't finish
+        # e.g. error_max_budget_usd: the session didn't finish; say which cap it hit
+        aborted = {"reason": metrics.result_subtype, "budget_usd": effective_budget}
     (result_dir / "runner-exit.json").write_text(json.dumps({"exit": runner_exit}), encoding="utf-8")
-    checks = () if aborted else _score(scenario, vault, today, yesterday, result_dir / "calls.jsonl")
+    transcript = metrics.calls if metrics is not None else ()
+    checks = () if aborted else _score(scenario, vault, today, yesterday, result_dir / "calls.jsonl", transcript)
     (result_dir / "checks.json").write_text(json.dumps([asdict(c) for c in checks], indent=2), encoding="utf-8")
     if metrics is not None:
         (result_dir / "metrics.json").write_text(json.dumps(asdict(metrics), indent=2), encoding="utf-8")
@@ -349,6 +434,7 @@ def run_sample(
         "today": today.isoformat(),
         "started_at": started_at,
         "checkout": {"label": checkout.label, "commit": checkout.commit} if checkout else None,
+        "budget_usd": effective_budget,
         "aborted": aborted,
     }
     (result_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

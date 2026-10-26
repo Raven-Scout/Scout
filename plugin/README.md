@@ -93,6 +93,15 @@ Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Ra
 
 **Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
+### Hosts that serve a checkout (Agnes)
+
+`plugin/` is a marketplace root of its own: `plugin/.claude-plugin/marketplace.json` lists `scout` with source `"./"`, the plugin itself. It is for a host that serves plugin files from a checkout of this repository and can't follow the root marketplace's `git-subdir` source, such as Agnes. Register it like this:
+
+- **Pin a release tag, `vX.Y.Z`. Never `main` or a branch.** A local source serves whatever tree is checked out; on `main` that is unreleased code carrying the last release's version. The tag gives you what the root marketplace's `stable` pin gives Claude Code.
+- **Read the manifest from `plugin/`** (Agnes: `manifest_dir: plugin`, `ref: vX.Y.Z`), so `"./"` resolves to `plugin/`.
+
+It is the root manifest with only `scout`, sourced `"./"`. Its version is one of the release's version files (`versioning check` and `scripts/release.sh` cover it), and Scout.app's engine bundle ships the same file. Claude Code users keep the root marketplace.
+
 ## Quick Start
 
 The one-line installer above is the recommended path. Under the hood, Scout is distributed as a Claude Code plugin via a built-in marketplace catalog (`.claude-plugin/marketplace.json`); to install it by hand instead:
@@ -213,7 +222,7 @@ Scout's runner scripts call three shell hooks before launching Claude. Each hook
 | Hook | Output | What it replaces |
 |------|--------|-----------------|
 | `hooks/kb-pre-filter.sh` | `.scout-cache/kb-filter.md` — KB files bucketed into stale / fresh / undated, with ages | Walking every KB file from inside the session to check "Last updated" dates |
-| `scripts/pre-session-data.sh` | `.scout-cache/session-context.json` — recent git log, open PRs, PR review requests, KB file dates, open personal tasks | `git log`, `gh pr list`, `gh search prs`, ontology parser queries |
+| `scripts/pre-session-data.sh` | `.scout-cache/session-context.json` — recent git log, open PRs, PR review requests, KB file dates, open personal tasks, each KB path and task labelled with its privacy `visibility` | `git log`, `gh pr list`, `gh search prs`, the engine's labelled knowledge graph |
 | `scripts/cc-session-cache.sh` | `.scout-cache/cc-sessions.md` — non-Scout Claude Code sessions from the last 24h: project paths, first prompts, files touched | Discovering + parsing `~/.claude/projects/*/*.jsonl` manually |
 
 The `.scout-cache/` directory is gitignored — everything in it is recomputed on every run. If a hook fails, the runner script continues anyway and the skill falls back to live queries. Hooks never block a run.
@@ -271,7 +280,7 @@ Additional context about Jane...
 
 ### Parser
 
-The knowledge graph parser (`knowledge-base/ontology/parser.py`) provides a CLI and Python API:
+The knowledge graph parser (`knowledge-base/ontology/parser.py`) is a command-line shim over `scoutctl kb`, which runs the graph in the engine and labels every result: private notes print with a `[private] ` marker (and `_label` in JSON). Without `scoutctl` on PATH it refuses to run rather than read the KB unlabelled. Python code uses `scout.kb.ontology.KnowledgeGraph`.
 
 ```bash
 # Validate all entities against the schema
@@ -298,6 +307,18 @@ Personal task entities (`knowledge-base/personal/task-*.md`) track non-work item
 - `deadline` — date-based priority escalation (3 days out → urgent)
 - `completion_signal: gmail_confirmation` — auto-resolve when a matching email appears
 - `status: open/completed` — tracked across daily action items
+
+## Sync with Agnes (Personal Knowledge Repository)
+
+Agnes can host a private copy of the vault, which Agnes calls your **Personal Knowledge Repository**: only you can fetch or push it, not an Agnes admin. `scoutctl repo` keeps it in step:
+
+- `scoutctl repo link --agnes-url https://agnes.example.com` asks for an Agnes personal access token and keeps it in `~/.scout-secrets/`, outside the vault. It creates the repository if needed and pushes one snapshot of the vault's HEAD; earlier history stays on this computer. It also turns OTLP content export off for sessions in the vault (`.claude/settings.json`).
+- `scoutctl repo sync` replays commits made in Agnes onto the vault, one vault commit each, then pushes one Agnes commit per new vault commit.
+- `scoutctl repo unlink` forgets the link here (`--delete-remote` also deletes the repository on Agnes).
+
+**What never leaves this computer:** machine plumbing (`.scout-logs/`, `.scout-cache/`, `.claude/`, `.venv/`, `.obsidian/`, `.mcp.json`, `.env*`, most of `.scout-state/`), secret files (`*.pem`, `id_rsa*`, `.scout-secrets/`), every `privacy.local_only_add` path in `scout-config.yaml` (trading folders, once `/scout-update` asked you), and every path Agnes keeps on your Local-Only list. Personal notes and the inbox do sync, marked private: only you and your own runs see them. Each pushed commit carries `.scout-state/privacy-policy.json`, the effective privacy policy plus every file's label, which Agnes indexes by.
+
+**Link refuses** until `/scout-update` has walked you through the privacy step, while `scout-config.yaml` can't be read, and while a root-level file or a folder that looks like trading or brokerage data (`TRADING.md`, `portfolio.csv`, `brokerage/`) would sync: make it local-only (`scoutctl bootstrap privacy-migrate --local-only '<path>'`) or confirm it once with `--confirm-sync '<path>'`. Sync re-checks the last two every time.
 
 ## Budget System
 

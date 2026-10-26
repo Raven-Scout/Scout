@@ -9,7 +9,29 @@ Reads ``~/.scout-secrets/telegram-bot-token`` and ``~/.scout-secrets/telegram-ch
 Returns an :class:`~scout.events.Event` with ``kind="notification.sent"`` and
 ``source="cli:notify_telegram"``. Payload shape::
 
-    {"tier": <tier>, "channel": "telegram", "body_chars": <int>, "dry_run": <bool>?}
+    {"tier": <tier>, "channel": "telegram", "body_chars": <int>, "dry_run": <bool>?,
+     "parse_mode": "html"?, "parse_fallback": <bool>?}
+
+``parse_mode`` appears only for ``--parse-mode html``; ``parse_fallback`` only
+when Telegram rejected the HTML of at least one chunk and it went out as plain
+text instead.
+
+**HTML mode.** ``--parse-mode html`` sends with Telegram's ``parse_mode=HTML``.
+HTML, not MarkdownV2: HTML needs only ``<``, ``>`` and ``&`` escaped, where
+MarkdownV2 needs ~18 characters escaped, and one miss in an LLM-written body
+gets the whole message refused. Telegram accepts ``<b> <i> <u> <s> <a href>
+<code> <pre> <blockquote>`` (and a few more). Before sending, a link whose
+href is not http(s) or mailto is replaced by its label, with a warning on
+stderr: Telegram would keep a ``tg://`` deep link live, and silently drop any
+other scheme. Two safety nets:
+
+  - Long bodies split tag-aware: a cut never lands inside a tag or an entity,
+    and tags open at the cut are closed at the end of the chunk and reopened
+    at the start of the next.
+  - If Telegram answers 400 "can't parse entities", that chunk is resent as
+    plain text (tags stripped, link URLs kept in parentheses, entities
+    unescaped), with a warning on stderr. A formatting mistake never loses the
+    message.
 
 Used by the Claude session at session-wrap from inside its prompt (via the Bash
 tool):
@@ -23,6 +45,15 @@ Bidirectional Telegram (a return-bridge for inbound replies as feedback signals)
 is v0.7+ territory per the event-architecture spec. v0.4 ships the outbound
 stub.
 
+**Target classification (#453, spec §8.4).** A positive chat id is a private
+chat with the owner (``telegram_private_chat``, owner-only): it sends as
+always, vault or not. Any other target (a group or channel, id below zero, or
+an ``@channel`` name) is ``telegram_group_chat``, a shared surface: the body
+goes through ``check_outbound`` first, and a hit drops the message with a
+``privacy.outbound_blocked`` event and a blocked line in
+``.scout-logs/kb-reads.jsonl`` (exit 4, line numbers only). With no vault to
+check against, a group send is refused.
+
 **Dry-run semantics.** ``--dry-run`` still reads the secrets so a missing
 install fails fast (operator wants to verify, not stub past). It then echoes
 what would be POSTed and returns an Event with ``dry_run=True`` instead of
@@ -33,8 +64,10 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import html
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
@@ -45,8 +78,9 @@ from typing import Any
 import requests
 
 from scout import paths
+from scout.action_items.render import safe_href
 from scout.errors import ConfigError, ScoutError
-from scout.events import Event
+from scout.events import Event, append_event
 from scout.ids import new_ulid
 from scout.redact import redact_secrets
 
@@ -54,6 +88,7 @@ TELEGRAM_API = "https://api.telegram.org"
 MAX_MESSAGE_LEN = 4096  # Telegram hard limit per sendMessage
 
 VALID_TIERS = ("info", "action_required")
+VALID_PARSE_MODES = ("none", "html")
 DEFAULT_TIMEOUT = 10.0
 
 # Duplicate guard (#241): a byte-identical body to the same chat inside this
@@ -71,6 +106,18 @@ class DuplicateSendError(ScoutError):
         super().__init__(f"byte-identical message sent at {sent_at} (id {original_id})")
         self.original_id = original_id
         self.sent_at = sent_at
+
+
+class OutboundBlockedError(ScoutError):
+    """The target is a group or channel and the message may not go there (#453, spec §8.4)."""
+
+    exit_code = 4
+
+
+# Output classes (spec §4.2): a private chat with the owner is owner-only, a
+# group or channel is shared.
+PRIVATE_CHAT = "telegram_private_chat"
+GROUP_CHAT = "telegram_group_chat"
 
 
 def secrets_dir() -> Path:
@@ -163,6 +210,79 @@ def _read_secret(name: str) -> str:
     return value
 
 
+# ----- target classification (#453) ------------------------------------------
+
+
+def target_surface(chat_id: str) -> str:
+    """The surface a chat id names: a positive id is a private chat with a user
+    (``telegram_private_chat``); anything else is ``telegram_group_chat`` —
+    a group or channel (id below zero), an ``@channel`` name, or an id that
+    doesn't parse (fail closed)."""
+    try:
+        return PRIVATE_CHAT if int(chat_id.strip()) > 0 else GROUP_CHAT
+    except ValueError:
+        return GROUP_CHAT
+
+
+def _guard_vault() -> Path | None:
+    """The vault whose private notes a shared send is checked against, or None when there is none."""
+    try:
+        vault = paths.data_dir()
+    except Exception:  # noqa: BLE001 - no vault: the caller fails closed
+        return None
+    return vault if (vault / paths.VAULT_MARKER).is_file() else None
+
+
+def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
+    """Refuse a body that names a private note (spec §8.4); records the block, never the content.
+
+    Raises :class:`OutboundBlockedError` on a hit, and when no vault can be
+    found to check against.
+    """
+    from scout.kb.outbound import check_outbound
+    from scout.kb.read_log import log_event
+    from scout.kb.reader import resolve_reader
+
+    vault = _guard_vault()
+    if vault is None:
+        raise OutboundBlockedError(
+            "refused — the target is a group or channel, and no Scout vault was found to check the message "
+            "against (run inside the vault, or set SCOUT_DATA_DIR)"
+        )
+    found = set(check_outbound(vault, body, surface))
+    if parse_mode == "html":
+        # What Telegram shows: tags stripped, entities decoded (`Sam<b></b>my`, `&#83;ammy`).
+        found |= set(check_outbound(vault, html.unescape(_TAG_RE.sub("", body)), surface))
+    lines = sorted(found)
+    if not lines:
+        return
+    try:
+        append_event(
+            paths.logs_dir(vault),
+            kind="privacy.outbound_blocked",
+            source="cli:notify_telegram",
+            payload={"surface": surface, "channel": "telegram", "lines": lines},
+        )
+    except OSError:
+        pass  # the message is dropped either way
+    log_event(
+        vault,
+        reader=resolve_reader(None, os.environ),
+        command="notify telegram",
+        surface=surface,
+        args=[surface],
+        returned=0,
+        denied=0,
+        private_paths=0,
+        blocked=True,
+    )
+    where = ("lines " if len(lines) > 1 else "line ") + ", ".join(str(n) for n in lines)
+    raise OutboundBlockedError(
+        f"refused — {where} of the message name a private note, and the target is a group or channel; "
+        "the message was dropped"
+    )
+
+
 # ----- body splitting ------------------------------------------------------
 
 
@@ -184,46 +304,265 @@ def _split_message(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     chunks: list[str] = []
     remaining = body
     while len(remaining) > limit:
-        window = remaining[:limit]
-        # Prefer paragraph boundary (consume the \n\n).
-        cut: int | None = None
-        consumed = 0
-        idx = window.rfind("\n\n")
-        if idx > 0:
-            cut = idx
-            consumed = 2
-        else:
-            idx = window.rfind("\n")
-            if idx > 0:
-                cut = idx
-                consumed = 1
-            else:
-                idx = window.rfind(" ")
-                if idx > 0:
-                    cut = idx
-                    consumed = 1
-        if cut is None:
-            # Hard cut — no breakable char in the window.
-            chunks.append(window)
-            remaining = remaining[limit:]
-        else:
-            chunks.append(remaining[:cut])
-            remaining = remaining[cut + consumed :]
+        cut, consumed = _find_cut(remaining[:limit])
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut + consumed :]
     if remaining:
         chunks.append(remaining)
     return chunks
 
 
+def _find_cut(window: str, ok: Callable[[int], bool] = lambda _: True) -> tuple[int, int]:
+    """Where to end a chunk inside ``window``: ``(cut, delimiter chars consumed)``.
+
+    Paragraph, then line, then word boundary; a hard cut at the window's end
+    (nothing consumed) when none of them is past position 0. A boundary at a
+    position ``ok`` rejects is skipped, and the search goes on to its left.
+    """
+    for delim in ("\n\n", "\n", " "):
+        idx = window.rfind(delim)
+        while idx > 0 and not ok(idx):
+            idx = window.rfind(delim, 0, idx)
+        if idx > 0:
+            return idx, len(delim)
+    return len(window), 0
+
+
+# ----- HTML mode -------------------------------------------------------------
+
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^<>]*>")
+_ENTITY_RE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
+# A link with its href quoted or not (Telegram accepts both): groups `qurl` or `url`, then `label`.
+_LINK_RE = re.compile(
+    r"""<a\s[^<>]*?href\s*=\s*(?:(["'])(?P<qurl>.*?)\1|(?P<url>[^\s"'<>]+))[^<>]*>(?P<label>.*?)</a\s*>""",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _safe_html_cut(text: str, cut: int) -> int:
+    """Move ``cut`` back to the start of a tag or entity it would split."""
+    lt = text.rfind("<", 0, cut)
+    if lt != -1 and ">" not in text[lt:cut]:
+        return lt
+    amp = text.rfind("&", 0, cut)
+    if amp != -1:
+        m = _ENTITY_RE.match(text, amp)
+        if m and m.end() > cut:
+            return amp
+    return cut
+
+
+def _open_tags_after(piece: str, stack: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The ``(name, opening tag)`` stack still open after ``piece``, given ``stack`` before it."""
+    stack = list(stack)
+    for m in _TAG_RE.finditer(piece):
+        name = m.group(2).lower()
+        if not m.group(1):
+            stack.append((name, m.group(0)))
+            continue
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i][0] == name:
+                del stack[i:]
+                break
+    return stack
+
+
+def _split_html(body: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
+    """:func:`_split_message` for Telegram HTML: every chunk is balanced on its own.
+
+    A cut never lands inside a tag or an entity. Tags still open at a cut are
+    closed at the end of that chunk and reopened (with their attributes) at the
+    start of the next, and both count against ``limit``. Unbalanced input is
+    not repaired beyond that: a stray closing tag still goes out, Telegram
+    refuses it, and the plain-text fallback in :func:`send` takes over.
+
+    A body without tags or entities splits as :func:`_split_message` does,
+    except that a chunk of only whitespace is skipped (Telegram refuses an
+    empty message).
+    """
+    if len(body) <= limit:
+        return [body]
+
+    chunks: list[str] = []
+    stack: list[tuple[str, str]] = []
+    remaining = body
+    while remaining:
+        stack = _carried(stack, limit)
+        prefix = "".join(tag for _, tag in stack)
+        if len(prefix) + len(remaining) <= limit:
+            chunks.append(prefix + remaining)
+            break
+        chunk, advance, stack = _next_chunk(remaining, stack, limit)
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[advance:]
+    return chunks
+
+
+def _closers(stack: list[tuple[str, str]]) -> str:
+    return "".join(f"</{name}>" for name, _ in reversed(stack))
+
+
+def _carried(stack: list[tuple[str, str]], limit: int) -> list[tuple[str, str]]:
+    """The open tags to reopen in the next chunk, or none when they would crowd it out.
+
+    The reopening tags and their closers together may take at most half the
+    chunk. Past that, give up on carrying the formatting over: the stray
+    closers that follow make Telegram refuse the chunk, and it goes out as
+    plain text instead.
+    """
+    if sum(len(tag) for _, tag in stack) + len(_closers(stack)) > limit // 2:
+        return []
+    return stack
+
+
+def _next_chunk(
+    remaining: str, stack: list[tuple[str, str]], limit: int
+) -> tuple[str | None, int, list[tuple[str, str]]]:
+    """Cut one chunk off ``remaining``: ``(chunk, chars of remaining used, tag stack after it)``.
+
+    ``chunk`` is ``None`` when the piece holds only tags, which Telegram refuses
+    as an empty message. They are not lost: the ones still open are reopened by
+    the next chunk.
+    """
+    prefix = "".join(tag for _, tag in stack)
+    budget = limit - len(prefix)
+
+    def outside_markup(i: int) -> bool:  # a space inside `<a href=…>` is not a word boundary
+        return _safe_html_cut(remaining, i) == i
+
+    while True:
+        cut, consumed = _find_cut(remaining[:budget], ok=outside_markup)
+        if not consumed:
+            # Hard cut. 0 means the chunk starts with a tag or entity longer
+            # than the budget: cut it anyway. Telegram refuses that chunk and
+            # the plain-text fallback sends it, where an over-long chunk
+            # would be refused for good.
+            cut = _safe_html_cut(remaining, cut) or cut
+        piece = remaining[:cut]
+        after = _open_tags_after(piece, stack)
+        closers = _closers(after)
+        overflow = len(prefix) + len(piece) + len(closers) - limit
+        if overflow <= 0:
+            break
+        # Ends: at budget 1 the piece is one character and opens no tag, so
+        # the chunk is at most prefix + 1 + the stack's closers, which
+        # _carried keeps within half the limit.
+        budget = max(budget - overflow, 1)
+    chunk = prefix + piece + closers if _html_to_plain(piece).strip() else None
+    return chunk, cut + consumed, after
+
+
+# The only named entities Telegram knows; numeric ones are all accepted.
+_NAMED_ENTITIES = {"lt": "<", "gt": ">", "amp": "&", "quot": '"'}
+
+
+def _unescape_telegram(text: str) -> str:
+    """Decode the entities Telegram decodes, and leave everything else as typed.
+
+    Not :func:`html.unescape`: HTML5 also decodes legacy entities without a
+    ``;``, so ``?id=1&copy=2`` in a URL would become ``?id=1©=2``.
+    """
+
+    def entity(m: re.Match[str]) -> str:
+        ref = m.group(0)[1:-1]
+        if not ref.startswith("#"):
+            return _NAMED_ENTITIES.get(ref, m.group(0))
+        try:
+            return chr(int(ref[2:], 16) if ref[1] in "xX" else int(ref[1:]))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    return _ENTITY_RE.sub(entity, text)
+
+
+def _html_to_plain(text: str) -> str:
+    """Telegram-HTML to readable plain text: links as ``label (url)``, tags dropped, entities unescaped."""
+
+    def link(m: re.Match[str]) -> str:
+        url = _link_url(m)
+        label = _TAG_RE.sub("", m["label"])
+        return label if _unescape_telegram(label).strip() == url else f"{label} ({url})"
+
+    return _unescape_telegram(_TAG_RE.sub("", _LINK_RE.sub(link, text)))
+
+
+def _link_url(m: re.Match[str]) -> str:
+    """The unescaped href of a :data:`_LINK_RE` match."""
+    return _unescape_telegram(m["qurl"] if m["qurl"] is not None else m["url"])
+
+
+# Any <a> opening tag (a quoted attribute value may hold a `>`) or closing tag.
+_A_TAG_RE = re.compile(r"""<a(?=[\s>])(?:"[^"]*"|'[^']*'|[^"'>])*>|</a\s*>""", re.IGNORECASE)
+# The one <a> form the sanitizer keeps: a single href and nothing else.
+_PLAIN_A_RE = re.compile(r"""<a\s+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))\s*>""", re.IGNORECASE)
+
+
+def _drop_unsafe_links(body: str) -> tuple[str, int]:
+    """Keep only http(s) and mailto links, each rebuilt as ``<a href="…">``: ``(body, links dropped)``.
+
+    A body can carry text Scout did not write (Slack, GitHub, mail), and
+    Telegram keeps ``tg://`` deep links live (join a chat, add a proxy). The
+    scheme rule is the action-items dashboard's
+    (:func:`~scout.action_items.render.safe_href`).
+
+    Fails closed: every ``<a>`` tag is read on its own, and one that is not
+    exactly ``<a href=…>`` (another attribute, a second href, a ``data-href``)
+    is dropped with its ``</a>``, as is a link nested in another. The label
+    always stays. A rebuilt tag carries only the href that was checked, so
+    Telegram cannot read a different one.
+    """
+    dropped = 0
+    open_links: list[bool] = []  # per open <a>: kept?
+
+    def tag(m: re.Match[str]) -> str:
+        nonlocal dropped
+        if m.group(0).startswith("</"):
+            return "</a>" if open_links and open_links.pop() else ""
+        plain = _PLAIN_A_RE.fullmatch(m.group(0))
+        url = _unescape_telegram(next(g for g in plain.groups() if g is not None)) if plain else ""
+        href = safe_href(url) if plain and not open_links else None
+        open_links.append(href is not None)
+        if href is None:
+            dropped += 1
+            return ""
+        return f'<a href="{href}">'
+
+    return _A_TAG_RE.sub(tag, body), dropped
+
+
+def _prepare(body: str, parse_mode: str) -> tuple[list[str], int]:
+    """The chunks to send, and how many unsafe links were dropped from an HTML body."""
+    if parse_mode != "html":
+        return _split_message(body), 0
+    body, dropped = _drop_unsafe_links(body)
+    return _split_html(body), dropped
+
+
+def _is_parse_error(resp: requests.Response) -> bool:
+    """True when Telegram refused the message because of its formatting entities."""
+    if resp.status_code != 400:
+        return False
+    try:
+        description = str(resp.json().get("description", ""))
+    except (ValueError, AttributeError):
+        return False
+    return "can't parse entities" in description.lower()
+
+
 # ----- send ----------------------------------------------------------------
 
 
-def _build_payload(*, chat_id: str, text: str, tier: str) -> dict[str, Any]:
+def _build_payload(*, chat_id: str, text: str, tier: str, parse_mode: str = "none") -> dict[str, Any]:
     """Build the JSON body for a single sendMessage call."""
-    return {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
         "disable_notification": tier == "info",
     }
+    if parse_mode == "html":
+        payload["parse_mode"] = "HTML"
+    return payload
 
 
 # ----- error scrubbing -------------------------------------------------------
@@ -303,6 +642,7 @@ def send(
     body: str,
     *,
     dry_run: bool = False,
+    parse_mode: str = "none",
     timeout: float = DEFAULT_TIMEOUT,
     allow_duplicate: bool = False,
     now: datetime | None = None,
@@ -314,15 +654,19 @@ def send(
     long bodies, then issues one POST per chunk (or echoes the request body
     on ``dry_run``). Defense-in-depth: the CLI layer ALSO restricts ``--tier``
     via Typer choices, but this layer rejects unknown tiers in case a Python
-    caller bypasses the CLI.
+    caller bypasses the CLI. ``parse_mode`` is ``none`` (plain text) or
+    ``html`` (see the module docstring for the split and fallback rules).
 
     ``receipt``, when given, is called with the Event id as soon as it is known
     (before any dry-run output; after the last chunk of a real send), so the CLI
     can put ``id=<id>`` first on stderr.
 
     Raises:
-        ValueError: empty body or unknown tier.
+        ValueError: empty body, unknown tier or unknown parse mode.
         ConfigError: missing secret files (exit code 10).
+        OutboundBlockedError: the chat is a group or channel and the body
+            names a private note, or there is no vault to check it against
+            (exit code 4). Nothing is sent.
         DuplicateSendError: a byte-identical body went to this chat inside
             ``DUPLICATE_WINDOW`` and ``allow_duplicate`` is false (exit code 3).
         requests.RequestException: HTTP-layer failure during a real send.
@@ -333,9 +677,14 @@ def send(
         raise ValueError("body cannot be empty")
     if tier not in VALID_TIERS:
         raise ValueError(f"unknown tier {tier!r}; valid tiers are: {', '.join(VALID_TIERS)}")
+    if parse_mode not in VALID_PARSE_MODES:
+        raise ValueError(f"unknown parse mode {parse_mode!r}; valid modes are: {', '.join(VALID_PARSE_MODES)}")
 
     token = _read_secret("telegram-bot-token")
     chat_id = _read_secret("telegram-chat-id")
+    surface = target_surface(chat_id)
+    if surface != PRIVATE_CHAT:
+        _check_shared(body, surface, parse_mode)  # a dry run too: it shows what would be sent
 
     now = now or datetime.now(UTC)
     ts = _iso(now)
@@ -347,7 +696,9 @@ def send(
             if row["key"] == key:
                 raise DuplicateSendError(row["id"], row["ts"])
 
-    chunks = _split_message(body)
+    chunks, dropped = _prepare(body, parse_mode)
+    if dropped:
+        print(f"warning: dropped {dropped} link(s) whose href is not http(s) or mailto", file=sys.stderr)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:
@@ -361,6 +712,7 @@ def send(
                 "channel": "telegram",
                 "body_chars": len(body),
                 "dry_run": True,
+                **({"parse_mode": "html"} if parse_mode == "html" else {}),
             },
         )
         if receipt:
@@ -373,7 +725,7 @@ def send(
         # logs should never see the raw token.
         redacted_url = f"{TELEGRAM_API}/bot<REDACTED>/sendMessage"
         for chunk in chunks:
-            payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier)
+            payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
             print(f"[dry-run] POST {redacted_url}", file=sys.stderr)
             print(
                 f"[dry-run] body: {json.dumps(payload, ensure_ascii=False)}",
@@ -381,9 +733,21 @@ def send(
             )
         return dry_event
 
-    for chunk in chunks:
-        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier)
+    parse_fallback = False
+    for n, chunk in enumerate(chunks, 1):
+        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
         resp = requests.post(url, json=payload, timeout=timeout)
+        if parse_mode == "html" and _is_parse_error(resp):
+            # Telegram's description names the offending tag and offset, never
+            # the URL, so it is safe to print.
+            print(
+                f"warning: Telegram refused the HTML of chunk {n}/{len(chunks)} "
+                f"({resp.json().get('description')}); resent it as plain text",
+                file=sys.stderr,
+            )
+            parse_fallback = True
+            payload = _build_payload(chat_id=chat_id, text=_html_to_plain(chunk), tier=tier)
+            resp = requests.post(url, json=payload, timeout=timeout)
         # Surface HTTP errors so the caller sees a non-zero exit. The CLI
         # layer maps requests.RequestException to a non-zero exit code.
         resp.raise_for_status()
@@ -397,6 +761,8 @@ def send(
             "tier": tier,
             "channel": "telegram",
             "body_chars": len(body),
+            **({"parse_mode": "html"} if parse_mode == "html" else {}),
+            **({"parse_fallback": True} if parse_fallback else {}),
         },
     )
     if log:
@@ -423,17 +789,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="notify-telegram")
     parser.add_argument("--tier", default="info", choices=list(VALID_TIERS))
     parser.add_argument("--body", required=True)
+    parser.add_argument("--parse-mode", default="none", choices=list(VALID_PARSE_MODES))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        ev = send(tier=args.tier, body=args.body, dry_run=args.dry_run)
+        ev = send(tier=args.tier, body=args.body, dry_run=args.dry_run, parse_mode=args.parse_mode)
     except ConfigError as e:
         print(f"notify-telegram: {e}")
         return ConfigError.exit_code
     except DuplicateSendError as e:
         print(f"notify-telegram: refused — {e}")
         return DuplicateSendError.exit_code
+    except OutboundBlockedError as e:
+        print(f"notify-telegram: {e}")
+        return OutboundBlockedError.exit_code
     except ValueError as e:
         print(f"notify-telegram: {e}")
         return 1

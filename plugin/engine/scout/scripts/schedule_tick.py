@@ -552,6 +552,9 @@ def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
     env = os.environ.copy()
     env["SCOUT_FORCE_MODE"] = slot_key
     env["SCOUT_DATA_DIR"] = str(vault)
+    # The run reads the vault as the owner's unattended reader (#453, spec §6.2),
+    # whatever runner the slot names (a vault-local one may not export it).
+    env["SCOUT_READER"] = "autonomous"
     proc = subprocess.Popen(
         [str(runner_path)],
         cwd=str(vault),

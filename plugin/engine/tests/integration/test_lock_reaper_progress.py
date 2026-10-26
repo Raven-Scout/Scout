@@ -135,6 +135,16 @@ def _ps(pid: int, field: str) -> str:
     return out.stdout.strip()
 
 
+def _cpu_cs(pid: int) -> int:
+    """``pid``'s CPU time in centiseconds, read as scout-lock.sh reads it:
+    ``ps -o time=`` is [[dd-]hh:]mm:ss, with hundredths on macOS only."""
+    days, _, clock = _ps(pid, "time").rpartition("-")
+    secs = 0.0
+    for part in clock.split(":"):
+        secs = secs * 60 + float(part)
+    return int((int(days or 0) * 86400 + secs) * 100 + 0.5)
+
+
 def _fake_claudes(vault: Path) -> list[int]:
     """PIDs of the live fake `claude --name scout-…` sessions. They run as
     `/bin/bash <vault>/bin/claude …`; the retry wrapper's command line names
@@ -174,16 +184,17 @@ def holders() -> Iterator[list[int]]:
 # --- sleep is not wedged time --------------------------------------------------
 
 
-@pytest.mark.parametrize(("awake_since_last_sample_s", "reaped"), [(0, False), (20, True)])
+@pytest.mark.parametrize(("awake_since_last_sample_s", "reaped"), [(0, False), (60, True)])
 def test_wall_clock_age_never_reaps_only_awake_stall_does(
     vault: Path, holders: list[int], awake_since_last_sample_s: int, reaped: bool
 ) -> None:
     """The issue's first incident: a holder sampled just before the host slept
     8 h, then sampled again on wake. Its lock is 8 h old and it made no progress
     since the last sample, but the host was asleep for all of it, so it is not
-    wedged. The control: the same holder with 20 s of AWAKE time since the
-    last sample is past the 10 s ceiling and reaped. The old code reaped both,
-    on the lock's age alone."""
+    wedged. The control: the same holder with 60 s of AWAKE time since the
+    last sample is past the 30 s ceiling and reaped. The old code reaped both,
+    on the lock's age alone. The ceiling leaves a loaded runner 30 s between
+    the two samples (#498)."""
     pid = _detached("exec sleep 300")
     holders.append(pid)
     _hold_lock(vault, pid, held_for_s=EIGHT_HOURS_S)
@@ -197,7 +208,7 @@ def test_wall_clock_age_never_reaps_only_awake_stall_does(
     )
     # The sample taken before the host slept, written by a waiter itself (a
     # baseline), then moved back by the awake time that passed since.
-    baseline = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="10", SCOUT_LOCK_WAIT_SECS="0")
+    baseline = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="30", SCOUT_LOCK_WAIT_SECS="0")
     assert baseline.returncode == 0, baseline.stderr
     progress = vault / ".scout-logs" / ".scout-session.lock.progress"
     sample = progress.read_text(encoding="utf-8").split()
@@ -205,7 +216,7 @@ def test_wall_clock_age_never_reaps_only_awake_stall_does(
     sample[6] = str(int(sample[6]) - awake_since_last_sample_s)
     progress.write_text(" ".join(sample) + "\n", encoding="utf-8")
 
-    result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="10", SCOUT_LOCK_WAIT_SECS="0")
+    result = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="30", SCOUT_LOCK_WAIT_SECS="0")
 
     assert result.returncode == 0, result.stderr
     if reaped:
@@ -245,8 +256,19 @@ def test_the_first_sample_of_a_holder_is_a_baseline(vault: Path, holders: list[i
 
 def test_an_idle_holder_that_resumes_working_is_not_reaped(vault: Path, holders: list[int]) -> None:
     """A holder idle for a long wall-clock time (stopped, its lock 8 h old) that
-    starts burning CPU again is progressing: the stall resets, so it is never
-    reaped, although the time it has been watched is far past the ceiling."""
+    starts burning CPU again is progressing: the stall resets, so it is not
+    reaped, although without that progress its stall would be past the ceiling.
+
+    Nothing here assumes how fast the runner is (#498). Each waiter takes exactly
+    one sample, after the test has waited for the condition that sample must
+    see. The ceiling is each waiter's own setting: the idle samples run under a
+    ceiling they can never reach, and the sample after the resume runs under one
+    the stall is already past. So a slow sample cannot reap the holder while it
+    is idle, and only the CPU it burned keeps it alive afterwards. Before, a
+    fixed 5 s ceiling gave the resumed holder about 2 s to burn 1 CPU-second,
+    and a loaded CI runner sometimes missed it."""
+    env = {"SCOUT_LOCK_PROGRESS_CPU_SECS": "1", "SCOUT_LOCK_WAIT_SECS": "0"}
+    progress = vault / ".scout-logs" / ".scout-session.lock.progress"
     pid = _detached(f"exec {sys.executable} -c 'while True: pass'")
     holders.append(pid)
     # Stop it only once it runs python: a STOP that lands before the exec is lost.
@@ -255,19 +277,28 @@ def test_an_idle_holder_that_resumes_working_is_not_reaped(vault: Path, holders:
     _wait_for(lambda: _ps(pid, "stat").startswith("T"), "the holder to stop")
     _hold_lock(vault, pid, held_for_s=EIGHT_HOURS_S)
 
-    # Idle: the stall grows for 3 s, under the 5 s ceiling.
-    first = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="5", SCOUT_LOCK_PROGRESS_CPU_SECS="1", SCOUT_LOCK_WAIT_SECS="3")
+    # Idle: a baseline, then 2 s of awake time later a sample whose stall has grown.
+    baseline = _waiter(vault, **env, SCOUT_LOCK_MAX_AGE_SECS="3600")
+    assert baseline.returncode == 0, baseline.stderr
+    baseline_sampled = int(progress.read_text(encoding="utf-8").split()[6])
+    _wait_for(lambda: _awake_now() >= baseline_sampled + 2, "2 s of awake time")
+    first = _waiter(vault, **env, SCOUT_LOCK_MAX_AGE_SECS="3600")
     assert first.returncode == 0, first.stderr
-    stalled = int((vault / ".scout-logs" / ".scout-session.lock.progress").read_text(encoding="utf-8").split()[-1])
+    mark = progress.read_text(encoding="utf-8").split()
+    mark_cpu, stalled = int(mark[2]), int(mark[-1])
     assert stalled >= 2, "a stopped holder makes no progress, so its stall must grow"
 
-    # Working again: watched for 8 s more (11 s in all), never reaped.
+    # Working again: once it has burned the 1 CPU-second that counts as
+    # progress, a waiter whose ceiling the stall is already past samples it.
     os.kill(pid, signal.SIGCONT)
-    second = _waiter(vault, SCOUT_LOCK_MAX_AGE_SECS="5", SCOUT_LOCK_PROGRESS_CPU_SECS="1", SCOUT_LOCK_WAIT_SECS="8")
+    _wait_for(lambda: _cpu_cs(pid) >= mark_cpu + 100, "the resumed holder to burn 1 CPU-second", timeout_s=120)
+    second = _waiter(vault, **env, SCOUT_LOCK_MAX_AGE_SECS=str(stalled - 1))
 
     assert second.returncode == 0, second.stderr
     assert _group_alive(pid), "a holder whose CPU time advances is alive and working"
     assert "Reaped" not in _failures(vault)
+    sample = progress.read_text(encoding="utf-8").split()
+    assert sample[-1] == "0", f"CPU progress must reset the stall: {sample}"
     assert not (vault / "claude-pids").exists()
     assert _lock(vault).read_text(encoding="utf-8").strip() == str(pid)
 

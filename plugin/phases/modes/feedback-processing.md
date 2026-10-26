@@ -17,7 +17,7 @@ This is the self-improvement loop. Harvest feedback from {{USER_NAME}}'s reactio
 Read the bot's DM conversation with {{USER_NAME}} using `slack_read_channel` with channel_id `{{USER_SLACK_ID}}`.
 
 **Determine the time window:**
-1. Check the newest shard(s) in `knowledge-base/session-log/` for the last dreaming row.
+1. Check the newest shard(s) in `knowledge-base/session-log/` for the last dreaming row (`scripts/scoutctl kb files --glob 'knowledge-base/session-log/*.md'`, then `scripts/scoutctl kb read <shard>`).
 2. If a previous dreaming entry exists, look back to that timestamp.
 3. If no previous dreaming entry exists (first run), look back 24 hours from now.
 
@@ -52,7 +52,7 @@ Categorize every piece of harvested feedback into one of these signal types:
 
 ### Step 1c: Cross-Reference with Mistake Audit
 
-Read `knowledge-base/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
+Read the mistake audit with `scripts/scoutctl kb read knowledge-base/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
 
 **If the signal matches an existing pattern in the mistake audit:**
 - Increment the occurrence count for that pattern.
@@ -113,7 +113,9 @@ For each, apply the change exactly as specified, set status to `Applied — [tod
 
 **Engine back-port reminder (every run).** Applying a `SKILL`/`DREAMING`/`RESEARCH` proposal edits only the vault brain file; the same rule must also land in the engine's `phases/` fragments, or the next `/scout-update` re-render will sidecar it. So at the start of this step, scan for **applied proposals whose engine back-port is not yet merged** and, if any are owed, surface a standing reminder in the wrap notification (and carry it as an action item — it must not silently drop):
 
-> ⚠️ Engine back-port owed: N applied proposal(s) not yet merged into the engine `phases/` — run `scoutctl phases backport` (dry-run first), review the diff, and open a PR. **Never auto-run it** — it writes the shared/distributable engine, so it stays operator-triggered.
+> ⚠️ Engine back-port owed: N applied proposal(s) not yet merged into the engine `phases/` — run `scoutctl phases backport` (dry-run first), then `--apply --plugin-root` into a clone under `~/.scout-worktrees/`, review the diff, and open a PR. **Never auto-run it** — it writes the shared/distributable engine, so it stays operator-triggered.
+
+Whoever runs it, the write goes into a clone, never the live engine checkout (see Engine Changes: Never in the Live Engine Checkout). `--apply` refuses the live engine.
 
 Clear the reminder when the back-port PR merges. The apply creates the debt; the reminder keeps it visible until it's paid.
 

@@ -36,7 +36,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 
 **Entity files (`people/`, `personal/`, `ontology/entities/`) — Knowledge graph entities**
 - Individual entity files with YAML frontmatter defining typed properties and relationships
-- The frontmatter is machine-readable by the parser at `knowledge-base/ontology/parser.py`
+- The frontmatter is machine-readable: query it with `scripts/scoutctl kb query`, `kb entity`, `kb related` (never by reading the files raw)
 - Relationships use `[[wikilinks]]` in targets: `target: "[[Entity Name]]"`
 - Entity files complement (not replace) `people.md` — the flat table remains the authoritative directory
 - When adding a new person to `people.md`, also create an entity file in `knowledge-base/people/` if they have relationships worth tracking
@@ -175,7 +175,7 @@ Never fan a causal claim out to multiple KB surfaces (project file + people + DM
 
 **Consequential claims carry an inline primary-source citation.** Any claim that — if wrong — would cause {{USER_NAME}} to act on bad information (who owns/built something, a strategy/decision, a status that gates action, an attribution) must cite the specific source inline: "per [Linear PROJ-123 status]", "per [DM from X 2026-05-01]", "per [PR #45 mergedAt]". A bare assertion with no traceable source is treated as `[unverified]`.
 
-**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the KB content written or changed in the last few runs (use `git log`/`git diff` to find it) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them.
+**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the KB content written or changed in the last few runs (`scripts/scoutctl kb delta --since 3d --diff` finds it) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase).
 
 ### Audits Remediate or Hand Off — Never Just Report
 
@@ -187,7 +187,7 @@ Applies to **every** audit in every mode — the consolidation KB audit, KG-inte
 
 ### Session Log Row (mandatory every run)
 
-**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `knowledge-base/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `knowledge-base/session-log.md` is the index that links the shards). A run that skips the row leaves the next run blind to what just happened.
+**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `knowledge-base/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `knowledge-base/session-log.md` is the index that links the shards). Append it with Edit/Write on that file (find it with `scripts/scoutctl kb files --glob 'knowledge-base/session-log/*.md'`); never `ls`, `tail` or `grep` `knowledge-base/` or `action-items/context/` to find it. Context notes are listed the same way, `scripts/scoutctl kb files --glob 'action-items/context/*.md'`; read a note with `scripts/scoutctl kb read <path>`. A run that skips the row leaves the next run blind to what just happened.
 
 Row shape, **≤ 500 characters**: date · session type (time, manual/scheduled) · one sentence of material findings with `[[links]]` to the notes changed · commit hash. Write `pending` for the hash pre-commit; back-fill it when possible (dreaming also back-fills `pending`). The detail lives in the notes and the commit message, not the row.
 

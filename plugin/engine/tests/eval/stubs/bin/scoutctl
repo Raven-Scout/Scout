@@ -1,0 +1,9 @@
+#!/bin/bash
+# eval stub: `scoutctl notify telegram` is recorded, never sent (tests/eval/harness/stubs/telegram.py);
+# every other subcommand runs the engine's real scoutctl.
+ENGINE="${SCOUT_EVAL_ENGINE:-$(cd "$(dirname "$0")/../../../.." && pwd)}"
+if [ "$1" = notify ] && [ "$2" = telegram ]; then
+  shift 2
+  PYTHONPATH="$ENGINE" exec "${SCOUT_EVAL_PYTHON:-$ENGINE/.venv/bin/python}" -m tests.eval.harness.stubs.telegram "$@"
+fi
+exec "$ENGINE/.venv/bin/scoutctl" "$@"

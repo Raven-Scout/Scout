@@ -67,7 +67,7 @@ Step 2: Execute Phase 1 (Feedback Processing) completely.
 Step 3: Execute Phase 2 (KB Deep Work) completely.
 Step 4: Execute Phase 3 (Wishlist) completely.
 Step 5: Commit results to git.
-Step 6: Send a brief Slack DM to {{USER_NAME}} (Slack ID: {{USER_SLACK_ID}}) summarizing feedback processed and KB work done.
+Step 6: Send the wrap notification summarizing feedback processed and KB work done, through the channel and recipient that DREAMING.md's notification section names, or SKILL.md's when DREAMING.md has none (a stock DREAMING.md has none; SKILL.md's are Slack Notification and, when Telegram is set up, Telegram Notification as well). Send every one that is there. Do not assume Slack. If neither file has a notification section, send nothing and say so in your final message.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
@@ -77,6 +77,14 @@ Important:
 - Your output should focus on what you found and changed, not infrastructure steps."
 
 echo "=== {{INSTANCE_NAME}} Dreaming run starting at $(date) ===" >> "$LOG_FILE"
+
+# A scheduled run reads the vault as the `autonomous` reader (#453, spec §6.2):
+# it sees every note, each labelled, and the privacy phase rule keeps private
+# content off shared surfaces. Set explicitly rather than left to the
+# SCOUT_MODE fallback (exported further down), and before the pre-session
+# caches below, so they and every `scoutctl kb` call in the session are
+# labelled for that reader.
+export SCOUT_READER=autonomous
 
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
 # These write to .scout-cache/ for DREAMING.md to consume.

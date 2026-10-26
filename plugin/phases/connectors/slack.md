@@ -81,7 +81,7 @@ Check project channels listed in `channels.md` for recent activity, even if {{US
 
 ### 🔴 Project Channel Poll (mandatory)
 
-`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." For every 🔴-priority project file (`knowledge-base/projects/*/<name>.md` with `priority: "🔴"` or a 🔴 status), read its `slack_channels:` YAML frontmatter and **directly read each declared channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels in the sources footer (`🔴 channels polled: #a, #b`). If a 🔴 project has no `slack_channels:` frontmatter yet, add it (see project-file conventions in kb-management).
+`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." For every 🔴-priority project file (`knowledge-base/projects/*/<name>.md` with `priority: "🔴"` or a 🔴 status), read its `slack_channels:` frontmatter (`scripts/scoutctl kb query --type project --json` has every project's frontmatter under `entity`) and **directly read each declared channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels in the sources footer (`🔴 channels polled: #a, #b`). If a 🔴 project has no `slack_channels:` frontmatter yet, add it (see project-file conventions in kb-management).
 
 ### Both Scans Required (gate)
 
@@ -197,7 +197,9 @@ requires: slack
 
 ## Slack Notification
 
-Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results.
+Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
+
+**Send this DM even when SKILL.md also has a Telegram Notification section:** the wrap then goes to both, and this DM still carries non-private items only. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a notification section, so if this section is here, send it.
 
 ### Consolidation Notification (3-5 lines)
 
@@ -205,7 +207,7 @@ Keep it tight. Example format:
 
 ```
 Scout consolidation complete.
-- Action items: X new, Y completed, Z carried forward
+- Action items: X new, Y completed, Z carried forward (non-private items only)
 - KB audited: [list of files checked/updated]
 - Urgent: [any urgent items, or "none"]
 ```
@@ -218,7 +220,7 @@ Slightly more detail. Example format:
 Scout morning briefing ready.
 *Today's focus:* [the 1–2 things today is really about — the throughline from recent work to now]
 - Today's meetings: [count] ([first meeting time])
-- Action items: X urgent, Y to-do, Z watching
+- Action items: X urgent, Y to-do, Z watching (non-private items only)
 - New since yesterday: [brief summary of new items]
 - KB areas updated: [list]
 - Review queue: [count] items pending your review
@@ -246,6 +248,6 @@ Applies to every wrap DM. Two parts:
 ### Notification Rules
 
 - Never include sensitive details in the notification — just summaries and counts.
-- If there are urgent items, mention them by name (briefly) so {{USER_NAME}} knows to check.
+- If there are urgent items, mention them by name (briefly) so {{USER_NAME}} knows to check; a `[private]` item is never named or counted here.
 - Always include where to find the full details: "Full report in {{SCOUT_DIR}}/action-items/"
 - If the run encountered errors or couldn't access a connector, mention it briefly so {{USER_NAME}} knows the run was partial.

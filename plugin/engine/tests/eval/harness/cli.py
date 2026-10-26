@@ -26,7 +26,12 @@ def _scenario_dir(name: str | None) -> Path | None:
     path = SCENARIOS_DIR / name
     if not path.is_dir():
         raise ValueError(f"unknown scenario {name!r} (looked in {SCENARIOS_DIR})")
-    return path
+    from .scenario import load_scenario
+
+    try:
+        return load_scenario(name).files  # a variant's overlays live in its files_from scenario
+    except (FileNotFoundError, KeyError):
+        return path
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -118,7 +123,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     from .report import format_comparison
     from .runner import LoginRequired, run_sample
     from .scenario import load_scenario
-    from .verdicts import compare_arms
+    from .verdicts import compare_arms, hit_limit
 
     today = date.fromisoformat(args.today) if args.today else _utc_today()
     model = "opus" if args.opus else DEFAULT_MODEL
@@ -191,8 +196,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     print(f"… {label}", flush=True)
                     sample = run_sample(s, rep=i + 1, arm=arm, checkout=checkout, **common)
                     (base_samples if arm == "base" else head_samples).append(sample)
+                    if sample.aborted and hit_limit(sample):
+                        # Only this sample is out: the rest still score, and "within limits" counts it.
+                        print(f"   hit a run limit ({sample.aborted.get('reason')}): left out of checks and metrics")
+                        continue  # never cached as a base sample
                     if sample.aborted:
-                        # The verdict is already blocked: don't spend more of the subscription.
+                        # A harness failure blocks the verdict: don't spend more of the subscription.
                         left = (missing - len(base_samples) + len(cached)) + (args.reps - len(head_samples))
                         print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}); "
                               f"{left} sample(s) never ran ==")  # fmt: skip
@@ -229,7 +238,7 @@ def _cmd_compare_models(args: argparse.Namespace) -> int:
     from .report import format_comparison
     from .runner import LoginRequired, run_sample
     from .scenario import load_scenario
-    from .verdicts import compare_arms
+    from .verdicts import compare_arms, hit_limit
 
     model_a, model_b = args.a.strip().lower(), args.b.strip().lower()
     for model in (model_a, model_b):
@@ -281,6 +290,9 @@ def _cmd_compare_models(args: argparse.Namespace) -> int:
                         real_claude=real_claude, arm=model, cli_version=cli_version,
                     )  # fmt: skip
                     arms[model].append(sample)
+                    if sample.aborted and hit_limit(sample):
+                        print(f"   hit a run limit ({sample.aborted.get('reason')}): left out of checks and metrics")
+                        continue
                     if sample.aborted:
                         print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}) ==")
                         cmp = compare_arms(arms[model_a], arms[model_b], across_models=True)

@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
 import yaml
@@ -39,7 +40,9 @@ from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
+    WRAP_CHANNELS,
     parse_phase_file,
+    parse_wrap_channels,
     render_template,
     select_sections,
 )
@@ -66,6 +69,10 @@ class BootstrapConfig:
     # Install-time auto-update preference from /scout-setup. None = not asked:
     # leave scout-config.yaml's auto_update block untouched.
     auto_update: bool | None = None
+    # scout-config.yaml's notify.wrap_channels: which enabled wrap channels
+    # (phase_assembly.WRAP_CHANNELS) get the wrap notification section.
+    # None = all of them.
+    wrap_channels: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         # Vaults configured before a probe-key rename (gmail → email) carry the
@@ -163,6 +170,9 @@ _CAT1_TEMPLATES = (
     # scout-tz.sh first: it is the runtime timezone resolver every other script
     # (and the assembled brain files) call via TZ="$(scripts/scout-tz.sh)".
     ("scripts/scout-tz.sh", "templates/scripts/scout-tz.sh.tmpl"),
+    # How the brain files call the engine (`scripts/scoutctl …`): finds it when
+    # it isn't on PATH, and points it at this vault wherever the vault lives.
+    ("scripts/scoutctl", "templates/scripts/scoutctl.sh.tmpl"),
     ("scripts/budget-check.sh", "templates/scripts/budget-check.sh.tmpl"),
     ("scripts/heartbeat.sh", "templates/scripts/heartbeat.sh.tmpl"),
     ("scripts/pre-session-data.sh", "templates/scripts/pre-session-data.sh.tmpl"),
@@ -210,6 +220,14 @@ _INSTALL_ONLY_TEMPLATES = (
     # The research run log (its items are files in knowledge-base/research-queue/).
     ("knowledge-base/research-queue.md", "templates/knowledge-base/research-queue.md.tmpl"),
 )
+
+# Vault-owned files seeded, like the cat-2 templates above, only where the
+# vault has none, but copied byte for byte from a file the engine package ships
+# rather than from templates/ (so there is one copy in the repo, not two). The
+# ontology schema: the vault's parser.py loads the schema.yaml next to it and
+# fails without one, and the engine's resolve_schema_path prefers it to the
+# packaged default, which it starts out identical to.
+_PACKAGED_SEEDS = (("knowledge-base/ontology/schema.yaml", ("kb", "schema.yaml")),)
 
 _CAT1B_RUNNERS = (
     ("run-scout.sh", "templates/run-scout.sh.tmpl"),
@@ -463,6 +481,11 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
             continue
         rendered = render_template(src.read_text(encoding="utf-8"), vars_)
         _atomic_write(target, rendered)
+    for vault_rel, resource in _PACKAGED_SEEDS:
+        target = cfg.vault / vault_rel
+        if target.exists() or target.is_symlink():
+            continue  # never overwrite: the vault may have extended it
+        _atomic_write(target, files("scout").joinpath(*resource).read_text(encoding="utf-8"))
 
 
 def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
@@ -525,6 +548,7 @@ def _assemble(
                 sections,
                 enabled_connectors=cfg.enabled_connectors,
                 modes=target_modes,
+                wrap_channels=cfg.wrap_channels,
             )
             for s in kept:
                 if deep_research_at is None and s.slot == "deep-research":
@@ -739,7 +763,8 @@ def config_from_vault(
     Shared by `bootstrap upgrade` / `auto` (via cli._config_from_existing_vault) and
     the custom-connector commands. Raises yaml.YAMLError / UnicodeDecodeError / OSError,
     and ValueError when the file parses but isn't shaped as a mapping (top level, or
-    its instance/user/connectors blocks, or connectors.inputs).
+    its instance/user/connectors/notify blocks, or connectors.inputs), or when
+    notify.wrap_channels isn't a non-empty list of known wrap channels.
     """
     existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     if existing is None:
@@ -761,6 +786,14 @@ def config_from_vault(
     inputs = connectors.get("inputs")
     if inputs is not None and not isinstance(inputs, dict):
         raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
+    enabled = set(connectors.get("enabled") or [])
+    wrap_channels = parse_wrap_channels(_submapping("notify").get("wrap_channels"))
+    if wrap_channels is not None and not wrap_channels & normalize_connector_keys(enabled):
+        print(
+            f"warning: scout-config.yaml: notify.wrap_channels ({', '.join(sorted(wrap_channels))}) "
+            f"names no enabled connector among {', '.join(WRAP_CHANNELS)}: runs will send no wrap notification",
+            file=sys.stderr,
+        )
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,
@@ -771,11 +804,12 @@ def config_from_vault(
         timezone=existing.get("timezone") or "",  # "" = follow the host (#279)
         platform=existing.get("platform", "macos"),
         plugin_version=plugin_version,
-        enabled_connectors=set(connectors.get("enabled") or []),
+        enabled_connectors=enabled,
         connector_inputs=dict(inputs or {}),
         skip_jobs=skip_jobs,
         skip_claude=skip_claude,
         managed_by=managed_by,
+        wrap_channels=wrap_channels,
     )
 
 
@@ -1239,6 +1273,31 @@ def _stage_migrations(cfg: BootstrapConfig) -> None:
     migrate_perfile(cfg.vault)
 
 
+def _stage_privacy_report(vault: Path) -> None:
+    """Print the per-note privacy migration report on stderr (#453, spec §10 P5). Never edits.
+
+    Legacy ``visibility:`` values, private links in shared files, and
+    trading/brokerage folders to make local-only. Changing any of them needs the
+    owner: ``/scout-update`` asks per note and per path and then runs
+    ``scoutctl bootstrap privacy-migrate --set-private`` / ``--local-only``.
+    A headless upgrade (self-update, the app) gets this report and nothing else.
+    A failure here never fails the upgrade.
+    """
+    from scout.scripts import privacy_migrate
+
+    try:
+        # persist=False: no privacy-index write, so repeated upgrades stay byte-identical.
+        rep = privacy_migrate.report(vault, persist=False)
+    except Exception as e:  # noqa: BLE001 - a report must never fail the upgrade
+        print(f"warning: privacy migration report skipped ({type(e).__name__}: {e})", file=sys.stderr)
+        return
+    if not rep:
+        return
+    print("privacy migration (nothing was changed; review it with the owner in /scout-update):", file=sys.stderr)
+    for line in rep.lines():
+        print(f"  {line}", file=sys.stderr)
+
+
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
     """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
     _refuse_interrupted_install(cfg.vault)
@@ -1279,6 +1338,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_git_init(cfg)
         _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
+        _stage_privacy_report(cfg.vault)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)

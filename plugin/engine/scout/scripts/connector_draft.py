@@ -297,7 +297,7 @@ class Isolation:
     settings, so no global allow rule can approve a write tool and no settings
     hook runs. ``settings`` (passed as ``--settings``) always turns hooks off,
     which also covers plugin hooks, and may re-enable the target server's own
-    plugin. ``mcp_config`` is a temp file holding the target's user-scope
+    plugin. ``mcp_config`` is a temp file holding the target's user-scope (or vault-local)
     ``mcpServers`` entry, or None.
     """
 
@@ -344,28 +344,42 @@ def session_settings(server_name: str) -> dict[str, Any]:
     return settings
 
 
-def user_mcp_server(server_name: str) -> dict[str, Any] | None:
-    """The user-scope ``mcpServers`` entry for ``server_name`` (``claude mcp add -s user``), or None.
+def user_mcp_server(server_name: str, vault: Path | None = None) -> dict[str, Any] | None:
+    """The ``mcpServers`` entry for ``server_name`` that Scout's runs would see, or None.
 
-    Those live in ``~/.claude.json`` (``$CLAUDE_CONFIG_DIR/.claude.json`` when
-    set) and are hidden along with user settings.
+    User scope (``claude mcp add -s user``) first, then — given ``vault`` —
+    local scope for the vault directory (``claude mcp add -s local`` run there),
+    which keeps a server visible to Scout's runs and no other session. Both live
+    in ``~/.claude.json`` (``$CLAUDE_CONFIG_DIR/.claude.json`` when set), local
+    entries under ``projects.<absolute path>``, and both are hidden along with
+    user settings.
     """
     cfg = _claude_config_dir()
-    servers = _read_json_object(cfg / ".claude.json" if cfg else Path.home() / ".claude.json").get("mcpServers")
-    entry = servers.get(server_name) if isinstance(servers, dict) else None
-    return entry if isinstance(entry, dict) else None
+    data = _read_json_object(cfg / ".claude.json" if cfg else Path.home() / ".claude.json")
+    scopes: list[Any] = [data.get("mcpServers")]
+    projects = data.get("projects")
+    if vault is not None and isinstance(projects, dict):
+        for key in dict.fromkeys((str(vault), str(vault.resolve()))):
+            project = projects.get(key)
+            if isinstance(project, dict):
+                scopes.append(project.get("mcpServers"))
+    for servers in scopes:
+        entry = servers.get(server_name) if isinstance(servers, dict) else None
+        if isinstance(entry, dict):
+            return entry
+    return None
 
 
 @contextmanager
-def isolated_session(server_name: str) -> Iterator[Isolation]:
+def isolated_session(server_name: str, vault: Path | None = None) -> Iterator[Isolation]:
     """The ``Isolation`` for ``server_name``; any ``--mcp-config`` file is deleted on exit.
 
     A server entry can carry tokens in ``env`` or ``headers``, so it goes in a
     0600 file in a fresh 0700 directory, never on the command line. A server
-    that is neither a plugin's nor user-scope (a claude.ai connector, or one
+    that is neither a plugin's nor user- or vault-local-scope (a claude.ai connector, or one
     that can't be resolved) gets neither, and ToolSearch finds what it can.
     """
-    entry = user_mcp_server(server_name)
+    entry = user_mcp_server(server_name, vault)
     tmp = None
     try:
         path = None
@@ -538,7 +552,7 @@ def draft(
         taken |= set(cc.load(vault, plugin_root=plugin_root).raw)
     schema = draft_schema(list(cc.load_presets(plugin_root)))
     prompt = render_prompt(server_name, plugin_root=plugin_root, taken=taken)
-    with isolated_session(server_name) as iso:
+    with isolated_session(server_name, vault) as iso:
         feedback = ""
         defs: list[dict[str, Any]] = []
         issues: list[cc.Issue] = []

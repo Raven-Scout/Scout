@@ -1,7 +1,8 @@
 # Telegram outbound — operator setup
 
-Telegram outbound lets a Scout session push notifications to your phone — same
-fan-out pattern as the session-wrap Slack DM, but to a Telegram chat instead.
+Telegram outbound lets a Scout session push notifications to your phone, in a
+Telegram chat. Once set up, it carries the session-wrap message too, alongside
+the Slack DM unless you choose one channel (see §7).
 It is **outbound only by design** in v0.4: Scout sends; you receive. There is
 no return-bridge yet (inbound replies as feedback signals are v0.7+ territory
 per the event-architecture spec).
@@ -26,7 +27,9 @@ by Scout.
   on your Mac, mode 600. Nothing transits a Scout-operated server.
 - **Tier maps to push behavior.** `--tier info` posts silently
   (`disable_notification=true`); `--tier action_required` posts loud. That's
-  the only knob — Scout doesn't sound or shape the notification beyond it.
+  the only push knob — Scout doesn't sound the notification beyond it.
+  `--parse-mode html` only changes how the text is rendered (see
+  [Formatting](#formatting-html-mode)).
 
 If any of those don't sit right, don't enable this connector — your Slack DM
 covers the same wrap-message use case.
@@ -149,19 +152,66 @@ will.
 
 ## 7. How Scout uses this
 
-The Claude session at session-wrap calls the same CLI command from inside
-its prompt (via the Bash tool):
+The runners (`run-scout.sh`, `run-dreaming.sh`, `run-research.sh`) only say
+that a wrap message is owed. The brain file's notification section names the
+channel and the recipient:
 
-```bash
-scoutctl notify telegram --tier action_required --body "$(scoutctl ... --format wrap)"
+| Runner             | Reads the channel from                                               |
+|--------------------|----------------------------------------------------------------------|
+| `run-scout.sh`     | `SKILL.md`'s notification sections                                   |
+| `run-dreaming.sh`  | `DREAMING.md`'s notification section, else `SKILL.md`'s              |
+| `run-research.sh`  | `RESEARCH.md`'s Step 4d, else `SKILL.md`'s notification sections     |
+
+Turn it on with the `telegram` connector:
+
+- **New vault:** once both secrets from steps 2 and 4 exist, `/scout-setup`
+  detects `telegram` (`test -s` on the two files; no network call). Enable it.
+- **Existing vault:** add `telegram` to `connectors.enabled` in your vault's
+  `scout-config.yaml`, then run `/scout-update`.
+
+SKILL.md then gains a **Telegram Notification** section and RESEARCH.md a
+**Step 4d: Telegram Notification**. Dreaming has no section of its own and
+follows SKILL.md.
+
+**Telegram is added to the Slack DM, not swapped for it.** With both Slack and
+Telegram enabled, every wrap goes to both. To keep the wrap on one channel, set
+`notify.wrap_channels` in your vault's `scout-config.yaml`, then run
+`/scout-update`:
+
+```yaml
+notify:
+  wrap_channels: [telegram]   # or [slack]; leave it out for both
 ```
 
-This fans out the wrap message to Telegram in addition to the Slack DM.
-Tier choice mirrors urgency: a session that surfaced 🔴 Urgent items
-escalates with `action_required`; a routine briefing posts `info`.
+Only `slack` and `telegram` are accepted; anything else, or an empty list,
+makes `/scout-update` stop with an error instead of silently dropping the wrap.
+Leaving a channel out removes only its notification section: Slack scans are
+unaffected.
 
-The runner stays bash-only in Plan 4; Plan 7 will Pythonize it. Either
-way, the integration point is `scoutctl notify telegram`.
+**Privacy still applies to each channel on its own.** Slack is a shared
+surface, so the Slack DM goes through `scoutctl kb check-outbound` and never
+names a `[private]` item. This Telegram chat is owner-only, so it may. With
+both on, private items reach Telegram and the daily file, never Slack. If a
+Telegram send fails, the session says so in its final message and does not
+resend that message on Slack.
+
+The section tells the session to pipe the wrap in through stdin, in HTML mode:
+
+```bash
+scoutctl notify telegram --tier info --parse-mode html --body-file - <<'SCOUT_WRAP'
+<b>Scout morning briefing ready.</b>
+...
+SCOUT_WRAP
+```
+
+`--body-file -` reads the body from stdin, so a wrap that quotes Slack, GitHub
+or mail text never goes through a shell argument (`--body-file PATH` reads a
+UTF-8 file instead). Tier choice mirrors urgency: a session that surfaced 🔴
+Urgent items escalates with `--tier action_required`; a routine run posts
+`--tier info`.
+
+To change the wording or the rule, edit the section in your vault's SKILL.md
+or RESEARCH.md; `/scout-update` keeps your edits.
 
 ## Tier semantics
 
@@ -173,12 +223,61 @@ way, the integration point is `scoutctl notify telegram`.
 There are only two tiers. `--tier critical` etc. are NOT supported — Scout
 treats anything beyond the two as a usage error.
 
+## Formatting (HTML mode)
+
+By default the body goes out as plain text. `--parse-mode html` sends it with
+Telegram's `parse_mode=HTML`, so you can use bold, italic, underline and
+links:
+
+```bash
+scoutctl notify telegram --tier info --parse-mode html \
+  --body '<b>Morning briefing</b> — <i>3 items</i>, <a href="https://example.com/pr/1">PR #1</a>'
+```
+
+- **Tags Telegram accepts:** `<b>`, `<i>`, `<u>`, `<s>`, `<a href="…">`,
+  `<code>`, `<pre>` (optionally `<pre><code class="language-…">`) and
+  `<blockquote>`. Nothing else — no `<br>`, `<p>`, `<ul>`: use plain
+  newlines and `•` for lists.
+- **Escape `<`, `>` and `&` in text** as `&lt;`, `&gt;` and `&amp;`, also in
+  a URL inside `href` (`?a=1&amp;b=2`).
+- **Scout keeps only `http://`, `https://` and `mailto:` links, written as
+  `<a href="…">` with no other attribute.** Any other `<a>` (`tg://`,
+  `obsidian://`, `javascript:`, a second `href`, `target=…`) is replaced by
+  its label before sending, and a `warning: dropped N link(s) …` line goes to
+  stderr.
+  Telegram itself would keep a `tg://` deep link live (join a chat, add a
+  proxy) and silently drop an `obsidian://` link. Put such a path in `<code>`
+  instead.
+- **Escape any text you did not write** (Slack, GitHub, mail) with
+  `html.escape` before you put it in an HTML body. Only links Scout builds
+  itself should be `<a>`: an unescaped `<a href="https://evil">` would show as
+  a live link with someone else's label.
+- **Why HTML and not MarkdownV2:** HTML needs only those three characters
+  escaped. MarkdownV2 needs ~18, and one miss gets the whole message refused.
+
+**A formatting mistake never loses the message.** If Telegram answers
+`400 Bad Request: can't parse entities`, Scout resends that chunk as plain
+text: tags stripped, link URLs kept in parentheses (`label (https://…)`),
+entities unescaped. It prints a `warning: Telegram refused the HTML …` line
+on stderr, and the Event payload gets `"parse_fallback": true`. Any other
+error (bad chat-id, revoked token) is not retried. In HTML mode the Event
+payload also carries `"parse_mode": "html"`.
+
 ## Long messages
 
 Telegram caps `sendMessage` at 4096 chars per call. Scout splits longer
 bodies on paragraph (`\n\n`), then line (`\n`), then word (` `), then a
 hard cut at 4096. You'll see one push notification per chunk; the receive
 order is sequential.
+
+In HTML mode a cut never lands inside a tag or an entity, and each chunk is
+valid on its own: a tag still open at the cut is closed at the end of that
+chunk and reopened, with its attributes, at the start of the next. A chunk of
+only whitespace is skipped, since Telegram refuses an empty message. Input
+that is unbalanced to begin with (a stray `</b>`) is not repaired; Telegram
+refuses that chunk and it goes out as plain text, as above. The same happens
+if the tags open at a cut, with their closers, would take more than half a
+chunk (about 2000 characters of nesting): Scout stops carrying them over.
 
 ## Troubleshooting
 
@@ -188,6 +287,8 @@ order is sequential.
 | `Missing secret: .../telegram-chat-id`                           | Step 4 not done.                                                             |
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
+| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an or an unescaped `<`/`&`. The chunk was sent as plain text. |
+| `warning: dropped N link(s) whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |
 

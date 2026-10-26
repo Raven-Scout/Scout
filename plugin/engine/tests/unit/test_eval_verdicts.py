@@ -88,10 +88,37 @@ def test_a_check_that_could_not_be_evaluated_does_not_count() -> None:
     assert (r.base_pass, r.base_n, r.unevaluated) == (2, 2, 1)
 
 
-def test_any_aborted_sample_blocks_every_verdict() -> None:
-    cmp = compare_arms(_arm(True, True), [*_arm(False, False), _sample({}, aborted={"reason": "timeout"})])
+def test_a_harness_failure_blocks_every_verdict() -> None:
+    cmp = compare_arms(_arm(True, True), [*_arm(False, False), _sample({}, aborted={"reason": "no_session"})])
     assert cmp.blocked == "aborted samples (base 0, head 1): no verdict"
     assert cmp.regressions == []
+
+
+def _limited(reason: str = "timeout") -> SampleResult:
+    return _sample({}, calls=500, aborted={"reason": reason, "seconds": 1800.0})
+
+
+def test_a_sample_that_hit_a_run_limit_is_left_out_and_the_rest_still_score() -> None:
+    cmp = compare_arms(_arm(True, True, True), [*_arm(True, True), _limited()])
+    assert cmp.blocked is None
+    r = _row(cmp)
+    assert (r.base_pass, r.base_n, r.head_pass, r.head_n, r.verdict) == (3, 3, 2, 2, "same")
+    limits = _row(cmp, "within limits")
+    assert (limits.base_pass, limits.base_n, limits.head_pass, limits.head_n) == (3, 3, 2, 3)
+    assert limits.verdict == "flaky on head"  # one slow run reads as a rerun, not a regression
+    assert cmp.regressions == []
+    calls = next(m for m in cmp.metrics if m.label == "tool calls")
+    assert calls.head == (10, 10, 10)  # the truncated sample's 500 calls never reach a metric
+
+
+def test_head_hitting_run_limits_twice_is_a_regression() -> None:
+    cmp = compare_arms(_arm(True, True, True), [_arm(True)[0], _limited(), _limited("error_max_budget_usd")])
+    assert _row(cmp, "within limits").verdict == "regression"
+    assert cmp.regressions == ["within limits"]
+
+
+def test_no_limit_row_when_no_sample_hit_a_limit() -> None:
+    assert [r.name for r in compare_arms(_arm(True, True), _arm(True, True)).checks] == ["placement"]
 
 
 def test_mixed_models_or_cli_versions_block() -> None:

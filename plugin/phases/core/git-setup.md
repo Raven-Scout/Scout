@@ -20,12 +20,11 @@ Do not mention git setup in your output unless something goes wrong.
 
 ## Using Git History
 
-Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use git history actively during runs:
+Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use the vault's history actively during runs, through `scripts/scoutctl kb delta` (it labels every changed path, so you know which changes are private):
 
-- `git log --oneline -20` — see what recent runs did (avoid duplicate work)
-- `git diff HEAD~1` — inspect what the last run changed
-- `git log --since="8 hours ago" --oneline` — understand what happened today
-- `git show <commit>` — inspect a specific change when you need provenance
+- `scripts/scoutctl kb delta --since 1d` — see what recent runs did (avoid duplicate work)
+- `scripts/scoutctl kb delta --since <commit> --diff` — inspect what changed after a commit
+- `scripts/scoutctl kb delta --since 8h` — understand what happened today
 
 The commit history is as valuable as the files themselves. When verifying KB claims or understanding what was already audited, check git before querying connectors.
 
@@ -34,14 +33,29 @@ The commit history is as valuable as the files themselves. When verifying KB cla
 Interactive sessions ({{INSTANCE_NAME}} work sessions, manual edits, `/scout-work`, audits) commit to the vault between scheduled runs. Those commits are a **primary signal source**, not background noise — a `work [HH:MM]:` commit may already have done the thing an action item is about. Before composing the run summary:
 
 ```bash
-git -C {{SCOUT_DIR}} log --since="<last run timestamp>" --pretty=format:'%h %s' --no-merges
+cd {{SCOUT_DIR}} && scripts/scoutctl kb delta --since <since>
 ```
 
-Narrate any non-session commits (anything not authored by this run) in the summary. **Do not assert a "quiet window" / "nothing changed since last run" until this git scan returns zero non-session commits.** A silent delta in the vault contradicts a "quiet" claim and erodes trust.
+`<since>` is the last scheduled run's commit sha (its `<mode> [HH:MM]:` commit in an earlier `kb delta`), or the hours since that run rounded up, such as `8h` (`--since` takes a commit or `Nh` / `Nd` / `Nw`, not a timestamp).
+
+Narrate any non-session commits (anything not authored by this run) in the summary. A commit that touches any `[private]` path is narrated in full (subject, message, private paths) only on owner-only surfaces (the daily file, Telegram). In the Slack wrap, mention it only by its normal paths, never by its subject or message; a commit with only private paths is left out of Slack. **Do not assert a "quiet window" / "nothing changed since last run" until this scan returns zero non-session commits.** A silent delta in the vault contradicts a "quiet" claim and erodes trust.
 
 ## GitHub Access via `gh` CLI
 
 All GitHub operations use the `gh` CLI, which is authenticated and has full access to both public and private repos. **Do not use GitHub MCP tools** — they have limited scope.
+
+## Engine Changes: Never in the Live Engine Checkout
+
+The engine checkout scheduled runs execute is `"engine_root"` in `~/.local/state/scout/engine.json`; read it there, never assume a path. On a developer's machine it is an editable install: whatever its working tree holds runs in the next scheduled run, unreviewed, and a checkout off `main` or a release tag blocks upgrades. **In it, never run `git checkout`, `git switch`, `git stash`, `git reset` or `git pull`, never create a branch, and never edit, write or delete a file.** Reading is fine.
+
+Make any engine or plugin change in a fresh clone of `origin/main`, with `NAME` a short kebab-case name for the change:
+
+```bash
+ROOT="$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.local/state/scout/engine.json")))["engine_root"])')"
+git clone -q "$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo https://github.com/Raven-Scout/Scout.git)" ~/.scout-worktrees/$NAME && git -C ~/.scout-worktrees/$NAME switch -c scout/$NAME
+```
+
+Commit there, `git push -u origin scout/$NAME`, then `gh pr create --draft`. Never merge it, and never leave uncommitted work (push unfinished work as the draft). Name the PR, or the clone's path if the push fails, in the wrap notification. `scoutctl phases backport --apply` needs `--plugin-root ~/.scout-worktrees/$NAME/plugin`. The repo is public: no vault content (people, companies, issue IDs, channels). A run-health `engine.dirty` or `engine.off_release` finding means that checkout was changed: report it, and never clean or switch it yourself.
 
 ## Timezone Handling
 

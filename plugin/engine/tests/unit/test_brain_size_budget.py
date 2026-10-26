@@ -18,8 +18,15 @@ from scout.scripts.phase_assembly import parse_phase_file
 
 PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 
-# ~tokens (chars/4) at the last re-pin. Re-pinned: 2026-10-13 (first pin).
-PINS = {"SKILL": 40_050, "DREAMING": 16_970, "RESEARCH": 4_755}
+# ~tokens (chars/4) at the last re-pin. Re-pinned: 2026-10-13 (first pin); 2026-10-20: +392 in every
+# mode for git-setup's "Engine Changes: Never in the Live Engine Checkout" (a dreaming run edited the
+# live engine; the rule must reach any scheduled run, research included). 2026-10-21: +1,254 SKILL,
+# +1,194 DREAMING, +1,113 RESEARCH for #453: the always-included privacy rule (phases/core/privacy.md,
+# ~790) plus reading the KB through `scoutctl kb` and the Slack outbound-draft step in the phases.
+# 2026-10-21 (#453 eval follow-up): +189 SKILL, +109 DREAMING, +70 RESEARCH for listing/reading context
+# notes via `scoutctl kb files|read`, exact private titles on owner-only surfaces, and consolidation
+# keeping `personal_tasks`; the pins also absorb drift already on main (+762 SKILL, +239 RESEARCH).
+PINS = {"SKILL": 42_648, "DREAMING": 18_725, "RESEARCH": 6_569}
 GROWTH = 0.05
 SHRINK = 0.10
 

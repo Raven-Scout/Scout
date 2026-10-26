@@ -1,0 +1,59 @@
+{
+  "engine_version": "0.18.2",
+  "policy": {
+    "local_only": {
+      "always": [
+        ".scout-logs/**",
+        ".scout-cache/**",
+        ".claude/**",
+        ".venv/**",
+        ".obsidian/**",
+        ".pytest_cache/**",
+        ".mcp.json",
+        ".env*",
+        ".scout-state/**"
+      ],
+      "default": [],
+      "sync_allow": [
+        ".scout-state/schedule.yaml",
+        ".scout-state/id-map.json",
+        ".scout-state/privacy-policy.json"
+      ]
+    },
+    "shared_files": [
+      "drafts/**"
+    ],
+    "surfaces": {
+      "owner_only": [
+        "agnes_owner_conversation",
+        "agnes_personal_memory",
+        "app",
+        "telegram_private_chat",
+        "vault",
+        "vault_sync"
+      ],
+      "shared": [
+        "agnes_memory_promotion",
+        "agnes_shared",
+        "connector_query",
+        "connector_write",
+        "peer_agent",
+        "public_repo",
+        "slack",
+        "telegram_group_chat",
+        "web_query"
+      ]
+    },
+    "visibility_defaults": [
+      {
+        "glob": "knowledge-base/personal/**",
+        "visibility": "private"
+      },
+      {
+        "glob": ".scout-inbox/**",
+        "visibility": "private"
+      }
+    ]
+  },
+  "schema_version": 1
+}

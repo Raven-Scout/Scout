@@ -40,3 +40,6 @@ drive:
 claude_sessions:
   primary: bash
   command: "test -d ~/.claude/projects"
+telegram:
+  primary: bash
+  command: "test -s ~/.scout-secrets/telegram-bot-token && test -s ~/.scout-secrets/telegram-chat-id"

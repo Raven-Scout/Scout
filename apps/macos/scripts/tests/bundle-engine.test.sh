@@ -199,19 +199,31 @@ run "$TMP/out12e"
 assert '[ "$RC" -ne 0 ] && grep -q "is not valid JSON" "$TMP/out12e.log"' "malformed root marketplace: fails, says why"
 g reset -q --hard HEAD~1
 
-# 12f. a committed plugin/.claude-plugin/marketplace.json would collide with
-#      the generated one (two entries at the same archive path): refuse
+# 12f. a committed plugin/.claude-plugin/marketplace.json that is not the
+#      generated manifest (here: the root one verbatim) fails, writes nothing
 printf '%s\n' "$ROOT_MP" > "$REPO/plugin/.claude-plugin/marketplace.json"
 g add plugin && g commit -qm "plugin-level marketplace"
 run "$TMP/out12f"
-assert '[ "$RC" -ne 0 ] && grep -q "plugin/.claude-plugin/marketplace.json is committed" "$TMP/out12f.log"' "committed plugin/ marketplace.json: fails, says why"
+assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out12f/engine-release.json" ]' "stale committed plugin/ marketplace.json: fails, writes nothing"
+assert 'grep -q "plugin/.claude-plugin/marketplace.json is committed but differs" "$TMP/out12f.log"' "stale committed plugin/ marketplace.json: says why"
+g reset -q --hard HEAD~1
+
+# 12f2. a committed copy of exactly the generated manifest ships as is: once,
+#       same content, and without needing `git archive --add-virtual-file`
+cp "$TMP/mp5.json" "$REPO/plugin/.claude-plugin/marketplace.json"   # generated at HEAD's version, 9.10.0
+g add plugin && g commit -qm "plugin is its own marketplace root"
+REAL_GIT="$(command -v git)"; mkdir -p "$TMP/oldgit"
+printf '#!/usr/bin/env bash\nif [[ " $* " == *" archive -h "* ]]; then "%s" "$@" 2>&1 | grep -v add-virtual-file; exit 129; fi\nexec "%s" "$@"\n' "$REAL_GIT" "$REAL_GIT" > "$TMP/oldgit/git"
+chmod +x "$TMP/oldgit/git"
+run "$TMP/out12f2" PATH="$TMP/oldgit:$PATH"
+TB2="$TMP/out12f2/scout-engine-9.10.0.tar.gz"
+assert '[ "$RC" -eq 0 ]' "committed plugin/ marketplace.json equal to the generated one: bundles"
+assert '[ "$(tar -tzf "$TB2" | grep -cx ".claude-plugin/marketplace.json")" = 1 ]' "committed plugin/ marketplace.json: in the archive exactly once"
+assert 'cmp -s <(tar -xzOf "$TB2" .claude-plugin/marketplace.json) "$TMP/mp5.json"' "committed plugin/ marketplace.json: shipped byte for byte"
 g reset -q --hard HEAD~1
 
 # 12g. a git without `archive --add-virtual-file` (< 2.39) fails clearly
 #      rather than shipping an engine Claude Code can't register
-REAL_GIT="$(command -v git)"; mkdir -p "$TMP/oldgit"
-printf '#!/usr/bin/env bash\nif [[ " $* " == *" archive -h "* ]]; then "%s" "$@" 2>&1 | grep -v add-virtual-file; exit 129; fi\nexec "%s" "$@"\n' "$REAL_GIT" "$REAL_GIT" > "$TMP/oldgit/git"
-chmod +x "$TMP/oldgit/git"
 run "$TMP/out12g" PATH="$TMP/oldgit:$PATH"
 assert '[ "$RC" -ne 0 ] && [ ! -e "$TMP/out12g/engine-release.json" ]' "git without --add-virtual-file: fails, writes nothing"
 assert 'grep -q "add-virtual-file.*git 2.39 or newer" "$TMP/out12g.log"' "git without --add-virtual-file: says which git is needed"

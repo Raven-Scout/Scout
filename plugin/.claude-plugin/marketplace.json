@@ -1,0 +1,27 @@
+{
+  "name": "scout-plugin",
+  "owner": {
+    "name": "Jordan Burger"
+  },
+  "description": "Marketplace for the Scout autonomous knowledge management plugin",
+  "plugins": [
+    {
+      "name": "scout",
+      "source": "./",
+      "description": "Autonomous knowledge management and daily briefing system for Claude Code",
+      "version": "0.18.3",
+      "author": {
+        "name": "Jordan Burger"
+      },
+      "homepage": "https://github.com/Raven-Scout/Scout",
+      "repository": "https://github.com/Raven-Scout/Scout",
+      "keywords": [
+        "knowledge-management",
+        "briefing",
+        "automation",
+        "scheduling",
+        "obsidian"
+      ]
+    }
+  ]
+}

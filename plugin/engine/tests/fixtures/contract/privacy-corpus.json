@@ -1,0 +1,1151 @@
+[
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/plain.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plain\ntype: topic\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/plain.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/plain.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "# Plain\n\nNo frontmatter here.\n",
+    "path": "knowledge-base/topics/misc/plain.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: \"Private \"\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/people/priya.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: NORMAL\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/people/priya.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/draft.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: PRIVATE while drafting\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/draft.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/draft.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility:\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/draft.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/draft.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: true\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/draft.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/broken.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: [unclosed\nvisibility: normal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/broken.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/broken.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\n- just\n- a list\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/broken.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/broken.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: normal\nname: Never closed\n",
+    "path": "knowledge-base/topics/misc/broken.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/plain.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\n---\nBody\n",
+    "path": "knowledge-base/topics/misc/plain.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "\ufeff---\nvisibility: private\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/personal/x.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntype: task\ndomain: personal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/personal/x.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/personal/y.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: normal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/personal/y.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": ".scout-inbox/a.jsonl",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-inbox/a.jsonl",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "inbox.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "# Inbox\n",
+    "path": "inbox.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "Raw/scan.txt",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "Raw/scan.txt",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".venv/x",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".venv/x",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".scout-state/lock",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-state/lock",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".env.local",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".env.local",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".mcp.json",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".mcp.json",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": ".scout-state/id-map.json",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-state/id-map.json",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": ".scout-state/schedule.yaml",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-state/schedule.yaml",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": ".scout-state/privacy-policy.json",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-state/privacy-policy.json",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/widget.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Widget\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/widget.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/widget.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: ' ORG '\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/widget.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/widget.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: none\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/widget.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya@example.com]\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com",
+        "group:0aF9_x-1"
+      ],
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: [Person:Priya@Example.COM, group:0aF9_x-1, person:priya@example.com]\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: bogus\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya@example.com, person:not-an-email]\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [group:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: person:priya@example.com\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: []\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [42]\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/notes.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": true,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "privacy-contradiction"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: private\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/personal/z.md",
+      "shared_file": true,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": [
+        "privacy-contradiction"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/personal/z.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/draft.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: secret\nfederation_scope: everyone\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/draft.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "drafts/r.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Reply\n---\n# Note\n\nBody text.\n",
+    "path": "drafts/r.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/billing/rollout.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Rollout\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/billing/rollout.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": "trading/p.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Positions\n---\n# Note\n\nBody text.\n",
+    "path": "trading/p.md",
+    "policy_overlay": {
+      "local_only_add": [
+        "trading/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/x.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "knowledge-base/x.md",
+    "policy_overlay": {
+      "local_only_add": [
+        "trading/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".scout-state/id-map.json",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".scout-state/id-map.json",
+    "policy_overlay": {
+      "local_only_add": [
+        ".scout-state/id-map.json"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": true,
+      "path": ".venv/x",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": ".venv/x",
+    "policy_overlay": {
+      "local_only_add": [
+        "trading/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/billing/rollout.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Rollout\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/billing/rollout.md",
+    "policy_overlay": {
+      "visibility_defaults": [
+        {
+          "glob": "knowledge-base/topics/billing/**",
+          "visibility": "private"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/billing/rollout.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: normal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/billing/rollout.md",
+    "policy_overlay": {
+      "visibility_defaults": [
+        {
+          "glob": "knowledge-base/topics/billing/**",
+          "visibility": "private"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/personal/shared/list.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "knowledge-base/personal/shared/list.md",
+    "policy_overlay": {
+      "visibility_defaults": [
+        {
+          "glob": "knowledge-base/personal/shared/**",
+          "visibility": "normal"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "notes/a.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: A\n---\n# Note\n\nBody text.\n",
+    "path": "notes/a.md",
+    "policy_overlay": {
+      "visibility_defaults": [
+        {
+          "glob": "notes/**",
+          "visibility": "secretish"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "notes/a.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: A\n---\n# Note\n\nBody text.\n",
+    "path": "notes/a.md",
+    "policy_overlay": {
+      "visibility_defaults": [
+        "notes/**",
+        {
+          "visibility": "private"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "outbox/m.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "outbox/m.md",
+    "policy_overlay": {
+      "shared_files_add": [
+        "outbox/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "drafts/r.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Reply\n---\n# Note\n\nBody text.\n",
+    "path": "drafts/r.md",
+    "policy_overlay": {
+      "shared_files_add": [
+        "outbox/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/widget.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/widget.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/widget.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/projects/widget/widget.md",
+    "policy_overlay": {
+      "federation_ceilings": {
+        "org": "org"
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": true,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": [
+        "privacy-contradiction"
+      ]
+    },
+    "frontmatter_text": "---\nvisibility: private\nfederation_scope: org\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": {
+      "federation_defaults": {}
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "trading/p.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "trading/p.md",
+    "policy_overlay": "just-a-string"
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "trading/p.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "trading/p.md",
+    "policy_overlay": {
+      "local_only_add": "trading/**"
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "outbox/m.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "outbox/m.md",
+    "policy_overlay": {
+      "shared_files_add": {
+        "a": "b"
+      },
+      "surfaces": [
+        "slack"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/personal/y.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: normal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/personal/y.md",
+    "policy_overlay": {
+      "surfaces": {
+        "owner_only": [
+          "slack"
+        ]
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/tab-after-colon.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: tab-after-colon\ntype: topic\nvisibility:\tnormal\n---\nA tab after the colon: pure SafeLoader rejects the block.\n",
+    "path": "knowledge-base/topics/misc/tab-after-colon.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/surrogate-escape.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: surrogate-escape\ntype: topic\nvisibility: normal\ntitle: \"lone surrogate \\ud800 escape\"\n---\nSafeLoader accepts a lone surrogate escape; libyaml rejects it.\n",
+    "path": "knowledge-base/topics/misc/surrogate-escape.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/bom-line-start.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: bom-line-start\n\ufefftype: topic\nvisibility: normal\n---\nA U+FEFF opening a line inside the block: SafeLoader keeps it in the key; libyaml rejects the block.\n",
+    "path": "knowledge-base/topics/misc/bom-line-start.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/bom-own-line.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: bom-own-line\ntype: topic\n\ufeff\nvisibility: normal\n---\nA U+FEFF alone on a line inside the block: SafeLoader rejects the block; libyaml skips it.\n",
+    "path": "knowledge-base/topics/misc/bom-own-line.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/block-scalar-comment.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: block-scalar-comment\ntype: topic\nvisibility: normal\nnote: |#c\n  text\n---\nA comment right after a block-scalar header: SafeLoader rejects the block; libyaml parses it.\n",
+    "path": "knowledge-base/topics/misc/block-scalar-comment.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "reserved",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/flow-explicit-key.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: flow-explicit-key\ntype: topic\nvisibility: normal\ntags: [? ]\n---\nAn empty explicit key in a flow sequence: SafeLoader parses it; libyaml rejects the block.\n",
+    "path": "knowledge-base/topics/misc/flow-explicit-key.md",
+    "policy_overlay": null
+  }
+]
