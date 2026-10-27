@@ -6,8 +6,8 @@
 
 They are machine metadata, replaced in place rather than stacked. A line only
 counts as a marker when its value parses, and the scan never reaches into a
-child task. Until the apps skip them too, the comment lister and the renderer
-still count them as comments, so comment indexes agree across engine and apps.
+child task. The comment lister and the renderer skip exactly the lines that
+read as markers, as the Mac app does, so comment indexes agree across both.
 """
 
 from __future__ import annotations
@@ -226,20 +226,99 @@ def test_read_plan_marks_out_of_range(tmp_path: Path) -> None:
         read_plan_marks(path, task_line_number=9)
 
 
-def test_plan_marks_still_count_as_comments_like_the_apps(daily: Path, fake_data_dir: Path) -> None:
-    # delete-comment / edit-comment take the index the apps show. The apps still
-    # list the markers as comments, so the engine has to count them the same way
-    # until all three skip them in one release.
+def test_plan_marks_are_not_comments(daily: Path, fake_data_dir: Path) -> None:
+    # delete-comment / edit-comment take the index the app shows, and the app
+    # reads the markers into the task's plan, so the engine skips them too.
     set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
     set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
     set_actual(minutes=60, by_id="PROJ1", data_dir=fake_data_dir)
 
     comments = list_comment_lines(daily, task_line_number=_task_line(daily, "PROJ1"))
-    assert [author for _, author, _ in comments] == ["estimate", "block", "actual", "Source", "alex"]
+    assert [author for _, author, _ in comments] == ["Source", "alex"]
 
     _title, _preamble, sections = render_parse(daily)
     task = next(t for s in sections for t in s.tasks if "PROJ1" in t.raw)
-    assert [c.author for c in task.comments] == ["estimate", "block", "actual", "alex"]
+    assert [c.author for c in task.comments] == ["alex"]
+    assert not any("estimate" in b.text or "block" in b.text for s in sections for b in s.bullets)
+
+
+def _authors(path: Path) -> tuple[list[str], list[str]]:
+    """Comment authors of the first task, from the lister and from the renderer."""
+    listed = [author for _, author, _ in list_comment_lines(path, task_line_number=_task_line(path, "AB1"))]
+    _title, _preamble, sections = render_parse(path)
+    rendered = [c.author for c in next(t for s in sections for t in s.tasks if "AB1" in t.raw).comments]
+    return listed, rendered
+
+
+def test_only_lines_plan_marks_reads_are_skipped(tmp_path: Path) -> None:
+    # Unparseable values stay comments, and so does a second line for a key
+    # that already has one. A reversed block parses, as it always has.
+    path = tmp_path / "action-items-2026-09-30.md"
+    path.write_text(
+        "## 🟡 To Do\n\n"
+        "- [ ] [#AB1] **Task**\n"
+        "  - block: waiting on Priya\n"
+        "  - estimate: 30m (kind: deep)\n"
+        "  - estimate: 1h\n"
+        "  - block: 2026-09-30 11:00-10:00\n"
+        "  - actual: a while\n"
+        "  - alex: noted\n",
+        encoding="utf-8",
+    )
+    expected = ["block", "estimate", "actual", "alex"]
+    assert _authors(path) == (expected, expected)
+    marks = read_plan_marks(path, task_line_number=3)
+    assert (marks.estimate_minutes, marks.raw_minutes, marks.kind) == (30, None, "deep")
+    assert marks.block is not None and marks.block.minutes == -60
+
+
+def test_marker_scope_ends_at_a_blank_line_and_a_child_task(tmp_path: Path) -> None:
+    path = tmp_path / "action-items-2026-09-30.md"
+    path.write_text(
+        "## 🟡 To Do\n\n"
+        "- [ ] [#AB1] **Task**\n"
+        "  - estimate: 45m\n"
+        "  - alex: before the gap\n"
+        "\n"
+        "  - block: 2026-09-30 10:00-10:45\n",
+        encoding="utf-8",
+    )
+    # The lister stops at the blank line; the renderer reads on, and finds a
+    # comment there, because the marker scan stopped too.
+    assert _authors(path) == (["alex"], ["alex", "block"])
+
+    path.write_text(
+        "## 🟡 To Do\n\n- [ ] [#AB1] **Task**\n  - [ ] [#CD2] **Child**\n    - estimate: 45m\n",
+        encoding="utf-8",
+    )
+    # The child's marker is not the parent's. The lister walks the whole
+    # indented block, so it still lists it for the parent, as before. That
+    # never shifts an index: lines under a child come after the parent's own.
+    listed, _rendered = _authors(path)
+    assert listed == ["estimate"]
+    _title, _preamble, sections = render_parse(path)
+    child = next(t for s in sections for t in s.tasks if "CD2" in t.raw)
+    assert child.comments == []
+
+
+def test_delete_and_edit_by_index_skip_the_markers(daily: Path, fake_data_dir: Path) -> None:
+    from scout.action_items.delete_comment import delete_comment
+    from scout.action_items.edit_comment import edit_comment
+
+    set_estimate(minutes=45, by_id="PROJ1", data_dir=fake_data_dir)
+    set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
+    day = dt.date(2026, 9, 30)
+
+    edit_comment(new_text="ping me after lunch", by_id="PROJ1", index=2, date=day, data_dir=fake_data_dir)
+    assert "  - alex: ping me after lunch" in _lines(daily)
+    delete_comment(by_id="PROJ1", index=1, date=day, data_dir=fake_data_dir)
+    lines = _lines(daily)
+    i = lines.index(_TASK)
+    assert lines[i + 1 : i + 4] == [
+        "  - estimate: 45m",
+        "  - block: 2026-09-30 10:00-10:45",
+        "  - alex: ping me after lunch",
+    ]
 
 
 def test_crlf_files_keep_their_line_endings(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

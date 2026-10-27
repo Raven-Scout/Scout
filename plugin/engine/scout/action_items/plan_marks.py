@@ -11,10 +11,11 @@ never stacks markers, and they always sit in the order estimate, block,
 actual, directly under the task line. A line only counts as a marker when its
 value parses: a hand-written ``- block: waiting on Priya`` is left alone.
 
-The comment lister (``_common.list_comment_lines``) and the HTML renderer still
-count the markers as comments, as the Mac and iOS apps do. ``delete-comment``
-and ``edit-comment`` address comments by index, so engine and apps have to skip
-the markers in the same release; until then they agree by counting them.
+The comment lister (``_common.list_comment_lines``) and the HTML renderer skip
+exactly the lines ``plan_mark_line_numbers`` returns, and the Mac app reads the
+same lines into the task's plan. ``delete-comment`` and ``edit-comment`` address
+comments by index, so all of them have to agree on what is a marker. The
+manifest advertises this as ``comments_skip_plan_marks_v1``.
 
 ``set_actual`` also appends one row to the planning log, which is what the
 estimate calibration learns from (``scout.planning.calibration``).
@@ -119,6 +120,11 @@ def _mark_lines(lines: list[str], task_line_number: int) -> dict[str, tuple[int,
             found[m.group("key")] = (j + 1, m.group("value"))
         j += 1
     return found
+
+
+def plan_mark_line_numbers(lines: list[str], task_line_number: int) -> frozenset[int]:
+    """The 1-indexed lines that are the task's plan markers, so no reader counts them as comments."""
+    return frozenset(line for line, _value in _mark_lines(lines, task_line_number).values())
 
 
 def _value_parses(key: str, value: str) -> bool:
@@ -383,6 +389,7 @@ __all__ = [
     "PlanMarks",
     "clear_block",
     "clear_plan",
+    "plan_mark_line_numbers",
     "read_plan_marks",
     "set_actual",
     "set_block",

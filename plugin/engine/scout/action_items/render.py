@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scout.action_items.plan_marks import plan_mark_line_numbers
 from scout.action_items.task_fields import TASK_FIELD_KEYS
 from scout.errors import ActionItemError
 from scout.ids import leading_prefix_pattern
@@ -144,6 +145,8 @@ def parse(md_path: Path) -> tuple[str, list[str], list[Section]]:
     current: Section | None = None
     in_table = False
     table: Table | None = None
+    # The /scout-plan marker lines of the current task (plan_marks.py).
+    task_plan_marks: frozenset[int] = frozenset()
 
     # Find title
     for i, line in enumerate(lines):
@@ -232,6 +235,12 @@ def parse(md_path: Path) -> tuple[str, list[str], list[Section]]:
             display = leading_prefix_pattern().sub("", rest, count=1).lstrip()
             subject, body = _split_subject(display)
             current.tasks.append(Task(done=done, subject=subject, body=body, raw=rest))
+            task_plan_marks = plan_mark_line_numbers(lines, i + 1)
+            i += 1
+            continue
+
+        # A /scout-plan marker is task metadata, not a comment or a bullet.
+        if i + 1 in task_plan_marks:
             i += 1
             continue
 

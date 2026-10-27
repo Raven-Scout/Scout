@@ -22,7 +22,7 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     let deepLinks: [TaskDeepLink]
     /// Indented sub-bullets and continuation lines under the task line, in
     /// source order. Excludes the sub-lines the parser already turns into
-    /// comments, refs or snooze metadata.
+    /// comments, refs, snooze metadata or plan markers.
     let details: [TaskDetail]
     /// Parsed from a `— 🛌 Snoozed until YYYY-MM-DD` body suffix. ``nil`` otherwise.
     let snoozedUntil: Date?
@@ -46,6 +46,8 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
     let snoozedFromKind: ActionSection.Kind?
     /// Optional board fields from `- State:` / `- Depends:` / … sub-bullets.
     let fields: TaskFields
+    /// `/scout-plan` estimate, calendar block and actual time (see `TaskPlan`).
+    let plan: TaskPlan
 
     init(
         id: UUID,
@@ -62,7 +64,8 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         indentLevel: Int = 0,
         shortPrefix: String? = nil,
         snoozedFromKind: ActionSection.Kind? = nil,
-        fields: TaskFields = .empty
+        fields: TaskFields = .empty,
+        plan: TaskPlan = .none
     ) {
         self.id = id
         self.lineNumber = lineNumber
@@ -79,6 +82,7 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         self.shortPrefix = shortPrefix
         self.snoozedFromKind = snoozedFromKind
         self.fields = fields
+        self.plan = plan
     }
 
     /// What a one-line surface (the collapsed card, a nested row, a concise
@@ -110,7 +114,8 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
             indentLevel: indentLevel,
             shortPrefix: shortPrefix,
             snoozedFromKind: snoozedFromKind,
-            fields: fields
+            fields: fields,
+            plan: plan
         )
     }
 
@@ -131,8 +136,39 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
             indentLevel: indentLevel,
             shortPrefix: shortPrefix,
             snoozedFromKind: snoozedFromKind,
-            fields: fields
+            fields: fields,
+            plan: plan
         )
+    }
+
+    /// This task with `plan` replaced and every other field kept.
+    func replacingPlan(_ plan: TaskPlan) -> ActionTask {
+        ActionTask(
+            id: id,
+            lineNumber: lineNumber,
+            done: done,
+            subject: subject,
+            plainSubject: plainSubject,
+            body: body,
+            comments: comments,
+            deepLinks: deepLinks,
+            details: details,
+            snoozedUntil: snoozedUntil,
+            carriedInFrom: carriedInFrom,
+            indentLevel: indentLevel,
+            shortPrefix: shortPrefix,
+            snoozedFromKind: snoozedFromKind,
+            fields: fields,
+            plan: plan
+        )
+    }
+
+    /// The selector for the comment the card shows at 1-based `index`. With
+    /// plan markers above it, an engine without `comments_skip_plan_marks_v1`
+    /// counts them, so the writer may need the old index instead.
+    func commentSelector(at index: Int) -> CommentSelector {
+        let legacy = plan.legacyCommentIndex(index)
+        return legacy == index ? .index(index) : .indexAfterPlanMarks(index, legacyIndex: legacy)
     }
 
     /// Search filter. `lowercasedNeedle` must already be lowercased; an empty

@@ -20,8 +20,9 @@ from scout.ids import new_ulid
 # Matches the comment shape that `add-comment` writes:
 #   `  - <author>: <text>`
 # Author allows letters/digits/`._-` to mirror the parser's tolerance.
-# The snooze marker `  - snoozed-until: YYYY-MM-DD` and the board fields
-# (`  - State: waiting`, see task_fields.py) also fit this shape; we strip
+# The snooze marker `  - snoozed-until: YYYY-MM-DD`, the board fields
+# (`  - State: waiting`, see task_fields.py) and the /scout-plan markers
+# (`  - estimate: 45m`, see plan_marks.py) also fit this shape; we strip
 # those when listing comments since they are not user-authored notes.
 _COMMENT_SUB_BULLET_RE = re.compile(r"^(?P<indent>\s+)-\s+(?P<author>[A-Za-z][A-Za-z0-9._-]*)\s*:\s*(?P<text>.+?)\s*$")
 _NON_COMMENT_AUTHORS = {"snoozed-until"} | TASK_FIELD_KEYS
@@ -32,8 +33,8 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
 
     Returns a list of `(line_number, author, text)` tuples for each comment
     `  - <author>: <text>` sub-bullet attached to the task, in file order.
-    The `snoozed-until` marker and board fields are filtered out — they're
-    machine metadata, not user-authored comments.
+    The `snoozed-until` marker, board fields and the task's plan markers are
+    filtered out — they're machine metadata, not user-authored comments.
 
     Stops at the first non-indented line, empty line, or a new task line.
     """
@@ -41,6 +42,10 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
     idx = task_line_number - 1
     if not 0 <= idx < len(lines):
         raise ActionItemError(f"list_comment_lines: task line {task_line_number} out of range (1..{len(lines)})")
+    # Imported here: plan_marks imports resolve_target from this module.
+    from scout.action_items.plan_marks import plan_mark_line_numbers
+
+    plan_marks = plan_mark_line_numbers(lines, task_line_number)
     comments: list[tuple[int, str, str]] = []
     j = idx + 1
     while j < len(lines):
@@ -57,7 +62,7 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
             j += 1
             continue
         author = m.group("author")
-        if author.lower() in _NON_COMMENT_AUTHORS:
+        if author.lower() in _NON_COMMENT_AUTHORS or j + 1 in plan_marks:
             j += 1
             continue
         comments.append((j + 1, author, m.group("text")))
