@@ -56,7 +56,7 @@ Use `gcal_list_events` to get all events for today. For each meeting:
 
 Also pull yesterday's meetings: they are the most likely source of unprocessed action items. Transcripts from other connectors are the primary source; the calendar gives the meeting list to check them against:
 - Check if transcripts or notes exist for these meetings
-- Cross-reference attendees with `people.md`
+- Cross-reference attendees with `people.md` (`scripts/scoutctl kb name-lookup <name>`)
 - Any meeting that happened but has no notes/transcript anywhere should be flagged as a gap
 
 ### Recently Added/Changed Events
@@ -110,7 +110,7 @@ requires: calendar
 
 ## Calendar-Sourced KB Updates
 
-After scanning the calendar, update the knowledge base:
+After scanning the calendar, update the knowledge base. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### Upcoming Meetings in Project Files
 

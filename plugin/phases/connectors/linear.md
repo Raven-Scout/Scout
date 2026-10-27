@@ -21,7 +21,7 @@ Before the issue-state scan below, build an **actor-attributed** delta of what {
 
 `list_issues` + issue comments **miss project-level status-update comments**, which is where leadership often pings. For every Linear project {{USER_NAME}} leads or owns, call `get_status_updates` (and `list_comments` on the project) for updates since the last run.
 
-**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (per `people.md` / the ontology `manages` relation), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
+**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (per `people.md` / the ontology `manages` relation: `scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
 
 ### Status Changes
 
@@ -90,7 +90,7 @@ requires: linear
 
 ## Linear-Sourced KB Updates
 
-After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical.
+After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### Issue Tracker Sync
 

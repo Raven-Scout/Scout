@@ -355,10 +355,12 @@ grep -nE '^\s*- \[x\]' "$DAILY_FILE" | grep -viE 'recently completed|## ✅' \
 Auto-transcribed sources (Granola, Gemini/Drive auto-notes, Fathom recaps, meeting summaries) frequently mis-hear names. **Never** write a transcribed name into action items, KB, or a DM without first resolving it against the knowledge graph. For every name-shaped token from a transcribed source:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb name-lookup "<Token>"
+cd {{SCOUT_DIR}} && scripts/scoutctl kb name-lookup "<Token>" --lookup-type any
 ```
 
-- **Exact match** → use the matched entity with its `[[people/<slug>]]` wikilink.
+`--lookup-type any` searches every entity type: transcription garbles company, product and project names as often as people's. Each candidate shows its `type`.
+
+- **Exact match** → use the matched entity with its wikilink (`[[people/<slug>]]` for a person).
 - **Fuzzy match** (within threshold ≈ Levenshtein-2 / phonetic-equivalent) → use that entity, append a `[name-fuzzy-resolved]` marker.
 - **No match** → write at most "Contact person matching '<verbatim-token>' (no KB match — please confirm)" and route a `[transcript-drift]` entry to `review-queue.md`. **NEVER elevate an unresolved transcribed name to a 🔴 headline** — 🟡 with the explicit "no KB match" framing is the ceiling.
 

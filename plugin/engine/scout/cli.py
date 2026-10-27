@@ -567,7 +567,9 @@ def kb_traverse(
     name: str | None = typer.Argument(None, help="Start entity."),
     name_opt: str | None = typer.Option(None, "--name", help="Start entity (parser.py spelling)."),
     hops: int | None = typer.Option(None, "--hops", help="Max hops (default 2)."),
-    rels: str | None = typer.Option(None, "--rels", help="Comma-separated relationship types to follow."),
+    rels: str | None = typer.Option(
+        None, "--rels", "--rel-types", help="Comma-separated relationship types to follow."
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
@@ -629,18 +631,23 @@ def kb_name_lookup(
     token: str | None = typer.Argument(None, help="Name token."),
     token_opt: str | None = typer.Option(None, "--token", help="Name token (parser.py spelling)."),
     threshold: float = typer.Option(0.7, "--threshold", help="Fuzzy cutoff (0.0-1.0)."),
+    lookup_type: str = typer.Option(
+        "person",
+        "--lookup-type",
+        help="Entity type(s) to search: person (default), organization, any, or a comma-separated list.",
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
     kb_root: str | None = _KBR,
     schema: str | None = _SCH,
 ) -> None:
-    """Resolve a transcribed name against people and aliases (parser.py name_lookup), labelled."""
+    """Resolve a transcribed name against entities and aliases (parser.py name_lookup), labelled."""
     args = _kb_args("name-lookup", dict(locals()))
     from scout.kb.read import cmd_name_lookup
 
     tok = token_opt or token
-    run = lambda g, _v: cmd_name_lookup(g, str(tok), threshold)  # noqa: E731
+    run = lambda g, _v: cmd_name_lookup(g, str(tok), threshold, lookup_type)  # noqa: E731
     _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((tok, "TOKEN"),))
 
 
