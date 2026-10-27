@@ -179,7 +179,10 @@ def test_retries_on_enotfound_in_the_sibling_wording(tmp_path: Path) -> None:
     "output",
     [
         "API Error: Unable to connect to API (FailedToOpenSocket)",
-        "API Error: 500 Internal server error. This is a server-side issue, usually temporary \u2014 try again in a moment.",
+        (
+            "API Error: 500 Internal server error. This is a server-side issue, "
+            "usually temporary \u2014 try again in a moment."
+        ),
     ],
 )
 def test_retries_on_socket_open_failure_and_server_500(tmp_path: Path, output: str) -> None:
