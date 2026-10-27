@@ -6,7 +6,16 @@ import Testing
 /// Mounts real cards in one in-process window and copies through the responder
 /// chain, the way Edit ▸ Copy does. It finds selectable text by behaviour (a view
 /// that takes focus and exposes its text), not by SwiftUI's private class names.
-@Suite("Task text selection", .serialized)
+///
+/// SwiftUI exposes selectable text that way on macOS 27 but not on macOS 15.7,
+/// where these tests find no selectable view at all, so they run on macOS 27
+/// and later (the Xcode 27 CI job and local runs).
+@Suite(
+    "Task text selection", .serialized,
+    .enabled(
+        if: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)),
+        "selectable text is a focusable view only from macOS 27"))
 @MainActor
 struct TaskTextSelectionTests {
     private final class KeyWindow: NSWindow {
