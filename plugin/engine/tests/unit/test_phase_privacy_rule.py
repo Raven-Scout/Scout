@@ -131,6 +131,21 @@ def test_no_assembled_phase_reads_the_kb_raw(kind: str) -> None:
     assert not re.search(r"\bgit (?:-C \S+ )?log\b", vault_only), "the vault's history comes through scoutctl kb delta"
 
 
+def test_connector_kb_updates_find_notes_through_scoutctl_kb() -> None:
+    """#507's eval: runs that read the connector KB-update sections reached for raw Reads of people,
+    topic and project notes. Each such section names the sanctioned lookups."""
+    sections = [
+        s
+        for f in sorted((PLUGIN_ROOT / "phases" / "connectors").glob("*.md"))
+        for s in parse_phase_file(f)
+        if s.slot == "update"
+    ]
+    assert len(sections) >= 4
+    for s in sections:
+        for needle in ("scoutctl kb name-lookup", "kb resolve", "kb read <path>", "Read only to edit"):
+            assert needle in s.body, (s.name, needle)
+
+
 def test_the_raw_read_detector() -> None:
     assert raw_kb_read("cat knowledge-base/people/sam.md")
     assert raw_kb_read("cd /v && rg -n permit knowledge-base/personal")
