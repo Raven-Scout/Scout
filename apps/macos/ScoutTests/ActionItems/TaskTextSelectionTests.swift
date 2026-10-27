@@ -43,6 +43,19 @@ struct TaskTextSelectionTests {
         return all(root).filter { $0.acceptsFirstResponder && !text(of: $0).isEmpty }
     }
 
+    /// Waits up to 3 s for every needle to show up in selectable text, since a
+    /// loaded CI runner can need more than one layout pass, then returns all of it.
+    private func selectableTexts(in window: NSWindow, waitingFor needles: [String]) async throws -> [String] {
+        var texts: [String] = []
+        for _ in 0..<30 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            texts = selectableViews(in: window).map(text(of:))
+            if needles.allSatisfy({ needle in texts.contains { $0.contains(needle) } }) { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return texts
+    }
+
     /// Selects all of `view`'s text and sends Copy, then reads the pasteboard.
     private func copyAll(_ view: NSView, in window: NSWindow) async throws -> String? {
         let pasteboard = NSPasteboard.general
@@ -66,7 +79,9 @@ struct TaskTextSelectionTests {
             scoutDirectory: URL(fileURLWithPath: "/tmp/scout"), onOp: { _, _ in }))
         defer { window.close() }
 
-        let texts = selectableViews(in: window).map(text(of:))
+        let texts = try await selectableTexts(in: window, waitingFor: [
+            "RFC by Friday", "Priya opens this tracker on Tuesday.", "Saw three alerts in ten minutes.",
+        ])
         #expect(texts.contains { $0.contains("RFC by Friday") })
         #expect(texts.contains("Priya opens this tracker on Tuesday."))
         #expect(texts.contains("Saw three alerts in ten minutes."))
@@ -83,6 +98,7 @@ struct TaskTextSelectionTests {
             size: CGSize(width: 320, height: 200))
         defer { window.close() }
 
+        _ = try await selectableTexts(in: window, waitingFor: ["Reply to Priya"])
         let subject = try #require(selectableViews(in: window).first { text(of: $0).contains("Reply to Priya") })
         #expect(try await copyAll(subject, in: window)?.contains("Reply to Priya") == true)
     }
@@ -94,7 +110,7 @@ struct TaskTextSelectionTests {
             task: task, rootSession: nil, prompt: { "" }, scoutDirectory: URL(fileURLWithPath: "/tmp/scout")))
         defer { window.close() }
 
-        let texts = selectableViews(in: window).map(text(of:))
+        let texts = try await selectableTexts(in: window, waitingFor: [body, "Priya opens this tracker on Tuesday."])
         #expect(texts.contains(body))
         #expect(texts.contains("Priya opens this tracker on Tuesday."))
     }
