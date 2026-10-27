@@ -24,7 +24,7 @@ def _install(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _write(script: Path, model: str | None) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODEL"}
+    env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODEL", "CLAUDE_CODE_SESSION_ID")}
     if model is not None:
         env["SCOUT_MODEL"] = model
     return subprocess.run(

@@ -6,8 +6,9 @@
 # Example: write-session-cost.sh dreaming 10 7.42 0 session
 #
 # source: "session" (actual Claude-reported cost) or "runner" (fallback from shell script).
-# budget-check.sh uses source=session entries for cost calculations — runner entries
-# exist only so crashed sessions still leave a row, and get $0 as the spent amount.
+# Runner entries exist only so crashed sessions still leave a row, and get $0 as the
+# spent amount. budget_check.decide() sums budget_spent over EVERY row in its window,
+# whatever the source, so a session that writes its row twice is counted twice.
 
 set -euo pipefail
 
@@ -62,4 +63,14 @@ if [[ "${SCOUT_MODEL:-}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
     MODEL_FIELD=",\"model\":\"$SCOUT_MODEL\""
 fi
 
-echo "{\"ts\":\"$TIMESTAMP\",\"ts_local\":\"$TIMESTAMP_LOCAL\",\"type\":\"$TYPE\",\"budget_cap\":$BUDGET_CAP,\"budget_spent\":$BUDGET_SPENT,\"exit_code\":$EXIT_CODE,\"source\":\"$SOURCE\"$MODEL_FIELD}" >> "$TRACKER_FILE"
+# Session identity. A session calls this from its own Bash tool, where Claude Code
+# exports CLAUDE_CODE_SESSION_ID. Two rows with the SAME id are one run writing twice
+# (e.g. a run that re-ran this script to check it worked), which would otherwise have to
+# be inferred from timestamps. Runner rows have no such variable and omit the key, and
+# budget_check.decide() reads rows with .get(), so the extra key is inert to it.
+SESSION_FIELD=""
+if [[ "${CLAUDE_CODE_SESSION_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    SESSION_FIELD=",\"session_id\":\"$CLAUDE_CODE_SESSION_ID\""
+fi
+
+echo "{\"ts\":\"$TIMESTAMP\",\"ts_local\":\"$TIMESTAMP_LOCAL\",\"type\":\"$TYPE\",\"budget_cap\":$BUDGET_CAP,\"budget_spent\":$BUDGET_SPENT,\"exit_code\":$EXIT_CODE,\"source\":\"$SOURCE\"$MODEL_FIELD$SESSION_FIELD}" >> "$TRACKER_FILE"
