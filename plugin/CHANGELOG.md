@@ -13,6 +13,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   - **A contract test** (`test_run_modes_router.py`) fails when a section a mode runs is neither read up front, nor named in that mode's row and its own heading, nor listed as a step the row deliberately leaves out. Briefings still don't route Cross-Check, KB Updates or Write-Back: #524's eval measured ~+14% a briefing for routing them, with no gain in correctness.
 
   **Upgrade:** `/scout-update` re-renders `run-scout.sh` and brings the new Run Modes rows and connector sections into each vault's `SKILL.md` through the usual 3-way merge. A vault that edited a Query section gets a proposed-merge sidecar for that file: move its edit into the matching Inbound Scan.
+
 ## [0.18.4] - 2026-10-27
 
 ### Added
