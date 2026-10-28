@@ -4,7 +4,8 @@
 checks, expectations), ``connectors.yaml`` (the scripted connectors),
 ``fixtures/`` (their responses), ``vault/`` (an overlay on the base
 fixture vault) and ``brain/`` (text appended to the built brain files, the
-way a vault's own edits to them survive upgrades). A variant that only changes
+way a vault's own edits to them survive upgrades). ``fixtures/linear-graphql.json``,
+when present, is the Linear API's answer to the runner's own-activity pre-fetch. A variant that only changes
 the mode or the expectations names another scenario in ``files_from:`` and
 uses that one's ``connectors.yaml``, ``fixtures/``, ``vault/`` and ``brain/``.
 """
@@ -21,7 +22,11 @@ SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
 KNOWN_CHECKS = {
     "placement", "no_drop", "context_note", "waiting_format", "no_collapse", "body_budget",
     "outage_reported", "no_false_outage", "dropoff_caught", "demotion", "privacy_canary", "privacy_hygiene",
+    "linear_delta", "red_poll",
 }  # fmt: skip
+# A recorded Linear API response in a scenario's fixtures/: the runner's pre-fetch reads it
+# (scout.linear_activity) in place of calling Linear. Without one, the pre-fetch finds no key.
+LINEAR_API_FIXTURE = "fixtures/linear-graphql.json"
 PERSONA_CONNECTORS = {"slack": "slack", "linear": "linear", "calendar": "calendar", "email": "email"}
 
 
@@ -42,11 +47,19 @@ class Scenario:
     permit_canary: str = ""  # privacy_canary: the private task's token that must reach owner-only surfaces
     files_from: Path | None = None  # another scenario's dir holding connectors.yaml, fixtures/, vault/, brain/
     budget: str | None = None  # the session's --max-budget-usd; None means the runner's DEFAULT_BUDGET
+    expected_linear_activity: tuple[str, ...] = ()  # linear_delta: issue ids the run must report
+    expected_red_channels: tuple[str, ...] = ()  # red_poll: channel ids the run must read
 
     @property
     def files(self) -> Path:
         """Where the scripted connectors and the vault/brain overlays live."""
         return self.files_from or self.path
+
+    @property
+    def linear_api(self) -> Path | None:
+        """The recorded Linear API response the runner's pre-fetch reads, if the scenario has one."""
+        path = self.files / LINEAR_API_FIXTURE
+        return path if path.is_file() else None
 
     @property
     def runner(self) -> str:
@@ -110,4 +123,6 @@ def load_scenario(name: str) -> Scenario:
         permit_canary=str(raw.get("permit_canary") or ""),
         files_from=files_from,
         budget=_budget(name, raw.get("budget")),
+        expected_linear_activity=tuple(str(i) for i in raw.get("expected_linear_activity") or ()),
+        expected_red_channels=tuple(str(c) for c in raw.get("expected_red_channels") or ()),
     )

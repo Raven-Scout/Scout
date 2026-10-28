@@ -38,6 +38,11 @@ slack:
     - respond: {messages: []}
   slack_read_thread:
     - respond: {messages: []}
+  # The 🔴 widgets project's channel (its slack_channels: frontmatter): a blocker and an ask.
+  slack_read_channel:
+    - match: {channel_id: '^C0123456789$'}
+      respond: fixtures/slack-widgets-channel.json
+    - respond: {messages: []}
   slack_send_message:
     - capture: wrap
   "*":
@@ -52,6 +57,12 @@ linear:
     - match: {id: PROJ-1207}
       respond: {identifier: PROJ-1207, state: {name: Done, type: completed}, completedAt: "{{today}}T05:10:00Z"}
     - respond: {}
+  # Alex's own Linear activity since the last run: moved PROJ-1212, created PROJ-1213, commented on
+  # OPS-315. The runner pre-fetches the same from fixtures/linear-graphql.json (the Linear API).
+  list_comments:
+    - match: {issueId: '^OPS-315$'}
+      respond: fixtures/linear-comments-ops-315.json
+    - respond: {comments: []}
   "*":
     - respond: {}
 

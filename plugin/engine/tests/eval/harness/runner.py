@@ -23,6 +23,7 @@ from scout.action_items.parser import ActionItem, parse_lines
 from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
+from .checks.connector_rules import linear_delta, red_poll
 from .checks.daily import body_budget, context_note, no_collapse, waiting_format
 from .checks.demotion import demotion
 from .checks.no_drop import no_drop
@@ -30,6 +31,7 @@ from .checks.placement import placement
 from .checks.privacy_canary import PrivacyOutputs, owner_surfaces_required, privacy_canary, privacy_hygiene
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
+from .dates import render_dates
 from .mcp_config import write_mcp_config
 from .metrics import SampleMetrics, ToolCall, metrics_from_dict, parse_stream
 from .runner_env import ENGINE, build_env
@@ -143,6 +145,31 @@ def archived_today(data_dir: Path, today: date) -> set[str]:
             elif tag and line.strip().startswith(f"- {mark}"):
                 tags.add(tag)
     return tags
+
+
+def stage_linear_api(scenario: Scenario, result_dir: Path, today: date) -> str | None:
+    """A stand-in Linear key in the sample's secrets dir and the scenario's recorded API response,
+    dates rendered, for the runner's pre-fetch. None when the scenario has no recorded response."""
+    if scenario.linear_api is None:
+        return None
+    secrets = result_dir / "secrets"
+    secrets.mkdir(mode=0o700, exist_ok=True)
+    key = secrets / "linear-api-key"
+    key.write_text("eval-stand-in-key\n", encoding="utf-8")
+    key.chmod(0o600)
+    recorded = result_dir / "linear-graphql.json"
+    recorded.write_text(render_dates(scenario.linear_api.read_text(encoding="utf-8"), today), encoding="utf-8")
+    return f"file://{recorded}"
+
+
+def _call_rows(calls: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []:
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
 
 
 def _unstubbed(calls: Path) -> int:
@@ -289,6 +316,7 @@ def _score(
             for name in scenario.checks
         )
     today_items = _items(today_file)
+    today_text = today_file.read_text(encoding="utf-8") if today_file.is_file() else None
     out = read_outputs(vault, calls_log, today)
     up = [p for p in scenario.personas if p not in scenario.personas_down]
     simple = {
@@ -304,6 +332,8 @@ def _score(
         ),
         "privacy_canary": lambda: _score_one("privacy_canary", scenario, vault, today, calls_log, transcript),
         "privacy_hygiene": lambda: _score_one("privacy_hygiene", scenario, vault, today, calls_log, transcript),
+        "linear_delta": lambda: linear_delta(today_text, out.wrap, scenario.expected_linear_activity),
+        "red_poll": lambda: red_poll(_call_rows(calls_log), scenario.expected_red_channels),
     }
     results = []
     for name in scenario.checks:
@@ -378,6 +408,7 @@ def run_sample(
         today=today.isoformat(),
         timeout_s=timeout_s,
         pythonpath=checkout.pythonpath if checkout else None,
+        linear_api_url=stage_linear_api(scenario, result_dir, today),
     )
     runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:

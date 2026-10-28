@@ -38,6 +38,7 @@ from scout import paths
 from scout.kb.privacy import FULL_READERS
 from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
+from scout.linear_activity import OwnActivity, fetch_own_activity
 
 OUTPUT_FILENAME = "session-context.json"
 KB_DATES_CACHE_FILENAME = "kb-dates.cache.json"
@@ -80,6 +81,15 @@ class SessionContext:
     pr_review_requested: list[dict] = field(default_factory=list)
     # One row per task entity: its frontmatter fields, "path" and "visibility".
     personal_tasks: list[dict[str, Any]] = field(default_factory=list)
+    # The user's own Linear actions since the last run (scout.linear_activity): one row per issue,
+    # {"identifier", "title", "url", "state", "actions", "last_at"}. None unless the status is
+    # "fetched"; `action-items check-linear-delta` then asks the session for the report instead.
+    linear_own_activity: list[dict[str, Any]] | None = None
+    linear_own_activity_since: str = ""
+    linear_own_activity_status: str = ""  # "fetched" | "no_key" | "failed: <why>" | "skipped"
+    # Every 🔴 project, labelled, with the Slack channels its `slack_channels:` frontmatter declares:
+    # {"project", "path", "visibility", "channels": [{"id", "name"}]}. `action-items check-red-polls`.
+    red_project_channels: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -322,6 +332,61 @@ def get_personal_tasks(scout_dir: Path, reader: str | None = None) -> list[dict[
     return sorted(out, key=lambda r: r["path"])
 
 
+_SLACK_CHANNEL_ID = re.compile(r"\b[CG][A-Z0-9]{8,}\b")
+_SLACK_CHANNEL_NAME = re.compile(r"#[\w.-]+")
+RED = "🔴"
+
+
+def _channel(raw: object) -> dict[str, str] | None:
+    """One ``slack_channels:`` entry as ``{"id", "name"}``: ``{id, name}`` or a string naming either."""
+    if isinstance(raw, dict):
+        cid, name = str(raw.get("id") or "").strip(), str(raw.get("name") or "").strip()
+    else:
+        text = str(raw or "")
+        found_id, found_name = _SLACK_CHANNEL_ID.search(text), _SLACK_CHANNEL_NAME.search(text)
+        cid = found_id.group(0) if found_id else ""
+        name = found_name.group(0) if found_name else ""
+    if name and not name.startswith("#"):
+        name = f"#{name}"
+    return {"id": cid, "name": name} if cid or name else None
+
+
+def get_red_project_channels(scout_dir: Path, reader: str | None = None) -> list[dict[str, Any]]:
+    """Every 🔴 project (by ``priority`` or ``status``) and the Slack channels it declares.
+
+    The Slack connector's 🔴 Project Channel Poll reads each of these channels
+    directly every briefing and consolidation. A 🔴 project with no
+    ``slack_channels:`` is listed with no channels, so the check can say so.
+    Empty on any failure, and for a reader that sees nothing.
+    """
+    from scout.kb.read import load_graph
+
+    who = reader if reader is not None else resolve_reader(None, os.environ)
+    if who not in FULL_READERS or not (scout_dir / "knowledge-base").is_dir():
+        return []
+    try:
+        projects = load_graph(scout_dir, who).query(type="project")
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for entity in projects:
+        if RED not in f"{entity.get('priority') or ''} {entity.get('status') or ''}":
+            continue
+        label = entity.get("_label") or {}
+        raw = entity.get("slack_channels") or []
+        channels = [c for c in (_channel(r) for r in (raw if isinstance(raw, list) else [raw])) if c]
+        path = label.get("path", "")
+        out.append(
+            {
+                "project": str(entity.get("name") or Path(path).stem),
+                "path": path,
+                "visibility": "normal" if label.get("visibility") == "normal" else "private",
+                "channels": channels,
+            }
+        )
+    return sorted(out, key=lambda r: r["path"])
+
+
 # ----- driver -------------------------------------------------------------
 
 
@@ -358,6 +423,13 @@ def gather(
             rel: {"last_updated": when, "visibility": labels.get(rel, "private")} for rel, when in dates.items()
         }
 
+    linear = get_linear_own_activity(target, now_dt) if full else None
+    if linear is None:
+        linear_rows, linear_since, linear_status = None, "", "skipped"
+    else:
+        linear_rows, linear_since = linear.issues, linear.since
+        linear_status = f"{linear.status}: {linear.error}" if linear.error else linear.status
+
     return SessionContext(
         generated_at=generated_at,
         session_type=session_type,
@@ -366,7 +438,16 @@ def gather(
         pr_authored=get_pr_authored(),
         pr_review_requested=get_pr_review_requested(),
         personal_tasks=get_personal_tasks(target, reader),
+        linear_own_activity=linear_rows,
+        linear_own_activity_since=linear_since,
+        linear_own_activity_status=linear_status,
+        red_project_channels=get_red_project_channels(target, reader),
     )
+
+
+def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
+    """The user's own Linear actions since the last run; see :mod:`scout.linear_activity`."""
+    return fetch_own_activity(scout_dir, now=now)
 
 
 def write_context(ctx: SessionContext, output_path: Path) -> None:
@@ -415,9 +496,11 @@ __all__ = [
     "gather",
     "gather_kb_file_dates",
     "get_git_recent",
+    "get_linear_own_activity",
     "get_personal_tasks",
     "get_pr_authored",
     "get_pr_review_requested",
+    "get_red_project_channels",
     "main",
     "run",
     "write_context",
