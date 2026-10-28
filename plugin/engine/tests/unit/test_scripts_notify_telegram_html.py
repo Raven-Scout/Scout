@@ -312,6 +312,27 @@ def test_split_html_deep_nesting_stays_within_the_limit() -> None:
     assert "".join(notify_telegram._html_to_plain(c) for c in chunks).count("word") == 30
 
 
+def test_next_chunk_hard_cut_never_lands_inside_the_leading_tag() -> None:
+    # The overflow loop shrank the budget below the leading `<a …>` for the
+    # <blockquote> later in the window. The hard cut landed inside the `<a`,
+    # _safe_html_cut returned 0, and the unsafe cut was kept:
+    # `<a href="https://example.com/p?x=</blockquote></blockquote>`.
+    bq = ("blockquote", "<blockquote>")
+    link = '<a href="https://example.com/p?x=1&amp;y=2">'
+    remaining = link + "word<blockquote>" + "x" * 60 + "</blockquote></a>"
+    chunk, advance, stack = notify_telegram._next_chunk(remaining, [bq, bq], 100)
+    assert chunk is None  # markup only: Telegram would refuse it as empty
+    assert advance == len(link)
+    assert stack == [bq, bq, ("a", link)]  # the link is carried to the next chunk
+
+    chunks = notify_telegram._split_html("<blockquote><blockquote>" + remaining, limit=100)
+    for c in chunks:
+        assert len(c) <= 100
+        assert not re.search(r"<[^>]*$", c), c
+        assert not re.match(r"^[^<]*>", c), c
+    assert _visible("".join(chunks)) == _visible("<blockquote><blockquote>" + remaining)
+
+
 def test_split_html_link_first_chunk_still_cuts_at_a_word() -> None:
     body = '<a href="https://example.com">' + "x" * 40 + " " + "y" * 40 + " " + "z" * 40 + "</a>"
     chunks = notify_telegram._split_html(body, limit=100)

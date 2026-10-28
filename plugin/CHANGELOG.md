@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutctl notify telegram --parse-mode html` no longer cuts a chunk inside the tag it starts with** (#465 follow-up; `engine/scout/scripts/notify_telegram.py`). When tags later in a window made the splitter shrink its budget below a leading `<a href=…>`, the hard cut landed inside that tag and was kept, so the chunk ended `<a href="https://…?x=</blockquote>` and went out as plain text. The splitter now takes the leading tag or entity alone when it fits and carries the tag to the next chunk. `safe_href` and `SAFE_LINK_SCHEMES` moved to `engine/scout/links.py` (still importable from `scout.action_items.render`), so the Telegram sender no longer imports the dashboard renderer. The setup doc's troubleshooting row for a refused HTML chunk is fixed too.
+
 ## [0.18.4] - 2026-10-27
 
 ### Added
