@@ -5,7 +5,7 @@ row names when it reaches that step. #507's eval found briefings skipping every 
 the row didn't name (the row named only the Query sections), while those sections' frontmatter said
 they were briefing steps too. These tests keep the frontmatter and the router in step: every section
 a mode runs is either read in full up front, or its step name is in that mode's row and in the
-section's heading, so a run can find it.
+section's heading, so a run can find it, or it is a step the row deliberately leaves out (UNROUTED).
 """
 
 from __future__ import annotations
@@ -50,6 +50,13 @@ ROWS = {
     "briefing": ("morning-briefing", "weekend-briefing"),
     "consolidation": ("morning-consolidation",),
 }
+# Steps a mode's frontmatter claims but its row doesn't name. Routing them cost ~+14% a briefing for
+# no measured gain (#524's eval, 2026-10-27), so the rows stay as they were. Name one in its row and
+# drop it here; a new step lands in neither without failing.
+UNROUTED = {
+    "briefing": {"cross-check", "update", "writeback", "query"},
+    "consolidation": {"cross-check", "update", "writeback", "query", "post-meeting-processing"},
+}
 SECTION_DIRS = ("core", "connectors", "custom")
 TEMPLATES = {"{{CONNECTOR_NAME}}": "Acme", "{{USER_NAME}}": "Alex"}
 
@@ -86,8 +93,18 @@ def test_the_mode_row_names_every_routed_step(mode: str) -> None:
     row = _row(mode)
     assert row, mode
     for s in _sections():
-        if _in_mode(s, mode) and s.slot in ROUTED:
+        if _in_mode(s, mode) and s.slot in ROUTED and s.slot not in UNROUTED[mode]:
             assert f"**{ROUTED[s.slot]}**" in row, f"{mode} row doesn't name {s.name}/{s.slot}"
+
+
+@pytest.mark.parametrize("mode", sorted(ROWS))
+def test_unrouted_steps_are_exactly_the_ones_the_row_leaves_out(mode: str) -> None:
+    """UNROUTED can't go stale: a step named in the row, or one no section runs in this mode, fails."""
+    row = _row(mode)
+    run = {s.slot for s in _sections() if _in_mode(s, mode) and s.slot in ROUTED}
+    for slot in UNROUTED[mode]:
+        assert slot in run, f"{mode}: no section runs {slot}; drop it from UNROUTED"
+        assert f"**{ROUTED[slot]}**" not in row, f"{mode} row names {ROUTED[slot]}; drop it from UNROUTED"
 
 
 def test_each_routed_section_heading_carries_its_step_name() -> None:
