@@ -374,12 +374,40 @@ Every step below runs under the provider's `flock`.
   Each attempt is steps 2–4 again, and `attempts` and `next_at` are journaled before each POST.
 - **If still unknown, keep retrying out of process.** The run reports `FAILED` "Linear refresh
   pending" and goes on through the gate. Before returning, it starts one detached retrier,
-  `scoutctl accounts refresh linear --resume`, double-forked so it outlives the run and holds no
-  run lock.
+  `scoutctl accounts refresh linear --resume`, which outlives the run (isolation below).
   - The retrier tries again at +1, +2, +4 and +8 minutes, and stops at `deadline`.
   - It takes the `flock` for each attempt and re-reads the file first, so it stops the moment
     another process has succeeded.
   - Only one retrier at a time: a `<file>.retrier.pid` that is alive means none is started.
+- **The retrier is isolated from the run that spawned it.** The lock reaper (#468) kills a wedged
+  run's whole process group, and #476 judges "wedged" by the run's progress. Neither may take the
+  retrier down mid-refresh, and the retrier must not keep a dead run looking alive.
+  1. **Its own session and process group.** It's spawned with `subprocess.Popen(...,
+     start_new_session=True)`, which calls `setsid()` in the child. That's the pattern
+     `schedule_tick.py`, `heartbeat.py` and `self_update_run.py` already use.
+     - Its pgid is its own pid, so a `killpg` on the run's group doesn't reach it.
+     - Spawn options: `stdin=DEVNULL`; stdout and stderr go to its own log,
+       `.scout-logs/accounts-retrier.log` (redacted), never the run's pipes, so a runner waiting
+       for EOF on its log isn't held open. `close_fds=True`, so it inherits no lock or pipe fd from
+       the run.
+  2. **It never takes or holds the vault session lock** (`.scout-logs/.scout-session.lock`).
+     - It doesn't open the file, doesn't write its pid there, and doesn't check it. The only lock
+       it takes is the per-provider token `flock` (`<file>.lock`), for one attempt at a time.
+     - It writes nothing the reaper or #476's progress check reads (no heartbeat or progress
+       files), so it is never counted as the run's work.
+     - The spawn also strips the run's lock and slot environment variables (`SCOUT_MODE`, the
+       runner's lock path), so nothing downstream can mistake it for the run.
+  3. **A hard wall-clock exit.**
+     - On start, it reads `deadline` from the journal. If `deadline` has already passed, it
+       records `grace_exhausted` (c) and exits.
+     - Otherwise it arms a watchdog: `signal.alarm` for `deadline − now + 15 s`, whose handler calls
+       `os._exit(3)`. A hung DNS lookup or socket therefore can't keep it alive, and no orphaned
+       `--resume` lingers.
+     - It never starts an attempt that could end after `deadline`: the 10 s request timeout must
+       fit before it.
+     - Any process that later finds a pid file whose process is dead removes it.
+     - The watchdog firing mid-write is safe: the write is a temp file plus `os.replace`, so the
+       file is either the old pair or the new one.
 - **Any process that finds `refresh_pending`** (a run, `accounts status --check`, the retrier)
   before `deadline` makes one attempt itself first.
 - **Definite answers skip the retries:** a 400 `invalid_grant` goes straight to (c). A
@@ -726,6 +754,25 @@ one is ever exposed, rotate it in the app settings.
     6. Two processes in the race: one POST, and the second re-reads under the lock and uses the
        new pair.
     7. A `401 invalid_client` isn't retried, and the state stays `ok` with `last_error` set.
+    8. **A reaped parent doesn't kill the retrier.**
+       - The test starts a stand-in "run" in its own process group (`start_new_session=True`, like
+         the runner). The run fails the refresh and spawns the retrier against a fake endpoint
+         that answers only after a delay.
+       - The test then does what the reaper does: `os.killpg(run_pgid, SIGKILL)`.
+       - Assert that the retrier's pid is still alive, that its pgid is neither the run's pgid nor
+         its pid, and that its session id is its own pid.
+       - Assert that the delayed response is persisted and the file ends `ok`.
+    9. **The retrier and the session lock.**
+       - With `.scout-logs/.scout-session.lock` held by a live stand-in pid, the retrier still
+         runs and succeeds. The lock file's bytes and mtime are unchanged afterwards.
+       - `is_lock_held_by_live_pid` never names the retrier's pid.
+       - `lsof`/`/proc` shows no session-lock fd in the retrier.
+       - Its environment has none of the run's lock or slot variables.
+    10. **The hard exit.**
+        - With a short deadline (an injectable grace for tests) and a fake endpoint that never
+          answers, the retrier exits by `deadline + 15 s` with code 3.
+        - With a deadline already past on start, it exits at once and writes `grace_exhausted`.
+        - A stale pid file left behind is cleared by the next spawn.
   - **(c) `needs_sign_in`**
     1. `invalid_grant` → `refresh_refused` at once, with no retry.
     2. The deadline passing → `grace_exhausted`.
