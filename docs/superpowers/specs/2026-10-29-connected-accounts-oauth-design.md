@@ -1,0 +1,582 @@
+# Connected accounts: Sign in with Linear and Slack — design
+
+Status: **draft for Jordan's review** (asked for on 2026-10-29). Spec only: no code, no OAuth
+apps registered, no secrets stored.
+Builds on: #532 (Linear own-activity pre-fetch, 🔴 project channel poll). Related: the Slack
+mention trigger (`scout/triggers/sources/slack.py`), `docs/superpowers/specs/2026-09-08-app-managed-engine-design.md`.
+
+## 1. Why
+
+#532 pre-fetches the user's own Linear activity before each briefing and consolidation, so the
+run reports it from data instead of being trusted to query Linear. The pre-fetch runs in the
+engine, before the Claude session starts, and the claude.ai Linear connector can't be reached from
+there: its login lives inside Claude. So #532 reads an optional personal API key from
+`~/.scout-secrets/linear-api-key`. A user who wants the pre-fetch has to make a key in Linear,
+write it to a file and `chmod 600` it.
+
+Slack is in the same position. Scout's Slack token (`~/.scout-secrets/slack-search-token`, made by
+hand) is used only by the mention trigger. #532's 🔴 poll pre-fetches which channels to read, but
+the reading itself stays in-session through the claude.ai Slack connector.
+
+Goal: a **Connected accounts** section in Scout.app Settings with **Sign in with Linear** and
+**Sign in with Slack**. One click and a browser consent replace the key file. The engine keeps
+the result working while the user sleeps, with or without the app running.
+
+Out of scope: GitHub (already uses the user's `gh` login); the claude.ai connectors themselves
+(this doesn't replace them, the in-session tools still use them); iOS.
+
+## 2. Constraints
+
+- **No paid or hosted anything** unless it can't be avoided. §3 shows it can be avoided for both
+  providers.
+- **No client secret ships in the app binary or the engine.** A secret in a public binary isn't
+  secret.
+- **Headless and dev-managed installs keep the hand-placed key file path** (#532's contract) and
+  get the same sign-in from the CLI.
+- **The app may be app-managed or dev-managed** (`managed_by` in `~/.local/state/scout/engine.json`).
+  Both must work the same way.
+- **Contract artifacts are generated** (the root `CLAUDE.md`): any new roster field goes through
+  `connectors.yaml` → `connectors_snapshot` → byte copies.
+- **No vault content on public surfaces**: examples use the `PROJ-1234` / `acme-co` stand-ins.
+
+## 3. What the providers support (from their docs, checked 2026-10-29)
+
+### 3.1 Linear: PKCE without a client secret — yes
+
+Source: <https://linear.app/developers/oauth-2-0-authentication>,
+<https://linear.app/developers/oauth-app-manifests>, <https://linear.app/developers/rate-limiting>,
+<https://linear.app/docs/third-party-application-approvals>.
+
+- **PKCE is supported.** `/oauth/authorize` takes `code_challenge` and
+  `code_challenge_method` (`plain` or `S256`; we use `S256`). The token exchange at
+  `https://api.linear.app/oauth/token` takes `code_verifier`, and for a PKCE request the docs
+  list `client_secret` as **optional**. Refreshing a PKCE-issued token needs only `client_id`.
+  So Linear needs **no server and no secret**.
+- **Redirect URIs** are listed on the app (the manifest allows 1–32, each an absolute
+  `http://` or `https://` URL). A custom scheme (`scout://`) is not allowed by the manifest schema.
+  The docs' own examples use `http://localhost:3000/oauth/callback`. They say nothing about
+  RFC 8252 loopback port wildcards. Third-party reports say the match is exact, port included, so
+  we register **three fixed loopback ports** and use the first free one (§6.2). Phase 0 confirms it.
+- **Lifetimes.** Access tokens last **24 hours** (`expires_in: 86399`). The code exchange also
+  returns a **refresh token**. Every OAuth app was moved to refresh tokens on 2026-04-01, so a new
+  app gets them. Each refresh returns a new access token **and a new refresh token** (rotation),
+  with a **30-minute grace period** on reusing the old refresh token. The docs don't give a
+  refresh-token lifetime.
+- **Revocation:** `POST https://api.linear.app/oauth/revoke` with `token=…`
+  (`token_type_hint=access_token|refresh_token`).
+- **API calls** send `Authorization: Bearer <access_token>`. #532 sends a personal key bare
+  (`Authorization: <key>`), so the header depends on the credential kind (§5.3).
+- **Distribution:** an app is `private` (its own workspace only) or `public` (any workspace).
+  Scout's has to be `public`. A paid workspace can require admin approval for third-party apps
+  (§10).
+- **Rate limits:** an OAuth app gets 5,000 requests/hour and 2,000,000 complexity points/hour
+  per user, against 2,500 and 3,000,000 for an API key. #532's two paged passes are well inside
+  that, but the complexity budget is lower, so Phase 1 measures one pre-fetch's complexity.
+
+### 3.2 Slack: PKCE without a client secret — yes, with a rate-limit catch
+
+Source: <https://docs.slack.dev/authentication/using-pkce>,
+<https://docs.slack.dev/changelog/2026/03/30/pkce>,
+<https://docs.slack.dev/authentication/using-token-rotation>,
+<https://docs.slack.dev/distribution>,
+<https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>,
+<https://docs.slack.dev/reference/methods/conversations.history>,
+<https://docs.slack.dev/reference/methods/search.messages>.
+
+- **PKCE has been self-service since 2026-03-30** (a toggle under *OAuth & Permissions*, or
+  `oauth_config.pkce_enabled: true` in the manifest). Turning it on **marks the app a public
+  client, and that's one-way** (only Slack support can undo it). With PKCE on, `oauth.v2.access`
+  takes the `code_verifier` and **no `client_secret`**. `S256` is the only method.
+- **Desktop redirects.** A custom scheme (`myApp://auth`) is always a desktop redirect. A
+  `http://localhost:…` redirect counts as one **only once the app has PKCE on**; otherwise it's
+  treated as a server redirect. Desktop redirects **cannot request bot scopes**, so Scout asks for
+  **user-token scopes only**, which is what it wants anyway (read as the user).
+- **Lifetimes.** Without token rotation, a Slack user token (`xoxp-`) doesn't expire. With
+  rotation, it lasts **12 hours** (`expires_in: 43200`, prefix `xoxe.xoxp-`), and each refresh
+  token works once. With PKCE on, **refresh tokens expire after 30 days**. A custom-scheme
+  redirect **forces** rotation on; a web or localhost redirect gets it only if the app turns
+  rotation on, and **rotation can't be turned off once on**. The docs disagree on whether a refresh
+  needs the secret: the token-rotation page says `client_secret` is "still required", while the PKCE
+  page says desktop-redirect tokens refresh without it. **Decision: use a localhost redirect and
+  leave rotation off.** The token is then long-lived like today's hand-made one, nothing has to
+  refresh, and there's no 30-day cliff. The engine still handles `expires_in` should Slack ever
+  force rotation on (§7).
+- **Revocation:** `auth.revoke` with the token. `auth.test` confirms it's gone.
+- **Distribution:** installing outside the app's own workspace means *Activate Public
+  Distribution* (the distribution page asks for SSL on redirect URLs; whether a PKCE localhost
+  redirect is exempt is checked in Phase 0). Workspaces can require admin approval (§10).
+- **The catch: the non-Marketplace rate limit.** Since 2025-05-29, a **new install of a
+  commercially distributed app that isn't in the Slack Marketplace** is limited on
+  **`conversations.history` and `conversations.replies` to 1 request/minute, at most 15 objects
+  per call**. Marketplace apps and "internal customer-built" apps keep Tier 3 (50+/min, 1,000
+  objects). A Raven-Scout app installed in a user's company workspace is an unlisted distributed
+  app. Slack doesn't define "commercially", and a free open-source app may or may not count, so we
+  have to assume the cap applies. With it, reading five 🔴 channels takes at least five minutes,
+  and more once one has over 15 new messages.
+- **`search.messages` isn't in that change.** It's Tier 2 (20+/min, up to 100 results a
+  page), takes `in:<channel>` modifiers, and needs only the user scope `search:read`. That is
+  the scope the current hand-made token already has. Slack calls the method legacy and points to
+  the Real-time Search API (`assistant.search.context`) instead, so it's a dependency to watch.
+
+### 3.3 The answer in one line each
+
+| | PKCE, no secret | Redirect | Server needed? | Refresh |
+|---|---|---|---|---|
+| Linear | Yes (secret optional on exchange and refresh) | `http://localhost:<fixed port>/…`, exact match; no custom scheme | **No** | 24 h access, rotating refresh (30 min grace) |
+| Slack | Yes (one-way public-client toggle) | localhost (desktop redirect once PKCE is on) or custom scheme | **No** | none with rotation off (long-lived user token) |
+
+**No hosted service is needed for either provider.** The one thing that could need more than free
+infrastructure is lifting Slack's history rate cap through a Marketplace listing (§12, §13). That costs
+no money but takes a review, plus a public privacy-policy and support page (GitHub Pages is
+enough). It isn't needed if the 🔴 pre-fetch reads through search (§8.2).
+
+## 4. Decisions (for Jordan to rule on)
+
+| # | Decision | Recommendation |
+|---|---|---|
+| D1 | Where the OAuth flow runs | **In the engine** (`scoutctl accounts login`), with the app as a thin UI over it. Linear rules out a custom scheme, so the flow needs a loopback listener and the system browser either way (`ASWebAuthenticationSession` only catches custom-scheme or associated-domain callbacks). Putting it in the engine gives headless and dev-managed users the same sign-in, keeps tokens out of the app process entirely, and is testable in pytest. |
+| D2 | Who refreshes | **The engine, lazily, just before it uses the token**, under a file lock. Not the app on a timer: scheduled runs fire at night with the app closed, and a Linear access token lasts only 24 h. §7. |
+| D3 | Token storage | **One file per provider in `~/.scout-secrets/`, mode 600, as the only store. No Keychain copy.** §5.1 says why (this departs from the brief's "Keychain plus file"). |
+| D4 | Contract | A `sign_in:` block on the existing `mcp:claude_ai_Linear` and `mcp:claude_ai_Slack` roster rows, projected into the snapshot. §5.4. |
+| D5 | Precedence | **OAuth token first, hand-placed key file second.** A failed or expired sign-in falls back to the key file if there is one, then to #532's gate. |
+| D6 | Slack read path for the 🔴 poll | **`search.messages` (`search:read`)** first, so no history scope and no rate cap. Add `channels:history` + `groups:history` only if Phase 0 shows search misses what the poll needs. §8.2. |
+| D7 | Who owns the OAuth apps | A **Raven-Scout-owned** Linear app and Slack app (Jordan's call; §12 lists the steps). Client IDs are public and ship in the roster. A `client_id` override lets anyone use their own app instead. |
+
+## 5. Storage and the app→engine contract
+
+### 5.1 Why there's no Keychain copy
+
+The brief asks for "Keychain plus the file the engine reads". This design keeps only the file:
+
+1. **A rotating refresh token can live in one place only.** Linear's refresh token is single-use:
+   once the engine refreshes, any copy in the Keychain is dead. Two stores means syncing them, and
+   a crash between the two writes leaves one wrong.
+2. **The engine must read it unattended.** An item Scout.app writes to the login Keychain has an
+   ACL that trusts Scout.app. When the engine's Python reads it, macOS prompts, and nobody answers
+   a prompt at 07:00. This setup already shows the problem: the release flow's notary Keychain
+   profile can't be read while the screen is locked (the ledger's release rule). A scheduled run
+   at 07:00 on a locked Mac would hit the same wall.
+3. **It matches every other Scout secret.** Telegram, the Slack search token, the Agnes PAT and
+   lease, and #532's Linear key all live in `~/.scout-secrets/` at mode 600, outside the vault,
+   and `repo_sync` already refuses to push that directory.
+4. **The app never holds a token** (D1), so the app has nothing of its own to keep in the Keychain.
+
+If Jordan still wants the Keychain, the only consistent variant is the Keychain as the sole store,
+with the engine reading it through `/usr/bin/security`. That breaks on a locked screen (point 2),
+so this spec doesn't recommend it.
+
+### 5.2 Files
+
+| File | Written by | Format |
+|---|---|---|
+| `~/.scout-secrets/linear-oauth.json` | `scoutctl accounts login linear`; rewritten on every refresh | `scout-oauth-token/1` (below) |
+| `~/.scout-secrets/linear-api-key` | the user, by hand (#532, unchanged) | one line, the key |
+| `~/.scout-secrets/slack-oauth.json` | `scoutctl accounts login slack` | `scout-oauth-token/1` |
+| `~/.scout-secrets/slack-search-token` | the user, by hand (unchanged) | one line, the token |
+| `~/.scout-secrets/<name>.lock` | the engine (`fcntl.flock`), empty | — |
+
+`SCOUT_SECRETS_DIR` moves the whole directory (as in #532). The Slack trigger source hard-codes
+`~/.scout-secrets` today; Phase 2 moves it onto the shared resolver.
+
+Permissions: the directory is 0700 and each file 0600. A write goes to a temp file opened with
+`O_CREAT|O_EXCL` at 0600 in the same directory, is `fsync`ed, then `os.replace`d over the old one.
+That's the pattern `repo_lease.py` already uses. A reader refuses a file that is group- or
+world-readable (as #532 does), with the `chmod 600` hint.
+
+`scout-oauth-token/1`:
+
+```json
+{
+  "schema": "scout-oauth-token/1",
+  "provider": "linear",
+  "client_id": "<the app that issued it>",
+  "token_type": "Bearer",
+  "access_token": "…",
+  "refresh_token": "…",
+  "scopes": ["read"],
+  "expires_at": "2026-10-30T07:00:00Z",
+  "obtained_at": "2026-10-29T07:00:00Z",
+  "refreshed_at": "2026-10-29T07:00:00Z",
+  "account": {
+    "user_id": "…", "name": "Alex Example", "email": "alex@example.com",
+    "workspace_id": "…", "workspace_name": "Acme Co", "workspace_url_key": "acme-co"
+  },
+  "state": "ok",
+  "last_error": null
+}
+```
+
+- `client_id` is stored so a refresh uses the app that issued the token, even after an override
+  changes.
+- For Slack, `access_token` holds `authed_user.access_token`. `refresh_token` and `expires_at`
+  are `null` while rotation is off. `account` comes from the `oauth.v2.access` response
+  (`authed_user.id`, `team`) and `auth.test` (user name, team URL).
+- `state` is `ok`, `expired` (the refresh was refused) or `revoked` (the provider refused the
+  token and the refresh). Once the state is `expired` or `revoked`, the engine blanks
+  `access_token` and `refresh_token` but keeps `account`, so the UI can still say who to sign
+  back in as.
+- `last_error` is `{"at": "...", "code": "invalid_grant", "message": "<redacted, ≤200 chars>"}`.
+  It never holds a token.
+
+### 5.3 One resolver
+
+`scout/accounts/credentials.py` exposes `credential(provider) -> Credential | None`, where
+`Credential` is `kind` (`oauth` | `api_key`), `token`, `header` (`Bearer <t>` for OAuth, the
+bare key for a Linear personal key) and `source` (the file path). It applies D5 and refreshes
+when needed (§7). `linear_activity.read_key()` becomes a call to it, so #532's `NO_KEY` and
+`FAILED` statuses keep their meaning. The Slack trigger source and the 🔴 pre-fetch use it too.
+
+### 5.4 Declared in the connector roster
+
+`connectors.yaml` gains an optional `sign_in:` block on the two existing rows. They are the same
+service reached two ways (in-session MCP, engine pre-fetch), so there are no new rows, and the
+connector-health rail doesn't change:
+
+```yaml
+  mcp:claude_ai_Linear:
+    # … existing fields unchanged …
+    sign_in:
+      provider: linear
+      used_for: "Your own Linear activity, pre-fetched before briefings and consolidations"
+      credentials:                       # in precedence order (D5)
+        - {file: linear-oauth.json, kind: oauth, written_by: "scoutctl accounts login linear"}
+        - {file: linear-api-key,    kind: api_key, written_by: hand}
+      oauth:
+        authorize_url: https://linear.app/oauth/authorize
+        token_url: https://api.linear.app/oauth/token
+        revoke_url: https://api.linear.app/oauth/revoke
+        client_id: "<from Phase 0>"      # public; SCOUT_LINEAR_CLIENT_ID overrides
+        scopes: [read]
+        redirect: {host: localhost, ports: [<p1>, <p2>, <p3>], path: /oauth/linear}
+```
+
+The Slack row is the same shape: `provider: slack`, credentials `slack-oauth.json` then
+`slack-search-token`, `authorize_url: https://slack.com/oauth/v2/authorize` with `user_scope`
+(not `scope`), `token_url: https://slack.com/api/oauth.v2.access`, `revoke_url:
+https://slack.com/api/auth.revoke`.
+
+- `_build_connector` ignores unknown keys today, so the loader takes the block without a schema
+  bump. A `SignIn` dataclass and a validation test come with it.
+- `connectors_snapshot` projects `sign_in` as `{provider, used_for, files: [...]}` with no
+  endpoints and no client ID: the app needs only the rows to show and the file names to point at.
+- The snapshot stays `schema_version: 1`. The field is additive, and the app's `SnapshotFile`
+  `Decodable` ignores unknown keys.
+- Regenerate it with `--no-also-write-app-fixture` and `cp` it over both app copies in the same
+  commit (`contract.yml` byte-compares them). Never hand-edit it.
+- Custom (vault-local) connectors can't declare `sign_in` in v1, because the endpoints would be
+  user-supplied URLs the engine posts tokens to.
+
+## 6. The engine side: `scoutctl accounts`
+
+### 6.1 Commands
+
+| Command | Does | Network |
+|---|---|---|
+| `accounts status [--json] [--check]` | Every `sign_in` provider: `source` (`oauth`/`api_key`/none), `state`, `account`, `expires_at`, `last_error`, the secrets dir in use. `--check` adds one live call (Linear `viewer { id }`, Slack `auth.test`) and refreshes if due. | only with `--check` |
+| `accounts login <provider> [--json] [--no-browser] [--timeout 300]` | The PKCE flow (§6.2). Writes the token file. Prints the account. | yes |
+| `accounts logout <provider> [--json] [--keep-remote]` | Revokes, then deletes the file (§8.4). | yes, unless `--keep-remote` |
+| `accounts refresh <provider>` | Forces a refresh (tests and debugging). | yes |
+
+`--json` output is one object, the shape the app decodes (`BudgetSettingsService.invoke` is the
+pattern), and never contains a token. `login --json` also prints one `{"event":"waiting","port":N}`
+line first, so the app can show "Waiting for your browser…".
+
+### 6.2 The login flow
+
+1. Generate a `code_verifier` (43–128 chars from `secrets.token_urlsafe`), its S256
+   `code_challenge`, and a `state` (32 random bytes). They stay in memory and are never written.
+2. Bind an HTTP listener on loopback, IPv4 `127.0.0.1` and IPv6 `::1`, at the first free port in
+   `redirect.ports`. If all three are taken, exit with `ports_busy` and the ports listed.
+3. Open `authorize_url?client_id=…&redirect_uri=http://localhost:<port><path>&response_type=code&scope=…&state=…&code_challenge=…&code_challenge_method=S256`
+   with macOS `open`. Linear adds `prompt=consent`, so the user can pick a workspace. With
+   `--no-browser` (SSH), print the URL instead.
+4. Serve exactly one request on `<path>`:
+   - A wrong or missing `state` returns 400 and the listener keeps waiting, until the timeout.
+   - An `error=access_denied` is `cancelled`; the other provider errors are reported by code.
+   - A good request gets a small "You can close this tab" page, with no token in it.
+5. Exchange the code at `token_url` (form-encoded): `grant_type=authorization_code`, `code`,
+   `redirect_uri`, `client_id`, `code_verifier`. Never a secret.
+6. Fetch the account (Linear `viewer { id name email } organization { id name urlKey }`; Slack
+   `auth.test`). Write the file (§5.2) under the lock. Close the listener.
+7. Exit codes: 0 connected; distinct codes for `cancelled`, `timeout`, `ports_busy`,
+   `exchange_failed`, `insecure_secrets_dir`.
+
+SIGTERM (the app's Cancel) closes the listener and writes nothing.
+
+## 7. Refresh and expiry
+
+**The engine refreshes, lazily, just before it uses the token** (D2):
+
+- In `credential(provider)`: if `expires_at` is less than 10 minutes away (or past), take
+  `flock` on `<file>.lock`, **re-read the file** (another process may have just refreshed it), and
+  if it's still due, POST `grant_type=refresh_token&refresh_token=…&client_id=…`.
+  - Write the new pair **before** using it.
+  - The lock waits at most 30 s. If it can't be taken, the fetch reports `FAILED` "credential
+    busy" and the run carries on through the gate.
+- If a call with a token that isn't due gets a 401, refresh once and retry once. A second 401
+  means `revoked`.
+- If the refresh returns `invalid_grant` (or the Slack equivalent), `state: expired` and the
+  tokens are blanked (§5.2). A network error or 5xx leaves the file alone and reports `FAILED`
+  for this run only.
+- A crash after Linear has rotated the token but before the write: Linear's 30-minute grace on the
+  old refresh token lets the next attempt recover. Past the grace, it's `expired`.
+
+Why not the app on a timer: the app is optional, may be closed, and isn't a login item by default
+(`SMAppService` is off unless the user turns it on). Linear's token lasts 24 h, so a weekend with
+the app closed would expire every scheduled run. And two refreshers racing for a single-use
+refresh token is exactly the failure the lock exists to stop. With one refresher, the engine, the
+app never needs the token.
+
+A Mac left off for weeks: Linear doesn't document a refresh-token lifetime. If it has one, the
+first run after the break gets `invalid_grant`, goes `expired`, and the gate covers it until the
+user signs in again (§9). With rotation off, Slack has no expiry.
+
+The app learns about expiry two ways: the Settings section runs `accounts status --json` when it
+opens, and run health (below) shows up through the doctor refresh the app already runs every
+600 s (`EngineHealthService`).
+
+Run health: `scoutctl health` / `bootstrap doctor` gain the yellow findings
+`accounts.<provider>.expired` and `accounts.<provider>.revoked`.
+- Each finding goes once through the existing notifier state machine, not once per run, using the
+  text of the roster row's `first_fix`.
+- `failed` for one run is not a finding: #532's gate already records it in the digest.
+
+## 8. Behaviour
+
+### 8.1 Linear (Phase 1)
+
+`linear_activity.fetch_own_activity` takes its credential from the resolver (§5.3) and sends the
+right header. Nothing else in #532 changes: `FETCHED` / `NO_KEY` / `FAILED` and
+`check-linear-delta` work as they do now. `NO_KEY` now means "no OAuth file and no key file". If
+the user hasn't set it, the signed-in `workspace_url_key` also fills `SCOUT_LINEAR_WORKSPACE` for
+deep links and offers to fill the app's Linear workspace setting.
+
+### 8.2 Slack (Phase 2)
+
+- **Search.** The mention trigger and anything else that searches use `credential("slack")`.
+  That is `slack-oauth.json` if it has `search:read`, else `slack-search-token`. **The current
+  hand-made token keeps working, untouched.** (Answer to Q3: yes, search can keep using it.)
+- **The 🔴 poll.** #532 pre-fetches *which* channels (`red_project_channels`, each `{id, name}`).
+  Phase 2 also pre-fetches *what they said*: one `search.messages` call per channel,
+  `query="in:<#C…> after:<date>"`, `sort=timestamp`, `count=100`, paged, for the window since the
+  last run. The results go into `session-context.json` as `red_project_messages`, and
+  `check-red-polls` accepts a pre-fetched channel the way `check-linear-delta` accepts the
+  pre-fetched activity. Search is Tier 2 and isn't under the non-Marketplace cap, and it needs
+  no scope beyond `search:read`.
+- **Phase 0 checks whether search is enough**, using the existing token on Jordan's machine (read-only, nothing posted):
+  - Do thread replies, bot posts and edited messages come back for a channel?
+  - Does `after:` behave as it does in the Slack UI?
+  - Is the index lag short enough for a 07:00 run?
+  If not, Phase 2 adds the user scopes `channels:history` (public 🔴 channels) and `groups:history`
+  (private ones) and reads with `conversations.history`. That path takes the 1/min, 15-object cap
+  into account: one channel per minute, and the check reports `truncated` when a channel had more
+  messages than were fetched.
+- **Minimal Slack scopes:** `search:read` (user scope). If needed: `channels:history`,
+  `groups:history`. Never bot scopes, which desktop redirects can't request anyway. Never
+  `im:history`/`mpim:history`, since the 🔴 poll reads project channels, not DMs.
+
+### 8.3 With no app
+
+Everything above runs from the CLI. `scoutctl accounts login linear` opens the browser on the
+Mac. `--no-browser` prints the URL for an SSH session; the user opens it on a machine whose
+browser can reach the Mac's loopback port, usually through `ssh -L <port>:localhost:<port>`. The
+README section says so. The hand-placed key files keep working exactly as in #532 (D5), so a
+headless box that never runs a browser loses nothing.
+
+### 8.4 Sign-out and revocation
+
+`accounts logout <provider>`:
+1. Under the lock, POST the revoke endpoint. Linear: `token=<refresh_token>` (revoking the grant,
+   with `token_type_hint=refresh_token`). Slack: `auth.revoke` with the user token. The timeout is
+   10 s.
+2. **Delete the file whatever the revoke returned.** If the revoke failed (offline, 4xx), say so
+   and point at the provider's own place to remove the app: Linear's *Settings → Account →
+   Security & access → Authorized applications*, Slack's app management page. The exact paths are
+   confirmed in Phase 0.
+3. Never touch the hand-placed key file. If one exists, the output says "Still using the key file
+   at …".
+
+`--keep-remote` skips step 1 (used when switching workspaces, or by the app when it removes a
+stale entry).
+
+## 9. Settings UI (Scout.app)
+
+The new section is **Connected accounts**, added to `SettingsView.swift` with the existing
+`section(label:)` helper, between *Claude Code* and *Budget*. It's its own file
+(`ConnectedAccountsSettingsSection.swift`, like `EngineSettingsSection`), with one
+`SettingsCard` row per roster row that has `sign_in`, built from the bundled snapshot.
+
+Each row: the provider name, the `used_for` line as help text, a status chip in the
+`UpdateTrackRow` capsule style, and buttons. The chip colours use `DS.Status`.
+
+| State (from `accounts status --json`) | Chip | Detail line | Buttons |
+|---|---|---|---|
+| none | "Not connected" (p3) | `used_for`. "Without it, the briefing asks Linear in-session." | **Sign in with Linear** |
+| connecting | "Waiting for browser…" (p3) | "Finish signing in in your browser." | Cancel |
+| ok (oauth) | "Connected" (ok) | "As Alex Example · Acme Co" | Check now · Disconnect |
+| ok (api_key) | "Using key file" (ok) | "`~/.scout-secrets/linear-api-key`" | Sign in with Linear (replaces the key; the file is kept as the fallback) |
+| expired / revoked | "Sign in again" (warn) | "Linear stopped accepting Scout's sign-in on <date>. Briefings fall back to asking in-session." | **Sign in again** · Disconnect |
+| error (last check failed, token kept) | "Couldn't check" (warn) | The redacted `last_error.message` | Check now |
+| insecure dir / file | "Fix permissions" (err) | "`chmod 600 …`" with a copy button | Check now |
+| engine too old | "Needs engine X.Y" (p3) | The `/scout-update` hand-off copy, as in `EngineSettingsModel` | — |
+
+- **Sign in** runs `scoutctl accounts login <provider> --json` through the scoutctl the app
+  already resolves: the shim for app-managed engines, the located one for external engines.
+  - It needs a cancellable variant of `ProcessRunner`. The current `SystemProcessRunner` waits for
+    exit, so Cancel sends SIGTERM through the new variant.
+  - The chip shows "Waiting for browser…" from the first JSON line until the process exits. The
+    timeout is 5 minutes.
+- **Disconnect** runs `accounts logout`, after a confirmation that names the account.
+- **Check now** runs `accounts status --check --json`. Opening Settings runs `status --json`,
+  which makes no network call.
+- **No row edits a file itself.** The app never reads or writes `~/.scout-secrets/`, so the
+  engine stays the only writer, whatever `managed_by` says. The app doesn't modify the engine for
+  this either: it runs a command, so writing a secret is allowed for a dev-managed engine too.
+- **Engine floor:** the app checks the engine version, as it does for `SCScoutPluginFloor`.
+  - Below the first version with `accounts`, the row shows "Needs engine X.Y".
+  - For a dev-managed engine, that comes with the `/scout-update` hand-off, never an app-driven
+    upgrade.
+- **Secrets dir:** the app passes no `SCOUT_SECRETS_DIR`. `EnvironmentInjectingRunner` injects
+  only `SCOUT_DATA_DIR`, so the app and launchd agree on `~/.scout-secrets`. `status` prints the
+  dir it used, and the row shows it under a disclosure.
+- **Badge:** an `accounts.*` finding in the doctor report puts a warn dot on the Settings menu
+  item, the same signal the engine-health row uses.
+
+Error copy, by exit code:
+- `cancelled`: "Sign-in cancelled."
+- `timeout`: "No answer from the browser in 5 minutes."
+- `ports_busy`: "Ports <p1>–<p3> are in use; quit the app using them and try again."
+- `admin_approval_required` (Linear's or Slack's approval page): "Your workspace admin has to
+  approve Scout first. Linear/Slack sent them the request."
+- `exchange_failed`: "Linear refused the sign-in (<code>)."
+
+## 10. Failure modes (every one ends at #532's gate)
+
+| Failure | What the engine does | What the run does |
+|---|---|---|
+| No OAuth file, no key file | `NO_KEY` | The gate asks the session (unchanged) |
+| Access token due | Refresh under the lock, then fetch | Pre-fetched |
+| Refresh refused (`invalid_grant`) | `state: expired`, tokens blanked; falls to the key file if there is one | Key-file fetch or the gate; one run-health finding |
+| 401 on a token that isn't due (revoked in the provider's UI) | One refresh + retry, then `revoked` | Same as above |
+| Network error / 5xx / timeout | `FAILED`; file untouched | The gate ("Linear unavailable: …") |
+| Lock busy for 30 s (another run is refreshing) | `FAILED` "credential busy" | The gate |
+| Crash during rotation | Linear's 30-min grace lets the next try recover; else `expired` | The gate |
+| File or dir mode too open | Refuse, with the `chmod` hint (as #532) | The gate; the UI shows "Fix permissions" |
+| Workspace needs admin approval | `login` exits `admin_approval_required` | n/a (no token yet) |
+| Different workspace than the claude.ai connector | Works; the row shows the workspace | The pre-fetch reads the signed-in workspace; the phase text says which |
+| Slack history cap (if D6 falls back to `conversations.history`) | One channel a minute; `truncated` when it got 15 and more were left | The check asks the session to read past the cut |
+| `search.messages` retired by Slack | Search returns `method_deprecated`/`unknown_method` → `FAILED` | The gate: the poll stays in-session, as today |
+| Engine older than the app expects | The app shows "Needs engine X.Y" | Key-file behaviour unchanged |
+
+The pre-fetch never blocks or fails a run (`fetch_own_activity` "never raises" today, and stays
+that way).
+
+## 11. Privacy
+
+- **Tokens never cross a process boundary.**
+  - They're never on a command line or in an environment variable, and never in `--json` output.
+  - They never reach the app or the session (`session-context.json` gets the fetched data, never
+    the credential).
+  - They never go into logs, `last_error`, health records, connector-health or transcripts.
+- `scout/redact.py` gains the new shapes:
+  - Slack's rotating `xoxe.xoxp-…` and refresh `xoxe-…` (today's `xox[abposr]-` misses `xoxe-`).
+  - Linear's `lin_api_…` / `lin_oauth_…` (prefixes confirmed in Phase 0).
+  - Every error string from `scout/accounts/` passes `redact_secrets(text, token)`.
+- The authorize URL carries `state` and `code_challenge`, which are useless without the in-memory
+  verifier. The app still doesn't log it.
+- `~/.scout-secrets/` is outside the vault and never synced; `repo_sync` already refuses it.
+- The `account` block (name, email, workspace) is personal data. It stays in the secrets file and
+  in local `status` output only, and never goes into run health that's sent over Slack or Telegram.
+- Tests use the `Alex` / `acme-co` / `PROJ-1234` stand-ins and a `file://` token endpoint, in the
+  same style as `SCOUT_LINEAR_API_URL`.
+
+## 12. What Jordan has to do (the OAuth apps)
+
+None of this costs money. Client IDs are public and go into `connectors.yaml` in the Phase 1/2 PR.
+**Copy no client secret anywhere.** Linear and Slack still generate one, and we never use it. If
+one is ever exposed, rotate it in the app settings.
+
+**Linear (Phase 0, about 15 minutes):**
+1. Create a free Linear workspace owned by Raven-Scout (for example "Raven Scout Apps"). Linear
+   recommends a dedicated workspace for app management, because every admin of the owning
+   workspace can see the app. Using it keeps the app out of any employer's workspace.
+2. In it, open *Settings → API → Applications → New* (`linear.app/settings/api/applications/new`)
+   and fill in:
+   - name **Scout** (it may not contain "Linear");
+   - developer **Raven-Scout**;
+   - homepage `https://github.com/Raven-Scout/Scout`;
+   - icon: the app icon.
+3. Redirect URIs: `http://localhost:<p1>/oauth/linear`, `…<p2>…`, `…<p3>…` (the card picks three
+   unassigned ports in Phase 0).
+4. **Distribution: public.** No webhook. Leave client credentials off.
+5. Send the **client ID** to the card. Don't send the secret.
+
+**Slack (Phase 2, about 20 minutes):**
+1. Create a free Slack workspace owned by Raven-Scout. An app is created in, and owned by, one
+   workspace, so it shouldn't be an employer's.
+2. At `api.slack.com/apps`, choose **Create New App → From a manifest** and paste the manifest the
+   Phase 2 PR commits (`plugin/engine/scout/accounts/slack-app-manifest.json`). It sets:
+   - user scopes only: `search:read`, plus `channels:history`/`groups:history` only if Phase 0 says
+     so;
+   - the three localhost redirect URLs;
+   - `pkce_enabled: true`.
+3. Confirm the PKCE toggle under *OAuth & Permissions*. **This is one-way.** Leave **token
+   rotation off**; that's one-way too.
+4. *Manage Distribution → Activate Public Distribution.* If the checklist refuses localhost
+   redirect URLs (the SSL item), stop and tell the card. The fallback is a custom-scheme redirect,
+   which forces rotation, so the design moves to 12 h tokens refreshed by the engine (§7).
+5. Optional, later: submit to the Slack Marketplace only if the history scopes turn out to be
+   needed and the 1/min cap hurts. That needs a public privacy policy and support page (GitHub
+   Pages, free) and Slack's review.
+6. Send the **client ID** to the card.
+
+## 13. Phased plan
+
+**Phase 0: verify (one card with Jordan, no merge).**
+- Jordan registers the Linear app (§12).
+- On a throwaway secrets dir, with a scratch script outside the repo, the card checks:
+  - a PKCE exchange and a refresh without a secret;
+  - the exact-match loopback redirect: does `localhost` match, and is a different port refused?;
+  - the token prefix, and revoke;
+  - the complexity cost of one #532 pre-fetch.
+- With Jordan's existing Slack search token, read-only: does `search.messages in:<#C…>` cover a
+  🔴 channel (§8.2)?
+- Results go into this spec as a short "verified" section, with no vault content.
+
+**Phase 1: Linear, one PR, ships after #532.**
+- `scout/accounts/` (credentials, store with locking, PKCE flow, CLI), wired into
+  `linear_activity`.
+- The `sign_in` roster block + snapshot + both app copies, in ONE commit (cross-cutting, gated by
+  `contract.yml`).
+- `redact.py` shapes, run-health findings, README + `linear-activity-setup.md` ("sign in, or
+  place a key").
+- The Settings section, for Linear only, and the cancellable process runner.
+- The engine and app halves can be two PRs if the snapshot copy lands with the engine half, since
+  the CLI is usable on its own. One PR is simpler.
+- Tests:
+  - flow against a local fake provider (loopback, state mismatch, cancel, ports busy);
+  - refresh race (two processes, one refresh);
+  - precedence, perms, redaction;
+  - app view-model states.
+- No eval change: the pre-fetch path is already seeded (`busy-briefing` `linear_delta`) through
+  `SCOUT_LINEAR_API_URL`.
+
+**Phase 2: Slack, one PR.**
+- The `slack` provider (rotation-aware but off), the trigger source moved onto the resolver
+  (fixing its hard-coded secrets dir), the `search.messages` 🔴 pre-fetch,
+  `red_project_messages` + the `check-red-polls` change, and the manifest file.
+- Its eval seed: `busy-briefing` already has `red_poll`. Add a recorded search response, in the
+  same `file://` style.
+- Plus the Slack row in Settings.
+
+**Phase 3: only if needed.** Slack history scopes and the rate-cap-aware reader; a Marketplace
+listing; per-user "bring your own app" (the `client_id` override, surfaced in Settings).
+
+## 14. Open questions
+
+1. D3: is a file-only store (no Keychain) acceptable? §5.1 gives the reasons.
+2. D6: is the 🔴 poll through search acceptable if Phase 0 shows it's complete, given that Slack
+   calls the method legacy?
+3. Should signing in also fill `connectors.inputs.user_slack_id` in `scout-config.yaml` (needed
+   by the mention trigger)? That writes to the vault, so it would be an offer, never automatic.
+4. One account per provider in v1. Is anyone running several Linear workspaces through Scout?
