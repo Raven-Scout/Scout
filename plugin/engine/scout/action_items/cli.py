@@ -595,8 +595,9 @@ def cli_check_linear_delta(
 
     With a Linear API key (`~/.scout-secrets/linear-api-key`) the runner
     pre-fetches that activity, and every pre-fetched issue must be named under
-    `### Your Linear Activity`. Without one, the heading must exist with at
-    least one bullet, built from the Linear connector. Run it before committing
+    `### Your Linear Activity` on a line this run wrote. Without one, this run
+    must add a bullet under that heading, built from the Linear connector. A
+    line already in the file before the session doesn't count. Run it before committing
     a briefing or consolidation. Exit codes: 0 = reported, 1 = not yet, 2 =
     cannot check.
     """
@@ -621,6 +622,7 @@ def cli_check_linear_delta(
                     "prefetched": None if result.prefetched is None else len(result.prefetched),
                     "reported": result.reported,
                     "unreported": rows,
+                    "truncated": result.truncated,
                     "passed": result.passed,
                 }
             )
@@ -640,7 +642,10 @@ def cli_check_linear_delta(
         for i in result.unreported:
             state = f" (now {i.state})" if i.state else ""
             sys.stdout.write(f"  {i.identifier} — {i.title} — {', '.join(i.actions)}{state}\n")
-        sys.stdout.write("Add a bullet for each: the identifier, what you did, and where it stands now.\n")
+        sys.stdout.write(
+            "Add a bullet for each: the identifier, what you did, and where it stands now. A line that was "
+            "already there before this run doesn't count: update it with this run's action.\n"
+        )
     elif result.passed:
         sys.stdout.write(f"{name}: reported under ### {HEADING} (not pre-fetched: {result.status or 'unknown'})\n")
     else:
@@ -648,7 +653,13 @@ def cli_check_linear_delta(
             f"{name}: your Linear activity was not pre-fetched ({result.status or 'unknown'}). Query the Linear "
             f"connector for the issues you created, moved, commented on or edited since {since}, and list each "
             f"under ### {HEADING} in today's 📋 Scout Digest. If there were none, write `- None since {since}`; "
-            "if Linear could not be read, write `- Linear unavailable: <error>`.\n"
+            "if Linear could not be read, write `- Linear unavailable: <error>`. Bullets already there before "
+            "this run don't count.\n"
+        )
+    if result.truncated and not json_out:
+        sys.stdout.write(
+            "  note: the pre-fetch hit a limit (linear_own_activity_truncated); check the Linear connector for "
+            f"anything else you did since {since}.\n"
         )
     if not result.passed:
         raise typer.Exit(code=1)
@@ -668,8 +679,9 @@ def cli_check_red_polls(
     """List the 🔴 project Slack channels today's file doesn't say were polled.
 
     The runner pre-fetches every 🔴 project's `slack_channels:`; each must
-    appear on a `🔴 channels polled: …` line (by `#name` or id), normally on
-    this run's 🪵 Run notes entry. Run it before committing a briefing or
+    appear on a `🔴 channels polled: …` line (by `#name` or id) on this run's
+    🪵 Run notes entry: one that wasn't in the file before the session, so an
+    earlier run's line doesn't count. Run it before committing a briefing or
     consolidation. Exit codes: 0 = all listed, 1 = some missing, 2 = cannot check.
     """
     from scout.action_items.prefetched import PrefetchCheckError
@@ -685,7 +697,14 @@ def cli_check_red_polls(
     if json_out:
         rows = [{"project": c.project, "id": c.id, "name": c.name} for c in result.unpolled]
         sys.stdout.write(
-            _json.dumps({"checked": len(result.channels), "unpolled": rows, "unconfigured": list(result.unconfigured)})
+            _json.dumps(
+                {
+                    "checked": len(result.channels),
+                    "unpolled": rows,
+                    "unconfigured": list(result.unconfigured),
+                    "has_entry": result.has_entry,
+                }
+            )
             + "\n"
         )
     else:
@@ -695,9 +714,14 @@ def cli_check_red_polls(
             n = len(result.channels)
             sys.stdout.write(f"{name}: all {n} 🔴 project channel{'s' if n != 1 else ''} listed as polled\n")
         else:
+            where = (
+                "on this run's 🪵 Run notes entry"
+                if result.has_entry
+                else "(today's 🪵 Run notes has no entry from this run yet)"
+            )
             sys.stdout.write(
                 f"{name}: {len(result.unpolled)} of {len(result.channels)} 🔴 project channels are not listed "
-                "as polled:\n"
+                f"as polled {where}:\n"
             )
             for c in result.unpolled:
                 sys.stdout.write(f"  {c.label} — {c.project}\n")

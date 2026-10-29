@@ -28,14 +28,21 @@ Scout keeps working without the key; nothing else changes.
 
 ## What it does
 
-- One GraphQL request to `api.linear.app` before each scheduled run, with a
-  10-second timeout: the issues assigned to you, created by you or commented on
-  by you, updated since the last successful briefing or consolidation (at most
-  7 days back). Only your own actions on them are kept.
+- Paged GraphQL requests to `api.linear.app` before each scheduled briefing
+  and consolidation (never dreaming or research), each with a 10-second
+  timeout, for the issues updated since the last successful briefing or
+  consolidation (at most 7 days back). The first pass covers the issues
+  assigned to you, created by you, commented on by you or that you subscribe
+  to, up to 500. A second, best-effort pass reads the workspace's 200 most
+  recently updated issues, to catch a move or edit on an issue you have no
+  other tie to. Only your own actions are kept. If the first pass, or an
+  issue's history, runs past its limit, `linear_own_activity_truncated` is
+  `true` and the run checks the connector for the rest.
 - The result goes into `.scout-cache/session-context.json` as
   `linear_own_activity`. Before committing, the run calls
   `scoutctl action-items check-linear-delta`, which wants each of those issues
-  under `### Your Linear Activity` in the day's 📋 Scout Digest.
+  under `### Your Linear Activity` in the day's 📋 Scout Digest, on a line that
+  run wrote (the digest is shared by the day's runs).
 - On any failure (no network, an expired key, an API error) the status says
   `failed: <why>` and the run falls back to asking the connector. The key is
   never written to a log or to the context file.

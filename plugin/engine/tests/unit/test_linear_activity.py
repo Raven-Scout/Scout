@@ -256,10 +256,96 @@ def test_with_a_key_it_asks_for_the_window_and_keeps_the_users_actions(tmp_path:
 
     assert got.status == la.FETCHED and got.since == "2026-04-14T07:00:00Z" and got.error == ""
     assert [r["identifier"] for r in got.issues or []] == ["PROJ-1"]
-    url, payload, key = seen[0]
-    assert url == la.API_URL and key == "lin_api_test"
-    assert payload["variables"] == {"since": "2026-04-14T07:00:00Z", "first": la.ISSUE_LIMIT}
-    assert "viewer" in payload["query"] and "isMe" in payload["query"]
+    assert len(seen) == 2  # the user's own issues, then the workspace's recent ones; one page each
+    mine, workspace = la.filters("2026-04-14T07:00:00Z")
+    for (url, payload, key), flt in zip(seen, (mine, workspace), strict=True):
+        assert url == la.API_URL and key == "lin_api_test"
+        assert payload["variables"] == {"filter": flt, "first": la.ISSUE_LIMIT}
+        assert "viewer" in payload["query"] and "pageInfo" in payload["query"]
+    assert got.truncated is False
+
+
+def test_the_first_pass_is_the_users_own_issues_and_the_second_any_updated_in_the_window() -> None:
+    mine, workspace = la.filters("2026-04-14T07:00:00Z")
+    assert workspace == {"updatedAt": {"gt": "2026-04-14T07:00:00Z"}}
+    ties = [next(iter(t)) for t in mine["or"]]
+    assert ties == ["assignee", "creator", "comments", "subscribers"]
+    assert mine["updatedAt"] == workspace["updatedAt"]
+
+
+def _page(*issues: dict[str, Any], after: str | None = None) -> dict[str, Any]:
+    data = _response(*issues)
+    data["data"]["issues"]["pageInfo"] = {"hasNextPage": after is not None, "endCursor": after}
+    return data
+
+
+def test_it_pages_through_the_users_issues(tmp_path: Path, secrets: Path) -> None:
+    _key(secrets)
+    seen: list[dict[str, Any]] = []
+    pages = {
+        None: _page(_issue("PROJ-1", creator={"id": ME}, createdAt=_at(1)), after="c1"),
+        "c1": _page(_issue("PROJ-2", creator={"id": ME}, createdAt=_at(2))),
+    }
+
+    def post(_url: str, payload: dict[str, Any], _key: str) -> dict[str, Any]:
+        seen.append(payload["variables"])
+        return pages[payload["variables"].get("after")]
+
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=post)
+    assert [r["identifier"] for r in got.issues or []] == ["PROJ-2", "PROJ-1"]
+    assert [v.get("after") for v in seen] == [None, "c1", None, "c1"]
+    assert got.truncated is False
+
+
+def test_a_move_on_an_issue_with_no_other_tie_comes_from_the_workspace_pass(tmp_path: Path, secrets: Path) -> None:
+    _key(secrets)
+    theirs = _issue("PROJ-9", history={"nodes": [_move(_at(2), ME, "Triage", "Todo")]})
+
+    def post(_url: str, payload: dict[str, Any], _key: str) -> dict[str, Any]:
+        return _page(theirs) if "or" not in payload["variables"]["filter"] else _page()
+
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=post)
+    assert [(r["identifier"], r["actions"]) for r in got.issues or []] == [("PROJ-9", ["moved Triage → Todo"])]
+
+
+def test_an_issue_both_passes_return_is_listed_once(tmp_path: Path, secrets: Path) -> None:
+    _key(secrets)
+    issue = _issue("PROJ-1", creator={"id": ME}, createdAt=_at(1))
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=lambda *_: _page(issue))
+    assert [r["identifier"] for r in got.issues or []] == ["PROJ-1"]
+
+
+def test_running_out_of_pages_on_the_users_issues_is_truncated(tmp_path: Path, secrets: Path) -> None:
+    _key(secrets)
+    calls = 0
+
+    def post(*_: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return _page(after=f"c{calls}")
+
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=post)
+    assert got.status == la.FETCHED and got.truncated is True
+    assert calls == la.MINE_PAGES + la.WORKSPACE_PAGES
+
+
+def test_running_out_of_workspace_pages_is_not_truncated(tmp_path: Path, secrets: Path) -> None:
+    """The workspace pass is best-effort: its limit says nothing about the user's own issues."""
+    _key(secrets)
+
+    def post(_url: str, payload: dict[str, Any], _key: str) -> dict[str, Any]:
+        return _page() if "or" in payload["variables"]["filter"] else _page(after="more")
+
+    assert la.fetch_own_activity(tmp_path, now=NOW, post=post).truncated is False
+
+
+@pytest.mark.parametrize("field", ["history", "comments"])
+def test_a_cut_history_or_comment_list_on_the_users_issue_is_truncated(
+    tmp_path: Path, secrets: Path, field: str
+) -> None:
+    _key(secrets)
+    issue = _issue("PROJ-1", **{field: {"nodes": [], "pageInfo": {"hasNextPage": True}}})
+    assert la.fetch_own_activity(tmp_path, now=NOW, post=lambda *_: _page(issue)).truncated is True
 
 
 def test_the_endpoint_can_be_moved(tmp_path: Path, secrets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,7 +353,7 @@ def test_the_endpoint_can_be_moved(tmp_path: Path, secrets: Path, monkeypatch: p
     monkeypatch.setenv("SCOUT_LINEAR_API_URL", "https://linear.example.test/graphql")
     seen: list[str] = []
     la.fetch_own_activity(tmp_path, now=NOW, post=lambda url, *_: seen.append(url) or _response())
-    assert seen == ["https://linear.example.test/graphql"]
+    assert seen == ["https://linear.example.test/graphql"] * 2
 
 
 def test_a_file_url_reads_a_recorded_response(tmp_path: Path, secrets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,6 +415,21 @@ def test_the_real_post_sends_the_key_and_reads_json(monkeypatch: pytest.MonkeyPa
     assert la._post(la.API_URL, {"query": "q"}, "lin_api_test") == _response()
     assert seen["headers"]["Authorization"] == "lin_api_test"
     assert seen["json"] == {"query": "q"} and seen["timeout"] == la.TIMEOUT_S
+
+
+def test_a_rejected_query_keeps_linears_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linear answers a query it rejects with HTTP 400 and a GraphQL ``errors`` body."""
+    import requests
+
+    class Resp:
+        status_code = 400
+
+        def json(self) -> dict[str, Any]:
+            return {"errors": [{"message": 'Cannot query field "subscribers"'}]}
+
+    monkeypatch.setattr(requests, "post", lambda *_a, **_k: Resp())
+    with pytest.raises(la.LinearFetchError, match=r'HTTP 400: Cannot query field "subscribers"'):
+        la._post(la.API_URL, {}, "lin_api_test")
 
 
 def test_the_real_post_turns_an_http_error_into_a_fetch_error(monkeypatch: pytest.MonkeyPatch) -> None:

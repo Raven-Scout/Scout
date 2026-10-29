@@ -11,19 +11,13 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from scout.action_items.linear_delta import DIGEST, mentions
 from scout.action_items.prefetched import section, unfenced
 
 from . import CheckResult
-
-DIGEST = "📋 Scout Digest"
-
-
-def _mentions(identifier: str, text: str) -> bool:
-    return bool(re.search(rf"(?<![\w-]){re.escape(identifier)}(?!\d)", text, re.IGNORECASE))
 
 
 def linear_delta(daily: str | None, wrap: str | None, expected: Sequence[str]) -> CheckResult:
@@ -31,7 +25,7 @@ def linear_delta(daily: str | None, wrap: str | None, expected: Sequence[str]) -
         return CheckResult("linear_delta", None, ("no daily file and no wrap",))
     digest = section(unfenced(daily.splitlines()), DIGEST, level=2) if daily is not None else None
     text = "\n".join([*(digest or []), wrap or ""])
-    missing = [i for i in expected if not _mentions(i, text)]
+    missing = [i for i in expected if not mentions(i, text)]
     details = tuple(f"missing: {i}" for i in missing) or (f"reported: {', '.join(expected)}",)
     return CheckResult("linear_delta", not missing, details)
 

@@ -8,9 +8,9 @@ pre-fetched issue must then be named in today's 📋 Scout Digest, under a
 ``### Your Linear Activity`` heading.
 
 Without a key, or when the fetch failed, nothing was pre-fetched: the session
-builds the report from the Linear connector, and the check asks only that the
-heading exists with at least one bullet (``- None since <when>`` counts, and
-so does a line saying Linear could not be read).
+builds the report from the Linear connector, and the check asks only that this
+run added a bullet under the heading (``- None since <when>`` counts, and so
+does a line saying Linear could not be read).
 """
 
 from __future__ import annotations
@@ -22,15 +22,22 @@ from pathlib import Path
 
 from scout.action_items.prefetched import (
     PrefetchCheckError,
+    added,
     context_path,
     daily_lines,
     load_context,
     section,
+    strings,
 )
 
 DIGEST = "📋 Scout Digest"
 HEADING = "Your Linear Activity"
 _BULLET = re.compile(r"^\s*[-*]\s+\S")
+
+
+def mentions(identifier: str, text: str) -> bool:
+    """Whether ``text`` names the Linear issue ``identifier`` (``PROJ-12``, not ``PROJ-123``)."""
+    return bool(re.search(rf"(?<![\w-]){re.escape(identifier)}(?!\d)", text, re.IGNORECASE))
 
 
 @dataclass(frozen=True)
@@ -41,7 +48,7 @@ class LinearIssue:
     state: str
 
     def mentioned_in(self, text: str) -> bool:
-        return bool(re.search(rf"(?<![\w-]){re.escape(self.identifier)}(?!\d)", text, re.IGNORECASE))
+        return mentions(self.identifier, text)
 
 
 @dataclass(frozen=True)
@@ -50,7 +57,8 @@ class LinearDeltaCheck:
     since: str
     prefetched: tuple[LinearIssue, ...] | None  # None: nothing was pre-fetched
     unreported: tuple[LinearIssue, ...]
-    reported: bool  # the heading exists with a bullet (what the fallback asks for)
+    reported: bool  # this run added a bullet under the heading (what the fallback asks for)
+    truncated: bool = False  # a fetch limit cut the pre-fetch: the session looks past it
 
     @property
     def passed(self) -> bool:
@@ -92,7 +100,9 @@ def check_linear_delta(*, data_dir: Path | None = None, today: str, context: Pat
     if prefetched == ():
         return LinearDeltaCheck(status, since, (), (), True)
     report = report_lines(daily_lines(data_dir, today))
-    text = "\n".join(report or [])
-    reported = report is not None and any(_BULLET.match(line) for line in report)
+    fresh = added(report or [], strings(data.get("linear_report_before")))
+    text = "\n".join(fresh)
+    reported = any(_BULLET.match(line) for line in fresh)
     unreported = tuple(i for i in prefetched or () if not i.mentioned_in(text))
-    return LinearDeltaCheck(status, since, prefetched, unreported, reported)
+    truncated = data.get("linear_own_activity_truncated") is True
+    return LinearDeltaCheck(status, since, prefetched, unreported, reported, truncated)

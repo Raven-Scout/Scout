@@ -252,8 +252,49 @@ def test_cli_json(vault: Path) -> None:
         "prefetched": 2,
         "reported": True,
         "unreported": [{"identifier": "OPS-315", "title": "Gateway capacity plan", "actions": ["commented"]}],
+        "truncated": False,
         "passed": False,
     }
+
+
+# ----- the digest is shared by the day's runs -----------------------------------------
+
+
+EARLIER = ["- PROJ-1212 Ship the catalog search: you moved it to In Progress", "- OPS-315: you commented"]
+
+
+def test_a_line_an_earlier_run_wrote_does_not_count(vault: Path) -> None:
+    """The afternoon run's pre-fetch has a new action on an issue the morning already named."""
+    _context(vault, [PROJ_1212], linear_report_before=["", *EARLIER])
+    _daily(vault, "### Your Linear Activity\n\n" + "\n".join(EARLIER) + "\n")
+    result = check_linear_delta(today=TODAY)
+    assert [i.identifier for i in result.unreported] == ["PROJ-1212"] and not result.passed
+
+
+def test_updating_an_earlier_line_counts(vault: Path) -> None:
+    _context(vault, [PROJ_1212], linear_report_before=EARLIER)
+    _daily(vault, "### Your Linear Activity\n\n- PROJ-1212: you moved it to In Review\n" + EARLIER[1] + "\n")
+    assert check_linear_delta(today=TODAY).passed
+
+
+def test_without_a_prefetch_an_earlier_runs_bullet_does_not_count(vault: Path) -> None:
+    _context(vault, None, "no_key", linear_report_before=["- None since 2026-04-14T07:00:00Z"])
+    _daily(vault, "### Your Linear Activity\n\n- None since 2026-04-14T07:00:00Z\n")
+    assert not check_linear_delta(today=TODAY).passed
+
+
+def test_a_malformed_snapshot_reads_as_empty(vault: Path) -> None:
+    _context(vault, [PROJ_1212], linear_report_before="not a list")
+    _daily(vault, REPORT)
+    assert check_linear_delta(today=TODAY).passed
+
+
+def test_cli_notes_a_truncated_prefetch(vault: Path) -> None:
+    _context(vault, [PROJ_1212], linear_own_activity_truncated=True)
+    _daily(vault, REPORT)
+    result = _cli()
+    assert result.exit_code == 0 and "hit a limit" in result.stdout
+    assert json.loads(_cli("--json").stdout)["truncated"] is True
 
 
 def test_cli_json_error(vault: Path) -> None:

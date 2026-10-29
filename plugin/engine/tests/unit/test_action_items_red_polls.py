@@ -46,9 +46,9 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return data_dir
 
 
-def _context(vault: Path, projects: list[dict] | None) -> Path:
+def _context(vault: Path, projects: list[dict] | None, **extra: Any) -> Path:
     path = vault / ".scout-cache" / "session-context.json"
-    data: dict[str, Any] = {"generated_at": f"{TODAY}T07:00:00", "session_type": "morning-briefing"}
+    data: dict[str, Any] = {"generated_at": f"{TODAY}T07:00:00", "session_type": "morning-briefing", **extra}
     if projects is not None:
         data["red_project_channels"] = projects
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -183,7 +183,49 @@ def test_cli_json(vault: Path) -> None:
         "checked": 2,
         "unpolled": [{"project": "Widgets launch", "id": "C0987654321", "name": ""}],
         "unconfigured": ["Billing cleanup"],
+        "has_entry": True,
     }
+
+
+# ----- only this run's Run notes entry counts ---------------------------------------
+
+MORNING = "- **2026-04-15 07:40 UTC** (morning-briefing) — ok"
+
+
+def _two_runs(vault: Path, afternoon: str) -> None:
+    path = vault / "action-items" / f"action-items-{TODAY}.md"
+    path.write_text(
+        HEAD
+        + "## 🪵 Run notes & connector availability\n\n"
+        + afternoon
+        + f"{MORNING}\n  - 🔴 channels polled: #widgets-launch, C0987654321\n",
+        encoding="utf-8",
+    )
+
+
+def test_an_earlier_runs_polled_line_does_not_count(vault: Path) -> None:
+    _context(vault, [WIDGETS], run_notes_before=[MORNING])
+    _two_runs(vault, "- **2026-04-15 13:05 UTC** (midday-consolidation) — ok\n")
+    result = check_red_polls(today=TODAY)
+    assert len(result.unpolled) == 2 and result.has_entry
+
+
+def test_this_runs_entry_counts(vault: Path) -> None:
+    _context(vault, [WIDGETS], run_notes_before=[MORNING])
+    _two_runs(
+        vault,
+        "- **2026-04-15 13:05 UTC** (midday-consolidation) — ok\n  - 🔴 channels polled: C0123456789, C0987654321\n",
+    )
+    assert check_red_polls(today=TODAY).unpolled == ()
+
+
+def test_no_entry_from_this_run_yet_is_said(vault: Path) -> None:
+    _context(vault, [WIDGETS], run_notes_before=[MORNING])
+    _two_runs(vault, "")
+    result = check_red_polls(today=TODAY)
+    assert not result.has_entry and len(result.unpolled) == 2
+    cli = _cli()
+    assert cli.exit_code == 1 and "no entry from this run yet" in cli.stdout
 
 
 def test_cli_json_error(vault: Path) -> None:

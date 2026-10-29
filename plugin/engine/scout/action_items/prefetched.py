@@ -4,15 +4,22 @@
 before each scheduled session. ``check-linear-delta`` and ``check-red-polls``
 compare part of it with today's daily file; both need the file to be today's
 and the daily file to exist, and both read sections of the daily file.
+
+Today's file is shared by every run of the day, so the context also records
+what stood in it before the session (``run_notes_before``,
+``linear_report_before``), and both checks count only what this run added.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
 import json
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
+
+RUN_NOTES = "🪵 Run notes"
 
 
 class PrefetchCheckError(Exception):
@@ -80,3 +87,31 @@ def section(lines: Sequence[str], heading: str, *, level: int) -> list[str] | No
                 out.append(later)
             return out
     return None
+
+
+def run_note_entries(lines: Sequence[str]) -> list[list[str]]:
+    """Each entry of today's 🪵 Run notes: its top-level bullet, then the lines under it."""
+    entries: list[list[str]] = []
+    for line in section(lines, RUN_NOTES, level=2) or []:
+        if line.startswith(("- ", "* ")):
+            entries.append([line])
+        elif entries and line.strip():
+            entries[-1].append(line)
+    return entries
+
+
+def strings(raw: object) -> list[str]:
+    """A context field that should be a list of strings; anything else reads as empty."""
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
+def added(lines: Sequence[str], before: Sequence[str]) -> list[str]:
+    """The lines of ``lines`` that ``before`` didn't have (repeats counted, whitespace ignored)."""
+    left = Counter(line.strip() for line in before)
+    out = []
+    for line in lines:
+        if left[line.strip()] > 0:
+            left[line.strip()] -= 1
+        else:
+            out.append(line)
+    return out

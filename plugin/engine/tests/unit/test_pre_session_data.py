@@ -284,6 +284,98 @@ def test_a_reader_that_sees_nothing_gets_no_linear_fetch(tmp_path: Path, monkeyp
     assert ctx.red_project_channels == []
 
 
+def test_gather_carries_a_truncated_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.linear_activity import FETCHED, OwnActivity
+    from scout.scripts import pre_session_data as psd
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "knowledge-base").mkdir(parents=True)
+    cut = OwnActivity(FETCHED, "2026-04-14T07:00:00Z", [], truncated=True)
+    monkeypatch.setattr(psd, "get_linear_own_activity", lambda d, now: cut)
+    assert gather("morning-briefing", scout_dir=scout_dir).linear_own_activity_truncated is True
+
+
+@pytest.mark.parametrize("session_type", ["dreaming", "research"])
+def test_dreaming_and_research_get_no_linear_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_type: str
+) -> None:
+    from scout.scripts import pre_session_data as psd
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "knowledge-base").mkdir(parents=True)
+    monkeypatch.setattr(psd, "get_linear_own_activity", lambda *a: pytest.fail("no Linear fetch for this session"))
+    ctx = gather(session_type, scout_dir=scout_dir)
+    assert ctx.linear_own_activity is None
+    assert ctx.linear_own_activity_status == f"skipped: {session_type} session"
+
+
+def test_gather_loads_the_knowledge_graph_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scout.kb.read
+
+    scout_dir = tmp_path / "vault"
+    _project(scout_dir, "widgets", 'status: active\npriority: "🔴"\nslack_channels:\n  - id: C0123456789\n')
+    real, loads = scout.kb.read.load_graph, []
+
+    def counting(*args: object, **kwargs: object) -> object:
+        loads.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scout.kb.read, "load_graph", counting)
+    ctx = gather("morning-briefing", scout_dir=scout_dir)
+    assert len(loads) == 1
+    assert [r["project"] for r in ctx.red_project_channels] == ["widgets"]
+
+
+DAILY = """# Action Items — 2026-04-15
+
+## 📋 Scout Digest — 2026-04-15 (07:40)
+
+### Your Linear Activity
+
+- PROJ-1: you created it
+
+```
+## 🪵 Run notes & connector availability
+- fenced, not an entry
+```
+
+## 🪵 Run notes & connector availability
+
+- **2026-04-15 07:40 UTC** (morning-briefing) — ok
+  - 🔴 channels polled: #widgets-launch
+"""
+
+
+def test_gather_records_todays_file_as_it_stands(tmp_path: Path) -> None:
+    import datetime as dt
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "action-items").mkdir(parents=True)
+    (scout_dir / "action-items" / "action-items-2026-04-15.md").write_text(DAILY, encoding="utf-8")
+    ctx = gather("midday-consolidation", scout_dir=scout_dir, now=dt.datetime(2026, 4, 15, 13, 0, tzinfo=dt.UTC))
+    assert ctx.run_notes_before == ["- **2026-04-15 07:40 UTC** (morning-briefing) — ok"]
+    assert [line for line in ctx.linear_report_before if line] == ["- PROJ-1: you created it"]
+
+
+def test_without_todays_file_nothing_stood_before(tmp_path: Path) -> None:
+    from datetime import date as dt_date
+
+    from scout.scripts.pre_session_data import get_daily_before
+
+    assert get_daily_before(tmp_path, dt_date(2026, 4, 15)) == ([], [])
+
+
+def test_a_reader_that_sees_nothing_gets_no_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import datetime as dt
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "action-items").mkdir(parents=True)
+    (scout_dir / "action-items" / "action-items-2026-04-15.md").write_text(DAILY, encoding="utf-8")
+    monkeypatch.setenv("SCOUT_READER", "agent:person:priya@example.com")
+    ctx = gather("midday-consolidation", scout_dir=scout_dir, now=dt.datetime(2026, 4, 15, 13, 0, tzinfo=dt.UTC))
+    assert ctx.run_notes_before == [] and ctx.linear_report_before == []
+
+
 def test_red_project_channels_lists_every_red_project_and_its_channels(tmp_path: Path) -> None:
     from scout.scripts.pre_session_data import get_red_project_channels
 

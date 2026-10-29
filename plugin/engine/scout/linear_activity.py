@@ -13,6 +13,13 @@ inside Claude, so this reads an optional personal API key from
 secrets). Without a key, or when the call fails, nothing is pre-fetched and the
 check falls back to asking the session for the report.
 
+Two paged passes find the issues: the ones the user is assigned to, created,
+commented on or subscribed to (complete up to ``MINE_PAGES`` pages), then the
+workspace's most recently updated ones (``WORKSPACE_PAGES`` pages), which
+catches a move or edit on an issue the user has no other tie to. When the
+first pass, or an issue's history or comments, runs past its limit the result
+says ``truncated``, and the phase asks the session to look past it.
+
 ``SCOUT_SECRETS_DIR`` moves the secrets dir and ``SCOUT_LINEAR_API_URL`` the
 endpoint. A ``file://`` URL reads a recorded GraphQL response instead of
 calling Linear: the eval harness uses it.
@@ -31,7 +38,11 @@ from typing import Any
 API_URL = "https://api.linear.app/graphql"
 KEY_FILENAME = "linear-api-key"
 TIMEOUT_S = 10.0
-ISSUE_LIMIT = 50
+ISSUE_LIMIT = 50  # issues per page
+MINE_PAGES = 10  # the user's own issues: past this many pages the result is truncated
+WORKSPACE_PAGES = 4  # the workspace's most recently updated issues: a best-effort pass
+HISTORY_LIMIT = 40
+COMMENT_LIMIT = 20
 # With no earlier briefing or consolidation on record, look back this far; never further than MAX_LOOKBACK.
 DEFAULT_LOOKBACK = timedelta(hours=24)
 MAX_LOOKBACK = timedelta(days=7)
@@ -39,40 +50,49 @@ _RUN_MODES = ("briefing", "consolidation")
 
 FETCHED, NO_KEY, FAILED = "fetched", "no_key", "failed"
 
-# Issues the viewer is assigned, created or commented on, touched since $since; their history and
-# the viewer's comments are filtered to the viewer and the window client-side.
-QUERY = """
-query OwnActivity($since: DateTimeOrDuration!, $first: Int!) {
-  viewer { id name }
-  issues(
-    first: $first
-    orderBy: updatedAt
-    filter: {
-      updatedAt: { gt: $since }
-      or: [
-        { assignee: { isMe: { eq: true } } }
-        { creator: { isMe: { eq: true } } }
-        { comments: { some: { user: { isMe: { eq: true } } } } }
-      ]
-    }
-  ) {
-    nodes {
+# One page of issues matching $filter; their history and the viewer's comments are filtered to
+# the viewer and the window client-side.
+QUERY = f"""
+query OwnActivity($filter: IssueFilter!, $first: Int!, $after: String) {{
+  viewer {{ id name }}
+  issues(first: $first, after: $after, orderBy: updatedAt, filter: $filter) {{
+    pageInfo {{ hasNextPage endCursor }}
+    nodes {{
       identifier
       title
       url
       createdAt
-      state { name }
-      creator { id }
-      history(first: 50) {
-        nodes { createdAt actor { id } fromState { name } toState { name } }
-      }
-      comments(first: 50, filter: { user: { isMe: { eq: true } } }) {
-        nodes { createdAt }
-      }
-    }
-  }
-}
+      state {{ name }}
+      creator {{ id }}
+      history(first: {HISTORY_LIMIT}) {{
+        pageInfo {{ hasNextPage }}
+        nodes {{ createdAt actor {{ id }} fromState {{ name }} toState {{ name }} }}
+      }}
+      comments(first: {COMMENT_LIMIT}, filter: {{ user: {{ isMe: {{ eq: true }} }} }}) {{
+        pageInfo {{ hasNextPage }}
+        nodes {{ createdAt }}
+      }}
+    }}
+  }}
+}}
 """
+
+_ME = {"isMe": {"eq": True}}
+
+
+def filters(window: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The two passes' issue filters: the user's own issues, then any updated in the window."""
+    updated: dict[str, Any] = {"updatedAt": {"gt": window}}
+    mine = {
+        **updated,
+        "or": [
+            {"assignee": _ME},
+            {"creator": _ME},
+            {"comments": {"some": {"user": _ME}}},
+            {"subscribers": {"some": _ME}},
+        ],
+    }
+    return mine, updated
 
 
 class LinearFetchError(Exception):
@@ -85,6 +105,7 @@ class OwnActivity:
     since: str  # ISO-8601 UTC, the window's start
     issues: list[dict[str, Any]] | None  # None unless FETCHED
     error: str = ""
+    truncated: bool = False  # a limit cut the user's own issues, or one's history or comments
 
 
 def secrets_dir() -> Path:
@@ -133,6 +154,11 @@ def since_last_run(vault: Path, now: datetime) -> datetime:
     return max(since, now - MAX_LOOKBACK)
 
 
+def _error(errors: object) -> str:
+    first = errors[0] if isinstance(errors, list) and errors else errors
+    return str(first.get("message", first) if isinstance(first, dict) else first)[:300]
+
+
 def _post(url: str, payload: dict[str, Any], key: str) -> dict[str, Any]:
     if url.startswith("file://"):
         return json.loads(Path(url[len("file://") :]).read_text(encoding="utf-8"))
@@ -145,7 +171,14 @@ def _post(url: str, payload: dict[str, Any], key: str) -> dict[str, Any]:
         timeout=TIMEOUT_S,
     )
     if resp.status_code != 200:
-        raise LinearFetchError(f"Linear API returned HTTP {resp.status_code}")
+        # Linear answers a query it rejects (an unknown field, a bad argument) with HTTP 400 and
+        # a GraphQL `errors` body: keep its message.
+        try:
+            errors = resp.json().get("errors")
+        except Exception:
+            errors = None
+        detail = f": {_error(errors)}" if errors else ""
+        raise LinearFetchError(f"Linear API returned HTTP {resp.status_code}{detail}")
     return resp.json()
 
 
@@ -179,17 +212,32 @@ def _actions(issue: dict[str, Any], viewer: str, since: datetime) -> tuple[list[
     return [what for _, what in events], (events[-1][0] if events else None)
 
 
-def own_activity(data: dict[str, Any], since: datetime) -> list[dict[str, Any]]:
-    """The issues the viewer acted on after ``since``, from a GraphQL response; newest action first."""
+def _body(data: object) -> tuple[str, dict[str, Any]]:
+    """The viewer's id and the ``issues`` connection of one GraphQL response."""
+    if not isinstance(data, dict):
+        raise LinearFetchError("Linear API response is not a JSON object")
     if data.get("errors"):
-        first = data["errors"][0]
-        raise LinearFetchError(f"Linear API error: {first.get('message', first) if isinstance(first, dict) else first}")
+        raise LinearFetchError(f"Linear API error: {_error(data['errors'])}")
     body = data.get("data") or {}
     viewer = (body.get("viewer") or {}).get("id")
     if not viewer:
         raise LinearFetchError("Linear API response has no viewer")
+    return str(viewer), body.get("issues") or {}
+
+
+def _clipped(issue: dict[str, Any]) -> bool:
+    """Whether a limit cut this issue's history or the viewer's comments on it."""
+    return any(((issue.get(k) or {}).get("pageInfo") or {}).get("hasNextPage") for k in ("history", "comments"))
+
+
+def _rows(viewer: str, issues: list[dict[str, Any]], since: datetime) -> list[dict[str, Any]]:
     rows: list[tuple[datetime, dict[str, Any]]] = []
-    for issue in (body.get("issues") or {}).get("nodes") or []:
+    seen: set[str] = set()
+    for issue in issues:
+        identifier = str(issue.get("identifier") or "")
+        if identifier in seen:
+            continue
+        seen.add(identifier)
         actions, last = _actions(issue, viewer, since)
         if not actions or last is None:
             continue
@@ -197,7 +245,7 @@ def own_activity(data: dict[str, Any], since: datetime) -> list[dict[str, Any]]:
             (
                 last,
                 {
-                    "identifier": str(issue.get("identifier") or ""),
+                    "identifier": identifier,
                     "title": str(issue.get("title") or ""),
                     "url": str(issue.get("url") or ""),
                     "state": str((issue.get("state") or {}).get("name") or ""),
@@ -210,12 +258,35 @@ def own_activity(data: dict[str, Any], since: datetime) -> list[dict[str, Any]]:
     return [row for _, row in rows]
 
 
-def fetch_own_activity(
-    vault: Path,
-    *,
-    now: datetime | None = None,
-    post: Callable[[str, dict[str, Any], str], dict[str, Any]] = _post,
-) -> OwnActivity:
+def own_activity(data: dict[str, Any], since: datetime) -> list[dict[str, Any]]:
+    """The issues the viewer acted on after ``since``, from one GraphQL response; newest action first."""
+    viewer, issues = _body(data)
+    return _rows(viewer, issues.get("nodes") or [], since)
+
+
+Post = Callable[[str, dict[str, Any], str], dict[str, Any]]
+
+
+def _pages(
+    post: Post, url: str, key: str, flt: dict[str, Any], max_pages: int
+) -> tuple[str, list[dict[str, Any]], bool]:
+    """The viewer, every issue matching ``flt`` up to ``max_pages`` pages, and whether more were left."""
+    viewer, after = "", None
+    nodes: list[dict[str, Any]] = []
+    for _ in range(max_pages):
+        variables: dict[str, Any] = {"filter": flt, "first": ISSUE_LIMIT}
+        if after:
+            variables["after"] = after
+        viewer, issues = _body(post(url, {"query": QUERY, "variables": variables}, key))
+        nodes += issues.get("nodes") or []
+        page = issues.get("pageInfo") or {}
+        after = page.get("endCursor")
+        if not page.get("hasNextPage") or not after:
+            return viewer, nodes, False
+    return viewer, nodes, True
+
+
+def fetch_own_activity(vault: Path, *, now: datetime | None = None, post: Post = _post) -> OwnActivity:
     """Fetch the user's own Linear activity since the last run. Never raises."""
     now = now or datetime.now(UTC)
     try:
@@ -228,10 +299,11 @@ def fetch_own_activity(
         if key is None:
             return OwnActivity(NO_KEY, window, None)
         url = os.environ.get("SCOUT_LINEAR_API_URL") or API_URL
-        data = post(url, {"query": QUERY, "variables": {"since": window, "first": ISSUE_LIMIT}}, key)
-        if not isinstance(data, dict):
-            raise LinearFetchError("Linear API response is not a JSON object")
-        return OwnActivity(FETCHED, window, own_activity(data, since))
+        mine_filter, updated_filter = filters(window)
+        viewer, mine, cut = _pages(post, url, key, mine_filter, MINE_PAGES)
+        _, others, _ = _pages(post, url, key, updated_filter, WORKSPACE_PAGES)
+        truncated = cut or any(_clipped(i) for i in mine)
+        return OwnActivity(FETCHED, window, _rows(viewer, mine + others, since), truncated=truncated)
     except LinearFetchError as e:
         return OwnActivity(FAILED, window, None, str(e))
     except Exception as e:  # network, JSON, an unexpected shape: never block the session

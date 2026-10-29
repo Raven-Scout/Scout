@@ -6,7 +6,9 @@ consolidation, and lists them on the run's 🪵 Run notes entry as
 ``🔴 channels polled: #a, #b``. The runner pre-fetches the list from the KB
 into ``.scout-cache/session-context.json`` (``red_project_channels``), so the
 session doesn't have to find the projects, and this check names each channel
-that no ``channels polled:`` line in today's file lists (by ``#name`` or id).
+that no ``channels polled:`` line on this run's Run notes entry lists (by
+``#name`` or id). This run's entry is one that wasn't in the file before the
+session (``run_notes_before``): an earlier run's line doesn't count.
 
 A 🔴 project with no ``slack_channels:`` is reported, not failed: the phase
 asks the run to add the field.
@@ -19,7 +21,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from scout.action_items.prefetched import PrefetchCheckError, context_path, daily_lines, load_context
+from scout.action_items.prefetched import (
+    PrefetchCheckError,
+    context_path,
+    daily_lines,
+    load_context,
+    run_note_entries,
+    strings,
+)
 
 POLLED_LINE_FORMAT = "🔴 channels polled: #a, #b"
 _POLLED = re.compile(r"channels polled:\s*(?P<list>.*)$", re.IGNORECASE)
@@ -47,6 +56,7 @@ class RedPollCheck:
     channels: tuple[RedChannel, ...]
     unpolled: tuple[RedChannel, ...]
     unconfigured: tuple[str, ...]  # 🔴 projects with no slack_channels
+    has_entry: bool = True  # today's 🪵 Run notes has an entry this run added
 
 
 def _projects(raw: object) -> tuple[tuple[RedChannel, ...], tuple[str, ...]]:
@@ -68,7 +78,7 @@ def _projects(raw: object) -> tuple[tuple[RedChannel, ...], tuple[str, ...]]:
 
 
 def polled_text(lines: Sequence[str]) -> str:
-    """Everything after ``channels polled:`` on any line of today's file."""
+    """Everything after ``channels polled:`` on any of ``lines``."""
     return "\n".join(m.group("list") for line in lines if (m := _POLLED.search(line)))
 
 
@@ -78,5 +88,7 @@ def check_red_polls(*, data_dir: Path | None = None, today: str, context: Path |
     channels, bare = _projects(data.get("red_project_channels"))
     if not channels:
         return RedPollCheck((), (), bare)
-    text = polled_text(daily_lines(data_dir, today))
-    return RedPollCheck(channels, tuple(c for c in channels if not c.listed_in(text)), bare)
+    before = {line.strip() for line in strings(data.get("run_notes_before"))}
+    fresh = [e for e in run_note_entries(daily_lines(data_dir, today)) if e[0].strip() not in before]
+    text = polled_text([line for entry in fresh for line in entry])
+    return RedPollCheck(channels, tuple(c for c in channels if not c.listed_in(text)), bare, bool(fresh))
