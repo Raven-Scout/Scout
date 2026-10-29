@@ -54,15 +54,11 @@ A task waiting on another task stays in its section with `Depends:`. The deadlin
 
 ### Hard Rule — Deadline-Distance Ceiling
 
-Urgency is **capped by how far away the deadline is** — distance sets a *ceiling*, not a floor. Before assigning any tier, compute the days between today and the item's real deadline:
+Urgency is **capped by how far away the deadline is**. Distance sets a *ceiling*, not a floor. Every task with a real deadline (a Linear due date, a KB task's `deadline`, a date in the ask) says it in its body as `due <date>`. The check below reads it there and computes the ceiling, so you don't count days. Past-due tasks follow *Past-Due Tasks Step Down* below.
 
-- **30+ days out** → 🟢 Watching (max). Far-future items never lead the list.
-- **7–30 days out** → 🟡 To Do (max).
-- **< 7 days out** → eligible for 🔴 Urgent.
-- **< 3 days out** → 🔴 when the next action is {{USER_NAME}}'s to take.
-- **Past due** → *Past-Due Tasks Step Down* below decides.
+**Tone never promotes.** "Action required", "expiring soon", "final notice" and "limit reached" are alarm words, not urgency, and never lift a task past its ceiling or justify an override. Deprecation and end-of-life notices stay 🟢 Watching until ~2–3 weeks before the cutover, even where the ceiling would allow 🟡. Escalation (under Knowledge Graph Personal Tasks) raises a task as its deadline nears; the ceiling stops a distant one from leading the list.
 
-**Evaluate the actual deadline, not the source's tone.** Notification language — "action required", "expiring soon", "final notice", "limit reached" — is alarm-word framing, not real urgency, and never promotes an item past the distance ceiling. Deprecation / end-of-life notices specifically stay 🟢 Watching until ~2–3 weeks before the cutover. This ceiling is the counterpart to the deadline *escalation* rule under Knowledge Graph Personal Tasks below: escalation raises priority as a deadline nears; the ceiling stops a distant deadline from being surfaced as urgent on tone alone.
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-tier-ceiling --data-dir {{SCOUT_DIR}}` until it exits 0. Exit 1 names each task above its ceiling (30+ days out → 🟢 at most; 7–29 → 🟡 at most; under 7 → 🔴 allowed). It also names a 🟡 task under 3 days out whose next step is {{USER_NAME}}'s: that one goes to 🔴. A 🟡 task that only waits on someone (its body says `waiting on <who> since <date>`) stays. Move each task named, or fix a wrong due date. If one really belongs where it is, add `- Ceiling override [#TAG] — <reason>` to this run's 🪵 Run notes entry. Exit 2 (it couldn't check): add `tier ceiling check could not run: <its message>` to that entry and go on.
 
 ### Hard Rule — Past-Due Tasks Step Down
 
@@ -384,12 +380,7 @@ Each result carries its label; a `[private]` task renders in the daily file as u
 For the morning briefing, focus on:
 
 1. **Open personal tasks** — tasks with `domain: personal` and `status: open`. These carry forward into daily action items alongside work tasks.
-2. **Deadline escalation** — any task with a `deadline` field. Apply escalating priority:
-   - 7+ days out: keep existing priority
-   - 3-7 days out: escalate to 🟡 if not already higher, when the next action is {{USER_NAME}}'s to take
-   - <3 days out: escalate to 🔴, when the next action is {{USER_NAME}}'s to take
-   - past due: *Past-Due Tasks Step Down* applies instead
-   - a task waiting on someone else stays in 🟢, with the deadline in its body, until it is under 3 days out; then it goes to 🟡 for {{USER_NAME}} to nudge
+2. **Deadline escalation**: any task with a `deadline` field. Write the deadline in its body as `due <date>`; `check-tier-ceiling` holds it to *Deadline-Distance Ceiling* above. Under 7 days out, raise it to 🟡 if it is lower and the next step is {{USER_NAME}}'s. A task waiting on someone else stays in 🟢 until it is under 3 days out, then goes to 🟡 for {{USER_NAME}} to nudge. Past due: *Past-Due Tasks Step Down* applies.
 3. **Birthday alerts** — check if any person entity has a `birthday` field matching today's month/day. If so, add a reminder to the action items.
 
 Personal tasks appear in the action items file in a **Personal** section after work items.

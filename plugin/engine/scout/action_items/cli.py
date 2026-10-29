@@ -802,6 +802,67 @@ def cli_check_demotion(
         raise typer.Exit(code=1)
 
 
+@app.command("check-tier-ceiling")
+def cli_check_tier_ceiling(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check each dated task in today's file against *Deadline-Distance Ceiling*.
+
+    The due date is the `due <date>` in the task's body (or, if today's body
+    has none, in the newest earlier daily file). 30+ days out: 🟢 at most;
+    7–29: 🟡 at most; under 7: 🔴 allowed; under 3 and your move: 🔴, so a
+    🟡 task that doesn't say `waiting on` or `nudge` is named. Past-due tasks
+    are `check-demotion`'s; tasks with no due date aren't checked. A
+    `- Ceiling override [#TAG] — <reason>` line in 🪵 Run notes accepts a
+    task as placed. Run it before committing a briefing or consolidation.
+    Exit codes: 0 = all within their ceiling, 1 = some are not, 2 = cannot check.
+    """
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.tier_ceiling import OVERRIDE_FORMAT, check_tier_ceiling
+
+    name = "check-tier-ceiling"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_tier_ceiling(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": [p.to_json() for p in result.checked],
+                    "overridden": list(result.overridden),
+                    "findings": [{"tag": f.tag, "problem": f.problem} for f in result.findings],
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif not result.checked:
+        sys.stdout.write(f"{name}: no open task has a future due date\n")
+    elif result.passed:
+        n = len(result.checked)
+        noted = f" ({len(result.overridden)} by a Ceiling override line)" if result.overridden else ""
+        sys.stdout.write(f"{name}: all {n} dated task{'s' if n != 1 else ''} within their ceiling{noted}\n")
+    else:
+        n = len(result.findings)
+        sys.stdout.write(f"{name}: {n} task{'s' if n != 1 else ''} off the deadline-distance ceiling:\n")
+        for f in result.findings:
+            sys.stdout.write(f"  [#{f.tag}] {f.problem}\n")
+        sys.stdout.write(
+            "Move each to the tier named; alarm words never raise the ceiling. If the due date in the body is "
+            f"wrong, fix the date. If a task really belongs where it is, add `{OVERRIDE_FORMAT}` to this run's "
+            "🪵 Run notes entry. Then run this again.\n"
+        )
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(
