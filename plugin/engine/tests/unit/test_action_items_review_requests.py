@@ -146,7 +146,10 @@ def test_near_misses_do_not_place_it(line: str) -> None:
     assert unaccounted([_req()], lines) == [_req()]
 
 
-@pytest.mark.parametrize("heading", ["## 🎯 Today's Focus", "## 🪵 Run notes & connector availability", "## 📥 Inbox"])
+@pytest.mark.parametrize(
+    "heading",
+    ["## 💡 Today's Focus", "## 🎯 Today's Focus", "## 🪵 Run notes & connector availability", "## 📥 Inbox"],
+)
 def test_mentions_outside_the_tiers_do_not_place_it(heading: str) -> None:
     lines = [heading, "- Review example-org/api#40 today"]
     assert unaccounted([_req()], lines) == [_req()]

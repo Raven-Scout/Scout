@@ -349,6 +349,15 @@ def test_render_emits_a_focus_box(out: str) -> None:
     assert "<li>Ship the parser fix</li>" in out
 
 
+def test_render_reads_an_older_target_emoji_focus_heading_as_focus(tmp_path: Path) -> None:
+    """The phases write ``## 💡 Today's Focus``; older files carry 🎯."""
+    p = tmp_path / "action-items-2026-04-15.md"
+    p.write_text("# T\n\n## 🎯 Today's Focus\n\n- Ship the parser fix\n", encoding="utf-8")
+    out = render(p)
+    assert 'class="focus-box"' in out
+    assert "<li>Ship the parser fix</li>" in out
+
+
 def test_render_emits_the_meetings_table_with_its_subhead(out: str) -> None:
     assert 'class="section section-meetings"' in out
     assert '<table class="mtg">' in out
