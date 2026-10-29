@@ -21,7 +21,7 @@ Use `slack_search_public_and_private` with `from:{{USER_SLACK_ID}}` and date fil
 
 ### Channel Posts
 
-Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file. Channel posts indicate:
+Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file (`scripts/scoutctl kb read knowledge-base/channels.md`). Channel posts indicate:
 - Status updates given (the underlying work is done or in progress)
 - Questions asked ({{USER_NAME}} is blocked or exploring)
 - Answers provided ({{USER_NAME}} helped someone — may indicate context/expertise)
@@ -73,7 +73,7 @@ Check DMs received by {{USER_NAME}} from frequent contacts. Inbound DMs often co
 
 ### Key Channel Activity
 
-Check project channels listed in `channels.md` for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
+Check project channels listed in `channels.md` (`scripts/scoutctl kb read knowledge-base/channels.md`) for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
 - Decisions made that affect {{USER_NAME}}'s work
 - New issues or blockers raised
 - Status updates from collaborators
@@ -163,7 +163,7 @@ requires: slack
 
 ## Slack-Sourced KB Updates
 
-After scanning Slack, update the knowledge base with any new information discovered:
+After scanning Slack, update the knowledge base with any new information discovered. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### People Updates
 
