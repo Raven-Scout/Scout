@@ -11,7 +11,8 @@ each one before it commits.
 A request is accounted for when today's file has it
 
 - in a task's line or sub-lines (the ``- Refs:`` line, usually), as
-  ``owner/repo#N`` or as the PR URL, in any section except 🎯 Today's Focus,
+  ``owner/repo#N`` or as the PR URL, in any section except 💡 Today's Focus
+  (🎯 in older files),
   🪵 Run notes, 📥 Inbox, 🧹 Loose ends and 📋 Scout Digest; or
 - in a skip line with a reason, normally in the run notes:
   ``- Skipped review request owner/repo#N — <reason>``;
@@ -30,7 +31,7 @@ from pathlib import Path
 from scout.action_items.parser import parse_lines
 
 # Sections whose lines say something about a PR without making it a task.
-_NOT_PLACEMENT = ("🎯", "🪵", "📥", "🧹", "📋")
+_NOT_PLACEMENT = ("💡", "🎯", "🪵", "📥", "🧹", "📋")
 _PR_URL = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>\d+)")
 _SKIP_LINE = re.compile(
     r"^\s*[-*]\s+Skipped review request\s+`?(?P<target>[^\s`]+)`?\s+(?:—|–|--?)\s*(?P<reason>.*)$",

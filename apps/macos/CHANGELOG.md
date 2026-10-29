@@ -9,6 +9,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 ### Added
 - **A planned task shows its `/scout-plan` time on the card** (`Scout/ActionItems/Models/TaskPlan.swift`, `Scout/ActionItems/ActionItemsParser.swift`, `Scout/ActionItems/Models/ActionTask.swift`, `Scout/ActionItems/Views/TaskCardView.swift`). The `- estimate:`, `- block:` and `- actual:` lines `/scout-plan` writes under a task are read into the task instead of showing as three comments. An open task gets a clock chip in its header: `10:00-10:45 · 45m`, with the weekday first when the block isn't today, `· took 1h` once the actual time is logged, or just `45m` for an estimate without a block. A done task reads `Done · 1h`. The tooltip spells out the date, estimate, raw estimate, kind and actual. The app reads exactly the lines the engine treats as markers, so a hand-written `- block: waiting on Priya` stays a comment. `scoutctl`'s `--index` still counts the markers, so editing or deleting a comment adds the markers above it back into the index it sends, and the right comment changes with any engine version.
 
+### Fixed
+- **A `## 🎯 Today's Focus` section shows as Today's Focus** (`Scout/ActionItems/ActionItemsParser.swift`). The engine's phases gave the heading as both 💡 and 🎯, and about half of daily files used 🎯, which the parser read as an ordinary section. 🎯 now maps to the focus section like 💡; the phases now write 💡 only.
+
 ## [0.18.4] - 2026-10-27
 
 ### Added
