@@ -127,55 +127,33 @@ def test_run_denies_a_search_from_a_folder_above_the_vault(vault):
     _denied(_decision(vault, "Grep", {"pattern": "Priya", "path": str(vault.parent)}))
 
 
-def test_first_read_of_a_kb_note_is_denied_with_the_repeat_rule(vault):
+def test_a_read_of_a_kb_note_is_denied_and_names_kb_read(vault):
     reason = _denied(_decision(vault, "Read", {"file_path": str(vault / "knowledge-base" / "people.md")}))
-    assert "kb read <path>" in reason and "Read it again" in reason
+    assert "kb read <path>" in reason and "Edit it directly" in reason
 
 
-def _transcript(tmp_path: Path, rows: list[dict]) -> Path:
+def _transcript(tmp_path: Path, path: Path) -> Path:
+    """A transcript where this file was already Read once (denied): the retry a run makes at once."""
+    use = {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": str(path)}}
+    res = {"type": "tool_result", "tool_use_id": "t1", "content": "x", "is_error": True}
     t = tmp_path / "transcript.jsonl"
+    rows = [{"message": {"role": "assistant", "content": [use]}}, {"message": {"role": "user", "content": [res]}}]
     t.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return t
 
 
-def _read_use(tid: str, path: Path) -> dict:
-    block = {"type": "tool_use", "id": tid, "name": "Read", "input": {"file_path": str(path)}}
-    return {"type": "assistant", "message": {"role": "assistant", "content": [block]}}
-
-
-def _result(tid: str, *, error: bool) -> dict:
-    block = {"type": "tool_result", "tool_use_id": tid, "content": "x", "is_error": error}
-    return {"type": "user", "message": {"role": "user", "content": [block]}}
-
-
-def test_the_pending_read_alone_does_not_count_as_an_earlier_read(vault, tmp_path):
+@pytest.mark.parametrize("env", [RUN, {"SCOUT_READER": "agent:person:priya@example.com"}])
+def test_a_repeat_read_is_denied_too(vault, tmp_path, env):
+    # #536 eval: runs retried a denied Read straight away, so a repeat pass would be a bypass.
     note = vault / "knowledge-base" / "people.md"
-    t = _transcript(tmp_path, [_read_use("t1", note)])  # written, no result yet: the call being gated
-    _denied(_decision(vault, "Read", {"file_path": str(note)}, transcript=t))
+    _denied(_decision(vault, "Read", {"file_path": str(note)}, env=env, transcript=_transcript(tmp_path, note)))
 
 
-def test_a_read_of_another_file_does_not_unlock_this_one(vault, tmp_path):
-    note = vault / "knowledge-base" / "people.md"
-    other = vault / "knowledge-base" / "projects.md"
-    t = _transcript(tmp_path, [_read_use("t1", other), _result("t1", error=True)])
-    _denied(_decision(vault, "Read", {"file_path": str(note)}, transcript=t))
-
-
-def test_an_agent_reader_gets_no_repeat_read(vault, tmp_path):
-    note = vault / "knowledge-base" / "people.md"
-    t = _transcript(tmp_path, [_read_use("t1", note), _result("t1", error=True)])
-    env = {"SCOUT_READER": "agent:person:priya@example.com"}
-    reason = _denied(_decision(vault, "Read", {"file_path": str(note)}, env=env, transcript=t))
-    assert "Read it again" not in reason
+def test_a_context_note_read_is_denied(vault):
+    _denied(_decision(vault, "Read", {"file_path": str(vault / "action-items" / "context" / "ROLL.md")}))
 
 
 # --- allowed -------------------------------------------------------------------------
-
-
-def test_a_repeat_read_for_an_edit_is_allowed(vault, tmp_path):
-    note = vault / "knowledge-base" / "people.md"
-    t = _transcript(tmp_path, [_read_use("t1", note), _result("t1", error=True), _read_use("t2", note)])
-    assert _decision(vault, "Read", {"file_path": str(note)}, transcript=t) is None
 
 
 @pytest.mark.parametrize(
