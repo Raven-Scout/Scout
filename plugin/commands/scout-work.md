@@ -112,9 +112,9 @@ Do **nothing** until the user responds. Accept:
 2. Update the action items file:
    - Change `- [ ]` to `- [x]` on the item's line
    - Append ` — ✅ Done via work session` to the line
-3. Commit immediately with a `work [HH:MM]:` message so the git log shows work-session activity distinct from briefing/consolidation/dreaming:
+3. Commit immediately with a `work [HH:MM]:` message so the git log shows work-session activity distinct from briefing/consolidation/dreaming. Name the files you changed; never `git add -A`, because a scheduled run may be writing in the same vault right now and `-A` would commit its half-written files:
    ```bash
-   git -C <SCOUT_DIR> add -A && git -C <SCOUT_DIR> commit -m "work [HH:MM]: <brief item summary>"
+   <SCOUT_DIR>/scripts/git-safe-commit.sh "work [HH:MM]: <brief item summary>" <the files this step changed>
    ```
 4. Move to the next item.
 
