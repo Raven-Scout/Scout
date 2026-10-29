@@ -9,7 +9,11 @@ eval needs:
 - a fresh ``CLAUDE_CONFIG_DIR`` per sample, with
   ``CLAUDE_SECURESTORAGE_CONFIG_DIR=""`` so the keychain login (the only thing
   shared) stays reachable;
-- ``--setting-sources ""`` and hooks off;
+- ``--setting-sources ""``, and of the hooks only the arm's own PreToolUse
+  gates (``plugin/hooks/hooks.json`` of the checkout whose engine the session
+  runs, with ``${CLAUDE_PLUGIN_ROOT}`` filled in): the privacy gates are part
+  of what a compare measures. Stop hooks stay off; with no PreToolUse hook,
+  every hook is off;
 - Claude Code's Bash sandbox (spec §12 R2a′): a Bash command writes only
   inside the sample's result dir and reaches no network host, and nothing
   runs outside it. Temp files go to ``<result>/tmp``;
@@ -59,10 +63,27 @@ EXIT_ABORTED, EXIT_TIMEOUT, EXIT_ENV = 3, 4, 2
 _SHARED_TMP_DENY = ["/tmp/claude*/-*", "/private/tmp/claude*/-*"]
 
 
-def settings(result_dir: str) -> dict[str, Any]:
+def pre_tool_use_hooks(plugin_root: Path) -> list[dict[str, Any]]:
+    """The PreToolUse entries of ``plugin_root``'s hooks.json, ``${CLAUDE_PLUGIN_ROOT}`` filled in; [] if none."""
+    try:
+        entries = json.loads((plugin_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    text = json.dumps(entries).replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
+    loaded = json.loads(text)
+    return loaded if isinstance(loaded, list) else []
+
+
+def session_plugin_root(env: dict[str, str]) -> Path:
+    """The plugin/ of the checkout whose engine the session runs: a base arm's, else this checkout's."""
+    return Path(env.get("SCOUT_EVAL_SESSION_PYTHONPATH") or env["SCOUT_EVAL_ENGINE"]).parent
+
+
+def settings(result_dir: str, hooks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The ``--settings`` JSON. Under ``--setting-sources ""`` it is the only settings source."""
+    hook_settings: dict[str, Any] = {"hooks": {"PreToolUse": hooks}} if hooks else {"disableAllHooks": True}
     return {
-        "disableAllHooks": True,
+        **hook_settings,
         "sandbox": {
             "enabled": True,
             "failIfUnavailable": True,  # an unsandboxed eval session must not start
@@ -75,7 +96,14 @@ def settings(result_dir: str) -> dict[str, Any]:
 
 
 def build_command(
-    runner_argv: list[str], *, real_claude: str, model: str, mcp_config: str, allowed_tools: str, result_dir: str
+    runner_argv: list[str],
+    *,
+    real_claude: str,
+    model: str,
+    mcp_config: str,
+    allowed_tools: str,
+    result_dir: str,
+    hooks: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], str]:
     """The isolated claude argv for these runner flags, and the prompt to send on stdin."""
     kept: list[str] = []
@@ -100,7 +128,7 @@ def build_command(
         "--setting-sources",
         "",
         "--settings",
-        json.dumps(settings(result_dir)),
+        json.dumps(settings(result_dir, hooks)),
         "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
@@ -158,6 +186,7 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         mcp_config=env["SCOUT_EVAL_MCP_CONFIG"],
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
         result_dir=str(result_dir),
+        hooks=pre_tool_use_hooks(session_plugin_root(env)),
     )
     child_env = {k: v for k, v in env.items() if k not in SECRETS and k != "PYTHONPATH"}
     if env.get("SCOUT_EVAL_SESSION_PYTHONPATH"):  # a base arm: the session's scoutctl is the base's

@@ -1,5 +1,5 @@
 {
-  "description": "Scout connector telemetry, session-token accounting and the restrict_tools MCP gate. Activate only inside scout runs: SCOUT_MODE from the runner, or, for a session started inside a vault without a runner, the run mode its prompt names (scout/hooks/run_context.py). Interactive sessions are skipped by those. The PreToolUse restrict_tools gate is different: it applies to every session (run or interactive) in a vault whose connectors.custom.yaml uses restrict_tools, the vault being SCOUT_DATA_DIR, else the one containing the working directory; elsewhere it exits before starting Python. Per #72, per-tool-call accounting was moved out of PostToolUse (which fired one Python cold-start per tool call) into the session-tool-log Stop hook that walks the transcript once at session end.",
+  "description": "Scout connector telemetry, session-token accounting, the restrict_tools MCP gate and the two privacy gates. Activate only inside scout runs: SCOUT_MODE from the runner, or, for a session started inside a vault without a runner, the run mode its prompt names (scout/hooks/run_context.py). Interactive sessions are skipped by those. The PreToolUse restrict_tools gate is different: it applies to every session (run or interactive) in a vault whose connectors.custom.yaml uses restrict_tools, the vault being SCOUT_DATA_DIR, else the one containing the working directory; elsewhere it exits before starting Python. The privacy gates (#453) count a session as a scheduled run by #517's rule (SCOUT_MODE set, or SCOUT_READER set to anything but exactly owner). kb-read-gate denies a run's shell/Grep/Glob/Read of knowledge-base/ and action-items/context/ in favour of scoutctl kb; it exits in the shell for every other session, and for a run's Bash/Read call that names no KB path. outbound-gate runs check-outbound on an MCP write tool's input in a vault (Slack as surface slack, others as connector_write): a run is denied, the owner is warned; a session in no vault that isn't a run exits in the shell. Both fail closed for runs (exit 2 when scoutctl can't run). Per #72, per-tool-call accounting was moved out of PostToolUse (which fired one Python cold-start per tool call) into the session-tool-log Stop hook that walks the transcript once at session end.",
   "hooks": {
     "PreToolUse": [
       {
@@ -9,6 +9,26 @@
             "type": "command",
             "command": "d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=$(dirname \"$d\"); done; fi; grep -qs restrict_tools \"$d/connectors.custom.yaml\" || exit 0; exec \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook mcp-tool-gate",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__.+__.*(send|create|update|save|post|add|delete|remove|schedule|comment|reply|draft|upload|edit|merge|close|reopen|set|archive|review|forward|complete|write|publish|share|invite).*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "run=; { [ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; }; } && run=1; d=\"$SCOUT_DATA_DIR\"; if [ -z \"$d\" ]; then d=\"$PWD\"; while [ \"$d\" != / ] && [ ! -f \"$d/scout-config.yaml\" ]; do d=$(dirname \"$d\"); done; fi; [ -n \"$run\" ] || [ -f \"$d/scout-config.yaml\" ] || exit 0; \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook outbound-gate && exit 0; if [ -n \"$run\" ]; then echo \"[scout:outbound-gate] Scout's outbound privacy check could not run, so this call is blocked in a scheduled run. Put the content in the daily file or the owner's Telegram chat instead, and say so in the run notes.\" >&2; exit 2; fi; echo \"[scout:outbound-gate] Warning: Scout's outbound privacy check could not run; this call was not checked for private content.\" >&2; exit 1",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$SCOUT_MODE\" ] || { [ -n \"${SCOUT_READER+set}\" ] && [ \"$SCOUT_READER\" != owner ]; } || exit 0; p=$(cat); case \"$p\" in *'\"Grep\"'*|*'\"Glob\"'*|*knowledge-base*|*knowledge_base*|*action-items/context*) ;; *) exit 0 ;; esac; printf '%s' \"$p\" | \"${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl\" hook kb-read-gate && exit 0; echo \"[scout:kb-read-gate] Scout's KB read gate could not run, so this call is blocked in a scheduled run. Read the KB through scripts/scoutctl kb (search, files, read, resolve).\" >&2; exit 2",
+            "timeout": 15
           }
         ]
       }

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests._waits import wait_until
-from tests.eval.harness.claude_shim import SHIM, build_command, settings
+from tests.eval.harness.claude_shim import SHIM, build_command, pre_tool_use_hooks, session_plugin_root, settings
 from tests.eval.harness.runner_env import build_env
 
 ENGINE = Path(__file__).resolve().parents[2]
@@ -117,7 +117,7 @@ def test_bash_is_sandboxed_to_the_result_dir_with_no_network(tmp_path: Path) -> 
     assert proc.returncode == 0, proc.stderr
     seen = json.loads((tmp_path / "argv.json").read_text())
     passed = json.loads(seen["argv"][seen["argv"].index("--settings") + 1])
-    assert passed == settings(str(result.resolve()))
+    assert passed == settings(str(result.resolve()), pre_tool_use_hooks(ENGINE.parent))
     box = passed["sandbox"]
     assert box["enabled"] and box["failIfUnavailable"]
     assert not box["autoAllowBashIfSandboxed"] and not box["allowUnsandboxedCommands"]
@@ -291,3 +291,33 @@ def test_terminating_the_shim_takes_its_claude_session_down(tmp_path: Path) -> N
     except AssertionError:
         os.killpg(claude_pid, signal.SIGKILL)
         raise
+
+
+# --- the arm's own PreToolUse gates ---------------------------------------------------
+
+
+def test_the_session_gets_its_arms_pretooluse_gates_and_no_stop_hooks(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [_init(["claude_ai_Slack"]), RESULT])
+    assert proc.returncode == 0, proc.stderr
+    seen = json.loads((tmp_path / "argv.json").read_text())
+    passed = json.loads(seen["argv"][seen["argv"].index("--settings") + 1])
+    assert "disableAllHooks" not in passed and set(passed["hooks"]) == {"PreToolUse"}
+    commands = [h["command"] for entry in passed["hooks"]["PreToolUse"] for h in entry["hooks"]]
+    assert any("hook kb-read-gate" in c for c in commands) and any("hook outbound-gate" in c for c in commands)
+    assert all("${CLAUDE_PLUGIN_ROOT}" not in c and str(ENGINE.parent / "engine" / "bin" / "scoutctl") in c
+               for c in commands)  # fmt: skip
+
+
+def test_a_base_arm_gets_its_own_hooks_json(tmp_path: Path) -> None:
+    base = tmp_path / "base" / "plugin"
+    (base / "hooks").mkdir(parents=True)
+    entry = {"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/x"}]}
+    (base / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [entry], "Stop": [entry]}}))
+    env = {"SCOUT_EVAL_SESSION_PYTHONPATH": str(base / "engine"), "SCOUT_EVAL_ENGINE": str(ENGINE)}
+    assert session_plugin_root(env) == base
+    assert pre_tool_use_hooks(base) == [{**entry, "hooks": [{"type": "command", "command": f"{base}/x"}]}]
+
+
+def test_an_arm_without_pretooluse_hooks_keeps_every_hook_off(tmp_path: Path) -> None:
+    assert pre_tool_use_hooks(tmp_path) == []
+    assert settings("/r", [])["disableAllHooks"] is True

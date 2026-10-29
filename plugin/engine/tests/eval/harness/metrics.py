@@ -29,6 +29,7 @@ FILE_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 # block cut from them (spec 2026-10-13-static-instruction-trim §8.1).
 BRAIN_FILES = {"SKILL.md", "DREAMING.md", "RESEARCH.md"}
 BRAIN_CACHE_DIR = "/.scout-cache/brain/"
+GATE_MARK = re.compile(r"\[scout:(kb-read-gate|outbound-gate)\]")
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,9 @@ class ToolCall:
     input: dict[str, Any]
     is_error: bool
     position: float
+    # The Scout PreToolUse gate that denied the call (``kb-read-gate``, ``outbound-gate``), read from
+    # the ``[scout:<gate>]`` mark its error result carries; None when it ran. None in an older metrics.json.
+    gate: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,9 +89,18 @@ def _result_chars(content: Any) -> int:
     return 0
 
 
+def _result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    return ""
+
+
 def parse_stream(lines: Iterable[str]) -> SampleMetrics:
     uses: list[tuple[str, str, dict[str, Any]]] = []
     errors: set[str] = set()
+    gates: dict[str, str] = {}
     message_ids: set[str] = set()
     brain_uses: set[str] = set()
     # (tokens, assistant messages seen when the result arrived) per brain read
@@ -127,13 +140,16 @@ def parse_stream(lines: Iterable[str]) -> SampleMetrics:
                     continue
                 if block.get("is_error"):
                     errors.add(block.get("tool_use_id", ""))
+                    mark = GATE_MARK.search(_result_text(block.get("content")))
+                    if mark:
+                        gates[block.get("tool_use_id", "")] = mark.group(1)
                 elif block.get("tool_use_id") in brain_uses:
                     brain_reads.append((_result_chars(block.get("content")) // 4, len(message_ids)))
         elif kind == "result":
             result = event
     total = len(uses)
     calls = tuple(
-        ToolCall(seq=i, name=name, input=inp, is_error=tid in errors, position=_position(i, total))
+        ToolCall(seq=i, name=name, input=inp, is_error=tid in errors, position=_position(i, total), gate=gates.get(tid))
         for i, (tid, name, inp) in enumerate(uses, start=1)
     )
     usage = result.get("usage") or {}
