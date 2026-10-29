@@ -306,8 +306,10 @@ could be pointed elsewhere. So:
 - **An overlay can't add or rename a sign-in credential file either.** A row whose overlay names a
   file that a `sign_in` block in the seed declares (for example `linear-oauth.json` under some
   other key) is ignored the same way.
-- **The snapshot is projected from the seed.** `connectors_snapshot` already reads only the seed,
-  and it keeps taking `sign_in` from there.
+- **The snapshot's `sign_in` is projected from the seed.** `connectors_snapshot` builds its rows
+  from `load_registry()` today, which layers the overlay and custom rows of whatever vault
+  `paths.data_dir()` resolves (on a dev Mac, `~/Scout`). It takes `sign_in` from
+  `load_sign_in_seed()`, never from that registry.
 - **Only `SCOUT_<PROVIDER>_CLIENT_ID` can override a value.** `SCOUT_LINEAR_CLIENT_ID` and
   `SCOUT_SLACK_CLIENT_ID` override the client ID; nothing else does. The endpoints, scopes,
   redirect ports and file names have no override.
@@ -428,7 +430,9 @@ Every step below runs under the provider's `flock`.
      - The spawner `wait()`s for the intermediate, which takes milliseconds and leaves no zombie.
        So **by the time the spawn call returns, the retrier's parent is launchd (pid 1)**. macOS
        has no subreaper, so an orphan always goes to launchd, and the reaper's `ppid` walk from the
-       run never reaches it.
+       run never reaches it. On Linux an orphan goes to the nearest subreaper (for example
+       `systemd --user`) or to pid 1. Either way that's an ancestor of the run, never inside its
+       tree.
      - The grandchild's session and pgid are the intermediate's (the `setsid` happened there) and
        never the run's, so a `kill -- -<run pgid>` misses it too.
      - Spawn options: `stdin=DEVNULL`; stdout and stderr go to its own log,
@@ -603,8 +607,10 @@ deep links and offers to fill the app's Linear workspace setting.
       so sign-in has succeeded. Only the config write waits.
     - `login` reports `user_slack_id_pending`, and the token file records
       `pending_user_slack_id: "U0BBB…"` (an ID, not a secret).
-    - The next `accounts status`, `accounts login` or pre-fetch that can take the lock within 5 s
-      applies it under the same rules as below, then clears the field.
+    - The next `accounts status` or `accounts login` that can take the lock within 5 s applies
+      it under the same rules as below, then clears the field. The pre-fetch doesn't try:
+      the runners (`run-scout.sh`, `run-dreaming.sh`) take the vault lock before they run `pre-session-data.sh`, so the lock is
+      always held by the pre-fetch's own run.
     - Settings shows "Connected", plus "Your Slack ID will be saved after the current run."
   - **Empty or missing:** written. The `login` output says so.
   - **Already the same ID:** nothing changes.
@@ -709,7 +715,7 @@ Error copy, by exit code:
 | Slack `invalid_auth` / `token_revoked` / `account_inactive` | `needs_sign_in` (`revoked`) at once, no retry | `slack-search-token` or the in-session poll; one notice |
 | File or dir mode too open | Refuse, with the `chmod` hint (as #532) | The gate; the UI shows "Fix permissions" |
 | A vault overlay (`connectors.local.yaml`) touches `sign_in` | Ignored; the seed's endpoints, client ID and files are used; doctor warns `connectors.overlay_sign_in_ignored` | Unaffected |
-| Reaper kills a wedged run while the retrier is pending | Unaffected: double-forked, `ppid` 1, own session; outside the reaper's group and descendant walk (§7.1 (b)) | The retrier finishes or hits its deadline |
+| Reaper kills a wedged run while the retrier is pending | Unaffected: double-forked, re-parented outside the run's tree, own session; outside the reaper's group and descendant walk (§7.1 (b)) | The retrier finishes or hits its deadline |
 | `login slack` while a run holds the vault lock | Token saved; `user_slack_id_pending` after a 5 s wait, applied by the next `status`/`login` | Unaffected |
 | Workspace needs admin approval | `login` exits `admin_approval_required` | n/a (no token yet) |
 | Different workspace than the claude.ai connector | Works; the row shows the workspace | The pre-fetch reads the signed-in workspace; the phase text says which |
@@ -863,13 +869,14 @@ one is ever exposed, rotate it in the app settings.
          descendant walk is exercised, not only a group kill.
        - Assert:
          - the retrier's pid isn't in `_scout_session_pids <run pgid> <run pid>` before the reap;
-         - its `ppid` is 1 once the spawn call has returned;
+         - once the spawn call has returned, its `ppid` is neither the run nor anything in the
+           run's tree (1 on macOS; on Linux, 1 or a subreaper);
          - its pgid and sid differ from the run's;
          - it is still alive after the reap, while the run and its real children are gone;
          - the delayed response is persisted, and the file ends `ok`.
        - A second case injects a sleep before the intermediate's `_exit`. Assert that the spawn
          call doesn't return until the intermediate has exited, and that the retrier's `ppid` is
-         1 when it does. That window, while the retrier is still the run's descendant, is the
+         outside the run's tree when it does. That window, while the retrier is still the run's descendant, is the
          only one the reaper could hit, and it closes before the run moves on.
     9. **The retrier and the session lock.**
        - With `.scout-logs/.scout-session.lock` held by a live stand-in pid, the retrier still
@@ -897,7 +904,8 @@ one is ever exposed, rotate it in the app settings.
           - the seed's file is the one read and written;
           - `bootstrap doctor --json` carries `connectors.overlay_sign_in_ignored`, naming the
             path and the rows but no values;
-          - the snapshot is byte-identical with and without the overlay;
+          - every `sign_in` projection in the snapshot is the same with and without the overlay
+            (the new row itself still appears, as overlay rows do today);
           - the rest of the overlay (a `remediation` change) still applies to the merged registry.
         - With `SCOUT_LINEAR_CLIENT_ID` set, that ID is used. No other env var or file changes an
           endpoint.
