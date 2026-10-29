@@ -58,7 +58,7 @@ If a Linear workspace switch happened, the OAuth scope may need re-grant.
 ### Alert rules
 - **Critical connector (mode-aware):** 0 successful calls in this run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero prior same-mode runs exist, no baseline → no alert.
 - **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs fires an alert in modes where it's required by `connectors.yaml`.
-- **Pattern #48:** if a connector has never logged a successful call across the entire window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).
+- **Pattern #48:** if a connector has never logged a successful call across the entire window, the alert is suppressed (it's unwired, not broken: wire it up rather than treat it as an outage).
 - **Pattern #54:** if a connector was healthy in any mode within the last 4h and the current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).
 - **Warning:** any connector with ≥3 calls this run and >50% errors.
 
