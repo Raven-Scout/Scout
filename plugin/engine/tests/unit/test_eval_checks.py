@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from scout.action_items.parser import parse_lines
 from tests.eval.harness.checks import CheckResult
 from tests.eval.harness.checks.no_drop import no_drop
@@ -60,8 +62,10 @@ def _items(text: str):
     return parse_lines(text.splitlines())
 
 
-def test_placement_passes_on_the_good_file_and_ignores_the_focus_list() -> None:
-    r = placement(_items(GOOD), EXPECTED)
+@pytest.mark.parametrize("focus", ["🎯", "💡"])
+def test_placement_passes_on_the_good_file_and_ignores_the_focus_list(focus: str) -> None:
+    """Either Today's Focus heading is a list, never the item's placement."""
+    r = placement(_items(GOOD.replace("## 🎯", f"## {focus}")), EXPECTED)
     assert r == CheckResult("placement", True, ())
 
 

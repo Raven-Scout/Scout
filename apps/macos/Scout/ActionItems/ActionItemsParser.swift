@@ -942,7 +942,7 @@ nonisolated extension ActionItemsParser {
         return out
     }
 
-    private static let recognizedEmojiPrefixes: Set<String> = ["🔴", "🟡", "🟢", "💡", "📅", "✅", "📋"]
+    private static let recognizedEmojiPrefixes: Set<String> = ["🔴", "🟡", "🟢", "💡", "🎯", "📅", "✅", "📋"]
 
     private static func isRecognizedEmoji(_ s: String) -> Bool {
         if recognizedEmojiPrefixes.contains(s) { return true }
@@ -974,7 +974,8 @@ nonisolated extension ActionItemsParser {
         case "🔴": return .urgent
         case "🟡": return .todo
         case "🟢": return .watching
-        case "💡": return .focus
+        // Today's Focus: the phases write 💡; older files and runs used 🎯.
+        case "💡", "🎯": return .focus
         case "📅": return .meetings
         case "✅": return .done
         case "📋": return .digest
