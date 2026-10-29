@@ -181,7 +181,6 @@ def test_manifest_advertises_planning() -> None:
 
     m = build_manifest()
     assert m.features["planning_v1"] is True
-    assert m.features["comments_skip_plan_marks_v1"] is True
     assert "planning" in m.subcommands
 
 

@@ -74,10 +74,6 @@ def build_manifest() -> EngineManifest:
             "agent_sessions_v1": True,
             # /scout-plan: estimate/block/actual markers, `scoutctl planning`.
             "planning_v1": True,
-            # The comment lister skips those markers, so `delete-comment` and
-            # `edit-comment --index` count only real comments. Scout.app sends
-            # the old index (markers counted) to an engine without this flag.
-            "comments_skip_plan_marks_v1": True,
             # Topic board writes: `action-items rename-topic` and `action-items dismiss`.
             "topic_board_v1": True,
             # Per-slot model selection: Slot.model, `scoutctl model resolve|show|set-default`.

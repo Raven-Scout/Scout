@@ -137,9 +137,9 @@ struct PlanMarksTests {
         #expect(TaskPlan.none.merging(key: "Source", value: "slack") == nil)
     }
 
-    // MARK: - Comment index for an engine that still counts markers
+    // MARK: - Comment index (scoutctl counts the markers, for every app version)
 
-    @Test func legacyIndexCountsTheMarkersAboveTheComment() throws {
+    @Test func theEngineIndexCountsTheMarkersAboveTheComment() throws {
         let task = try parseTask([
             "- [ ] [#PROJ1] **Draft the rollout note**",
             "  - alex: first",
@@ -149,64 +149,36 @@ struct PlanMarksTests {
         ])
         #expect(task.plan.markerPositions == [1, 1])
         #expect(task.commentSelector(at: 1) == .index(1))
-        #expect(task.commentSelector(at: 2) == .indexAfterPlanMarks(2, legacyIndex: 4))
+        #expect(task.commentSelector(at: 2) == .index(4))
     }
 
-    private func writer(_ runner: RecordingRunner) -> ActionItemsWriter {
-        ActionItemsWriter(
+    @Test func aCommentWriteSendsTheEngineIndexWithoutAskingTheEngine() async throws {
+        // set-estimate puts the markers right under the task line, so every
+        // comment on a planned task is shifted.
+        let task = try parseTask([
+            "- [ ] [#PROJ1] **Draft the rollout note**",
+            "  - estimate: 45m",
+            "  - block: 2026-09-30 10:00-10:45",
+            "  - actual: 1h",
+            "  - alex: first",
+        ])
+        let runner = RecordingRunner()
+        let writer = ActionItemsWriter(
             scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"),
             actionItemsDirectory: URL(fileURLWithPath: "/tmp/ai"),
             scoutDirectory: URL(fileURLWithPath: "/tmp"),
             runner: runner,
             gitService: nil
         )
-    }
-
-    private func manifest(_ features: String) -> ProcessResult {
-        ProcessResult(exitCode: 0, stdout: Data(#"{"features": {\#(features)}, "schema_version": 1}"#.utf8), stderr: Data())
-    }
-
-    private func indexArgument(_ call: RecordingRunner.Call) -> String? {
-        call.arguments.firstIndex(of: "--index").map { call.arguments[$0 + 1] }
-    }
-
-    @Test func anEngineThatSkipsMarkersGetsTheAppsIndex() async throws {
-        let runner = RecordingRunner()
-        runner.scripted = [manifest(#""planning_v1": true, "comments_skip_plan_marks_v1": true"#)]
-        let w = writer(runner)
-        let op = WriteOp.deleteComment(subject: "X", shortPrefix: "A3F7", selector: .indexAfterPlanMarks(2, legacyIndex: 4))
-        _ = try await w.submit(op, displayedDate: Date())
-        _ = try await w.submit(op, displayedDate: Date())
-        let calls = await runner.calls
-        // One probe; a yes is remembered.
-        #expect(calls.map { $0.arguments.first } == ["manifest", "action-items", "action-items"])
-        #expect(indexArgument(calls[1]) == "2")
-        #expect(indexArgument(calls[2]) == "2")
-    }
-
-    @Test func anOlderEngineGetsTheIndexWithMarkersCounted() async throws {
-        let runner = RecordingRunner()
-        runner.scripted = [manifest(#""planning_v1": true"#)]
-        _ = try await writer(runner).submit(
-            .editComment(subject: "X", shortPrefix: "A3F7", selector: .indexAfterPlanMarks(2, legacyIndex: 4), newText: "later"),
-            displayedDate: Date()
-        )
-        let calls = await runner.calls
-        #expect(calls.count == 2)
-        #expect(calls[1].arguments.contains("edit-comment"))
-        #expect(indexArgument(calls[1]) == "4")
-        #expect(calls[1].arguments.last == "later")
-    }
-
-    @Test func aCommentWithNoMarkerAboveItSkipsTheProbe() async throws {
-        let runner = RecordingRunner()
-        _ = try await writer(runner).submit(
-            .deleteComment(subject: "X", shortPrefix: "A3F7", selector: .index(1)),
+        _ = try await writer.submit(
+            .editComment(subject: "X", shortPrefix: "PROJ1", selector: task.commentSelector(at: 1), newText: "later"),
             displayedDate: Date()
         )
         let calls = await runner.calls
         #expect(calls.count == 1)
-        #expect(indexArgument(calls[0]) == "1")
+        let args = try #require(calls.first?.arguments)
+        #expect(args.contains("edit-comment"))
+        #expect(args.firstIndex(of: "--index").map { args[$0 + 1] } == "4")
     }
 
     // MARK: - Card

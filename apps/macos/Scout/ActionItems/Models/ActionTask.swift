@@ -163,12 +163,11 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         )
     }
 
-    /// The selector for the comment the card shows at 1-based `index`. With
-    /// plan markers above it, an engine without `comments_skip_plan_marks_v1`
-    /// counts them, so the writer may need the old index instead.
+    /// The selector for the comment the card shows at 1-based `index`.
+    /// `scoutctl`'s `--index` counts the plan markers this app hides, so the
+    /// ones above the comment are added back in (see `TaskPlan`).
     func commentSelector(at index: Int) -> CommentSelector {
-        let legacy = plan.legacyCommentIndex(index)
-        return legacy == index ? .index(index) : .indexAfterPlanMarks(index, legacyIndex: legacy)
+        .index(plan.engineCommentIndex(index))
     }
 
     /// Search filter. `lowercasedNeedle` must already be lowercased; an empty

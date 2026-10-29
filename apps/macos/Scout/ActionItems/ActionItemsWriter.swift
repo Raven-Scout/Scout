@@ -2,13 +2,10 @@ import Foundation
 
 /// Selector identifying which comment under a task to act on.
 enum CommentSelector: Sendable, Equatable {
-    /// 1-based index, counting only user-authored sub-bullets (the
-    /// `snoozed-until` marker is filtered).
+    /// 1-based index as `scoutctl --index` counts: user-authored sub-bullets
+    /// and the `/scout-plan` markers (the `snoozed-until` marker is filtered).
+    /// A card builds it with `ActionTask.commentSelector(at:)`.
     case index(Int)
-    /// `index` for a comment below `/scout-plan` markers. An engine without
-    /// `comments_skip_plan_marks_v1` counts those markers as comments and gets
-    /// `legacyIndex` instead; `ActionItemsWriter` picks one before it runs.
-    case indexAfterPlanMarks(Int, legacyIndex: Int)
     /// Case-insensitive substring of the comment body.
     case text(String)
 }
@@ -120,7 +117,7 @@ enum WriteOp: Sendable {
 
     private static func selectorArguments(_ s: CommentSelector) -> [String] {
         switch s {
-        case .index(let n), .indexAfterPlanMarks(let n, _): return ["--index", String(n)]
+        case .index(let n):   return ["--index", String(n)]
         case .text(let body): return ["--text", body]
         }
     }
@@ -171,11 +168,6 @@ actor ActionItemsWriter {
     /// method isn't enough to serialize across suspensions).
     private var tail: Task<Void, Never>?
 
-    /// Advertised by an engine whose `--index` skips `/scout-plan` markers.
-    static let planMarksFeature = "comments_skip_plan_marks_v1"
-    /// Only a yes is remembered, as in `BoardWriter.supportsBoardWrites`.
-    private var skipsPlanMarks = false
-
     init(
         scoutctl: URL,
         argumentsPrefix: [String] = [],
@@ -197,9 +189,8 @@ actor ActionItemsWriter {
     @discardableResult
     func submit(_ op: WriteOp, displayedDate: Date) async throws -> WriteResult {
         let previous = tail
-        let task = Task { [self, scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
+        let task = Task { [scoutctl, argumentsPrefix, runner, actionItemsDirectory, scoutDirectory, gitService] in
             _ = await previous?.value
-            let op = await self.resolvingPlanMarkIndex(op)
             return try await Self.perform(
                 op: op,
                 displayedDate: displayedDate,
@@ -213,39 +204,6 @@ actor ActionItemsWriter {
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
-    }
-
-    /// `.indexAfterPlanMarks` as the plain index the installed engine counts.
-    /// Asks the engine only for such a selector: everywhere else both counts agree.
-    private func resolvingPlanMarkIndex(_ op: WriteOp) async -> WriteOp {
-        switch op {
-        case .deleteComment(let subject, let prefix, .indexAfterPlanMarks(let index, let legacy)):
-            let skips = await engineSkipsPlanMarks()
-            return .deleteComment(subject: subject, shortPrefix: prefix, selector: .index(skips ? index : legacy))
-        case .editComment(let subject, let prefix, .indexAfterPlanMarks(let index, let legacy), let newText):
-            let skips = await engineSkipsPlanMarks()
-            return .editComment(
-                subject: subject, shortPrefix: prefix, selector: .index(skips ? index : legacy), newText: newText
-            )
-        default:
-            return op
-        }
-    }
-
-    /// Whether `scoutctl manifest show` advertises `planMarksFeature`. A failed
-    /// probe reads as no, and is asked again next time.
-    private func engineSkipsPlanMarks() async -> Bool {
-        if skipsPlanMarks { return true }
-        let result = try? await runner.run(
-            executable: scoutctl,
-            arguments: argumentsPrefix + ["manifest", "show"],
-            environment: [:],
-            workingDirectory: scoutDirectory
-        )
-        skipsPlanMarks = result.map {
-            $0.exitCode == 0 && EngineFeatures.decode($0.stdout).contains(Self.planMarksFeature)
-        } ?? false
-        return skipsPlanMarks
     }
 
     private static func perform(

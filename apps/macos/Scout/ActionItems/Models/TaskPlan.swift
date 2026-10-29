@@ -10,10 +10,11 @@ import Foundation
 ///
 /// Like `snoozed-until`, these are machine metadata: the parser folds them
 /// into `ActionTask.plan` instead of exposing them as comments. What counts
-/// as a marker mirrors the engine's `plan_marks._mark_lines`, because
-/// `delete-comment` / `edit-comment --index` have to count the same comments
-/// on both sides: inside the task's sub-list, the first line per key whose
-/// value parses. Any other `- estimate:` line stays a comment.
+/// as a marker mirrors the engine's `plan_marks._mark_lines`: inside the
+/// task's sub-list, the first line per key whose value parses. Any other
+/// `- estimate:` line stays a comment. The engine's `--index` still counts
+/// the markers, for every app version, so a comment write goes through
+/// `engineCommentIndex`.
 nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
     var estimateMinutes: Int?
     var rawMinutes: Int?
@@ -21,9 +22,8 @@ nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
     var block: PlannedBlock?
     var actualMinutes: Int?
     var actualDate: String?
-    /// For each marker line, how many of the task's comments came before it.
-    /// An engine without `comments_skip_plan_marks_v1` still counts the
-    /// markers as comments; `legacyCommentIndex` translates with this.
+    /// For each marker line, how many of the task's comments came before it,
+    /// so `engineCommentIndex` can count the markers back in.
     var markerPositions: [Int] = []
 
     static let none = TaskPlan()
@@ -65,9 +65,10 @@ nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
         return out
     }
 
-    /// The `--index` an engine that counts markers as comments expects for
-    /// the comment the app shows at 1-based `index`.
-    func legacyCommentIndex(_ index: Int) -> Int {
+    /// The `--index` `scoutctl delete-comment` / `edit-comment` expect for the
+    /// comment the app shows at 1-based `index`: the engine counts the markers
+    /// above it as comments, as every app before this one showed them.
+    func engineCommentIndex(_ index: Int) -> Int {
         index + markerPositions.filter { $0 < index }.count
     }
 

@@ -1,8 +1,8 @@
-# Action Items: `/scout-plan` markers stop being comments, and a plan chip on the card
+# Action Items: `/scout-plan` markers leave the comment lists, and a plan chip on the card
 
 **Date:** 2026-10-27
-**Status:** Design, implemented on this branch, for review
-**Surface:** engine `scout/action_items/_common.py`, `render.py`, `plan_marks.py`, `scout/manifest.py`; Scout.app `apps/macos/` (parser, `ActionTask`, task card, comment writes); `parser-corpus.json`
+**Status:** Design, implemented on this branch, for review (revised 2026-10-29 per review: `--index` keeps counting the markers)
+**Surface:** engine `scout/action_items/render.py`, `plan_marks.py`; Scout.app `apps/macos/` (parser, `ActionTask`, task card, comment writes); `parser-corpus.json`
 
 ## Context
 
@@ -19,7 +19,7 @@ Every client still reads them as comments from authors `estimate`, `block` and `
 
 ## Goal
 
-A planned task shows its block, estimate and actual time as one chip on the card, and the markers never show up as comments, in the app or in the engine. A comment index means the same line to the app and to the engine, also when the app runs against an engine from before this change.
+A planned task shows its block, estimate and actual time as one chip on the card, and the markers no longer show up as comments, in the app or on the engine's dashboard. No pairing of app and engine versions edits or deletes a different comment than the one picked: an app from before this change with a newer engine, and the other way round.
 
 ## Design
 
@@ -36,16 +36,15 @@ A reversed block (`11:00-10:00`) passes 2: the engine has always accepted it, an
 ### Engine
 
 - `plan_marks.plan_mark_line_numbers(lines, task_line_number)` returns the marker lines of one task.
-- `list_comment_lines` (behind `delete-comment` and `edit-comment`) skips those lines.
-- The HTML renderer (`render.parse`) skips them too, so they are no longer comments on the dashboard.
-- The manifest advertises `comments_skip_plan_marks_v1`.
+- The HTML renderer (`render.parse`) skips those lines, so they are no longer comments on the dashboard.
+- `list_comment_lines` (behind `delete-comment` and `edit-comment`, `--index` and `--text`) keeps listing them. `--index` is the wire contract with every app version, and an app from before this change shows the markers as comments 1 to 3.
 
 ### Mac app
 
 - **Model.** `TaskPlan` on `ActionTask.plan`: estimate, raw estimate, kind, block (`PlannedBlock`), actual and its date. Default `.none`, so existing call sites compile unchanged. `replacingPlan(_:)` sits next to `replacingDetails` and `replacingFields`, and every place that rebuilds a task carries the plan.
 - **Parser.** A marker branch runs ahead of the dash comment branch, with the grammar and the three rules above. The parser tracks the sub-list window itself (a blank or unindented line closes it, a task line opens a new one), because the app otherwise binds comments to the last task across blank lines.
 - **Card.** The trailing status slot shows a clock chip when an open, unsnoozed task has a plan: `10:00-10:45 · 45m`, the weekday first when the block is not today, `· took 1h` once the actual is known, and `45m` alone for an estimate without a block. A done task reads `Done · 1h`. The tooltip spells out date, estimate, raw estimate, kind and actual.
-- **Comment index against an older engine.** The parser records, for each marker, how many comments came before it. When a comment has markers above it, the card sends `CommentSelector.indexAfterPlanMarks(n, legacyIndex: m)`, where `m` counts those markers the way an older engine does. The writer asks `scoutctl manifest show` once (a yes is remembered, as `BoardWriter` does for `topic_board_v1`) and passes `--index n` when the engine has `comments_skip_plan_marks_v1`, else `--index m`. A comment with no marker above it has the same index on both engines and skips the probe.
+- **Comment index.** The parser records, for each marker, how many comments came before it. For the comment it shows at `n`, the card sends `--index n + (markers above it)` (`TaskPlan.engineCommentIndex`), the index every engine version understands, because every engine counts the markers. No probe, no feature flag. The mapping does not depend on the marker rule either: the lister counts every marker-shaped line, so the app only adds back the lines it took out. `set-estimate` puts the markers right under the task line, so on a planned task almost every comment is shifted.
 
 ### Parser contract
 
@@ -55,7 +54,7 @@ A reversed block (`11:00-10:00`) passes 2: the engine has always accepted it, an
 
 | Fork | Choice |
 |---|---|
-| Older engine | The app translates the index instead of falling back to showing markers as comments. The chip works with any engine, and the parse does not depend on a subprocess probe. |
+| Comment index | `--index` keeps its meaning and the new app maps to it. Changing what `--index` counts would make an older app edit the wrong comment against a newer engine (each engine updates through `/scout-update`, apart from the app's own updates); a new selector plus a manifest probe would add a failure mode, a probe that can't answer. |
 | A marker after a blank line | A comment, in both. The engine's scan has always stopped there. |
 | Engine renderer | Skips markers, renders no chip. The dashboard is not where planning happens. |
 | Board cards and the display profile | Unchanged here. `actionItems.fields.plan` from the display-profile spec arrives as a follow-up once the profile code is on `main`. |
@@ -66,5 +65,5 @@ scout-iOS-app parses the same sub-bullets and shows the markers as comments. It 
 
 ## Testing
 
-- Engine: `tests/unit/test_action_items_plan_marks.py` (lister and renderer skip exactly the markers, unparseable values and duplicates stay comments, scope ends at blank lines and child tasks; delete and edit by index hit the right line under markers), manifest flag, corpus.
-- App: `ScoutTests/ActionItems/PlanMarksTests.swift` (grammar parity with the engine, plan survives every later sub-bullet, chip label and tooltip, legacy index), writer tests for the probe and both engines, `ParserContractTests`.
+- Engine: `tests/unit/test_action_items_plan_marks.py` (the renderer skips exactly the markers, unparseable values and duplicates stay comments, scope ends at blank lines and child tasks; the lister still lists the markers, and the index the app sends reaches its comment), corpus.
+- App: `ScoutTests/ActionItems/PlanMarksTests.swift` (grammar parity with the engine, plan survives every later sub-bullet, chip label and tooltip, engine index and the write that sends it without asking the engine), `ParserContractTests`.
