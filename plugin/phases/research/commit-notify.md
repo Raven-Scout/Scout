@@ -10,9 +10,13 @@ requires: null
 
 ## Step 4a: Commit
 
+Explicit paths through the helper, **never `git add -A`**: a concurrent session shares this tree, and `-A` commits its half-written files.
+
 ```bash
-git -C "{{SCOUT_DIR}}" add -A && git -C "{{SCOUT_DIR}}" commit -m "research [HH:MM]: <summary of targets researched and key findings>"
+{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: <summary of targets researched and key findings>" <only the paths THIS run touched>
 ```
+
+Exit 4: nothing changed. Exit 3 or 5: report it in the notification; never fall back to `-A`.
 
 Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
 
@@ -21,6 +25,8 @@ Use `TZ="$(scripts/scout-tz.sh)" date '+%H:%M'` for the timestamp (the computer'
 Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Research | <one sentence: targets researched, key findings, entities updated, with [[links]]> | <commit> |`
+
+Then commit it: `{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: session log" knowledge-base/session-log/YYYY-MM.md`.
 
 ## Step 4c: Session Cost
 
