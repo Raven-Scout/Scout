@@ -1,7 +1,8 @@
 # Connected accounts: Sign in with Linear and Slack — design
 
-Status: **draft for Jordan's review** (asked for on 2026-10-29). Spec only: no code, no OAuth
-apps registered, no secrets stored.
+Status: **draft; §14's four open questions decided** (Jordan, 2026-10-29, via the coordinator:
+yes to all four, recorded in §4 and §14). Spec only: no code, no OAuth apps registered, no
+secrets stored. Phase 0 waits for Jordan to create the Linear app.
 Builds on: #532 (Linear own-activity pre-fetch, 🔴 project channel poll). Related: the Slack
 mention trigger (`scout/triggers/sources/slack.py`), `docs/superpowers/specs/2026-09-08-app-managed-engine-design.md`.
 
@@ -130,17 +131,23 @@ infrastructure is lifting Slack's history rate cap through a Marketplace listing
 no money but takes a review, plus a public privacy-policy and support page (GitHub Pages is
 enough). It isn't needed if the 🔴 pre-fetch reads through search (§8.2).
 
-## 4. Decisions (for Jordan to rule on)
+## 4. Decisions
 
-| # | Decision | Recommendation |
+Rows marked **Decided** were ruled by Jordan on 2026-10-29 (via the coordinator). The rest are
+the spec's recommendations, open for review on the PR.
+
+| # | Decision | Recommendation / ruling |
 |---|---|---|
 | D1 | Where the OAuth flow runs | **In the engine** (`scoutctl accounts login`), with the app as a thin UI over it. Linear rules out a custom scheme, so the flow needs a loopback listener and the system browser either way (`ASWebAuthenticationSession` only catches custom-scheme or associated-domain callbacks). Putting it in the engine gives headless and dev-managed users the same sign-in, keeps tokens out of the app process entirely, and is testable in pytest. |
 | D2 | Who refreshes | **The engine, lazily, just before it uses the token**, under a file lock. Not the app on a timer: scheduled runs fire at night with the app closed, and a Linear access token lasts only 24 h. §7. |
-| D3 | Token storage | **One file per provider in `~/.scout-secrets/`, mode 600, as the only store. No Keychain copy.** §5.1 says why (this departs from the brief's "Keychain plus file"). |
+| D3 | Token storage | **Decided: file-only.** One file per provider in `~/.scout-secrets/`, mode 600, as the only store. No Keychain copy. §5.1 says why (this departs from the brief's "Keychain plus file"). |
 | D4 | Contract | A `sign_in:` block on the existing `mcp:claude_ai_Linear` and `mcp:claude_ai_Slack` roster rows, projected into the snapshot. §5.4. |
 | D5 | Precedence | **OAuth token first, hand-placed key file second.** A failed or expired sign-in falls back to the key file if there is one, then to #532's gate. |
-| D6 | Slack read path for the 🔴 poll | **`search.messages` (`search:read`)** first, so no history scope and no rate cap. Add `channels:history` + `groups:history` only if Phase 0 shows search misses what the poll needs. §8.2. |
+| D6 | Slack read path for the 🔴 poll | **Decided: `search.messages` (`search:read`)**, subject to Phase 0's completeness check. No history scope and no rate cap. Add `channels:history` + `groups:history` only if Phase 0 shows search misses what the poll needs. §8.2. |
 | D7 | Who owns the OAuth apps | A **Raven-Scout-owned** Linear app and Slack app (Jordan's call; §12 lists the steps). Client IDs are public and ship in the roster. A `client_id` override lets anyone use their own app instead. |
+| D8 | `connectors.inputs.user_slack_id` | **Decided: auto-filled at Slack sign-in** (§8.2). |
+| D9 | Accounts per provider | **Decided: one for now.** Switching workspace is disconnect + sign in. |
+| D10 | A refresh whose outcome is lost | Write-ahead, a bounded retry with the old refresh token inside Linear's 30-minute grace, then `needs_sign_in` with one notice. §7.1. |
 
 ## 5. Storage and the app→engine contract
 
@@ -161,9 +168,9 @@ The brief asks for "Keychain plus the file the engine reads". This design keeps 
    and `repo_sync` already refuses to push that directory.
 4. **The app never holds a token** (D1), so the app has nothing of its own to keep in the Keychain.
 
-If Jordan still wants the Keychain, the only consistent variant is the Keychain as the sole store,
-with the engine reading it through `/usr/bin/security`. That breaks on a locked screen (point 2),
-so this spec doesn't recommend it.
+The only consistent Keychain variant would be the Keychain as the sole store, with the engine
+reading it through `/usr/bin/security`, and that breaks on a locked screen (point 2). **Jordan
+ruled for file-only storage on 2026-10-29.**
 
 ### 5.2 Files
 
@@ -202,6 +209,8 @@ world-readable (as #532 does), with the `chmod 600` hint.
     "workspace_id": "…", "workspace_name": "Acme Co", "workspace_url_key": "acme-co"
   },
   "state": "ok",
+  "needs_sign_in": null,
+  "refresh_attempt": null,
   "last_error": null
 }
 ```
@@ -211,10 +220,19 @@ world-readable (as #532 does), with the `chmod 600` hint.
 - For Slack, `access_token` holds `authed_user.access_token`. `refresh_token` and `expires_at`
   are `null` while rotation is off. `account` comes from the `oauth.v2.access` response
   (`authed_user.id`, `team`) and `auth.test` (user name, team URL).
-- `state` is `ok`, `expired` (the refresh was refused) or `revoked` (the provider refused the
-  token and the refresh). Once the state is `expired` or `revoked`, the engine blanks
-  `access_token` and `refresh_token` but keeps `account`, so the UI can still say who to sign
-  back in as.
+- `state` is one of:
+  - `ok`;
+  - `refresh_pending`: a refresh was started and its outcome isn't known yet (§7.1);
+  - `needs_sign_in`: the token can't be used again, and only a new sign-in fixes it.
+- `needs_sign_in`, set with that state, is `{"since": "...", "reason": "refresh_refused" |
+  "grace_exhausted" | "revoked"}`.
+  - The engine then blanks `access_token` and `refresh_token` but keeps `account`, so the UI can
+    still say who to sign back in as.
+  - Whether the notice went out isn't kept here: the notifier's state records it (§7.1 (c)).
+- `refresh_attempt`, set with `refresh_pending`, is `{"started_at": "...", "attempts": N,
+  "next_at": "..."}`.
+  - It never holds a token.
+  - The old refresh token stays in `refresh_token` until a new pair replaces it.
 - `last_error` is `{"at": "...", "code": "invalid_grant", "message": "<redacted, ≤200 chars>"}`.
   It never holds a token.
 
@@ -272,10 +290,10 @@ https://slack.com/api/auth.revoke`.
 
 | Command | Does | Network |
 |---|---|---|
-| `accounts status [--json] [--check]` | Every `sign_in` provider: `source` (`oauth`/`api_key`/none), `state`, `account`, `expires_at`, `last_error`, the secrets dir in use. `--check` adds one live call (Linear `viewer { id }`, Slack `auth.test`) and refreshes if due. | only with `--check` |
-| `accounts login <provider> [--json] [--no-browser] [--timeout 300]` | The PKCE flow (§6.2). Writes the token file. Prints the account. | yes |
+| `accounts status [--json] [--check]` | Every `sign_in` provider: `source` (`oauth`/`api_key`/none), `state`, `needs_sign_in`, `refresh_attempt`, `fallback`, `account`, `expires_at`, `last_error`, `notice`, the secrets dir in use (§7.1 (d)). `--check` adds one live call (Linear `viewer { id }`, Slack `auth.test`), and refreshes if due or pending. Exit 1 if any provider is `needs_sign_in`. | only with `--check` |
+| `accounts login <provider> [--json] [--no-browser] [--timeout 300]` | The PKCE flow (§6.2). Writes the token file. Prints the account. For Slack it also fills `user_slack_id` (§8.2). `--set-user-id` (Slack) replaces a different `user_slack_id` from the current token, with no browser. | yes |
 | `accounts logout <provider> [--json] [--keep-remote]` | Revokes, then deletes the file (§8.4). | yes, unless `--keep-remote` |
-| `accounts refresh <provider>` | Forces a refresh (tests and debugging). | yes |
+| `accounts refresh <provider> [--resume]` | Forces a refresh (tests and debugging). `--resume` is the detached retrier of §7.1 (b): it retries a pending refresh until its deadline. | yes |
 
 `--json` output is one object, the shape the app decodes (`BudgetSettingsService.invoke` is the
 pattern), and never contains a token. `login --json` also prints one `{"event":"waiting","port":N}`
@@ -309,17 +327,118 @@ SIGTERM (the app's Cancel) closes the listener and writes nothing.
 
 - In `credential(provider)`: if `expires_at` is less than 10 minutes away (or past), take
   `flock` on `<file>.lock`, **re-read the file** (another process may have just refreshed it), and
-  if it's still due, POST `grant_type=refresh_token&refresh_token=…&client_id=…`.
-  - Write the new pair **before** using it.
+  if it's still due, refresh as §7.1 says.
   - The lock waits at most 30 s. If it can't be taken, the fetch reports `FAILED` "credential
     busy" and the run carries on through the gate.
 - If a call with a token that isn't due gets a 401, refresh once and retry once. A second 401
-  means `revoked`.
-- If the refresh returns `invalid_grant` (or the Slack equivalent), `state: expired` and the
-  tokens are blanked (§5.2). A network error or 5xx leaves the file alone and reports `FAILED`
-  for this run only.
-- A crash after Linear has rotated the token but before the write: Linear's 30-minute grace on the
-  old refresh token lets the next attempt recover. Past the grace, it's `expired`.
+  means `needs_sign_in` (`reason: revoked`).
+- A network error or 5xx on an API call (not the refresh) leaves the file alone and reports
+  `FAILED` for this run only.
+
+### 7.1 When a refresh's outcome is lost (Linear)
+
+**The danger.** Linear rotates on every refresh. Once the server has issued a new pair, the old
+refresh token works for only **30 more minutes** (the reuse grace). If the engine never persists
+the new pair, the account is lost for good after those 30 minutes. That happens on:
+- a crash between the response and the write;
+- a disk error on the write;
+- a network drop after the server rotated but before the response arrived.
+
+Every step below runs under the provider's `flock`.
+
+**(a) Write-ahead.**
+1. **Journal before the POST.** Write the file with `state: refresh_pending` and
+   `refresh_attempt.started_at = now`, keeping a `started_at` that is already there. Use the same
+   atomic write as §5.2: temp file at 0600, `fsync` it, `os.replace`, then `fsync` the directory.
+   The old `refresh_token` stays in the file. The journal tells any later process that the server
+   may already have rotated, and when the grace window began. The server rotated after
+   `started_at`, so counting the deadline from it is the safe side.
+2. POST `grant_type=refresh_token&refresh_token=<old>&client_id=…` (form-encoded, 10 s timeout, no
+   secret).
+3. On a 200: **persist the new pair first**, with the same atomic write (`state: ok`,
+   `refresh_attempt: null`, the new `expires_at`, `refreshed_at`). Only once the rename and the
+   directory `fsync` have returned does the caller get the new access token.
+4. If that write fails (`OSError`: disk full, EIO, permissions), drop the in-memory pair unused.
+   The file still holds the old token and the journal, so the outcome counts as unknown (b).
+   Never use a pair that isn't on disk: one copy, one truth.
+
+**(b) A failed or unknown outcome: retry with the old token inside the grace window.**
+- **Counts as unknown:** a timeout or connection reset after the request may have reached Linear,
+  a 5xx, a 429, or a failed write (a4). Linear may or may not have rotated. Either way the old
+  refresh token is still good inside the grace window, so the engine retries **with the old
+  refresh token**, from the file.
+- **The budget:** `deadline = refresh_attempt.started_at + 25 min`, which leaves 5 minutes of
+  margin under Linear's 30.
+- **In-process backoff, bounded:** retry after 5 s, 20 s, then 60 s, a 429's `Retry-After` taking
+  precedence. No more than 4 attempts or about 2 minutes, so the pre-fetch never holds a run up.
+  Each attempt is steps 2–4 again, and `attempts` and `next_at` are journaled before each POST.
+- **If still unknown, keep retrying out of process.** The run reports `FAILED` "Linear refresh
+  pending" and goes on through the gate. Before returning, it starts one detached retrier,
+  `scoutctl accounts refresh linear --resume`, double-forked so it outlives the run and holds no
+  run lock.
+  - The retrier tries again at +1, +2, +4 and +8 minutes, and stops at `deadline`.
+  - It takes the `flock` for each attempt and re-reads the file first, so it stops the moment
+    another process has succeeded.
+  - Only one retrier at a time: a `<file>.retrier.pid` that is alive means none is started.
+- **Any process that finds `refresh_pending`** (a run, `accounts status --check`, the retrier)
+  before `deadline` makes one attempt itself first.
+- **Definite answers skip the retries:** a 400 `invalid_grant` goes straight to (c). A
+  `401 invalid_client` is a configuration error (a wrong or overridden `client_id`): no retry,
+  `last_error` records it, and the state stays `ok`, because a sign-in with the same client ID
+  wouldn't help.
+
+**(c) Grace window exhausted, or `invalid_grant`.**
+- Set `state: needs_sign_in`, with `needs_sign_in.reason`:
+  - `grace_exhausted`: `deadline` passed with no success;
+  - `refresh_refused`: a definite `invalid_grant`;
+  - `revoked`: the 401 path in §7.
+- `needs_sign_in.since` is now. Blank both tokens, keep `account`, record `last_error`.
+- `credential()` then falls through D5: to the hand-placed `linear-api-key` if there is one, else
+  `NO_KEY`. So #532's gate takes over, and the run never fails.
+- **One notice.** Run health gets the yellow finding `accounts.linear.needs_sign_in`. Today the
+  notifier (run-health spec §4.4) pushes only red findings, with a reminder every 24 h. This adds a
+  **`push: once`** class:
+  - The notifier pushes the finding once, the first time it sees it, on Scout's normal channels in
+    their usual order: desktop, Telegram, `notify.command`.
+  - The text is the roster row's `first_fix`: "Linear sign-in expired. Sign in again: Scout.app →
+    Settings → Connected accounts, or `scoutctl accounts login linear`."
+  - It sends no 24 h reminders, and it doesn't make the overall severity red.
+  - The notifier's state keeps the id until the finding goes away, which happens on the next
+    sign-in. A later episode notifies again.
+  - Like the other pushes, a push no channel delivered is retried on the next call.
+  - The session wrap lists the finding only in the run that made the transition, not in every
+    later wrap.
+
+**(d) How it shows.**
+- `scoutctl accounts status` (text) prints, per provider:
+  - `refresh_pending`: "Linear: refreshing. Linear didn't answer (attempt 3); retrying until 07:27."
+  - `needs_sign_in`, first line: "Linear: needs sign-in since 2026-10-30 07:27 (Linear's refresh
+    grace ran out). Was: Alex Example · Acme Co."
+  - `needs_sign_in`, second line: "Meanwhile: using `~/.scout-secrets/linear-api-key`", or
+    "Meanwhile: briefings ask Linear in-session."
+  - `needs_sign_in`, last line: "Fix: `scoutctl accounts login linear`."
+- `--json` gives `state`, `needs_sign_in` (`since`, `reason`), `refresh_attempt` (`started_at`,
+  `attempts`, `next_at`, `deadline`), `fallback` (`api_key` | `gate`), `account`, `last_error`,
+  and `notice` (`sent_at` | `null`, from the notifier's state). It never holds a token.
+- Exit 0 when every provider is `ok` or not connected. Exit 1 when any provider is
+  `needs_sign_in`.
+- Settings: the rows in §9 (`refresh_pending` → "Refreshing…", `needs_sign_in` → "Sign in again"
+  with the reason and the fallback).
+
+**(e) Slack: simpler, since rotation is off.**
+- With rotation off, there is no refresh, no rotation and no grace window, so (a)–(b) don't apply.
+- **Definite answers mean `needs_sign_in` at once.** On `invalid_auth`, `token_revoked`,
+  `account_inactive` or `token_expired`, from an API call or from the `auth.test` that confirms
+  it, the engine sets `needs_sign_in` (`reason: revoked`, or `refresh_refused` for
+  `token_expired`) and blanks the token. There's no retry: the answer is definite.
+- **Network errors, 5xx and `ratelimited`** are `FAILED` for this run only; the token is kept.
+- **Fallback:** `slack-search-token` if there is one, else the in-session poll through the
+  claude.ai connector, as today.
+- **The notice:** `accounts.slack.needs_sign_in`, with the same `push: once` behaviour.
+- **If rotation is ever forced on** (the custom-scheme fallback in §12), (a) and (c) apply as
+  written. (b) does not: Slack's refresh tokens are single-use and Slack documents no grace window.
+  So a lost refresh outcome means `needs_sign_in` (`grace_exhausted`) as soon as the old token is
+  refused. Phase 0 confirms Slack's behaviour before that path is built.
 
 Why not the app on a timer: the app is optional, may be closed, and isn't a login item by default
 (`SMAppService` is off unless the user turns it on). Linear's token lasts 24 h, so a weekend with
@@ -328,18 +447,21 @@ refresh token is exactly the failure the lock exists to stop. With one refresher
 app never needs the token.
 
 A Mac left off for weeks: Linear doesn't document a refresh-token lifetime. If it has one, the
-first run after the break gets `invalid_grant`, goes `expired`, and the gate covers it until the
-user signs in again (§9). With rotation off, Slack has no expiry.
+first run after the break gets `invalid_grant` and goes `needs_sign_in` (§7.1 (c)), and the gate
+covers it until the user signs in again (§9). With rotation off, Slack has no expiry.
+
+A Mac that sleeps mid-retry: the detached retrier sleeps with it. If the Mac wakes after
+`deadline`, the next attempt is never made, and the next process sets `grace_exhausted`. That's
+the right answer: the old token is dead by then.
 
 The app learns about expiry two ways: the Settings section runs `accounts status --json` when it
 opens, and run health (below) shows up through the doctor refresh the app already runs every
 600 s (`EngineHealthService`).
 
-Run health: `scoutctl health` / `bootstrap doctor` gain the yellow findings
-`accounts.<provider>.expired` and `accounts.<provider>.revoked`.
-- Each finding goes once through the existing notifier state machine, not once per run, using the
-  text of the roster row's `first_fix`.
-- `failed` for one run is not a finding: #532's gate already records it in the digest.
+Run health: `scoutctl health` and `bootstrap doctor` gain the yellow finding
+`accounts.<provider>.needs_sign_in`, which pushes once (§7.1 (c)).
+- `refresh_pending` is not a finding: it resolves within 25 minutes, one way or the other.
+- `FAILED` for one run is not a finding either: #532's gate already records it in the digest.
 
 ## 8. Behaviour
 
@@ -374,6 +496,20 @@ deep links and offers to fill the app's Linear workspace setting.
 - **Minimal Slack scopes:** `search:read` (user scope). If needed: `channels:history`,
   `groups:history`. Never bot scopes, which desktop redirects can't request anyway. Never
   `im:history`/`mpim:history`, since the 🔴 poll reads project channels, not DMs.
+- **`user_slack_id` is auto-filled at sign-in** (D8, decided). The mention trigger needs it.
+  After a successful `accounts login slack`, the engine puts `authed_user.id` into
+  `connectors.inputs.user_slack_id` in the bound vault's `scout-config.yaml` (the vault in
+  `engine.json`). It writes through `bootstrap.write_connector_config`, which keeps the file's
+  comments, under the vault lock.
+  - **Empty or missing:** written. The `login` output says so.
+  - **Already the same ID:** nothing changes.
+  - **A different ID** (another account, or a hand-typed one): **not overwritten.** `login`
+    reports `user_slack_id_mismatch` with both IDs. `accounts status` keeps reporting it, and the
+    Settings row shows "Your Slack ID in scout-config.yaml is U0AAA…; you signed in as U0BBB…"
+    with a **Use U0BBB…** button, which runs `accounts login slack --set-user-id`, with no browser
+    when a valid token is already there.
+  - No vault configured (a bare headless engine): skipped, with a note.
+  - `logout` never clears it.
 
 ### 8.3 With no app
 
@@ -415,7 +551,9 @@ Each row: the provider name, the `used_for` line as help text, a status chip in 
 | connecting | "Waiting for browser…" (p3) | "Finish signing in in your browser." | Cancel |
 | ok (oauth) | "Connected" (ok) | "As Alex Example · Acme Co" | Check now · Disconnect |
 | ok (api_key) | "Using key file" (ok) | "`~/.scout-secrets/linear-api-key`" | Sign in with Linear (replaces the key; the file is kept as the fallback) |
-| expired / revoked | "Sign in again" (warn) | "Linear stopped accepting Scout's sign-in on <date>. Briefings fall back to asking in-session." | **Sign in again** · Disconnect |
+| refresh_pending | "Refreshing…" (p3) | "Linear didn't answer a token refresh. Retrying until 07:27." | Check now |
+| needs_sign_in | "Sign in again" (warn) | The reason, in plain words: "Linear refused Scout's sign-in on <date>" (`refresh_refused`), "Scout couldn't finish refreshing its Linear sign-in on <date>" (`grace_exhausted`), "Access was removed in Linear on <date>" (`revoked`). Then the fallback: "Meanwhile: using your key file" or "Meanwhile: briefings ask Linear in-session." Then "Was: Alex Example · Acme Co". | **Sign in again** · Disconnect |
+| user_slack_id_mismatch (Slack) | "Connected" (ok) + warn note | "Your Slack ID in scout-config.yaml is U0AAA…; you signed in as U0BBB…" | Use U0BBB… |
 | error (last check failed, token kept) | "Couldn't check" (warn) | The redacted `last_error.message` | Check now |
 | insecure dir / file | "Fix permissions" (err) | "`chmod 600 …`" with a copy button | Check now |
 | engine too old | "Needs engine X.Y" (p3) | The `/scout-update` hand-off copy, as in `EngineSettingsModel` | — |
@@ -456,11 +594,13 @@ Error copy, by exit code:
 |---|---|---|
 | No OAuth file, no key file | `NO_KEY` | The gate asks the session (unchanged) |
 | Access token due | Refresh under the lock, then fetch | Pre-fetched |
-| Refresh refused (`invalid_grant`) | `state: expired`, tokens blanked; falls to the key file if there is one | Key-file fetch or the gate; one run-health finding |
-| 401 on a token that isn't due (revoked in the provider's UI) | One refresh + retry, then `revoked` | Same as above |
-| Network error / 5xx / timeout | `FAILED`; file untouched | The gate ("Linear unavailable: …") |
+| Refresh refused (`invalid_grant`) | `needs_sign_in` (`refresh_refused`), tokens blanked; falls to the key file if there is one | Key-file fetch or the gate; one `push: once` notice |
+| 401 on a token that isn't due (revoked in the provider's UI) | One refresh + retry, then `needs_sign_in` (`revoked`) | Same as above |
+| Network error / 5xx / timeout on an API call | `FAILED`; file untouched | The gate ("Linear unavailable: …") |
 | Lock busy for 30 s (another run is refreshing) | `FAILED` "credential busy" | The gate |
-| Crash during rotation | Linear's 30-min grace lets the next try recover; else `expired` | The gate |
+| Refresh outcome unknown (timeout, reset, 5xx or 429 on the refresh; crash or disk error before the new pair is on disk) | Journal kept (`refresh_pending`); in-process retries with the old refresh token (≤ 4, about 2 min); then a detached retrier until `started_at + 25 min` (§7.1) | `FAILED` "refresh pending" → the gate for this run; the next run is normally back to `ok` |
+| Grace window exhausted | `needs_sign_in` (`grace_exhausted`), tokens blanked | Key file or the gate; one notice |
+| Slack `invalid_auth` / `token_revoked` / `account_inactive` | `needs_sign_in` (`revoked`) at once, no retry | `slack-search-token` or the in-session poll; one notice |
 | File or dir mode too open | Refuse, with the `chmod` hint (as #532) | The gate; the UI shows "Fix permissions" |
 | Workspace needs admin approval | `login` exits `admin_approval_required` | n/a (no token yet) |
 | Different workspace than the claude.ai connector | Works; the row shows the workspace | The pre-fetch reads the signed-in workspace; the phase text says which |
@@ -553,11 +693,64 @@ one is ever exposed, rotate it in the app settings.
 - The Settings section, for Linear only, and the cancellable process runner.
 - The engine and app halves can be two PRs if the snapshot copy lands with the engine half, since
   the CLI is usable on its own. One PR is simpler.
+- The `push: once` notifier class (§7.1 (c)) and the `accounts.<provider>.needs_sign_in` finding.
 - Tests:
   - flow against a local fake provider (loopback, state mismatch, cancel, ports busy);
   - refresh race (two processes, one refresh);
   - precedence, perms, redaction;
   - app view-model states.
+- Refresh-failure tests: unit tests against a fake token endpoint, an injectable clock and
+  injectable write failures.
+  - **(a) Write-ahead**
+    1. The file reads `refresh_pending` with `started_at` set when the fake endpoint receives the
+       refresh POST, so the journal comes before the request.
+    2. The fake API sees the first call with the new access token only after the file holds the
+       new pair (it reads the file in its handler).
+    3. An `os.replace` that raises `OSError` after a 200 leaves the in-memory pair unused. The file
+       keeps the old refresh token and `refresh_pending`, and the result is `FAILED`.
+    4. An exception injected between the response and the write ("crash"): the next
+       `credential()` within the grace window retries with the old refresh token, gets a pair,
+       and ends `ok`.
+    5. A second `started_at` never replaces the first across retries.
+    6. The directory is `fsync`ed after the rename. Patch `os.fsync` and assert it's called on the
+       dir fd.
+  - **(b) Bounded retry**
+    1. A timeout, a reset, a 5xx and a 429 each count as unknown. Retries reuse the old refresh
+       token at 5 s, 20 s and 60 s on the fake clock, and a 429 `Retry-After` overrides them.
+    2. There are never more than 4 in-process attempts, and the total wait stays within the budget.
+    3. After the in-process attempts, exactly one detached retrier is spawned. Assert the spawn
+       command and the pid-file guard: a second failing run spawns none.
+    4. The retrier stops at `started_at + 25 min`, and stops early once another process has
+       written `ok`.
+    5. A process that finds `refresh_pending` before the deadline attempts once itself.
+    6. Two processes in the race: one POST, and the second re-reads under the lock and uses the
+       new pair.
+    7. A `401 invalid_client` isn't retried, and the state stays `ok` with `last_error` set.
+  - **(c) `needs_sign_in`**
+    1. `invalid_grant` → `refresh_refused` at once, with no retry.
+    2. The deadline passing → `grace_exhausted`.
+    3. A second 401 → `revoked`.
+    4. Each blanks both tokens and keeps `account`.
+    5. `credential()` then returns the key file if there is one, and `None` otherwise, so #532's
+       `NO_KEY` and the gate apply.
+    6. Over N runs the notifier pushes `accounts.linear.needs_sign_in` exactly once, with no 24 h
+       reminder.
+    7. An undelivered push retries on the next call.
+    8. The id clears after a sign-in, and a new episode pushes again.
+    9. The wrap lists the finding only in the run that made the transition.
+  - **(d) `status`**
+    1. Text and `--json` for `ok`, `refresh_pending` (with `deadline`) and `needs_sign_in` (each
+       reason × each fallback).
+    2. Exit 0 or 1.
+    3. No token in any output (scan for the fake tokens).
+    4. The app view-model decodes and labels each state.
+  - **(e) Slack** (lands with Phase 2, listed here so the resolver's interface covers it)
+    1. `invalid_auth`, `token_revoked`, `account_inactive` → `needs_sign_in` with no retry.
+    2. A network error, a 5xx or `ratelimited` → `FAILED`, with the token kept.
+    3. The fallback goes to `slack-search-token`.
+    4. A forced-rotation fixture: a lost outcome → `grace_exhausted` on the first refusal.
+    5. `user_slack_id`: filled when empty; a no-op when the same; reported, not overwritten, when
+       different; skipped with no vault.
 - No eval change: the pre-fetch path is already seeded (`busy-briefing` `linear_delta`) through
   `SCOUT_LINEAR_API_URL`.
 
@@ -572,11 +765,19 @@ one is ever exposed, rotate it in the app settings.
 **Phase 3: only if needed.** Slack history scopes and the rate-cap-aware reader; a Marketplace
 listing; per-user "bring your own app" (the `client_id` override, surfaced in Settings).
 
-## 14. Open questions
+## 14. Decided (Jordan, 2026-10-29, via the coordinator)
 
-1. D3: is a file-only store (no Keychain) acceptable? §5.1 gives the reasons.
-2. D6: is the 🔴 poll through search acceptable if Phase 0 shows it's complete, given that Slack
-   calls the method legacy?
-3. Should signing in also fill `connectors.inputs.user_slack_id` in `scout-config.yaml` (needed
-   by the mention trigger)? That writes to the vault, so it would be an offer, never automatic.
-4. One account per provider in v1. Is anyone running several Linear workspaces through Scout?
+The four open questions in the first draft were all ruled yes:
+
+1. **File-only token storage, no Keychain copy** (D3, §5.1).
+2. **The 🔴 poll goes through `search.messages` (`search:read`)**, subject to Phase 0's
+   completeness check (D6, §8.2).
+3. **`user_slack_id` is auto-filled at sign-in** (D8, §8.2): written when empty, never overwritten
+   when different.
+4. **One account per provider for now** (D9).
+
+Also added at the coordinator's request: the refresh-failure handling in §7.1 (write-ahead, a
+bounded retry inside the grace window, `needs_sign_in` with one notice, how status shows it,
+Slack's equivalent) and its Phase 1 tests (§13).
+
+Nothing is open in the design now. Phase 0 waits for Jordan to create the Linear app (§12).
