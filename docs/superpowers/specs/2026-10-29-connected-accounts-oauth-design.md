@@ -244,7 +244,8 @@ world-readable (as #532 does), with the `chmod 600` hint.
 `scout/accounts/credentials.py` exposes `credential(provider) -> Credential | None`, where
 `Credential` is `kind` (`oauth` | `api_key`), `token`, `header` (`Bearer <t>` for OAuth, the
 bare key for a Linear personal key) and `source` (the file path). It applies D5 and refreshes
-when needed (§7). `linear_activity.read_key()` becomes a call to it, so #532's `NO_KEY` and
+when needed (§7). It takes the endpoints and file names from the packaged seed only, never from
+the merged registry (§5.4). `linear_activity.read_key()` becomes a call to it, so #532's `NO_KEY` and
 `FAILED` statuses keep their meaning. The Slack trigger source and the 🔴 pre-fetch use it too.
 
 ### 5.4 Declared in the connector roster
@@ -286,6 +287,35 @@ https://slack.com/api/auth.revoke`.
   commit (`contract.yml` byte-compares them). Never hand-edit it.
 - Custom (vault-local) connectors can't declare `sign_in` in v1, because the endpoints would be
   user-supplied URLs the engine posts tokens to.
+
+**`sign_in` comes from the packaged roster only.** `connectors.load_registry()` deep-merges
+`<vault>/.scout-state/connectors.local.yaml` over the shipped rows (`_deep_merge_dict`). The
+vault is a directory scheduled sessions write to. If the overlay could reach `sign_in`, anything
+that steered a session into writing that file could set `token_url` or `revoke_url` to its own
+host. The engine would then POST the refresh token there, or the `credentials[].file` entries
+could be pointed elsewhere. So:
+- **The resolver and every `scoutctl accounts` command read `sign_in` from the packaged
+  `connectors.yaml` only.** That is the file next to `scout/connectors.py`, through a separate
+  `load_sign_in_seed()` that never looks at the overlay or the custom roster. They never take it
+  from the merged registry. `sign_in` is also dropped from the merged `Connector`, so nothing can
+  read it from there by mistake.
+- **An overlay that touches `sign_in` is ignored, with a warning.** That covers a `sign_in` key
+  on any row, shipped or new, and any key under it. `bootstrap doctor` and `scoutctl health`
+  report the yellow finding `connectors.overlay_sign_in_ignored`, which names the overlay path and
+  the row, never a value. The rest of the overlay still applies.
+- **An overlay can't add or rename a sign-in credential file either.** A row whose overlay names a
+  file that a `sign_in` block in the seed declares (for example `linear-oauth.json` under some
+  other key) is ignored the same way.
+- **The snapshot is projected from the seed.** `connectors_snapshot` already reads only the seed,
+  and it keeps taking `sign_in` from there.
+- **Only `SCOUT_<PROVIDER>_CLIENT_ID` can override a value.** `SCOUT_LINEAR_CLIENT_ID` and
+  `SCOUT_SLACK_CLIENT_ID` override the client ID; nothing else does. The endpoints, scopes,
+  redirect ports and file names have no override.
+  - The env var is a launchd or shell setting, not a vault file, so a session can't set it for a
+    later scheduled run.
+  - The tests use `SCOUT_LINEAR_API_URL`-style `file://` stand-ins, which only redirect the data
+    API (as #532 does), never the token endpoints. The token endpoint stand-in in tests is a
+    monkeypatched transport, not a URL setting.
 
 ## 6. The engine side: `scoutctl accounts`
 
@@ -382,13 +412,25 @@ Every step below runs under the provider's `flock`.
   - It takes the `flock` for each attempt and re-reads the file first, so it stops the moment
     another process has succeeded.
   - Only one retrier at a time: a `<file>.retrier.pid` that is alive means none is started.
-- **The retrier is isolated from the run that spawned it.** The lock reaper (#468) kills a wedged
-  run's whole process group, and #476 judges "wedged" by the run's progress. Neither may take the
-  retrier down mid-refresh, and the retrier must not keep a dead run looking alive.
-  1. **Its own session and process group.** It's spawned with `subprocess.Popen(...,
-     start_new_session=True)`, which calls `setsid()` in the child. That's the pattern
-     `schedule_tick.py`, `heartbeat.py` and `self_update_run.py` already use.
-     - Its pgid is its own pid, so a `killpg` on the run's group doesn't reach it.
+- **The retrier is isolated from the run that spawned it.** The lock reaper (#468,
+  `_scout_reap_holder` in `scout-lock.sh.tmpl`) kills a wedged run's process group **and every
+  descendant it finds by walking `ppid`** (`_scout_session_pids`). #476's progress check counts
+  those same descendants' CPU and process list. Neither may take the retrier down mid-refresh, and
+  the retrier must not keep a dead run looking alive.
+  1. **Its own session, and not a descendant: a double fork.** `setsid()` alone takes the
+     retrier out of the run's group, but leaves it a descendant (its `ppid` is the spawner) until
+     the spawner exits. So:
+     - The spawner runs `subprocess.Popen([scoutctl, "accounts", "refresh", "linear", "--resume",
+       "--detach"], start_new_session=True, ...)`, the `setsid` pattern `schedule_tick.py`,
+       `heartbeat.py` and `self_update_run.py` already use.
+     - With `--detach`, that intermediate child `os.fork()`s once more and exits at once. The
+       grandchild, the real retrier, runs on.
+     - The spawner `wait()`s for the intermediate, which takes milliseconds and leaves no zombie.
+       So **by the time the spawn call returns, the retrier's parent is launchd (pid 1)**. macOS
+       has no subreaper, so an orphan always goes to launchd, and the reaper's `ppid` walk from the
+       run never reaches it.
+     - The grandchild's session and pgid are the intermediate's (the `setsid` happened there) and
+       never the run's, so a `kill -- -<run pgid>` misses it too.
      - Spawn options: `stdin=DEVNULL`; stdout and stderr go to its own log,
        `.scout-logs/accounts-retrier.log` (redacted), never the run's pipes, so a runner waiting
        for EOF on its log isn't held open. `close_fds=True`, so it inherits no lock or pipe fd from
@@ -437,6 +479,13 @@ Every step below runs under the provider's `flock`.
   - The notifier's state keeps the id until the finding goes away, which happens on the next
     sign-in. A later episode notifies again.
   - Like the other pushes, a push no channel delivered is retried on the next call.
+  - **Coalescing.** The notifier sends at most one red push per call, listing every new or
+    overdue red (run-health §13.5).
+    - If that call is sending a red push anyway, a due `push: once` finding rides along as a
+      separate "Also:" line at the end, and is marked sent with it.
+    - Otherwise it goes out on its own, as one push. Several due `push: once` findings in one call
+      (Linear and Slack together) share that one push.
+    - It never delays a red push, and never makes the red push's headline its own.
   - The session wrap lists the finding only in the run that made the transition, not in every
     later wrap.
 
@@ -466,8 +515,8 @@ Every step below runs under the provider's `flock`.
 - **Fallback:** `slack-search-token` if there is one, else the in-session poll through the
   claude.ai connector, as today.
 - **The notice:** `accounts.slack.needs_sign_in`, with the same `push: once` behaviour.
-- **If rotation is ever forced on** (the custom-scheme fallback in §12), (a) and (c) apply as
-  written. (b) does not: Slack's refresh tokens are single-use and Slack documents no grace window.
+- **If rotation is ever forced on** (the custom-scheme fallback in §12, which also moves Slack's
+  sign-in into the app and ends headless Slack sign-in), (a) and (c) apply as written. (b) does not: Slack's refresh tokens are single-use and Slack documents no grace window.
   So a lost refresh outcome means `needs_sign_in` (`grace_exhausted`) as soon as the old token is
   refused. Phase 0 confirms Slack's behaviour before that path is built.
 
@@ -516,6 +565,19 @@ deep links and offers to fill the app's Linear workspace setting.
   `check-red-polls` accepts a pre-fetched channel the way `check-linear-delta` accepts the
   pre-fetched activity. Search is Tier 2 and isn't under the non-Marketplace cap, and it needs
   no scope beyond `search:read`.
+  - **Cache-only and pruned** (Slack API Terms: keep use, processing and retention of API data
+    to the minimum necessary).
+    - `red_project_messages` exists only in `.scout-cache/session-context.json`. That file is
+      gitignored, outside the KB, and never synced: `repo_sync` already keeps `.scout-cache/` on
+      the machine.
+    - It holds only the run's window, never more than #532's `MAX_LOOKBACK` (7 days), and only
+      the fields the poll reads: `channel`, `ts`, `user`, `text`, `thread_ts`, `permalink`.
+    - Every pre-fetch overwrites it.
+    - When the session ends, the runner removes the field (`scoutctl pre-session prune`, called
+      from `run-outcome.sh`). A file left by a crashed run is pruned when the next run starts.
+    - The session writes its own summary into the daily file and KB, as the 🔴 phase does today.
+      Messages are never copied into the KB verbatim, and the eval fixtures for it use the
+      `acme-co` stand-ins.
 - **Phase 0 checks whether search is enough**, using the existing token on Jordan's machine (read-only, nothing posted):
   - Do thread replies, bot posts and edited messages come back for a channel?
   - Does `in:` take a channel ID (`in:<#C…>`)? The method docs only show `in:channel_name`.
@@ -534,6 +596,16 @@ deep links and offers to fill the app's Linear workspace setting.
   `connectors.inputs.user_slack_id` in the bound vault's `scout-config.yaml` (the vault in
   `engine.json`). It writes through `bootstrap.write_connector_config`, which keeps the file's
   comments, under the vault lock.
+  - **A short lock wait, never the 300 s one.** `acquire_lock_with_wait` defaults to polling for
+    300 s, and a scheduled run holds `.scout-session.lock` for the whole run. So `login slack`
+    waits at most **5 s** for the lock (`timeout_s=5, poll_s=1`).
+    - If the lock is still busy, the token is already saved (the token file needs no vault lock),
+      so sign-in has succeeded. Only the config write waits.
+    - `login` reports `user_slack_id_pending`, and the token file records
+      `pending_user_slack_id: "U0BBB…"` (an ID, not a secret).
+    - The next `accounts status`, `accounts login` or pre-fetch that can take the lock within 5 s
+      applies it under the same rules as below, then clears the field.
+    - Settings shows "Connected", plus "Your Slack ID will be saved after the current run."
   - **Empty or missing:** written. The `login` output says so.
   - **Already the same ID:** nothing changes.
   - **A different ID** (another account, or a hand-typed one): **not overwritten.** `login`
@@ -636,6 +708,9 @@ Error copy, by exit code:
 | Grace window exhausted | `needs_sign_in` (`grace_exhausted`), tokens blanked | Key file or the gate; one notice |
 | Slack `invalid_auth` / `token_revoked` / `account_inactive` | `needs_sign_in` (`revoked`) at once, no retry | `slack-search-token` or the in-session poll; one notice |
 | File or dir mode too open | Refuse, with the `chmod` hint (as #532) | The gate; the UI shows "Fix permissions" |
+| A vault overlay (`connectors.local.yaml`) touches `sign_in` | Ignored; the seed's endpoints, client ID and files are used; doctor warns `connectors.overlay_sign_in_ignored` | Unaffected |
+| Reaper kills a wedged run while the retrier is pending | Unaffected: double-forked, `ppid` 1, own session; outside the reaper's group and descendant walk (§7.1 (b)) | The retrier finishes or hits its deadline |
+| `login slack` while a run holds the vault lock | Token saved; `user_slack_id_pending` after a 5 s wait, applied by the next `status`/`login` | Unaffected |
 | Workspace needs admin approval | `login` exits `admin_approval_required` | n/a (no token yet) |
 | Different workspace than the claude.ai connector | Works; the row shows the workspace | The pre-fetch reads the signed-in workspace; the phase text says which |
 | Slack history cap (if D6 falls back to `conversations.history`) | One channel a minute; `truncated` when it got 15 and more were left | The check asks the session to read past the cut |
@@ -661,8 +736,13 @@ that way).
 - `~/.scout-secrets/` is outside the vault and never synced; `repo_sync` already refuses it.
 - The `account` block (name, email, workspace) is personal data. It stays in the secrets file and
   in local `status` output only, and never goes into run health that's sent over Slack or Telegram.
-- Tests use the `Alex` / `acme-co` / `PROJ-1234` stand-ins and a `file://` token endpoint, in the
-  same style as `SCOUT_LINEAR_API_URL`.
+- Channel messages fetched for the 🔴 poll stay in `.scout-cache` only, and are pruned after each
+  run (§8.2, per Slack's API Terms on retention).
+- The endpoints that see a token (token, refresh, revoke) come from the packaged roster only. No
+  vault file can redirect them (§5.4, B1).
+- Tests use the `Alex` / `acme-co` / `PROJ-1234` stand-ins. The data API uses a `file://` stand-in,
+  as `SCOUT_LINEAR_API_URL` does; the token endpoints use a monkeypatched transport, never a URL
+  setting.
 
 ## 12. What Jordan has to do (the OAuth apps)
 
@@ -697,8 +777,19 @@ one is ever exposed, rotate it in the app settings.
 3. Confirm the PKCE toggle under *OAuth & Permissions*. **This is one-way.** Leave **token
    rotation off**; that's one-way too.
 4. *Manage Distribution → Activate Public Distribution.* If the checklist refuses localhost
-   redirect URLs (the SSL item), stop and tell the card. The fallback is a custom-scheme redirect,
-   which forces rotation, so the design moves to 12 h tokens refreshed by the engine (§7).
+   redirect URLs (the SSL item), stop and tell the card. The fallback is a custom-scheme redirect
+   (`scout-oauth://slack`). It costs more than 12 h tokens:
+   - **It forces rotation**, so 12 h access tokens and single-use refresh tokens with no
+     documented grace window (§7.1 (e)), plus a 30-day refresh-token expiry with PKCE.
+   - **The engine's loopback listener can't receive it** (D1). A `scout-oauth://` callback goes to
+     whichever app registered the scheme, so Scout.app must catch it with
+     `ASWebAuthenticationSession(callbackURLScheme:)`, finish the exchange itself, and hand the
+     token pair to the engine on stdin (`scoutctl accounts store slack --stdin`). That's the one
+     place a token would cross from the app to the engine, and it would need its own redaction and
+     test.
+   - **Headless and dev-managed Slack sign-in is lost.** With no app to catch the callback, those
+     installs keep only the hand-placed `slack-search-token`. Linear is unaffected.
+   - If it comes to that, the card brings it back to Jordan before building it.
 5. Optional, later: submit to the Slack Marketplace only if the history scopes turn out to be
    needed and the 1/min cap hurts. That needs a public privacy policy and support page (GitHub
    Pages, free) and Slack's review.
@@ -765,10 +856,21 @@ one is ever exposed, rotate it in the app settings.
        - The test starts a stand-in "run" in its own process group (`start_new_session=True`, like
          the runner). The run fails the refresh and spawns the retrier against a fake endpoint
          that answers only after a delay.
-       - The test then does what the reaper does: `os.killpg(run_pgid, SIGKILL)`.
-       - Assert that the retrier's pid is still alive, that its pgid is neither the run's pgid nor
-         its pid, and that its session id is its own pid.
-       - Assert that the delayed response is persisted and the file ends `ok`.
+       - The stand-in run stays alive (the test keeps it busy, so it's still a live parent) and
+         holds `.scout-session.lock`.
+       - The test then runs the **real** `_scout_reap_holder <run pid>`. It sources the rendered
+         `scout-lock.sh` in `bash`, the way the integration tests for #468/#476 do, so the `ppid`
+         descendant walk is exercised, not only a group kill.
+       - Assert:
+         - the retrier's pid isn't in `_scout_session_pids <run pgid> <run pid>` before the reap;
+         - its `ppid` is 1 once the spawn call has returned;
+         - its pgid and sid differ from the run's;
+         - it is still alive after the reap, while the run and its real children are gone;
+         - the delayed response is persisted, and the file ends `ok`.
+       - A second case injects a sleep before the intermediate's `_exit`. Assert that the spawn
+         call doesn't return until the intermediate has exited, and that the retrier's `ppid` is
+         1 when it does. That window, while the retrier is still the run's descendant, is the
+         only one the reaper could hit, and it closes before the run moves on.
     9. **The retrier and the session lock.**
        - With `.scout-logs/.scout-session.lock` held by a live stand-in pid, the retrier still
          runs and succeeds. The lock file's bytes and mtime are unchanged afterwards.
@@ -780,6 +882,25 @@ one is ever exposed, rotate it in the app settings.
           answers, the retrier exits by `deadline + 15 s` with code 3.
         - With a deadline already past on start, it exits at once and writes `grace_exhausted`.
         - A stale pid file left behind is cleared by the next spawn.
+    11. **A hostile roster overlay changes nothing (B1).**
+        - The test writes `<vault>/.scout-state/connectors.local.yaml` with, on
+          `mcp:claude_ai_Linear`:
+          - `sign_in.oauth.token_url` and `revoke_url` pointing at a local "attacker" listener;
+          - a different `client_id`;
+          - a `credentials` list naming another file.
+          It also adds a `sign_in` block to a new row.
+        - Then it runs a due refresh, `accounts logout` and `accounts status`.
+        - Assert:
+          - the attacker listener gets no request;
+          - the refresh and the revoke go to the seed's endpoints (the monkeypatched transport
+            records the URL) with the seed's client ID;
+          - the seed's file is the one read and written;
+          - `bootstrap doctor --json` carries `connectors.overlay_sign_in_ignored`, naming the
+            path and the rows but no values;
+          - the snapshot is byte-identical with and without the overlay;
+          - the rest of the overlay (a `remediation` change) still applies to the merged registry.
+        - With `SCOUT_LINEAR_CLIENT_ID` set, that ID is used. No other env var or file changes an
+          endpoint.
   - **(c) `needs_sign_in`**
     1. `invalid_grant` → `refresh_refused` at once, with no retry.
     2. The deadline passing → `grace_exhausted`.
@@ -790,6 +911,10 @@ one is ever exposed, rotate it in the app settings.
     6. Over N runs the notifier pushes `accounts.linear.needs_sign_in` exactly once, with no 24 h
        reminder.
     7. An undelivered push retries on the next call.
+       - Coalescing: with a red finding due in the same call, there's one push that carries the
+         red headline plus an "Also:" line, and both are marked sent.
+       - With no red due, there's one `push: once` push of its own, and two due `push: once`
+         findings share it.
     8. The id clears after a sign-in, and a new episode pushes again.
     9. The wrap lists the finding only in the run that made the transition.
   - **(d) `status`**
@@ -805,6 +930,15 @@ one is ever exposed, rotate it in the app settings.
     4. A forced-rotation fixture: a lost outcome → `grace_exhausted` on the first refusal.
     5. `user_slack_id`: filled when empty; a no-op when the same; reported, not overwritten, when
        different; skipped with no vault.
+    6. With `.scout-session.lock` held by a live pid, `login slack` returns within about 5 s.
+       - It exits 0 with `user_slack_id_pending`, and the token is saved.
+       - The next `accounts status` with the lock free writes the ID and clears
+         `pending_user_slack_id`.
+       - Nothing waits 300 s.
+    7. `red_project_messages` is only ever in `.scout-cache/session-context.json`.
+       - It's gone after `pre-session prune`, and a crashed run's copy is pruned at the next run
+         start.
+       - It's never older than the window, and carries only the listed fields.
 - No eval change: the pre-fetch path is already seeded (`busy-briefing` `linear_delta`) through
   `SCOUT_LINEAR_API_URL`.
 
