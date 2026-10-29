@@ -45,7 +45,7 @@ def _due(tag: str, offset: int, rest: str = "") -> str:
 
 def _lines(red: str = "", yellow: str = "", green: str = "", parked: str = "", notes: str = "") -> list[str]:
     return (
-        f"# Action Items — {TODAY}\n\n## 🎯 Today's Focus\n\n{red}\n## 🔴 Urgent\n\n{red}\n## 🟡 To Do\n\n{yellow}\n"
+        f"# Action Items — {TODAY}\n\n## 💡 Today's Focus\n\n{red}\n## 🔴 Urgent\n\n{red}\n## 🟡 To Do\n\n{yellow}\n"
         f"## 🟢 Watching\n\n{green}\n## 🅿️ Parked\n\n{parked}\n## ✅ Recently Completed\n\n"
         f"## 🪵 Run notes\n\n{notes}"
     ).splitlines()
