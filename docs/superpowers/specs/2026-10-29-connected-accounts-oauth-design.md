@@ -111,8 +111,10 @@ Source: <https://docs.slack.dev/authentication/using-pkce>,
   **`conversations.history` and `conversations.replies` to 1 request/minute, at most 15 objects
   per call**. Marketplace apps and "internal customer-built" apps keep Tier 3 (50+/min, 1,000
   objects). A Raven-Scout app installed in a user's company workspace is an unlisted distributed
-  app. Slack doesn't define "commercially", and a free open-source app may or may not count, so we
-  have to assume the cap applies. With it, reading five 🔴 channels takes at least five minutes,
+  app. The API Terms (<https://slack.com/terms-of-service/api>) define "Commercially Distribute"
+  as an app where "users could pay fees for your product, service, or features". Scout charges
+  nothing, so it probably doesn't count, but the rate-limit changelog doesn't point to that
+  definition, so we still assume the cap applies. With it, reading five 🔴 channels takes at least five minutes,
   and more once one has over 15 new messages.
 - **`search.messages` isn't in that change.** It's Tier 2 (20+/min, up to 100 results a
   page), takes `in:<channel>` modifiers, and needs only the user scope `search:read`. That is
@@ -187,7 +189,8 @@ ruled for file-only storage on 2026-10-29.**
 
 Permissions: the directory is 0700 and each file 0600. A write goes to a temp file opened with
 `O_CREAT|O_EXCL` at 0600 in the same directory, is `fsync`ed, then `os.replace`d over the old one.
-That's the pattern `repo_lease.py` already uses. A reader refuses a file that is group- or
+`repo_lease.save` already writes a 0600 temp file and `os.replace`s it. This store adds
+`O_EXCL` and the `fsync`s, which `repo_lease.py` doesn't do. A reader refuses a file that is group- or
 world-readable (as #532 does), with the `chmod 600` hint.
 
 `scout-oauth-token/1`:
@@ -515,7 +518,9 @@ deep links and offers to fill the app's Linear workspace setting.
   no scope beyond `search:read`.
 - **Phase 0 checks whether search is enough**, using the existing token on Jordan's machine (read-only, nothing posted):
   - Do thread replies, bot posts and edited messages come back for a channel?
-  - Does `after:` behave as it does in the Slack UI?
+  - Does `in:` take a channel ID (`in:<#C…>`)? The method docs only show `in:channel_name`.
+  - Does `after:` behave as it does in the Slack UI? It takes a date, not a time, so a run that
+    fires more than once a day filters the results by `ts` against its own window.
   - Is the index lag short enough for a 07:00 run?
   If not, Phase 2 adds the user scopes `channels:history` (public 🔴 channels) and `groups:history`
   (private ones) and reads with `conversations.history`. That path takes the 1/min, 15-object cap
@@ -550,8 +555,9 @@ headless box that never runs a browser loses nothing.
 ### 8.4 Sign-out and revocation
 
 `accounts logout <provider>`:
-1. Under the lock, POST the revoke endpoint. Linear: `token=<refresh_token>` (revoking the grant,
-   with `token_type_hint=refresh_token`). Slack: `auth.revoke` with the user token. The timeout is
+1. Under the lock, POST the revoke endpoint. Linear: `token=<refresh_token>` with
+   `token_type_hint=refresh_token`. The docs don't say whether that also ends the access token
+   and the grant (Phase 0 checks). If it doesn't, revoke the access token too. Slack: `auth.revoke` with the user token. The timeout is
    10 s.
 2. **Delete the file whatever the revoke returned.** If the revoke failed (offline, 4xx), say so
    and point at the provider's own place to remove the app: Linear's *Settings → Account →
@@ -705,7 +711,8 @@ one is ever exposed, rotate it in the app settings.
 - On a throwaway secrets dir, with a scratch script outside the repo, the card checks:
   - a PKCE exchange and a refresh without a secret;
   - the exact-match loopback redirect: does `localhost` match, and is a different port refused?;
-  - the token prefix, and revoke;
+  - the token prefix, and revoke: does revoking the refresh token also end the access token and
+    the grant? Linear's docs don't say;
   - the complexity cost of one #532 pre-fetch.
 - With Jordan's existing Slack search token, read-only: does `search.messages in:<#C…>` cover a
   🔴 channel (§8.2)?
