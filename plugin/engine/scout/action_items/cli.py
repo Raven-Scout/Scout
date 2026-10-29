@@ -735,6 +735,73 @@ def cli_check_red_polls(
         raise typer.Exit(code=1)
 
 
+@app.command("check-demotion")
+def cli_check_demotion(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check today's file follows *Past-Due Tasks Step Down* for each pre-fetched past-due task.
+
+    The runner pre-fetches every past-due 🔴/🟡 task with its quiet days and
+    branch (`past_due_tasks`). A `step_down` task must be out of 🔴, read
+    `due <date>; still want this?` and have a dated `stepped down, past due
+    with no news` line in its context note; a `park` task must be in 🅿️ Parked
+    with its text unchanged; a `hold` task must not be parked, asked "still
+    want this?" or given that line. New evidence this run recorded (a dated
+    note line, a comment, a new due date) restarts the count. Run it before
+    committing a briefing or consolidation. Exit codes: 0 = all on their
+    branch, 1 = some are not, 2 = cannot check.
+    """
+    from scout.action_items.past_due import check_demotion
+    from scout.action_items.prefetched import PrefetchCheckError
+
+    name = "check-demotion"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_demotion(data_dir=data_dir, today=day, context=context)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": [t.to_json() for t in result.checked],
+                    "released": list(result.released),
+                    "findings": [{"tag": f.tag, "branch": f.branch, "problem": f.problem} for f in result.findings],
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif not result.checked and not result.findings:
+        sys.stdout.write(f"{name}: no past-due 🔴/🟡 tasks\n")
+    elif result.passed:
+        counts = ", ".join(
+            f"{n} {b}" for b in ("hold", "step_down", "park") if (n := sum(t.branch == b for t in result.checked))
+        )
+        sys.stdout.write(f"{name}: every past-due task is on its branch ({counts})\n")
+    else:
+        tags = sorted({f.tag for f in result.findings})
+        sys.stdout.write(f"{name}: {len(tags)} past-due task{'s' if len(tags) != 1 else ''} off their branch:\n")
+        for f in result.findings:
+            sys.stdout.write(f"  [#{f.tag}] ({f.branch}) {f.problem}\n")
+        sys.stdout.write(
+            "step_down: 🟡 at most, body `— due <date>; still want this?`, and a dated "
+            "`- YYYY-MM-DD: stepped down, past due with no news` line in action-items/context/<TAG>.md. "
+            "park: move it to 🅿️ Parked as it stood. hold: place it under the usual rules. Fix each, then run "
+            "this again.\n"
+        )
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(
