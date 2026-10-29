@@ -127,30 +127,14 @@ def test_run_denies_a_search_from_a_folder_above_the_vault(vault):
     _denied(_decision(vault, "Grep", {"pattern": "Priya", "path": str(vault.parent)}))
 
 
-def test_a_read_of_a_kb_note_is_denied_and_names_kb_read(vault):
-    reason = _denied(_decision(vault, "Read", {"file_path": str(vault / "knowledge-base" / "people.md")}))
-    assert "kb read <path>" in reason and "Edit it directly" in reason
+AGENT = {"SCOUT_READER": "agent:person:priya@example.com"}
 
 
-def _transcript(tmp_path: Path, path: Path) -> Path:
-    """A transcript where this file was already Read once (denied): the retry a run makes at once."""
-    use = {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": str(path)}}
-    res = {"type": "tool_result", "tool_use_id": "t1", "content": "x", "is_error": True}
-    t = tmp_path / "transcript.jsonl"
-    rows = [{"message": {"role": "assistant", "content": [use]}}, {"message": {"role": "user", "content": [res]}}]
-    t.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    return t
-
-
-@pytest.mark.parametrize("env", [RUN, {"SCOUT_READER": "agent:person:priya@example.com"}])
-def test_a_repeat_read_is_denied_too(vault, tmp_path, env):
-    # #536 eval: runs retried a denied Read straight away, so a repeat pass would be a bypass.
-    note = vault / "knowledge-base" / "people.md"
-    _denied(_decision(vault, "Read", {"file_path": str(note)}, env=env, transcript=_transcript(tmp_path, note)))
-
-
-def test_a_context_note_read_is_denied(vault):
-    _denied(_decision(vault, "Read", {"file_path": str(vault / "action-items" / "context" / "ROLL.md")}))
+@pytest.mark.parametrize("env", [AGENT, {"SCOUT_READER": ""}, {"SCOUT_READER": "Owner"}])
+def test_a_reader_kb_shows_nothing_is_denied_a_kb_read(vault, env):
+    # #453 v1: scoutctl kb shows an agent:* reader (and a malformed one, agent:invalid) nothing.
+    note = str(vault / "knowledge-base" / "people.md")
+    assert "scoutctl kb" in _denied(_decision(vault, "Read", {"file_path": note}, env=env))
 
 
 # --- allowed -------------------------------------------------------------------------
@@ -168,6 +152,10 @@ def test_a_context_note_read_is_denied(vault):
         ("Grep", {"pattern": "PROJ-1234", "glob": "action-items/*.md"}),
         ("Glob", {"pattern": "action-items/*.md"}),
         ("Read", {"file_path": "SKILL.md"}),
+        # Read stays allowed in a run: the kb-read-label PostToolUse hook labels it (Jordan, 2026-10-29).
+        ("Read", {"file_path": "knowledge-base/people.md"}),
+        ("Read", {"file_path": "knowledge-base/personal/task.md"}),
+        ("Read", {"file_path": "action-items/context/ROLL.md"}),
         ("Read", {"file_path": "knowledge-base/ontology/schema.yaml"}),
         ("Edit", {"file_path": "knowledge-base/people.md", "old_string": "a", "new_string": "b"}),
     ],
@@ -247,24 +235,40 @@ def test_main_prints_the_decision(vault, monkeypatch, capsys):
 # --- hooks.json wiring: the shell short-circuit ----------------------------------------
 
 
-def _entry() -> dict:
+def _entry(matcher: str = "Grep|Glob|Bash") -> dict:
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
-    (entry,) = [h for h in hooks if "kb-read-gate" in h["hooks"][0]["command"]]
+    (entry,) = [h for h in hooks if "kb-read-gate" in h["hooks"][0]["command"] and h["matcher"] == matcher]
     return entry
 
 
-def _sh(env: dict, payload: str, cwd: Path, root: Path = PLUGIN) -> subprocess.CompletedProcess[str]:
+def _sh(
+    env: dict, payload: str, cwd: Path, root: Path = PLUGIN, matcher: str = "Grep|Glob|Bash"
+) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
     full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
-    cmd = _entry()["hooks"][0]["command"]
+    cmd = _entry(matcher)["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd], env=full, cwd=cwd, input=payload, capture_output=True, text=True, timeout=60
     )
 
 
-def test_matcher_is_an_exact_tool_list():
-    # Letters and `|` only: Claude Code matches it as an exact list, so MultiEdit or ReadMcpResource never hit.
-    assert _entry()["matcher"] == "Read|Grep|Glob|Bash"
+def test_matchers_are_exact_tool_lists():
+    # Letters and `|` only: Claude Code matches them as exact lists, so MultiEdit or ReadMcpResource never hit.
+    assert _entry()["matcher"] == "Grep|Glob|Bash" and _entry("Read")["matcher"] == "Read"
+
+
+def test_a_runs_read_exits_in_the_shell_without_python(vault, tmp_path):
+    payload = _payload("Read", {"file_path": str(vault / "knowledge-base" / "people.md")}, vault).getvalue()
+    for env in (RUN, {"SCOUT_MODE": "morning-briefing"}, {}):
+        res = _sh({**env, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing", matcher="Read")
+        assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_an_agent_readers_kb_read_is_denied_through_the_real_cli(vault):
+    payload = _payload("Read", {"file_path": str(vault / "knowledge-base" / "people.md")}, vault).getvalue()
+    res = _sh({**AGENT, "SCOUT_DATA_DIR": str(vault)}, payload, vault, matcher="Read")
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_owner_session_exits_in_the_shell_without_python(vault, tmp_path):

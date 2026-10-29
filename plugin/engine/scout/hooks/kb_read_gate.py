@@ -12,12 +12,12 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
-  - **Read**: every Read of a KB note is denied, pointing at ``kb read``.
-    Edit doesn't need it: in the #536 eval every KB Edit after a denied Read
-    went through (Claude Code 2.1.278). An earlier "a repeat Read is allowed"
-    pass is gone: runs retried the denied Read at once, so it was a bypass.
-    ``knowledge-base/ontology/schema.yaml`` and ``parser.py`` are tooling, not
-    notes, and are never gated.
+  - **Read** stays allowed (Edit needs it, on any Claude Code version): the
+    ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`)
+    tells the session the note's privacy label instead. Only a reader that
+    ``scoutctl kb`` shows nothing (an ``agent:*`` reader, #453 v1) is denied a
+    Read of a KB note. ``knowledge-base/ontology/schema.yaml`` and
+    ``parser.py`` are tooling, not notes, and are never gated.
 
 Scope: only scheduled runs, by #517's rule (:func:`scout.kb.lint.is_scheduled`:
 ``SCOUT_MODE`` set, or a reader other than exactly ``owner``), and only in a
@@ -25,7 +25,8 @@ Scout vault (``SCOUT_DATA_DIR``, else the vault containing the session's cwd).
 The owner's interactive sessions and sessions in other repos are never gated.
 hooks.json checks the run and the KB words in the payload in the shell first,
 so Python only starts for a run's call that may touch the KB (and every
-Grep/Glob, which can search the vault with no path at all).
+Grep/Glob, which can search the vault with no path at all), and for a Read only
+when the reader is neither ``owner`` nor ``autonomous``.
 
 In a run this fails closed: a payload that can't be read, or a gate that
 errors, denies the call. Outside a run it never denies.
@@ -102,7 +103,7 @@ def _deny_bash() -> str:
     return (
         f"{MARK} Scheduled runs don't read knowledge-base/ or action-items/context/ with shell commands "
         f"(cat, grep, ls, find, head, git show …): that skips the privacy labels. {_REPLACEMENT} "
-        "To change a note, Edit it directly."
+        "To change a note, Read it and Edit it."
     )
 
 
@@ -115,14 +116,10 @@ def _deny_search(tool: str) -> str:
 
 
 def _deny_read() -> str:
-    return (
-        f"{MARK} Scheduled runs don't Read knowledge-base/ or action-items/context/ notes: read one with "
-        "`scripts/scoutctl kb read <path>`, which labels private content. To change a note, Edit it directly; "
-        "the Edit doesn't need a Read first."
-    )
+    return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
 
-def decide(payload: Mapping[str, Any]) -> str | None:
+def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
     """The deny reason for one run's tool call, or None to allow it. May raise: the caller fails closed."""
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
@@ -152,7 +149,9 @@ def decide(payload: Mapping[str, Any]) -> str | None:
     rel = _rel(target, vault)
     if not _in_kb(target, vault) or (rel is not None and ONTOLOGY_TOOLING.search(rel)):
         return None
-    return _deny_read()
+    from scout.kb.privacy import FULL_READERS
+
+    return None if reader in FULL_READERS else _deny_read()
 
 
 def _deny(reason: str) -> dict[str, Any]:
@@ -168,6 +167,7 @@ def _deny(reason: str) -> dict[str, Any]:
 def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """Read one PreToolUse payload; return the deny decision, or None to allow."""
     from scout.kb.lint import is_scheduled
+    from scout.kb.reader import resolve_reader
 
     env = os.environ if env is None else env
     if not is_scheduled(env):
@@ -177,7 +177,7 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
         payload = json.load(src)
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
-        reason = decide(payload)
+        reason = decide(payload, reader=resolve_reader(None, env))
     except Exception as exc:  # noqa: BLE001 — a run fails closed
         reason = (
             f"{MARK} Scout's KB read gate could not check this call ({type(exc).__name__}), so it is blocked in "

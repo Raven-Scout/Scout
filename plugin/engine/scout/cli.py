@@ -128,6 +128,14 @@ def hook_kb_read_gate() -> None:
     raise typer.Exit(kb_read_gate_main())
 
 
+@hook_app.command("kb-read-label")
+def hook_kb_read_label() -> None:
+    """PostToolUse hook: attach a KB note's privacy label to a Read of it (private: never to a shared surface)."""
+    from scout.hooks.kb_read_label import main as kb_read_label_main
+
+    raise typer.Exit(kb_read_label_main())
+
+
 @hook_app.command("outbound-gate")
 def hook_outbound_gate() -> None:
     """PreToolUse hook: check-outbound on a Slack/connector write tool's input; runs blocked, the owner warned."""
