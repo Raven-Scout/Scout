@@ -53,9 +53,7 @@ def _script_commands(path: Path) -> list[tuple[int, str]]:
 def _sources() -> list[Path]:
     md = [p for d in ("phases", "commands", "skills") for p in sorted((PLUGIN / d).rglob("*.md"))]
     scripts = [
-        p
-        for p in sorted((PLUGIN / "templates").rglob("*"))
-        if p.is_file() and p.suffix in {".tmpl", ".sh", ".py"}
+        p for p in sorted((PLUGIN / "templates").rglob("*")) if p.is_file() and p.suffix in {".tmpl", ".sh", ".py"}
     ]
     return md + scripts
 
