@@ -22,7 +22,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-import typer
+# No module-level typer import: the privacy hooks (``python -m scout.hooks``) resolve the reader
+# on every tool call, and typer alone costs ~0.35 s to import. Only a bad ``--reader`` needs it.
 
 FAIL_CLOSED_READER = "agent:invalid"
 
@@ -64,6 +65,8 @@ def resolve_reader(flag: str | None, env: Mapping[str, str]) -> str:
         base = "owner"
     if flag is None:
         return base
+    import typer
+
     canon = _canonical(flag)
     if canon is None:
         raise typer.BadParameter(
@@ -76,3 +79,18 @@ def resolve_reader(flag: str | None, env: Mapping[str, str]) -> str:
             param_hint="--reader",
         )
     return canon
+
+
+def is_scheduled(env: Mapping[str, str]) -> bool:
+    """Whether a session or commit counts as a scheduled run's (ruling R27; #517): fail closed.
+
+    True when ``SCOUT_MODE`` is non-empty, or the resolved reader isn't the
+    owner: ``autonomous``, any ``agent:*``, and a set ``SCOUT_READER`` that
+    isn't exactly ``owner`` (empty or malformed, which :func:`resolve_reader`
+    turns into the no-rights ``agent:invalid``). Nothing unknown is ever taken
+    for the owner. The one predicate for the lint's widening guard
+    (``scout.kb.lint_privacy``), the refusal when the privacy check can't run,
+    and the privacy hooks (``scout.hooks``); the pre-commit template's
+    ``scheduled()`` and hooks.json's shell checks mirror it.
+    """
+    return bool(env.get("SCOUT_MODE")) or resolve_reader(None, env) != "owner"

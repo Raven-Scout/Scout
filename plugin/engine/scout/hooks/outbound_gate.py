@@ -204,8 +204,7 @@ def decide(payload: Mapping[str, Any], *, scheduled: bool, reader: str) -> dict[
 
 def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """Read one PreToolUse payload; return the hook output, or None to let the call through."""
-    from scout.kb.lint import is_scheduled
-    from scout.kb.reader import resolve_reader
+    from scout.kb.reader import is_scheduled, resolve_reader
 
     env = os.environ if env is None else env
     scheduled = is_scheduled(env)

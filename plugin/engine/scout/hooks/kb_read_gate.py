@@ -19,7 +19,7 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     Read of a KB note. ``knowledge-base/ontology/schema.yaml`` and
     ``parser.py`` are tooling, not notes, and are never gated.
 
-Scope: only scheduled runs, by #517's rule (:func:`scout.kb.lint.is_scheduled`:
+Scope: only scheduled runs, by #517's rule (:func:`scout.kb.reader.is_scheduled`:
 ``SCOUT_MODE`` set, or a reader other than exactly ``owner``), and only in a
 Scout vault (``SCOUT_DATA_DIR``, else the vault containing the session's cwd).
 The owner's interactive sessions and sessions in other repos are never gated.
@@ -166,8 +166,7 @@ def _deny(reason: str) -> dict[str, Any]:
 
 def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """Read one PreToolUse payload; return the deny decision, or None to allow."""
-    from scout.kb.lint import is_scheduled
-    from scout.kb.reader import resolve_reader
+    from scout.kb.reader import is_scheduled, resolve_reader
 
     env = os.environ if env is None else env
     if not is_scheduled(env):
