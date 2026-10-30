@@ -1,9 +1,13 @@
 """What counts as reading the KB around ``scoutctl kb`` (#453; hard-rule audit 2026-10, row 2).
 
-One definition for two users: the ``kb-read-gate`` PreToolUse hook
+One definition for three users: the ``kb-read-gate`` PreToolUse hook
 (:mod:`scout.hooks.kb_read_gate`), which denies these calls in scheduled runs,
-and the eval harness's ``privacy_hygiene`` check, which counts them. Pure: it
-judges strings and does no I/O, so the eval's scoring layer can import it.
+the ``kb-read-label`` PostToolUse hook (:mod:`scout.hooks.kb_read_label`),
+which labels a Read of any path :func:`is_kb_note_path` accepts, and the eval
+harness's ``privacy_hygiene`` check, which counts them. All three judge a path
+with :data:`KB_PATH`, so ``knowledge-base.md`` (the KB's index) is KB for each.
+Pure: it judges strings and does no I/O, so the eval's scoring layer can import
+it.
 """
 
 from __future__ import annotations
@@ -80,6 +84,12 @@ def search_reads_kb(tool_name: str, tool_input: Mapping[str, Any]) -> bool:
     return filter_reaches_kb(tool_name, tool_input)
 
 
+def is_kb_path(path: str) -> bool:
+    """A path string (absolute, or relative to the vault) in the KB: under one of :data:`KB_DIRS`, or
+    the index ``knowledge-base.md``. The one path rule the gate, the label hook and the eval share."""
+    return bool(KB_PATH.search(" " + path))
+
+
 def is_kb_note_path(path: str) -> bool:
     """A path string in the KB that isn't ontology tooling (what a Read of the KB means)."""
-    return bool(KB_PATH.search(" " + path)) and not ONTOLOGY_TOOLING.search(posixpath.normpath(path))
+    return is_kb_path(path) and not ONTOLOGY_TOOLING.search(posixpath.normpath(path))

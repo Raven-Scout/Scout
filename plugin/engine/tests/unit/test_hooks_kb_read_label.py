@@ -13,9 +13,11 @@ from pathlib import Path
 
 import pytest
 
+from scout.hooks import kb_read_gate
 from scout.hooks import kb_read_label as hook
 from scout.kb.ontology import clear_frontmatter_cache
-from tests.eval.harness.checks.privacy_canary import LABEL_COMMAND, label_key
+from tests.eval.harness.checks.privacy_canary import LABEL_COMMAND, label_key, leading_indicators
+from tests.eval.harness.metrics import ToolCall
 from tests.unit.privacy_vault_helpers import build_privacy_vault
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -78,6 +80,41 @@ def test_a_context_note_is_labelled(vault):
     assert "action-items/context/ROLL.md is" in _context(
         hook.run(stdin=_payload(vault, "action-items/context/ROLL.md"), env=RUN)
     )
+
+
+def test_the_kb_index_is_labelled(vault):
+    # knowledge-base.md is KB for the Bash gate and the eval, so a Read of it gets a label too (#536 eval).
+    (vault / "knowledge-base.md").write_text("# Knowledge base\n\n- [[priya]]\n")
+    try:
+        assert "knowledge-base.md is" in _context(hook.run(stdin=_payload(vault, "knowledge-base.md"), env=RUN))
+    finally:
+        (vault / "knowledge-base.md").unlink()
+
+
+# One path rule (scout.kb.raw_read.is_kb_note_path) for all three: a Read the eval counts as a KB read is
+# labelled by this hook and denied to a reader scoutctl kb shows nothing, and nothing else is.
+PARITY = [
+    ("knowledge-base.md", True),
+    ("knowledge-base/people/priya.md", True),
+    ("knowledge_base/people/priya.md", True),
+    ("action-items/context/ROLL.md", True),
+    ("knowledge-base/ontology/schema.yaml", False),
+    ("knowledge-base/ontology/parser.py", False),
+    ("SKILL.md", False),
+    ("action-items/action-items-2026-10-29.md", False),
+    ("drafts/knowledge.md", False),
+]
+
+
+@pytest.mark.parametrize(("rel", "kb"), PARITY)
+def test_the_label_hook_the_gate_and_the_eval_agree_on_what_is_kb(vault, rel, kb):
+    labelled = hook.run(stdin=_payload(vault, rel), env=RUN) is not None
+    agent = {"SCOUT_READER": "agent:person:priya@example.com"}
+    body = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(vault / rel)}, "cwd": str(vault)})
+    gated = kb_read_gate.run(stdin=io.StringIO(body), env=agent) is not None
+    call = ToolCall(seq=0, name="Read", input={"file_path": str(vault / rel)}, is_error=False, position=0.0)
+    counted = leading_indicators([call], {}, (str(vault),))["raw_kb_read"] == 1
+    assert (labelled, gated, counted) == (kb, kb, kb)
 
 
 def test_a_runs_label_is_logged_with_the_hash_the_eval_matches(vault):

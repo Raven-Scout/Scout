@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
-from scout.kb.raw_read import KB_DIRS, ONTOLOGY_TOOLING, filter_reaches_kb, raw_kb_read
+from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb_path, raw_kb_read
 
 GATE = "kb-read-gate"
 MARK = f"[scout:{GATE}]"
@@ -83,7 +83,7 @@ def _rel(path: Path, vault: Path) -> str | None:
 
 def _in_kb(path: Path, vault: Path) -> bool:
     rel = _rel(path, vault)
-    return rel is not None and any(rel == d or rel.startswith(d + "/") for d in KB_DIRS)
+    return rel is not None and is_kb_path(rel)
 
 
 def _covers_kb(path: Path, vault: Path) -> bool:
@@ -145,9 +145,8 @@ def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Read call without a file_path")
-    target = _target(raw, cwd)
-    rel = _rel(target, vault)
-    if not _in_kb(target, vault) or (rel is not None and ONTOLOGY_TOOLING.search(rel)):
+    rel = _rel(_target(raw, cwd), vault)
+    if rel is None or not is_kb_note_path(rel):
         return None
     from scout.kb.privacy import FULL_READERS
 

@@ -55,6 +55,7 @@ def _denied(out) -> str:
     "command",
     [
         "cat knowledge-base/people.md",
+        "cat knowledge-base.md",
         'echo "--- people ---" && cat knowledge-base/people.md',
         "ls action-items/context/",
         "find knowledge-base -name '*.md'",
@@ -117,6 +118,7 @@ def test_run_denies_a_shell_read_from_a_cwd_inside_the_kb(vault):
         ("Glob", {"pattern": "**/*.md"}),
         ("Glob", {"pattern": "*.md", "path": "action-items/context"}),
         ("Glob", {"pattern": "knowledge-base/people/*.md"}),
+        ("Grep", {"pattern": "Priya", "path": "knowledge-base.md"}),  # the KB's index
     ],
 )
 def test_run_denies_a_search_that_reaches_the_kb(vault, tool, tool_input):
@@ -131,9 +133,10 @@ AGENT = {"SCOUT_READER": "agent:person:priya@example.com"}
 
 
 @pytest.mark.parametrize("env", [AGENT, {"SCOUT_READER": ""}, {"SCOUT_READER": "Owner"}])
-def test_a_reader_kb_shows_nothing_is_denied_a_kb_read(vault, env):
+@pytest.mark.parametrize("rel", ["knowledge-base/people.md", "knowledge-base.md"])
+def test_a_reader_kb_shows_nothing_is_denied_a_kb_read(vault, env, rel):
     # #453 v1: scoutctl kb shows an agent:* reader (and a malformed one, agent:invalid) nothing.
-    note = str(vault / "knowledge-base" / "people.md")
+    note = str(vault / rel)
     assert "scoutctl kb" in _denied(_decision(vault, "Read", {"file_path": note}, env=env))
 
 

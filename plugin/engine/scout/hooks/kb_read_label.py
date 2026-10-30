@@ -3,7 +3,9 @@
 Runs may Read KB notes (Edit needs a Read on any Claude Code version; Jordan,
 2026-10-29, #536). What ``scoutctl kb read`` adds over a raw Read is the label,
 so this hook adds it: after a Read of a file under ``knowledge-base/`` or
-``action-items/context/``, it attaches ``additionalContext`` naming the file and
+``action-items/context/``, or of the index ``knowledge-base.md`` (the same
+paths the gate and the eval treat as KB: :func:`scout.kb.raw_read.is_kb_note_path`),
+it attaches ``additionalContext`` naming the file and
 its label, computed exactly as ``scoutctl kb`` labels it
 (:func:`scout.kb.privacy.label_file` under the vault's policy). For a private
 note it says the content must not reach any shared surface.
@@ -30,7 +32,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
-from scout.kb.raw_read import KB_DIRS, ONTOLOGY_TOOLING
+from scout.kb.raw_read import is_kb_note_path
 
 GATE = "kb-label"
 MARK = f"[scout:{GATE}]"
@@ -76,7 +78,7 @@ def _kb_rel(vault: Path, raw: str, cwd: Path) -> str | None:
         rel = normalize_rel(vault, target)
     except ValueError:
         return None  # outside the vault
-    if not any(rel == d or rel.startswith(d + "/") for d in KB_DIRS) or ONTOLOGY_TOOLING.search(rel):
+    if not is_kb_note_path(rel):
         return None
     return rel
 
