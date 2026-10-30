@@ -25,8 +25,13 @@ struct ActionBoardColumn: Identifiable, Equatable {
     /// are bucketed by `effectiveKind` so a task snoozed forward from an urgent
     /// section still lands in Urgent. Urgent/To Do/Watching/Done always appear
     /// (even when empty) to keep the board's structure stable; Personal appears
-    /// only when it has tasks.
-    static func columns(from sections: [ActionSection]) -> [ActionBoardColumn] {
+    /// only when it has tasks. `sort` orders each column, keeping sub-tasks
+    /// with their parent (see `ActionItemsArrangement.sorted`).
+    static func columns(
+        from sections: [ActionSection],
+        sort: ActionItemsDisplay.Sort = .fileOrder,
+        parents: [UUID: UUID] = [:]
+    ) -> [ActionBoardColumn] {
         var byKind: [ActionSection.Kind: [ActionTask]] = [:]
         for section in sections {
             for task in section.tasks {
@@ -39,7 +44,10 @@ struct ActionBoardColumn: Identifiable, Equatable {
         return order.compactMap { entry in
             let tasks = byKind[entry.kind] ?? []
             if entry.kind == .personal && tasks.isEmpty { return nil }
-            return ActionBoardColumn(kind: entry.kind, title: entry.title, tasks: tasks)
+            return ActionBoardColumn(
+                kind: entry.kind, title: entry.title,
+                tasks: ActionItemsArrangement.sorted(tasks, by: sort, parents: parents)
+            )
         }
     }
 }

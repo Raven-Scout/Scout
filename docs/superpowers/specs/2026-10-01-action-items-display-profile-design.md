@@ -1,7 +1,7 @@
 # Action Items display profile: design
 
 **Date:** 2026-10-01 (revised 2026-10-03 and 2026-10-12 after review, updated 2026-10-05)
-**Status:** Proposed (for review). Docs only; code follows after approval.
+**Status:** Approved 2026-10-19 in #320.
 **Surface:** Scout.app in `apps/macos/` (Action Items tab, Settings). Paths below are relative to `apps/macos/`. No engine or plugin change.
 **Refs:** #290 (the customization half; it was Raven-Scout/scout-app-legacy#52 before the move).
 The three rendering fixes from the same issue shipped in Raven-Scout/scout-app-legacy#122.

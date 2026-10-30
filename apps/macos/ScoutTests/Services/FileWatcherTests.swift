@@ -89,4 +89,37 @@ struct FileWatcherTests {
 
         await waitUntil("the consumer's for-await loop never ended") { flag.finished }
     }
+
+    /// The display profile is watched by file path before the file exists.
+    /// FSEvents reports its creation and a later atomic replace, as long as
+    /// the watched path is the real one: temp directories sit under the `/var`
+    /// symlink, which FSEvents never matches.
+    @Test func emitsEventsForAFileThatDoesNotExistYet() async throws {
+        let tmp = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: FileManager.default.temporaryDirectory,
+            create: true
+        ).resolvingRealPath()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let file = tmp.appendingPathComponent("scout-display.json")
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+
+        let beforeCreate = FileWatcher().events(for: file)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try Data("{}".utf8).write(to: file, options: .atomic)
+        let created = await Self.firstEvent(named: file.lastPathComponent, from: beforeCreate, within: .seconds(30))
+        #expect(created != nil, "expected an event for the file's creation")
+
+        let beforeReplace = FileWatcher().events(for: file)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try Data(#"{"schema":1}"#.utf8).write(to: file, options: .atomic)
+        let replaced = await Self.firstEvent(named: file.lastPathComponent, from: beforeReplace, within: .seconds(30))
+        #expect(replaced != nil, "expected an event for the atomic replace")
+    }
+
+    @Test func realPathResolvesTheVarSymlink() {
+        #expect(URL(fileURLWithPath: "/var", isDirectory: true).resolvingRealPath().path == "/private/var")
+        #expect(URL(fileURLWithPath: "/no/such/dir").resolvingRealPath().path == "/no/such/dir")
+    }
 }

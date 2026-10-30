@@ -24,6 +24,12 @@ struct TaskCardView: View {
     /// Called when the user collapses the card. Recently Completed uses it to
     /// turn an opened done task back into its one-line row.
     let onCollapse: (() -> Void)?
+    /// Display options from the profile (#52). Defaults draw today's card.
+    let density: ActionItemsDisplay.Density
+    let fields: ActionItemsDisplay.Fields
+    /// Set when the caller decides the starting state (an opened done row);
+    /// a density change then leaves the card alone.
+    private let startsExpandedOverride: Bool?
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -40,6 +46,8 @@ struct TaskCardView: View {
         selection: Binding<Set<UUID>>? = nil,
         startsExpanded: Bool? = nil,
         onCollapse: (() -> Void)? = nil,
+        density: ActionItemsDisplay.Density = .comfortable,
+        fields: ActionItemsDisplay.Fields = .init(),
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
@@ -49,8 +57,23 @@ struct TaskCardView: View {
         self.selection = selection
         self.onOp = onOp
         self.onCollapse = onCollapse
-        // Urgent opens by default — its detail is what you want immediately.
-        _expanded = State(initialValue: startsExpanded ?? ((task.snoozedFromKind ?? kind) == .urgent))
+        self.density = density
+        self.fields = fields
+        self.startsExpandedOverride = startsExpanded
+        _expanded = State(initialValue: startsExpanded
+            ?? Self.startsExpanded(kind: task.snoozedFromKind ?? kind, density: density))
+    }
+
+    /// Urgent opens by default, since its detail is what you want right away.
+    /// Compact density starts every card collapsed.
+    static func startsExpanded(kind: ActionSection.Kind, density: ActionItemsDisplay.Density) -> Bool {
+        kind == .urgent && density == .comfortable
+    }
+
+    /// The chips the profile lets the collapsed card show. With `refs` off only
+    /// the "carried" chip stays: it is the task's age, not a reference.
+    static func visibleChips(_ chips: [TaskChip], fields: ActionItemsDisplay.Fields) -> [TaskChip] {
+        fields.refs ? chips : chips.filter { $0.glyph == .carry }
     }
 
     var body: some View {
@@ -98,6 +121,12 @@ struct TaskCardView: View {
         }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+        // Picking a density applies to the cards already on screen too, not
+        // only to cards created after the change.
+        .onChange(of: density) { _, newDensity in
+            guard startsExpandedOverride == nil else { return }
+            expanded = Self.startsExpanded(kind: effectiveKind, density: newDensity)
+        }
     }
 
     // MARK: - Header (always visible, scannable)
@@ -127,7 +156,7 @@ struct TaskCardView: View {
                 trailingStatus
                 chevron
             }
-            if !expanded && !summary.isEmpty {
+            if !expanded && !summary.isEmpty && density == .comfortable {
                 InlineMarkdownText(summary)
                     .font(DS.serif(13))
                     .foregroundStyle(DS.Ink.p3)
@@ -141,7 +170,7 @@ struct TaskCardView: View {
                 chipRow(chips)
             }
         }
-        .padding(14)
+        .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
     }
 
@@ -172,10 +201,14 @@ struct TaskCardView: View {
     // MARK: - Source/context chips
 
     private var chips: [TaskChip] {
-        TaskChip.chips(
-            for: task,
-            carriedLabel: task.carriedInFrom.map { dateShort($0) }
+        var chips = Self.visibleChips(
+            TaskChip.chips(for: task, carriedLabel: task.carriedInFrom.map { dateShort($0) }),
+            fields: fields
         )
+        if fields.comments && !task.comments.isEmpty {
+            chips.append(TaskChip(glyph: .comments, label: "\(task.comments.count)"))
+        }
+        return chips
     }
 
     private func chipRow(_ chips: [TaskChip]) -> some View {
@@ -269,6 +302,7 @@ struct TaskCardView: View {
         case .carry:    return "calendar"
         case .entity:   return "doc.text"
         case .crossRef: return "number.square"
+        case .comments: return "text.bubble"
         case .plain:    return "tag"
         }
     }
@@ -321,7 +355,7 @@ struct TaskCardView: View {
     private var trailingStatus: some View {
         if task.done {
             statusPill("Done", color: DS.Status.ok)
-        } else if let until = task.snoozedUntil {
+        } else if fields.snooze, let until = task.snoozedUntil {
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
