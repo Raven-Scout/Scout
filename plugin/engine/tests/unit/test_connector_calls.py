@@ -13,6 +13,9 @@ from scout import connector_calls
 from scout.scripts import connector_health_report as chr_mod
 
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+# A day file the tests append to. append_rows prunes on a new day against the real clock, so a
+# fixed past date would be deleted by its own first append once it fell out of the window.
+LEDGER = "connector-calls-2099-01-01.jsonl"
 
 
 def _line(i: int, pad: int = 0) -> str:
@@ -30,7 +33,7 @@ def test_day_path(tmp_path: Path) -> None:
 
 
 def test_append_writes_every_row_under_the_cap(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     assert connector_calls.append_rows(path, [_line(1), _line(2)]) == 2
     assert connector_calls.append_rows(path, []) == 0
     assert path.read_text().splitlines() == [_line(1).strip(), _line(2).strip()]
@@ -41,7 +44,7 @@ def _rows(path: Path) -> list[dict]:
 
 
 def test_the_cap_writes_one_marker_then_closes_the_day(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     one = len(_line(0).encode())
     assert connector_calls.append_rows(path, [_line(i) for i in range(3)], max_bytes=3 * one) == 3
     assert "cap" not in capsys.readouterr().err
@@ -62,7 +65,7 @@ def test_the_cap_writes_one_marker_then_closes_the_day(tmp_path: Path, capsys: p
 
 def test_a_closed_day_stays_closed_even_with_room_left(tmp_path: Path) -> None:
     """A marker written short of the cap still closes the file: small rows don't sneak in after it."""
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     big = _line(0, pad=900)
     assert connector_calls.append_rows(path, [big], max_bytes=800) == 0  # marker only, < 800 bytes
     assert path.stat().st_size < 800
@@ -71,7 +74,7 @@ def test_a_closed_day_stays_closed_even_with_room_left(tmp_path: Path) -> None:
 
 
 def test_the_marker_takes_the_dropped_rows_run(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     row = json.dumps({"ts": "2026-09-30T12:00:00Z", "session_id": "run-7", "mode": "research", "x": "y" * 300})
     connector_calls.append_rows(path, [row + "\n"], max_bytes=10)
     marker = _rows(path)[0]
@@ -79,7 +82,7 @@ def test_the_marker_takes_the_dropped_rows_run(tmp_path: Path) -> None:
 
 
 def test_an_unparseable_dropped_row_still_gets_a_visible_marker(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     connector_calls.append_rows(path, ["not json " * 10 + "\n"], max_bytes=10)
     marker = _rows(path)[0]
     # Not "interactive"/"unknown": the report keeps it.
@@ -87,7 +90,7 @@ def test_an_unparseable_dropped_row_still_gets_a_visible_marker(tmp_path: Path) 
 
 
 def test_far_from_the_cap_the_tail_is_not_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     path.write_text(_line(0))
     real = Path.open
 
@@ -100,7 +103,7 @@ def test_far_from_the_cap_the_tail_is_not_read(tmp_path: Path, monkeypatch: pyte
 
 
 def test_an_unreadable_tail_counts_as_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     path.write_text(_line(0))
     real = Path.open
 
@@ -114,14 +117,14 @@ def test_an_unreadable_tail_counts_as_open(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_a_batch_is_cut_at_the_cap_not_rejected_whole(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     one = len(_line(0).encode())
     assert connector_calls.append_rows(path, [_line(i) for i in range(5)], max_bytes=2 * one + 1) == 2
     assert [r["session_id"] for r in _rows(path)] == ["s0", "s1", "s2"]  # s2 is the marker
 
 
 def test_the_cap_counts_bytes_not_characters(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     wide = json.dumps({"k": "é" * 10}, ensure_ascii=False) + "\n"  # 24 bytes, 14 characters
     assert connector_calls.append_rows(path, [wide, wide], max_bytes=40) == 1
 
@@ -170,7 +173,7 @@ def _writer(path: str, worker: int, rows: int) -> None:
 
 @pytest.mark.concurrency
 def test_concurrent_writers_never_interleave_or_overshoot_the_cap(tmp_path: Path) -> None:
-    path = tmp_path / "connector-calls-2026-09-30.jsonl"
+    path = tmp_path / LEDGER
     ctx = multiprocessing.get_context("spawn")
     procs = [ctx.Process(target=_writer, args=(str(path), w, 15)) for w in range(4)]
     for p in procs:

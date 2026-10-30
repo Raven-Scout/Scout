@@ -97,6 +97,11 @@ class SessionContext:
     # under the digest's `### Your Linear Activity`. The two checks count only what this run adds.
     run_notes_before: list[str] = field(default_factory=list)
     linear_report_before: list[str] = field(default_factory=list)
+    # Each past-due 🔴/🟡 task (and each one *Past-Due Tasks Step Down* parked) on the newest daily file
+    # on or before today, with its quiet days and branch (hold | step_down | park): see
+    # scout.action_items.past_due. None when it couldn't be computed; `action-items check-demotion`.
+    past_due_tasks: list[dict[str, Any]] | None = field(default_factory=list)
+    past_due_source: str = ""  # the date of the daily file they were read from
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -465,6 +470,7 @@ def gather(
         linear_status = f"{linear.status}: {linear.error}" if linear.error else linear.status
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
+    past_due_source, past_due = get_past_due_tasks(target, now_dt.date()) if full else ("", [])
 
     return SessionContext(
         generated_at=generated_at,
@@ -481,7 +487,21 @@ def gather(
         red_project_channels=get_red_project_channels(target, reader, graph=graph),
         run_notes_before=run_notes_before,
         linear_report_before=linear_report_before,
+        past_due_tasks=past_due,
+        past_due_source=past_due_source,
     )
+
+
+def get_past_due_tasks(scout_dir: Path, day: date) -> tuple[str, list[dict[str, Any]] | None]:
+    """(the daily file's date, each past-due task's branch); see :mod:`scout.action_items.past_due`.
+    ("", None) when it fails, so `action-items check-demotion` says it couldn't check."""
+    from scout.action_items.past_due import past_due_tasks
+
+    try:
+        source, tasks = past_due_tasks(scout_dir, day)
+    except Exception:
+        return "", None
+    return source or "", [t.to_json() for t in tasks]
 
 
 def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
@@ -537,6 +557,7 @@ __all__ = [
     "get_daily_before",
     "get_git_recent",
     "get_linear_own_activity",
+    "get_past_due_tasks",
     "get_personal_tasks",
     "get_pr_authored",
     "get_pr_review_requested",
