@@ -95,7 +95,7 @@ Move a project to `projects/archived/` when:
 - No meetings about it in the last 30 days
 - {{USER_NAME}} confirms it's complete (or the system detects no activity for 30+ days)
 
-To archive: move the project's folder into `archived/`, update `projects.md` to move its row to the Archived table, and update `knowledge-base.md` if needed.
+To archive: `git mv` the project's folder into `archived/`; in the same commit, rewrite links that name its old path (`scripts/scoutctl kb search --fixed 'projects/<project-name>/'`) to the bare `[[<project-name>]]`, which resolves wherever the file lives; move its row to the Archived table in `projects.md`, and update `knowledge-base.md` if needed.
 
 ### KB Freshness Standards
 
