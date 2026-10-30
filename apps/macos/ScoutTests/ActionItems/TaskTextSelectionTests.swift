@@ -57,12 +57,19 @@ struct TaskTextSelectionTests {
     }
 
     /// Selects all of `view`'s text and sends Copy, then reads the pasteboard.
+    /// Every item already on the pasteboard, in every type, is put back after.
     private func copyAll(_ view: NSView, in window: NSWindow) async throws -> String? {
         let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
         defer {
             pasteboard.clearContents()
-            if let saved { pasteboard.setString(saved, forType: .string) }
+            if !saved.isEmpty { pasteboard.writeObjects(saved) }
         }
         pasteboard.clearContents()
         window.makeFirstResponder(view)
