@@ -23,12 +23,13 @@ struct DisplayProfileRenderTests {
         var testDescription: String { values.joined(separator: " ") }
     }
 
-    private static func f(_ refs: Bool, _ snooze: Bool, _ comments: Bool) -> ActionItemsDisplay.Fields {
+    private nonisolated static func f(_ refs: Bool, _ snooze: Bool, _ comments: Bool) -> ActionItemsDisplay.Fields {
         .init(refs: refs, snooze: snooze, comments: comments)
     }
 
     /// Generated as a strength-2 covering array; `coversEveryPair` checks it.
-    static let cases: [Case] = [
+    /// `nonisolated` because `@Test(arguments:)` reads it outside the main actor.
+    nonisolated static let cases: [Case] = [
         Case(view: .list,  density: .compact,     sort: .fileOrder,    grouping: .section, fields: f(true, true, true),    dark: false),
         Case(view: .board, density: .compact,     sort: .alphabetical, grouping: .none,    fields: f(false, false, false), dark: true),
         Case(view: .list,  density: .comfortable, sort: .fileOrder,    grouping: .section, fields: f(true, false, false),  dark: true),
