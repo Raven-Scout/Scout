@@ -560,6 +560,181 @@ def cli_check_review_requests(
         raise typer.Exit(code=1)
 
 
+def _check_day(name: str, date: str | None, data_dir: Path | None) -> str:
+    from scout.config import today
+
+    if date is not None:
+        try:
+            _dt.date.fromisoformat(date)
+        except ValueError:
+            sys.stdout.write(f"{name}: --date: invalid date {date!r}\n")
+            raise typer.Exit(code=2) from None
+    return date or today(data_dir).isoformat()
+
+
+def _cannot_check(name: str, error: Exception, json_out: bool) -> typer.Exit:
+    if json_out:
+        sys.stdout.write(_json.dumps({"error": str(error)}) + "\n")
+    else:
+        sys.stdout.write(f"{name}: cannot check — {error}\n")
+    return typer.Exit(code=2)
+
+
+@app.command("check-linear-delta")
+def cli_check_linear_delta(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check today's 📋 Scout Digest reports your own Linear activity since the last run.
+
+    With a Linear API key (`~/.scout-secrets/linear-api-key`) the runner
+    pre-fetches that activity, and every pre-fetched issue must be named under
+    `### Your Linear Activity` on a line this run wrote. Without one, this run
+    must add a bullet under that heading, built from the Linear connector. A
+    line already in the file before the session doesn't count. Run it before committing
+    a briefing or consolidation. Exit codes: 0 = reported, 1 = not yet, 2 =
+    cannot check.
+    """
+    from scout.action_items.linear_delta import HEADING, check_linear_delta
+    from scout.action_items.prefetched import PrefetchCheckError
+
+    name = "check-linear-delta"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_linear_delta(data_dir=data_dir, today=day, context=context)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    since = result.since or "the last run"
+    if json_out:
+        rows = [{"identifier": i.identifier, "title": i.title, "actions": list(i.actions)} for i in result.unreported]
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "status": result.status,
+                    "since": result.since,
+                    "prefetched": None if result.prefetched is None else len(result.prefetched),
+                    "reported": result.reported,
+                    "unreported": rows,
+                    "truncated": result.truncated,
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif result.prefetched == ():
+        sys.stdout.write(f"{name}: no own Linear activity since {since} was pre-fetched\n")
+    elif result.prefetched is not None and result.passed:
+        n = len(result.prefetched)
+        noun = "issue is" if n == 1 else "issues are"
+        sys.stdout.write(f"{name}: all {n} pre-fetched Linear {noun} under ### {HEADING}\n")
+    elif result.prefetched is not None:
+        sys.stdout.write(
+            f"{name}: {len(result.unreported)} of {len(result.prefetched)} issues you acted on in Linear since "
+            f"{since} are not under ### {HEADING} in today's 📋 Scout Digest:\n"
+        )
+        for i in result.unreported:
+            state = f" (now {i.state})" if i.state else ""
+            sys.stdout.write(f"  {i.identifier} — {i.title} — {', '.join(i.actions)}{state}\n")
+        sys.stdout.write(
+            "Add a bullet for each: the identifier, what you did, and where it stands now. A line that was "
+            "already there before this run doesn't count: update it with this run's action.\n"
+        )
+    elif result.passed:
+        sys.stdout.write(f"{name}: reported under ### {HEADING} (not pre-fetched: {result.status or 'unknown'})\n")
+    else:
+        sys.stdout.write(
+            f"{name}: your Linear activity was not pre-fetched ({result.status or 'unknown'}). Query the Linear "
+            f"connector for the issues you created, moved, commented on or edited since {since}, and list each "
+            f"under ### {HEADING} in today's 📋 Scout Digest. If there were none, write `- None since {since}`; "
+            "if Linear could not be read, write `- Linear unavailable: <error>`. Bullets already there before "
+            "this run don't count.\n"
+        )
+    if result.truncated and not json_out:
+        sys.stdout.write(
+            "  note: the pre-fetch hit a limit (linear_own_activity_truncated); check the Linear connector for "
+            f"anything else you did since {since}.\n"
+        )
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
+@app.command("check-red-polls")
+def cli_check_red_polls(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """List the 🔴 project Slack channels today's file doesn't say were polled.
+
+    The runner pre-fetches every 🔴 project's `slack_channels:`; each must
+    appear on a `🔴 channels polled: …` line (by `#name` or id) on this run's
+    🪵 Run notes entry: one that wasn't in the file before the session, so an
+    earlier run's line doesn't count. Run it before committing a briefing or
+    consolidation. Exit codes: 0 = all listed, 1 = some missing, 2 = cannot check.
+    """
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.red_polls import POLLED_LINE_FORMAT, check_red_polls
+
+    name = "check-red-polls"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_red_polls(data_dir=data_dir, today=day, context=context)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        rows = [{"project": c.project, "id": c.id, "name": c.name} for c in result.unpolled]
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": len(result.channels),
+                    "unpolled": rows,
+                    "unconfigured": list(result.unconfigured),
+                    "has_entry": result.has_entry,
+                }
+            )
+            + "\n"
+        )
+    else:
+        if not result.channels:
+            sys.stdout.write(f"{name}: no 🔴 project declares a Slack channel\n")
+        elif not result.unpolled:
+            n = len(result.channels)
+            sys.stdout.write(f"{name}: all {n} 🔴 project channel{'s' if n != 1 else ''} listed as polled\n")
+        else:
+            where = (
+                "on this run's 🪵 Run notes entry"
+                if result.has_entry
+                else "(today's 🪵 Run notes has no entry from this run yet)"
+            )
+            sys.stdout.write(
+                f"{name}: {len(result.unpolled)} of {len(result.channels)} 🔴 project channels are not listed "
+                f"as polled {where}:\n"
+            )
+            for c in result.unpolled:
+                sys.stdout.write(f"  {c.label} — {c.project}\n")
+            sys.stdout.write(
+                "Read each with `slack_read_channel` since the last run, then list it on this run's 🪵 Run notes "
+                f"entry: `{POLLED_LINE_FORMAT}` (add `(unavailable: <error>)` after one you could not read).\n"
+            )
+        for project in result.unconfigured:
+            sys.stdout.write(f"  note: 🔴 project {project} has no slack_channels: frontmatter; add it\n")
+    if result.unpolled:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(

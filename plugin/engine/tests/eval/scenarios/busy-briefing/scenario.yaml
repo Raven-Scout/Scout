@@ -1,0 +1,38 @@
+# busy-briefing: busy-weekday's vault and connectors as a morning briefing (#84; first in #524). #507's
+# eval found briefings skipping connector sections; this scores a briefing on the same seeds as
+# busy-weekday (a consolidation). The review-request audit is in no_drop's ref:example-org/widgets#12.
+# linear_delta and red_poll score two mandatory connector rules the runner now pre-fetches data for.
+mode: morning-briefing
+files_from: busy-weekday
+weekdays_only: true
+personas: [slack, linear, calendar]
+checks: [placement, no_drop, demotion, linear_delta, red_poll]
+budget: 5  # dollars, as busy-weekday's base samples cost ~$3.94 in #507's compare
+
+# Same seeds and expectations as busy-weekday: a briefing places and steps down items alike.
+expected_placement:
+  QUOTA: [🔴, 🟡]
+  BILL: [🟢]
+  DOCS: [🟡]
+  DEPR: [🟢]
+  OVRD: [🟡]
+  "ref:example-org/widgets#12": [🔴, 🟡]
+  "ref:example-org/widgets#20": [🔴, 🟡]
+  "ref:example-org/widgets#21": [🔴, 🟡]
+  "ref:example-org/widgets#22": [🟢]
+  "ref:example-org/api#40": [🟢]
+  "ref:PROJ-1210": [🟢]
+  "ref:PROJ-1211": [🟡]
+
+expected_demotion: {OVRD: step_down, LATE: hold, PARK: park}
+
+expected_closures: [LCHK]
+
+# The Linear connector's own-activity report: Alex moved PROJ-1212 to In Review, created PROJ-1213
+# and commented on OPS-315 this morning (fixtures/linear-graphql.json, served to the pre-fetch, and
+# the linear persona's list_issues/list_comments). PROJ-1207 moved too, but by Priya: not Alex's.
+expected_linear_activity: [PROJ-1212, PROJ-1213, OPS-315]
+
+# The Slack connector's 🔴 Project Channel Poll: the widgets project is 🔴 and declares one channel
+# (vault/knowledge-base/projects/widgets/widgets.md), whose feed holds a blocker and an ask.
+expected_red_channels: [C0123456789]

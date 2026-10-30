@@ -3,8 +3,9 @@
 HOME stays real: isolating it loses the keychain login (spec §4.3). So the
 paths that reach through it are closed one by one here: the stub ``gh`` is
 first on PATH and ``GH_CONFIG_DIR`` is a temp dir (backstop if a shell re-adds
-the real ``gh``), global git config is off, and no inherited ``GIT_*``,
-``SCOUT_*`` or ``CLAUDE_CONFIG_DIR`` leaks in.
+the real ``gh``), global git config is off, ``SCOUT_SECRETS_DIR`` is the
+sample's own (so the Linear pre-fetch never finds a real ``~/.scout-secrets``
+key), and no inherited ``GIT_*``, ``SCOUT_*`` or ``CLAUDE_CONFIG_DIR`` leaks in.
 """
 
 from __future__ import annotations
@@ -47,9 +48,11 @@ def build_env(
     today: str,
     timeout_s: int,
     pythonpath: Path | None = None,
+    linear_api_url: str | None = None,
 ) -> dict[str, str]:
     """``pythonpath`` is a comparison base arm's engine: the runner's hooks and the session's
-    shell import ``scout`` from it. The harness's own stubs keep this checkout's."""
+    shell import ``scout`` from it. The harness's own stubs keep this checkout's.
+    ``linear_api_url`` is where the Linear pre-fetch reads (a recorded ``file://`` response)."""
     env = {k: v for k, v in base.items() if not k.startswith(_DROPPED_PREFIXES) and k not in SECRETS}
     env.pop("PYTHONPATH", None)
     if pythonpath is not None:
@@ -77,5 +80,8 @@ def build_env(
         SCOUT_EVAL_CALLS=str(result_dir / "calls.jsonl"),
         SCOUT_EVAL_TODAY=today,
         SCOUT_EVAL_SESSION_PYTHONPATH=str(pythonpath or ""),
+        SCOUT_SECRETS_DIR=str(result_dir / "secrets"),
     )
+    if linear_api_url:
+        env["SCOUT_LINEAR_API_URL"] = linear_api_url
     return env

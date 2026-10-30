@@ -12,10 +12,12 @@ Check for changes to {{USER_NAME}}'s assigned issues and any newly created or as
 
 ### {{USER_NAME}}'s Own Linear Activity Since Last Run (delta-scan — surface this first)
 
-Before the issue-state scan below, build an **actor-attributed** delta of what {{USER_NAME}} did in Linear since the last run — issues he created, moved (state change), commented on, or edited. This is the Linear analog of the Slack outbound scan and is a primary signal of completed/in-progress work. Surface it **early** in the run summary (before "Today's Wins") — never silently omit it.
+Report what {{USER_NAME}} did in Linear since the last run — the issues {{USER_NAME}} created, moved (state change), commented on, or edited. It is the Linear analog of the Slack outbound scan and a primary signal of completed/in-progress work. List each issue under `### Your Linear Activity` in today's 📋 Scout Digest (identifier, what {{USER_NAME}} did, where it stands now), and lead the wrap notification with it — never silently omit it. The digest is shared by the day's runs: name each issue on a line this run writes or updates, since a line left as an earlier run wrote it doesn't count.
 
-- **Volume-sanity gate:** if the delta is suspiciously empty (zero activity) for a normally-active window, re-fetch before concluding "no Linear activity" — a silent empty result erodes trust more than a slow run.
+- **Pre-fetched when the vault has a Linear API key** (`~/.scout-secrets/linear-api-key`): `.scout-cache/session-context.json` holds `linear_own_activity` (one row per issue, with {{USER_NAME}}'s `actions`) for the window from `linear_own_activity_since`. Report those rows; don't re-query Linear for them. When `linear_own_activity_truncated` is true a fetch limit cut the list: also check Linear for what's past it.
+- **Otherwise** (`linear_own_activity` is null; `linear_own_activity_status` says why), build it from Linear: issues updated since `linear_own_activity_since`, keeping only {{USER_NAME}}'s own actions. If it comes back empty for a normally-active window, re-fetch before writing `- None since <when>`. If Linear can't be read, write `- Linear unavailable: <error>`.
 - **Re-fetch fast-moving issues at compose time:** any issue you're about to cite with a state framing ("In Review", "blocked") must be re-read at compose time, not carried from cache (mirrors the Gmail/Pattern #43 rule).
+- **Before committing**, run `scripts/scoutctl action-items check-linear-delta --data-dir {{SCOUT_DIR}}`. Exit 1 names what's missing: add it and run it again. Exit 2 (it couldn't check): note `linear-delta check could not run: <its message>` in this run's 🪵 Run notes entry.
 
 ### Project-Update Polling for {{USER_NAME}}-Led Projects (leadership pings)
 
