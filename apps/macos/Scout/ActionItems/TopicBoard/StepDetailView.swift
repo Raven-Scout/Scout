@@ -28,6 +28,7 @@ struct StepDetailView: View {
                     .font(DS.sans(13))
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             if !task.details.isEmpty {
                 TaskDetailsView(details: task.details)
@@ -42,6 +43,7 @@ struct StepDetailView: View {
                 }
                 if let carried = task.carriedInFrom {
                     Text("Carried in \(carried.formatted(.dateTime.day().month(.abbreviated)))")
+                        .textSelection(.enabled)
                 }
                 Spacer(minLength: 0)
                 LaunchClaudeMenu(
@@ -58,6 +60,7 @@ struct StepDetailView: View {
                 Text(launchError)
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Status.err)
+                    .textSelection(.enabled)
             }
         }
         .padding(.leading, Self.titleInset)

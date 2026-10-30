@@ -6,6 +6,9 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+### Added
+- **Text in Action Items cards can be selected and copied with ⌘C** (`Scout/ActionItems/Views/TaskBodyView.swift`, `Scout/ActionItems/Views/TaskDetailsView.swift`, `Scout/ActionItems/Views/CommentListView.swift`, `Scout/ActionItems/Views/TaskCardView.swift`, `Scout/ActionItems/Views/BoardCardView.swift`, `Scout/ActionItems/TopicBoard/StepDetailView.swift`). In an open List card, the body, the sub-bullets, the comments and nested sub-tasks are selectable, like a context note already was. So are a Board card's tag, subject and link labels, and a Topics step's detail. Before, the only way to take text out of a card was the Copy button, which copies the whole task. A card's title and its collapsed summary stay click targets that open and close the card, so they aren't selectable. Links in selectable text open as before.
+
 ### Fixed
 - **A `## 🎯 Today's Focus` section shows as Today's Focus** (`Scout/ActionItems/ActionItemsParser.swift`). The engine's phases gave the heading as both 💡 and 🎯, and about half of daily files used 🎯, which the parser read as an ordinary section. 🎯 now maps to the focus section like 💡; the phases now write 💡 only.
 
