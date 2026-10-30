@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-10-30
+
 ### Added
 - **Privacy hooks: runs read the KB through `scoutctl kb` or a labelled Read, and nothing private leaves through a Slack or connector write tool** (#453; hard-rule audit 2026-10, rows 2 and 2b; `hooks/hooks.json`, `engine/scout/hooks/{kb_read_gate,kb_read_label,outbound_gate}.py`, `engine/scout/kb/raw_read.py`, `engine/scout/cli.py`). Both phase rules were prose only: eval runs read the KB raw in 30 of 34 privacy runs, and 1 of 24 sent a Slack message with no `check-outbound`.
   - **`scoutctl hook kb-read-gate`** (PreToolUse, matcher `Grep|Glob|Bash`) denies a scheduled run's shell read of `knowledge-base/` or `action-items/context/` (`cat`, `grep`, `ls`, `find`, `head`, `git show` …, or any of them after `cd` into it) and a `Grep`/`Glob` there or across the whole vault. The deny message names `scoutctl kb search|files|read|resolve|name-lookup|delta`. A `Read` stays allowed, so editing a note works on any Claude Code version; only a reader `scoutctl kb` shows nothing (`agent:*`, or a malformed `SCOUT_READER`) is denied a Read of a KB note (matcher `Read`, which exits in the shell for `owner` and `autonomous`).
