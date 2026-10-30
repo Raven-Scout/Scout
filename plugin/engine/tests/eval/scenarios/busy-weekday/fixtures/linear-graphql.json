@@ -60,6 +60,30 @@
             ]
           },
           "comments": {"nodes": []}
+        },
+        {
+          "identifier": "PROJ-1210",
+          "title": "Plan the catalog analytics dashboard",
+          "url": "https://linear.app/example-org/issue/PROJ-1210",
+          "createdAt": "{{today}}T06:00:00Z",
+          "dueDate": "{{d+40}}",
+          "state": {"name": "Todo", "type": "unstarted"},
+          "creator": {"id": "user-priya"},
+          "assignee": {"id": "user-alex"},
+          "history": {"nodes": []},
+          "comments": {"nodes": []}
+        },
+        {
+          "identifier": "PROJ-1211",
+          "title": "Write the catalog quota migration",
+          "url": "https://linear.app/example-org/issue/PROJ-1211",
+          "createdAt": "{{today}}T06:05:00Z",
+          "dueDate": "{{d+12}}",
+          "state": {"name": "Todo", "type": "unstarted"},
+          "creator": {"id": "user-priya"},
+          "assignee": {"id": "user-alex"},
+          "history": {"nodes": []},
+          "comments": {"nodes": []}
         }
       ]
     }

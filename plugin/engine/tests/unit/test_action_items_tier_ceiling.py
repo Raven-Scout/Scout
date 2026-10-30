@@ -21,6 +21,7 @@ from scout.action_items.tier_ceiling import (
     GREEN,
     RED,
     YELLOW,
+    AssignedIssue,
     ceiling,
     check_tier_ceiling,
     judge,
@@ -191,7 +192,7 @@ def test_a_body_that_lost_its_due_date_uses_the_earlier_file(vault: Path) -> Non
     _file(vault, TODAY, red=_task("QMIG", "write it today."))
     result = check_tier_ceiling(today=TODAY.isoformat())
     assert [f.tag for f in result.findings] == ["QMIG"]
-    assert result.checked[0].from_earlier_file
+    assert result.checked[0].due_from == "earlier file"
 
 
 def test_a_new_due_date_today_wins_over_the_earlier_file(vault: Path) -> None:
@@ -203,6 +204,114 @@ def test_a_new_due_date_today_wins_over_the_earlier_file(vault: Path) -> None:
 def test_it_cannot_check_without_todays_file(vault: Path) -> None:
     with pytest.raises(PrefetchCheckError, match="no action-items file"):
         check_tier_ceiling(today=TODAY.isoformat())
+
+
+# ----- pre-fetched dated Linear issues ---------------------------------------------------------
+
+
+def _assigned(*issues: tuple[str, int]) -> list[AssignedIssue]:
+    return [AssignedIssue(ident, f"Title of {ident}", d(offset)) for ident, offset in issues]
+
+
+def _refs(tag: str, ident: str, body: str = "write it.") -> str:
+    return _task(tag, body) + f"  - Refs: {ident}\n"
+
+
+def _judge(assigned: list[AssignedIssue], **sections: str) -> dict[str, str]:
+    result = judge(_lines(**sections), today=TODAY, assigned=assigned)
+    return {f.label: f.problem for f in result.findings}
+
+
+def test_a_dated_issue_with_no_task_line_is_named_with_where_it_goes() -> None:
+    problems = _judge(_assigned(("PROJ-1210", 40), ("PROJ-1211", 12)), notes="- 07:12 run\n  - PROJ-1210 is new\n")
+    assert set(problems) == {"[PROJ-1210]", "[PROJ-1211]"}
+    assert problems["[PROJ-1210]"] == (
+        f'Linear issue "Title of PROJ-1210" is assigned to you, due {d(40):%b} {d(40).day} (40 days out), and no '
+        f"task line names it: add it under 🟢 Watching or lower, with `due {d(40)}` and `Refs: PROJ-1210`"
+    )
+    assert "under 🟡 To Do or lower" in problems["[PROJ-1211]"]
+
+
+@pytest.mark.parametrize("key", ["red", "yellow", "green", "parked"])
+def test_a_task_line_in_any_tier_tracks_the_issue(key: str) -> None:
+    assert "[PROJ-1210]" not in _judge(_assigned(("PROJ-1210", 40)), **{key: _refs("DASH", "PROJ-1210")})
+
+
+def test_a_completed_task_line_tracks_the_issue() -> None:
+    lines = _lines()
+    i = lines.index("## ✅ Recently Completed")
+    lines[i + 1 : i + 1] = ["", "- [x] [#DASH] **Plan the dashboard** — done. Refs: PROJ-1210"]
+    assert judge(lines, today=TODAY, assigned=_assigned(("PROJ-1210", 40))).passed
+
+
+def test_an_identifier_prefix_is_not_a_match() -> None:
+    assert "[PROJ-121]" in _judge(_assigned(("PROJ-121", 12)), yellow=_refs("QMIG", "PROJ-1211"))
+
+
+def test_past_due_assigned_issues_are_left_to_check_demotion() -> None:
+    result = judge(_lines(), today=TODAY, assigned=_assigned(("PROJ-1209", -1)))
+    assert result.passed
+
+
+def test_a_task_naming_the_issue_takes_its_ceiling_from_the_linear_due_date() -> None:
+    result = judge(_lines(red=_refs("QMIG", "PROJ-1211")), today=TODAY, assigned=_assigned(("PROJ-1211", 12)))
+    assert [(p.tag, p.due_from, p.ceiling) for p in result.checked] == [("QMIG", "PROJ-1211", YELLOW)]
+    assert [f.problem for f in result.findings] == [f"in 🔴, ceiling 🟡 (due {d(12):%b} {d(12).day}, 12 days out)"]
+
+
+def test_the_body_due_date_wins_over_the_linear_one() -> None:
+    lines = _lines(red=_refs("QMIG", "PROJ-1211", f"due {d(4)}; write it."))
+    assert judge(lines, today=TODAY, assigned=_assigned(("PROJ-1211", 12))).passed
+
+
+def test_an_issue_override_accepts_it_untracked() -> None:
+    notes = "- 07:12 run\n  - Ceiling override [PROJ-1210] — Sam owns it in practice; reassigning\n"
+    result = judge(_lines(notes=notes), today=TODAY, assigned=_assigned(("PROJ-1210", 40)))
+    assert result.passed and result.overridden == ("PROJ-1210",)
+
+
+def test_nothing_pre_fetched_checks_no_issues() -> None:
+    result = judge(_lines(), today=TODAY, assigned=None)
+    assert result.passed and result.assigned is None
+
+
+def _context(vault: Path, generated: str, assigned: object) -> None:
+    cache = vault / ".scout-cache"
+    cache.mkdir(exist_ok=True)
+    data = {"generated_at": f"{generated}T07:00:00+00:00", "linear_assigned_due": assigned}
+    (cache / "session-context.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _row(ident: str, offset: int) -> dict[str, str]:
+    return {
+        "identifier": ident,
+        "title": "Write the quota migration",
+        "dueDate": d(offset).isoformat(),
+        "state": "Todo",
+    }
+
+
+def test_the_vault_check_reads_todays_pre_fetch(vault: Path) -> None:
+    _file(vault, TODAY, green=_due("FAR", 40))
+    _context(vault, TODAY.isoformat(), [_row("PROJ-1211", 12)])
+    result = check_tier_ceiling(today=TODAY.isoformat())
+    assert [f.label for f in result.findings] == ["[PROJ-1211]"]
+
+
+@pytest.mark.parametrize("generated", [d(-1).isoformat(), None])
+def test_an_old_or_missing_pre_fetch_checks_only_the_ceiling(vault: Path, generated: str | None) -> None:
+    _file(vault, TODAY, green=_due("FAR", 40))
+    if generated:
+        _context(vault, generated, [_row("PROJ-1211", 12)])
+    result = check_tier_ceiling(today=TODAY.isoformat())
+    assert result.passed and result.assigned is None
+
+
+def test_a_pre_fetch_without_the_list_checks_no_issues(vault: Path) -> None:
+    """No Linear key: linear_assigned_due is null, as #532's own-activity rows are."""
+    _file(vault, TODAY)
+    _context(vault, TODAY.isoformat(), None)
+    assert check_tier_ceiling(today=TODAY.isoformat()).assigned is None
 
 
 # ----- CLI --------------------------------------------------------------------------------
@@ -246,6 +355,27 @@ def test_cli_json(vault: Path) -> None:
 def test_cli_exit_2_when_it_cannot_check(vault: Path) -> None:
     result = _cli()
     assert result.exit_code == 2 and "check-tier-ceiling: cannot check" in result.stdout
+
+
+def test_cli_names_an_untracked_issue_by_its_identifier(vault: Path) -> None:
+    _file(vault, TODAY, green=_due("FAR", 40))
+    _context(vault, TODAY.isoformat(), [_row("PROJ-1211", 12)])
+    result = _cli()
+    assert result.exit_code == 1
+    assert "  [PROJ-1211] Linear issue" in result.stdout and "[PROJ-123]" in result.stdout
+    out = json.loads(_cli("--json").stdout)
+    assert out["findings"] == [{"tag": "PROJ-1211", "problem": out["findings"][0]["problem"], "untracked": True}]
+    assert out["assigned"] == [{"identifier": "PROJ-1211", "due": d(12).isoformat()}]
+
+
+def test_cli_passes_with_every_dated_issue_tracked(vault: Path) -> None:
+    _file(vault, TODAY, yellow=_refs("QMIG", "PROJ-1211", f"due {d(12)}; write it."))
+    _context(vault, TODAY.isoformat(), [_row("PROJ-1211", 12)])
+    result = _cli()
+    assert result.exit_code == 0
+    assert "all 1 dated task within their ceiling; every dated Linear issue assigned to you has a task line" in (
+        result.stdout
+    )
 
 
 def test_cli_bad_date_is_exit_2(vault: Path) -> None:

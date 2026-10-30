@@ -15,8 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from scout import linear_activity as la
 from scout.action_items.tier_ceiling import _RANK, ceiling, check_tier_ceiling
 from tests.eval.harness.dates import render_dates
+from tests.eval.harness.runner import stage_linear_api
 from tests.eval.harness.scenario import load_scenario
 
 TODAY = dt.date(2026, 10, 12)  # a Monday
@@ -90,3 +92,37 @@ def test_the_expected_placement_passes(vault: Path) -> None:
     result = check_tier_ceiling(today=TODAY.isoformat())
     assert result.passed
     assert {p.tag: p.ceiling for p in result.checked if p.tag in {"QMIG", "DASH"}} == {"QMIG": "🟡", "DASH": "🟢"}
+
+
+def _prefetch(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runner's pre-fetch over busy-briefing's recorded Linear response, into session-context."""
+    url = stage_linear_api(load_scenario("busy-briefing"), tmp_path / "staged", TODAY)
+    assert url is not None
+    monkeypatch.setenv("SCOUT_SECRETS_DIR", str(tmp_path / "staged" / "secrets"))
+    monkeypatch.setenv("SCOUT_LINEAR_API_URL", url)
+    got = la.fetch_own_activity(vault, now=dt.datetime(2026, 10, 12, 7, 0, tzinfo=dt.UTC))
+    context = {"generated_at": f"{TODAY}T07:00:00+00:00", "linear_assigned_due": got.assigned_due}
+    (vault / ".scout-cache").mkdir(exist_ok=True)
+    (vault / ".scout-cache" / "session-context.json").write_text(json.dumps(context), encoding="utf-8")
+
+
+def test_the_dated_issues_left_out_of_every_tier_are_named(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What 2 of 3 head samples did on 2026-10-30: PROJ-1210/1211 only in the digest."""
+    (tmp_path / "staged").mkdir()
+    _prefetch(vault, tmp_path, monkeypatch)
+    _today(vault)
+    result = check_tier_ceiling(today=TODAY.isoformat())
+    assert [f.label for f in result.findings] == ["[PROJ-1211]", "[PROJ-1210]"]
+    assert "under 🟡 To Do" in result.findings[0].problem and "under 🟢 Watching" in result.findings[1].problem
+
+
+def test_the_expected_placement_tracks_both_dated_issues(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "staged").mkdir()
+    _prefetch(vault, tmp_path, monkeypatch)
+    _today(vault, PROJ_1211="🟡", PROJ_1210="🟢")
+    result = check_tier_ceiling(today=TODAY.isoformat())
+    assert result.passed and [i.identifier for i in result.assigned or ()] == ["PROJ-1211", "PROJ-1210"]

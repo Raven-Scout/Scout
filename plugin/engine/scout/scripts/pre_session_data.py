@@ -90,6 +90,9 @@ class SessionContext:
     # "skipped: <type> session" (dreaming and research don't report it)
     linear_own_activity_status: str = ""
     linear_own_activity_truncated: bool = False  # a fetch limit cut it: the session looks past it
+    # Open issues assigned to the user with a due date, from the same fetch; None unless fetched.
+    # `action-items check-tier-ceiling` names each one with no task line.
+    linear_assigned_due: list[dict[str, Any]] | None = None
     # Every 🔴 project, labelled, with the Slack channels its `slack_channels:` frontmatter declares:
     # {"project", "path", "visibility", "channels": [{"id", "name"}]}. `action-items check-red-polls`.
     red_project_channels: list[dict[str, Any]] = field(default_factory=list)
@@ -459,6 +462,7 @@ def gather(
         }
 
     linear_rows: list[dict[str, Any]] | None = None
+    linear_due: list[dict[str, Any]] | None = None
     linear_since, linear_truncated = "", False
     if not full:
         linear_status = "skipped"
@@ -467,6 +471,7 @@ def gather(
     else:
         linear = get_linear_own_activity(target, now_dt)
         linear_rows, linear_since, linear_truncated = linear.issues, linear.since, linear.truncated
+        linear_due = linear.assigned_due
         linear_status = f"{linear.status}: {linear.error}" if linear.error else linear.status
     graph = _graph(target, reader)
     run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
@@ -484,6 +489,7 @@ def gather(
         linear_own_activity_since=linear_since,
         linear_own_activity_status=linear_status,
         linear_own_activity_truncated=linear_truncated,
+        linear_assigned_due=linear_due,
         red_project_channels=get_red_project_channels(target, reader, graph=graph),
         run_notes_before=run_notes_before,
         linear_report_before=linear_report_before,

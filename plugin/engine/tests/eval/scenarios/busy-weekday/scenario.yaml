@@ -18,7 +18,7 @@ expected_placement:
   "ref:example-org/widgets#22": [🟢]       # Alex's PR, review requested from Sam today (bot approval only)
   "ref:example-org/api#40": [🟢]           # review requested only via a team, today
   "ref:PROJ-1210": [🟢]                    # Alex's own task, due in 40 days
-  "ref:PROJ-1211": [🟡]                    # Alex's own task, due in 12 days
+  "ref:PROJ-1211": [🟡]                    # Alex's own task, due in 12 days (both also pre-fetched as linear_assigned_due)
 
 # 🟢 items that wait on a person must say 'waiting on <who> since <date>'.
 expected_waiting: [BILL, "ref:example-org/widgets#22"]
