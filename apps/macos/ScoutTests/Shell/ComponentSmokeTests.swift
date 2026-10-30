@@ -18,14 +18,25 @@ enum SmokeFixtures {
         deepLinks: [TaskDeepLink] = [],
         details: [TaskDetail] = [],
         snoozedUntil: Date? = nil,
-        carriedInFrom: Date? = nil
+        carriedInFrom: Date? = nil,
+        plan: TaskPlan = .none
     ) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 4, done: done,
             subject: subject, plainSubject: subject, body: body,
             comments: comments, deepLinks: deepLinks, details: details,
-            snoozedUntil: snoozedUntil, carriedInFrom: carriedInFrom)
+            snoozedUntil: snoozedUntil, carriedInFrom: carriedInFrom, plan: plan)
     }
+
+    static let plan: TaskPlan = {
+        var plan = TaskPlan()
+        plan.estimateMinutes = 45
+        plan.rawMinutes = 30
+        plan.kind = "deep"
+        plan.block = PlannedBlock(date: "2026-06-15", start: "10:00", end: "10:45", eventID: nil)
+        plan.actualMinutes = 60
+        return plan
+    }()
 
     static let comments: [TaskComment] = [
         TaskComment(author: "alex", timestamp: "2026-06-15 10:00 AM ET",
@@ -156,6 +167,8 @@ struct ComponentSmokeTests {
             SmokeFixtures.task(body: ""),
             SmokeFixtures.task(body: "", details: SmokeFixtures.details),
             SmokeFixtures.task(details: SmokeFixtures.details),
+            SmokeFixtures.task(plan: SmokeFixtures.plan),
+            SmokeFixtures.task(done: true, plan: SmokeFixtures.plan),
         ]
         for task in variants {
             for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal, .done] {
