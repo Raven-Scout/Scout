@@ -29,7 +29,7 @@ import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from scout import paths
 from scout.kb.privacy import FULL_READERS
 from scout.kb.read import visibility_map
 from scout.kb.reader import resolve_reader
+from scout.linear_activity import OwnActivity, fetch_own_activity
 
 OUTPUT_FILENAME = "session-context.json"
 KB_DATES_CACHE_FILENAME = "kb-dates.cache.json"
@@ -80,6 +81,22 @@ class SessionContext:
     pr_review_requested: list[dict] = field(default_factory=list)
     # One row per task entity: its frontmatter fields, "path" and "visibility".
     personal_tasks: list[dict[str, Any]] = field(default_factory=list)
+    # The user's own Linear actions since the last run (scout.linear_activity): one row per issue,
+    # {"identifier", "title", "url", "state", "actions", "last_at"}. None unless the status is
+    # "fetched"; `action-items check-linear-delta` then asks the session for the report instead.
+    linear_own_activity: list[dict[str, Any]] | None = None
+    linear_own_activity_since: str = ""
+    # "fetched" | "no_key" | "failed: <why>" | "skipped" (a reader that sees nothing) |
+    # "skipped: <type> session" (dreaming and research don't report it)
+    linear_own_activity_status: str = ""
+    linear_own_activity_truncated: bool = False  # a fetch limit cut it: the session looks past it
+    # Every 🔴 project, labelled, with the Slack channels its `slack_channels:` frontmatter declares:
+    # {"project", "path", "visibility", "channels": [{"id", "name"}]}. `action-items check-red-polls`.
+    red_project_channels: list[dict[str, Any]] = field(default_factory=list)
+    # Today's file as it stood before the session: its 🪵 Run notes entries' first lines and the lines
+    # under the digest's `### Your Linear Activity`. The two checks count only what this run adds.
+    run_notes_before: list[str] = field(default_factory=list)
+    linear_report_before: list[str] = field(default_factory=list)
 
 
 # ----- KB date extraction with mtime cache --------------------------------
@@ -294,32 +311,110 @@ def get_pr_review_requested() -> list[dict]:
     )
 
 
-def get_personal_tasks(scout_dir: Path, reader: str | None = None) -> list[dict[str, Any]]:
+def _graph(scout_dir: Path, reader: str | None) -> Any | None:
+    """The labelled knowledge graph, or None for a reader that sees nothing, no KB, or any failure."""
+    from scout.kb.read import load_graph
+
+    who = reader if reader is not None else resolve_reader(None, os.environ)
+    if who not in FULL_READERS or not (scout_dir / "knowledge-base").is_dir():
+        return None
+    try:
+        return load_graph(scout_dir, who)
+    except Exception:
+        return None
+
+
+_LOAD = object()  # `graph=` default: load it here
+
+
+def _query(graph: Any | None, type_: str) -> list[dict[str, Any]]:
+    if graph is None:
+        return []
+    try:
+        return list(graph.query(type=type_))
+    except Exception:
+        return []
+
+
+def get_personal_tasks(scout_dir: Path, reader: str | None = None, *, graph: Any = _LOAD) -> list[dict[str, Any]]:
     """Every task entity, labelled, from the engine's ``KnowledgeGraph``.
 
     Was the vault ``parser.py query --type task`` text, which needed a
     ``python3`` (and now ``scoutctl``) on PATH. Each row is the entity's
     frontmatter plus ``path`` and ``visibility``. Empty on any failure, and
-    for a reader that sees nothing.
+    for a reader that sees nothing. ``graph`` is one already loaded (None: none).
     """
-    from scout.kb.read import load_graph
-
-    who = reader if reader is not None else resolve_reader(None, os.environ)
-    if who not in FULL_READERS or not (scout_dir / "knowledge-base").is_dir():
-        return []
-    try:
-        graph = load_graph(scout_dir, who)
-        rows = graph.query(type="task")
-    except Exception:
-        return []
     out: list[dict[str, Any]] = []
-    for entity in rows:
+    for entity in _query(_graph(scout_dir, reader) if graph is _LOAD else graph, "task"):
         label = entity.get("_label") or {}
         row = {k: v for k, v in entity.items() if not k.startswith("_")}
         row["path"] = label.get("path", "")
         row["visibility"] = "normal" if label.get("visibility") == "normal" else "private"
         out.append(row)
     return sorted(out, key=lambda r: r["path"])
+
+
+_SLACK_CHANNEL_ID = re.compile(r"\b[CG][A-Z0-9]{8,}\b")
+_SLACK_CHANNEL_NAME = re.compile(r"#[\w.-]+")
+RED = "🔴"
+# Session types that never report the user's own Linear activity, so the pre-fetch skips the call.
+NO_LINEAR_SESSIONS = ("dreaming", "research")
+
+
+def _channel(raw: object) -> dict[str, str] | None:
+    """One ``slack_channels:`` entry as ``{"id", "name"}``: ``{id, name}`` or a string naming either."""
+    if isinstance(raw, dict):
+        cid, name = str(raw.get("id") or "").strip(), str(raw.get("name") or "").strip()
+    else:
+        text = str(raw or "")
+        found_id, found_name = _SLACK_CHANNEL_ID.search(text), _SLACK_CHANNEL_NAME.search(text)
+        cid = found_id.group(0) if found_id else ""
+        name = found_name.group(0) if found_name else ""
+    if name and not name.startswith("#"):
+        name = f"#{name}"
+    return {"id": cid, "name": name} if cid or name else None
+
+
+def get_red_project_channels(scout_dir: Path, reader: str | None = None, *, graph: Any = _LOAD) -> list[dict[str, Any]]:
+    """Every 🔴 project (by ``priority`` or ``status``) and the Slack channels it declares.
+
+    The Slack connector's 🔴 Project Channel Poll reads each of these channels
+    directly every briefing and consolidation. A 🔴 project with no
+    ``slack_channels:`` is listed with no channels, so the check can say so.
+    Empty on any failure, and for a reader that sees nothing. ``graph`` is one
+    already loaded (None: none).
+    """
+    out: list[dict[str, Any]] = []
+    for entity in _query(_graph(scout_dir, reader) if graph is _LOAD else graph, "project"):
+        if RED not in f"{entity.get('priority') or ''} {entity.get('status') or ''}":
+            continue
+        label = entity.get("_label") or {}
+        raw = entity.get("slack_channels") or []
+        channels = [c for c in (_channel(r) for r in (raw if isinstance(raw, list) else [raw])) if c]
+        path = label.get("path", "")
+        out.append(
+            {
+                "project": str(entity.get("name") or Path(path).stem),
+                "path": path,
+                "visibility": "normal" if label.get("visibility") == "normal" else "private",
+                "channels": channels,
+            }
+        )
+    return sorted(out, key=lambda r: r["path"])
+
+
+def get_daily_before(scout_dir: Path, day: date) -> tuple[list[str], list[str]]:
+    """Today's 🪵 Run notes entries' first lines and the lines under ``### Your Linear Activity``,
+    as they stand before the session. Empty when there is no file yet."""
+    from scout.action_items.linear_delta import report_lines
+    from scout.action_items.prefetched import run_note_entries, unfenced
+
+    try:
+        text = paths.action_items_daily_path(scout_dir, date=day).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return [], []
+    lines = unfenced(text.splitlines())
+    return [entry[0] for entry in run_note_entries(lines)], report_lines(lines) or []
 
 
 # ----- driver -------------------------------------------------------------
@@ -358,6 +453,19 @@ def gather(
             rel: {"last_updated": when, "visibility": labels.get(rel, "private")} for rel, when in dates.items()
         }
 
+    linear_rows: list[dict[str, Any]] | None = None
+    linear_since, linear_truncated = "", False
+    if not full:
+        linear_status = "skipped"
+    elif any(t in session_type for t in NO_LINEAR_SESSIONS):
+        linear_status = f"skipped: {session_type} session"
+    else:
+        linear = get_linear_own_activity(target, now_dt)
+        linear_rows, linear_since, linear_truncated = linear.issues, linear.since, linear.truncated
+        linear_status = f"{linear.status}: {linear.error}" if linear.error else linear.status
+    graph = _graph(target, reader)
+    run_notes_before, linear_report_before = get_daily_before(target, now_dt.date()) if full else ([], [])
+
     return SessionContext(
         generated_at=generated_at,
         session_type=session_type,
@@ -365,8 +473,20 @@ def gather(
         kb_file_dates=kb_dates,
         pr_authored=get_pr_authored(),
         pr_review_requested=get_pr_review_requested(),
-        personal_tasks=get_personal_tasks(target, reader),
+        personal_tasks=get_personal_tasks(target, reader, graph=graph),
+        linear_own_activity=linear_rows,
+        linear_own_activity_since=linear_since,
+        linear_own_activity_status=linear_status,
+        linear_own_activity_truncated=linear_truncated,
+        red_project_channels=get_red_project_channels(target, reader, graph=graph),
+        run_notes_before=run_notes_before,
+        linear_report_before=linear_report_before,
     )
+
+
+def get_linear_own_activity(scout_dir: Path, now: datetime) -> OwnActivity:
+    """The user's own Linear actions since the last run; see :mod:`scout.linear_activity`."""
+    return fetch_own_activity(scout_dir, now=now)
 
 
 def write_context(ctx: SessionContext, output_path: Path) -> None:
@@ -414,10 +534,13 @@ __all__ = [
     "extract_last_updated",
     "gather",
     "gather_kb_file_dates",
+    "get_daily_before",
     "get_git_recent",
+    "get_linear_own_activity",
     "get_personal_tasks",
     "get_pr_authored",
     "get_pr_review_requested",
+    "get_red_project_channels",
     "main",
     "run",
     "write_context",

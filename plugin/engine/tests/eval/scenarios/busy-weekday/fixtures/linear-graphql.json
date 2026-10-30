@@ -1,0 +1,67 @@
+{
+  "data": {
+    "viewer": {"id": "user-alex", "name": "Alex Example"},
+    "issues": {
+      "nodes": [
+        {
+          "identifier": "PROJ-1212",
+          "title": "Ship the catalog search filters",
+          "url": "https://linear.app/example-org/issue/PROJ-1212",
+          "createdAt": "{{d-9}}T10:00:00Z",
+          "state": {"name": "In Review"},
+          "creator": {"id": "user-alex"},
+          "history": {
+            "nodes": [
+              {
+                "createdAt": "{{today}}T05:20:00Z",
+                "actor": {"id": "user-alex"},
+                "fromState": {"name": "In Progress"},
+                "toState": {"name": "In Review"}
+              }
+            ]
+          },
+          "comments": {"nodes": []}
+        },
+        {
+          "identifier": "PROJ-1213",
+          "title": "Add usage metering to the widget catalog",
+          "url": "https://linear.app/example-org/issue/PROJ-1213",
+          "createdAt": "{{today}}T05:30:00Z",
+          "state": {"name": "Todo"},
+          "creator": {"id": "user-alex"},
+          "history": {"nodes": [{"createdAt": "{{today}}T05:30:00Z", "actor": {"id": "user-alex"}}]},
+          "comments": {"nodes": []}
+        },
+        {
+          "identifier": "OPS-315",
+          "title": "Size the gateway pool for the catalog launch",
+          "url": "https://linear.app/example-org/issue/OPS-315",
+          "createdAt": "{{d-4}}T09:00:00Z",
+          "state": {"name": "In Progress"},
+          "creator": {"id": "user-priya"},
+          "history": {"nodes": []},
+          "comments": {"nodes": [{"createdAt": "{{today}}T05:40:00Z"}]}
+        },
+        {
+          "identifier": "PROJ-1207",
+          "title": "Write the rollout notes for the widgets launch",
+          "url": "https://linear.app/example-org/issue/PROJ-1207",
+          "createdAt": "{{d-6}}T09:00:00Z",
+          "state": {"name": "Done"},
+          "creator": {"id": "user-priya"},
+          "history": {
+            "nodes": [
+              {
+                "createdAt": "{{today}}T05:10:00Z",
+                "actor": {"id": "user-priya"},
+                "fromState": {"name": "In Review"},
+                "toState": {"name": "Done"}
+              }
+            ]
+          },
+          "comments": {"nodes": []}
+        }
+      ]
+    }
+  }
+}
