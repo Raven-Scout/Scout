@@ -26,20 +26,70 @@ fi
 
 export SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-$SCOUT_DIR}"
 
+cd "$SCOUT_DIR" || { echo "post-session-backfill.sh: SCOUT_DIR not found ($SCOUT_DIR)" >&2; exit 0; }
+WATCH=(action-items)
+if [ -f .scout-state/id-map.json ] && ! git check-ignore -q .scout-state/id-map.json; then
+    WATCH+=(.scout-state/id-map.json)
+fi
+
+# Snapshot the dirty set BEFORE the backfill runs.
+#
+# This step is the difference between committing our own edits and committing
+# whatever the session happened to leave behind. The session normally commits
+# its own work, but a session that dies mid-write does not — and a run that is
+# killed between "rewrite the daily file" and "write the items back" leaves a
+# truncated daily file sitting in the tree. Staging all of action-items/ then
+# hands that truncation a reassuring "chore: backfill prefixes" subject and
+# makes it permanent. That is not hypothetical: it cost a vault its entire open
+# item list on 2026-10-24, when a briefing died on a network error at 09:09 and
+# the backfill committed the 807-line deletion nine minutes later.
+#
+# `--porcelain=v1 -z` so paths with spaces or non-ASCII survive the round trip.
+snapshot() { git status --porcelain=v1 -z -- "${WATCH[@]}" | tr '\0' '\n'; }
+BEFORE="$(snapshot)"
+
 "$SCOUTCTL_BIN" action-items backfill-prefixes ${1:+"$1"} || true
 
-# Commit only the changes the backfill introduced. The session already
-# committed its own work, so a non-empty diff under action-items/ (plus the
-# id-map registration) is the prefix edits.
-cd "$SCOUT_DIR" || { echo "post-session-backfill.sh: SCOUT_DIR not found ($SCOUT_DIR)" >&2; exit 0; }
-PATHS_TO_COMMIT=(action-items)
-if [ -f .scout-state/id-map.json ] && ! git check-ignore -q .scout-state/id-map.json; then
-    PATHS_TO_COMMIT+=(.scout-state/id-map.json)
+AFTER="$(snapshot)"
+
+warn_carried() {
+    [ -n "$1" ] || return 0
+    echo "post-session-backfill.sh: leaving pre-existing uncommitted changes alone:" >&2
+    printf '%s\n' "$1" >&2
+}
+
+if [ "$BEFORE" = "$AFTER" ]; then
+    # The status set is unchanged, so nothing here is demonstrably ours:
+    # either backfill-prefixes was a no-op, or it edited a file the session
+    # had already left dirty and we cannot separate the two. Commit nothing.
+    # Say so, loudly — an uncommitted daily file after a run is a symptom.
+    warn_carried "$AFTER"
+    exit 0
 fi
-# Use porcelain rather than `git diff --quiet` so newly-created (untracked)
-# files such as a first-time id-map.json are also detected. No `2>/dev/null`:
-# a genuine git error should surface, not be swallowed.
-if [ -n "$(git status --porcelain -- "${PATHS_TO_COMMIT[@]}")" ]; then
-    git add "${PATHS_TO_COMMIT[@]}"
-    git commit -m "chore(action-items): backfill stable [#XXXX] prefixes" >/dev/null
+
+# Stage only the paths whose status the backfill actually changed. A path that
+# was already dirty before we ran, and is dirty in the same way after, is the
+# session's uncommitted work and is left alone (and reported, because an
+# uncommitted daily file is itself a symptom worth seeing in the run log).
+CHANGED=()
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$BEFORE" in
+        *"$line"*) continue ;;   # unchanged by us
+    esac
+    CHANGED+=("${line:3}")
+done <<EOF
+$AFTER
+EOF
+
+warn_carried "$(comm -12 <(printf '%s\n' "$BEFORE" | sort) <(printf '%s\n' "$AFTER" | sort) | sed '/^$/d')"
+
+if [ ${#CHANGED[@]} -eq 0 ]; then
+    exit 0
 fi
+
+git add -- "${CHANGED[@]}"
+if git diff --cached --quiet; then
+    exit 0
+fi
+git commit -m "chore(action-items): backfill stable [#XXXX] prefixes" >/dev/null
