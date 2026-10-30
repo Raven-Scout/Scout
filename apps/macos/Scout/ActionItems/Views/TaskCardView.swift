@@ -113,6 +113,7 @@ struct TaskCardView: View {
                 if selection != nil {
                     selectionButton
                 }
+                // Not selectable: a click on the title opens or closes the card.
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
@@ -497,6 +498,7 @@ struct TaskCardView: View {
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Status.err)
                     .padding(.top, 2)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -528,6 +530,7 @@ struct TaskCardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .textSelection(.enabled)
         }
         .padding(.vertical, 6)
         .padding(.leading, CGFloat(task.indentLevel) * 24 + 16)
