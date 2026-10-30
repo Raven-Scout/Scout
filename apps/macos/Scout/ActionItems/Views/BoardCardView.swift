@@ -29,12 +29,15 @@ struct BoardCardView: View {
                 .lineLimit(density == .compact ? 2 : 3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
             footer
+                .textSelection(.enabled)
             if let launchError {
                 Text(launchError)
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .padding(density == .compact ? 8 : 12)
@@ -58,6 +61,7 @@ struct BoardCardView: View {
                 Text("#\(prefix)")
                     .font(DS.mono(10.5, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
+                    .textSelection(.enabled)
             }
             Spacer(minLength: 0)
             if Self.showsLaunchMenu(for: task) {

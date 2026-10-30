@@ -262,3 +262,13 @@ This
 Vendor
 Which
 Wrap
+
+# --- busy-briefing connector-rule seeds (Linear own activity, 🔴 channel poll) ---
+Heads
+In
+Nothing
+Numbers
+Poll
+Progress
+Ran
+Size

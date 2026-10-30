@@ -68,14 +68,15 @@ Urgency is **capped by how far away the deadline is** — distance sets a *ceili
 
 A deadline that passed with nobody acting on it is no longer today's work. Without this rule a past-due task stays 🔴 for good, and the few that really are urgent get lost among them.
 
-For each 🔴 or 🟡 task whose due date has passed, count its **quiet days**: the calendar days since the later of its due date and the last new evidence on it (a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}), as its context note dates that evidence. Then:
+The runner does the counting. `.scout-cache/session-context.json` → `past_due_tasks` lists each 🔴 or 🟡 task whose `due <date>` has passed (and each one this rule parked) with its **quiet days**, the calendar days since the later of its due date and the last new evidence on it, and its `branch`. Follow the branch:
 
-- **Under 7 quiet days:** treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
-- **7 or more:** 🟡 at most. The first time, whether you move it down from 🔴 or it was already 🟡, rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `stepped down, past due with no news`.
-- **14 days after that line, still with no news:** move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
-- **New evidence restarts the count.** Record it, dated, in the context note, and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive.
-- A task snoozed past today is skipped: the snooze is {{USER_NAME}}'s decision.
-- A recurring task the cadence computer reports `overdue` is 🔴 on its due day and the 2 days after. On the 3rd day past due with no completion evidence it steps down to 🟡 with the question and the note line (without waiting for 7 quiet days), and parks 14 days after that line, as above.
+- **`hold`** (under 7 quiet days; a recurring `[[recurring-tasks/…]]` task, its due day and the 2 days after): treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
+- **`step_down`:** 🟡 at most. The first time (`stepped_down` is null), rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `- YYYY-MM-DD: stepped down, past due with no news`.
+- **`park`** (14 days after that line, still with no news): move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
+
+**New evidence restarts the count**: a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}. Record it as a dated line in the context note and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive. The count reads every dated note line as evidence except the step-down line, so never add a dated line that only says nothing happened. A task snoozed past today isn't listed: the snooze is {{USER_NAME}}'s decision.
+
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-demotion --data-dir {{SCOUT_DIR}}`. Exit 1 names each task off its branch: fix it and run it again. Exit 2 (it couldn't check): if the context file is missing or from another day, run `scripts/scoutctl pre-session data <run mode>` once and check again; otherwise add `demotion check could not run: <its message>` to this run's 🪵 Run notes entry and go on. Never edit `session-context.json` to make it pass.
 
 This is demotion within view: the task keeps its row and its `[#TAG]`, so the count-guard and the dropoff audit see no change. A parked task nobody touches leaves through the 60-day *Stale Items Auto-Archive*, never by being dropped.
 
