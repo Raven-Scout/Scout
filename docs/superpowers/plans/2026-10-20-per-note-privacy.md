@@ -198,7 +198,7 @@
 - Modify: `plugin/skills/scout-ask/SKILL.md` per spec §6.3 row 1; `plugin/CHANGELOG.md`
 - Test: `tests/unit/test_shell_portability.py` (already globs skills); a grep test that the skill has no `rg … knowledge-base`, `ls knowledge-base`, or `parser.py`
 
-- [ ] **Step 1: Failing grep test.** **Step 2: Edit the skill** (`--reader "${SCOUT_READER:-owner}"` on every call). **Step 3: Run** — PASS. **Step 4: Commit** `feat(skills): scout-ask reads through scoutctl kb`.
+- [ ] **Step 1: Failing grep test.** **Step 2: Edit the skill** (no `--reader`: the ambient reader, spec §6.3; an owner fallback would widen `autonomous` and fail). **Step 3: Run** — PASS. **Step 4: Commit** `feat(skills): scout-ask reads through scoutctl kb`.
 
 ### Task 11: Sync labels (with `scoutctl vault sync`)
 

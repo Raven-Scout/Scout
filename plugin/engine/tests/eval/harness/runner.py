@@ -28,7 +28,13 @@ from .checks.daily import body_budget, context_note, no_collapse, waiting_format
 from .checks.demotion import demotion
 from .checks.no_drop import no_drop
 from .checks.placement import placement
-from .checks.privacy_canary import PrivacyOutputs, owner_surfaces_required, privacy_canary, privacy_hygiene
+from .checks.privacy_canary import (
+    LABEL_COMMAND,
+    PrivacyOutputs,
+    owner_surfaces_required,
+    privacy_canary,
+    privacy_hygiene,
+)
 from .checks.run import dropoff_caught, no_false_outage, outage_reported
 from .claude_shim import SHIM
 from .dates import render_dates
@@ -282,12 +288,28 @@ def read_privacy_outputs(
     )
 
 
+def read_kb_labels(vault: Path) -> dict[str, bool]:
+    """``args_hash`` → private, from the kb-read-label hook's rows in ``.scout-logs/kb-reads.jsonl``."""
+    log = vault / ".scout-logs" / "kb-reads.jsonl"
+    out: dict[str, bool] = {}
+    if not log.is_file():
+        return out
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("command") == LABEL_COMMAND and isinstance(row.get("args_hash"), str):
+            out[row["args_hash"]] = out.get(row["args_hash"], False) or bool(row.get("private_paths"))
+    return out
+
+
 def _score_one(
     name: str, scenario: Scenario, vault: Path, today: date, calls_log: Path, transcript: Sequence[ToolCall]
 ) -> CheckResult:
     """The privacy checks, which read only what a run sent and ran (and the daily file, when its mode owns it)."""
     if name == "privacy_hygiene":
-        return privacy_hygiene(transcript)
+        return privacy_hygiene(transcript, read_kb_labels(vault), (str(vault), str(vault.resolve())))
     return privacy_canary(
         read_privacy_outputs(vault, calls_log, today, transcript), scenario.permit_canary, scenario.mode
     )
