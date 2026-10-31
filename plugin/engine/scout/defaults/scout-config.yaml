@@ -111,8 +111,19 @@ agent_sessions:
 # Per-vault extra budgets go in a top-level `kb_budgets: {glob: bytes}` map,
 # which is checked BEFORE these defaults. Mode `report` logs findings and
 # never blocks; `block` refuses the commit (override: SCOUT_LINT_OVERRIDE).
+# Privacy findings block in every mode.
 kb_lint:
   mode: report
+  # Mode per path: an ordered list, and the FIRST matching rule decides a
+  # finding's mode; a path no rule matches gets `mode` above. A rule is
+  # {glob, mode, exclude: [globs], exclude_logs: bool, checks: [check ids]}:
+  # it matches when `glob` matches, no `exclude` glob does, the path is not a
+  # `log_globs` file (with `exclude_logs: true`) and, if `checks` is given, the
+  # finding's check is listed. An excluded path falls through to the next rule.
+  # Example — block in the KB except its log files, report elsewhere:
+  #   path_modes:
+  #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true}
+  path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500
   exclude_globs:

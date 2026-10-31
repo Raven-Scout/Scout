@@ -333,6 +333,89 @@ def test_run_hook_override_allows_and_logs(kb_repo) -> None:
     assert row["files"] == [PROJECT]
 
 
+SESSION_SHARD = "knowledge-base/session-log/2026-09.md"
+DAILY_NOTE = "action-items/backlog.md"
+
+
+def _per_path(kb_repo, mode: str = "report") -> None:
+    """Block in the KB except its log files; everything else gets ``mode``."""
+    kb_repo.write(
+        "scout-config.yaml",
+        f"kb_lint:\n  mode: {mode}\n"
+        "  path_modes:\n    - {glob: 'knowledge-base/**', mode: block, exclude_logs: true}\n"
+        "kb_budgets:\n  'knowledge-base/projects/**': 100\n  'action-items/**': 100\n",
+    )
+
+
+def test_per_path_report_paths_never_block(kb_repo) -> None:
+    _per_path(kb_repo)
+    kb_repo.stage(SESSION_SHARD, "- " + "y" * 600 + "\n")  # mega-line in a log file
+    kb_repo.stage(DAILY_NOTE, "x" * 200 + "\n")  # over budget outside the KB
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    text = out.getvalue()
+    assert "(mode: report, per path)" in text
+    assert "[mega-line] (report)" in text and "[size] (report)" in text
+    assert "report mode — not blocking" in text
+
+
+def test_per_path_block_path_blocks_and_only_its_files_are_overridden(kb_repo) -> None:
+    _per_path(kb_repo)
+    kb_repo.stage(PROJECT, "x" * 200 + "\n")
+    kb_repo.stage(SESSION_SHARD, "- " + "y" * 600 + "\n")
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 1
+    text = out.getvalue()
+    assert f"{PROJECT} [size] " in text  # enforced: no (report) tag
+    assert "[mega-line] (report)" in text
+    assert "Commit blocked." in text and "marked (report)" in text
+    rows = [json.loads(r) for r in (kb_repo.root / ".scout-logs" / "kb-lint.jsonl").read_text().splitlines()]
+    by_path = {r["path"]: (r["lint_mode"], r["enforced"]) for r in rows}
+    assert by_path == {PROJECT: ("block", True), SESSION_SHARD: ("report", False)}
+
+    env = {OVERRIDE_ENV: "two fix attempts failed", "SCOUT_MODE": "morning-briefing"}
+    assert run_hook(kb_repo.root, env=env, out=io.StringIO()) == 0
+    row = json.loads((kb_repo.root / ".scout-logs" / "lint-overrides.log").read_text().splitlines()[0])
+    assert row["files"] == [PROJECT]
+
+
+def test_global_block_with_a_report_rule_lets_that_path_through(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "kb_lint:\n  mode: block\n  path_modes:\n    - {glob: 'action-items/**', mode: report}\n"
+        "kb_budgets:\n  'action-items/**': 100\n  'knowledge-base/projects/**': 100\n",
+    )
+    kb_repo.stage(DAILY_NOTE, "x" * 200 + "\n")
+    assert run_hook(kb_repo.root, env={}, out=io.StringIO()) == 0
+    kb_repo.stage(PROJECT, "x" * 200 + "\n")
+    assert run_hook(kb_repo.root, env={}, out=io.StringIO()) == 1
+
+
+def test_warnings_never_block_on_a_block_path(kb_repo) -> None:
+    _per_path(kb_repo)
+    kb_repo.stage(PROJECT, "see [[nowhere]]\n")
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    assert "[dangling-link]" in out.getvalue()
+
+
+def test_a_new_check_plugs_into_the_registry_and_its_path_mode(kb_repo, monkeypatch) -> None:
+    from scout.kb import lint
+
+    def loose_file(f: lint.StagedFile) -> list[lint.Finding]:
+        return [lint.Finding(f.rel, "loose-file", True, "loose file")]
+
+    monkeypatch.setattr(lint, "STAGED_CHECKS", (*lint.STAGED_CHECKS, loose_file))
+    kb_repo.write(
+        "scout-config.yaml",
+        "kb_lint:\n  mode: block\n  path_modes:\n    - {glob: '**', mode: report, checks: [loose-file]}\n",
+    )
+    kb_repo.stage(PROJECT, "fine\n")
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    assert "[loose-file] (report)" in out.getvalue()
+
+
 def test_run_hook_clean_commit_writes_nothing(kb_repo) -> None:
     kb_repo.stage(PROJECT, "fine\n")
     assert run_hook(kb_repo.root, env={}, out=io.StringIO()) == 0

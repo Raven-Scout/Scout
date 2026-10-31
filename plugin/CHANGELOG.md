@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **kb-lint mode per path** (`engine/scout/kb/lint_config.py`, `engine/scout/kb/lint.py`, `engine/scout/defaults/scout-config.yaml`, `phases/core/write-protocol.md`). `kb_lint.mode` was all or nothing, so a vault couldn't make the KB blocking while action items and log files stayed in report mode. `kb_lint.path_modes` is an ordered list of `{glob, mode, exclude, exclude_logs, checks}` rules. The first rule that matches a finding sets its mode, and a path no rule matches keeps the global `mode`. `exclude` globs and `exclude_logs: true` (the `log_globs` files) send a path on to the next rule. `checks` limits a rule to the named checks, so a new check can start in report mode where the KB already blocks. `- {glob: "knowledge-base/**", mode: block, exclude_logs: true}` blocks the KB except its logs. The pre-commit hook and `scoutctl kb lint --staged` refuse a commit only for a finding on a block-mode path. The output tags a finding that only logs `(report)`, `SCOUT_LINT_OVERRIDE` logs only the blocked files, and each `.scout-logs/kb-lint.jsonl` row records its path's `lint_mode` and whether it was `enforced`. Privacy findings still block in every mode. A plain `kb_lint.mode` works as before, and a mode typo in a rule means `report`. The staged checks now run from one list (`STAGED_CHECKS`), so a new check is one function there.
+
 ## [0.18.6] - 2026-10-31
 
 ### Added

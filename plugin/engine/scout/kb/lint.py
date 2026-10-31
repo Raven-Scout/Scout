@@ -1,9 +1,10 @@
 """`scoutctl kb lint` — the pre-commit ratchet that keeps the vault from
 growing mega-files.
 
-Blocking (in ``block`` mode): an over-budget file that grew, a new file over
-budget, an added run-diary heading outside log paths, an added line over the
-line limit. Warnings: a topic-note paragraph with no citation, a wikilink that
+Blocking (where the path's mode is ``block``; ``kb_lint.mode`` or a
+``kb_lint.path_modes`` rule, see ``scout.kb.lint_config``): an over-budget file
+that grew, a new file over budget, an added run-diary heading outside log
+paths, an added line over the line limit. Warnings: a topic-note paragraph with no citation, a wikilink that
 resolves nowhere. Only ADDED lines are line-checked, so existing debt never
 blocks a commit; it drains through the dreaming shrink pass instead. A line
 that only re-adds a removed one with a cosmetic edit (checkbox tick, short-id
@@ -17,7 +18,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -321,9 +322,64 @@ def _check_context_notes(repo: Path, rel: str, added: list[tuple[int, str]], sta
     return out
 
 
+@dataclass
+class StagedFile:
+    """What a staged-diff check sees for one in-scope file."""
+
+    repo: Path
+    cfg: LintConfig
+    rel: str
+    # The HEAD path the size check compares against (a daily file's baseline when new).
+    size_base: str | None
+    # The really-new lines (``_new_lines``), 1-based.
+    added: list[tuple[int, str]]
+    staged_rels: set[str]
+    # Every wikilink target in the vault, built once per lint on first use.
+    known_targets: Callable[[], set[str]]
+
+
+StagedCheck = Callable[[StagedFile], list[Finding]]
+
+
+def _size(f: StagedFile) -> list[Finding]:
+    return _check_size(f.repo, f.rel, f.size_base, f.cfg)
+
+
+def _lines(f: StagedFile) -> list[Finding]:
+    return _check_lines(f.rel, f.added, f.cfg)
+
+
+def _context_notes(f: StagedFile) -> list[Finding]:
+    return _check_context_notes(f.repo, f.rel, f.added, f.staged_rels)
+
+
+def _citations(f: StagedFile) -> list[Finding]:
+    if not f.cfg.is_topic(f.rel):
+        return []
+    return _check_citations(f.rel, staged_text(f.repo, f.rel), {n for n, _ in f.added})
+
+
+def _links(f: StagedFile) -> list[Finding]:
+    return _check_links(f.rel, f.added, f.known_targets())
+
+
+# The checks `lint_staged` runs on each in-scope staged file, in output order.
+# A new check is one function here; it reports `Finding(blocking=True)` for
+# what should refuse a commit, and the path's mode (`LintConfig.mode_for`,
+# which a `path_modes` rule can scope to named checks) decides whether it does.
+STAGED_CHECKS: tuple[StagedCheck, ...] = (_size, _lines, _context_notes, _citations, _links)
+
+
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
+
+    def known_targets() -> set[str]:
+        nonlocal known
+        if known is None:
+            known = _link_targets(repo)
+        return known
+
     staged_list = staged_paths(repo)
     staged_rels = {sp.rel for sp in staged_list}
     for sp in staged_list:
@@ -336,15 +392,10 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
             if baseline is not None:
                 size_base = baseline
                 baseline_text = head_text(repo, baseline)
-        result.findings += _check_size(repo, sp.rel, size_base, cfg)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
-        result.findings += _check_lines(sp.rel, added, cfg)
-        result.findings += _check_context_notes(repo, sp.rel, added, staged_rels)
-        if cfg.is_topic(sp.rel):
-            result.findings += _check_citations(sp.rel, staged_text(repo, sp.rel), {n for n, _ in added})
-        if known is None:
-            known = _link_targets(repo)
-        result.findings += _check_links(sp.rel, added, known)
+        staged = StagedFile(repo, cfg, sp.rel, size_base, added, staged_rels, known_targets)
+        for check in STAGED_CHECKS:
+            result.findings += check(staged)
     return result
 
 
@@ -373,24 +424,38 @@ def _hard(f: Finding) -> bool:
     return f.blocking and f.check in PRIVACY_BLOCKING
 
 
+def enforced(f: Finding, cfg: LintConfig | None) -> bool:
+    """Whether ``f`` refuses the commit: a privacy block always; any other
+    blocking finding only where its path's mode is ``block``. Without a config
+    (it failed to load) the size/diary lint fails open."""
+    if _hard(f):
+        return True
+    return f.blocking and cfg is not None and cfg.mode_for(f.path, f.check) == "block"
+
+
 def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
-    mode = cfg.mode if cfg is not None else "?"
+    mode = cfg.mode_label if cfg is not None else "?"
+    per_path = cfg is not None and bool(cfg.path_modes)
     lines = [f"kb-lint: {len(result.blocking)} blocking, {len(result.warnings)} warning(s) (mode: {mode})"]
     for f in result.findings:
         mark = "✗" if f.blocking else "!"
         where = f"{f.path}:{f.line}" if f.line else f.path
-        lines.append(f"  {mark} {where} [{f.check}] {f.message}")
+        tail = " (report)" if per_path and f.blocking and not enforced(f, cfg) else ""
+        lines.append(f"  {mark} {where} [{f.check}]{tail} {f.message}")
     soft = [f for f in result.blocking if not _hard(f)]
+    blocked = [f for f in soft if enforced(f, cfg)]
     if any(_hard(f) for f in result.blocking):
         lines.append(
             "Commit blocked by the privacy checks: they block in every lint mode, and "
             f"{OVERRIDE_ENV} does not apply to them."
         )
-    if soft and mode == "block":
+    if blocked:
         lines.append(
             "Commit blocked. Fix the files above — or, only after two failed attempts, re-run with "
             f'{OVERRIDE_ENV}="<reason>" (logged; the next dreaming run must clean it up).'
         )
+        if len(blocked) < len(soft):
+            lines.append("(findings marked (report) are in report-mode paths — logged, not blocking)")
     elif soft:
         lines.append("(report mode — not blocking; findings logged to .scout-logs/kb-lint.jsonl)")
     return "\n".join(lines)
@@ -516,15 +581,24 @@ def run_hook(
     result.findings[:0] = privacy
     if not result.findings:
         return 0
-    lint_mode = cfg.mode if cfg else None
     ts = (now or datetime.now(UTC)).isoformat()
     run_mode = env.get("SCOUT_MODE", "interactive")
     logs: Path | None = None
     try:
         logs = paths.logs_dir(main_root(repo))
+        # lint_mode is the finding's own path mode; enforced, whether it refused the commit.
         _append_jsonl(
             logs / "kb-lint.jsonl",
-            [{"ts": ts, "mode": run_mode, "lint_mode": lint_mode, **asdict(f)} for f in result.findings],
+            [
+                {
+                    "ts": ts,
+                    "mode": run_mode,
+                    "lint_mode": cfg.mode_for(f.path, f.check) if cfg else None,
+                    "enforced": enforced(f, cfg),
+                    **asdict(f),
+                }
+                for f in result.findings
+            ],
         )
     except Exception as e:  # noqa: BLE001 - bookkeeping never decides a verdict
         _say(out, f"kb-lint: could not write .scout-logs/kb-lint.jsonl ({type(e).__name__})")
@@ -536,11 +610,12 @@ def run_hook(
             _say(out, _privacy_summary(result.findings))
     if hard:
         return 1
-    if not result.blocking or cfg is None or cfg.mode == "report":
+    blocked = [f for f in result.blocking if enforced(f, cfg)]
+    if not blocked:
         return 0
     reason = env.get(OVERRIDE_ENV, "").strip()
     if reason:
-        files = sorted({f.path for f in result.blocking})
+        files = sorted({f.path for f in blocked})
         try:
             if logs is None:
                 raise OSError("no logs directory")
