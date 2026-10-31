@@ -188,7 +188,7 @@ def kb_lint(
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
 ) -> None:
-    """Lint the vault's KB structure. Exit 1 = blocked (block mode) or lossless tokens missing."""
+    """Lint the vault's KB structure. Exit 1 = blocked (block-mode path, or privacy) or lossless tokens missing."""
     root = _kb_repo(repo)
     if lossless_rev or lossless_path:
         from scout.kb.lossless import lossless_check

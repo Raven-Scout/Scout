@@ -94,3 +94,109 @@ def test_default_report_excludes(tmp_path: Path) -> None:
 def test_null_budget_means_unlimited(tmp_path: Path) -> None:
     (tmp_path / "scout-config.yaml").write_text("kb_budgets:\n  'knowledge-base/big/**': null\n", encoding="utf-8")
     assert load_lint_config(tmp_path).budget_for("knowledge-base/big/x.md") is None
+
+
+def _path_modes(tmp_path: Path, block: str) -> None:
+    (tmp_path / "scout-config.yaml").write_text("kb_lint:\n" + block, encoding="utf-8")
+
+
+def test_global_mode_alone_applies_to_every_path(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  mode: block\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.path_modes == ()
+    assert cfg.mode_for("knowledge-base/projects/widget/widget.md", "size") == "block"
+    assert cfg.mode_for("action-items/action-items-2026-09-28.md", "mega-line") == "block"
+    assert cfg.mode_label == "block"
+
+
+def test_overlapping_globs_first_match_wins(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  mode: block\n"
+        "  path_modes:\n"
+        "    - {glob: 'knowledge-base/projects/widget/**', mode: report}\n"
+        "    - {glob: 'knowledge-base/**', mode: block}\n"
+        "    - {glob: 'knowledge-base/projects/**', mode: report}\n"
+        "    - {glob: 'action-items/**', mode: report}\n",
+    )
+    cfg = load_lint_config(tmp_path)
+    # The narrow rule listed first wins over the broad one after it ...
+    assert cfg.mode_for("knowledge-base/projects/widget/widget.md", "size") == "report"
+    # ... and a narrower rule listed AFTER a broad match never applies (first match, not most specific).
+    assert cfg.mode_for("knowledge-base/projects/acme-pilot/acme-pilot.md", "size") == "block"
+    assert cfg.mode_for("action-items/action-items-2026-09-28.md", "mega-line") == "report"
+    # No rule matches: the global mode.
+    assert cfg.mode_for("drafts/note.md", "size") == "block"
+    assert cfg.mode_label == "block, per path"
+
+
+def test_excluded_path_falls_through_to_the_next_rule(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  mode: report\n"
+        "  path_modes:\n"
+        "    - glob: 'knowledge-base/**'\n"
+        "      mode: block\n"
+        "      exclude: ['knowledge-base/projects/*/archive/**', 'knowledge-base/inbox/**']\n"
+        "    - {glob: 'knowledge-base/inbox/**', mode: block, checks: [size]}\n",
+    )
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/topics/widget/retrieval.md", "size") == "block"
+    # Excluded, and no later rule matches: the global mode.
+    assert cfg.mode_for("knowledge-base/projects/widget/archive/old.md", "size") == "report"
+    # Excluded from rule 1, caught by rule 2 for the check it names only.
+    assert cfg.mode_for("knowledge-base/inbox/a.md", "size") == "block"
+    assert cfg.mode_for("knowledge-base/inbox/a.md", "mega-line") == "report"
+
+
+def test_exclude_logs_leaves_log_files_to_later_rules(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  mode: report\n  path_modes:\n    - {glob: 'knowledge-base/**', mode: block, exclude_logs: true}\n",
+    )
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/projects/widget/widget.md", "mega-line") == "block"
+    for log in (
+        "knowledge-base/session-log/2026-09.md",
+        "knowledge-base/session-log.md",
+        "knowledge-base/projects/widget/decision-log.md",
+        "knowledge-base/kg-audits/2026-09-28.md",
+    ):
+        assert cfg.mode_for(log, "mega-line") == "report", log
+    assert cfg.mode_for("action-items/action-items-2026-09-28.md", "size") == "report"
+
+
+def test_a_rule_scoped_to_checks_covers_only_those(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  mode: block\n  path_modes:\n    - {glob: '**', mode: report, checks: [future-check]}\n",
+    )
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/x.md", "future-check") == "report"
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "block"
+    # A path-only lookup skips check-scoped rules.
+    assert cfg.mode_for("knowledge-base/x.md") == "block"
+
+
+def test_bad_path_mode_entries(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  mode: report\n"
+        "  path_modes:\n"
+        "    - {glob: 'knowledge-base/a/**', mode: strict}\n"  # a typo reports, never blocks
+        "    - {mode: block}\n"  # no glob: skipped
+        "    - not-a-rule\n"
+        "    - {glob: 'knowledge-base/**', mode: block, exclude: 'knowledge-base/b/**'}\n",
+    )
+    cfg = load_lint_config(tmp_path)
+    assert len(cfg.path_modes) == 2
+    assert cfg.mode_for("knowledge-base/a/x.md", "size") == "report"
+    assert cfg.mode_for("knowledge-base/b/x.md", "size") == "report"  # a scalar exclude works
+    assert cfg.mode_for("knowledge-base/c/x.md", "size") == "block"
+
+
+def test_path_modes_that_is_not_a_list_is_ignored(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  mode: block\n  path_modes: {knowledge-base/**: report}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.path_modes == ()
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "block"

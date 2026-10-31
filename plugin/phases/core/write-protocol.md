@@ -7,7 +7,7 @@ requires: null
 
 ## KB WRITE PROTOCOL — where every fact goes (checked by the pre-commit hook)
 
-The vault is a folder tree of **small, linked documents**, not a journal. A git pre-commit hook (`scoutctl kb lint --staged`) flags a file over its budget, a run-diary heading or a line over the limit. By default (`kb_lint.mode: report`) it only logs them; in `block` mode it refuses the commit. Privacy findings always block. Follow the rules either way. Read this before writing anything.
+The vault is a folder tree of **small, linked documents**, not a journal. A git pre-commit hook (`scoutctl kb lint --staged`) flags a file over its budget, a run-diary heading or a line over the limit. By default (`kb_lint.mode: report`) it only logs them; in `block` mode it refuses the commit. The mode can differ per path (`kb_lint.path_modes`), and the output tags a finding that only logs `(report)`. Privacy findings always block. Follow the rules either way. Read this before writing anything.
 
 ### Every fact has one home
 
