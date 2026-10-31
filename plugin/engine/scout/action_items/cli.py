@@ -802,6 +802,83 @@ def cli_check_demotion(
         raise typer.Exit(code=1)
 
 
+@app.command("check-tier-ceiling")
+def cli_check_tier_ceiling(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="The pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check each dated task in today's file against *Deadline-Distance Ceiling*.
+
+    The due date is the `due <date>` in the task's body (or, if today's body
+    has none, in the newest earlier daily file, then the due date of a Linear
+    issue the task names). 30+ days out: 🟢 at most; 7–29: 🟡 at most; under 7:
+    🔴 allowed; under 3 and your move: 🔴, so a 🟡 task that doesn't say
+    `waiting on` or `nudge` is named. Each open Linear issue assigned to you
+    with a due date (pre-fetched as `linear_assigned_due`) must have a task
+    line in a tier section. Past-due tasks are `check-demotion`'s; tasks with
+    no due date aren't checked. A `- Ceiling override [#TAG] — <reason>` line
+    (or `[PROJ-123]` for an issue) in 🪵 Run notes accepts it as it stands.
+    Run it before committing a briefing or consolidation.
+    Exit codes: 0 = all within their ceiling, 1 = some are not, 2 = cannot check.
+    """
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.tier_ceiling import OVERRIDE_FORMAT, check_tier_ceiling
+
+    name = "check-tier-ceiling"
+    day = _check_day(name, date, data_dir)
+    try:
+        result = check_tier_ceiling(data_dir=data_dir, today=day, context=context)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": [p.to_json() for p in result.checked],
+                    "assigned": None
+                    if result.assigned is None
+                    else [{"identifier": i.identifier, "due": i.due.isoformat()} for i in result.assigned],
+                    "overridden": list(result.overridden),
+                    "findings": [
+                        {"tag": f.tag, "problem": f.problem, "untracked": f.untracked} for f in result.findings
+                    ],
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif not result.passed:
+        n = len(result.findings)
+        sys.stdout.write(f"{name}: {n} task{'s' if n != 1 else ''} off the deadline-distance ceiling:\n")
+        for f in result.findings:
+            sys.stdout.write(f"  {f.label} {f.problem}\n")
+        sys.stdout.write(
+            "Move each to the tier named, and give each Linear issue named a task line; alarm words never raise "
+            "the ceiling and a far due date never drops a task. If the due date in the body is wrong, fix the "
+            f"date. If a task really belongs where it is, add `{OVERRIDE_FORMAT}` (or `[PROJ-123]` for an issue) "
+            "to this run's 🪵 Run notes entry. Then run this again.\n"
+        )
+    else:
+        n = len(result.checked)
+        noted = f" ({len(result.overridden)} by a Ceiling override line)" if result.overridden else ""
+        tasks = (
+            f"all {n} dated task{'s' if n != 1 else ''} within their ceiling"
+            if n
+            else "no open task has a future due date"
+        )
+        issues = "" if not result.assigned else "; every dated Linear issue assigned to you has a task line"
+        sys.stdout.write(f"{name}: {tasks}{issues}{noted}\n")
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(

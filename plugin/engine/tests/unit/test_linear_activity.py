@@ -441,3 +441,68 @@ def test_the_real_post_turns_an_http_error_into_a_fetch_error(monkeypatch: pytes
     monkeypatch.setattr(requests, "post", lambda *_a, **_k: Resp())
     with pytest.raises(la.LinearFetchError, match="HTTP 401"):
         la._post(la.API_URL, {}, "lin_api_test")
+
+
+# ----- dated issues assigned to the user ---------------------------------------------------
+
+
+def _dated(identifier: str, due: str | None, *, assignee: str = ME, state_type: str = "unstarted") -> dict[str, Any]:
+    return _issue(identifier, dueDate=due, assignee={"id": assignee}, state={"name": "Todo", "type": state_type})
+
+
+def test_the_query_asks_for_due_dates_assignees_and_state_types() -> None:
+    assert "dueDate" in la.QUERY and "assignee { id }" in la.QUERY and "state { name type }" in la.QUERY
+
+
+def test_assigned_due_keeps_open_dated_issues_assigned_to_the_user_soonest_first() -> None:
+    issues = [
+        _dated("PROJ-1210", "2026-05-25"),
+        _dated("PROJ-1211", "2026-04-27"),
+        _dated("PROJ-1", "2026-04-20", assignee=PRIYA),  # someone else's
+        _dated("PROJ-2", None),  # no due date
+        _dated("PROJ-3", "2026-04-20", state_type="completed"),
+        _dated("PROJ-4", "2026-04-20", state_type="canceled"),
+        _dated("PROJ-1211", "2026-04-27"),  # both passes can return one issue
+    ]
+    rows = la.assigned_due(ME, issues)
+    assert [(r["identifier"], r["dueDate"]) for r in rows] == [("PROJ-1211", "2026-04-27"), ("PROJ-1210", "2026-05-25")]
+    assert rows[0] == {
+        "identifier": "PROJ-1211",
+        "title": "Title of PROJ-1211",
+        "url": "https://linear.app/example-org/issue/PROJ-1211",
+        "dueDate": "2026-04-27",
+        "state": "Todo",
+    }
+
+
+def test_a_dated_issue_assigned_to_the_user_counts_with_no_action_of_theirs(tmp_path: Path, secrets: Path) -> None:
+    """Priya created and assigned it: no own-activity row, but it is the user's dated work."""
+    _key(secrets)
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=lambda *_: _response(_dated("PROJ-1211", "2026-04-27")))
+    assert got.issues == []
+    assert [r["identifier"] for r in got.assigned_due or []] == ["PROJ-1211"]
+
+
+def test_assigned_due_comes_from_the_users_own_pass_only(tmp_path: Path, secrets: Path) -> None:
+    _key(secrets)
+    passes = iter([_response(_dated("PROJ-1", "2026-04-27")), _response(_dated("PROJ-2", "2026-04-27"))])
+    got = la.fetch_own_activity(tmp_path, now=NOW, post=lambda *_: next(passes))
+    assert [r["identifier"] for r in got.assigned_due or []] == ["PROJ-1"]
+
+
+def test_a_recorded_response_yields_the_dated_issues(
+    tmp_path: Path, secrets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _key(secrets)
+    recorded = tmp_path / "linear-graphql.json"
+    recorded.write_text(json.dumps(_response(_dated("PROJ-1210", "2026-05-25T00:00:00.000Z"))), encoding="utf-8")
+    monkeypatch.setenv("SCOUT_LINEAR_API_URL", f"file://{recorded}")
+    got = la.fetch_own_activity(tmp_path, now=NOW)
+    assert [(r["identifier"], r["dueDate"]) for r in got.assigned_due or []] == [("PROJ-1210", "2026-05-25")]
+
+
+def test_without_a_key_or_on_failure_there_is_no_dated_list(tmp_path: Path, secrets: Path) -> None:
+    assert la.fetch_own_activity(tmp_path, now=NOW).assigned_due is None
+    _key(secrets)
+    failed = la.fetch_own_activity(tmp_path, now=NOW, post=lambda *_: {"errors": [{"message": "Rate limited"}]})
+    assert failed.status == la.FAILED and failed.assigned_due is None

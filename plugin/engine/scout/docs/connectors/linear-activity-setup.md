@@ -43,6 +43,10 @@ Scout keeps working without the key; nothing else changes.
   `scoutctl action-items check-linear-delta`, which wants each of those issues
   under `### Your Linear Activity` in the day's 📋 Scout Digest, on a line that
   run wrote (the digest is shared by the day's runs).
+- The same first pass also gives `linear_assigned_due`: each open issue
+  assigned to you that has a due date, whoever touched it. Before committing,
+  `scoutctl action-items check-tier-ceiling` wants a task line naming each one
+  in a tier of the day's action items, no higher than its due date allows.
 - On any failure (no network, an expired key, an API error) the status says
   `failed: <why>` and the run falls back to asking the connector. The key is
   never written to a log or to the context file.

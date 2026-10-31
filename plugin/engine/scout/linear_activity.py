@@ -20,6 +20,13 @@ catches a move or edit on an issue the user has no other tie to. When the
 first pass, or an issue's history or comments, runs past its limit the result
 says ``truncated``, and the phase asks the session to look past it.
 
+The first pass also yields ``assigned_due``: each open issue assigned to the
+user that has a due date, whoever touched it. A newly assigned issue the user
+never acted on has no own-activity row, and runs left such issues out of the
+action items (busy-briefing eval, 2026-10-30); ``check-tier-ceiling`` names any
+with no task line. It covers issues updated since the last run, the same window,
+so an old untouched one is not asked for again every day.
+
 ``SCOUT_SECRETS_DIR`` moves the secrets dir and ``SCOUT_LINEAR_API_URL`` the
 endpoint. A ``file://`` URL reads a recorded GraphQL response instead of
 calling Linear: the eval harness uses it.
@@ -49,6 +56,7 @@ MAX_LOOKBACK = timedelta(days=7)
 _RUN_MODES = ("briefing", "consolidation")
 
 FETCHED, NO_KEY, FAILED = "fetched", "no_key", "failed"
+_CLOSED = ("completed", "canceled")  # workflow state types an open issue isn't in
 
 # One page of issues matching $filter; their history and the viewer's comments are filtered to
 # the viewer and the window client-side.
@@ -62,8 +70,10 @@ query OwnActivity($filter: IssueFilter!, $first: Int!, $after: String) {{
       title
       url
       createdAt
-      state {{ name }}
+      dueDate
+      state {{ name type }}
       creator {{ id }}
+      assignee {{ id }}
       history(first: {HISTORY_LIMIT}) {{
         pageInfo {{ hasNextPage }}
         nodes {{ createdAt actor {{ id }} fromState {{ name }} toState {{ name }} }}
@@ -106,6 +116,7 @@ class OwnActivity:
     issues: list[dict[str, Any]] | None  # None unless FETCHED
     error: str = ""
     truncated: bool = False  # a limit cut the user's own issues, or one's history or comments
+    assigned_due: list[dict[str, Any]] | None = None  # open issues assigned to the user with a due date
 
 
 def secrets_dir() -> Path:
@@ -258,6 +269,27 @@ def _rows(viewer: str, issues: list[dict[str, Any]], since: datetime) -> list[di
     return [row for _, row in rows]
 
 
+def assigned_due(viewer: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each open issue assigned to ``viewer`` that has a due date, soonest first."""
+    rows: dict[str, dict[str, Any]] = {}
+    for issue in issues:
+        identifier = str(issue.get("identifier") or "")
+        due = issue.get("dueDate")
+        state = issue.get("state") or {}
+        if not identifier or identifier in rows or not isinstance(due, str) or not due:
+            continue
+        if (issue.get("assignee") or {}).get("id") != viewer or state.get("type") in _CLOSED:
+            continue
+        rows[identifier] = {
+            "identifier": identifier,
+            "title": str(issue.get("title") or ""),
+            "url": str(issue.get("url") or ""),
+            "dueDate": due[:10],
+            "state": str(state.get("name") or ""),
+        }
+    return sorted(rows.values(), key=lambda r: (r["dueDate"], r["identifier"]))
+
+
 def own_activity(data: dict[str, Any], since: datetime) -> list[dict[str, Any]]:
     """The issues the viewer acted on after ``since``, from one GraphQL response; newest action first."""
     viewer, issues = _body(data)
@@ -303,7 +335,13 @@ def fetch_own_activity(vault: Path, *, now: datetime | None = None, post: Post =
         viewer, mine, cut = _pages(post, url, key, mine_filter, MINE_PAGES)
         _, others, _ = _pages(post, url, key, updated_filter, WORKSPACE_PAGES)
         truncated = cut or any(_clipped(i) for i in mine)
-        return OwnActivity(FETCHED, window, _rows(viewer, mine + others, since), truncated=truncated)
+        return OwnActivity(
+            FETCHED,
+            window,
+            _rows(viewer, mine + others, since),
+            truncated=truncated,
+            assigned_due=assigned_due(viewer, mine),
+        )
     except LinearFetchError as e:
         return OwnActivity(FAILED, window, None, str(e))
     except Exception as e:  # network, JSON, an unexpected shape: never block the session

@@ -120,6 +120,11 @@ def test_the_recorded_linear_response_yields_exactly_the_seeded_activity(
         "PROJ-1213": ["created"],
         "PROJ-1212": ["moved In Progress → In Review"],
     }
+    # Priya assigned Alex PROJ-1210/1211 with due dates: not Alex's activity, but Alex's dated work.
+    assert [(r["identifier"], r["dueDate"]) for r in got.assigned_due or []] == [
+        ("PROJ-1211", "2026-10-24"),
+        ("PROJ-1210", "2026-11-21"),
+    ]
 
 
 def test_the_mcp_persona_serves_the_same_activity(busy) -> None:

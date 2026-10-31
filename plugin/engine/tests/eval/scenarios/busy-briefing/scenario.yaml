@@ -21,6 +21,8 @@ expected_placement:
   "ref:example-org/widgets#21": [🔴, 🟡]
   "ref:example-org/widgets#22": [🟢]
   "ref:example-org/api#40": [🟢]
+  # PROJ-1210 and PROJ-1211 also reach the pre-fetch as linear_assigned_due: check-tier-ceiling
+  # names either one if no task line does.
   "ref:PROJ-1210": [🟢]
   "ref:PROJ-1211": [🟡]
 

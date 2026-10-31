@@ -295,6 +295,20 @@ def test_gather_carries_a_truncated_fetch(tmp_path: Path, monkeypatch: pytest.Mo
     assert gather("morning-briefing", scout_dir=scout_dir).linear_own_activity_truncated is True
 
 
+def test_gather_carries_the_dated_assigned_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.linear_activity import FETCHED, NO_KEY, OwnActivity
+    from scout.scripts import pre_session_data as psd
+
+    scout_dir = tmp_path / "vault"
+    (scout_dir / "knowledge-base").mkdir(parents=True)
+    due = [{"identifier": "PROJ-1211", "title": "Write it", "url": "", "dueDate": "2026-04-27", "state": "Todo"}]
+    fetched = OwnActivity(FETCHED, "", [], assigned_due=due)
+    monkeypatch.setattr(psd, "get_linear_own_activity", lambda d, now: fetched)
+    assert gather("morning-briefing", scout_dir=scout_dir).linear_assigned_due == due
+    monkeypatch.setattr(psd, "get_linear_own_activity", lambda d, now: OwnActivity(NO_KEY, "", None))
+    assert gather("morning-briefing", scout_dir=scout_dir).linear_assigned_due is None
+
+
 @pytest.mark.parametrize("session_type", ["dreaming", "research"])
 def test_dreaming_and_research_get_no_linear_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_type: str
