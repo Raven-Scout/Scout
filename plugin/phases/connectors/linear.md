@@ -132,7 +132,7 @@ For every issue in the KB's issue tracker file:
 
 Every run must spot-check at least 2-3 issue statuses against Linear as the source of truth. Pick issues that:
 - Are high priority (most impactful if stale)
-- Haven't been verified recently (check the "Last verified" note)
+- Haven't been verified recently (check the file's `last_verified:` frontmatter, or an older file's "Last verified" line)
 - Are referenced by current action items (most likely to cause errors if stale)
 
 ### New Issues

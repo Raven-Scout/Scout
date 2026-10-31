@@ -14,8 +14,8 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 
 **`knowledge-base.md` — Root index**
 - Master navigation table linking to every KB file
-- Key Decisions Log: major decisions with date, decision, and context. Add entries when decisions are made in meetings, messages, or issue trackers. Remove or update entries when decisions are reversed or superseded.
-- Recent session history: what each {{INSTANCE_NAME}} run accomplished
+- Cross-project decisions only: a decision that belongs to one project goes in that project's `knowledge/<name>-decisions.md`, not here
+- No run history. What each run did lives in the commit message and the session-log row (see Session Log Row below), never in this file
 - Quality bar: if someone reads only this file, they should know what exists in the KB and be able to navigate to any topic in one click.
 
 **`people.md` — People directory**
@@ -43,16 +43,12 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - Personal task entities (`personal/task-*.md`) have `domain: personal`, `status`, `priority`, `deadline`, and `completion_signal` fields
 
 **`projects/<project-name>/<project-name>.md` — Project files**
-- This is where the KB's real value lives. A good project file contains:
-  - **One-liner**: What is this project in one sentence?
-  - **Status**: Current state with "Last verified" date and which sources were checked
-  - **Key People**: Everyone involved, with their role *in this project* (not just their org role)
-  - **Decisions Made**: Dated log of architectural and strategic decisions
-  - **Open Technical Questions**: What's unresolved, with status (resolved/open/deferred)
-  - **Current Action Items**: What {{USER_NAME}} specifically needs to do for this project
-  - **Upcoming Meetings**: Next relevant meetings
-  - **Issues**: Key issues with links, status, and who owns them
-- Quality bar: after reading a project file, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what decisions were made and why, and what they need to do next. If the file doesn't answer those questions, it's too thin.
+- This is the KB's front page for a workstream, and it is written **for a person**. Follow [[docs/kb-page-standard]]: one screen, under 8 KB (hard budget 15 KB), with sections in this fixed order: intro · status line · Where it stands · What's next · Key decisions (top 7) · Open questions · People · Go deeper · History. Write "None right now." rather than dropping a section.
+- **Verification goes in frontmatter:** `as_of:`, `last_verified:` and `verified_against:` (the sources checked). Never a "Last verified" line or blockquote in the body.
+- **No run narration** in the body: no session names, slot numbers, "this run", finding counters or verification diaries. The commit message and the session log carry those.
+- **The dated decision log lives in `knowledge/<project-name>-decisions.md`**, one table, newest first. The project page shows only its top 7.
+- **The folder holds everything about the project:** `<project-name>.md` at the top, then `knowledge/` (topic notes about this project, plus the decisions note), `documents/` (other people's documents, condensed), `research/` (syntheses, investigations) and `archive/` (pre-restructure copies, retired material). No other loose files, no index file in a subfolder, short filenames with no dates.
+- Quality bar: after reading a project page, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what was decided and why, and what's next, in under a minute, and be able to click through to the detail. A page that runs past one screen needs restructuring (kb-deep-work's nightly KB pass), not more sections.
 - **`slack_channels:` frontmatter (required for 🔴 projects):** every high-priority project file declares the Slack channels that carry its work, so runs can poll them directly (see the Slack connector's 🔴 Project Channel Poll). Shape:
   ```yaml
   slack_channels:
@@ -63,7 +59,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 
 ### When to Create New KB Files
 
-**Most new knowledge is a topic or source note, not a new project.** Follow the KB WRITE PROTOCOL table: events → `knowledge-base/sources/`, durable facts → `knowledge-base/topics/<domain>/`. The rules below govern project pages and entity files only.
+**Most new knowledge is a topic or source note, not a new project.** Follow the KB WRITE PROTOCOL table: events → `knowledge-base/sources/`, durable facts about one project → `knowledge-base/projects/<name>/knowledge/`, durable facts that span projects → `knowledge-base/topics/<domain>/`. The rules below govern project pages and entity files only.
 
 **Create a new project file when:**
 - A new workstream appears that has its own meetings, issues, AND people (all three — not just one)
@@ -71,7 +67,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - It would take more than 3 bullets to describe in `projects.md`
 
 **How to create:**
-1. Create `knowledge-base/projects/<project-name>/<project-name>.md` (folder + file named identically)
+1. Create `knowledge-base/projects/<project-name>/<project-name>.md` (folder + file named identically) from the project-page template in `docs/kb-page-standard.md`. Create its subfolders only when their first file arrives.
 2. Add a row to `projects/projects.md` with priority and status summary
 3. Add `[[project-name]]` link to `projects.md`
 4. Add any new people to `people.md`
@@ -84,7 +80,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 Enriching the files you already have is **not** a substitute for minting the ones you're missing: a run that goes deep on existing entities but never creates one for a person/org/tech that has clearly crossed the recurrence threshold leaves a structural gap in the graph.
 
 **Do NOT create a new file when:**
-- A topic is just a sub-item of an existing project (add it to that project's file instead)
+- A topic is just a sub-item of an existing project (add a topic note in that project's `knowledge/` folder, linked from its Go deeper section, instead)
 - It's a one-off task with no ongoing context (that's an action item, not a KB entry)
 - It duplicates information that already lives in another file
 
@@ -181,7 +177,7 @@ Never fan a causal claim out to multiple KB surfaces (project file + people + DM
 
 Applies to **every** audit in every mode — the consolidation KB audit, KG-integrity checks, issue-tracker sync audits, action-item-health checks (the dreaming-mode KG check restates this rule for its own steps). After an audit produces findings, split them into `auto-remediable` vs `backlog` and **act** — an audit with no downstream actor is a slow leak that {{USER_NAME}} reads as noise (*"nice audit, but did you fix anything?"*):
 
-- **Auto-remediable → fix in the same run** (or hand to the next run as an explicit *must-action* queue, not a passive report): an issue-state claim the KB has wrong → re-query the tracker + flip the row; a personnel/status label past its own dated window → correct it + bump the verified date; a dangling relationship target that resolves to an existing entity under a slug → fix the target to the slug/wikilink form.
+- **Auto-remediable → fix in the same run** (or hand to the next run as an explicit *must-action* queue, not a passive report): an issue-state claim the KB has wrong → re-query the tracker + flip the row; a personnel/status label past its own dated window → correct it + bump the file's `last_verified:`; a dangling relationship target that resolves to an existing entity under a slug → fix the target to the slug/wikilink form.
 - **Backlog → leave as backlog, do NOT auto-create:** genuinely-missing entities, judgment calls, structural decisions.
 - The audit's notification/report then states **what it fixed**, not only what's wrong.
 
@@ -211,7 +207,7 @@ The KB's value depends on its graph being connected. Rules:
 
 ### Naming Convention
 
-**Never use `index.md`.** The main file in any folder is named after the folder itself (e.g., `projects/projects.md`, `my-project/my-project.md`). If you need to create a new project or subfolder, follow this pattern. Always use `[[wikilinks]]` when referencing other files in the KB.
+**Never use `index.md`.** The main file in any folder is named after the folder itself (e.g., `projects/projects.md`, `my-project/my-project.md`). If you need to create a new project or topic domain, follow this pattern. The exception is a project's `knowledge/`, `documents/`, `research/` and `archive/` subfolders: they get no main file, because the project page's Go deeper section is their map. Always use `[[wikilinks]]` when referencing other files in the KB.
 
 ***
 

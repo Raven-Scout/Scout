@@ -44,7 +44,8 @@ def test_dreaming_has_shrink_pass(tmp_path: Path) -> None:
 def test_shrink_pass_never_targets_daily_files_or_legacy_session_log(tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path), "DREAMING")
     shrink = text[text.index("Step 2a-shrink") : text.index("### Step 2b")]
-    assert "Never shrink a daily action-items file" in shrink
+    assert "Only a project page is a target" in shrink
+    assert "Never rebuild a daily action-items file" in shrink
     assert "`knowledge-base/session-log.md`" in shrink
 
 

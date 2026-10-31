@@ -15,7 +15,7 @@ For each research target, execute a focused research cycle.
 Read the entity's current file. Note:
 - What {{INSTANCE_NAME}} already knows (don't re-research known facts)
 - What's thin or missing (focus research here)
-- Last verified / last updated dates
+- Last verified / last updated dates (the `last_verified:` / `last_updated:` frontmatter)
 - Existing relationships that might lead to new discoveries
 
 ## Step 2b: External Research

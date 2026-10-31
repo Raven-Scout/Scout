@@ -121,8 +121,11 @@ kb_lint:
   strict_line_globs:
     - "action-items/action-items-*.md"
     - "knowledge-base/session-log/**"
+  # Topic notes: cross-project ones under topics/, and each project's own in
+  # its knowledge/ folder (docs/kb-page-standard.md).
   topic_globs:
     - "knowledge-base/topics/**"
+    - "knowledge-base/projects/*/knowledge/**"
   # Files `kb lint --report` never ranks as dreaming shrink targets: the daily
   # file is rewritten by the briefings, the legacy session log is migrated by
   # a one-time sharding step, and the topic board's files are state the app
@@ -164,6 +167,7 @@ kb_lint:
     - {glob: "knowledge-base/kg-audits/**", bytes: null}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
+    - {glob: "knowledge-base/projects/*/knowledge/**", bytes: 10240}
     - {glob: "knowledge-base/people/**", bytes: 10240}
     - {glob: "knowledge-base/ontology/**", bytes: 10240}
     - {glob: "knowledge-base/personal/**", bytes: 10240}
