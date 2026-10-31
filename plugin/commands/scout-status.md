@@ -216,22 +216,16 @@ The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each 
 
 Dreaming runs may edit Scout's own instructions (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
 
-If the vault has its own generator, use it. It attributes each edit to the section it landed in and says whether the change still needs porting to the plugin:
-
-```bash
-[ -f "SCOUT_DIR/scripts/applied-rules.py" ] && python3 "SCOUT_DIR/scripts/applied-rules.py" --days 7 --json
-```
-
-The output is a JSON list, one object per commit: `commit`, `date`, `subject`, and `files` mapping each brain file to `sections` (heading names), `added`, `removed` and `backport` (`owed` / `carried` / `superseded` line counts). A missing `backport` means it was not measured, not that nothing is owed.
-
-Otherwise, read git directly:
+Read git:
 
 ```bash
 git -C "SCOUT_DIR" log --since="7 days ago" --no-merges --date=format:'%Y-%m-%d %H:%M' \
     --pretty=format:'@@%h|%ad|%s' --numstat -- SKILL.md DREAMING.md RESEARCH.md
 ```
 
-Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines. No section names and no back-port state come from this path, so show `-` in those columns.
+Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines.
+
+Split the commits by subject. A **self-edit** is a commit whose subject starts with a run prefix, optionally after a slot name and a hyphen: `dreaming [`, `research [`, `briefing [`, `consolidation [` or `work [` (so `dreaming [21:0x]: …` and `morning-briefing [08:0x]: …` both count). Every other commit that touched the three files is **other**: plugin upgrades, hand-made grafts, `bootstrap resolve` follow-ups and the owner's own edits. Keep both lists; only the self-edits get rows.
 
 No commits in the window means no brain-file edits in 7 days. A git error means the history is unavailable: say so rather than showing an empty table.
 
@@ -456,16 +450,18 @@ A `conflict` means the user is running their own version of a plugin-owned file 
 
 ### Brain-File Edits (last 7 days)
 
-From 3h. One row per commit, newest first, at most 10 (say how many were left out):
+From 3h. One row per self-edit, newest first, at most 10 (say how many were left out). Every row shows the subject, cut to its first clause:
 
 ```
-  2026-10-25 18:44  a1b2c3d  DREAMING.md +4/-0  Step 0.6 · Step 2a-shrink   back-port owed: 3
-  2026-10-25 06:48  e4f5a6b  SKILL.md +24/-9 · DREAMING.md +17/-4 · RESEARCH.md +14/-1
+  2026-10-25 18:44  a1b2c3d  DREAMING.md +4/-0  dreaming [18:4x]: Step 2a-shrink cuts tables with their header
+  2026-10-25 06:48  e4f5a6b  SKILL.md +24/-9 · DREAMING.md +17/-4 · RESEARCH.md +14/-1  dreaming [06:4x]: wrap goes to Telegram
 ```
 
-Shorten the commit subject to its first clause if you show it. When any row has `owed` lines, end with: `Some of these edits are not in the plugin yet: scoutctl phases backport shows the full list (read-only).`
+Then, when the other list is not empty, one line: `  +N other brain-file commits (upgrades or by hand).`
 
-If there were none: `  No brain-file edits in the last 7 days.`
+When at least one self-edit is listed, end with: `These edits may not be in the plugin yet: "$SCOUTCTL" phases backport lists what is owed (read-only).` Resolve `$SCOUTCTL` as in 3f.
+
+If there were no self-edits and no other commits: `  No brain-file edits in the last 7 days.` If there were only other commits, show just the `+N other` line.
 
 ---
 
