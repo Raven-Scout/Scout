@@ -156,14 +156,17 @@ _CAT1_FILES_FROM_PLUGIN = {
 }
 
 # Plugin-owned files the vault is known to extend, not just patch: parser.py is
-# grown by dreaming sessions in the vault (Pattern #68). They are managed files
-# like the rest, with one difference: when there is no recorded base to merge
-# against, the vault's version stays live and the plugin's is parked. Engines
-# before last-rendered/ merged these into a blocking `<file>.proposed-merge`
-# sidecar; one an older engine left behind still blocks the upgrade
-# (_refuse_pending_sidecars), so the name stays.
+# grown by dreaming sessions in the vault (Pattern #68), and the KB page
+# standard is tailored by vaults that wrote their own before the plugin shipped
+# one. They are managed files like the rest, with one difference: when there is
+# no recorded base to merge against, the vault's version stays live and the
+# plugin's is parked. Engines before last-rendered/ merged parser.py into a
+# blocking `<file>.proposed-merge` sidecar; one an older engine left behind
+# still blocks the upgrade (_refuse_pending_sidecars), so the name stays.
 _CAT_MERGE_FILES = {
     "knowledge-base/ontology/parser.py": "templates/knowledge-base/ontology/parser.py",
+    # What a KB page must look like; the write protocol and kb-deep-work link it.
+    "docs/kb-page-standard.md": "templates/docs/kb-page-standard.md",
 }
 
 _CAT1_TEMPLATES = (

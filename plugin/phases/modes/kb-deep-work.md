@@ -73,7 +73,7 @@ cd {{SCOUT_DIR}} && scripts/scoutctl kb stats
 - **Broken wikilink targets** — relationship targets that don't resolve to an entity file. Either create the missing entity file or fix the target name.
 
 **Audits remediate or hand off — never just report.** Applies to this KG-integrity check and to any standing audit (Linear-state, action-item-health, graph-health). After the audit produces findings, split them into `auto-remediable` vs `backlog` and **act** — a report with no downstream actor is a slow leak that reads as noise:
-- **Auto-remediable → fix this run** (or hand to the next run as an explicit *must-action* queue, not a passive note): a Linear-state claim the KB has wrong → re-query the issue + flip the row; a personnel/status label past its own dated window (e.g. a "leave imminent" flag whose start date has passed) → correct it + bump the verified date; a dangling relationship target that resolves to an existing entity under a slug → fix the target to the slug/wikilink form.
+- **Auto-remediable → fix this run** (or hand to the next run as an explicit *must-action* queue, not a passive note): a Linear-state claim the KB has wrong → re-query the issue + flip the row; a personnel/status label past its own dated window (e.g. a "leave imminent" flag whose start date has passed) → correct it + bump the file's `last_verified:`; a dangling relationship target that resolves to an existing entity under a slug → fix the target to the slug/wikilink form.
 - **Backlog → leave as backlog, do NOT auto-create:** genuinely-missing entities, judgment calls, structural decisions.
 - The audit's notification/report then states **what it fixed**, not only what's wrong.
 
@@ -96,7 +96,7 @@ Score every file in `knowledge-base/`. Start from the caches (`.scout-cache/kb-f
 
 #### Dimension 1: Staleness (0-3)
 
-Compare each file's "Last verified" or "Last updated" date against the freshness standard for its type. Score based on how far overdue the file is.
+Compare each file's verification date (the frontmatter `last_verified:` or `last_updated:`, else an older file's "Last verified" / "Last updated" line) against the freshness standard for its type. Score based on how far overdue the file is.
 
 | File Type | Freshness Standard | Score 0 | Score 1 | Score 2 | Score 3 |
 |---|---|---|---|---|---|
@@ -108,7 +108,7 @@ Compare each file's "Last verified" or "Last updated" date against the freshness
 | `channels.md` | 14 days | Within 14d | 14-21d overdue | 21-28d overdue | >28d overdue |
 | `knowledge-base.md` (root) | Every run | Updated this run | 1 run behind | 2 runs behind | 3+ runs behind |
 
-If a file has no "Last verified" date at all, assign staleness score 3 automatically.
+If a file has no verification date at all, assign staleness score 3 automatically.
 
 #### Dimension 2: Gaps (0-3)
 
@@ -153,17 +153,20 @@ Record the scoring table for the session log.
 
 ***
 
-### Step 2a-shrink: Clear overrides, then shrink the largest over-budget file (mandatory while any exist)
+### Step 2a-shrink: Nightly KB pass — rebuild one over-budget project page to the standard
+
+Rebuild **one** over-budget project page a night to [[docs/kb-page-standard]] §"Restructuring an existing over-long page". One page per night, never more: a rebuild re-verifies the project live, and a second one gets done shallowly.
 
 1. **Overrides first.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
-2. **Pick the target.** Run `scripts/scoutctl kb lint --report --top 10`. Take the **largest file you can finish this session**. This replaces the staleness-only pick in Step 2b whenever the report is non-empty, except that an open coverage mandate (e.g. a project `surface_rule` window) still takes precedence. **Never shrink a daily action-items file (`action-items/action-items-YYYY-MM-DD.md`), the topic board's `action-items/topics.md`, `topic-names.md` or `dismissed.md`, or the legacy `knowledge-base/session-log.md`**, even if one shows up: past daily files are dated records and today's is rewritten by the briefings; the board's files are state the app reads line by line; the legacy session log is migrated by a one-time sharding step, not by this pass.
-3. **Shrink it:**
-   - durable facts → topic notes under `knowledge-base/topics/<domain>/`, each paragraph cited;
-   - meetings, docs, PRs and decision threads → source notes under `knowledge-base/sources/YYYY-MM/`;
-   - rewrite the file itself to **current state + links** (project page) or **index + shard links** (log);
-   - drop run narration (git retains it).
-4. **Verify nothing was lost** before committing: `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <file>`. Every token it reports missing must be restored somewhere or named in the commit message as deliberately dropped.
-5. Report: *file, before → after size, notes created, lossless result.* That is this step's deliverable and passes the Step 2d depth gate.
+2. **Pick the page:** the largest project page (`knowledge-base/projects/<name>/<name>.md`) in `scripts/scoutctl kb lint --report --top 20`. Only a project page is a target. **Never rebuild a daily action-items file, the topic board's files, a log, or the legacy `knowledge-base/session-log.md`.** If no project page is over budget, skip to Step 2b. Otherwise this replaces Step 2b's pick, unless an open coverage mandate (e.g. a `surface_rule` window) applies.
+3. **Count the baseline:** over-budget rows in `kb lint --report`, `scripts/scoutctl kb validate` errors, and dangling wikilinks.
+4. **Rebuild it, in this order:**
+   1. **Archive the page verbatim** to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md` (a copy).
+   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each) and its dated decisions into `knowledge/<name>-decisions.md`. `git mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links in the same commit. Drop no facts: superseded ones go in a topic's History or stay in the archive.
+   3. **Re-verify the current state live.** The old page is a lead, not a fact.
+   4. **Rewrite the page in place** to the standard's template, keeping any heading other notes link to (`[[<name>#<heading>]]`).
+   5. **Check nothing got worse:** none of the three counts may rise, and the page leaves the over-budget list. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>` too.
+5. Report: *page, before → after size, notes created, the three counts before → after.* That is this step's deliverable and passes the Step 2d depth gate.
 
 ***
 
@@ -191,7 +194,7 @@ Based on the scoring distribution, select a work mode:
 
 **Validation Pass** (when the score distribution is flat — nothing critically stale, no strong feedback signal pointing at a specific gap). **This is the default idle-night mode.** Once the KB is large, the marginal dreaming hour is better spent confirming that what's already in it is still true than adding more — so when in doubt between Gap Hunt and Validation Pass, choose Validation Pass. The deliverable is **existing claims re-grounded against live sources — corrected, downgraded, or confirmed — NOT new sections or entities.**
 - Pick a set of the highest-stakes *existing* claims: verification-marker-free assertions in high-priority project files, people roles/titles, issue-tracker states (status/assignee/priority), pricing & cost figures, dated decisions, and any claim a downstream briefing leans on. Prefer claims that are (a) load-bearing for an active decision, (b) older than their file's freshness standard, or (c) single-sourced when first written.
-- For each, query the live source and compare. **Correct** the claim where the source disagrees; **downgrade** to `[stale]` / `[contradicted]` / `[single-source]` where you can't fully re-confirm; **confirm** (bump the verified date, optionally add a `[re-verified YYYY-MM-DD vs <source>]` note) where it still holds.
+- For each, query the live source and compare. **Correct** the claim where the source disagrees; **downgrade** to `[stale]` / `[contradicted]` / `[single-source]` where you can't fully re-confirm; **confirm** (bump `last_verified:` and add the source to `verified_against:` in the frontmatter) where it still holds.
 - Route genuinely-uncertain claims to `review-queue.md` rather than asserting them.
 - Do **not** add new entities or expand thin sections in this mode — that's Gap Hunt / research. If you find a real gap, note it for a future run; don't fill it here.
 - **Verified-scope guard.** A "confirmed / 0-drift / re-verified" label applies ONLY to the specific claims you queried live *this run*. Any supporting or **derived** claim — especially comparative conclusions like *"X is the sole/only/first/last …"* that depend on the state of **sibling** entities — must either be queried live too, or be explicitly marked `[unverified — not queried this run]`. A derived conclusion inherits the verification status of its **weakest** input, not its strongest. Never re-state a sibling/comparative fact from carried text; re-derive it from the live source. The "N checked / K confirmed" count must equal the number of claims you actually queried.
@@ -207,7 +210,7 @@ Perform the selected work. During execution:
 
 - **Query connectors as needed.** You have full access to all connected tools for the purpose of KB improvement. Use them to verify claims, fill gaps, and gather fresh data.
 - **Follow all KB management guidelines** from the `kb-management` phase. Apply verification levels, maintain cross-references, use `[[wikilinks]]`, and route uncertain claims to `review-queue.md`.
-- **Update "Last verified" dates** on every file you touch, noting which sources were checked.
+- **Record the verification in frontmatter** of every file you deeply audit: `last_verified:` and `verified_against:` (the sources checked). Never add a "Last verified" note or blockquote to the body. Leave every page you touch closer to [[docs/kb-page-standard]].
 - **Do not duplicate daytime work.** If a consolidation run already updated a file today, focus on areas that run did not cover rather than re-verifying the same data.
 
 ***
@@ -221,14 +224,14 @@ Before proceeding to commit, answer this question honestly:
 **If YES**: proceed to commit.
 
 **If NO**: the work was superficial. Go back to Step 2c and find real work:
-- Update a "Last verified" date without actually verifying anything? Not real work.
+- Bump `last_verified:` without actually verifying anything? Not real work.
 - Fix a typo and nothing else? Not real work.
 - Add a wikilink to a file that already had adequate navigation? Not real work.
 - Rephrase existing content without adding information? Not real work.
 
 Real work means: new facts verified from live sources, stale information corrected with current data, missing context filled in, genuinely broken navigation fixed.
 
-**Validation Pass exception:** genuinely re-grounding load-bearing claims against live sources is real work *even when nothing changed* — confirming a high-stakes, aging assertion is still true converts it from a carried claim into a freshly-verified one, which has value. A Validation Pass passes this gate on its honest "N checked / K confirmed" count, not on net-new content. The gate fails only if you neither added or corrected information **nor** genuinely re-verified anything (re-stamping "Last verified" without actually querying a source is still not real work).
+**Validation Pass exception:** genuinely re-grounding load-bearing claims against live sources is real work *even when nothing changed* — confirming a high-stakes, aging assertion is still true converts it from a carried claim into a freshly-verified one, which has value. A Validation Pass passes this gate on its honest "N checked / K confirmed" count, not on net-new content. The gate fails only if you neither added or corrected information **nor** genuinely re-verified anything (re-stamping `last_verified:` without actually querying a source is still not real work).
 
 This gate exists because the easiest failure mode of an automated KB system is busywork that looks productive but adds no value. Do not pass this gate unless the work is substantive.
 

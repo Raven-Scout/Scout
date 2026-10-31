@@ -122,33 +122,25 @@ After scanning Linear, update the knowledge base with current issue data. **Issu
 
 ### Issue Tracker Sync
 
-For every issue in the KB's issue tracker file:
-1. **Verify the status matches Linear.** If the KB says "To Do" but Linear says "In Progress," update the KB immediately.
-2. **Update priority** if it changed in Linear.
-3. **Add any new comments or context** that are relevant to understanding the issue.
-4. **Remove or archive issues** that are Done/Cancelled in Linear (move to a "Completed" section, don't delete — the history is useful).
+The issue tracker file is a thin index: one short row per tracked open issue. For every row:
+1. **Verify the state matches Linear** and fix a stale cell in place, immediately.
+2. **Move a Done/Cancelled issue** to the archive file (e.g. `issues-archive.md`) as one line.
+3. **Put new context in the project's `knowledge/` notes**, cited with the Linear URL, never in the index.
 
 ### Spot-Check Requirement
 
 Every run must spot-check at least 2-3 issue statuses against Linear as the source of truth. Pick issues that:
 - Are high priority (most impactful if stale)
-- Haven't been verified recently (check the "Last verified" note)
+- Haven't been verified recently (check the file's `last_verified:` frontmatter, or an older file's "Last verified" line)
 - Are referenced by current action items (most likely to cause errors if stale)
 
 ### New Issues
 
-Add any newly discovered issues to the issue tracker file with:
-- Issue identifier and title
-- Status, priority, assignee
-- Project/parent issue if applicable
-- Link to Linear
+Add each newly tracked issue as one row under its project: linked identifier, what it is, state, why it's tracked.
 
 ### Project File Updates
 
-If issue changes affect active projects, update the relevant project files:
-- Changed issue statuses in the project's issues section
-- New issues added to the project
-- Completed milestones or resolved blockers
+If issue changes affect an active project (a completed milestone, a resolved blocker), update its page's Where it stands or What's next, and its `knowledge/` notes.
 
 ---
 phase: connector
