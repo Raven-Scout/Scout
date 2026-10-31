@@ -28,11 +28,10 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - Channel name, ID, and purpose/context
 - Quality bar: if {{INSTANCE_NAME}} needs to search a channel related to a project, this file tells it which channel to search.
 
-**Issue tracker file (e.g., `issues.md`) — Assigned issues**
-- {{USER_NAME}}'s assigned issues with current status, priority, project/parent, and notes
-- Monitored issues (not assigned to {{USER_NAME}} but relevant)
-- Issue hierarchy maps for complex projects
-- Quality bar: statuses must match the actual current state in the source system — stale statuses are the most common KB rot. Every run should spot-check at least 2-3 issue statuses.
+**Issue tracker file (e.g., `issues.md`) — thin index of tracked issues** (the tracker is the source of truth)
+- One row per tracked open issue, grouped by project: issue · what it is · state · why it's tracked, a short phrase each. Track issues assigned to or created by {{USER_NAME}}, gating their projects, or referenced by an action item. Edit cells in place; no prose or verification notes.
+- Durable detail goes in the project's `knowledge/` notes, cited with the issue URL. A closed issue moves to the archive file (e.g. `issues-archive.md`) as one line.
+- Quality bar: the state column matches the tracker; stale states are the most common KB rot. Every run spot-checks 2-3 rows.
 
 **Entity files (`people/`, `personal/`, `ontology/entities/`) — Knowledge graph entities**
 - Individual entity files with YAML frontmatter defining typed properties and relationships

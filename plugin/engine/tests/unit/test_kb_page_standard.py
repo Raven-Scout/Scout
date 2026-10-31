@@ -89,6 +89,17 @@ def test_nightly_pass_rebuilds_one_project_page_in_the_standards_order(tmp_path:
     assert "deliberately OFF" not in text
 
 
+def test_the_issue_tracker_file_is_a_thin_index(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path / "Scout")
+    cfg.enabled_connectors = {"linear"}
+    text = _assemble(cfg, "SKILL")
+    assert "thin index of tracked issues" in text
+    assert "The issue tracker file is a thin index" in text
+    assert "`issues-archive.md`" in text
+    assert "with current status, priority, project/parent, and notes" not in text
+    assert "**Add any new comments or context**" not in text
+
+
 # ---------------------------------------------------------------- template ----
 
 
