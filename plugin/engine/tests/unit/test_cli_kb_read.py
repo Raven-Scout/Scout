@@ -184,7 +184,12 @@ def test_owner_and_autonomous_see_private_labelled(vault: Path, reader: str) -> 
     export = json.loads(kb(vault, "export", reader=reader).stdout)
     assert export["entities"]["sam"]["_label"]["visibility"] == "private"
     assert "Entities:" in kb(vault, "stats", reader=reader).stdout
-    assert kb(vault, "validate", reader=reader).exit_code == 0
+    # 3, not 0: this fixture plants two validation errors on purpose (an orphaned private
+    # task and a file with broken frontmatter). What matters here is that the reader is not
+    # denied — a denial is also 3, so check the output names the errors it found.
+    validated = kb(vault, "validate", reader=reader)
+    assert validated.exit_code == 3
+    assert "validation error(s) found" in validated.stdout
 
 
 # ----- agents: nothing ----------------------------------------------------------
