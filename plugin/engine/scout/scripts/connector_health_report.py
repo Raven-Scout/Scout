@@ -602,7 +602,7 @@ def render_health_md(
         "- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs "
         "fires an alert in modes where it's required by `connectors.yaml`.",
         "- **Pattern #48:** if a connector has never logged a successful call across the entire "
-        "window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).",
+        "window, the alert is suppressed (it's unwired, not broken: wire it up rather than treat it as an outage).",
         "- **Pattern #54:** if a connector was healthy in any mode within the last 4h and the "
         "current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).",
         "- **Warning:** any connector with ≥3 calls this run and >50% errors.",

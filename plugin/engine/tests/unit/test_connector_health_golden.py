@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -154,6 +155,13 @@ def test_golden_output(vault: Path) -> None:
     # The fixture exercises both alert levels, so the alert paths are covered too.
     assert "CRITICAL" in out["connector-alerts.log"]
     assert "WARNING" in out["connector-alerts.log"]
+
+
+def test_report_links_only_to_the_knowledge_base_index(vault: Path) -> None:
+    """The report lands in the vault's knowledge-base, so every wikilink in it must name a
+    note every vault has. `[[Wishlist]]` named none and showed up as a dangling link."""
+    links = set(re.findall(r"\[\[([^\]|#]+)", _outputs(vault)["connector-health.md"]))
+    assert links == {"knowledge-base"}
 
 
 def _index(vault: Path) -> Path:
