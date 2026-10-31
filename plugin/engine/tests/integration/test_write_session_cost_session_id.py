@@ -1,4 +1,7 @@
-"""write-session-cost.sh records the Claude Code session id, so a run that writes its row twice is visible as one id on two rows."""
+"""write-session-cost.sh records the Claude Code session id.
+
+A run that writes its row twice is then visible as one id on two rows.
+"""
 
 from __future__ import annotations
 
