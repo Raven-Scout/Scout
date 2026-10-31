@@ -36,9 +36,13 @@ Rules:
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
-- ``visibility-value``, ``privacy-contradiction``, ``federation-reserved``,
+- ``visibility-value``, ``privacy-contradiction``, ``federation-ceiling``,
   ``frontmatter-unparseable``: warnings (the last is an error in
   ``kb lint --report``).
+
+A note with an effective share (Stage 2, a ``federation_defaults`` entry with
+sharing on) is a shared file too: :attr:`Label.shared_file` says so, so the two
+blocking checks cover it (Agnes #6090 §4).
 
 No message names a private note, its title or a matched term: findings carry
 the staged file, a line number and the rule id. The hook runs
@@ -98,7 +102,7 @@ from scout.kb.read import all_labels, policy_hash
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
 
-LABEL_WARNINGS = ("visibility-value", "privacy-contradiction", "frontmatter-unparseable")
+LABEL_WARNINGS = ("visibility-value", "privacy-contradiction", "federation-ceiling", "frontmatter-unparseable")
 
 _HINT_ALLOW = "remove it, or (owner only) add %%privacy:allow <note-slug>%% on that line"
 _MESSAGES = {
@@ -109,7 +113,8 @@ _MESSAGES = {
     "or federation_scope doesn't parse (it counts as none)",
     "privacy-contradiction": "visibility: private with a federation_scope other than none",
     "frontmatter-unparseable": "the frontmatter doesn't parse, so the note counts as private",
-    "federation-reserved": "the privacy: block sets a Stage 2 key (federation*); it is ignored in v1",
+    "federation-ceiling": "federation_scope is wider than this folder may share (people notes, emails: none; "
+    "meetings and threads: named people only), so part of it is dropped",
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy "
     "applies; a scheduled run's commit is refused until it does",
@@ -412,8 +417,6 @@ def _privacy_block(data: Any) -> Any:
 def _config_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
     staged = _config_data(staged_text_lossy(ctx.repo, sp.rel))
     out: list[Finding] = []
-    if isinstance(staged, dict) and "federation-reserved" in policy_from_overlay(staged.get("privacy")).warnings:
-        out.append(Finding(sp.rel, "federation-reserved", False, _MESSAGES["federation-reserved"]))
     if ctx.scheduled:
         head = _config_data(head_text_lossy(ctx.repo, sp.head_rel)) if sp.head_rel else None
         if _privacy_block(head) != _privacy_block(staged):
@@ -451,8 +454,6 @@ def privacy_report(repo: Path) -> PrivacyReport:
     policy = load_policy(repo)
     terms: PrivateTerms | None = None
     rep = PrivacyReport()
-    if "federation-reserved" in policy.warnings:
-        rep.problems.append((CONFIG_FILE, "federation-reserved", "warn"))
     for rel in tracked_files(repo):
         if rel == CONFIG_FILE or not in_privacy_scope(rel, policy.shared_files):
             continue
