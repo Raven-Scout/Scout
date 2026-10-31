@@ -43,12 +43,10 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - Personal task entities (`personal/task-*.md`) have `domain: personal`, `status`, `priority`, `deadline`, and `completion_signal` fields
 
 **`projects/<project-name>/<project-name>.md` — Project files**
-- This is the KB's front page for a workstream, and it is written **for a person**. Follow [[docs/kb-page-standard]]: one screen, under 8 KB (hard budget 15 KB), with sections in this fixed order: intro · status line · Where it stands · What's next · Key decisions (top 7) · Open questions · People · Go deeper · History. Write "None right now." rather than dropping a section.
-- **Verification goes in frontmatter:** `as_of:`, `last_verified:` and `verified_against:` (the sources checked). Never a "Last verified" line or blockquote in the body.
-- **No run narration** in the body: no session names, slot numbers, "this run", finding counters or verification diaries. The commit message and the session log carry those.
-- **The dated decision log lives in `knowledge/<project-name>-decisions.md`**, one table, newest first. The project page shows only its top 7.
-- **The folder holds everything about the project:** `<project-name>.md` at the top, then `knowledge/` (topic notes about this project, plus the decisions note), `documents/` (other people's documents, condensed), `research/` (syntheses, investigations) and `archive/` (pre-restructure copies, retired material). No other loose files, no index file in a subfolder, short filenames with no dates.
-- Quality bar: after reading a project page, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what was decided and why, and what's next, in under a minute, and be able to click through to the detail. A page that runs past one screen needs restructuring (kb-deep-work's nightly KB pass), not more sections.
+- The KB's front page for a workstream, written **for a person** to [[docs/kb-page-standard]]: one screen (under 8 KB), sections in its fixed order (intro · status line · Where it stands · What's next · Key decisions · Open questions · People · Go deeper · History), no run narration.
+- **Verification goes in frontmatter** (`last_verified:`, `verified_against:`), never a "Last verified" line in the body. **The dated decision log lives in `knowledge/<project-name>-decisions.md`**; the page shows its top 7.
+- **The folder:** `<project-name>.md` at the top; everything else in `knowledge/`, `documents/`, `research/` or `archive/`.
+- Quality bar: after reading a project page, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what was decided and why, and what's next, in under a minute. A page past one screen needs restructuring, not more sections.
 - **`slack_channels:` frontmatter (required for 🔴 projects):** every high-priority project file declares the Slack channels that carry its work, so runs can poll them directly (see the Slack connector's 🔴 Project Channel Poll). Shape:
   ```yaml
   slack_channels:

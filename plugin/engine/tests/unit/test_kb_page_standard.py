@@ -59,7 +59,7 @@ def test_no_phase_text_contradicts_the_standard(kind: str, tmp_path: Path) -> No
     assert "Recent session history" not in text
     # Topic domains are for cross-project subjects, not any subject at 3+ notes.
     assert "create `topics/<domain>/` when a subject reaches three or more topic notes" not in text
-    assert "`topics/<domain>/` is only for a subject that spans projects" in text
+    assert "`topics/<domain>/` is only for subjects that span projects" in text
 
 
 def test_deep_work_records_verification_in_frontmatter(tmp_path: Path) -> None:
@@ -73,11 +73,11 @@ def test_deep_work_records_verification_in_frontmatter(tmp_path: Path) -> None:
 def test_nightly_pass_rebuilds_one_project_page_in_the_standards_order(tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path / "Scout"), "DREAMING")
     step = _section(text, "### Step 2a-shrink", "### Step 2b")
-    assert "rebuild **one** over-budget project page" in step
+    assert "Rebuild **one** over-budget project page" in step
     assert "One page per night, never more" in step
     order = [
         "**Archive the page verbatim**",
-        "**Move its knowledge into `knowledge/` topic notes:**",
+        "**Move its knowledge into `knowledge/` topic notes**",
         "**Re-verify the current state live.**",
         "**Rewrite the page in place**",
         "**Check nothing got worse:**",

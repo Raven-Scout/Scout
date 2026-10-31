@@ -155,18 +155,18 @@ Record the scoring table for the session log.
 
 ### Step 2a-shrink: Nightly KB pass — rebuild one over-budget project page to the standard
 
-Each night, rebuild **one** over-budget project page into a page a person can read, following [[docs/kb-page-standard]] §"Restructuring an existing over-long page". One page per night, never more: a rebuild re-verifies the project live, and a second one in the same run gets done shallowly.
+Rebuild **one** over-budget project page a night to [[docs/kb-page-standard]] §"Restructuring an existing over-long page". One page per night, never more: a rebuild re-verifies the project live, and a second one gets done shallowly.
 
 1. **Overrides first.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
-2. **Pick the page.** Run `scripts/scoutctl kb lint --report --top 20` and take the **largest project page** (`knowledge-base/projects/<name>/<name>.md`) on it. Only a project page is a target. **Never rebuild a daily action-items file (`action-items/action-items-YYYY-MM-DD.md`), the topic board's `action-items/topics.md`, `topic-names.md` or `dismissed.md`, a log, or the legacy `knowledge-base/session-log.md`**, even if one shows up: past daily files are dated records and today's is rewritten by the briefings; the board's files are state the app reads line by line; the legacy session log is migrated by a one-time sharding step, not by this pass. If no project page is over budget, skip to Step 2b. When this step runs, it replaces the pick in Step 2b, except that an open coverage mandate (e.g. a project `surface_rule` window) still takes precedence.
-3. **Count the baseline** before you change anything: the over-budget rows in `scripts/scoutctl kb lint --report`, the errors from `scripts/scoutctl kb validate`, and the dangling wikilinks in the vault (if the vault has its own dangling-link script, run that too).
+2. **Pick the page:** the largest project page (`knowledge-base/projects/<name>/<name>.md`) in `scripts/scoutctl kb lint --report --top 20`. Only a project page is a target. **Never rebuild a daily action-items file, the topic board's files, a log, or the legacy `knowledge-base/session-log.md`.** If no project page is over budget, skip to Step 2b. Otherwise this replaces Step 2b's pick, unless an open coverage mandate (e.g. a `surface_rule` window) applies.
+3. **Count the baseline:** over-budget rows in `kb lint --report`, `scripts/scoutctl kb validate` errors, and dangling wikilinks.
 4. **Rebuild it, in this order:**
-   1. **Archive the page verbatim** to `knowledge-base/projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md` (a copy, not a move).
-   2. **Move its knowledge into `knowledge/` topic notes:** durable facts → `knowledge-base/projects/<name>/knowledge/<topic>.md` (cited, at most 10 KB each); the dated decision log → `knowledge/<name>-decisions.md` (one table, newest first); meetings, docs, PRs and decision threads → source notes under `knowledge-base/sources/YYYY-MM/`. Sort every other loose file in the project folder into `documents/`, `research/` or `archive/` with `git mv`, repointing every path-style link to it (`scripts/scoutctl kb search --fixed 'projects/<name>/'`) in the same commit. Don't drop facts: a superseded fact goes into a topic note's History section or stays only in the archive copy.
-   3. **Re-verify the current state live.** The old page is a lead, not a fact. Query the connectors for the project's status, next dates, open questions and people before writing "Where it stands".
-   4. **Rewrite the page in place**, at the same path, to the standard's project-page template: fixed section order, under 8 KB (hard budget 15 KB), no run narration, verification in the frontmatter (`as_of:`, `last_verified:`, `verified_against:`). If other notes link to `[[<name>#<heading>]]`, keep that heading or repoint the links. Its Go deeper section lists every file now in the folder.
-   5. **Check nothing got worse:** re-run the three counts from step 3. None may go up, and the page must leave the over-budget list. Also run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>` after `git add`ing the new notes: every token it reports missing must be restored or named in the commit message as deliberately dropped.
-5. Report: *page, before → after size, notes created, files sorted, the three counts before → after.* That is this step's deliverable and passes the Step 2d depth gate.
+   1. **Archive the page verbatim** to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md` (a copy).
+   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each) and its dated decisions into `knowledge/<name>-decisions.md`. `git mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links in the same commit. Drop no facts: superseded ones go in a topic's History or stay in the archive.
+   3. **Re-verify the current state live.** The old page is a lead, not a fact.
+   4. **Rewrite the page in place** to the standard's template, keeping any heading other notes link to (`[[<name>#<heading>]]`).
+   5. **Check nothing got worse:** none of the three counts may rise, and the page leaves the over-budget list. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>` too.
+5. Report: *page, before → after size, notes created, the three counts before → after.* That is this step's deliverable and passes the Step 2d depth gate.
 
 ***
 
@@ -210,8 +210,7 @@ Perform the selected work. During execution:
 
 - **Query connectors as needed.** You have full access to all connected tools for the purpose of KB improvement. Use them to verify claims, fill gaps, and gather fresh data.
 - **Follow all KB management guidelines** from the `kb-management` phase. Apply verification levels, maintain cross-references, use `[[wikilinks]]`, and route uncertain claims to `review-queue.md`.
-- **Record the verification in frontmatter** of every file you deeply audit: `last_verified:` (ISO date) and `verified_against:` (the sources checked). Never add a "Last verified" note or blockquote to the body; that is run narration ([[docs/kb-page-standard]] rule 3).
-- **Leave every page you touch closer to [[docs/kb-page-standard]].** Decision history from meetings goes in the project's `knowledge/<name>-decisions.md`, not on the project page.
+- **Record the verification in frontmatter** of every file you deeply audit: `last_verified:` and `verified_against:` (the sources checked). Never add a "Last verified" note or blockquote to the body. Leave every page you touch closer to [[docs/kb-page-standard]].
 - **Do not duplicate daytime work.** If a consolidation run already updated a file today, focus on areas that run did not cover rather than re-verifying the same data.
 
 ***
