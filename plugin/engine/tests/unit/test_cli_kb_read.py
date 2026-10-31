@@ -585,7 +585,14 @@ def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, mon
     assert data["classifier"] == kb_read.CLASSIFIER_VERSION and data["engine"] == kb_read.__version__
     # an older classifier's verdict for SAM, under its current stat key
     stale = data["files"][SAM]
-    stale["facts"] = {"state": "ok", "visibility": "normal", "declared": "none", "warnings": []}
+    stale["facts"] = {
+        "state": "ok",
+        "visibility": "normal",
+        "declared": "none",
+        "warnings": [],
+        "declared_present": False,
+        "kind": None,
+    }
     stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
     for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
         index.write_text(json.dumps({**data, header: value}), encoding="utf-8")

@@ -29,7 +29,7 @@ from tests.unit.test_kb_privacy import _ROWS
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "privacy-corpus.json"
 
-EXPECTED_SHA256 = "14fa35bd828e8fcaefa8295e8fc2caac44f35e8d36bc2a19f03fa37eb12b4f2e"
+EXPECTED_SHA256 = "42fa36625d2beee27724866f9980953aab497b13509840f0decf7d76e1f3664e"
 
 _CASES: list[dict[str, Any]] = json.loads(CORPUS.read_text(encoding="utf-8")) if CORPUS.exists() else []
 
@@ -56,6 +56,54 @@ def test_corpus_has_a_case_per_classifier_row() -> None:
 def test_corpus_exercises_overlays() -> None:
     overlays = [c for c in _CASES if c["policy_overlay"] is not None]
     assert len(overlays) >= 6
+
+
+def _stage2(predicate: Any) -> list[dict[str, Any]]:
+    def overlay(c: dict[str, Any]) -> dict[str, Any]:
+        return c["policy_overlay"] if isinstance(c["policy_overlay"], dict) else {}
+
+    return [c for c in _CASES if predicate(c["expected_label"], overlay(c), c["frontmatter_text"] or "")]
+
+
+# Agnes Shared Areas (#6090 §4): the Stage 2 cases the indexer's A8a side needs.
+_STAGE2_KINDS = {
+    "default": lambda lb, ov, fm: lb["federation_source"] == "default" and lb["federation_scope"] != "none",
+    "frontmatter": lambda lb, ov, fm: lb["federation_source"] == "frontmatter" and lb["federation_scope"] != "none",
+    "frontmatter-none-keeps-out": lambda lb, ov, fm: (
+        lb["federation_source"] == "frontmatter"
+        and "federation_scope: none" in fm
+        and bool(ov.get("federation_defaults"))
+    ),
+    "ceiling-cap": lambda lb, ov, fm: (
+        lb["federation_source"] == "ceiling"
+        and lb["ceiling"] == "none"
+        and lb["visibility"] == "normal"
+        and not lb["local_only"]
+    ),
+    "private-override": lambda lb, ov, fm: (
+        lb["visibility"] == "private" and lb["federation_source"] == "ceiling" and bool(ov.get("federation_defaults"))
+    ),
+    "local-only-override": lambda lb, ov, fm: lb["local_only"] and lb["federation_source"] == "ceiling",
+    "disabled-switch": lambda lb, ov, fm: lb["federation_source"] == "disabled" and bool(ov.get("federation_defaults")),
+    "unresolvable-principal": lambda lb, ov, fm: "person:priya]" in fm and "visibility-value" in lb["warnings"],
+    "people-drops-org": lambda lb, ov, fm: lb["ceiling"] == "people" and "federation_scope: org" in fm,
+    "people-drops-group": lambda lb, ov, fm: (
+        lb["ceiling"] == "people" and "group:" in fm and "federation-ceiling" in lb["warnings"]
+    ),
+    "people-admits-person": lambda lb, ov, fm: lb["ceiling"] == "people" and lb["federation_scope"] != "none",
+    "other-source-kind-none": lambda lb, ov, fm: (
+        lb["path"].startswith("knowledge-base/sources/") and "kind: email" in fm and lb["federation_scope"] == "none"
+    ),
+    "overlay-narrows": lambda lb, ov, fm: bool(ov.get("federation_ceilings")) and lb["ceiling"] == "people",
+    "overlay-cannot-widen": lambda lb, ov, fm: (
+        bool(ov.get("federation_ceilings")) and lb["path"].startswith("knowledge-base/people/")
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_STAGE2_KINDS))
+def test_corpus_has_stage2_case(kind: str) -> None:
+    assert _stage2(_STAGE2_KINDS[kind]), kind
 
 
 def test_corpus_file_format() -> None:

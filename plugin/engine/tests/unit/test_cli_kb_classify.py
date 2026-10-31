@@ -290,7 +290,8 @@ def test_policy_json_includes_overlay_and_warnings(vault: Path) -> None:
     )
     data = json.loads(_run(vault, "policy", "--json").stdout)
     assert "trading/**" in data["local_only"]["default"]
-    assert data["warnings"] == ["federation-reserved"]
+    assert data["federation"] == {"enabled": True}  # Stage 2 keys are honoured now (Agnes #6090 §4)
+    assert data["warnings"] == []
 
 
 def test_policy_text(vault: Path) -> None:

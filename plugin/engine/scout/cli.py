@@ -307,11 +307,216 @@ def kb_policy(
             "surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]),
             "surfaces.shared:      " + " ".join(data["surfaces"]["shared"]),
             "shared_files:         " + (" ".join(data["shared_files"]) or "(none)"),
+            "federation.enabled:   " + ("true" if data["federation"]["enabled"] else "false"),
+            "federation_ceilings:",
+            *(_ceiling_line(entry) for entry in data["federation_ceilings"]),
+            *(
+                ["federation_ceilings (overlay, narrowing only):"]
+                + [_ceiling_line(entry) for entry in data["federation_ceilings_overlay"]]
+                if data["federation_ceilings_overlay"]
+                else []
+            ),
+            "federation_defaults:" + ("" if data["federation_defaults"] else "  (none)"),
+            *(f"  {entry['glob']} -> {_scope_text(entry['scope'])}" for entry in data["federation_defaults"]),
             "warnings:             " + (" ".join(data["warnings"]) or "(none)"),
         ]
         return Output(data=data, lines=lines)
 
     _kb_run(args, reader, repo, as_json, body)
+
+
+# ----- Shared Areas (Agnes #6090 §4, slice S1a): logic in scout/kb/share.py -------
+
+
+def _share_values(extra: list[str], with_: list[str]) -> list[str]:
+    """``--with a --with b``, ``--with a,b`` and ``--with a b`` (spare positionals) all name people."""
+    return [v.strip() for raw in (*with_, *extra) for v in raw.split(",") if v.strip()]
+
+
+def _owner_only(as_json: bool) -> None:
+    """Sharing is the owner's act: a scheduled run (or any non-owner reader) may not change it (#486 §8.3)."""
+    import os
+
+    from scout.kb.reader import is_scheduled
+
+    if is_scheduled(os.environ):
+        _share_refused("refused: only the owner, in their own interactive session, may change what is shared", as_json)
+
+
+def _share_refused(message: str, as_json: bool, code: int = 1) -> NoReturn:
+    import json
+
+    if as_json:
+        print(json.dumps({"refused": message, "written": False}, indent=2))
+    print(message, file=sys.stderr)
+    raise typer.Exit(code)
+
+
+def _pick_groups(directory: object) -> list[str]:
+    """``--pick-group``: number the owner's Agnes share targets (Everyone left out) and read a choice."""
+    from scout.kb.share import Directory
+
+    if not isinstance(directory, Directory) or not sys.stdin.isatty():
+        _share_refused("refused: --pick-group needs a vault linked to Agnes and a terminal", False)
+    targets = [t for t in directory.share_targets() or [] if not t.is_everyone]
+    if not targets:
+        _share_refused("refused: Agnes returned no groups you can share with", False)
+    for n, t in enumerate(targets, 1):
+        print(f"  {n}. {t.name}  (group:{t.id})")
+    answer = typer.prompt("Groups to share with (numbers, comma-separated)")
+    picked: list[str] = []
+    for part in answer.split(","):
+        if not part.strip().isdigit() or not 1 <= int(part) <= len(targets):
+            _share_refused(f"refused: {part.strip()!r} isn't one of the numbers above", False, 2)
+        picked.append(f"group:{targets[int(part) - 1].id}")
+    return picked
+
+
+@kb_app.command("share")
+def kb_share(
+    target: str = typer.Argument(..., help="A folder (shared as <folder>/**) or one note of the vault."),
+    extra: list[str] = typer.Argument(None, help="More people for --with (`--with a@example.com b@example.com`)."),
+    with_: list[str] = typer.Option(
+        [], "--with", help="An email, person:<email>, or group:<id or name>. Repeatable; commas work too."
+    ),
+    pick_group: bool = typer.Option(False, "--pick-group", help="Choose groups from your Agnes share targets."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Write without asking (after reading the preview)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the preview; write nothing."),
+    as_json: bool = typer.Option(False, "--json", help="Print the preview (and whether it was written) as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Share a folder or note with named people or your Agnes groups (owner only).
+
+    Previews the notes that would be newly shared, the ones left out (private,
+    local-only, over their ceiling, deciding for themselves) and the copy
+    warning, then writes scout-config.yaml → privacy.federation_defaults and
+    turns sharing on. Agnes enforces it from your next `scoutctl repo sync`.
+    Exit 1 = refused or not confirmed, 2 = bad argument.
+    """
+    import json
+
+    from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_share
+
+    _owner_only(as_json)
+    root = _kb_repo(repo)
+    directory = directory_for(root)
+    values = _share_values(extra or [], with_)
+    if pick_group:
+        values += _pick_groups(directory)
+    try:
+        plan = plan_share(root, target, values, directory=directory)
+    except ShareUsage as e:
+        _share_refused(f"error: {e}", as_json, 2)
+    except ShareRefused as e:
+        _share_refused(str(e), as_json)
+    if not as_json:
+        for line in plan.lines():
+            print(line)
+    written = False
+    if plan.changed and not dry_run:
+        if not yes:
+            if not sys.stdin.isatty() or as_json:
+                if as_json:
+                    print(json.dumps({**plan.to_json(), "written": False}, indent=2))
+                print("Preview only: nothing was written. Re-run with --yes to share.", file=sys.stderr)
+                raise typer.Exit(1)
+            if not typer.confirm("Share these notes?"):
+                print("Nothing was written.")
+                raise typer.Exit(1)
+        apply(root, plan)
+        written = True
+    if as_json:
+        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+    elif written:
+        from scout.kb.share import SYNC_NOTE
+
+        print("Wrote scout-config.yaml → privacy.federation_defaults.")
+        print(SYNC_NOTE)
+    elif not plan.changed:
+        print("Nothing to change: already shared that way.")
+
+
+@kb_app.command("unshare")
+def kb_unshare(
+    target: str = typer.Argument(..., help="A shared folder or note."),
+    extra: list[str] = typer.Argument(None, help="More people for --with."),
+    with_: list[str] = typer.Option(
+        [], "--with", help="Stop sharing with this person or group only (default: everyone). Repeatable."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would stop; write nothing."),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Stop sharing a folder or note, with some people or everyone (owner only).
+
+    Narrows scout-config.yaml → privacy.federation_defaults. In this release it
+    is vault only, so Agnes stops the share at your next `scoutctl repo sync`.
+    A note that shares itself in its own frontmatter is listed, not edited.
+    """
+    import json
+
+    from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_unshare
+
+    _owner_only(as_json)
+    root = _kb_repo(repo)
+    values = _share_values(extra or [], with_)
+    try:
+        plan = plan_unshare(root, target, values, directory=directory_for(root) if values else None)
+    except ShareUsage as e:
+        _share_refused(f"error: {e}", as_json, 2)
+    except ShareRefused as e:
+        _share_refused(str(e), as_json)
+    written = False
+    if plan.changed and not dry_run:
+        apply(root, plan)
+        written = True
+    if as_json:
+        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+        return
+    for line in plan.lines():
+        print(line)
+    if not plan.changed:
+        print("Nothing to change: it wasn't shared that way.")
+
+
+@kb_app.command("shares")
+def kb_shares(
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """List what this vault shares: per folder or note, the people, the notes shared and the notes left out.
+
+    Owner and autonomous readers only; another person's agent is denied
+    (exit 3). Group names come from Agnes when the vault is linked.
+    """
+    args = _kb_args("shares", dict(locals()))
+
+    def body(who: str, root: Path) -> object:
+        from scout.kb.privacy import FULL_READERS
+        from scout.kb.read import Output
+        from scout.kb.share import directory_for, group_names, list_shares, shares_lines
+
+        if who not in FULL_READERS:
+            return Output(data={"denied": True}, lines=["denied"], denied=1, code=3)
+        enabled, rows = list_shares(root)
+        names = group_names(directory_for(root), rows)
+        data = {"enabled": enabled, "group_names": names, "shares": [row.to_json() for row in rows]}
+        return Output(data=data, lines=shares_lines(enabled, rows, names))
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
+def _ceiling_line(entry: dict[str, object]) -> str:
+    kinds = entry.get("kinds")
+    only = f" (kind: {', '.join(str(k) for k in kinds)})" if isinstance(kinds, list) else ""
+    return f"  {entry['glob']}{only} -> {entry['ceiling']}"
+
+
+def _scope_text(scope: object) -> str:
+    return ", ".join(str(p) for p in scope) if isinstance(scope, list) else str(scope)
 
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
