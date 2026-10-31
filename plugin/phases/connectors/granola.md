@@ -59,7 +59,7 @@ If a flagged meeting has no decisions/commitments/follow-ups recorded near it, g
 
 ### Attendee Extraction
 
-Note all meeting attendees. Cross-reference with `people.md` and add any new people with context: "Attendee in [meeting title] on [date]."
+Note all meeting attendees. Cross-reference with `people.md` (`scripts/scoutctl kb name-lookup <name>`) and add any new people with context: "Attendee in [meeting title] on [date]."
 
 ### Cross-Reference with the Document Store
 

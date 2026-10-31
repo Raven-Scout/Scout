@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 from scout.action_items.parser import ActionItem
 
-FOCUS = "🎯"
+# Today's Focus: the phases write 💡; older files and runs used 🎯.
+FOCUS = ("💡", "🎯")
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,6 @@ def by_tag(items: Sequence[ActionItem]) -> dict[str, ActionItem]:
     for item in items:
         if not item.short_prefix:
             continue
-        if item.short_prefix not in out or section_emoji(out[item.short_prefix]) == FOCUS:
+        if item.short_prefix not in out or section_emoji(out[item.short_prefix]) in FOCUS:
             out[item.short_prefix] = item
     return out

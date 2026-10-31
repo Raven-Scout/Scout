@@ -73,7 +73,7 @@ from typing import Any
 from scout import __version__
 from scout.errors import KBError
 from scout.kb.lint_config import glob_match
-from scout.kb.ontology import KnowledgeGraph, find_vault
+from scout.kb.ontology import PARSE_ERROR_KEY, KnowledgeGraph, find_vault, parse_lookup_types
 from scout.kb.privacy import (
     CLASSIFIER_VERSION,
     FULL_READERS,
@@ -463,6 +463,13 @@ class IndexStore:
             return None
         if frontmatter is not None and not _is_entity(frontmatter):
             return None
+        if frontmatter is None and facts.state == "unparseable":
+            # The graph's own parse error ("err", None when the full block parses).
+            # An entry from before parse errors were kept has no "err": parse again.
+            if "err" not in entry:
+                return None
+            error = entry["err"]
+            return facts, ({PARSE_ERROR_KEY: error} if isinstance(error, str) else None)
         return facts, frontmatter
 
     def put(
@@ -483,6 +490,9 @@ class IndexStore:
         }
         if not _is_entity(frontmatter):
             new["fm"] = None
+            if facts.state == "unparseable":
+                error = frontmatter.get(PARSE_ERROR_KEY) if isinstance(frontmatter, dict) else None
+                new["err"] = None if error is None else str(error)
         else:
             try:
                 encoded = _enc(frontmatter)
@@ -943,8 +953,11 @@ def cmd_entity(graph: KnowledgeGraph, name: str) -> Output:
     )
 
 
-def cmd_name_lookup(graph: KnowledgeGraph, token: str, threshold: float) -> Output:
-    results = graph.name_lookup(token, distance_threshold=threshold)
+def cmd_name_lookup(graph: KnowledgeGraph, token: str, threshold: float, lookup_type: str | None = None) -> Output:
+    """``name_lookup`` over ``--lookup-type`` (``person`` | ``organization`` | ``any`` | a CSV)."""
+    types = parse_lookup_types(lookup_type)
+    scope = ",".join(sorted(types)) if types else "any type"
+    results = graph.name_lookup(token, distance_threshold=threshold, types=types)
     rows = [
         {
             **{k: v for k, v in r.items() if k != "_label"},
@@ -954,14 +967,22 @@ def cmd_name_lookup(graph: KnowledgeGraph, token: str, threshold: float) -> Outp
         for r in results
     ]
     if not results:
-        lines = [f"No KB match for '{token}' (threshold={threshold}). Route to review-queue; do NOT elevate to 🔴."]
+        lines = [
+            f"No KB match for '{token}' (threshold={threshold}, searched: {scope}). "
+            "Route to review-queue; do NOT elevate to 🔴."
+        ]
+        if types == {"person"}:
+            lines.append(
+                "  ↳ Searched PEOPLE only. If this token could be a company, product or project, "
+                "re-run with --lookup-type any before routing to review-queue."
+            )
     else:
         lines = [
             f"  {_mark(r['label'])}[{r['match_strength']:5s}] {r['name']} "
-            f"(slug={r['slug']}, matched_field={r['matched_field']}, score={r['score']})"
+            f"(slug={r['slug']}, type={r.get('type') or '?'}, matched_field={r['matched_field']}, score={r['score']})"
             for r in rows
         ]
-        lines.append(f"\n{len(results)} candidate(s).")
+        lines.append(f"\n{len(results)} candidate(s) — searched: {scope}.")
     return Output(data=rows, lines=lines, labels=[r["label"] for r in rows if r["label"]])
 
 
@@ -982,14 +1003,37 @@ def cmd_stats(graph: KnowledgeGraph) -> Output:
 
 
 def cmd_validate(graph: KnowledgeGraph) -> Output:
+    """Errors, then the accepted known gaps (never errors, always listed).
+
+    JSON: ``{"errors": [...], "known_gaps": [...]}``, each row labelled. A
+    parse-error row's ``entity`` is the file's vault-relative path, labelled
+    as that file (malformed frontmatter is private).
+    """
     errors = graph.validate()
-    rows: list[dict[str, Any]] = [{**e, "label": graph.label_of(e["entity"])} for e in errors]
+    file_labels = {pe["path"]: pe["_label"] for pe in graph.parse_errors}
+
+    def label(name: str) -> Mapping[str, Any] | None:
+        return graph.label_of(name) or file_labels.get(name)
+
+    rows: list[dict[str, Any]] = [{**e, "label": label(e["entity"])} for e in errors]
+    gaps: list[dict[str, Any]] = [{**g, "label": graph.label_of(g["entity"])} for g in graph.known_gaps]
     if rows:
-        lines = [f"  {_mark(graph.label_of(e['entity']))}[{e['entity']}] {e['message']}" for e in errors]
+        lines = [f"  {_mark(r['label'])}[{r['entity']}] {r['message']}" for r in rows]
         lines.append(f"\n{len(errors)} validation error(s) found.")
     else:
         lines = ["No validation errors."]
-    return Output(data=rows, lines=lines, labels=_node_labels(graph, [e["entity"] for e in errors]))
+    if gaps:
+        by_target: dict[str, list[dict[str, Any]]] = {}
+        for g in gaps:
+            by_target.setdefault(g["target"], []).append(g)
+        lines.append(f"\n{len(by_target)} known entity gap(s) — accepted backlog, not errors:")
+        for target in sorted(by_target):
+            sources = sorted({(g["entity"], _mark(g["label"])) for g in by_target[target]})
+            refs = ", ".join(f"{mark}{name}" for name, mark in sources)
+            lines.append(f"  '{target}' — {by_target[target][0]['reason']}  (referenced by: {refs})")
+    labels = [*_node_labels(graph, [e["entity"] for e in errors] + [g["entity"] for g in gaps])]
+    labels += [lab for lab in file_labels.values() if lab]
+    return Output(data={"errors": rows, "known_gaps": gaps}, lines=lines, labels=labels)
 
 
 # ----- the audit -----------------------------------------------------------------------

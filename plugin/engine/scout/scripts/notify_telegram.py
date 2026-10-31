@@ -78,10 +78,10 @@ from typing import Any
 import requests
 
 from scout import paths
-from scout.action_items.render import safe_href
 from scout.errors import ConfigError, ScoutError
 from scout.events import Event, append_event
 from scout.ids import new_ulid
+from scout.links import safe_href
 from scout.redact import redact_secrets
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -431,18 +431,28 @@ def _next_chunk(
     def outside_markup(i: int) -> bool:  # a space inside `<a href=…>` is not a word boundary
         return _safe_html_cut(remaining, i) == i
 
+    def overflow_of(cut: int) -> int:
+        return len(prefix) + cut + len(_closers(_open_tags_after(remaining[:cut], stack))) - limit
+
     while True:
         cut, consumed = _find_cut(remaining[:budget], ok=outside_markup)
         if not consumed:
-            # Hard cut. 0 means the chunk starts with a tag or entity longer
-            # than the budget: cut it anyway. Telegram refuses that chunk and
-            # the plain-text fallback sends it, where an over-long chunk
-            # would be refused for good.
-            cut = _safe_html_cut(remaining, cut) or cut
+            # Hard cut. 0 means the window cuts through the tag or entity
+            # ``remaining`` starts with (the budget can shrink below it for
+            # tags later in the window). Take that markup alone when it fits:
+            # the piece is then markup only and an opened tag is carried to
+            # the next chunk. When even that does not fit, cut through it.
+            # Telegram refuses that chunk and the plain-text fallback sends
+            # it, where an over-long chunk would be refused for good.
+            safe = _safe_html_cut(remaining, cut)
+            if not safe:
+                m = _TAG_RE.match(remaining) or _ENTITY_RE.match(remaining)
+                safe = m.end() if m and overflow_of(m.end()) <= 0 else cut
+            cut = safe
         piece = remaining[:cut]
         after = _open_tags_after(piece, stack)
         closers = _closers(after)
-        overflow = len(prefix) + len(piece) + len(closers) - limit
+        overflow = overflow_of(cut)
         if overflow <= 0:
             break
         # Ends: at budget 1 the piece is one character and opens no tag, so
@@ -504,7 +514,7 @@ def _drop_unsafe_links(body: str) -> tuple[str, int]:
     A body can carry text Scout did not write (Slack, GitHub, mail), and
     Telegram keeps ``tg://`` deep links live (join a chat, add a proxy). The
     scheme rule is the action-items dashboard's
-    (:func:`~scout.action_items.render.safe_href`).
+    (:func:`~scout.links.safe_href`).
 
     Fails closed: every ``<a>`` tag is read on its own, and one that is not
     exactly ``<a href=…>`` (another attribute, a second href, a ``data-href``)

@@ -54,28 +54,27 @@ A task waiting on another task stays in its section with `Depends:`. The deadlin
 
 ### Hard Rule — Deadline-Distance Ceiling
 
-Urgency is **capped by how far away the deadline is** — distance sets a *ceiling*, not a floor. Before assigning any tier, compute the days between today and the item's real deadline:
+Urgency is **capped by how far away the deadline is**. Distance sets a *ceiling*, not a floor. Every task with a real deadline (a Linear due date, a KB task's `deadline`, a date in the ask) says it in its body as `due <date>`. The check below reads it there and computes the ceiling, so you don't count days. Past-due tasks follow *Past-Due Tasks Step Down* below.
 
-- **30+ days out** → 🟢 Watching (max). Far-future items never lead the list.
-- **7–30 days out** → 🟡 To Do (max).
-- **< 7 days out** → eligible for 🔴 Urgent.
-- **< 3 days out** → 🔴 when the next action is {{USER_NAME}}'s to take.
-- **Past due** → *Past-Due Tasks Step Down* below decides.
+**Every dated item gets a task line.** A dated item is new work assigned to {{USER_NAME}} with a deadline: a Linear issue, a KB task, an ask. It goes in the tier its distance allows: 30+ days out in 🟢 Watching, 7–29 days in 🟡 To Do, under 7 days in 🔴 Urgent when the next step is {{USER_NAME}}'s. A far deadline lowers the tier but never removes the item. A dated item that only appears in the Scout Digest or the run notes is a dropped task.
 
-**Evaluate the actual deadline, not the source's tone.** Notification language — "action required", "expiring soon", "final notice", "limit reached" — is alarm-word framing, not real urgency, and never promotes an item past the distance ceiling. Deprecation / end-of-life notices specifically stay 🟢 Watching until ~2–3 weeks before the cutover. This ceiling is the counterpart to the deadline *escalation* rule under Knowledge Graph Personal Tasks below: escalation raises priority as a deadline nears; the ceiling stops a distant deadline from being surfaced as urgent on tone alone.
+**Tone never promotes.** "Action required", "expiring soon", "final notice" and "limit reached" are alarm words, not urgency, and never lift a task past its ceiling or justify an override. Deprecation and end-of-life notices stay 🟢 Watching until ~2–3 weeks before the cutover, even where the ceiling would allow 🟡. Escalation (under Knowledge Graph Personal Tasks) raises a task as its deadline nears; the ceiling stops a distant one from leading the list.
+
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-tier-ceiling --data-dir {{SCOUT_DIR}}` until it exits 0. Exit 1 names each task above its ceiling (30+ days out → 🟢 at most; 7–29 → 🟡 at most; under 7 → 🔴 allowed), and each pre-fetched Linear issue assigned to {{USER_NAME}} with a due date (`linear_assigned_due`) that no task line names: add it. It also names a 🟡 task under 3 days out whose next step is {{USER_NAME}}'s: that one goes to 🔴. A 🟡 task that only waits on someone (its body says `waiting on <who> since <date>`) stays. Move each task named, or fix a wrong due date. If one really belongs where it is, add `- Ceiling override [#TAG] — <reason>` (`[PROJ-123]` for an issue) to this run's 🪵 Run notes entry. Exit 2 (it couldn't check): add `tier ceiling check could not run: <its message>` to that entry and go on.
 
 ### Hard Rule — Past-Due Tasks Step Down
 
 A deadline that passed with nobody acting on it is no longer today's work. Without this rule a past-due task stays 🔴 for good, and the few that really are urgent get lost among them.
 
-For each 🔴 or 🟡 task whose due date has passed, count its **quiet days**: the calendar days since the later of its due date and the last new evidence on it (a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}), as its context note dates that evidence. Then:
+The runner does the counting. `.scout-cache/session-context.json` → `past_due_tasks` lists each 🔴 or 🟡 task whose `due <date>` has passed (and each one this rule parked) with its **quiet days**, the calendar days since the later of its due date and the last new evidence on it, and its `branch`. Follow the branch:
 
-- **Under 7 quiet days:** treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
-- **7 or more:** 🟡 at most. The first time, whether you move it down from 🔴 or it was already 🟡, rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `stepped down, past due with no news`.
-- **14 days after that line, still with no news:** move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
-- **New evidence restarts the count.** Record it, dated, in the context note, and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive.
-- A task snoozed past today is skipped: the snooze is {{USER_NAME}}'s decision.
-- A recurring task the cadence computer reports `overdue` is 🔴 on its due day and the 2 days after. On the 3rd day past due with no completion evidence it steps down to 🟡 with the question and the note line (without waiting for 7 quiet days), and parks 14 days after that line, as above.
+- **`hold`** (under 7 quiet days; a recurring `[[recurring-tasks/…]]` task, its due day and the 2 days after): treat it as under 3 days out: 🔴 when the next step is {{USER_NAME}}'s, 🟡 for a nudge when it waits on someone else. A deadline just missed is still urgent.
+- **`step_down`:** 🟡 at most. The first time (`stepped_down` is null), rewrite its body once to the due date and one question, e.g. `— due Sep 22; still want this?`, and add a dated line to its context note: `- YYYY-MM-DD: stepped down, past due with no news`.
+- **`park`** (14 days after that line, still with no news): move it to 🅿️ Parked as it is, without editing its text. The board shows it as on hold.
+
+**New evidence restarts the count**: a reply, a PR or ticket update, a meeting mention, a comment from {{USER_NAME}}. Record it as a dated line in the context note and place the task under the usual rules again, even if it is parked. {{USER_NAME}} answering "still want this?" is evidence: yes means re-place it (with a new due date, if they give one); no means close it as a directive. The count reads every dated note line as evidence except the step-down line, so never add a dated line that only says nothing happened. A task snoozed past today isn't listed: the snooze is {{USER_NAME}}'s decision.
+
+Before committing a briefing or consolidation, run `scripts/scoutctl action-items check-demotion --data-dir {{SCOUT_DIR}}`. Exit 1 names each task off its branch: fix it and run it again. Exit 2 (it couldn't check): if the context file is missing or from another day, run `scripts/scoutctl pre-session data <run mode>` once and check again; otherwise add `demotion check could not run: <its message>` to this run's 🪵 Run notes entry and go on. Never edit `session-context.json` to make it pass.
 
 This is demotion within view: the task keeps its row and its `[#TAG]`, so the count-guard and the dropoff audit see no change. A parked task nobody touches leaves through the 60-day *Stale Items Auto-Archive*, never by being dropped.
 
@@ -355,10 +354,12 @@ grep -nE '^\s*- \[x\]' "$DAILY_FILE" | grep -viE 'recently completed|## ✅' \
 Auto-transcribed sources (Granola, Gemini/Drive auto-notes, Fathom recaps, meeting summaries) frequently mis-hear names. **Never** write a transcribed name into action items, KB, or a DM without first resolving it against the knowledge graph. For every name-shaped token from a transcribed source:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb name-lookup "<Token>"
+cd {{SCOUT_DIR}} && scripts/scoutctl kb name-lookup "<Token>" --lookup-type any
 ```
 
-- **Exact match** → use the matched entity with its `[[people/<slug>]]` wikilink.
+`--lookup-type any` searches every entity type: transcription garbles company, product and project names as often as people's. Each candidate shows its `type`.
+
+- **Exact match** → use the matched entity with its wikilink (`[[people/<slug>]]` for a person).
 - **Fuzzy match** (within threshold ≈ Levenshtein-2 / phonetic-equivalent) → use that entity, append a `[name-fuzzy-resolved]` marker.
 - **No match** → write at most "Contact person matching '<verbatim-token>' (no KB match — please confirm)" and route a `[transcript-drift]` entry to `review-queue.md`. **NEVER elevate an unresolved transcribed name to a 🔴 headline** — 🟡 with the explicit "no KB match" framing is the ceiling.
 
@@ -381,12 +382,7 @@ Each result carries its label; a `[private]` task renders in the daily file as u
 For the morning briefing, focus on:
 
 1. **Open personal tasks** — tasks with `domain: personal` and `status: open`. These carry forward into daily action items alongside work tasks.
-2. **Deadline escalation** — any task with a `deadline` field. Apply escalating priority:
-   - 7+ days out: keep existing priority
-   - 3-7 days out: escalate to 🟡 if not already higher, when the next action is {{USER_NAME}}'s to take
-   - <3 days out: escalate to 🔴, when the next action is {{USER_NAME}}'s to take
-   - past due: *Past-Due Tasks Step Down* applies instead
-   - a task waiting on someone else stays in 🟢, with the deadline in its body, until it is under 3 days out; then it goes to 🟡 for {{USER_NAME}} to nudge
+2. **Deadline escalation**: any task with a `deadline` field. Write the deadline in its body as `due <date>`; `check-tier-ceiling` holds it to *Deadline-Distance Ceiling* above. Under 7 days out, raise it to 🟡 if it is lower and the next step is {{USER_NAME}}'s. A task waiting on someone else stays in 🟢 until it is under 3 days out, then goes to 🟡 for {{USER_NAME}} to nudge. Past due: *Past-Due Tasks Step Down* applies.
 3. **Birthday alerts** — check if any person entity has a `birthday` field matching today's month/day. If so, add a reminder to the action items.
 
 Personal tasks appear in the action items file in a **Personal** section after work items.
@@ -517,17 +513,17 @@ Run every available cross-check (calendar, issue tracker, messaging, code host, 
 
 After reconciliation is complete, refresh the `## 🪵 Run notes & connector availability` block at the **bottom** of the action items file: keep **one line per run** (≤ 300 chars: timestamp, mode, counts, connector availability) for the last 3 runs only. Do not write run metadata at the top of the file.
 
-## Item line format (enforced: 60 KB file, 500-char lines)
+## Item line format (pre-commit lint limits: 60 KB file, 500-char lines)
 
-Each item is **one line of up to 300 characters**, plus **at most one sub-bullet** of up to 300 characters (the blocker, or {{USER_NAME}}'s comment thread):
+Each item is **one line of up to 500 characters**, plus **at most one sub-bullet** of up to 500 characters (the blocker, or {{USER_NAME}}'s comment thread):
 
 `- [ ] [#XXXX] **Title** — next step · due YYYY-MM-DD · → [[<project, topic or source note>]]`
 
 A 🟢 Watching line says whom it waits on instead: `— waiting on <who> since <date>`. Tags and other refs go in `- Refs:` (*Clean Title, Prose Body, Refs Block*).
 
-**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. List notes with `scripts/scoutctl kb files --glob 'action-items/context/*.md'` and read one with `scripts/scoutctl kb read <path>`, never `ls` or `cat`. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`) — the one exception to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
+**Context lives in the item's own note**, `action-items/context/<TAG>.md`, never in extra sub-bullets. Create it in the same commit as the item. Frontmatter: `tag`, `title` (plain text), `created`, `updated` (YYYY-MM-DD). Body: what this is and why, current status, what blocks it, the evidence (quotes, timestamps, ticket and PR state), and links to the project, topic and source notes that hold the durable knowledge. When the item gains context, update the note (and its `updated` date), not the daily file. List notes with `scripts/scoutctl kb files --glob 'action-items/context/*.md'` and read one with `scripts/scoutctl kb read <path>`, never `ls` or `cat`. Carry-forward never touches the note. **A re-tag renames the note** to the new tag in the same commit (`git mv`), one of the write protocol's two exceptions to "never rename or move existing files". The `→ [[…]]` slot may point at the note as `→ [[action-items/context/<TAG>|context]]`; it is optional, because the apps find the note by tag. The only exception is machine lines: plan markers, `- Refs:` and the board fields in **Board Fields**, each written only when it adds something.
 
-**Fixed sections, in order:** `## 🎯 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
+**Fixed sections, in order:** `## 💡 Today's Focus` (≤ 5) · `## 🔴 Urgent` · `## 🟡 To Do` · `## 🟢 Watching` · `## 🅿️ Parked` · `## 📅 Meetings` · `## ✅ Recently Completed` (7 days, then the line is dropped; git keeps it) · `## 📋 Scout Digest` (see below) · `## 🪵 Run notes & connector availability` (bottom).
 
 **A tier change moves the line.** Never write "Demoted by…", "Re-tiered by…", "Relocated from…" or "From this run…" sections. Git records why.
 

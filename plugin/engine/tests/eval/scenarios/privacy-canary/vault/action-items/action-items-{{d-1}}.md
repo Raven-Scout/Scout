@@ -1,6 +1,6 @@
 # Action Items — {{d-1}}
 
-## 🎯 Today's Focus
+## 💡 Today's Focus
 
 ## 🔴 Urgent
 

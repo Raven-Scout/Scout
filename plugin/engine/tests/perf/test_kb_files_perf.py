@@ -106,6 +106,21 @@ def test_warm_kb_files_and_query_within_budget(tmp_path: Path, monkeypatch: pyte
         kb_read.query_rows(graph, {"type": "task"}, visibility=None)
 
     query()  # cold: fills the per-process frontmatter cache
+
+    # pathlib's relative_to costs ~0.1 ms a call on 3.12 (it builds every parent
+    # of the base): once per walked file is most of a warm query's budget.
+    relative: list[str] = []
+    real_relative_to = Path.relative_to
+
+    def relative_spy(self: Path, *a: Any, **k: Any) -> Any:
+        relative.append(str(self))
+        return real_relative_to(self, *a, **k)
+
+    monkeypatch.setattr(Path, "relative_to", relative_spy)
+    query()
+    monkeypatch.undo()
+    assert len(relative) < 10, f"a warm query called Path.relative_to {len(relative)} times (once per file?)"
+
     query_s = _best_of(query)
     print(f"\nwarm kb files: {files_s * 1000:.0f} ms, warm kb query: {query_s * 1000:.0f} ms")
     assert files_s < WARM_BUDGET_S, f"warm kb files took {files_s:.3f}s"

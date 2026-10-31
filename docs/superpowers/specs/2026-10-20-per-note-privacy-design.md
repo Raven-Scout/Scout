@@ -388,7 +388,7 @@ filesystem (§12.4).
 
 | Reader today | Raw access | Change |
 |---|---|---|
-| `scout-ask` skill (#480) | `ls knowledge-base/projects/`, direct reads, fallback `rg`, `parser.py query` | Step 1 uses `scoutctl kb resolve` then `kb files --glob`; the fallback search is `scoutctl kb search`; typed queries use `scoutctl kb query`; reads use `scoutctl kb read`. Every call passes `--reader "${SCOUT_READER:-owner}"`. The owner sees no difference except `[private]` labels. A follow-up to #480, not inside it. |
+| `scout-ask` skill (#480) | `ls knowledge-base/projects/`, direct reads, fallback `rg`, `parser.py query` | Step 1 uses `scoutctl kb resolve` then `kb files --glob`; the fallback search is `scoutctl kb search`; typed queries use `scoutctl kb query`; reads use `scoutctl kb read`. No call passes `--reader`: each runs as the ambient reader (below the table). The owner sees no difference except `[private]` labels. A follow-up to #480, not inside it. |
 | `phases/core/git-setup.md` | `git log --oneline -20`, `git diff HEAD~1`, `git log --since` | `scoutctl kb delta`, so the run narrates private changes only to owner-only surfaces. Non-KB git work (status, commit, push) is unchanged. |
 | `phases/core/action-items.md` (personal tasks, `surface_rule`, `always_visible_if` driver) | `parser.py query --type task` | `scoutctl kb query --type task`; private tasks render in the daily file as usual and carry their label into the wrap (§8.1). |
 | `phases/core/kb-management.md`, `phases/modes/kb-deep-work.md` (fact-check pass, stale-task check, shrink target pick) | `git log`/`git diff`, parser, file reads | `kb delta`, `kb query`, `kb files`. Deep work maintains private notes like any other; a fact-check of a private note uses only owner-side sources and never puts its content into a connector or web query. |
@@ -399,6 +399,13 @@ filesystem (§12.4).
 | `scout/scripts/heartbeat.py` (`research_queue_has_open`) | direct frontmatter reads of `research-queue/*.md` | Ignores private items, because a research run may not research them (§4.2). |
 | The vault-local enrichment-question generator (in the vault's `scripts/`, not shipped by the engine) | `rglob` over `people/`, `personal/` | Must read through `scoutctl kb files` and tag each question with its source's visibility; a question from a private file is delivered only on an owner-only channel (Telegram, the daily file), never Slack. The engine can't edit vault scripts: `/scout-update` reports it as drift with the fix, and it is a back-port candidate into `templates/scripts/`. |
 | Every phase | ad-hoc `rg`/`cat` of the KB | The always-included section `phases/core/privacy.md` (§8.1) says: read the KB through `scoutctl kb`, never `cat`, `rg`, `grep`, `find` or `ls` inside `knowledge-base/` or `action-items/context/`. |
+
+**scout-ask takes the ambient reader** (amended with plan Task 10, #544).
+Its commands pass no `--reader`, so §6.2 resolves the reader: the owner in
+the owner's session, `autonomous` in a scheduled run, the host's `agent:…`
+reader. An explicit owner fallback such as `--reader "${SCOUT_READER:-owner}"`
+is wrong: when only `SCOUT_MODE` is set, the ambient reader is `autonomous`,
+and `--reader owner` would widen it, which `scoutctl` rejects.
 
 `scripts/eval.sh` and the eval stubs gain the commands so scenarios run
 against the fixture vault.

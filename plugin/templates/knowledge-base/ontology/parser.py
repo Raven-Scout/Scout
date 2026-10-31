@@ -15,9 +15,11 @@ this parser always printed, plus labels: a `[private] ` marker before each
 private result in text, and a `_label` key on each entity in JSON.
 
 `--reader` (owner | autonomous | agent:...) is passed through and can only
-narrow the reader `SCOUT_READER` / `SCOUT_MODE` set. If `scoutctl` isn't on
-PATH this exits non-zero without reading the knowledge base: there is no
-unlabelled fallback.
+narrow the reader `SCOUT_READER` / `SCOUT_MODE` set, as is `--lookup-type`
+(name_lookup: person | organization | any | a comma-separated list);
+`--rel-types` is another spelling of `--rels`. `scoutctl` is the one on PATH,
+else this vault's `scripts/scoutctl`. With neither, this exits non-zero
+without reading the knowledge base: there is no unlabelled fallback.
 
 Python callers: `from knowledge_base.ontology.parser import KnowledgeGraph`
 still works, with the old constructor `KnowledgeGraph(schema_path=..., kb_root=...)`
@@ -105,8 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", help="Entity name (for entity/related/traverse, and the source for path)")
     parser.add_argument("--to", dest="to", help="Target entity name (for the path command)")
     parser.add_argument("--hops", type=int, help="Max hops (traverse: default 2; path: default 6)")
-    parser.add_argument("--rels", help="Comma-separated relationship types to restrict a traverse (e.g. 'works_with,works_on')")
+    parser.add_argument("--rels", "--rel-types", dest="rels", help="Comma-separated relationship types to restrict a traverse (e.g. 'works_with,works_on')")
     parser.add_argument("--token", help="Name token to resolve against people/aliases (name_lookup)")
+    parser.add_argument("--lookup-type", dest="lookup_type", help="name_lookup: entity type(s) to search — person (default), organization, any, or a comma-separated list")
     parser.add_argument("--type", help="Entity type filter (for query command)")
     parser.add_argument("--status", help="Status filter (e.g. 'open', 'completed') — query command")
     parser.add_argument("--exclude-status", dest="exclude_status", help="Comma-separated statuses to exclude (e.g. 'completed,cancelled') — query command. Use this for 'currently-actionable' tasks since entities use mixed statuses (open / in-progress / scheduled / in_service / ...).")
@@ -150,6 +153,7 @@ def scoutctl_argv(args: argparse.Namespace) -> list[str] | None:
             return None
         flag("--token", args.token)
         out.extend(["--threshold", str(args.threshold)])
+        flag("--lookup-type", args.lookup_type)
     elif cmd == "query":
         flag("--type", args.type)
         flag("--status", args.status)
@@ -160,17 +164,27 @@ def scoutctl_argv(args: argparse.Namespace) -> list[str] | None:
     return out
 
 
+def find_scoutctl() -> str | None:
+    """`scoutctl` on PATH, else this vault's `scripts/scoutctl` (<vault>/knowledge-base/ontology/parser.py)."""
+    found = shutil.which("scoutctl")
+    if found:
+        return found
+    vault = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    local = os.path.join(vault, "scripts", "scoutctl")
+    return local if os.path.isfile(local) and os.access(local, os.X_OK) else None
+
+
 def main() -> int:
     args = build_parser().parse_args()
     argv = scoutctl_argv(args)
     if argv is None:
         return 0
-    scoutctl = shutil.which("scoutctl")
+    scoutctl = find_scoutctl()
     if scoutctl is None:
         print(
-            "parser.py: scoutctl not found on PATH. The knowledge graph runs in the Scout engine "
-            "(scoutctl kb), which labels private notes; this parser won't read the knowledge base "
-            "without it. Put scoutctl on PATH (see /scout-status), then retry.",
+            "parser.py: scoutctl not found on PATH or in this vault's scripts/. The knowledge graph "
+            "runs in the Scout engine (scoutctl kb), which labels private notes; this parser won't "
+            "read the knowledge base without it. Put scoutctl on PATH (see /scout-status), then retry.",
             file=sys.stderr,
         )
         return 127

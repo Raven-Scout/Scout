@@ -85,6 +85,7 @@ private struct CommentRow: View {
                         .foregroundStyle(DS.Ink.p3)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
             }
         }
