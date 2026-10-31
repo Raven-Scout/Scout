@@ -72,7 +72,13 @@ fi
 # while the retry gate called it permanent. The apostrophe is `.` on purpose: this
 # string is single-quoted. Known remaining gap, unevidenced here so deliberately not
 # added: `EAI_AGAIN` (DNS timeout) would be the same class.
-TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded'
+#
+# `(FailedToOpenSocket)` and `API Error: 500 ` are added on the same evidence rule.
+# One vault's logs hold a run that died on each: `API Error: Unable to connect to API
+# (FailedToOpenSocket)` (2026-07-08) and `API Error: 500 Internal server error. This
+# is a server-side issue, usually temporary — try again in a moment.` (2026-06-05).
+# The CLI's own text calls the 500 temporary. The trailing space keeps `5000…` out.
+TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Unable to connect to API \(FailedToOpenSocket\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded|API Error: 500 '
 
 # Auth-failure class (HTTP 401/403). NOT retried — re-authentication needs a human —
 # but surfaced with a concrete remediation instead of the opaque "not classified"
