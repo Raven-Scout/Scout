@@ -156,7 +156,7 @@ gains the scheme; every `scoutctl kb` command and the audit log
 | Delegate sees | Default | Owner may widen to |
 |---|---|---|
 | `visibility: normal` notes, labelled | yes | — |
-| `visibility: private` notes | **no** | yes, per delegate (`privacy.delegates.<id>.include_private: true`), only for a delegate whose conversations are the owner's alone (§4.2) |
+| `visibility: private` notes | **no** | yes, per delegate (`privacy.delegates.<id>.include_private: true`, §4.5), only for a delegate whose conversations are the owner's alone (§4.2) |
 | Local-only paths (plumbing, trading) | **never** | never: path-level, like any sync (privacy §4.3) |
 | Action items (daily file, context notes) | yes, minus lines that link a private note (§4.4) | whole file, when private is widened |
 | Brain files, `scout-config.yaml` minus secrets, schedule snapshot | yes | — |
@@ -233,6 +233,53 @@ files. So the delegate profile:
 
 The redacted file is a new blob in the mirror commit only; the vault file is
 untouched, so the laptop never replays a redaction back (§7.3).
+
+### 4.5 Settings and keys
+
+Delegate settings follow the privacy-policy key layout agreed with the Shared
+Areas marking slice (S1a, Raven-Scout/Scout#553): everything lives in
+`scout-config.yaml → privacy:`, and `privacy-policy.json → policy` mirrors
+it. The keys are grouped by reader, additive, and `schema_version` stays 1.
+Unknown keys are ignored, so a vault without delegates parses unchanged.
+Federation keys (`federation`, `federation_ceilings`, `federation_defaults`)
+are for `agent:*` readers only. Delegate keys sit beside them, never inside:
+
+```yaml
+privacy:
+  # v1 keys for all readers: local_only_add, visibility_defaults, shared_files_add, surfaces
+  # agent:* readers (Shared Areas): federation, federation_ceilings, federation_defaults
+  delegates:                    # delegate:* readers (this spec, V1)
+    grok-personal:              # the <id> in delegate:<id>
+      include_private: false    # §4.1; only the literal `true` widens, anything else is false
+      account_unshared: true    # §4.2; the owner's one-time confirmation that no Bot on the account is shared
+    duet: {}
+  # delegation: {...}           # reserved for policy-wide delegate switches; none in V1
+```
+
+Rules:
+
+- **Ids.** `^[a-z0-9][a-z0-9-]{0,39}$`. A `delegate:<id>` reader whose id
+  isn't listed sees nothing (fail closed), so the list itself is the on
+  switch, and V1 needs no global `enabled` key.
+- **Policy-wide switches** go in the sibling `delegation:` section, never as
+  a reserved key inside `delegates:` (no `_defaults`), so every key under
+  `delegates:` is an id.
+- **Separate sections.** No delegate key goes inside `federation*`, and no
+  federation key goes inside `delegates`.
+- **Labels gain no delegate keys.** What a delegate sees is derived from
+  `visibility`, `local_only` and that delegate's `include_private`. The
+  line-level redaction of mixed files (§4.4) is part of the mirror build, not
+  a label. `kb.privacy.visible_to` gains the policy as an argument for this
+  (V1).
+- **Only the owner edits it.** The widening guard already blocks a scheduled
+  run's change to the `privacy:` block (privacy §8.3); that covers
+  `delegates:`.
+- **Not policy.** Mirror links (host, repo, clone URL, profile, credentials)
+  are link state in `.scout-state/repo-sync.json` and `~/.scout-secrets/`, not
+  privacy keys (§6.1, §6.4).
+- **Agnes** treats readers it doesn't know as not indexed, so `delegates:` in a
+  synced `privacy-policy.json` changes nothing there. A delegate mirror's own
+  `privacy-policy.json` carries only that delegate's entry (V2).
 
 ## 5. Options compared
 
