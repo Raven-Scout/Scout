@@ -69,6 +69,11 @@ COPY_WARNING = (
     "Un-sharing stops future reads; it can't recall what was already read."
 )
 SYNC_NOTE = "Nothing is shared until your next `scoutctl repo sync`; Agnes checks every read against it."
+GROUP_MEMBERS_NOTE = "members are shown once Agnes reports them (A8b)"
+GROUP_OWNER_NOTE = (
+    "A group share works only while you are a member of that group: Agnes rechecks your membership and the "
+    "reader's at every read (ruling 7). Scout can't see your membership yet, so it doesn't check it here."
+)
 UNSHARE_PENDING = (
     "The stop takes effect in Agnes at your next `scoutctl repo sync` "
     "(an instant stop from the laptop comes with Agnes's shares/stop, slice S1b)."
@@ -544,6 +549,16 @@ class SharePlan:
             "folder": self.target.folder,
             "principals": self.principals,
             "group_names": self.names,
+            "groups": [
+                {
+                    "id": g[len("group:") :],
+                    "name": self.names.get(g),
+                    "members": None,
+                    "members_note": GROUP_MEMBERS_NOTE,
+                }
+                for g in self._groups()
+            ],
+            "group_owner_note": GROUP_OWNER_NOTE if self._groups() else None,
             "newly_shared": [{"path": p, "principals": w} for p, w in self.newly],
             "already_shared": self.already,
             "excluded": [{"path": p, "reason": r} for p, r in self.excluded],
@@ -554,9 +569,17 @@ class SharePlan:
             "turns_sharing_on": self.enabling,
         }
 
+    def _groups(self) -> list[str]:
+        return [p for p in self.principals if p.startswith("group:")]
+
     def lines(self) -> list[str]:
         who = ", ".join(_display(p, self.names) for p in self.principals)
         out = [f"Share {self.target.glob} with {who}"]
+        for g in self._groups():
+            name = self.names.get(g) or "(name not checked with Agnes)"
+            out.append(f"  group {g[len('group:') :]}: {name}; {GROUP_MEMBERS_NOTE}")
+        if self._groups():
+            out.append(f"  {GROUP_OWNER_NOTE}")
         out += [f"  warning: {w}" for w in self.warnings]
         out.append(f"Newly shared: {len(self.newly)} note(s)")
         out += [f"  {p}  +{', '.join(_display(x, self.names) for x in w)}" for p, w in self.newly]

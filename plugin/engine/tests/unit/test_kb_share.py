@@ -298,6 +298,25 @@ def test_a_group_is_written_by_its_id_and_everyone_is_refused(vault: Path) -> No
         share.plan_share(vault, WIDGET, ["group:other"], directory=FakeDirectory(groups=groups))
 
 
+def test_a_group_share_preview_names_the_group_and_the_owners_membership(vault: Path) -> None:
+    groups = [{"id": "a1b2c3", "name": "Widget team", "is_everyone": False}]
+    plan = share.plan_share(vault, WIDGET, ["group:a1b2c3"], directory=FakeDirectory(groups=groups))
+    text = "\n".join(plan.lines())
+    assert f"group a1b2c3: Widget team; {share.GROUP_MEMBERS_NOTE}" in text
+    assert share.GROUP_OWNER_NOTE in text
+    data = plan.to_json()
+    assert data["groups"] == [
+        {"id": "a1b2c3", "name": "Widget team", "members": None, "members_note": share.GROUP_MEMBERS_NOTE}
+    ]
+    assert data["group_owner_note"] == share.GROUP_OWNER_NOTE
+
+    offline = share.plan_share(vault, WIDGET, ["group:team-1"], directory=None)
+    assert "group team-1: (name not checked with Agnes)" in "\n".join(offline.lines())
+    people_only = share.plan_share(vault, WIDGET, ["priya@example.com"], directory=None)
+    assert share.GROUP_OWNER_NOTE not in "\n".join(people_only.lines())
+    assert people_only.to_json()["groups"] == [] and people_only.to_json()["group_owner_note"] is None
+
+
 def test_offline_a_group_id_is_kept_with_a_warning(vault: Path) -> None:
     plan = share.plan_share(vault, WIDGET, ["group:team-1"], directory=None)
     assert plan.principals == ["group:team-1"]
