@@ -212,6 +212,29 @@ Of the output, the first line is the JSON report and the last line is `exit=N`. 
 
 The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each finding has `id`, `severity` (`yellow`, `red` or `note`), `since`, `summary` and `fix`. Ignore `note` findings everywhere: they are informational and never change the headline. Each slot has `key`, `type`, `last_fire` and `last_outcome` (`{outcome, finished_at, failure_class}` or null). Keep the whole report for Step 4.
 
+### 3h. Brain-file edits (applied rules)
+
+Dreaming runs may edit Scout's own instructions (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
+
+If the vault has its own generator, use it. It attributes each edit to the section it landed in and says whether the change still needs porting to the plugin:
+
+```bash
+[ -f "SCOUT_DIR/scripts/applied-rules.py" ] && python3 "SCOUT_DIR/scripts/applied-rules.py" --days 7 --json
+```
+
+The output is a JSON list, one object per commit: `commit`, `date`, `subject`, and `files` mapping each brain file to `sections` (heading names), `added`, `removed` and `backport` (`owed` / `carried` / `superseded` line counts). A missing `backport` means it was not measured, not that nothing is owed.
+
+Otherwise, read git directly:
+
+```bash
+git -C "SCOUT_DIR" log --since="7 days ago" --no-merges --date=format:'%Y-%m-%d %H:%M' \
+    --pretty=format:'@@%h|%ad|%s' --numstat -- SKILL.md DREAMING.md RESEARCH.md
+```
+
+Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines. No section names and no back-port state come from this path, so show `-` in those columns.
+
+No commits in the window means no brain-file edits in 7 days. A git error means the history is unavailable: say so rather than showing an empty table.
+
 ---
 
 ## Step 4: Compose and Display the Dashboard
@@ -431,6 +454,21 @@ A `conflict` means the user is running their own version of a plugin-owned file 
 
 ---
 
+### Brain-File Edits (last 7 days)
+
+From 3h. One row per commit, newest first, at most 10 (say how many were left out):
+
+```
+  2026-10-25 18:44  a1b2c3d  DREAMING.md +4/-0  Step 0.6 · Step 2a-shrink   back-port owed: 3
+  2026-10-25 06:48  e4f5a6b  SKILL.md +24/-9 · DREAMING.md +17/-4 · RESEARCH.md +14/-1
+```
+
+Shorten the commit subject to its first clause if you show it. When any row has `owed` lines, end with: `Some of these edits are not in the plugin yet: scoutctl phases backport shows the full list (read-only).`
+
+If there were none: `  No brain-file edits in the last 7 days.`
+
+---
+
 ### Knowledge Graph Health
 
 Run the ontology parser to check the knowledge graph:
@@ -483,4 +521,4 @@ End the dashboard with a one-line summary:
 Scout is healthy. / Scout needs attention — Z KB files stale, X proposals pending.
 ```
 
-Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes.
+Choose the appropriate variant based on findings. "Needs attention" if any of: KB files stale, proposals pending with Approved status, scheduler entries missing or with non-zero exit codes. Brain-file edits alone never make it "needs attention": they are a record, not a fault.
