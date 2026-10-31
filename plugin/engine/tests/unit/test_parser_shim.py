@@ -438,9 +438,72 @@ def test_shim_output_matches_the_pre_shim_parser(vault: Path, args: list[str]) -
         cwd=vault,
     )
     new = _run_shim(vault, args, f"{VENV_BIN}{os.pathsep}{env.get('PATH', '')}")
+    # This test owns *text* parity, not the exit code. The legacy fixture is the
+    # v0.18.2 parser, which printed `N validation error(s) found.` and returned 0
+    # anyway; this fixture vault carries two deliberate validation errors. Pinning
+    # `== 0` on both sides is what let the shim ship without `validate`'s exit 3 —
+    # see test_validate_exit_code_is_the_contract below, which owns that.
     assert old.returncode == 0, old.stderr
-    assert new.returncode == 0, new.stderr
+    assert new.returncode in (0, 3), new.stderr
     assert _normalise(args[0], new.stdout) == _normalise(args[0], old.stdout)
+
+
+_CONTRACT_SCHEMA = """\
+entity_types:
+  person:
+    properties:
+      required: [name, type]
+      optional: [role]
+    relationships:
+      - works_with
+
+relationship_types:
+  works_with:
+    inverse: works_with
+    symmetric: true
+"""
+
+# Two people who reference each other: well typed, neither orphaned.
+_CONTRACT_CLEAN = {
+    "people/ann.md": '---\nname: Ann\ntype: person\nrelationships:\n  - type: works_with\n    target: "[[people/bo]]"\n---\n\n# Ann\n',
+    "people/bo.md": "---\nname: Bo\ntype: person\n---\n\n# Bo\n",
+}
+
+
+@pytest.mark.parametrize(
+    "extra, want_code",
+    [
+        ({}, 0),
+        ({"topics/t.md": "---\nname: A Topic\ntype: topic\n---\n\n# A Topic\n"}, 3),
+    ],
+    ids=["clean graph exits 0", "unknown entity type exits 3"],
+)
+def test_validate_exit_code_is_the_contract(
+    tmp_path_factory: pytest.TempPathFactory, extra: dict[str, str], want_code: int
+) -> None:
+    """`validate`'s exit code is the only part of it another program reads.
+
+    A vault's dreaming preflight renders the knowledge graph's health row from
+    this code alone. When it returns 0 with findings on stdout, a red graph is
+    reported as `✅ clean` — which is what happened to the five live errors of
+    2026-10-30. Output parity above cannot catch this: it compares text, against
+    a baseline that had the same bug.
+
+    Built from scratch rather than from `build_privacy_vault`, which carries
+    deliberate validation errors and so can never show the clean-exit half.
+    """
+    v = tmp_path_factory.mktemp("validate-exit")
+    kb = v / "knowledge-base"
+    (kb / "ontology").mkdir(parents=True)
+    (kb / "ontology" / "schema.yaml").write_text(_CONTRACT_SCHEMA, encoding="utf-8")
+    shutil.copyfile(SHIM, kb / "ontology" / "parser.py")
+    for rel, body in {**_CONTRACT_CLEAN, **extra}.items():
+        target = kb / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    path_env = f"{VENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    out = _run_shim(v, ["validate"], path_env)
+    assert out.returncode == want_code, f"exit {out.returncode}\n{out.stdout}{out.stderr}"
 
 
 def test_shim_output_is_labelled_for_the_owner(vault: Path) -> None:
