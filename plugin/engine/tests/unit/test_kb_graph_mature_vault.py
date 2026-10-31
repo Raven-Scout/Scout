@@ -12,7 +12,10 @@ carries the generic part, so such a vault can switch to the shim:
 - a dangling-target check whose exceptions come from the vault's schema
   ``validation:`` block, with accepted known gaps reported apart from errors;
 - ``MM-DD`` birthdays;
-- typed name lookup (``--lookup-type``), each candidate carrying its ``type``.
+- typed name lookup (``--lookup-type``), each candidate carrying its ``type``;
+- name lookup by file slug and by each distinctive word of a multi-word name
+  (corporate suffixes never match alone; the schema's ``graph.name_word_stoplist``
+  adds more), exact matches ranked by field, then type.
 
 Names are the CLAUDE.md stand-ins (Alex / Priya / Sam, ``example-org``).
 """
@@ -322,7 +325,7 @@ def test_birthday_month_reads_dated_and_yearless_birthdays(tmp_path: Path, birth
 def _lookup_vault(tmp_path: Path) -> Path:
     vault = _vault(tmp_path)
     _note(vault, "people/priya.md", "name: Priya\ntype: person\nvisibility: private\n")
-    _note(vault, "orgs/acme.md", "name: Acme Widgets\ntype: organization\naliases: [Acme]\n")
+    _note(vault, "orgs/acme-widgets.md", "name: Acme Widgets\ntype: organization\naliases: [Acme]\n")
     _note(vault, "projects/acme-portal.md", "name: Acme Portal\ntype: project\nstatus: active\n")
     return vault
 
@@ -363,11 +366,130 @@ def test_name_lookup_cli_lookup_type(tmp_path: Path) -> None:
     assert "searched: person" in miss and "--lookup-type any" in miss
     hit = kb(vault, "name-lookup", "Acme", "--lookup-type", "any")
     assert hit.exit_code == 0, hit.output
-    assert "  [exact] Acme Widgets (slug=acme, type=organization, matched_field=alias, score=1.0)" in hit.stdout
+    assert "  [exact] Acme Widgets (slug=acme-widgets, type=organization, matched_field=alias, score=1.0)" in hit.stdout
     assert "candidate(s) — searched: any type." in hit.stdout
     rows = json.loads(kb(vault, "name-lookup", "--token", "Acme", "--lookup-type", "organization", "--json").stdout)
     assert [(r["name"], r["type"], r["path"]) for r in rows] == [
-        ("Acme Widgets", "organization", "knowledge-base/orgs/acme.md")
+        ("Acme Widgets", "organization", "knowledge-base/orgs/acme-widgets.md")
     ]
     private = kb(vault, "name-lookup", "Priya").stdout
     assert "  [private] [exact] Priya (slug=priya, type=person, " in private
+
+
+# ----- name lookup by slug and name word -----------------------------------------
+# Made-up names: a transcript says one word of a multi-word name ("Bramble" for
+# "Bramble Holdings"), and the whole-name ratio alone misses it or, worse, picks a
+# different entity whose short name happens to score higher.
+
+
+def _words_vault(tmp_path: Path, graph: dict[str, Any] | None = None) -> Path:
+    vault = _vault(tmp_path, {"graph": graph} if graph is not None else None)
+    _note(vault, "orgs/bramble-holdings.md", "name: Bramble Holdings\ntype: organization\n")
+    _note(vault, "orgs/larkspur-partners.md", "name: Larkspur Partners\ntype: organization\n")
+    _note(vault, "projects/larkspur-star.md", "name: Larkspur Star\ntype: project\nstatus: active\n")
+    _note(vault, "orgs/velora-foods.md", "name: Velora Foods\ntype: organization\n")
+    _note(vault, "orgs/valora.md", "name: Valora\ntype: organization\n")
+    _note(vault, "orgs/quillco.md", "name: The Quill Company\ntype: organization\n")
+    _note(vault, "orgs/larch-corp.md", "name: Larch Corp.\ntype: organization\n")
+    _note(vault, "people/alex-rivera.md", "name: Alex Rivera\ntype: person\n")
+    _note(vault, "meetings/alex-lunch.md", "name: Alex Lunch Notes\ntype: meeting\n")
+    _note(vault, "projects/juniper.md", "name: Juniper\ntype: project\nstatus: active\n")
+    _note(vault, "orgs/juniper-labs.md", "name: Juniper Labs\ntype: organization\n")
+    return vault
+
+
+def _hits(g: KnowledgeGraph, token: str, types: set[str] | None = None) -> list[tuple[str, str, str]]:
+    return [(c["name"], c["match_strength"], c["matched_field"]) for c in g.name_lookup(token, types=types)]
+
+
+def test_one_word_of_a_multi_word_name_is_an_exact_match(tmp_path: Path) -> None:
+    g = _graph(_words_vault(tmp_path))
+    assert _hits(g, "bramble", {"organization"}) == [("Bramble Holdings", "exact", "name-word")]
+
+
+def test_a_name_word_beats_a_higher_scoring_different_entity(tmp_path: Path) -> None:
+    g = _graph(_words_vault(tmp_path))
+    # "Valora" scores 0.83 against the whole name; "Velora Foods" only 0.67.
+    assert _hits(g, "Velora", {"organization"})[0] == ("Velora Foods", "exact", "name-word")
+
+
+def test_the_file_slug_is_an_exact_match(tmp_path: Path) -> None:
+    g = _graph(_words_vault(tmp_path))
+    assert _hits(g, "QuillCo", {"organization"}) == [("The Quill Company", "exact", "slug")]
+
+
+@pytest.mark.parametrize("token", ["Partners", "holdings", "Company", "Corp", "corp."])
+def test_corporate_suffixes_never_match_alone(tmp_path: Path, token: str) -> None:
+    g = _graph(_words_vault(tmp_path))
+    assert [h for h in _hits(g, token, set()) if h[1] == "exact"] == []
+
+
+def test_short_words_never_match_alone(tmp_path: Path) -> None:
+    vault = _words_vault(tmp_path)
+    _note(vault, "orgs/oak-ridge.md", "name: Oak Ridge\ntype: organization\n")
+    assert [h for h in _hits(_graph(vault), "Oak", set()) if h[1] == "exact"] == []
+
+
+def test_people_and_orgs_outrank_other_types_on_the_same_field(tmp_path: Path) -> None:
+    g = _graph(_words_vault(tmp_path))
+    assert _hits(g, "Larkspur", set())[:2] == [
+        ("Larkspur Partners", "exact", "name-word"),
+        ("Larkspur Star", "exact", "name-word"),
+    ]
+    assert _hits(g, "Alex", set())[:2] == [
+        ("Alex Rivera", "exact", "name-word"),
+        ("Alex Lunch Notes", "exact", "name-word"),
+    ]
+
+
+def test_the_whole_name_outranks_a_name_word_whatever_the_type(tmp_path: Path) -> None:
+    g = _graph(_words_vault(tmp_path))
+    assert _hits(g, "Juniper", set())[:2] == [
+        ("Juniper", "exact", "name"),
+        ("Juniper Labs", "exact", "name-word"),
+    ]
+
+
+def test_an_alias_outranks_a_name_word(tmp_path: Path) -> None:
+    vault = _words_vault(tmp_path)
+    _note(vault, "orgs/hollow.md", "name: Hollow Works\ntype: organization\naliases: [Tamsin]\n")
+    _note(vault, "orgs/tamsin-mills.md", "name: Tamsin Mills\ntype: organization\n")
+    assert _hits(_graph(vault), "Tamsin", {"organization"}) == [
+        ("Hollow Works", "exact", "alias"),
+        ("Tamsin Mills", "exact", "name-word"),
+    ]
+
+
+def test_fuzzy_candidates_stay_ordered_by_score(tmp_path: Path) -> None:
+    # Field rank breaks ties between exact matches only: a closer alias beats a
+    # farther whole name.
+    vault = _vault(tmp_path)
+    _note(vault, "people/sam.md", "name: Sam\ntype: person\naliases: [Samwise]\n")
+    _note(vault, "people/samwell.md", "name: Samwell\ntype: person\n")
+    rows = _graph(vault).name_lookup("Samwyse")
+    assert [(c["name"], c["matched_field"], c["score"]) for c in rows] == [
+        ("Sam", "alias", 0.857),
+        ("Samwell", "name", 0.714),
+    ]
+
+
+def test_the_schema_adds_name_words_that_never_match_alone(tmp_path: Path) -> None:
+    assert _hits(_graph(_words_vault(tmp_path)), "Foods", {"organization"}) == [("Velora Foods", "exact", "name-word")]
+    g = _graph(_words_vault(tmp_path / "b", {"name_word_stoplist": ["Foods"]}))
+    assert [h for h in _hits(g, "Foods", {"organization"}) if h[1] == "exact"] == []
+    # The defaults still apply alongside the vault's own words.
+    assert [h for h in _hits(g, "Partners", {"organization"}) if h[1] == "exact"] == []
+
+
+@pytest.mark.parametrize("stoplist", ["foods", {"foods": 1}, [["foods"]]])
+def test_a_malformed_name_word_stoplist_is_a_schema_error(tmp_path: Path, stoplist: Any) -> None:
+    g = _graph(_words_vault(tmp_path, {"name_word_stoplist": stoplist}))
+    with pytest.raises(KBSchemaError, match="graph.name_word_stoplist"):
+        g.name_lookup("Velora", types={"organization"})
+
+
+def test_name_lookup_cli_reports_a_name_word_match(tmp_path: Path) -> None:
+    out = kb(_words_vault(tmp_path), "name-lookup", "Bramble", "--lookup-type", "organization")
+    assert out.exit_code == 0, out.output
+    want = "  [exact] Bramble Holdings (slug=bramble-holdings, type=organization, matched_field=name-word, score=1.0)"
+    assert want in out.stdout

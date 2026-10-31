@@ -40,6 +40,12 @@ shim without losing behaviour its scheduled runs rely on):
   shadow the live entity.
 - A file whose frontmatter isn't valid YAML is kept in ``parse_errors``, and
   ``validate()`` reports it rather than dropping it silently.
+- ``name_lookup()`` also matches the file slug and each distinctive word of a
+  multi-word name, so the one word a transcript says ("Bramble") reaches
+  "Bramble Holdings". Corporate suffixes never match alone
+  (:data:`NAME_WORD_STOPLIST`, plus the schema's ``graph.name_word_stoplist``),
+  and exact matches rank by field (name, slug, alias, name word), then type
+  (people, then organizations, then the rest).
 - ``validate()`` checks that every relationship target resolves. The vault's
   ``schema.yaml`` ``validation:`` block lists the exceptions:
   ``external_references`` (real things never modelled), ``known_gaps``
@@ -113,6 +119,31 @@ _FACTS_KEY = "__scout_privacy_facts__"
 # A file whose frontmatter block isn't valid YAML parses to {PARSE_ERROR_KEY: message}
 # (so the per-process cache keeps the failure too); ``load()`` records it in ``parse_errors``.
 PARSE_ERROR_KEY = "__scout_parse_error__"
+
+# Words of a multi-word entity name that never resolve a ``name_lookup`` token on
+# their own: corporate suffixes and generic nouns, never a distinguishing word. A
+# bare "Partners" must not exact-match every "... Partners". Compared after
+# stripping ``,.()`` like the name words are, so ``Inc.`` and ``inc`` are one entry;
+# words under 4 characters never match alone anyway. A vault adds its own in the
+# schema's ``graph.name_word_stoplist``.
+NAME_WORD_STOPLIST = frozenset(
+    {
+        "holdings", "partners", "group", "company", "capital", "communications",
+        "services", "solutions", "technologies", "international", "limited",
+        "corporation", "corp", "gmbh", "s.r.o", "clinic", "clinics",
+        "hospital", "care", "market", "data",
+    }
+)  # fmt: skip
+_NAME_WORD_MIN_LEN = 4
+# name_lookup's ranking of exact matches: the canonical fields over an incidental
+# word inside a longer name, then people and organizations over everything else.
+_FIELD_RANK = {"name": 0, "slug": 1, "alias": 2, "name-word": 3}
+_TYPE_RANK = {"person": 0, "organization": 1}
+
+
+def _name_word_key(word: str) -> str:
+    return word.strip(",.()").lower()
+
 
 # KB-relative globs ``load()`` skips when the schema sets no ``graph.exclude``:
 # verbatim pre-restructure snapshots repeat the live page's name and type.
@@ -515,6 +546,16 @@ class KnowledgeGraph:
             raise KBSchemaError(f"KB schema at {self.schema_path}: graph.exclude must be a list of globs")
         return tuple(str(g) for g in globs)
 
+    def _name_word_stoplist(self) -> frozenset[str]:
+        """:data:`NAME_WORD_STOPLIST` plus the schema's ``graph.name_word_stoplist``."""
+        graph = self.schema.get("graph") if isinstance(self.schema, dict) else None
+        extra = graph.get("name_word_stoplist") if isinstance(graph, dict) else None
+        if extra is None:
+            return NAME_WORD_STOPLIST
+        if not isinstance(extra, list) or not all(isinstance(w, str) for w in extra):
+            raise KBSchemaError(f"KB schema at {self.schema_path}: graph.name_word_stoplist must be a list of words")
+        return NAME_WORD_STOPLIST | {_name_word_key(w) for w in extra}
+
     def _build_indexes(self) -> None:
         """Index entities by filename stem and by declared ``aliases:``.
 
@@ -770,14 +811,25 @@ class KnowledgeGraph:
         headline". Each candidate carries the person's ``_label``.
 
         Match strategy:
-            1. Exact (case-insensitive) match against ``name`` or any ``aliases`` value.
-            2. Fuzzy match via difflib ``SequenceMatcher.ratio()``. The default 0.7
-               threshold ≈ Levenshtein-distance-2 on short strings.
+            1. Exact (case-insensitive) match against ``name``, the file slug, any
+               ``aliases`` value, or any distinctive word of ``name`` (4+ characters,
+               not in the stoplist).
+            2. Fuzzy match via difflib ``SequenceMatcher.ratio()``, best over the
+               same fields. The default 0.7 threshold ≈ Levenshtein-distance-2 on
+               short strings.
+
+        The slug and name words matter for multi-word names: scored against the
+        whole name only, "Bramble" misses "Bramble Holdings" (0.61), and "Velora"
+        picks the different "Valora" (0.83) over "Velora Foods" (0.67), a
+        confident wrong answer. Exact matches come first, ranked by field
+        (name, slug, alias, name word), then type (people, organizations, the
+        rest); fuzzy ones by score, with the same tie-breaks.
         """
         token_lower = token.lower().strip()
         if not token_lower:
             return []
         wanted = {"person"} if types is None else set(types)
+        stoplist = self._name_word_stoplist()
 
         candidates: list[dict[str, Any]] = []
 
@@ -786,10 +838,17 @@ class KnowledgeGraph:
                 continue
 
             slug = Path(entity.get("_source_path", "")).stem
+            # In rank order, so the first exact hit is the best field it matches on.
             field_pool: list[tuple[str, str]] = [("name", entity_name)]
+            if slug:
+                field_pool.append(("slug", slug))
             for alias in entity.get("aliases", []) or []:
                 if alias:
                     field_pool.append(("alias", str(alias)))
+            for word in re.split(r"[\s/]+", entity_name):
+                key = _name_word_key(word)
+                if len(key) >= _NAME_WORD_MIN_LEN and key not in stoplist:
+                    field_pool.append(("name-word", word.strip(",.()")))
 
             best_score = 0.0
             best_field = ""
@@ -823,7 +882,15 @@ class KnowledgeGraph:
                     }
                 )
 
-        candidates.sort(key=lambda c: (c["match_strength"] != "exact", -c["score"]))
+        # Every exact score is 1.0, so exact matches fall through to field and type.
+        candidates.sort(
+            key=lambda c: (
+                c["match_strength"] != "exact",
+                -c["score"],
+                _FIELD_RANK.get(c["matched_field"], len(_FIELD_RANK)),
+                _TYPE_RANK.get(c["type"], len(_TYPE_RANK)),
+            )
+        )
         return candidates[:max_results]
 
     # ------------------------------------------------------------------
