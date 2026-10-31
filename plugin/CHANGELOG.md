@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutctl kb name-lookup` finds an entity by one word of its name, or by its file slug** (KB parser parity follow-up to #512; `engine/scout/kb/ontology.py`). Scored against the whole `name:` only, a transcript's "Bramble" missed "Bramble Holdings", and a short token could pick a different entity whose short name scored higher over the multi-word one it meant. The lookup now also matches the slug and each word of 4+ characters, except corporate suffixes and generic nouns (`NAME_WORD_STOPLIST`; a vault adds its own in its schema's `graph.name_word_stoplist`). Exact matches rank by field (name, slug, alias, name word), then type (people, organizations, the rest); fuzzy ones stay ordered by score. This was the last behaviour a mature vault's hand-edited `parser.py` had over the shim.
+
 ## [0.18.5] - 2026-10-30
 
 ### Added
