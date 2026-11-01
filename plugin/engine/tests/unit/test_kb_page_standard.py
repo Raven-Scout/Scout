@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scout.kb.lint import lint_staged, over_budget
 from scout.kb.lint_config import load_lint_config
 from scout.scripts import vault_drift
 from scout.scripts.bootstrap import BootstrapConfig, _assemble, install, upgrade
@@ -60,6 +61,18 @@ def test_no_phase_text_contradicts_the_standard(kind: str, tmp_path: Path) -> No
     # Topic domains are for cross-project subjects, not any subject at 3+ notes.
     assert "create `topics/<domain>/` when a subject reaches three or more topic notes" not in text
     assert "`topics/<domain>/` is only for subjects that span projects" in text
+    # knowledge-base.md is an index, not something every run must touch.
+    assert "| `knowledge-base.md` | Every run" not in text
+    assert "a new topic, source or sibling file" not in text
+
+
+@pytest.mark.parametrize("kind", ["SKILL", "DREAMING"])
+def test_connectors_do_not_regrow_the_sections_the_standard_removed(kind: str, tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path / "Scout")
+    cfg.enabled_connectors = {"calendar", "github", "linear"}
+    text = _assemble(cfg, kind)
+    assert 'Update the "Upcoming Meetings" section' not in text
+    assert "### PR Status in Project Files" not in text
 
 
 def test_deep_work_records_verification_in_frontmatter(tmp_path: Path) -> None:
@@ -84,9 +97,33 @@ def test_nightly_pass_rebuilds_one_project_page_in_the_standards_order(tmp_path:
     ]
     positions = [step.index(s) for s in order]
     assert positions == sorted(positions)
-    assert "scoutctl kb validate" in step and "dangling" in step
+    assert "scoutctl kb validate" in step
+
+
+def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "`$SCOUT_MODE` is `dreaming-nightly`" in step
+    assert "`scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit" in step
+    assert "with `nightly KB pass — <page>` as the commit summary" in step
+
+
+def test_nightly_pass_can_finish_or_resume_a_big_page(tmp_path: Path) -> None:
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "**that you can finish this session**" in step
+    assert "**A page too big for one session:**" in step
+    assert "resume it" in step
+
+
+def test_nightly_pass_skips_pages_it_could_widen_and_keeps_the_lossless_rule(tmp_path: Path) -> None:
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "kb classify --json <page>" in step
+    assert "`visibility: private` or `shared_file: true`" in step
+    assert "name it in the commit message as deliberately dropped" in step
+    assert "naming both paths of each move" in step
+    # No count a run has no command for: privacy.md forbids grep in knowledge-base/.
+    assert "Count the baseline:** over-budget rows in `kb lint --report` and `scripts/scoutctl kb validate`" in step
     # The 2026-10-04 off switch is the vault's; the engine's pass is on.
-    assert "deliberately OFF" not in text
+    assert "deliberately OFF" not in step
 
 
 def test_the_issue_tracker_file_is_a_thin_index(tmp_path: Path) -> None:
@@ -109,6 +146,8 @@ def test_the_template_is_copied_verbatim_and_carries_no_template_variables() -> 
     assert "{{" not in text  # a verbatim managed file: nothing would substitute it
     for heading in ("## Folder layout", "## Project page", "## Restructuring an existing over-long page"):
         assert heading in text
+    # Every KB file's required freshness key, in the page and topic-note templates.
+    assert text.count("last_updated:") == 2
 
 
 def test_the_standard_is_a_vault_developed_managed_file() -> None:
@@ -173,6 +212,31 @@ def test_upgrade_merges_a_tailored_standard_with_a_plugin_change(tmp_path: Path,
 
 
 # -------------------------------------------------------------------- lint ----
+
+
+def test_a_verbatim_archive_copy_passes_lint_in_block_mode(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_lint:\n  mode: block\n")
+    body = "# Widgets\n\n## §59 · 2026-03-07 (overnight-research)\n\n" + "A line of old page text.\n" * 700
+    kb_repo.stage("knowledge-base/projects/widgets/archive/widgets-2026-03-14-pre-restructure.md", body)
+    assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).findings == []
+
+    # The same text outside archive/ is what the exclusion spares it from.
+    kb_repo.stage("knowledge-base/projects/widgets/knowledge/widgets-copy.md", body)
+    assert {f.check for f in lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking} >= {"size", "diary"}
+
+
+def test_an_archive_copy_is_never_an_over_budget_row(kb_repo) -> None:
+    kb_repo.stage("knowledge-base/projects/widgets/archive/widgets-2026-03-14-pre-restructure.md", "x\n" * 9000)
+    kb_repo.commit()
+    assert over_budget(kb_repo.root, load_lint_config(kb_repo.root)) == []
+
+
+def test_the_decisions_note_is_a_log_with_a_log_budget(tmp_path: Path) -> None:
+    cfg = load_lint_config(tmp_path)
+    for note in ("widgets-decisions.md", "widgets-decisions-2025.md"):
+        rel = f"knowledge-base/projects/widgets/knowledge/{note}"
+        assert cfg.budget_for(rel) == 51200
+        assert cfg.is_log(rel)
 
 
 def test_project_knowledge_notes_are_topic_notes_to_lint(tmp_path: Path) -> None:

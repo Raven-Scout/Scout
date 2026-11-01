@@ -84,13 +84,13 @@ PRIORITY_PROSE_RE = re.compile(
 FRONTMATTER_SCAN_LINES = 200
 
 # Claimed-date divergence: compare the date a file claims on its "Last verified"
-# / "Last updated" line with its last commit.
+# / "Last updated" line, or its `last_verified:` frontmatter, with its last commit.
 #   claim-lags-git     committed well after the claimed date: an edit that did
 #                      not re-verify the file
 #   claim-ahead-of-git claims a verification newer than any commit touching it;
 #                      writing the claim is itself a commit, so this should not
 #                      happen, and flags a claim that was never re-checked
-CLAIM_LABEL_RE = re.compile(r"(?:last\s+verified|last\s+updated|prior\s+verified)\b", re.IGNORECASE)
+CLAIM_LABEL_RE = re.compile(r"(?:last[\s_]+verified|last\s+updated|prior\s+verified)\b", re.IGNORECASE)
 MONTHS = {
     m: i
     for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], start=1)

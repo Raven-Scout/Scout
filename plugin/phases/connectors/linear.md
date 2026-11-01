@@ -130,7 +130,7 @@ The issue tracker file is a thin index: one short row per tracked open issue. Fo
 ### Spot-Check Requirement
 
 Every run must spot-check at least 2-3 issue statuses against Linear as the source of truth. Pick issues that:
-- Are high priority (most impactful if stale)
+- Belong to a high-priority project (most impactful if stale)
 - Haven't been verified recently (check the file's `last_verified:` frontmatter, or an older file's "Last verified" line)
 - Are referenced by current action items (most likely to cause errors if stale)
 

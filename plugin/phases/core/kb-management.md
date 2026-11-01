@@ -104,7 +104,7 @@ Whenever you write to a KB file, set `last_updated:` to now. If the file has no 
 | `people.md` | 7 days (for role claims); add new people immediately |
 | Issue tracker file | Every run (spot-check statuses) |
 | `channels.md` | 14 days |
-| `knowledge-base.md` | Every run (it's the index) |
+| `knowledge-base.md` | 14 days (it's an index, not a log) |
 
 During consolidation KB audits, **prioritize the stalest high-priority files** when choosing what to audit.
 
@@ -187,9 +187,9 @@ Row shape, **≤ 500 characters**: date · session type (time, manual/scheduled)
 ### Cross-Reference Integrity
 
 The KB's value depends on its graph being connected. Rules:
-- Every project file links to: `[[projects]]`, `[[people]]`, the issue tracker file, and any related project files
+- Every project page links to related project pages from its Go deeper section
 - Every person mentioned in a project file should exist in `[[people]]`
-- Every issue mentioned in a project file should exist in the issue tracker file
+- Every open issue a project page names should be in the issue tracker file
 - `knowledge-base.md` links to everything at the top level
 - Action items link to any KB files they reference
 - If you update a file and mention something that should be linked but isn't, add the link

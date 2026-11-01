@@ -256,15 +256,9 @@ requires: github
 
 After scanning GitHub, update the knowledge base with current code activity. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
-### PR Status in Project Files
+### PRs on Project Pages
 
-For each active project in the KB, check if any open PRs are associated with that project. Update the project file with:
-- PR number, title, and current status
-- Review status (who reviewed, what was the decision)
-- CI status if relevant
-- Link to the PR
-
-Update or remove references to PRs that have been merged or closed since the last run.
+Keep no per-PR status list on a project page. When an open PR changes where a project stands, say so in one **Where it stands** bullet with a link to the PR; lasting review or design detail goes in the project's `knowledge/` notes. Update or remove references to PRs merged or closed since the last run.
 
 ### Contributor Activity
 

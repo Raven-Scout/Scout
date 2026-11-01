@@ -106,7 +106,7 @@ Compare each file's verification date (the frontmatter `last_verified:` or `last
 | `people.md` | 7 days | Within 7d | 7-10d overdue | 10-14d overdue | >14d overdue |
 | Issue tracker file | Every run | Updated this run | 1 run behind | 2 runs behind | 3+ runs behind |
 | `channels.md` | 14 days | Within 14d | 14-21d overdue | 21-28d overdue | >28d overdue |
-| `knowledge-base.md` (root) | Every run | Updated this run | 1 run behind | 2 runs behind | 3+ runs behind |
+| `knowledge-base.md` (root) | 14 days | Within 14d | 14-21d overdue | 21-28d overdue | >28d overdue |
 
 If a file has no verification date at all, assign staleness score 3 automatically.
 
@@ -157,16 +157,17 @@ Record the scoring table for the session log.
 
 Rebuild **one** over-budget project page a night to [[docs/kb-page-standard]] §"Restructuring an existing over-long page". One page per night, never more: a rebuild re-verifies the project live, and a second one gets done shallowly.
 
-1. **Overrides first.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
-2. **Pick the page:** the largest project page (`knowledge-base/projects/<name>/<name>.md`) in `scripts/scoutctl kb lint --report --top 20`. Only a project page is a target. **Never rebuild a daily action-items file, the topic board's files, a log, or the legacy `knowledge-base/session-log.md`.** If no project page is over budget, skip to Step 2b. Otherwise this replaces Step 2b's pick, unless an open coverage mandate (e.g. a `surface_rule` window) applies.
-3. **Count the baseline:** over-budget rows in `kb lint --report`, `scripts/scoutctl kb validate` errors, and dangling wikilinks.
-4. **Rebuild it, in this order:**
+1. **Overrides first, every run.** If `.scout-logs/lint-overrides.log` has entries newer than the last dreaming run, fix each named file first: bring it back under the ratchet by moving the offending content into the right layer.
+2. **Once a night.** Go on only if `$SCOUT_MODE` is `dreaming-nightly` and `scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit. Otherwise skip to Step 2b.
+3. **Pick the page:** the largest project page (`knowledge-base/projects/<name>/<name>.md`) in `scripts/scoutctl kb lint --report --top 20` **that you can finish this session**. One with an archive copy from an earlier night comes first: resume it. Only a project page is a target. **Never rebuild a daily action-items file, the topic board's files, a log, or the legacy `knowledge-base/session-log.md`.** Skip a page whose `scripts/scoutctl kb classify --json <page>` says `visibility: private` or `shared_file: true`: its new copies could widen it or hit a hard privacy block. If no page qualifies, skip to Step 2b. Otherwise this replaces Step 2b's pick, unless an open coverage mandate (e.g. a `surface_rule` window) applies. **A page too big for one session:** archive it, move one area into `knowledge/` a night, and rewrite the page once the rest fits.
+4. **Count the baseline:** over-budget rows in `kb lint --report` and `scripts/scoutctl kb validate` errors.
+5. **Rebuild it, in this order,** with `nightly KB pass — <page>` as the commit summary:
    1. **Archive the page verbatim** to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md` (a copy).
-   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each) and its dated decisions into `knowledge/<name>-decisions.md`. `git mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links in the same commit. Drop no facts: superseded ones go in a topic's History or stay in the archive.
-   3. **Re-verify the current state live.** The old page is a lead, not a fact.
+   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each), its dated decisions into `knowledge/<name>-decisions.md` (an old `decision-log.md` merges in), and meetings, docs, PRs and decision threads into source notes. `git mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links (`scripts/scoutctl kb search --fixed 'projects/<name>/'`) and naming both paths of each move to `git-safe-commit.sh`. Drop no facts: superseded ones go in a topic's History or stay in the archive.
+   3. **Re-verify the current state live.** The old page is a lead, not a fact. Query the connectors for its status, next dates, open questions and people.
    4. **Rewrite the page in place** to the standard's template, keeping any heading other notes link to (`[[<name>#<heading>]]`).
-   5. **Check nothing got worse:** none of the three counts may rise, and the page leaves the over-budget list. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>` too.
-5. Report: *page, before → after size, notes created, the three counts before → after.* That is this step's deliverable and passes the Step 2d depth gate.
+   5. **Check nothing got worse:** neither count may rise, the page leaves the over-budget list, and you fix any dangling-link warning the commit's lint prints. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>`, which doesn't count the archive copy: restore each token it reports, or name it in the commit message as deliberately dropped.
+6. Report: *page, before → after size, notes created, both counts before → after.* That is this step's deliverable and passes the Step 2d depth gate.
 
 ***
 

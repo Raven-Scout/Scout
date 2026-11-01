@@ -32,7 +32,7 @@ projects/<name>/
 - **Subfolders get no index file.** The front page's **Go deeper** section lists every file,
   grouped, one line each. Names like `knowledge/knowledge.md` would collide across projects.
 - **Short filenames with no dates.** Write `widgets-vision-v3`, not
-  `widgets-product-vision-v3-2026-09-29`. The date goes in frontmatter (`date:`). Filenames still
+  `widgets-product-vision-v3-2026-03-14`. The date goes in frontmatter (`date:`). Filenames still
   have to be unique vault-wide, so prefix generic names with the project (`widgets-decisions`, not
   `decisions`). The one dated name is the archive copy a restructure makes (see the last section).
 - **Material that isn't about the project leaves the folder.** A note about the agent's own
@@ -46,8 +46,8 @@ projects/<name>/
    (`#WIDGETS`), and issue or PR number, then link it. Write "the pricing API PR
    ([example-org/widgets#42](https://github.com/example-org/widgets/pull/42))", never a bare "#42".
 2. **No run narration, anywhere in the body.** Leave out session names (`research`,
-   `evening-consolidation`), slot numbers, masked times (`08:0x`), finding or section counters
-   ("Finding 76", "§113"), "this run", status stamps like "RETIRES" or "RE-SURFACED", verification
+   `evening-consolidation`), slot numbers, masked times (`07:3x`), finding or section counters
+   ("Finding 12", "§31"), "this run", status stamps like "CLOSED OUT" or "BACK AGAIN", verification
    diaries, and the reasons a run picked a lane. The commit message and the session log hold all
    of that.
 3. **Provenance goes in frontmatter and topic notes, not the page body.** A project page links to
@@ -56,7 +56,7 @@ projects/<name>/
    top.
 4. **Plain sentences, short bullets.** Keep a bullet to two lines at most, with one bold phrase at
    most. No walls of bold. Use tables only for people, decisions and dates.
-5. **Absolute dates.** Write "Oct 28", or "Oct 28, 2026" when the year matters. Never "yesterday" or
+5. **Absolute dates.** Write "Mar 12", or "Mar 12, 2026" when the year matters. Never "yesterday" or
    "last run". Times only when they matter, labelled with their zone (`%Z`).
 6. **Current state replaces old state.** When a fact changes, rewrite it where it sits. Old states
    live in git and in the topic notes' history sections, not as stacked dated paragraphs.
@@ -73,9 +73,10 @@ order, all required (write "None right now." rather than dropping a section).
 # ontology fields stay as they are: name, aliases, type: project, status, priority, relationships …
 status: "Active"              # a short phrase, not a paragraph
 summary: "One sentence: what this is."
-as_of: 2026-10-31             # the date "Where it stands" was last made true
-last_verified: 2026-10-31
-verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[sources/2026-10/…]]"]
+last_updated: 2026-03-14T10:20:00+02:00
+as_of: 2026-03-14             # the date "Where it stands" was last made true
+last_verified: 2026-03-14
+verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[sources/2026-03/…]]"]
 ---
 # <Project name>
 
@@ -85,7 +86,7 @@ verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[s
 **Links:** [repo](…) · [tracker](…) · [channel](…)
 
 ## Where it stands
-_As of Oct 31, 2026._
+_As of Mar 14, 2026._
 - <up to 6 bullets of current state, the most important first. Each ends with a link to the
   topic note holding the detail.>
 
@@ -130,7 +131,8 @@ something costs. Rewrite it in place as understanding improves.
 ---
 domain: <project or domain>
 project: "[[projects/<name>/<name>]]"
-as_of: 2026-10-31
+last_updated: 2026-03-14T10:20:00+02:00
+as_of: 2026-03-14
 ---
 # <Plain noun-phrase title: "How the widgets release pipeline works">
 
@@ -138,20 +140,21 @@ as_of: 2026-10-31
 
 ## <Sections as the subject needs>
 <Prose and tables. Every paragraph cites a source note or a permalink, e.g.
-"([PR #42](…))" or "([[sources/2026-10/2026-10-08-widgets-sync]])".>
+"([PR #42](…))" or "([[sources/2026-03/2026-03-08-widgets-sync]])".>
 
 ## History
 <optional: dated bullets of how the understanding or decision changed, newest first>
 ```
 
-The same no-narration rule applies here. "Verified 2026-10-25 by reading `code.py` at `main`" is
+The same no-narration rule applies here. "Verified 2026-03-10 by reading `code.py` at `main`" is
 a citation, so keep it as a short trailing link. It is not a paragraph of method.
 
 ## Decisions note — `projects/<name>/knowledge/<name>-decisions.md`
 
 This is the one place a dated log belongs. It's a single table, newest first:
 `| Date | Decision | Who decided | Why | Source |`. The project page shows the top 7. Decisions that
-stopped mattering stay here; they don't clutter the page.
+stopped mattering stay here; they don't clutter the page. Past 50 KB, move the oldest rows to
+`<name>-decisions-YYYY.md`.
 
 ## Domain index — `topics/<domain>/<domain>.md` (cross-project domains only)
 
@@ -163,18 +166,27 @@ subject, e.g. `widgets-platform`.
 
 ## Restructuring an existing over-long page
 
-The dreaming run's nightly KB pass rebuilds one over-budget project page a night this way. Do the
-same by hand for any page you restructure.
+The `dreaming-nightly` run's KB pass rebuilds one over-budget project page a night this way. Do the
+same by hand for any page you restructure. The pass skips a page labelled private or shared (`kb
+classify`), because a new copy could widen it or hit a hard privacy block; restructure those by hand.
 
-1. Copy the page verbatim to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md`.
+1. Copy the page verbatim to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md`. Lint
+   skips `archive/`, so the copy's size and old headings are fine.
 2. Move the durable knowledge into topic notes in `projects/<name>/knowledge/` (cited, at most
-   10 KB each) and the decisions into the decisions note. Sort every other loose file in the folder
-   into `documents/`, `research/` or `archive/` (or out of the folder) with `git mv`, repointing
-   every path-style link to it in the same commit. Don't drop facts. Superseded facts go into a
-   topic's **History** section or stay only in the archive.
-3. Check the current state against a live source before writing "Where it stands". The old page
-   is a lead, not a fact: the existing KB is claims to verify, never facts to preserve.
+   10 KB each) and the decisions into the decisions note. An old `decision-log.md` merges into it.
+   Meetings, docs, PRs and decision threads go in source notes. Sort every other loose file in the
+   folder into `documents/`, `research/` or `archive/` (or out of the folder) with `git mv`: an old
+   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --fixed
+   'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
+   commit with `scripts/git-safe-commit.sh`. Don't drop facts. Superseded facts go into a topic's
+   **History** section or stay only in the archive.
+3. Check the current state against a live source before writing "Where it stands": its status, next
+   dates, open questions and people. The old page is a lead, not a fact: the existing KB is claims
+   to verify, never facts to preserve.
 4. Rewrite the page in place, at the same path, to this standard, so inbound links keep working.
    If other notes link to `[[<name>#<heading>]]`, keep that heading or repoint the links.
-5. `scripts/scoutctl kb lint --report`, `scripts/scoutctl kb validate` and the vault's dangling
-   wikilinks must not get worse. Count each before you start and again before you commit.
+5. `scripts/scoutctl kb lint --report` and `scripts/scoutctl kb validate` must not get worse: count
+   each before you start and again before you commit, and fix any dangling-link warning the commit's
+   lint prints. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>`. It doesn't
+   count archive copies, so each token it reports reached no live note: restore it, or name it in the
+   commit message as deliberately dropped.
