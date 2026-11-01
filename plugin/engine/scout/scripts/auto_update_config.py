@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from scout import paths
+from scout.yaml_safe import load_yaml
 
 # The channels a vault may subscribe to. Only `stable` ships today.
 CHANNELS = ("stable",)
@@ -57,7 +58,7 @@ def _scalar(value: object) -> str:
 
 def _loads_as(text: str, expected: dict[str, Any]) -> bool:
     try:
-        return bool(yaml.safe_load(text) == expected)
+        return bool(load_yaml(text) == expected)
     except yaml.YAMLError:
         return False
 
@@ -154,7 +155,7 @@ def apply_auto_update(text: str, *, enabled: bool | None = None, channel: str | 
     """
     _validate_channel(channel)
     try:
-        original = yaml.safe_load(text)
+        original = load_yaml(text)
     except yaml.YAMLError as e:
         raise AutoUpdateWriteError(f"cannot parse scout-config.yaml, so it was not changed: {e}") from e
     if original is None:

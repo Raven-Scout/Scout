@@ -24,6 +24,7 @@ import yaml
 
 from scout.errors import ConfigError
 from scout.triggers.sources import SOURCE_NAMES, supported_match_types
+from scout.yaml_safe import load_yaml
 
 TRIGGERS_FILENAME = "triggers.yaml"
 
@@ -83,7 +84,7 @@ def load_triggers(
     """Load + validate a triggers.yaml. Raises ConfigError on any violation."""
     try:
         with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = load_yaml(f)
     except FileNotFoundError as e:
         raise ConfigError(f"triggers yaml at {path} not found") from e
     except yaml.YAMLError as e:

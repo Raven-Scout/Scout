@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from scout import yaml_blocks
+from scout.yaml_safe import load_yaml
 
 CUSTOM_FILE = "connectors.custom.yaml"
 SCHEMA_VERSION = 1
@@ -516,7 +517,7 @@ def load(vault: Path, *, plugin_root: Path | None = None) -> CustomLoad:
     if not path.exists():
         return CustomLoad()
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = load_yaml(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         return CustomLoad(issues=[Issue(CUSTOM_FILE, f"could not be read: {e}")])
     root = plugin_root or default_plugin_root()
@@ -663,7 +664,7 @@ def enabled_keys(vault: Path) -> set[str]:
     showing one Scout cannot confirm is enabled. Never raises.
     """
     try:
-        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        raw = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return set()
     if not isinstance(raw, dict):
@@ -680,7 +681,7 @@ def enabled_keys(vault: Path) -> set[str]:
 def bash_binaries(vault: Path) -> dict[str, str]:
     """Binary → connector key for every bash probe/tool. Unvalidated and never raises (hook path)."""
     try:
-        raw = yaml.safe_load((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
+        raw = load_yaml((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return {}
     conns = raw.get("connectors") if isinstance(raw, dict) else None
@@ -731,7 +732,7 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     if "restrict_tools" not in text:
         return {}
     try:
-        raw = yaml.safe_load(text)
+        raw = load_yaml(text)
     except yaml.YAMLError:
         servers = set(_GATE_SERVER_RE.findall(text)) | set(_GATE_TOOL_RE.findall(text))
         return {s: frozenset() for s in servers} if servers else {GATE_ALL: frozenset()}

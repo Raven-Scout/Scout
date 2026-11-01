@@ -21,9 +21,11 @@ from pathlib import Path
 
 import yaml
 
+from scout.config import config_load_problem
 from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
 from scout.scripts.brain_merge import BRAIN_KINDS, PROPOSED_DIR, has_conflict_markers, pending_brain_sidecars
 from scout.scripts.brain_merge import sidecar_name as sidecar_name_for
+from scout.yaml_safe import load_yaml, yaml_problem
 
 
 class Severity(Enum):
@@ -490,7 +492,7 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     custom = load(vault)
     warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
     try:
-        cfg = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
         inputs = cfg["connectors"]["inputs"]
     except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
         inputs = None  # a missing or malformed scout-config.yaml is not this check's to report
@@ -602,25 +604,25 @@ def run_doctor(
     if not schedule_path.exists():
         errors.append(f"missing schedule.yaml at {schedule_path}")
     else:
+        schedule_text = schedule_path.read_text(encoding="utf-8")
         try:
-            yaml.safe_load(schedule_path.read_text(encoding="utf-8"))
+            load_yaml(schedule_text)
         except yaml.YAMLError as e:
-            errors.append(f"schedule.yaml invalid: {e}")
+            errors.append(f"schedule.yaml invalid: {yaml_problem(e, schedule_text)}")
 
     # scout-config.yaml must record version stamps.
     config_path = vault / "scout-config.yaml"
     if not config_path.exists():
         errors.append(f"missing scout-config.yaml at {config_path}")
+    elif problem := config_load_problem(vault):
+        errors.append(f"scout-config.yaml invalid: {problem}")
     else:
-        try:
-            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            plugin = cfg.get("plugin") or {}
-            if not plugin.get("version_at_last_setup"):
-                errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
-            if not plugin.get("version_at_last_update"):
-                errors.append("scout-config.yaml: plugin.version_at_last_update missing")
-        except yaml.YAMLError as e:
-            errors.append(f"scout-config.yaml invalid: {e}")
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        plugin = cfg.get("plugin") or {}
+        if not plugin.get("version_at_last_setup"):
+            errors.append("scout-config.yaml: plugin.version_at_last_setup missing")
+        if not plugin.get("version_at_last_update"):
+            errors.append("scout-config.yaml: plugin.version_at_last_update missing")
 
     # Cat-1 files must exist with non-zero content.
     for rel in _REQUIRED_CAT1_FILES:

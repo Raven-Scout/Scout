@@ -51,7 +51,6 @@ the staged file, a line number and the rule id. The hook runs
 
 from __future__ import annotations
 
-import dataclasses
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -94,12 +93,12 @@ from scout.kb.privacy import (
     label_file,
     label_from_facts,
     load_policy,
-    load_yaml,
     note_facts,
-    policy_from_overlay,
+    policy_from_config_text,
     read_head,
 )
 from scout.kb.read import all_labels, policy_hash
+from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
 
@@ -117,8 +116,8 @@ _MESSAGES = {
     "federation-ceiling": "federation_scope is wider than this folder may share (people notes, emails: none; "
     "meetings and threads: named people only), so part of it is dropped",
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
-    "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy "
-    "applies; a scheduled run's commit is refused until it does",
+    "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so only its privacy: block if that part reads "
+    "cleanly, else the engine's default privacy policy, applies; a scheduled run's commit is refused until it does",
 }
 
 
@@ -156,22 +155,6 @@ def _widens(head: FederationScope, staged: FederationScope) -> bool:
     if head == "none":
         return True
     return bool(set(staged) - set(head))
-
-
-def policy_from_config_text(text: str | None) -> Policy:
-    """:func:`~scout.kb.privacy.load_policy` for a ``scout-config.yaml`` text (None: the engine default)."""
-    base = policy_from_overlay(None)
-    if text is None:
-        return base
-    try:
-        data = load_yaml(text)
-    except yaml.YAMLError:
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    if data is None:
-        return base
-    if not isinstance(data, dict):
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    return policy_from_overlay(data.get("privacy"))
 
 
 @dataclass

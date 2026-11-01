@@ -25,6 +25,7 @@ from scout import health, notify_desktop
 from scout.errors import ConfigError
 from scout.health import RunHealth
 from scout.scripts import notify_telegram
+from scout.yaml_safe import load_yaml
 
 AUTH_FINDING_ID = "auth.expired"
 AUTH_ALERT_WINDOW_S = 24 * 3600
@@ -108,8 +109,8 @@ def telegram_channel(push: Push, *, send: Callable | None = None) -> ChannelResu
 
 def _configured_command(vault: Path) -> str | None:
     try:
-        data = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        data = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return None
     notify = data.get("notify") if isinstance(data, dict) else None
     command = notify.get("command") if isinstance(notify, dict) else None

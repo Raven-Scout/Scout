@@ -57,8 +57,9 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
 - ``visibility-value``: an overlay ``visibility_defaults`` entry has a value
   other than ``normal``/``private``; it is kept as ``private``.
 - ``privacy-overlay-unreadable``: ``scout-config.yaml`` exists but can't be
-  read or parsed (or isn't a mapping); the whole overlay is dropped and the
-  engine default applies. Later tasks refuse sync while it is set.
+  read or parsed (or isn't a mapping). Its ``privacy:`` block still applies if
+  that part alone can be built; otherwise the overlay is dropped and the engine
+  default applies. Later tasks refuse sync while it is set.
 - ``privacy-overlay-invalid``: the ``privacy:`` block or one of its keys has the
   wrong shape; that part is ignored. Federation entries fail closed instead of
   being dropped where dropping could widen: a ``federation_defaults`` entry with
@@ -86,6 +87,7 @@ import yaml
 from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
+from scout.yaml_safe import load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
 
@@ -110,27 +112,6 @@ CLASSIFIER_VERSION = 3  # 3: Stage 2 effective scope, ceiling, frontmatter kind 
 def load_frontmatter_yaml(text: str) -> Any:
     """``yaml.safe_load`` of a frontmatter block: pure ``SafeLoader``, never libyaml."""
     return load_yaml(text)  # pure SafeLoader, never the C loader
-
-
-class YAMLValueError(yaml.YAMLError):
-    """YAML that scans but holds a value PyYAML can't build. Names the cause, never the text."""
-
-
-def load_yaml(stream: Any) -> Any:
-    """``yaml.safe_load`` that only ever raises ``yaml.YAMLError``, so ``except yaml.YAMLError`` fails closed.
-
-    PyYAML's constructors let plain exceptions out on text it scanned without
-    complaint: ``ValueError`` (``date: 2026-13-45``, ``n: 0x_``), ``KeyError``
-    (``!!bool foo``), ``IndexError`` (``!!int ""``), ``AttributeError``
-    (``!!timestamp foo``), ``OverflowError`` (``"\\U99999999"``) and
-    ``RecursionError`` (deep nesting). Each just means the text doesn't parse.
-    """
-    try:
-        return yaml.safe_load(stream)
-    except yaml.YAMLError:
-        raise
-    except Exception as e:  # the list above is what PyYAML does today; a label must not depend on it staying complete
-        raise YAMLValueError(type(e).__name__) from e
 
 
 VISIBILITIES = ("normal", "private")
@@ -421,14 +402,43 @@ def load_policy(vault: Path | None) -> Policy:
     if not config.exists():
         return base
     try:
-        data = load_yaml(config.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        text = config.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+    return policy_from_config_text(text)
+
+
+def policy_from_config_text(text: str | None) -> Policy:
+    """:func:`load_policy` for a ``scout-config.yaml`` text (None: the engine default).
+
+    When the file doesn't load whole, its ``privacy:`` block still applies if that
+    part can be built (a bad date elsewhere must not lift the owner's own rules),
+    with ``privacy-overlay-unreadable`` set either way, so everything that refuses
+    on that warning (sync, a scheduled run's commit) still refuses. If it can't be
+    built, the engine default applies.
+    """
+    if text is None:
+        return _engine_default()
+    try:
+        data = load_yaml(text)
+    except yaml.YAMLError:
+        return _unreadable_policy(text)
     if data is None:
-        return base
+        return _engine_default()
     if not isinstance(data, dict):
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+        return _unreadable_policy(None)
     return policy_from_overlay(data.get("privacy"))
+
+
+def _unreadable_policy(text: str | None) -> Policy:
+    overlay: Any = None
+    if text is not None:
+        try:
+            overlay = load_yaml_key(text, "privacy")
+        except yaml.YAMLError:
+            overlay = None
+    policy = policy_from_overlay(overlay)
+    return dataclasses.replace(policy, warnings=(*policy.warnings, "privacy-overlay-unreadable"))
 
 
 def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:

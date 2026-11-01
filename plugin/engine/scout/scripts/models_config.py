@@ -21,6 +21,7 @@ from scout import paths
 from scout.errors import ConfigError
 from scout.models import validate_model
 from scout.scripts.auto_update_config import _edit_children, _entry_starts, _is_filler, _loads_as, _mtime_ns
+from scout.yaml_safe import load_yaml
 
 _KEY = "models"
 _HEADER_RE = re.compile(r"models[ \t]*:(?P<rest>[ \t].*)?$")
@@ -52,7 +53,7 @@ def apply_models_default(text: str, model: str) -> str:
     """
     value = _validated(model)
     try:
-        original = yaml.safe_load(text)
+        original = load_yaml(text)
     except yaml.YAMLError as e:
         raise ModelsWriteError(f"cannot parse scout-config.yaml, so it was not changed: {e}") from e
     if original is None:

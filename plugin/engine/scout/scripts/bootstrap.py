@@ -48,6 +48,7 @@ from scout.scripts.phase_assembly import (
 )
 from scout.scripts.three_way_merge import three_way_merge
 from scout.scripts.vault_drift import VaultEdit
+from scout.yaml_safe import load_yaml
 
 
 @dataclass
@@ -766,7 +767,7 @@ def config_from_vault(
     its instance/user/connectors/notify blocks, or connectors.inputs), or when
     notify.wrap_channels isn't a non-empty list of known wrap channels.
     """
-    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    existing = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     if existing is None:
         existing = {}
     if not isinstance(existing, dict):
@@ -1021,7 +1022,7 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
 
     split = yaml_blocks.split_blocks(text, indent=0)
     try:
-        original = yaml.safe_load(text) or {}
+        original = load_yaml(text) or {}
     except yaml.YAMLError:
         return fallback("the file does not parse as YAML")
     if split is None or not isinstance(original, dict):
