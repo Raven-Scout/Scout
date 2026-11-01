@@ -110,14 +110,19 @@ def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
 def test_nightly_pass_can_finish_or_resume_a_big_page(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "**that you can finish this session**" in step
-    assert "**A page too big for one session:**" in step
     assert "resume it" in step
+    assert "when none is left, start the largest" in step
+    # A partial night is a finished night, and the archive copy is made once.
+    assert "**A page too big for one session** takes several nights" in step
+    assert "once, on its first night" in step
+    assert "a partial night only has to shrink it" in step
 
 
 def test_nightly_pass_skips_pages_it_could_widen_and_keeps_the_lossless_rule(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "kb classify --json <page>" in step
-    assert "`visibility: private` or `shared_file: true`" in step
+    assert "`visibility: private`, `shared_file: true` or `local_only: true`" in step
+    assert "Leave any loose file `kb classify` labels private, shared or local-only where it is" in step
     assert "name it in the commit message as deliberately dropped" in step
     assert "naming both paths of each move" in step
     # No count a run has no command for: privacy.md forbids grep in knowledge-base/.

@@ -54,7 +54,7 @@ from pathlib import Path
 # (FRESHNESS_OVERRIDES, PRIORITY_FRESHNESS, DEFAULT_FRESHNESS_HOURS).
 BASENAME_HOURS = {
     "linear-issues.md": 6,
-    "knowledge-base.md": 6,
+    "knowledge-base.md": 336,
     "people.md": 168,
     "channels.md": 336,
     "meetings.md": 336,

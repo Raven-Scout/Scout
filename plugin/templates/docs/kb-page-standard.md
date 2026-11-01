@@ -167,8 +167,12 @@ subject, e.g. `widgets-platform`.
 ## Restructuring an existing over-long page
 
 The `dreaming-nightly` run's KB pass rebuilds one over-budget project page a night this way. Do the
-same by hand for any page you restructure. The pass skips a page labelled private or shared (`kb
-classify`), because a new copy could widen it or hit a hard privacy block; restructure those by hand.
+same by hand for any page you restructure. The pass skips a page labelled private, shared or
+local-only (`kb classify`), because a new copy could widen it or hit a hard privacy block; restructure
+those by hand. On a local-only project nothing leaves the folder: keep source notes and moved files
+inside it. A page too big for one session takes several nights: archive it once, on the first night,
+move one area into `knowledge/` a night (the page only has to shrink), and rewrite it once the rest
+fits.
 
 1. Copy the page verbatim to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md`. Lint
    skips `archive/`, so the copy's size and old headings are fine.
@@ -178,7 +182,8 @@ classify`), because a new copy could widen it or hit a hard privacy block; restr
    folder into `documents/`, `research/` or `archive/` (or out of the folder) with `git mv`: an old
    `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --fixed
    'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
-   commit with `scripts/git-safe-commit.sh`. Don't drop facts. Superseded facts go into a topic's
+   commit with `scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only
+   where it is. Don't drop facts. Superseded facts go into a topic's
    **History** section or stay only in the archive.
 3. Check the current state against a live source before writing "Where it stands": its status, next
    dates, open questions and people. The old page is a lead, not a fact: the existing KB is claims
