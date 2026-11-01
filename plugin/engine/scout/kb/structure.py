@@ -121,7 +121,7 @@ def split_page(text: str) -> tuple[dict[str, Any], str]:
         return {}, text
     try:
         fm = load_frontmatter_yaml("".join(block))
-    except (yaml.YAMLError, ValueError):  # PyYAML raises ValueError on a date like 2026-13-45
+    except yaml.YAMLError:
         fm = None
     return (fm if isinstance(fm, dict) else {}), "".join(lines[len(block) + 2 :])
 
@@ -316,10 +316,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
-        try:
-            private = label_file(vault, front, policy).visibility == "private"
-        except ValueError:  # PyYAML on an impossible date, which classify() doesn't catch: fail closed
-            private = True
+        private = label_file(vault, front, policy).visibility == "private"
         rows.append(check_folder(vault, folder, cfg, history, excluded, private))
     rows.sort(key=lambda r: r["_rank"])
     for r in rows:
