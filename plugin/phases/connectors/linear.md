@@ -12,16 +12,19 @@ Check for changes to {{USER_NAME}}'s assigned issues and any newly created or as
 
 ### {{USER_NAME}}'s Own Linear Activity Since Last Run (delta-scan — surface this first)
 
-Before the issue-state scan below, build an **actor-attributed** delta of what {{USER_NAME}} did in Linear since the last run — issues he created, moved (state change), commented on, or edited. This is the Linear analog of the Slack outbound scan and is a primary signal of completed/in-progress work. Surface it **early** in the run summary (before "Today's Wins") — never silently omit it.
+Report what {{USER_NAME}} did in Linear since the last run — the issues {{USER_NAME}} created, moved (state change), commented on, or edited. It is the Linear analog of the Slack outbound scan and a primary signal of completed/in-progress work. List each issue under `### Your Linear Activity` in today's 📋 Scout Digest (identifier, what {{USER_NAME}} did, where it stands now), and lead the wrap notification with it — never silently omit it. The digest is shared by the day's runs: name each issue on a line this run writes or updates, since a line left as an earlier run wrote it doesn't count.
 
-- **Volume-sanity gate:** if the delta is suspiciously empty (zero activity) for a normally-active window, re-fetch before concluding "no Linear activity" — a silent empty result erodes trust more than a slow run.
+- **Pre-fetched when the vault has a Linear API key** (`~/.scout-secrets/linear-api-key`): `.scout-cache/session-context.json` holds `linear_own_activity` (one row per issue, with {{USER_NAME}}'s `actions`) for the window from `linear_own_activity_since`. Report those rows; don't re-query Linear for them. When `linear_own_activity_truncated` is true a fetch limit cut the list: also check Linear for what's past it.
+- **Otherwise** (`linear_own_activity` is null; `linear_own_activity_status` says why), build it from Linear: issues updated since `linear_own_activity_since`, keeping only {{USER_NAME}}'s own actions. If it comes back empty for a normally-active window, re-fetch before writing `- None since <when>`. If Linear can't be read, write `- Linear unavailable: <error>`.
+- **Dated issues assigned to {{USER_NAME}}** are pre-fetched with the same key as `linear_assigned_due` (each open one with a due date, whoever touched it). Each needs a task line in a tier, with `due <date>` and `Refs: <identifier>`, not only a digest line; `check-tier-ceiling` (*Deadline-Distance Ceiling*) names any that has none.
 - **Re-fetch fast-moving issues at compose time:** any issue you're about to cite with a state framing ("In Review", "blocked") must be re-read at compose time, not carried from cache (mirrors the Gmail/Pattern #43 rule).
+- **Before committing**, run `scripts/scoutctl action-items check-linear-delta --data-dir {{SCOUT_DIR}}`. Exit 1 names what's missing: add it and run it again. Exit 2 (it couldn't check): note `linear-delta check could not run: <its message>` in this run's 🪵 Run notes entry.
 
 ### Project-Update Polling for {{USER_NAME}}-Led Projects (leadership pings)
 
 `list_issues` + issue comments **miss project-level status-update comments**, which is where leadership often pings. For every Linear project {{USER_NAME}} leads or owns, call `get_status_updates` (and `list_comments` on the project) for updates since the last run.
 
-**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (per `people.md` / the ontology `manages` relation), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
+**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (per `people.md` / the ontology `manages` relation: `scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
 
 ### Status Changes
 
@@ -115,7 +118,7 @@ requires: linear
 
 ## Linear-Sourced KB Updates
 
-After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical.
+After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### Issue Tracker Sync
 

@@ -287,7 +287,7 @@ chunk (about 2000 characters of nesting): Scout stops carrying them over.
 | `Missing secret: .../telegram-chat-id`                           | Step 4 not done.                                                             |
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
-| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported tag, an or an unescaped `<`/`&`. The chunk was sent as plain text. |
+| `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported or unclosed tag, or an unescaped `<`/`&`. The chunk was sent as plain text. |
 | `warning: dropped N link(s) whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |

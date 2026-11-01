@@ -38,7 +38,7 @@ Every action item extracted from a transcript is a **candidate** that must be ve
 
 ### Attendee Extraction
 
-Note all meeting attendees from the `calendar_invitees` field and transcript speaker names. Cross-reference with `people.md` and add any new people with context: "Attendee in [meeting title] on [date]."
+Note all meeting attendees from the `calendar_invitees` field and transcript speaker names. Cross-reference with `people.md` (`scripts/scoutctl kb name-lookup <name>`) and add any new people with context: "Attendee in [meeting title] on [date]."
 
 ### Person Lookup for Context
 

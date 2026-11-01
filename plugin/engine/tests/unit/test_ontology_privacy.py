@@ -536,11 +536,24 @@ def pair(vault: Path) -> tuple[KnowledgeGraph, Any]:
     return _graph(vault), _template(vault)
 
 
+def _pre_shim(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Engine results as the pre-shim parser gave them: no parse-failure rows, no candidate ``type``."""
+    return [
+        {k: v for k, v in r.items() if k != "type"}
+        for r in rows
+        if not str(r.get("message", "")).startswith("YAML parse failure")
+    ]
+
+
 def test_parity_entities_relationships_validate(pair: tuple[KnowledgeGraph, Any]) -> None:
     engine, template = pair
     assert _strip(engine.entities) == template.entities
     assert engine.relationships == template.relationships
-    assert engine.validate() == template.validate()
+    errors = engine.validate()
+    assert _pre_shim(errors) == template.validate()
+    # The one deliberate addition: the malformed note the old parser dropped silently.
+    (broken,) = [e for e in errors if e not in _pre_shim(errors)]
+    assert broken["entity"] == "knowledge-base/topics/misc/broken.md"
 
 
 @pytest.mark.parametrize(
@@ -567,10 +580,10 @@ def test_parity_query(pair: tuple[KnowledgeGraph, Any], filters: dict[str, Any])
 @pytest.mark.parametrize("threshold", [0.7, 0.5])
 def test_parity_name_lookup(pair: tuple[KnowledgeGraph, Any], token: str, threshold: float) -> None:
     engine, template = pair
-    assert _strip(engine.name_lookup(token, distance_threshold=threshold)) == template.name_lookup(
+    assert _pre_shim(_strip(engine.name_lookup(token, distance_threshold=threshold))) == template.name_lookup(
         token, distance_threshold=threshold
     )
-    assert _strip(engine.name_lookup(token, max_results=1)) == template.name_lookup(token, max_results=1)
+    assert _pre_shim(_strip(engine.name_lookup(token, max_results=1))) == template.name_lookup(token, max_results=1)
 
 
 @pytest.mark.parametrize("hops", [1, 2, 3])

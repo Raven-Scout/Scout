@@ -15,6 +15,7 @@ struct TaskBodyView: View {
                 blockView(block)
             }
         }
+        .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 

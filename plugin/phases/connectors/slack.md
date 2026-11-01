@@ -21,7 +21,7 @@ Use `slack_search_public_and_private` with `from:{{USER_SLACK_ID}}` and date fil
 
 ### Channel Posts
 
-Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file. Channel posts indicate:
+Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file (`scripts/scoutctl kb read knowledge-base/channels.md`). Channel posts indicate:
 - Status updates given (the underlying work is done or in progress)
 - Questions asked ({{USER_NAME}} is blocked or exploring)
 - Answers provided ({{USER_NAME}} helped someone — may indicate context/expertise)
@@ -73,7 +73,7 @@ Check DMs received by {{USER_NAME}} from frequent contacts. Inbound DMs often co
 
 ### Key Channel Activity
 
-Check project channels listed in `channels.md` for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
+Check project channels listed in `channels.md` (`scripts/scoutctl kb read knowledge-base/channels.md`) for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
 - Decisions made that affect {{USER_NAME}}'s work
 - New issues or blockers raised
 - Status updates from collaborators
@@ -81,7 +81,7 @@ Check project channels listed in `channels.md` for recent activity, even if {{US
 
 ### 🔴 Project Channel Poll (mandatory)
 
-`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." For every 🔴-priority project file (`knowledge-base/projects/*/<name>.md` with `priority: "🔴"` or a 🔴 status), read its `slack_channels:` frontmatter (`scripts/scoutctl kb query --type project --json` has every project's frontmatter under `entity`) and **directly read each declared channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels in the sources footer (`🔴 channels polled: #a, #b`). If a 🔴 project has no `slack_channels:` frontmatter yet, add it (see project-file conventions in kb-management).
+`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." The runner lists every 🔴 project (`priority: "🔴"` or a 🔴 status) and the channels its `slack_channels:` frontmatter declares in `.scout-cache/session-context.json` → `red_project_channels`. **Directly read each listed channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels on this run's 🪵 Run notes entry (`  - 🔴 channels polled: #a, #b`; add `(unavailable: <error>)` after one you couldn't read). If a 🔴 project has no channels yet, add its `slack_channels:` frontmatter (see project-file conventions in kb-management). Before committing, run `scripts/scoutctl action-items check-red-polls --data-dir {{SCOUT_DIR}}`; exit 1 names each channel not yet listed: poll it, list it, run it again. Only this run's own Run notes entry counts, never an earlier run's line.
 
 ### Both Scans Required (gate)
 
@@ -163,7 +163,7 @@ requires: slack
 
 ## Slack-Sourced KB Updates
 
-After scanning Slack, update the knowledge base with any new information discovered:
+After scanning Slack, update the knowledge base with any new information discovered. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### People Updates
 

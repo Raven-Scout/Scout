@@ -41,7 +41,8 @@ struct TabViewSmokeTests {
                 actionItemsDirectory: vault.state.actionItemsDirectory)
                 .environmentObject(vault.state.actionItemsDocumentService)
                 .environmentObject(vault.state.actionItemsWriterBox)
-                .environmentObject(vault.state.actionItemsEnvState))
+                .environmentObject(vault.state.actionItemsEnvState)
+                .environmentObject(vault.state.displayProfileService))
     }
 
     @Test("the action items tab renders its missing-day state")
@@ -57,7 +58,8 @@ struct TabViewSmokeTests {
                 actionItemsDirectory: vault.state.actionItemsDirectory)
                 .environmentObject(vault.state.actionItemsDocumentService)
                 .environmentObject(vault.state.actionItemsWriterBox)
-                .environmentObject(vault.state.actionItemsEnvState))
+                .environmentObject(vault.state.actionItemsEnvState)
+                .environmentObject(vault.state.displayProfileService))
     }
 
     // MARK: - Proposals

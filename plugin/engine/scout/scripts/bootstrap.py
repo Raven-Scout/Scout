@@ -186,7 +186,7 @@ _CAT1_TEMPLATES = (
     ("scripts/run-outcome.sh", "templates/scripts/run-outcome.sh.tmpl"),
     # The session lock every run-*.sh sources: wait, skip rows, redundancy (#218).
     ("scripts/scout-lock.sh", "templates/scripts/scout-lock.sh.tmpl"),
-    # The dreaming brain's commit steps: explicit paths only, behind a
+    # The dreaming and research commit steps (and /scout-work): explicit paths only, behind a
     # cross-session mutex, so overlapping runs never commit each other's work.
     ("scripts/git-safe-commit.sh", "templates/scripts/git-safe-commit.sh.tmpl"),
     ("hooks/kb-pre-filter.sh", "templates/hooks/kb-pre-filter.sh.tmpl"),
