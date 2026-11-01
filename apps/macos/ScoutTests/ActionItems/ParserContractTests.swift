@@ -13,7 +13,7 @@ struct ParserContractTests {
     /// On an intentional corpus change: re-copy the canonical corpus into both
     /// repos, then update this digest to the output of
     /// `shasum -a 256 ScoutTests/Fixtures/parser-corpus.json`.
-    static let canonicalSHA256 = "c4237bc4aafd1daf84a3ffb82f254383d56b6d6f2f4460b43be89aead3794d63"
+    static let canonicalSHA256 = "2e8d56c51f448143d3e59d6a10298ad3251efed03b326d0a21be95e518056d7d"
 
     struct Corpus: Decodable {
         let entries: [Entry]
@@ -30,12 +30,28 @@ struct ParserContractTests {
             let priority: Int?
             let cycle: String?
         }
+        struct Block: Decodable, Equatable {
+            let date: String
+            let start: String
+            let end: String
+            let minutes: Int
+            let event_id: String?
+        }
+        struct Plan: Decodable, Equatable {
+            let estimate_minutes: Int?
+            let raw_minutes: Int?
+            let kind: String?
+            let block: Block?
+            let actual_minutes: Int?
+            let actual_date: String?
+        }
         struct Expected: Decodable {
             let short_prefix: String?
             let subject: String
             let plain_subject: String
             let body: String
             let fields: Fields?
+            let plan: Plan?
             let comment_authors: [String]?
         }
         let name: String
@@ -48,6 +64,16 @@ struct ParserContractTests {
         Entry.Fields(
             topic: f.topic, parent: f.parent, state: f.state?.rawValue, action: f.action,
             depends: f.depends, session: f.session, priority: f.priority, cycle: f.cycle
+        )
+    }
+
+    private static func plan(_ p: TaskPlan) -> Entry.Plan {
+        Entry.Plan(
+            estimate_minutes: p.estimateMinutes, raw_minutes: p.rawMinutes, kind: p.kind,
+            block: p.block.map {
+                Entry.Block(date: $0.date, start: $0.start, end: $0.end, minutes: $0.minutes, event_id: $0.eventID)
+            },
+            actual_minutes: p.actualMinutes, actual_date: p.actualDate
         )
     }
 
@@ -92,6 +118,9 @@ struct ParserContractTests {
             #expect(t.body == e.expected.body, "\(e.name): body")
             if let expected = e.expected.fields {
                 #expect(Self.fields(t.fields) == expected, "\(e.name): fields")
+            }
+            if let expected = e.expected.plan {
+                #expect(Self.plan(t.plan) == expected, "\(e.name): plan")
             }
             if let authors = e.expected.comment_authors {
                 #expect(t.comments.map(\.author) == authors, "\(e.name): comment_authors")

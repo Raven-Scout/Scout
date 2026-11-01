@@ -98,6 +98,7 @@ configurable vault root (Raven-Scout/scout-app-legacy#104) needs no change here.
 | `actionItems.fields.refs` | boolean | `true` |
 | `actionItems.fields.snooze` | boolean | `true` |
 | `actionItems.fields.comments` | boolean | `false` |
+| `actionItems.fields.plan` | boolean | `true` (added with the plan chip, #526) |
 | `actionItems.topics.doneRange` | `today`, `yesterday`, `week` | `week` |
 
 `topics` and `topics.doneRange` follow the Topics view (#343) and the shared
