@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A run that dies on `FailedToOpenSocket` or `API Error: 500` is retried** (`templates/scripts/claude-with-retry.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`, `engine/scout/health.py`). Both signatures killed real scheduled runs unretried; the CLI's own 500 text calls it temporary. A run that uses up its retries on `FailedToOpenSocket` is now classed `network` in the run ledger and `scoutctl health`, like the other connect errors. An exhausted 500 stays `unknown`.
+
 ## [0.18.6] - 2026-10-31
 
 ### Added
