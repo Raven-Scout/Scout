@@ -116,7 +116,7 @@ def _frontmatter(text: str) -> dict[str, Any] | None:
         return None
     try:
         data = load_frontmatter_yaml("\n".join(block))
-    except (yaml.YAMLError, RecursionError, ValueError):
+    except yaml.YAMLError:
         return None
     return data if isinstance(data, dict) else None
 
