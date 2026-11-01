@@ -29,7 +29,7 @@ from tests.unit.test_kb_privacy import _ROWS
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "privacy-corpus.json"
 
-EXPECTED_SHA256 = "42fa36625d2beee27724866f9980953aab497b13509840f0decf7d76e1f3664e"
+EXPECTED_SHA256 = "17cea066c8688ad8be8251a3506283fdfd6daab48cc7bdff8ddca20d808fd2b7"
 
 _CASES: list[dict[str, Any]] = json.loads(CORPUS.read_text(encoding="utf-8")) if CORPUS.exists() else []
 

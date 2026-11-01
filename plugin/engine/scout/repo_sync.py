@@ -67,6 +67,7 @@ from scout.kb.privacy import (
     classify,
     decode_head,
     load_policy,
+    load_yaml,
     policy_from_overlay,
 )
 
@@ -415,7 +416,7 @@ def policy_at(vault: Path, rev: str, blobs: BlobReader) -> Policy:
     if entry is None:
         return base
     try:
-        data = yaml.safe_load(blobs.read(entry.sha).decode("utf-8"))
+        data = load_yaml(blobs.read(entry.sha).decode("utf-8"))
     except (UnicodeDecodeError, yaml.YAMLError):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
     if data is None:

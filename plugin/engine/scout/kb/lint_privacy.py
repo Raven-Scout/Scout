@@ -94,6 +94,7 @@ from scout.kb.privacy import (
     label_file,
     label_from_facts,
     load_policy,
+    load_yaml,
     note_facts,
     policy_from_overlay,
     read_head,
@@ -163,7 +164,7 @@ def policy_from_config_text(text: str | None) -> Policy:
     if text is None:
         return base
     try:
-        data = yaml.safe_load(text)
+        data = load_yaml(text)
     except yaml.YAMLError:
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
     if data is None:
@@ -401,7 +402,7 @@ def _config_data(text: str | None) -> Any:
     if text is None:
         return None
     try:
-        return yaml.safe_load(text)
+        return load_yaml(text)
     except yaml.YAMLError:
         return _Unparseable(text)
 

@@ -83,6 +83,7 @@ from scout.kb.privacy import (
     label_from_facts,
     load_frontmatter_yaml,
     load_policy,
+    load_yaml,
     normalize_rel,
     note_facts,
     read_head,
@@ -363,7 +364,7 @@ class KnowledgeGraph:
     def _load_schema(self) -> dict[str, Any]:
         try:
             with open(self.schema_path, encoding="utf-8") as f:
-                return yaml.safe_load(f)
+                return load_yaml(f)
         except OSError as e:
             raise KBSchemaError(f"KB schema not found at {self.schema_path}: {e}") from e
         except yaml.YAMLError as e:

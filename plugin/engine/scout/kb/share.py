@@ -56,6 +56,7 @@ from scout.kb.privacy import (
     first_default,
     folder_ceiling,
     load_policy,
+    load_yaml,
     normalize_rel,
     note_facts,
     parse_principal,
@@ -411,7 +412,7 @@ def load_overlay(vault: Path) -> Overlay:
     config = paths.config_path(vault)
     try:
         text = config.read_text(encoding="utf-8") if config.exists() else ""
-        data = yaml.safe_load(text) if text.strip() else {}
+        data = load_yaml(text) if text.strip() else {}
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         raise ShareRefused("refused: scout-config.yaml can't be read; fix it first") from e
     data = {} if data is None else data
