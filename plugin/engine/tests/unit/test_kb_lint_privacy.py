@@ -233,11 +233,41 @@ def test_unparseable_frontmatter_warns_in_the_hook(vault: Path) -> None:
     assert rc == 0 and "[frontmatter-unparseable]" in out
 
 
-def test_a_stage_2_overlay_key_warns(vault: Path) -> None:
+_SHARE_TOPICS = (
+    "  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/topics/misc/**", scope: ["person:priya@example.com"]}\n'
+)
+
+
+def test_stage_2_overlay_keys_no_longer_warn(vault: Path) -> None:
     with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
-        fh.write("  federation:\n    enabled: true\n")
+        fh.write(_SHARE_TOPICS)
     git(vault, "add", "scout-config.yaml")
-    assert checks(vault) == [("scout-config.yaml", "federation-reserved", False, None)]
+    assert checks(vault) == []
+
+
+def test_a_note_shared_by_a_folder_default_is_a_shared_file(vault: Path) -> None:
+    """Agnes #6090 §4: a note with an effective share blocks a private link like any shared file."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(_SHARE_TOPICS)
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "share topics/misc with Priya")
+    n = append(vault, PLAIN, "See [[sam]] for the details.")
+    assert checks(vault) == [(PLAIN, "private-link", True, n)]
+
+
+def test_the_same_note_is_owner_only_while_sharing_is_off(vault: Path) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(_SHARE_TOPICS.replace("enabled: true", "enabled: false"))
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "share topics/misc later")
+    append(vault, PLAIN, "See [[sam]] for the details.")
+    assert checks(vault) == []
+
+
+def test_a_scope_wider_than_the_ceiling_warns(vault: Path) -> None:
+    stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
+    assert (PRIYA, "federation-ceiling", False, None) in checks(vault)
 
 
 # ----- the commit, not the working tree ----------------------------------------------
@@ -280,15 +310,19 @@ def test_a_note_renamed_into_drafts_has_every_line_checked(vault: Path) -> None:
 
 def test_a_note_given_a_federation_scope_has_every_line_checked(vault: Path) -> None:
     stage(vault, PRIYA, _read(vault, PRIYA).replace("type: person\n", "type: person\nfederation_scope: org\n", 1))
-    found = checks(vault)
+    found = [f for f in checks(vault) if f[1] != "federation-ceiling"]  # a people note's ceiling is none
     assert found and all(f[:3] == (PRIYA, "private-link", True) for f in found)
 
 
 def test_a_federation_scope_note_outside_the_kb_is_shared(vault: Path) -> None:
     """Ruling R23: a staged .md declaring federation_scope is checked wherever it lives."""
     stage(vault, "notes/outside.md", "---\nfederation_scope: org\n---\nSee [[sam]].\n")
-    assert checks(vault) == [("notes/outside.md", "private-link", True, 4)]
+    assert checks(vault) == [
+        ("notes/outside.md", "federation-ceiling", False, None),  # outside every shareable folder
+        ("notes/outside.md", "private-link", True, 4),
+    ]
     assert checks(vault, RUN) == [
+        ("notes/outside.md", "federation-ceiling", False, None),
         ("notes/outside.md", "privacy-widening", True, None),
         ("notes/outside.md", "private-link", True, 4),
     ]
@@ -562,7 +596,8 @@ def test_widens(head: object, staged: object, widens: bool) -> None:
         ("", ()),
         ("- just\n- a list\n", ("privacy-overlay-unreadable",)),
         ("privacy: [unclosed\n", ("privacy-overlay-unreadable",)),
-        ("privacy:\n  federation:\n    enabled: true\n", ("federation-reserved",)),
+        ("privacy:\n  federation:\n    enabled: true\n", ()),
+        ("privacy:\n  federation: true\n", ("privacy-overlay-invalid",)),
     ],
 )
 def test_policy_from_config_text(text: str | None, warnings: tuple[str, ...]) -> None:
@@ -656,7 +691,7 @@ def test_a_run_may_delete_lines(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
-def test_report_lists_a_stage_2_overlay_and_skips_missing_and_unreadable_files(vault: Path) -> None:
+def test_report_ignores_a_stage_2_overlay_and_skips_missing_and_unreadable_files(vault: Path) -> None:
     import os
 
     with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
@@ -671,7 +706,7 @@ def test_report_lists_a_stage_2_overlay_and_skips_missing_and_unreadable_files(v
         rep = privacy_report(vault)
     finally:
         locked.chmod(0o644)
-    assert ("scout-config.yaml", "federation-reserved", "warn") in rep.problems
+    assert all(rel != "scout-config.yaml" for rel, _check, _sev in rep.problems)  # Stage 2 keys don't warn
     assert all(rel != "drafts/gone.md" for rel, _n in rep.unmarked)
     if os.geteuid() != 0:  # root reads a mode-000 file anyway
         assert ("drafts/locked.md", "file-unreadable", "error") in rep.problems

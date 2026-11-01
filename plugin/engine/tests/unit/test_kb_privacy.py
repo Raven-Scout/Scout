@@ -10,6 +10,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scout.kb import privacy
 from scout.kb.privacy import Label, Policy, classify, load_policy, normalize_rel, surface_class, visible_to
@@ -141,14 +142,15 @@ _ROWS: list[tuple[str, str, str | None, dict[str, object]]] = [
     ("sync-allow-schedule", ".scout-state/schedule.yaml", None, {"local_only": False}),
     ("sync-allow-policy", ".scout-state/privacy-policy.json", None, {"local_only": False}),
     (
-        "federation-org-reserved",
+        "federation-org-declared-sharing-off",
         "knowledge-base/projects/widget/widget.md",
         _fm("name: Widget\nfederation_scope: org"),
         {
             "visibility": "normal",
             "federation_scope": "none",
             "federation_scope_declared": "org",
-            "federation_source": "reserved",
+            "federation_source": "disabled",
+            "ceiling": "org",
             "shared_file": True,
             "warnings": (),
         },
@@ -256,8 +258,8 @@ _ROWS: list[tuple[str, str, str | None, dict[str, object]]] = [
 def test_classify_rules(policy: Policy, rel: str, text: str | None, expected: dict[str, object]) -> None:
     label = classify(rel, text, policy)
     assert label.path == rel
-    assert label.federation_scope == "none"
-    assert label.federation_source == "reserved"
+    assert label.federation_scope == "none"  # sharing is off in the engine default
+    assert label.federation_source == "disabled"
     for field, want in expected.items():
         assert getattr(label, field) == want, field
 
@@ -322,13 +324,188 @@ def test_overlay_shared_files_add(tmp_path: Path) -> None:
     assert classify("outbox/m.md", None, pol).shared_file is True
 
 
-@pytest.mark.parametrize("key", ["federation_ceilings", "federation_defaults", "federation"])
-def test_overlay_stage2_keys_warn_and_are_ignored(tmp_path: Path, key: str) -> None:
-    pol = load_policy(_overlay(tmp_path, f"privacy:\n  {key}:\n    enabled: true\n"))
-    assert pol.warnings == ("federation-reserved",)
-    label = classify("knowledge-base/projects/widget/widget.md", _fm("federation_scope: org"), pol)
+_WIDGET_SHARE = (
+    "privacy:\n  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/projects/widget/**", scope: ["person:Priya@example.com"]}\n'
+)
+
+
+def test_overlay_stage2_keys_are_honoured(tmp_path: Path) -> None:
+    pol = load_policy(_overlay(tmp_path, _WIDGET_SHARE))
+    assert pol.warnings == ()
+    assert pol.federation_enabled is True
+    assert pol.federation_defaults == (
+        privacy.ScopeDefault("knowledge-base/projects/widget/**", ("person:priya@example.com",)),
+    )
+    label = classify("knowledge-base/projects/widget/notes.md", _fm("name: Notes"), pol)
+    assert (label.federation_scope, label.federation_source, label.ceiling) == (
+        ("person:priya@example.com",),
+        "default",
+        "org",
+    )
+    assert label.shared_file is True
+
+
+def test_sharing_is_off_without_the_switch(tmp_path: Path) -> None:
+    pol = load_policy(_overlay(tmp_path, _WIDGET_SHARE.replace("enabled: true", "enabled: false")))
+    label = classify("knowledge-base/projects/widget/notes.md", _fm("name: Notes"), pol)
+    assert (label.federation_scope, label.federation_source) == ("none", "disabled")
+    assert label.shared_file is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "privacy:\n  federation: true\n",
+        "privacy:\n  federation:\n    enabled: yes-please\n",
+        "privacy:\n  federation_defaults: {glob: x}\n",
+        "privacy:\n  federation_ceilings: knowledge-base/**\n",
+    ],
+)
+def test_overlay_bad_federation_shapes_share_nothing(tmp_path: Path, body: str) -> None:
+    pol = load_policy(_overlay(tmp_path, body))
+    assert "privacy-overlay-invalid" in pol.warnings
+    assert pol.federation_enabled is False
+    assert pol.federation_defaults == ()
+
+
+def test_overlay_bad_default_scope_fails_closed_in_place(tmp_path: Path) -> None:
+    """A bad scope is kept as `none` so a broader entry below it can't match instead."""
+    pol = load_policy(
+        _overlay(
+            tmp_path,
+            "privacy:\n  federation: {enabled: true}\n  federation_defaults:\n"
+            '    - {glob: "knowledge-base/projects/widget/**", scope: [priya]}\n'
+            '    - {glob: "knowledge-base/projects/**", scope: ["person:priya@example.com"]}\n',
+        )
+    )
+    assert "privacy-overlay-invalid" in pol.warnings
+    label = classify("knowledge-base/projects/widget/notes.md", _fm("name: Notes"), pol)
     assert label.federation_scope == "none"
-    assert dataclasses.replace(pol, warnings=()) == load_policy(None)
+
+
+def test_overlay_ceilings_narrow_but_never_widen(tmp_path: Path) -> None:
+    pol = load_policy(
+        _overlay(
+            tmp_path,
+            "privacy:\n  federation_ceilings:\n"
+            '    - {glob: "knowledge-base/projects/widget/**", ceiling: people}\n'
+            '    - {glob: "knowledge-base/people/**", ceiling: org}\n'
+            '    - {glob: "knowledge-base/topics/**", ceiling: whatever}\n',
+        )
+    )
+    assert privacy.folder_ceiling(pol, "knowledge-base/projects/widget/a.md", None) == "people"
+    assert privacy.folder_ceiling(pol, "knowledge-base/projects/other/a.md", None) == "org"
+    assert privacy.folder_ceiling(pol, "knowledge-base/people/sam.md", None) == "none"
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/a.md", None) == "none"
+    assert "privacy-overlay-invalid" in pol.warnings
+
+
+@pytest.mark.parametrize(
+    ("rel", "kind", "want"),
+    [
+        ("knowledge-base/sources/2026-10/m.md", "meeting", "people"),
+        ("knowledge-base/sources/2026-10/t.md", "thread", "people"),
+        ("knowledge-base/sources/2026-10/e.md", "email", "none"),
+        ("knowledge-base/sources/2026-10/x.md", None, "none"),
+        ("knowledge-base/people/sam.md", None, "none"),
+        ("action-items/action-items-2026-10-31.md", None, "none"),
+        ("knowledge-base/research-queue/q.md", None, "org"),
+        ("knowledge-base/ontology/entities/e.md", None, "org"),
+    ],
+)
+def test_engine_folder_ceilings(policy: Policy, rel: str, kind: str | None, want: str) -> None:
+    assert privacy.folder_ceiling(policy, rel, kind) == want
+
+
+@pytest.mark.parametrize(
+    ("scope", "ceiling", "want"),
+    [
+        (("person:a@example.com", "group:g1"), "org", ("person:a@example.com", "group:g1")),
+        (("person:a@example.com", "group:g1"), "people", ("person:a@example.com",)),
+        (("group:g1",), "people", "none"),
+        ("org", "people", "none"),
+        ("org", "org", "org"),
+        (("person:a@example.com",), "none", "none"),
+    ],
+)
+def test_cap_scope(scope: privacy.FederationScope, ceiling: privacy.CeilingLevel, want: object) -> None:
+    assert privacy.cap_scope(scope, ceiling) == want
+
+
+def _engine_raw() -> dict[str, object]:
+    return yaml.safe_load((Path(privacy.__file__).parents[1] / "defaults" / "privacy.yaml").read_text("utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("federation_ceilings", [{"ceiling": "org"}]),
+        ("federation_ceilings", [{"glob": "a/**", "ceiling": "everyone"}]),
+        ("federation_defaults", ["a/**"]),
+        ("federation_defaults", [{"glob": "a/**", "scope": "everyone"}]),
+        ("federation", {"enabled": "yes"}),
+    ],
+)
+def test_a_bad_engine_federation_key_raises(key: str, value: object) -> None:
+    with pytest.raises(ValueError, match=r"privacy\.yaml"):
+        privacy._parse_engine_yaml({**_engine_raw(), key: value})
+
+
+def test_engine_federation_defaults_parse() -> None:
+    pol = privacy._parse_engine_yaml({**_engine_raw(), "federation_defaults": [{"glob": "a/**", "scope": "org"}]})
+    assert pol.federation_defaults == (privacy.ScopeDefault("a/**", "org"),)
+
+
+def test_overlay_ceiling_entry_shapes_fail_closed(tmp_path: Path) -> None:
+    pol = load_policy(
+        _overlay(
+            tmp_path,
+            "privacy:\n  federation_ceilings:\n"
+            "    - knowledge-base/**\n"
+            "    - {ceiling: none}\n"
+            '    - {glob: "knowledge-base/topics/a/**", ceiling: 3}\n'
+            '    - {glob: "knowledge-base/topics/b/**", ceiling: people, kinds: meeting}\n',
+        )
+    )
+    assert pol.warnings == ("privacy-overlay-invalid",)
+    assert [r.glob for r in pol.federation_ceilings_overlay] == [
+        "knowledge-base/topics/a/**",
+        "knowledge-base/topics/b/**",
+    ]
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/a/n.md", None) == "none"  # a bad ceiling is none
+    # bad kinds apply the narrowing to every kind
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/b/n.md", "doc") == "people"
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/c/n.md", None) == "org"
+
+
+def test_overlay_default_entry_with_no_glob_is_dropped(tmp_path: Path) -> None:
+    pol = load_policy(
+        _overlay(
+            tmp_path, 'privacy:\n  federation_defaults:\n    - notes/**\n    - {scope: org}\n    - {glob: "a/**"}\n'
+        )
+    )
+    assert pol.warnings == ("privacy-overlay-invalid",)
+    assert pol.federation_defaults == (privacy.ScopeDefault("a/**", "none"),)  # no scope: nothing shared
+
+
+def test_overlay_federation_without_enabled_stays_off(tmp_path: Path) -> None:
+    pol = load_policy(_overlay(tmp_path, "privacy:\n  federation: {note: later}\n"))
+    assert pol.federation_enabled is False and pol.warnings == ()
+
+
+def test_a_ceiling_rule_with_kinds_needs_a_matching_kind() -> None:
+    rule = privacy.CeilingRule("a/**", "people", ("meeting",))
+    assert rule.matches("a/n.md", "meeting") is True
+    assert rule.matches("a/n.md", "email") is False
+    assert rule.matches("a/n.md", None) is False
+    assert rule.matches("b/n.md", "meeting") is False
+    assert rule.to_json() == {"glob": "a/**", "ceiling": "people", "kinds": ["meeting"]}
+
+
+def test_kind_is_trimmed_and_lowercased() -> None:
+    assert privacy.note_facts(_fm("kind: ' Meeting '")).kind == "meeting"
+    assert privacy.note_facts(_fm("kind: 3")).kind is None
 
 
 def test_overlay_surfaces_add_and_move_to_shared(tmp_path: Path) -> None:
@@ -452,7 +629,8 @@ def test_label_to_json_shape_matches_spec(policy: Policy) -> None:
         "visibility_source": "path_default",
         "federation_scope": "none",
         "federation_scope_declared": "none",
-        "federation_source": "reserved",
+        "federation_source": "disabled",
+        "ceiling": "none",
         "local_only": False,
         "shared_file": False,
         "warnings": [],
