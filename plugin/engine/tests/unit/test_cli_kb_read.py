@@ -585,7 +585,14 @@ def test_index_rebuilds_after_a_classifier_or_engine_change(own_vault: Path, mon
     assert data["classifier"] == kb_read.CLASSIFIER_VERSION and data["engine"] == kb_read.__version__
     # an older classifier's verdict for SAM, under its current stat key
     stale = data["files"][SAM]
-    stale["facts"] = {"state": "ok", "visibility": "normal", "declared": "none", "warnings": []}
+    stale["facts"] = {
+        "state": "ok",
+        "visibility": "normal",
+        "declared": "none",
+        "warnings": [],
+        "declared_present": False,
+        "kind": None,
+    }
     stale["label"] = {**stale["label"], "visibility": "normal", "visibility_source": "frontmatter"}
     for header, value in (("classifier", kb_read.CLASSIFIER_VERSION - 1), ("engine", "0.0.1")):
         index.write_text(json.dumps({**data, header: value}), encoding="utf-8")
@@ -881,3 +888,76 @@ def test_index_is_owner_only(own_vault: Path) -> None:
     kb_read.visible_files(own_vault, "owner")
     index = own_vault / ".scout-cache" / kb_read.INDEX_FILENAME
     assert index.stat().st_mode & 0o777 == 0o600
+
+
+# ----- Stage 2 fields in the privacy index (Agnes #6090 §4) -------------------------------
+
+
+_GOOD_FACTS: dict[str, object] = {
+    "state": "ok",
+    "visibility": None,
+    "declared": ["person:priya@example.com"],
+    "warnings": [],
+    "declared_present": True,
+    "kind": "meeting",
+}
+
+
+def test_facts_round_trip_through_the_index() -> None:
+    facts = kb_read._facts_from_json(_GOOD_FACTS)
+    assert facts is not None
+    assert (facts.declared, facts.declared_present, facts.kind) == (("person:priya@example.com",), True, "meeting")
+    assert kb_read._facts_json(facts) == _GOOD_FACTS
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"state": "odd"},
+        {"visibility": "secret"},
+        {"warnings": "none"},
+        {"declared_present": "yes"},
+        {"kind": 3},
+        {"declared": 3},
+        {"declared": [3]},
+    ],
+)
+def test_malformed_facts_in_the_index_are_not_trusted(bad: dict[str, object]) -> None:
+    assert kb_read._facts_from_json({**_GOOD_FACTS, **bad}) is None
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [None, [], {"state": "ok", "visibility": None, "declared": "none", "warnings": []}],
+    ids=["null", "a-list", "facts-from-before-stage-2"],
+)
+def test_facts_of_the_wrong_shape_in_the_index_are_not_trusted(stored: object) -> None:
+    assert kb_read._facts_from_json(stored) is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"federation_scope": 3},
+        {"federation_source": "reserved"},
+        {"ceiling": "everyone"},
+        {"federation_scope_declared": [3]},
+    ],
+)
+def test_a_label_with_a_bad_stage_2_field_in_the_index_is_not_trusted(bad: dict[str, object]) -> None:
+    good = kb_read.Label(path="n.md", visibility="normal", visibility_source="default").to_json()
+    assert kb_read._label_from_json(good, "n.md") is not None
+    assert kb_read._label_from_json({**good, **bad}, "n.md") is None
+
+
+def test_an_effective_scope_survives_the_index() -> None:
+    label = kb_read.Label(
+        path="n.md",
+        visibility="normal",
+        visibility_source="default",
+        federation_scope=("person:priya@example.com",),
+        federation_source="default",
+        ceiling="org",
+        shared_file=True,
+    )
+    assert kb_read._label_from_json(label.to_json(), "n.md") == label

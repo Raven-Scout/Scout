@@ -1,9 +1,10 @@
 [
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/plain.md",
       "shared_file": false,
@@ -17,9 +18,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/plain.md",
       "shared_file": false,
@@ -33,9 +35,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/people/sam.md",
       "shared_file": false,
@@ -49,9 +52,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/people/priya.md",
       "shared_file": false,
@@ -65,9 +69,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/draft.md",
       "shared_file": false,
@@ -83,9 +88,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/draft.md",
       "shared_file": false,
@@ -101,9 +107,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/draft.md",
       "shared_file": false,
@@ -119,9 +126,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/broken.md",
       "shared_file": false,
@@ -137,9 +145,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/broken.md",
       "shared_file": false,
@@ -155,9 +164,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/broken.md",
       "shared_file": false,
@@ -173,9 +183,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/plain.md",
       "shared_file": false,
@@ -189,9 +200,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/people/sam.md",
       "shared_file": false,
@@ -205,9 +217,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/personal/x.md",
       "shared_file": false,
@@ -221,9 +234,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/personal/y.md",
       "shared_file": false,
@@ -237,9 +251,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": ".scout-inbox/a.jsonl",
       "shared_file": false,
@@ -253,9 +268,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "inbox.md",
       "shared_file": false,
@@ -269,9 +285,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "Raw/scan.txt",
       "shared_file": false,
@@ -285,9 +302,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".venv/x",
       "shared_file": false,
@@ -301,9 +319,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".scout-state/lock",
       "shared_file": false,
@@ -317,9 +336,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".env.local",
       "shared_file": false,
@@ -333,9 +353,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".mcp.json",
       "shared_file": false,
@@ -349,9 +370,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": ".scout-state/id-map.json",
       "shared_file": false,
@@ -365,9 +387,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": ".scout-state/schedule.yaml",
       "shared_file": false,
@@ -381,9 +404,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": ".scout-state/privacy-policy.json",
       "shared_file": false,
@@ -397,9 +421,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/widget.md",
       "shared_file": true,
@@ -413,9 +438,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/widget.md",
       "shared_file": true,
@@ -429,9 +455,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/widget.md",
       "shared_file": false,
@@ -445,11 +472,12 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": [
         "person:priya@example.com"
       ],
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": true,
@@ -463,12 +491,13 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": [
         "person:priya@example.com",
         "group:0aF9_x-1"
       ],
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": true,
@@ -482,9 +511,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -500,9 +530,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -518,9 +549,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -536,9 +568,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -554,9 +587,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -570,9 +604,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/notes.md",
       "shared_file": false,
@@ -588,9 +623,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/people/sam.md",
       "shared_file": true,
@@ -606,9 +642,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/personal/z.md",
       "shared_file": true,
@@ -624,9 +661,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/draft.md",
       "shared_file": false,
@@ -642,9 +680,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "drafts/r.md",
       "shared_file": true,
@@ -658,9 +697,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/billing/rollout.md",
       "shared_file": false,
@@ -674,9 +714,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": "trading/p.md",
       "shared_file": false,
@@ -694,9 +735,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/x.md",
       "shared_file": false,
@@ -714,9 +756,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".scout-state/id-map.json",
       "shared_file": false,
@@ -734,9 +777,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": true,
       "path": ".venv/x",
       "shared_file": false,
@@ -754,9 +798,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/billing/rollout.md",
       "shared_file": false,
@@ -777,9 +822,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/billing/rollout.md",
       "shared_file": false,
@@ -800,9 +846,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/personal/shared/list.md",
       "shared_file": false,
@@ -823,9 +870,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "notes/a.md",
       "shared_file": false,
@@ -846,9 +894,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "notes/a.md",
       "shared_file": false,
@@ -869,9 +918,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "outbox/m.md",
       "shared_file": true,
@@ -889,9 +939,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "drafts/r.md",
       "shared_file": true,
@@ -909,9 +960,10 @@
   },
   {
     "expected_label": {
-      "federation_scope": "none",
+      "ceiling": "org",
+      "federation_scope": "org",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "frontmatter",
       "local_only": false,
       "path": "knowledge-base/projects/widget/widget.md",
       "shared_file": true,
@@ -929,9 +981,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/projects/widget/widget.md",
       "shared_file": true,
@@ -949,9 +1002,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "org",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/people/sam.md",
       "shared_file": true,
@@ -969,9 +1023,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "trading/p.md",
       "shared_file": false,
@@ -985,9 +1040,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "trading/p.md",
       "shared_file": false,
@@ -1003,9 +1059,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "outbox/m.md",
       "shared_file": false,
@@ -1026,9 +1083,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/personal/y.md",
       "shared_file": false,
@@ -1048,9 +1106,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/tab-after-colon.md",
       "shared_file": false,
@@ -1066,9 +1125,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/surrogate-escape.md",
       "shared_file": false,
@@ -1082,9 +1142,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/bom-line-start.md",
       "shared_file": false,
@@ -1098,9 +1159,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/bom-own-line.md",
       "shared_file": false,
@@ -1116,9 +1178,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "none",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/block-scalar-comment.md",
       "shared_file": false,
@@ -1134,9 +1197,10 @@
   },
   {
     "expected_label": {
+      "ceiling": "org",
       "federation_scope": "none",
       "federation_scope_declared": "none",
-      "federation_source": "reserved",
+      "federation_source": "disabled",
       "local_only": false,
       "path": "knowledge-base/topics/misc/flow-explicit-key.md",
       "shared_file": false,
@@ -1147,5 +1211,978 @@
     "frontmatter_text": "---\nname: flow-explicit-key\ntype: topic\nvisibility: normal\ntags: [? ]\n---\nAn empty explicit key in a flow sequence: SafeLoader parses it; libyaml rejects the block.\n",
     "path": "knowledge-base/topics/misc/flow-explicit-key.md",
     "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:sam@example.com"
+      ],
+      "federation_scope_declared": [
+        "person:sam@example.com"
+      ],
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/solo.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:sam@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/solo.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/internal.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: none\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/internal.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plain.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": null,
+    "path": "knowledge-base/projects/widget/plain.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/secret.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "frontmatter",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nvisibility: private\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/secret.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/personal/task-renew-permit.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "path_default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\ntype: task\n---\nBody text.\n",
+    "path": "knowledge-base/personal/task-renew-permit.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Sam\ntype: person\n---\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/topics/billing/rollout.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Rollout\n---\nBody text.\n",
+    "path": "knowledge-base/topics/billing/rollout.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/broken.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\nname: [unclosed\n---\n",
+    "path": "knowledge-base/projects/widget/broken.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": true,
+      "path": "knowledge-base/projects/widget/keys/notes.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Keys\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/keys/notes.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ],
+      "local_only_add": [
+        "knowledge-base/projects/widget/keys/**"
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "disabled",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:sam@example.com"
+      ],
+      "federation_source": "disabled",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/solo.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:sam@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/solo.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": false
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "disabled",
+      "local_only": false,
+      "path": "knowledge-base/people/priya.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: org\n---\nBody text.\n",
+    "path": "knowledge-base/people/priya.md",
+    "policy_overlay": null
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/typo.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "visibility-value"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya]\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/typo.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": [
+        "person:nobody@example.invalid",
+        "group:no-such-group"
+      ],
+      "federation_scope_declared": [
+        "person:nobody@example.invalid",
+        "group:no-such-group"
+      ],
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/topics/billing/billing.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:nobody@example.invalid, group:no-such-group]\n---\nBody text.\n",
+    "path": "knowledge-base/topics/billing/billing.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "priya"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nkind: meeting\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "frontmatter",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-02-launch-thread.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nkind: thread\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-02-launch-thread.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": [
+        "person:sam@example.com"
+      ],
+      "federation_scope_declared": [
+        "person:sam@example.com",
+        "group:team-1"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: Meeting\nfederation_scope: [person:sam@example.com, group:team-1]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": "none",
+      "federation_scope_declared": "org",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: meeting\nfederation_scope: org\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "group:team-1"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-02-launch-thread.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: thread\nfederation_scope: [group:team-1]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-02-launch-thread.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-03-vendor-email.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: email\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-03-vendor-email.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-04-spec-doc.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: doc\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-04-spec-doc.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-05-untyped.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-05-untyped.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nkind: meeting\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/sources/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-03-vendor-email.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nkind: email\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-03-vendor-email.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/sources/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "people",
+      "federation_scope": [
+        "person:priya@example.com"
+      ],
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_ceilings": [
+        {
+          "ceiling": "people",
+          "glob": "knowledge-base/projects/widget/**"
+        }
+      ],
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com",
+            "group:team-1"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/people/sam.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/people/sam.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_ceilings": [
+        {
+          "ceiling": "org",
+          "glob": "knowledge-base/people/**"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nkind: meeting\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "knowledge-base/sources/2026-10/2026-10-01-weekly-sync.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_ceilings": [
+        {
+          "ceiling": "none",
+          "glob": "knowledge-base/sources/**",
+          "kinds": [
+            "meeting"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_ceilings": [
+        {
+          "ceiling": "everyone",
+          "glob": "knowledge-base/projects/**"
+        }
+      ],
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/drafts/outline.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Outline\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/drafts/outline.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/widget/drafts/**",
+          "scope": "none"
+        },
+        {
+          "glob": "knowledge-base/projects/widget/**",
+          "scope": [
+            "person:priya@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "org",
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      },
+      "federation_defaults": [
+        {
+          "glob": "knowledge-base/projects/**",
+          "scope": "org"
+        }
+      ]
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": [
+        "person:priya@example.com"
+      ],
+      "federation_source": "ceiling",
+      "local_only": false,
+      "path": "notes/loose.md",
+      "shared_file": true,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": [
+        "federation-ceiling"
+      ]
+    },
+    "frontmatter_text": "---\nfederation_scope: [person:priya@example.com]\n---\nBody text.\n",
+    "path": "notes/loose.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
+  },
+  {
+    "expected_label": {
+      "ceiling": "org",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "default",
+      "local_only": false,
+      "path": "knowledge-base/projects/widget/plan.md",
+      "shared_file": false,
+      "visibility": "normal",
+      "visibility_source": "default",
+      "warnings": []
+    },
+    "frontmatter_text": "---\nname: Plan\ntype: project\n---\nBody text.\n",
+    "path": "knowledge-base/projects/widget/plan.md",
+    "policy_overlay": {
+      "federation": {
+        "enabled": true
+      }
+    }
   }
 ]
