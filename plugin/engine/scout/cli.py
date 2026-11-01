@@ -720,6 +720,27 @@ def kb_validate(
     _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_validate(g))
 
 
+@kb_app.command("structure")
+def kb_structure(
+    next_: bool = typer.Option(
+        False, "--next", help="Print only the next rebuild target (a project name), or an empty line if all conform."
+    ),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help="Print the table (or, with --next, the target) as JSON."),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check each project folder against the KB page standard. Report-only: exit 0.
+
+    Loose files, odd subfolders, front-page size, required sections, run
+    narration, `as_of` and staleness; worst first. A private front page shows
+    only paths, counts and verdicts. Settings: `kb_structure` in scout-config.yaml.
+    """
+    args = _kb_args("structure", dict(locals()))
+    from scout.kb.structure import cmd_structure
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration

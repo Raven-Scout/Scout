@@ -389,7 +389,7 @@ class KnowledgeGraph:
         self._adj = None
         if not self._full:
             return self
-        exclude = self._exclude_globs()
+        exclude = self.exclude_globs()
 
         labeller = _Labeller(self.kb_root, self.vault)
         root_key = os.path.abspath(self.kb_root)
@@ -534,7 +534,7 @@ class KnowledgeGraph:
         match = re.search(r"\[\[(.+?)]]", text)
         return match.group(1) if match else text
 
-    def _exclude_globs(self) -> tuple[str, ...]:
+    def exclude_globs(self) -> tuple[str, ...]:
         """The schema's ``graph.exclude`` (KB-relative globs), else :data:`DEFAULT_EXCLUDE`."""
         graph = self.schema.get("graph") if isinstance(self.schema, dict) else None
         if not isinstance(graph, dict) or "exclude" not in graph:

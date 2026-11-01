@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`scoutctl kb structure` checks each project folder against the KB page standard** (`engine/scout/kb/structure.py`, `engine/scout/defaults/scout-config.yaml`). `kb lint` measures bytes and lines, which left a page's shape unmeasured: pages could be within budget and still hard for a person to read. The new report-only command checks every `knowledge-base/projects/<name>/` folder for loose files next to the front page, subfolders outside the standard's layout, a front page over 15 KB (and marks one over the 8 KB target), the seven required `##` sections, run narration in the body ("Last verified", "Finding N", "§N", masked times, session-slot names), a missing `as_of`, and staleness: another file in the folder changed more than 3 days after `as_of`. `--next` prints the next rebuild target (non-conforming first, then 🔴 > 🟡 > 🟢, then the largest page) and `--json` prints the table. All settings are under `kb_structure` in `scout-config.yaml`, with defaults that match the standard. Paths matching `kb_lint.exclude_globs` or the schema's `graph.exclude` are skipped. A private front page is still checked, but its row carries only paths, counts and verdicts, and an agent reader gets an empty table. History comes from one `git log --name-only` pass, so the whole table takes about 0.5 s on a 20,000-commit, 200-folder test vault (a new perf test holds it to 3 s and one git call).
+
 ## [0.18.6] - 2026-10-31
 
 ### Added
