@@ -409,11 +409,11 @@ class Overlay:
 
 def load_overlay(vault: Path) -> Overlay:
     config = paths.config_path(vault)
-    text = config.read_text(encoding="utf-8") if config.exists() else ""
     try:
+        text = config.read_text(encoding="utf-8") if config.exists() else ""
         data = yaml.safe_load(text) if text.strip() else {}
-    except yaml.YAMLError as e:
-        raise ShareRefused("refused: scout-config.yaml doesn't parse; fix it first") from e
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        raise ShareRefused("refused: scout-config.yaml can't be read; fix it first") from e
     data = {} if data is None else data
     if not isinstance(data, dict):
         raise ShareRefused("refused: scout-config.yaml isn't a mapping; fix it first")
@@ -501,6 +501,7 @@ _REASON_TEXT: dict[str, str] = {
 
 
 def _ceiling_refusal(principal: str, ceiling: CeilingLevel, what: str) -> str:
+    """Why ``principal`` is refused. ``org`` admits every principal, so only ``people`` and ``none`` get here."""
     if ceiling == "people":
         return (
             f"refused: {principal} is above the ceiling of {what}: meetings and threads are shared with named "
@@ -509,8 +510,6 @@ def _ceiling_refusal(principal: str, ceiling: CeilingLevel, what: str) -> str:
     return (
         f"refused: {what} can't be shared (its ceiling is none: people notes, action items, logs, emails and "
         "documents never are)"
-        if ceiling == "none"
-        else f"refused: {principal} is above the ceiling of {what}"
     )
 
 
@@ -621,8 +620,6 @@ def plan_share(
     principals = parse_with(with_values)
     overlay = load_overlay(vault)
     before = load_policy(vault)
-    if "privacy-overlay-unreadable" in before.warnings:
-        raise ShareRefused("refused: scout-config.yaml can't be read; fix it first")
     labels_before = _labels(vault, before, persist=True)
     notes = _notes(labels_before, target)
     if not target.folder and not notes:
@@ -666,11 +663,7 @@ def plan_share(
     entries = overlay.entries
     same = next((e for e in entries if e.glob == target.glob), None)
     if same is not None:
-        if same.scope is None:
-            raise ShareRefused(
-                f"refused: the federation_defaults entry for {target.glob} has a bad scope; fix it first"
-            )
-        same.set_scope(_union(same.scope, principals))
+        same.set_scope(_union(same.scope or "none", principals))
     else:
         at = next((i for i, e in enumerate(entries) if _broader(e.glob, target)), len(entries))
         # The new entry shadows the broader one for these notes: carry its people over, so adding never removes.
@@ -785,8 +778,6 @@ def plan_unshare(
         )
     overlay = load_overlay(vault)
     before = load_policy(vault)
-    if "privacy-overlay-unreadable" in before.warnings:
-        raise ShareRefused("refused: scout-config.yaml can't be read; fix it first")
 
     entries = overlay.entries
     has_same = any(e.glob == target.glob for e in entries)
@@ -795,9 +786,8 @@ def plan_unshare(
             entries[i].set_scope(_minus(e.scope, remove))
     if not has_same:
         at = next((i for i, e in enumerate(entries) if _broader(e.glob, target)), None)
-        if at is not None and entries[at].scope is not None:
-            outer = entries[at].scope
-            assert outer is not None
+        if at is not None:
+            outer = entries[at].scope or "none"
             narrowed = _minus(outer, remove)
             if narrowed != outer:
                 entries.insert(at, _Entry(raw={"glob": target.glob, "scope": _scope_json(narrowed)}, scope=narrowed))

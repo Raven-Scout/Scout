@@ -352,11 +352,15 @@ def _share_refused(message: str, as_json: bool, code: int = 1) -> NoReturn:
     raise typer.Exit(code)
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
 def _pick_groups(directory: object) -> list[str]:
     """``--pick-group``: number the owner's Agnes share targets (Everyone left out) and read a choice."""
     from scout.kb.share import Directory
 
-    if not isinstance(directory, Directory) or not sys.stdin.isatty():
+    if not isinstance(directory, Directory) or not _interactive():
         _share_refused("refused: --pick-group needs a vault linked to Agnes and a terminal", False)
     targets = [t for t in directory.share_targets() or [] if not t.is_everyone]
     if not targets:
@@ -415,7 +419,7 @@ def kb_share(
     written = False
     if plan.changed and not dry_run:
         if not yes:
-            if not sys.stdin.isatty() or as_json:
+            if not _interactive() or as_json:
                 if as_json:
                     print(json.dumps({**plan.to_json(), "written": False}, indent=2))
                 print("Preview only: nothing was written. Re-run with --yes to share.", file=sys.stderr)

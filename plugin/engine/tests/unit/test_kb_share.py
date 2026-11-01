@@ -16,15 +16,18 @@ Agnes lookups are a fake :class:`Directory`.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 import requests
+import typer
 import yaml
 from typer.testing import CliRunner
 
+from scout import cli
 from scout.cli import app
 from scout.kb import share
 from scout.kb.privacy import label_file, load_policy
@@ -441,3 +444,594 @@ def test_kb_policy_text_shows_the_federation_keys(vault: Path) -> None:
     assert "federation.enabled:   true" in out
     assert "knowledge-base/sources/** (kind: meeting, thread) -> people" in out
     assert f"{WIDGET}/** -> {PRIYA}" in out
+
+
+# ----- the Agnes lookups, on the wire (requests faked) ----------------------------------
+
+
+class _Resp:
+    def __init__(self, status: int = 200, body: bytes = b"[]") -> None:
+        self.status_code = status
+        self.content = body
+
+    def json(self) -> Any:
+        return json.loads(self.content)
+
+
+def _answering(monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
+    def fake_get(*_a: Any, **_k: Any) -> Any:
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+
+def test_a_lookup_sends_the_pat_and_compares_emails_case_insensitively(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_get(url: str, **kwargs: Any) -> _Resp:
+        seen.update(url=url, **kwargs)
+        return _Resp(200, b'{"data": [{"email": " Priya@Example.com "}, "junk"]}')
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert share.Directory("https://agnes.example.com/", "tok").colleague("priya@example.com") == "known"
+    assert seen["url"] == "https://agnes.example.com/api/v1/colleagues"
+    assert seen["params"] == {"q": "priya@example.com"}
+    assert seen["headers"]["Authorization"] == "Bearer tok"
+    assert seen["timeout"] == 5.0
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        requests.ConnectionError("down"),
+        requests.Timeout("slow"),
+        _Resp(200, b"not json"),
+        _Resp(204, b""),
+        _Resp(404, b'{"detail": "Not Found"}'),
+        _Resp(401, b'{"detail": "no"}'),
+        _Resp(500, b"oops"),
+    ],
+)
+def test_every_lookup_failure_is_soft(monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
+    _answering(monkeypatch, answer)
+    d = share.Directory("https://agnes.example.com", "tok")
+    assert d.colleague("priya@example.com") == "unchecked"
+    assert d.share_targets() is None
+
+
+def test_a_200_without_a_data_list_is_unchecked_not_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answering(monkeypatch, _Resp(200, b'{"rows": []}'))
+    assert share.Directory("https://agnes.example.com", "tok").colleague("priya@example.com") == "unchecked"
+
+
+def test_share_targets_skip_junk_and_flag_everyone(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps(
+        [
+            "junk",
+            {"name": "No id"},
+            {"id": "g1"},
+            {"id": "g2", "name": "Team", "is_everyone": False},
+            {"id": "everyone"},
+        ]
+    )
+    _answering(monkeypatch, _Resp(200, body.encode()))
+    assert share.Directory("https://agnes.example.com", "tok").share_targets() == [
+        share.ShareTarget("g1", "g1"),
+        share.ShareTarget("g2", "Team"),
+        share.ShareTarget("everyone", "everyone", True),
+    ]
+
+
+def _link(vault: Path, url: str = "https://agnes.example.com") -> None:
+    from scout.repo_sync import LinkState, save_state
+
+    save_state(vault, LinkState(agnes_url=url, clone_url="", linked_at="", last_laptop="", last_mirror=""))
+
+
+def test_a_linked_vault_has_a_directory(vault: Path) -> None:
+    from scout.repo_sync import save_token
+
+    _link(vault)
+    save_token(vault, "tok")
+    d = share.directory_for(vault)
+    assert d is not None and d.base_url == "https://agnes.example.com"
+
+
+def test_a_link_with_no_token_or_url_or_a_torn_state_has_no_directory(vault: Path) -> None:
+    from scout.repo_sync import save_token, state_path
+
+    _link(vault)
+    assert share.directory_for(vault) is None  # no token
+    save_token(vault, "tok")
+    _link(vault, url="")
+    assert share.directory_for(vault) is None  # no url
+    state_path(vault).write_text("{torn", encoding="utf-8")
+    assert share.directory_for(vault) is None
+
+
+# ----- arguments -------------------------------------------------------------------------
+
+
+def test_with_takes_repeats_commas_and_spare_positionals(vault: Path) -> None:
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com,sam@example.com", "--dry-run", "--json")
+    assert json.loads(res.stdout)["principals"] == [PRIYA, SAM]
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "sam@example.com", "--dry-run", "--json")
+    assert json.loads(res.stdout)["principals"] == [PRIYA, SAM]
+    res = kb(
+        vault, "share", WIDGET, "--with", "priya@example.com", "--with", "PRIYA@example.com", "--dry-run", "--json"
+    )
+    assert json.loads(res.stdout)["principals"] == [PRIYA]
+    res = kb(vault, "share", WIDGET, "--with", "person:priya@example.com", "--dry-run", "--json")
+    assert json.loads(res.stdout)["principals"] == [PRIYA]
+
+
+def test_share_needs_someone_to_share_with(vault: Path) -> None:
+    res = kb(vault, "share", WIDGET)
+    assert res.exit_code == 2 and "at least one" in res.output
+
+
+@pytest.mark.parametrize("command", ["share", "unshare"])
+def test_a_target_outside_the_vault_or_not_a_note_is_a_usage_error(vault: Path, tmp_path: Path, command: str) -> None:
+    (vault / WIDGET / "data.txt").write_text("x\n", encoding="utf-8")
+    for target in (str(tmp_path / "elsewhere"), f"{WIDGET}/data.txt", f"{WIDGET}/missing.md"):
+        res = kb(vault, command, target, "--with", "priya@example.com")
+        assert res.exit_code == 2, target
+        assert "error:" in res.output
+
+
+def test_a_refusal_in_json_says_nothing_was_written(vault: Path) -> None:
+    res = kb(vault, "share", EMAIL, "--with", "priya@example.com", "--yes", "--json")
+    assert res.exit_code == 1
+    data = json.loads(res.stdout)
+    assert data["written"] is False and "refused" in data["refused"]
+
+
+def test_json_without_yes_previews_and_writes_nothing(vault: Path) -> None:
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--json")
+    assert res.exit_code == 1
+    assert json.loads(res.stdout)["written"] is False
+    assert "federation_defaults" not in overlay(vault)
+
+
+def test_json_with_yes_says_it_was_written(vault: Path) -> None:
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes", "--json")
+    assert res.exit_code == 0 and json.loads(res.stdout)["written"] is True
+
+
+def test_a_terminal_is_asked_to_confirm(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    argv = ["kb", "share", WIDGET, "--with", "priya@example.com", "--repo", str(vault)]
+    res = runner.invoke(app, argv, input="n\n")
+    assert res.exit_code == 1 and "Nothing was written." in res.output
+    assert "federation_defaults" not in overlay(vault)
+    res = runner.invoke(app, argv, input="y\n")
+    assert res.exit_code == 0 and "Wrote scout-config.yaml" in res.output
+    assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+
+
+@pytest.mark.parametrize("bad", ["priya", "group:"])
+def test_unshare_with_a_bad_value_is_a_usage_error(vault: Path, bad: str) -> None:
+    assert kb(vault, "unshare", WIDGET, "--with", bad).exit_code == 2
+
+
+# ----- group resolution and the picker -----------------------------------------------------
+
+
+GROUPS = [
+    {"id": "a1b2c3", "name": "Widget team", "is_everyone": False},
+    {"id": "d4e5f6", "name": "Twins", "is_everyone": False},
+    {"id": "f7a8b9", "name": "twins", "is_everyone": False},
+    {"id": "everyone", "name": "Everyone", "is_everyone": True},
+]
+
+
+def test_people_and_groups_mix_and_one_group_named_twice_is_one_principal() -> None:
+    principals, names, warnings = share.resolve_groups(
+        [PRIYA, "group:a1b2c3", "group:WIDGET TEAM"], FakeDirectory(groups=GROUPS)
+    )
+    assert principals == [PRIYA, "group:a1b2c3"]
+    assert names == {"group:a1b2c3": "Widget team"} and warnings == []
+
+
+def test_an_ambiguous_group_name_needs_its_id() -> None:
+    with pytest.raises(share.ShareUsage, match="give its id"):
+        share.resolve_groups(["group:twins"], FakeDirectory(groups=GROUPS))
+    assert share.resolve_groups(["group:d4e5f6"], FakeDirectory(groups=GROUPS))[0] == ["group:d4e5f6"]
+
+
+def test_offline_everyone_is_refused_and_a_name_needs_an_id() -> None:
+    with pytest.raises(share.ShareRefused, match="Everyone"):
+        share.resolve_groups(["group:Everyone"], None)
+    with pytest.raises(share.ShareUsage, match="give the group's id"):
+        share.resolve_groups(["group:Widget team"], None)
+
+
+def test_an_agnes_that_cant_answer_is_treated_as_offline() -> None:
+    principals, names, warnings = share.resolve_groups(["group:team-1"], FakeDirectory(groups=None))
+    assert principals == ["group:team-1"] and names == {}
+    assert "couldn't check it with Agnes" in warnings[0]
+
+
+def test_two_unchecked_emails_read_in_the_plural() -> None:
+    assert "these emails are" in share.check_people([PRIYA, SAM], None)[0]
+    assert "these emails are" in share.check_people([PRIYA, SAM], FakeDirectory(colleagues=None))[0]
+    assert share.check_people(["group:team-1"], None) == []
+
+
+def test_pick_group_needs_a_link_and_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    with pytest.raises(typer.Exit) as e:
+        cli._pick_groups(None)
+    assert e.value.exit_code == 1
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    with pytest.raises(typer.Exit):
+        cli._pick_groups(FakeDirectory(groups=GROUPS))
+
+
+def test_interactive_is_whether_stdin_is_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli._interactive() is False
+
+
+@pytest.mark.parametrize("groups", [None, [], [GROUPS[3]]])
+def test_pick_group_with_nothing_to_pick_is_refused(
+    monkeypatch: pytest.MonkeyPatch, groups: list[dict[str, Any]] | None
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    with pytest.raises(typer.Exit) as e:
+        cli._pick_groups(FakeDirectory(groups=groups))
+    assert e.value.exit_code == 1
+
+
+def test_pick_group_lists_targets_without_everyone_and_takes_numbers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(typer, "prompt", lambda *_a, **_k: "1, 3")
+    assert cli._pick_groups(FakeDirectory(groups=GROUPS)) == ["group:a1b2c3", "group:f7a8b9"]
+    out = capsys.readouterr().out
+    assert "1. Widget team  (group:a1b2c3)" in out and "Everyone" not in out
+
+
+@pytest.mark.parametrize("answer", ["x", "0", "9"])
+def test_pick_group_refuses_a_number_that_isnt_listed(monkeypatch: pytest.MonkeyPatch, answer: str) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(typer, "prompt", lambda *_a, **_k: answer)
+    with pytest.raises(typer.Exit) as e:
+        cli._pick_groups(FakeDirectory(groups=GROUPS))
+    assert e.value.exit_code == 2
+
+
+def test_the_share_command_takes_the_picked_groups(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_pick_groups", lambda _d: ["group:team-1"])
+    res = kb(vault, "share", WIDGET, "--pick-group", "--dry-run", "--json")
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)["principals"] == ["group:team-1"]
+
+
+# ----- the overlay file -----------------------------------------------------------------------
+
+
+def _privacy(vault: Path, block: str) -> None:
+    """Append to the fixture's ``privacy:`` block, which ends the file."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(block)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"privacy: [unclosed\n",
+        b"- just\n- a list\n",
+        b"\xff\xfeprivacy: {}\n",
+        b"privacy: just-a-string\n",
+        b"privacy:\n  federation_defaults: {glob: x}\n",
+        b"privacy:\n  federation_defaults: [not-a-mapping]\n",
+    ],
+    ids=["bad-yaml", "a-list", "not-utf8", "privacy-string", "defaults-mapping", "defaults-entry-string"],
+)
+@pytest.mark.parametrize("command", ["share", "unshare"])
+def test_a_config_these_commands_cant_edit_is_refused(vault: Path, command: str, body: bytes) -> None:
+    (vault / "scout-config.yaml").write_bytes(body)
+    res = kb(vault, command, WIDGET, "--with", "priya@example.com", "--yes" if command == "share" else "--dry-run")
+    assert res.exit_code == 1, res.output
+    assert "refused" in res.output
+    assert (vault / "scout-config.yaml").read_bytes() == body
+
+
+def test_an_empty_privacy_block_is_fine(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_text("privacy:\n", encoding="utf-8")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation"] == {"enabled": True}
+
+
+def test_an_empty_config_is_fine(vault: Path) -> None:
+    (vault / "scout-config.yaml").write_text("# nothing yet\n", encoding="utf-8")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation"] == {"enabled": True}
+
+
+def test_a_share_writes_a_config_that_wasnt_there(vault: Path) -> None:
+    (vault / "scout-config.yaml").unlink()
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+
+
+def test_a_write_that_wouldnt_load_back_is_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    before = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    plan = share.plan_share(vault, WIDGET, ["priya@example.com"], directory=None)
+    monkeypatch.setattr("scout.scripts.bootstrap._dump_keeping_comments", lambda *_a: "other: value\n")
+    with pytest.raises(RuntimeError, match="could not write"):
+        share.apply(vault, plan)
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == before
+
+
+def test_other_federation_keys_survive_a_share(vault: Path) -> None:
+    _privacy(vault, "  federation:\n    enabled: false\n    note: mine\n")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation"] == {"enabled": True, "note": "mine"}
+
+
+def test_a_non_mapping_federation_key_is_replaced_by_the_switch(vault: Path) -> None:
+    _privacy(vault, "  federation: true\n")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation"] == {"enabled": True}
+
+
+def test_an_entry_with_no_glob_is_left_alone(vault: Path) -> None:
+    junk = {"scope": [SAM]}
+    _privacy(vault, f"  federation_defaults:\n    - {json.dumps(junk)}\n")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation_defaults"] == [junk, {"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+    assert kb(vault, "unshare", WIDGET).exit_code == 0
+    assert overlay(vault)["federation_defaults"] == [junk]
+
+
+# ----- what a share leaves out, and why --------------------------------------------------------
+
+
+def test_an_empty_folder_uses_the_ceiling_a_new_note_there_would_have(vault: Path) -> None:
+    (vault / "knowledge-base/projects/empty").mkdir(parents=True)
+    (vault / "knowledge-base/people/empty").mkdir(parents=True)
+    res = kb(vault, "share", "knowledge-base/projects/empty", "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 0 and "Newly shared: 0 note(s)" in res.output
+    assert overlay(vault)["federation_defaults"] == [{"glob": "knowledge-base/projects/empty/**", "scope": [PRIYA]}]
+    assert kb(vault, "share", "knowledge-base/people/empty", "--with", "priya@example.com", "--yes").exit_code == 1
+
+
+def test_a_plumbing_note_cant_be_shared(vault: Path) -> None:
+    _note(vault, ".claude/note.md", "name: Note")
+    res = kb(vault, "share", ".claude/note.md", "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 1 and "can't be shared" in res.output
+
+
+def test_a_local_only_note_is_refused_and_excluded_from_its_folder(vault: Path) -> None:
+    keys = f"{WIDGET}/keys/notes.md"
+    _note(vault, keys, "name: Keys")
+    _privacy(vault, f'    - "{WIDGET}/keys/**"\n')  # continues the fixture's local_only_add list
+    res = kb(vault, "share", keys, "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 1 and "local-only" in res.output
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run")
+    assert f"{keys}  local-only (never leaves the laptop)" in res.output
+
+
+def test_a_note_over_a_narrowed_ceiling_is_excluded_for_the_ceiling(vault: Path) -> None:
+    _privacy(vault, f'  federation_ceilings:\n    - {{glob: "{WIDGET}/design/**", ceiling: none}}\n')
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run")
+    assert res.exit_code == 0
+    assert f"{DESIGN}  its folder can't be shared this widely" in res.output
+
+
+def test_a_folder_narrowed_to_people_is_shared_note_by_note(vault: Path) -> None:
+    _privacy(vault, f'  federation_ceilings:\n    - {{glob: "{WIDGET}/design/**", ceiling: people}}\n')
+    res = kb(vault, "share", f"{WIDGET}/design", "--with", "priya@example.com", "--yes")
+    assert res.exit_code == 1 and "note by note" in res.output
+    assert kb(vault, "share", DESIGN, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert label(vault, DESIGN)["federation_scope"] == [PRIYA]
+
+
+def test_a_note_an_earlier_entry_decides_says_so(vault: Path) -> None:
+    _privacy(vault, '  federation_defaults:\n    - {glob: "knowledge-base/projects/*/plan.md", scope: none}\n')
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run")
+    assert f"{PLAN}  an earlier federation_defaults entry decides" in res.output
+
+
+def test_the_preview_prints_private_links_and_the_switch(vault: Path) -> None:
+    _note(vault, PLAN, "name: Widget plan\ntype: project", "Ask [[sam]] first.\n")
+    out = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run").output
+    assert "1 note(s) about to be shared link or name a private note" in out
+    assert f"{PLAN}  line(s) 5" in out
+    assert "This turns sharing on for this vault" in out
+
+
+def test_the_preview_counts_notes_already_shared(vault: Path) -> None:
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    out = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run").output
+    assert "Already shared with them: 2 note(s)" in out
+    assert "This turns sharing on" not in out
+
+
+def test_a_note_that_vanishes_during_the_preview_is_skipped(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = share._labels
+
+    def racing(v: Path, policy: Any, *, persist: bool) -> dict[str, Any]:
+        labels = dict(real(v, policy, persist=persist))
+        if not persist:
+            labels.pop(PLAN, None)
+        return labels
+
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    monkeypatch.setattr(share, "_labels", racing)
+    assert PLAN not in [p for p, _ in share.plan_unshare(vault, WIDGET, []).stopped]
+    kb(vault, "unshare", WIDGET)
+    assert PLAN not in [p for p, _ in share.plan_share(vault, WIDGET, ["priya@example.com"], directory=None).newly]
+
+
+def test_a_note_unreadable_for_the_link_check_is_skipped(vault: Path) -> None:
+    assert share._private_links(vault, load_policy(vault), [f"{WIDGET}/missing.md"]) == []
+
+
+# ----- org entries (stored; they admit nobody) ----------------------------------------------------
+
+
+_ORG_WIDGET = f'  federation: {{enabled: true}}\n  federation_defaults:\n    - {{glob: "{WIDGET}/**", scope: org}}\n'
+
+
+def test_a_person_added_to_an_org_entry_stays_unshared_and_the_preview_says_so(vault: Path) -> None:
+    _privacy(vault, _ORG_WIDGET)
+    data = json.loads(kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run", "--json").stdout)
+    assert data["newly_shared"] == []
+    assert {"path": PLAN, "reason": "earlier-entry"} in data["excluded"]
+
+
+def test_a_subfolder_of_an_org_entry_gets_only_the_named_people(vault: Path) -> None:
+    _privacy(vault, _ORG_WIDGET)
+    assert kb(vault, "share", f"{WIDGET}/design", "--with", "priya@example.com", "--yes").exit_code == 0
+    assert label(vault, DESIGN)["federation_scope"] == [PRIYA]
+
+
+def test_unsharing_a_person_leaves_an_org_entry_and_unsharing_org_removes_it(vault: Path) -> None:
+    _privacy(vault, _ORG_WIDGET)
+    res = kb(vault, "unshare", WIDGET, "--with", "priya@example.com")
+    assert res.exit_code == 0 and "Nothing to change" in res.output
+    assert label(vault, PLAN)["federation_scope"] == "org"
+    res = kb(vault, "unshare", WIDGET, "--with", "org", "--json")
+    assert json.loads(res.stdout)["stopped"][0]["principals"] == ["org"]
+    assert overlay(vault)["federation_defaults"] == []
+
+
+# ----- kb unshare edges ---------------------------------------------------------------------------
+
+
+def test_unshare_dry_run_writes_nothing(vault: Path) -> None:
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    data = json.loads(kb(vault, "unshare", WIDGET, "--dry-run", "--json").stdout)
+    assert data["written"] is False and data["changes_overlay"] is True
+    assert label(vault, PLAN)["federation_scope"] == [PRIYA]
+
+
+def test_unsharing_someone_a_broader_entry_doesnt_name_changes_nothing(vault: Path) -> None:
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    res = kb(vault, "unshare", f"{WIDGET}/design", "--with", "sam@example.com")
+    assert res.exit_code == 0 and "Nothing to change" in res.output
+    assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+
+
+def test_a_note_sharing_itself_with_someone_else_isnt_listed(vault: Path) -> None:
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    data = json.loads(kb(vault, "unshare", WIDGET, "--with", "priya@example.com", "--json").stdout)
+    assert data["still_shared_by_frontmatter"] == []
+    assert label(vault, SOLO)["federation_scope"] == [SAM]
+
+
+def test_unshare_turns_a_group_name_into_its_id(vault: Path) -> None:
+    groups = [{"id": "a1b2c3", "name": "Widget team", "is_everyone": False}]
+    assert kb(vault, "share", WIDGET, "--with", "group:a1b2c3", "--with", "priya@example.com", "--yes").exit_code == 0
+    plan = share.plan_unshare(
+        vault, WIDGET, ["group:widget team", "sam@example.com"], directory=FakeDirectory(groups=groups)
+    )
+    assert plan.principals == ["group:a1b2c3", SAM]
+    share.apply(vault, plan)
+    assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+
+
+def test_unshare_offline_keeps_a_group_name_as_given(vault: Path) -> None:
+    plan = share.plan_unshare(vault, WIDGET, ["group:widget team"], directory=FakeDirectory(groups=None))
+    assert plan.principals == ["group:widget team"]
+
+
+def test_an_order_unshare_cant_narrow_is_refused(vault: Path) -> None:
+    _privacy(
+        vault,
+        "  federation: {enabled: true}\n  federation_defaults:\n"
+        f'    - {{glob: "knowledge-base/projects/*/plan.md", scope: ["{PRIYA}"]}}\n',
+    )
+    before = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    res = kb(vault, "unshare", WIDGET, "--with", "priya@example.com")
+    assert res.exit_code == 1 and "couldn't narrow" in res.output
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    ("outer", "inner", "want"),
+    [
+        ("a/**", "a/b/**", True),
+        ("a/**", "a/**", True),
+        ("a/**", "a/b.md", True),
+        ("a/**", "ab/**", False),
+        ("a/b.md", "a/b.md", False),
+        ("a/*/c/**", "a/b/c/**", False),
+        ("a/**", "a/*/c.md", False),
+    ],
+)
+def test_covers_glob(outer: str, inner: str, want: bool) -> None:
+    assert share._covers_glob(outer, inner) is want
+
+
+def test_an_exclusion_stays_while_a_later_entry_would_share_the_notes(vault: Path) -> None:
+    kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
+    kb(vault, "share", f"{WIDGET}/design", "--with", "sam@example.com", "--yes")
+    assert kb(vault, "unshare", f"{WIDGET}/design").exit_code == 0
+    assert overlay(vault)["federation_defaults"] == [
+        {"glob": f"{WIDGET}/design/**", "scope": "none"},
+        {"glob": f"{WIDGET}/**", "scope": [PRIYA]},
+    ]
+    assert label(vault, DESIGN)["federation_scope"] == "none"
+
+
+# ----- kb shares edges ------------------------------------------------------------------------------
+
+
+def test_nothing_shared_says_so(vault: Path) -> None:
+    out = kb(vault, "shares").output
+    assert "Sharing is off" in out and "Nothing is shared." in out
+
+
+def test_with_sharing_off_a_default_lists_its_notes_as_off_and_private_stays_private(vault: Path) -> None:
+    _privacy(vault, f'  federation_defaults:\n    - {{glob: "{WIDGET}/**", scope: ["{PRIYA}"]}}\n')
+    data = json.loads(kb(vault, "shares", "--json").stdout)
+    assert data["enabled"] is False
+    (row,) = data["shares"]
+    assert row["notes"] == 0
+    assert row["excluded"]["private"] == [SECRET]
+    assert PLAN in row["excluded"]["sharing-off"]
+    assert "excluded, sharing is off" in kb(vault, "shares").output
+
+
+def test_a_self_sharing_note_outside_any_share_has_its_own_row(vault: Path) -> None:
+    _privacy(vault, "  federation: {enabled: true}\n")
+    data = json.loads(kb(vault, "shares", "--json").stdout)
+    assert [(r["glob"], r["source"], r["principals"]) for r in data["shares"]] == [(SOLO, "frontmatter", [SAM])]
+    assert "its own frontmatter" in kb(vault, "shares").output
+
+
+def test_a_none_entry_and_a_repeated_glob_get_no_row_of_their_own(vault: Path) -> None:
+    _privacy(
+        vault,
+        "  federation: {enabled: true}\n  federation_defaults:\n"
+        f'    - {{glob: "{WIDGET}/design/**", scope: none}}\n'
+        f'    - {{glob: "{WIDGET}/**", scope: ["{PRIYA}"]}}\n'
+        f'    - {{glob: "{WIDGET}/**", scope: ["{SAM}"]}}\n',
+    )
+    data = json.loads(kb(vault, "shares", "--json").stdout)
+    rows = [r for r in data["shares"] if r["source"] == "default"]
+    assert [(r["glob"], r["principals"]) for r in rows] == [(f"{WIDGET}/**", [PRIYA])]
+    assert DESIGN not in rows[0]["shared"]
+
+
+def test_kb_shares_shows_a_groups_current_name(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    groups = [{"id": "a1b2c3", "name": "Widget team", "is_everyone": False}]
+    assert kb(vault, "share", WIDGET, "--with", "group:a1b2c3", "--yes").exit_code == 0
+    monkeypatch.setattr(share, "directory_for", lambda _v: FakeDirectory(groups=groups))
+    assert "with Widget team (group:a1b2c3)" in kb(vault, "shares").output
+    assert json.loads(kb(vault, "shares", "--json").stdout)["group_names"] == {"group:a1b2c3": "Widget team"}
+
+
+def test_group_names_ask_agnes_only_when_a_row_names_a_group() -> None:
+    person = share.ShareRow(glob="x/**", source="default", principals=[PRIYA])
+    group = share.ShareRow(glob="y/**", source="default", principals=["group:a1b2c3"])
+    assert share.group_names(None, [group]) == {}
+    assert share.group_names(FakeDirectory(groups=None), [person]) == {}
+    assert share.group_names(FakeDirectory(groups=None), [group]) == {}

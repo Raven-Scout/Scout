@@ -10,6 +10,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scout.kb import privacy
 from scout.kb.privacy import Label, Policy, classify, load_policy, normalize_rel, surface_class, visible_to
@@ -430,6 +431,76 @@ def test_engine_folder_ceilings(policy: Policy, rel: str, kind: str | None, want
 )
 def test_cap_scope(scope: privacy.FederationScope, ceiling: privacy.CeilingLevel, want: object) -> None:
     assert privacy.cap_scope(scope, ceiling) == want
+
+
+def _engine_raw() -> dict[str, object]:
+    return yaml.safe_load((Path(privacy.__file__).parents[1] / "defaults" / "privacy.yaml").read_text("utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("federation_ceilings", [{"ceiling": "org"}]),
+        ("federation_ceilings", [{"glob": "a/**", "ceiling": "everyone"}]),
+        ("federation_defaults", ["a/**"]),
+        ("federation_defaults", [{"glob": "a/**", "scope": "everyone"}]),
+        ("federation", {"enabled": "yes"}),
+    ],
+)
+def test_a_bad_engine_federation_key_raises(key: str, value: object) -> None:
+    with pytest.raises(ValueError, match=r"privacy\.yaml"):
+        privacy._parse_engine_yaml({**_engine_raw(), key: value})
+
+
+def test_engine_federation_defaults_parse() -> None:
+    pol = privacy._parse_engine_yaml({**_engine_raw(), "federation_defaults": [{"glob": "a/**", "scope": "org"}]})
+    assert pol.federation_defaults == (privacy.ScopeDefault("a/**", "org"),)
+
+
+def test_overlay_ceiling_entry_shapes_fail_closed(tmp_path: Path) -> None:
+    pol = load_policy(
+        _overlay(
+            tmp_path,
+            "privacy:\n  federation_ceilings:\n"
+            "    - knowledge-base/**\n"
+            "    - {ceiling: none}\n"
+            '    - {glob: "knowledge-base/topics/a/**", ceiling: 3}\n'
+            '    - {glob: "knowledge-base/topics/b/**", ceiling: people, kinds: meeting}\n',
+        )
+    )
+    assert pol.warnings == ("privacy-overlay-invalid",)
+    assert [r.glob for r in pol.federation_ceilings_overlay] == [
+        "knowledge-base/topics/a/**",
+        "knowledge-base/topics/b/**",
+    ]
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/a/n.md", None) == "none"  # a bad ceiling is none
+    # bad kinds apply the narrowing to every kind
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/b/n.md", "doc") == "people"
+    assert privacy.folder_ceiling(pol, "knowledge-base/topics/c/n.md", None) == "org"
+
+
+def test_overlay_default_entry_with_no_glob_is_dropped(tmp_path: Path) -> None:
+    pol = load_policy(
+        _overlay(
+            tmp_path, 'privacy:\n  federation_defaults:\n    - notes/**\n    - {scope: org}\n    - {glob: "a/**"}\n'
+        )
+    )
+    assert pol.warnings == ("privacy-overlay-invalid",)
+    assert pol.federation_defaults == (privacy.ScopeDefault("a/**", "none"),)  # no scope: nothing shared
+
+
+def test_overlay_federation_without_enabled_stays_off(tmp_path: Path) -> None:
+    pol = load_policy(_overlay(tmp_path, "privacy:\n  federation: {note: later}\n"))
+    assert pol.federation_enabled is False and pol.warnings == ()
+
+
+def test_a_ceiling_rule_with_kinds_needs_a_matching_kind() -> None:
+    rule = privacy.CeilingRule("a/**", "people", ("meeting",))
+    assert rule.matches("a/n.md", "meeting") is True
+    assert rule.matches("a/n.md", "email") is False
+    assert rule.matches("a/n.md", None) is False
+    assert rule.matches("b/n.md", "meeting") is False
+    assert rule.to_json() == {"glob": "a/**", "ceiling": "people", "kinds": ["meeting"]}
 
 
 def test_kind_is_trimmed_and_lowercased() -> None:
