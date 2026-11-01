@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 from scout.action_items.task_fields import TASK_FIELD_KEYS
 from scout.errors import ActionItemError
 from scout.ids import leading_prefix_pattern
+from scout.links import SAFE_LINK_SCHEMES as SAFE_LINK_SCHEMES  # re-exported; the template keeps its own copy
+from scout.links import safe_href as safe_href
 
 if TYPE_CHECKING:
     from scout.action_items.diff import ChangeEvent
@@ -385,24 +387,6 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<![\*_])\*(?!\*)([^*]+?)\*(?!\*)")
 CODE_RE = re.compile(r"`([^`]+)`")
 
-# Link schemes that become clickable anchors (Raven-Scout/Scout#435). Action
-# items are written from Slack, mail, GitHub and Linear text, so a link's URL is
-# attacker-reachable: any other scheme (javascript:, data:, file:, obsidian:)
-# and any scheme-less URL renders as its label only.
-SAFE_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
-# Browsers drop ASCII control characters and spaces when they read a URL's
-# scheme (`java<TAB>script:` runs), so the check ignores them too.
-_URL_IGNORED_RE = re.compile(r"[\x00-\x20\x7f]")
-_URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*):")
-
-
-def safe_href(url: str) -> str | None:
-    """*url* (unescaped) escaped for an ``href`` attribute, or None if its scheme isn't allowed."""
-    m = _URL_SCHEME_RE.match(_URL_IGNORED_RE.sub("", url))
-    if m is None or m.group(1).lower() not in SAFE_LINK_SCHEMES:
-        return None
-    return html.escape(url, quote=True)
-
 
 def _link(m: re.Match[str]) -> str:
     # The text was escaped before the link pass; undo that so the scheme check
@@ -444,6 +428,7 @@ SECTION_STYLES = {
     "🟡": ("todo", "To do"),
     "🟢": ("watching", "Watching"),
     "💡": ("focus", "Today's focus"),
+    "🎯": ("focus", "Today's focus"),  # older files and runs
     "📅": ("meetings", "Today's meetings"),
     "✅": ("done", "Recently completed"),
     "📋": ("digest", "Scout digest"),

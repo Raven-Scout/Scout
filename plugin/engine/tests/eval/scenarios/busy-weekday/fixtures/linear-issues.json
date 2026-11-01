@@ -61,6 +61,60 @@
       "url": "https://linear.app/example-org/issue/OPS-311"
     },
     {
+      "identifier": "PROJ-1212",
+      "title": "Ship the catalog search filters",
+      "state": {
+        "name": "In Review",
+        "type": "started"
+      },
+      "createdAt": "{{d-9}}T10:00:00Z",
+      "updatedAt": "{{today}}T05:20:00Z",
+      "creator": {
+        "name": "Alex Example"
+      },
+      "assignee": {
+        "name": "Alex Example"
+      },
+      "dueDate": null,
+      "url": "https://linear.app/example-org/issue/PROJ-1212"
+    },
+    {
+      "identifier": "PROJ-1213",
+      "title": "Add usage metering to the widget catalog",
+      "state": {
+        "name": "Todo",
+        "type": "unstarted"
+      },
+      "createdAt": "{{today}}T05:30:00Z",
+      "updatedAt": "{{today}}T05:30:00Z",
+      "creator": {
+        "name": "Alex Example"
+      },
+      "assignee": {
+        "name": "Sam Example"
+      },
+      "dueDate": null,
+      "url": "https://linear.app/example-org/issue/PROJ-1213"
+    },
+    {
+      "identifier": "OPS-315",
+      "title": "Size the gateway pool for the catalog launch",
+      "state": {
+        "name": "In Progress",
+        "type": "started"
+      },
+      "createdAt": "{{d-4}}T09:00:00Z",
+      "updatedAt": "{{today}}T05:40:00Z",
+      "creator": {
+        "name": "Priya Example"
+      },
+      "assignee": {
+        "name": "Priya Example"
+      },
+      "dueDate": null,
+      "url": "https://linear.app/example-org/issue/OPS-315"
+    },
+    {
       "identifier": "OPS-312",
       "title": "Send the gateway capacity numbers",
       "state": {

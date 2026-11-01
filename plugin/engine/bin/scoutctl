@@ -41,6 +41,19 @@ PLUGIN_ROOT="${ENGINE_DIR%/engine}"
 
 CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 
+# The privacy hooks run on tool calls (kb-read-label on every Read of a KB
+# note), so `scoutctl hook <one of them>` goes to the thin entry
+# `python -m scout.hooks <name>`, which skips scout.cli and typer (~0.7 s).
+MODULE=scout.cli
+if [ "${1:-}" = hook ]; then
+    case "${2:-}" in
+        kb-read-gate | kb-read-label | outbound-gate)
+            MODULE=scout.hooks
+            shift
+            ;;
+    esac
+fi
+
 # Resolves scout.cli the way `-m` will, without running it, and prints the
 # stamp. Exits non-zero when the interpreter can't find scout.cli. The dist-info
 # is found with listdir, not importlib.metadata, which costs ~30 ms to import.
@@ -68,7 +81,7 @@ if [ -r "$CACHE_FILE" ]; then
         done
     } <"$CACHE_FILE"
     if [ -n "$CACHED_PY" ] && [ -x "$CACHED_PY" ] && [ "$STAMPED" = 1 ] && [ "$MISSING" = 0 ]; then
-        exec "$CACHED_PY" -m scout.cli "$@"
+        exec "$CACHED_PY" -m "$MODULE" "$@"
     fi
     rm -f "$CACHE_FILE" 2>/dev/null || true
 fi
@@ -131,8 +144,8 @@ for VENV_PY in "${candidates[@]}"; do
         # Failures (read-only plugin root in Claude Code's cache copy, no
         # write perms, etc.) are silently ignored.
         printf '%s\n%s\n' "$VENV_PY" "$STAMP_LINES" >"$CACHE_FILE" 2>/dev/null || true
-        exec "$VENV_PY" -m scout.cli "$@"
+        exec "$VENV_PY" -m "$MODULE" "$@"
     fi
 done
 
-exec python3 -m scout.cli "$@"
+exec python3 -m "$MODULE" "$@"

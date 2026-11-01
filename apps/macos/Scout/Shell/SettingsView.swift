@@ -76,6 +76,11 @@ struct SettingsView: View {
                         })
                 }
 
+                section(label: "Action Items") {
+                    ActionItemsDisplaySection()
+                        .environmentObject(appState.displayProfileService)
+                }
+
                 section(label: "Claude Code") {
                     SettingsCard {
                         SettingsField(
