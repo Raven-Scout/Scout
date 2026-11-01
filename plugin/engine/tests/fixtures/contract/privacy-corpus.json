@@ -2184,5 +2184,24 @@
         "enabled": true
       }
     }
+  },
+  {
+    "expected_label": {
+      "ceiling": "none",
+      "federation_scope": "none",
+      "federation_scope_declared": "none",
+      "federation_source": "disabled",
+      "local_only": false,
+      "path": "knowledge-base/topics/misc/impossible-date.md",
+      "shared_file": false,
+      "visibility": "private",
+      "visibility_source": "forced",
+      "warnings": [
+        "frontmatter-unparseable"
+      ]
+    },
+    "frontmatter_text": "---\ndate: 2026-13-45\nvisibility: normal\n---\n# Note\n\nBody text.\n",
+    "path": "knowledge-base/topics/misc/impossible-date.md",
+    "policy_overlay": null
   }
 ]

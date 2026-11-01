@@ -81,6 +81,12 @@ _ROWS: list[tuple[str, str, str | None, dict[str, object]]] = [
         {"visibility": "private", "visibility_source": "forced", "warnings": ("frontmatter-unparseable",)},
     ),
     (
+        "impossible-date-is-forced-private",
+        "knowledge-base/topics/misc/impossible-date.md",
+        _fm("date: 2026-13-45\nvisibility: normal"),
+        {"visibility": "private", "visibility_source": "forced", "warnings": ("frontmatter-unparseable",)},
+    ),
+    (
         "non-mapping-frontmatter-is-forced-private",
         "knowledge-base/topics/misc/broken.md",
         _fm("- just\n- a list"),
