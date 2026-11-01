@@ -263,3 +263,42 @@ def test_a_run_commit_with_such_a_value_in_the_config_is_refused(vault: Path) ->
     git(vault, "add", "--", "scout-config.yaml")
     with pytest.raises(PolicyUnreadable):
         privacy_staged(vault, env=RUN)
+
+
+# ----- with kb_lint.path_modes: a report rule lifts no privacy block -------------
+
+REPORT_EVERYWHERE = "kb_lint:\n  mode: report\n  path_modes:\n    - {glob: '**', mode: report}\n"
+
+
+def _config_with(vault: Path, extra: str) -> None:
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    _write(vault, "scout-config.yaml", text + extra)
+    git(vault, "add", "--", "scout-config.yaml")
+
+
+def test_a_link_to_such_a_note_blocks_on_a_report_path(vault: Path) -> None:
+    _config_with(vault, REPORT_EVERYWHERE)
+    _write(vault, NOTE, _fm("date: 2026-13-45"))
+    git(vault, "add", "--", NOTE)
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "note and config")
+    draft = "drafts/reply-to-priya.md"
+    text = (vault / draft).read_text(encoding="utf-8")
+    _write(vault, draft, text.rstrip("\n") + "\n\nSee [[odd-value]] for the details.\n")
+    git(vault, "add", "--", draft)
+    out = io.StringIO()
+    assert run_hook(vault, env={"SCOUT_LINT_OVERRIDE": "need it now"}, out=out) == 1
+    assert "[private-link]" in out.getvalue() and "override accepted" not in out.getvalue()
+
+
+def test_a_run_commit_with_such_a_config_is_refused_whatever_its_path_modes(vault: Path) -> None:
+    _config_with(vault, "when: 2026-13-45\n" + REPORT_EVERYWHERE)
+    out = io.StringIO()
+    assert run_hook(vault, env=RUN, out=out) == 1
+    assert "[privacy-check-failed]" in out.getvalue()
+
+
+def test_the_owner_commit_with_such_a_config_goes_on_whatever_its_path_modes(vault: Path) -> None:
+    _config_with(vault, "when: 2026-13-45\n" + REPORT_EVERYWHERE)
+    out = io.StringIO()
+    assert run_hook(vault, env={}, out=out) == 0
+    assert "[privacy-overlay-unreadable]" in out.getvalue() and "could not run" not in out.getvalue()
