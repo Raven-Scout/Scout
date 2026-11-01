@@ -10,7 +10,9 @@ Snapshot file format (v1)::
 
     {
       "engine_version": "<scout.__version__ at generation>",
-      "policy": {"local_only": {...}, "shared_files": [...],
+      "policy": {"federation": {"enabled": false}, "federation_ceilings": [...],
+                 "federation_ceilings_overlay": [], "federation_defaults": [],
+                 "local_only": {...}, "shared_files": [...],
                  "surfaces": {...}, "visibility_defaults": [...]},
       "schema_version": 1
     }

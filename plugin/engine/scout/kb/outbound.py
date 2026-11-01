@@ -150,7 +150,7 @@ def _names_from_text(text: str | None) -> list[str]:
         return []
     try:
         data = load_frontmatter_yaml("\n".join(block))
-    except (yaml.YAMLError, RecursionError, ValueError):
+    except yaml.YAMLError:
         return []
     if not isinstance(data, dict):
         return []

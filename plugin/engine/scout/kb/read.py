@@ -75,9 +75,12 @@ from scout.errors import KBError
 from scout.kb.lint_config import glob_match
 from scout.kb.ontology import PARSE_ERROR_KEY, KnowledgeGraph, find_vault, parse_lookup_types
 from scout.kb.privacy import (
+    CEILING_LEVELS,
     CLASSIFIER_VERSION,
+    FEDERATION_SOURCES,
     FULL_READERS,
     VISIBILITIES,
+    FederationScope,
     Label,
     NoteFacts,
     Policy,
@@ -202,6 +205,8 @@ def _facts_json(facts: NoteFacts) -> dict[str, Any]:
         "visibility": facts.visibility,
         "declared": list(declared) if isinstance(declared, tuple) else declared,
         "warnings": list(facts.warnings),
+        "declared_present": facts.declared_present,
+        "kind": facts.kind,
     }
 
 
@@ -213,16 +218,29 @@ def _str_tuple(value: Any) -> tuple[str, ...] | None:
 
 def _facts_from_json(data: Any) -> NoteFacts | None:
     """The facts an index entry stored, or None when the entry is malformed."""
-    if not isinstance(data, dict) or set(data) != {"state", "visibility", "declared", "warnings"}:
+    if not isinstance(data, dict) or set(data) != _FACT_KEYS:
         return None
     state, vis, declared, warnings = data["state"], data["visibility"], data["declared"], _str_tuple(data["warnings"])
+    present, kind = data["declared_present"], data["kind"]
     if state not in _STATES or (vis is not None and vis not in VISIBILITIES) or warnings is None:
         return None
-    if isinstance(declared, list):
-        declared = _str_tuple(declared)
-    if not isinstance(declared, (str, tuple)):
+    if not isinstance(present, bool) or not (kind is None or isinstance(kind, str)):
         return None
-    return NoteFacts(state=state, visibility=vis, declared=declared, warnings=warnings)
+    declared = _scope_from_json(declared)
+    if declared is None:
+        return None
+    return NoteFacts(
+        state=state, visibility=vis, declared=declared, warnings=warnings, declared_present=present, kind=kind
+    )
+
+
+_FACT_KEYS = frozenset({"state", "visibility", "declared", "warnings", "declared_present", "kind"})
+
+
+def _scope_from_json(value: Any) -> FederationScope | None:
+    if isinstance(value, list):
+        return _str_tuple(value)
+    return value if isinstance(value, str) else None
 
 
 _LABEL_KEYS = frozenset(Label(path="", visibility="normal", visibility_source="default").to_json())
@@ -232,16 +250,16 @@ def _label_from_json(data: Any, rel: str) -> Label | None:
     """The label an index entry stored for ``rel``, or None when it is malformed."""
     if not isinstance(data, dict) or set(data) != _LABEL_KEYS or data["path"] != rel:
         return None
-    declared = data["federation_scope_declared"]
-    if isinstance(declared, list):
-        declared = _str_tuple(declared)
+    declared = _scope_from_json(data["federation_scope_declared"])
+    scope = _scope_from_json(data["federation_scope"])
     warnings = _str_tuple(data["warnings"])
     if (
         data["visibility"] not in VISIBILITIES
         or data["visibility_source"] not in _SOURCES
-        or data["federation_scope"] != "none"
-        or data["federation_source"] != "reserved"
-        or not isinstance(declared, (str, tuple))
+        or scope is None
+        or data["federation_source"] not in FEDERATION_SOURCES
+        or data["ceiling"] not in CEILING_LEVELS
+        or declared is None
         or not isinstance(data["local_only"], bool)
         or not isinstance(data["shared_file"], bool)
         or warnings is None
@@ -251,7 +269,10 @@ def _label_from_json(data: Any, rel: str) -> Label | None:
         path=rel,
         visibility=data["visibility"],
         visibility_source=data["visibility_source"],
+        federation_scope=scope,
         federation_scope_declared=declared,
+        federation_source=data["federation_source"],
+        ceiling=data["ceiling"],
         local_only=data["local_only"],
         shared_file=data["shared_file"],
         warnings=warnings,
