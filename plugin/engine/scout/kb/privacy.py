@@ -31,7 +31,8 @@ move a surface to ``shared``. It can't remove ``local_only.always``, and it
 can't move an engine-default shared surface to ``owner_only``.
 
 Fail-closed everywhere: an unknown ``visibility`` value, an unparseable
-frontmatter block and a frontmatter fence that never closes all classify as
+frontmatter block (a value PyYAML can't build, like ``date: 2026-13-45``,
+included) and a frontmatter fence that never closes all classify as
 ``private``; an unparseable ``federation_scope`` counts as ``none``.
 
 Warning rule ids carried on a :class:`Label` (kb-lint ids, spec §8.2):
@@ -108,7 +109,28 @@ CLASSIFIER_VERSION = 3  # 3: Stage 2 effective scope, ceiling, frontmatter kind 
 # goes through :func:`load_frontmatter_yaml`.
 def load_frontmatter_yaml(text: str) -> Any:
     """``yaml.safe_load`` of a frontmatter block: pure ``SafeLoader``, never libyaml."""
-    return yaml.safe_load(text)  # pure SafeLoader, never the C loader
+    return load_yaml(text)  # pure SafeLoader, never the C loader
+
+
+class YAMLValueError(yaml.YAMLError):
+    """YAML that scans but holds a value PyYAML can't build. Names the cause, never the text."""
+
+
+def load_yaml(stream: Any) -> Any:
+    """``yaml.safe_load`` that only ever raises ``yaml.YAMLError``, so ``except yaml.YAMLError`` fails closed.
+
+    PyYAML's constructors let plain exceptions out on text it scanned without
+    complaint: ``ValueError`` (``date: 2026-13-45``, ``n: 0x_``), ``KeyError``
+    (``!!bool foo``), ``IndexError`` (``!!int ""``), ``AttributeError``
+    (``!!timestamp foo``), ``OverflowError`` (``"\\U99999999"``) and
+    ``RecursionError`` (deep nesting). Each just means the text doesn't parse.
+    """
+    try:
+        return yaml.safe_load(stream)
+    except yaml.YAMLError:
+        raise
+    except Exception as e:  # the list above is what PyYAML does today; a label must not depend on it staying complete
+        raise YAMLValueError(type(e).__name__) from e
 
 
 VISIBILITIES = ("normal", "private")
@@ -399,7 +421,7 @@ def load_policy(vault: Path | None) -> Policy:
     if not config.exists():
         return base
     try:
-        data = yaml.safe_load(config.read_text(encoding="utf-8"))
+        data = load_yaml(config.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
     if data is None:
