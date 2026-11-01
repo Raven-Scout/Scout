@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A session's cost row carries its Claude Code session id** (`templates/scripts/write-session-cost.sh.tmpl`). A `source=session` row now records `CLAUDE_CODE_SESSION_ID` (a lowercase UUID only, so the line stays valid JSON), so two rows with one id show a run that wrote its cost twice. Runner rows never carry it, since a runner started from an interactive session inherits that session's id. The header comment no longer says `source=session` rows come from the runner. The budget gate is unchanged and still sums every row; reading the id to drop the duplicate is a follow-up.
+
 ## [0.18.6] - 2026-10-31
 
 ### Added

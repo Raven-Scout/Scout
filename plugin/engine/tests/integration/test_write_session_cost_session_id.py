@@ -1,4 +1,7 @@
-"""write-session-cost.sh records the Claude Code session id, so a run that writes its row twice is visible as one id on two rows."""
+"""write-session-cost.sh records the Claude Code session id on a session's own row.
+
+A run that writes its row twice is then visible as one id on two rows.
+"""
 
 from __future__ import annotations
 
@@ -24,12 +27,14 @@ def _install(tmp_path: Path) -> tuple[Path, Path]:
     return script, vault / ".scout-logs" / "usage-tracker.jsonl"
 
 
-def _write(script: Path, session_id: str | None) -> subprocess.CompletedProcess[str]:
+def _write(
+    script: Path, session_id: str | None, source: str = "session", ttype: str = "dreaming"
+) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODEL", "CLAUDE_CODE_SESSION_ID")}
     if session_id is not None:
         env["CLAUDE_CODE_SESSION_ID"] = session_id
     return subprocess.run(
-        [str(script), "dreaming", "50", "3.10", "0", "session"],
+        [str(script), ttype, "50", "3.10", "0", source],
         env=env,
         capture_output=True,
         text=True,
@@ -54,6 +59,17 @@ def test_two_writes_from_one_session_share_the_id(tmp_path: Path) -> None:
     assert _write(script, SID).returncode == 0
     rows = _rows(tracker)
     assert [r["session_id"] for r in rows] == [SID, SID]
+
+
+@pytest.mark.parametrize("ttype", ["morning-briefing", "dreaming"])
+def test_a_runner_row_with_an_inherited_id_leaves_the_key_out(tmp_path: Path, ttype: str) -> None:
+    """A runner launched by /scout-briefing or /scout-dream inherits the launching session's id;
+    stamping it would make two different runs share one id."""
+    script, tracker = _install(tmp_path)
+    assert _write(script, SID, source="runner", ttype=ttype).returncode == 0
+    (row,) = _rows(tracker)
+    assert row["source"] == "runner"
+    assert "session_id" not in row
 
 
 def test_no_session_leaves_the_key_out(tmp_path: Path) -> None:

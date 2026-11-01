@@ -63,13 +63,17 @@ if [[ "${SCOUT_MODEL:-}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
     MODEL_FIELD=",\"model\":\"$SCOUT_MODEL\""
 fi
 
-# Session identity. A session calls this from its own Bash tool, where Claude Code
-# exports CLAUDE_CODE_SESSION_ID. Two rows with the SAME id are one run writing twice
-# (e.g. a run that re-ran this script to check it worked), which would otherwise have to
-# be inferred from timestamps. Runner rows have no such variable and omit the key, and
+# Session identity, on the session's own row only (source=session). A session calls this
+# from its own Bash tool, where Claude Code exports CLAUDE_CODE_SESSION_ID, so two
+# source=session rows with the same id are one run writing twice (e.g. a run that re-ran
+# this script to check it worked), which would otherwise have to be inferred from
+# timestamps. Runner rows never carry it: a runner started from an interactive session
+# (/scout-briefing, /scout-dream nohup it from the Bash tool) inherits that session's id,
+# so stamping it there would make two different runs look like one. session-tokens rows
+# share an id on purpose (they are deltas); they come from record_run_cost, not from here.
 # budget_check.decide() reads rows with .get(), so the extra key is inert to it.
 SESSION_FIELD=""
-if [[ "${CLAUDE_CODE_SESSION_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+if [[ "$SOURCE" == "session" && "${CLAUDE_CODE_SESSION_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     SESSION_FIELD=",\"session_id\":\"$CLAUDE_CODE_SESSION_ID\""
 fi
 
