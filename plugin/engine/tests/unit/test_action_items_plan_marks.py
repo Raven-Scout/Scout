@@ -6,8 +6,9 @@
 
 They are machine metadata, replaced in place rather than stacked. A line only
 counts as a marker when its value parses, and the scan never reaches into a
-child task. Until the apps skip them too, the comment lister and the renderer
-still count them as comments, so comment indexes agree across engine and apps.
+child task. The renderer leaves exactly those lines out of a task's comments,
+as the Mac app does. The comment lister keeps counting them, so
+`delete-comment` / `edit-comment --index` mean the same to every app version.
 """
 
 from __future__ import annotations
@@ -226,10 +227,10 @@ def test_read_plan_marks_out_of_range(tmp_path: Path) -> None:
         read_plan_marks(path, task_line_number=9)
 
 
-def test_plan_marks_still_count_as_comments_like_the_apps(daily: Path, fake_data_dir: Path) -> None:
-    # delete-comment / edit-comment take the index the apps show. The apps still
-    # list the markers as comments, so the engine has to count them the same way
-    # until all three skip them in one release.
+def test_renderer_skips_plan_marks_and_the_index_still_counts_them(daily: Path, fake_data_dir: Path) -> None:
+    # delete-comment / edit-comment --index keep counting the markers: an app
+    # from before the plan chip shows them as comments, and a newer app adds
+    # the markers above a comment back into the index it sends.
     set_estimate(minutes=45, raw_minutes=30, kind="deep", by_id="PROJ1", data_dir=fake_data_dir)
     set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
     set_actual(minutes=60, by_id="PROJ1", data_dir=fake_data_dir)
@@ -239,7 +240,81 @@ def test_plan_marks_still_count_as_comments_like_the_apps(daily: Path, fake_data
 
     _title, _preamble, sections = render_parse(daily)
     task = next(t for s in sections for t in s.tasks if "PROJ1" in t.raw)
-    assert [c.author for c in task.comments] == ["estimate", "block", "actual", "alex"]
+    assert [c.author for c in task.comments] == ["alex"]
+    assert not any("estimate" in b.text or "block" in b.text for s in sections for b in s.bullets)
+
+
+def _rendered_authors(path: Path, tag: str = "AB1") -> list[str]:
+    _title, _preamble, sections = render_parse(path)
+    return [c.author for c in next(t for s in sections for t in s.tasks if tag in t.raw).comments]
+
+
+def test_renderer_skips_only_lines_plan_marks_reads(tmp_path: Path) -> None:
+    # Unparseable values stay comments, and so does a second line for a key
+    # that already has one. A reversed block parses, as it always has.
+    path = tmp_path / "action-items-2026-09-30.md"
+    path.write_text(
+        "## 🟡 To Do\n\n"
+        "- [ ] [#AB1] **Task**\n"
+        "  - block: waiting on Priya\n"
+        "  - estimate: 30m (kind: deep)\n"
+        "  - estimate: 1h\n"
+        "  - block: 2026-09-30 11:00-10:00\n"
+        "  - actual: a while\n"
+        "  - alex: noted\n",
+        encoding="utf-8",
+    )
+    assert _rendered_authors(path) == ["block", "estimate", "actual", "alex"]
+    marks = read_plan_marks(path, task_line_number=3)
+    assert (marks.estimate_minutes, marks.raw_minutes, marks.kind) == (30, None, "deep")
+    assert marks.block is not None and marks.block.minutes == -60
+
+
+def test_marker_scope_ends_at_a_blank_line_and_a_child_task(tmp_path: Path) -> None:
+    path = tmp_path / "action-items-2026-09-30.md"
+    path.write_text(
+        "## 🟡 To Do\n\n"
+        "- [ ] [#AB1] **Task**\n"
+        "  - estimate: 45m\n"
+        "  - alex: before the gap\n"
+        "\n"
+        "  - block: 2026-09-30 10:00-10:45\n",
+        encoding="utf-8",
+    )
+    # The renderer reads on past the blank line and finds a comment there,
+    # because the marker scan stopped at it.
+    assert _rendered_authors(path) == ["alex", "block"]
+
+    path.write_text(
+        "## 🟡 To Do\n\n- [ ] [#AB1] **Task**\n  - [ ] [#CD2] **Child**\n    - estimate: 45m\n",
+        encoding="utf-8",
+    )
+    # The child's marker is the child's, never the parent's.
+    assert _rendered_authors(path) == []
+    assert _rendered_authors(path, "CD2") == []
+    assert read_plan_marks(path, task_line_number=3).estimate_minutes is None
+    assert read_plan_marks(path, task_line_number=4).estimate_minutes == 45
+
+
+def test_the_index_the_app_sends_reaches_its_comment(daily: Path, fake_data_dir: Path) -> None:
+    # The app shows [Source, alex] with the two markers above them, so for its
+    # comment n it sends n + 2. The same index works on an older engine.
+    from scout.action_items.delete_comment import delete_comment
+    from scout.action_items.edit_comment import edit_comment
+
+    set_estimate(minutes=45, by_id="PROJ1", data_dir=fake_data_dir)
+    set_block(day=_DAY, start="10:00", end="10:45", by_id="PROJ1", data_dir=fake_data_dir)
+    day = dt.date(2026, 9, 30)
+
+    edit_comment(new_text="ping me after lunch", by_id="PROJ1", index=4, date=day, data_dir=fake_data_dir)
+    delete_comment(by_id="PROJ1", index=3, date=day, data_dir=fake_data_dir)
+    lines = _lines(daily)
+    i = lines.index(_TASK)
+    assert lines[i + 1 : i + 4] == [
+        "  - estimate: 45m",
+        "  - block: 2026-09-30 10:00-10:45",
+        "  - alex: ping me after lunch",
+    ]
 
 
 def test_crlf_files_keep_their_line_endings(fake_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
