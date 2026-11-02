@@ -4,12 +4,20 @@ growing mega-files.
 Blocking (where the path's mode is ``block``; ``kb_lint.mode`` or a
 ``kb_lint.path_modes`` rule, see ``scout.kb.lint_config``): an over-budget file
 that grew, a new file over budget, an added run-diary heading outside log
-paths, an added line over the line limit. Warnings: a topic-note paragraph with no citation, a wikilink that
-resolves nowhere. Only ADDED lines are line-checked, so existing debt never
-blocks a commit; it drains through the dreaming shrink pass instead. A line
-that only re-adds a removed one with a cosmetic edit (checkbox tick, short-id
-prefix, strike-through) is not "added", and a new daily action-items file is
-compared against the newest earlier daily file, not against nothing.
+paths, an added line over the line limit. Warnings: a topic-note paragraph with
+no citation, a wikilink that resolves nowhere.
+
+Only ADDED lines are line-checked, and a line that only re-adds a removed one
+with a cosmetic edit (checkbox tick, short-id prefix, strike-through) is not
+"added". A new daily action-items file is compared against the newest earlier
+daily file, not against nothing.
+
+Existing debt must be able to drain, by hand or through the dreaming shrink
+pass, so an added line that replaces a line already breaking the same rule
+doesn't block either (:class:`_LineDebt`): an in-place edit that doesn't make
+the line longer, or a verbatim move into another file of the commit. Each
+removed line excuses one added line, so splitting one long line into two long
+ones still blocks, as do growth, a copy, a reworded move and a new line.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
@@ -33,12 +42,13 @@ from scout.kb.git_io import (
     head_size,
     head_text,
     main_root,
+    staged_line_changes,
     staged_paths,
     staged_size,
     staged_text,
     tracked_files,
 )
-from scout.kb.lint_config import LintConfig, load_lint_config
+from scout.kb.lint_config import PRIVACY_BLOCKING, LintConfig, load_lint_config
 from scout.kb.lint_rules import has_citation, is_diary_heading, is_heading, normalize_line, wikilink_targets
 
 OVERRIDE_ENV = "SCOUT_LINT_OVERRIDE"
@@ -100,12 +110,115 @@ def _check_size(repo: Path, rel: str, head_rel: str | None, cfg: LintConfig) -> 
     return []
 
 
-def _check_lines(rel: str, added: list[tuple[int, str]], cfg: LintConfig) -> list[Finding]:
+@dataclass
+class _Debt:
+    """A line the commit removes that already broke a line rule where it was."""
+
+    source: str  # the path it was removed from
+    rel: str  # the file it counts as an in-place edit of: ``source``, or a rename's new path
+    norm: str
+    chars: int
+    movable: bool = True
+    spent: bool = False
+
+
+class _LineDebt:
+    """What the commit removes that may excuse what it adds, one line for one.
+
+    A removed line counts only if it broke the rule in its own file, so a move
+    can't launder a line that was fine at its source (a diary heading from a
+    log file, a long line from an unlinted file). Built on first use: a commit
+    with no over-limit line and no diary heading never pays for the diff."""
+
+    def __init__(self, repo: Path, cfg: LintConfig) -> None:
+        self.repo = repo
+        self.cfg = cfg
+        self._debts: dict[str, list[_Debt]] | None = None
+
+    def _broken(self, source: str, line: str) -> list[str]:
+        if not self.cfg.in_scope(source):
+            return []
+        broken = ["mega-line"] if len(line) > self.cfg.line_limit(source) else []
+        if not self.cfg.is_log(source) and is_diary_heading(line):
+            broken.append("diary")
+        return broken
+
+    def _load(self) -> dict[str, list[_Debt]]:
+        if self._debts is None:
+            self._debts = {"mega-line": [], "diary": []}
+            for change in staged_line_changes(self.repo):
+                if change.old_rel is None:
+                    continue
+                kept = {normalize_line(t) for t in change.added}
+                here = change.new_rel or change.old_rel
+                for line in change.removed:
+                    norm = normalize_line(line)
+                    if norm not in kept:
+                        for check in self._broken(change.old_rel, line):
+                            self._debts[check].append(_Debt(change.old_rel, here, norm, len(line)))
+        return self._debts
+
+    def add_baseline(self, rel: str, baseline_text: str, staged: str) -> None:
+        """A new daily file's "removed" lines: its baseline's lines it no longer
+        carries. They stay in the earlier file, so they excuse edits here, not moves."""
+        kept = {normalize_line(t) for t in staged.split("\n")}
+        debts = self._load()
+        for line in baseline_text.split("\n"):
+            norm = normalize_line(line)
+            if norm not in kept:
+                for check in self._broken(rel, line):
+                    debts[check].append(_Debt(rel, rel, norm, len(line), movable=False))
+
+    def _may_move(self, debt: _Debt, rel: str, check: str) -> bool:
+        """Debt doesn't move from a report path into a block path: that would add it where it's enforced."""
+        return self.cfg.mode_for(rel, check) != "block" or self.cfg.mode_for(debt.source, check) == "block"
+
+    def _find(self, rel: str, check: str, text: str, debts: list[_Debt]) -> _Debt | None:
+        # In place: the longest debt left that's no shorter. A diary heading has no length to grow.
+        needed = len(text) if check == "mega-line" else 0
+        own = [d for d in debts if not d.spent and d.rel == rel and d.chars >= needed]
+        if own:
+            return max(own, key=lambda d: d.chars)
+        norm = normalize_line(text)
+        for d in debts:
+            if not d.spent and d.movable and d.rel != rel and d.norm == norm and self._may_move(d, rel, check):
+                return d
+        return None
+
+    def excused(self, rel: str, check: str, lines: list[tuple[int, str]]) -> set[int]:
+        """The line numbers of ``lines`` (added to ``rel``, breaking ``check``) that only replace debt."""
+        if not lines:
+            return set()
+        debts = self._load()[check]
+        paid: set[int] = set()
+        # Longest first, so each debt goes to the longest line it can excuse.
+        for n, text in sorted(lines, key=lambda line: -len(line[1])):
+            debt = self._find(rel, check, text, debts)
+            if debt is not None:
+                debt.spent = True
+                paid.add(n)
+        return paid
+
+
+def _check_lines(
+    repo: Path,
+    rel: str,
+    added: list[tuple[int, str]],
+    cfg: LintConfig,
+    debts: _LineDebt,
+    baseline_text: str | None = None,
+) -> list[Finding]:
     limit = cfg.line_limit(rel)
     diary_scope = not cfg.is_log(rel)
+    over = [(n, text) for n, text in added if len(text) > limit]
+    diary = [(n, text) for n, text in added if diary_scope and is_diary_heading(text)]
+    if baseline_text is not None and (over or diary):
+        debts.add_baseline(rel, baseline_text, staged_text(repo, rel))
+    excused_over = debts.excused(rel, "mega-line", over)
+    excused_diary = debts.excused(rel, "diary", diary)
     out: list[Finding] = []
     for n, text in added:
-        if len(text) > limit:
+        if len(text) > limit and n not in excused_over:
             out.append(
                 Finding(
                     rel,
@@ -115,7 +228,7 @@ def _check_lines(rel: str, added: list[tuple[int, str]], cfg: LintConfig) -> lis
                     n,
                 )
             )
-        if diary_scope and is_diary_heading(text):
+        if diary_scope and is_diary_heading(text) and n not in excused_diary:
             out.append(
                 Finding(
                     rel,
@@ -336,6 +449,10 @@ class StagedFile:
     staged_rels: set[str]
     # Every wikilink target in the vault, built once per lint on first use.
     known_targets: Callable[[], set[str]]
+    # The lines the commit removes, shared across its files (one line excuses one).
+    debts: _LineDebt
+    # A new daily file's earlier daily file; its lines count as this file's old version.
+    baseline_text: str | None = None
 
 
 StagedCheck = Callable[[StagedFile], list[Finding]]
@@ -346,7 +463,7 @@ def _size(f: StagedFile) -> list[Finding]:
 
 
 def _lines(f: StagedFile) -> list[Finding]:
-    return _check_lines(f.rel, f.added, f.cfg)
+    return _check_lines(f.repo, f.rel, f.added, f.cfg, f.debts, f.baseline_text)
 
 
 def _context_notes(f: StagedFile) -> list[Finding]:
@@ -364,15 +481,17 @@ def _links(f: StagedFile) -> list[Finding]:
 
 
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
-# A new check is one function here; it reports `Finding(blocking=True)` for
-# what should refuse a commit, and the path's mode (`LintConfig.mode_for`,
-# which a `path_modes` rule can scope to named checks) decides whether it does.
+# A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
+# It reports `Finding(blocking=True)` for what should refuse a commit, and the
+# path's mode (`LintConfig.mode_for`, which a `path_modes` rule can scope to
+# named checks) decides whether it does.
 STAGED_CHECKS: tuple[StagedCheck, ...] = (_size, _lines, _context_notes, _citations, _links)
 
 
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
+    debts = _LineDebt(repo, cfg)
 
     def known_targets() -> set[str]:
         nonlocal known
@@ -393,7 +512,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
                 size_base = baseline
                 baseline_text = head_text(repo, baseline)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
-        staged = StagedFile(repo, cfg, sp.rel, size_base, added, staged_rels, known_targets)
+        staged = StagedFile(repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, baseline_text)
         for check in STAGED_CHECKS:
             result.findings += check(staged)
     return result
@@ -415,9 +534,18 @@ def over_budget(repo: Path, cfg: LintConfig) -> list[tuple[str, int, int]]:
     return rows
 
 
-# Privacy checks (#453, spec §8.2/§8.3; scout.kb.lint_privacy) that block in
-# every mode and ignore SCOUT_LINT_OVERRIDE.
-PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+def config_problems(repo: Path, cfg: LintConfig) -> list[str]:
+    """What's wrong with the lint config, for ``kb lint --report`` and the doctor.
+
+    The commit hook prints only ``cfg.warnings``: this also lists the tracked
+    files, which a commit shouldn't pay for."""
+    problems = list(cfg.warnings)
+    if cfg.path_modes:
+        try:
+            problems += cfg.rules_matching_nothing(tracked_files(repo))
+        except (OSError, subprocess.SubprocessError):
+            pass  # not a git checkout, so there's no file list to check the rules against
+    return problems
 
 
 def _hard(f: Finding) -> bool:
@@ -436,7 +564,10 @@ def enforced(f: Finding, cfg: LintConfig | None) -> bool:
 def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
     mode = cfg.mode_label if cfg is not None else "?"
     per_path = cfg is not None and bool(cfg.path_modes)
-    lines = [f"kb-lint: {len(result.blocking)} blocking, {len(result.warnings)} warning(s) (mode: {mode})"]
+    count = f"{len(result.blocking)} blocking"
+    if per_path:
+        count += f" ({sum(enforced(f, cfg) for f in result.blocking)} enforced)"
+    lines = [f"kb-lint: {count}, {len(result.warnings)} warning(s) (mode: {mode})"]
     for f in result.findings:
         mark = "✗" if f.blocking else "!"
         where = f"{f.path}:{f.line}" if f.line else f.path
@@ -574,6 +705,8 @@ def run_hook(
     result = LintResult()
     try:
         cfg = load_lint_config(repo)
+        for warning in cfg.warnings:
+            _say(out, f"kb-lint: config: {warning}")
         result = lint_staged(repo, cfg)
     except Exception as e:  # noqa: BLE001 - fail open (spec §8.3)
         cfg, result = None, LintResult()
@@ -610,7 +743,11 @@ def run_hook(
             _say(out, _privacy_summary(result.findings))
     if hard:
         return 1
-    blocked = [f for f in result.blocking if enforced(f, cfg)]
+    try:
+        blocked = [f for f in result.blocking if enforced(f, cfg)]
+    except Exception as e:  # noqa: BLE001 - fail open (spec §8.3); the privacy verdict is already in
+        _say(out, f"kb-lint: size/diary check failed ({type(e).__name__}) — not blocking")
+        return 0
     if not blocked:
         return 0
     reason = env.get(OVERRIDE_ENV, "").strip()

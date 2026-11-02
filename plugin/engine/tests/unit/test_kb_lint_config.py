@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import ast
+import time
 from pathlib import Path
 
-from scout.kb.lint_config import glob_match, load_lint_config
+import pytest
+
+from scout.kb import lint_config
+from scout.kb.lint_config import MAX_GLOB_STARS, glob_match, load_lint_config
 
 
 def test_glob_single_star_does_not_cross_slash() -> None:
@@ -174,8 +179,6 @@ def test_a_rule_scoped_to_checks_covers_only_those(tmp_path: Path) -> None:
     cfg = load_lint_config(tmp_path)
     assert cfg.mode_for("knowledge-base/x.md", "future-check") == "report"
     assert cfg.mode_for("knowledge-base/x.md", "size") == "block"
-    # A path-only lookup skips check-scoped rules.
-    assert cfg.mode_for("knowledge-base/x.md") == "block"
 
 
 def test_bad_path_mode_entries(tmp_path: Path) -> None:
@@ -200,3 +203,158 @@ def test_path_modes_that_is_not_a_list_is_ignored(tmp_path: Path) -> None:
     cfg = load_lint_config(tmp_path)
     assert cfg.path_modes == ()
     assert cfg.mode_for("knowledge-base/x.md", "size") == "block"
+
+
+# ----- a config mistake says so -----------------------------------------------
+
+
+def test_a_good_config_warns_about_nothing(tmp_path: Path) -> None:
+    assert load_lint_config(tmp_path).warnings == ()
+    _path_modes(
+        tmp_path,
+        "  mode: block\n  path_modes:\n"
+        "    - {glob: 'knowledge-base/a/**', mode: report}\n"
+        "    - glob: 'knowledge-base/**'\n"
+        "      mode: block\n"
+        "      exclude: ['knowledge-base/b/**']\n"
+        "      exclude_logs: true\n"
+        "      checks: [mega-line, diary]\n",
+    )
+    assert load_lint_config(tmp_path).warnings == ()
+
+
+def test_an_empty_path_modes_warns_about_nothing(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  path_modes:\n")
+    assert load_lint_config(tmp_path).warnings == ()
+
+
+@pytest.mark.parametrize("mode", ["Block", "true", "[block]", "strict"])
+def test_a_bad_global_mode_warns_and_reports(tmp_path: Path, mode: str) -> None:
+    _path_modes(tmp_path, f"  mode: {mode}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode == "report"
+    assert len(cfg.warnings) == 1 and "not report or block" in cfg.warnings[0]
+
+
+@pytest.mark.parametrize("field", ["mode: Block", "mode: true", "mode: [block]", "other: 1"])
+def test_a_bad_rule_mode_warns_and_reports(tmp_path: Path, field: str) -> None:
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: 'knowledge-base/**', {field}}}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "report"
+    assert any("not report or block" in w for w in cfg.warnings)
+
+
+@pytest.mark.parametrize(
+    ("rule", "says"),
+    [
+        ("{globs: 'knowledge-base/**', mode: block}", "unknown key"),
+        ("{glob: [a, b], mode: block}", "not a path glob"),
+        ("{glob: '', mode: block}", "not a path glob"),
+        ("{glob: 5, mode: block}", "not a path glob"),
+        ("not-a-rule", "not a rule"),
+        # Each of these would otherwise widen the rule, so it goes rather than guesses.
+        ("{glob: 'knowledge-base/**', mode: block, checks: 5}", "not a list of check ids"),
+        ("{glob: 'knowledge-base/**', mode: block, checks: {a: b}}", "not a list of check ids"),
+        ("{glob: 'knowledge-base/**', mode: block, checks: []}", "not a list of check ids"),
+        ("{glob: 'knowledge-base/**', mode: block, checks: [[mega-line]]}", "not a list of check ids"),
+        ("{glob: 'knowledge-base/**', mode: block, exclude: 5}", "not a list of globs"),
+        ("{glob: 'knowledge-base/**', mode: block, exclude: [5]}", "not a list of globs"),
+        ("{glob: 'knowledge-base/**', mode: block, exclude_logs: 'false'}", "not true or false"),
+        ("{glob: 'knowledge-base/**', mode: block, exclude_logs: 1}", "not true or false"),
+    ],
+)
+def test_a_rule_that_cant_be_read_is_dropped_with_a_warning(tmp_path: Path, rule: str, says: str) -> None:
+    _path_modes(tmp_path, f"  mode: report\n  path_modes:\n    - {rule}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.path_modes == ()
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "report"
+    assert any(says in w for w in cfg.warnings), cfg.warnings
+
+
+def test_an_unknown_key_warns_and_keeps_a_good_rule(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  path_modes:\n    - {glob: 'knowledge-base/**', mode: block, excludes: [a]}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "block"
+    assert len(cfg.warnings) == 1 and "'excludes'" in cfg.warnings[0]
+
+
+def test_an_unknown_check_warns_and_never_matches(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  path_modes:\n    - {glob: 'knowledge-base/**', mode: block, checks: [megaline]}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/x.md", "mega-line") == "report"
+    assert len(cfg.warnings) == 1 and "unknown check 'megaline'" in cfg.warnings[0]
+
+
+@pytest.mark.parametrize("check", ["private-link", "citation"])
+def test_a_check_no_mode_changes_warns(tmp_path: Path, check: str) -> None:
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: 'knowledge-base/**', mode: report, checks: [{check}]}}\n")
+    assert "no mode changes" in load_lint_config(tmp_path).warnings[0]
+
+
+@pytest.mark.parametrize("glob", ["./knowledge-base/**", "/knowledge-base/**"])
+def test_a_rooted_glob_warns(tmp_path: Path, glob: str) -> None:
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
+    assert "vault-relative" in load_lint_config(tmp_path).warnings[0]
+
+
+def test_path_modes_as_a_mapping_warns(tmp_path: Path) -> None:
+    _path_modes(tmp_path, "  path_modes: {knowledge-base/**: block}\n")
+    assert "not a list of rules" in load_lint_config(tmp_path).warnings[0]
+
+
+def test_a_rule_matching_no_linted_file_is_named(tmp_path: Path) -> None:
+    _path_modes(
+        tmp_path,
+        "  path_modes:\n"
+        "    - {glob: 'Knowledge-Base/**', mode: block}\n"
+        "    - {glob: 'drafts/**', mode: block}\n"
+        "    - {glob: 'knowledge-base/**', mode: block}\n",
+    )
+    problems = load_lint_config(tmp_path).rules_matching_nothing(["knowledge-base/a.md", "drafts/b.md"])
+    assert [p.split("'")[1] for p in problems] == ["Knowledge-Base/**", "drafts/**"]
+
+
+# ----- a glob can't hang the hook -----------------------------------------------
+
+
+def test_an_over_complex_glob_returns_at_once_and_matches_nothing(tmp_path: Path) -> None:
+    glob = "**a" * 10 + "**b"
+    started = time.monotonic()
+    assert not glob_match(glob, "knowledge-base/" + "a" * 60 + ".md")
+    assert time.monotonic() - started < 1
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
+    assert any("matches nothing" in w for w in load_lint_config(tmp_path).warnings)
+
+
+def test_a_budget_glob_that_complex_warns_too(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text("kb_budgets:\n  '*a*a*a*a*a*a*a*b': 100\n", encoding="utf-8")
+    assert any("matches nothing" in w for w in load_lint_config(tmp_path).warnings)
+
+
+def test_every_shipped_glob_stays_under_the_star_limit(tmp_path: Path) -> None:
+    cfg = load_lint_config(tmp_path)
+    globs = [b.glob for b in cfg.budgets] + [*cfg.log_globs, *cfg.strict_line_globs, *cfg.exclude_globs]
+    assert globs and all(g.count("*") <= MAX_GLOB_STARS for g in globs)
+
+
+# ----- the check ids ------------------------------------------------------------
+
+
+def _finding_ids(module: str) -> set[str]:
+    """The literal check id of every ``Finding(path, "id", ...)`` in a scout.kb module."""
+    tree = ast.parse((Path(lint_config.__file__).parent / f"{module}.py").read_text(encoding="utf-8"))
+    return {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "Finding"
+        and isinstance(node.args[1], ast.Constant)
+    }
+
+
+def test_every_finding_uses_a_known_check_id() -> None:
+    from scout.kb.lint_privacy import LABEL_WARNINGS
+
+    ids = _finding_ids("lint") | _finding_ids("lint_privacy") | set(LABEL_WARNINGS)
+    assert {"size", "mega-line", "diary", "citation", "privacy-widening"} <= ids
+    assert ids <= lint_config.KNOWN_CHECKS, ids - lint_config.KNOWN_CHECKS

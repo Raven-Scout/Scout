@@ -120,9 +120,12 @@ kb_lint:
   # it matches when `glob` matches, no `exclude` glob does, the path is not a
   # `log_globs` file (with `exclude_logs: true`) and, if `checks` is given, the
   # finding's check is listed. An excluded path falls through to the next rule.
-  # Example — block in the KB except its log files, report elsewhere:
+  # A mistake here reports instead of blocking: the commit hook, `kb lint
+  # --report` and `scoutctl doctor` all name it.
+  # Example — long lines and diary headings block in the KB except its log
+  # files, everything else reports (size too, since most pages start over budget):
   #   path_modes:
-  #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true}
+  #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
   path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500

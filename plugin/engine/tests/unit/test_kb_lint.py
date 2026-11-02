@@ -416,6 +416,54 @@ def test_a_new_check_plugs_into_the_registry_and_its_path_mode(kb_repo, monkeypa
     assert "[loose-file] (report)" in out.getvalue()
 
 
+def test_a_config_mistake_is_printed_on_every_commit_even_a_clean_one(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "kb_lint:\n  path_modes:\n    - {glob: 'knowledge-base/**', mode: Block, checks: [megaline]}\n",
+    )
+    kb_repo.stage(PROJECT, "fine\n")
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    text = out.getvalue()
+    assert "kb-lint: config: path_modes rule 1 (knowledge-base/**) names unknown check 'megaline'" in text
+    assert "mode 'Block'" in text
+
+
+def test_a_good_config_adds_no_lines_to_the_hook_output(kb_repo) -> None:
+    _small_budgets(kb_repo)
+    kb_repo.stage(PROJECT, "fine\n")
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    assert out.getvalue() == ""
+
+
+def test_the_header_counts_what_is_enforced_only_with_rules(kb_repo) -> None:
+    _per_path(kb_repo)
+    kb_repo.stage(PROJECT, "x" * 200 + "\n")
+    kb_repo.stage(SESSION_SHARD, "- " + "y" * 600 + "\n")
+    out = io.StringIO()
+    run_hook(kb_repo.root, env={}, out=out)
+    assert "kb-lint: 2 blocking (1 enforced), 0 warning(s) (mode: report, per path)" in out.getvalue()
+    _small_budgets(kb_repo)
+    out = io.StringIO()
+    run_hook(kb_repo.root, env={}, out=out)
+    assert "kb-lint: 2 blocking, 0 warning(s) (mode: block)" in out.getvalue()
+
+
+def test_a_crash_deciding_the_verdict_fails_open(kb_repo, monkeypatch) -> None:
+    from scout.kb import lint
+
+    def boom(_f: object, _cfg: object) -> bool:
+        raise RuntimeError("no")
+
+    _small_budgets(kb_repo)
+    kb_repo.stage(PROJECT, "x" * 200 + "\n")
+    monkeypatch.setattr(lint, "enforced", boom)
+    out = io.StringIO()
+    assert run_hook(kb_repo.root, env={}, out=out) == 0
+    assert "size/diary check failed (RuntimeError) — not blocking" in out.getvalue()
+
+
 def test_run_hook_clean_commit_writes_nothing(kb_repo) -> None:
     kb_repo.stage(PROJECT, "fine\n")
     assert run_hook(kb_repo.root, env={}, out=io.StringIO()) == 0

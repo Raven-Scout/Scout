@@ -216,6 +216,28 @@ def test_hook_blocks_real_commit(kb_repo) -> None:
     assert "kb-lint" in proc.stderr
 
 
+@pytest.mark.skipif(not _scoutctl_has_kb(), reason="installed scoutctl predates `kb` (passes after merge)")
+def test_the_real_hook_applies_path_modes_and_shows_a_config_mistake(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "kb_lint:\n  mode: report\n  path_modes:\n"
+        "    - {glob: 'knowledge-base/projects/**', mode: block}\n"
+        "    - {glob: 'knowledge-base/topics/**', mode: Block}\n",
+    )
+    install_hook(kb_repo.root)
+    kb_repo.write("knowledge-base/topics/big.md", "x" * 20000 + "\n")
+    kb_repo.git("add", "-A")
+    commit = ["git", "commit", "-q", "-m", "big"]
+    proc = subprocess.run(commit, cwd=kb_repo.root, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "kb-lint: config: path_modes rule 2" in proc.stderr and "[size] (report)" in proc.stderr
+    kb_repo.write("knowledge-base/projects/big.md", "x" * 20000 + "\n")
+    kb_repo.git("add", "-A")
+    proc = subprocess.run(commit, cwd=kb_repo.root, capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "Commit blocked." in proc.stderr
+
+
 def test_bootstrap_stage_installs_into_git_vault(kb_repo, tmp_path) -> None:
     from scout.scripts.bootstrap import BootstrapConfig, _stage_install_git_hook
 

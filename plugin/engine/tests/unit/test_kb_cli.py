@@ -28,6 +28,20 @@ def test_kb_lint_staged_applies_the_path_mode(kb_repo) -> None:
     assert runner.invoke(cli.app, args).exit_code == 1
 
 
+def test_kb_lint_report_names_config_problems(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "kb_lint:\n  path_modes:\n"
+        "    - {glob: 'Knowledge-Base/**', mode: block}\n"
+        "    - {glob: 'knowledge-base/**', mode: Block}\n",
+    )
+    kb_repo.write("knowledge-base/a.md", "fine\n")
+    result = runner.invoke(cli.app, ["kb", "lint", "--report", "--repo", str(kb_repo.root)])
+    assert result.exit_code == 0
+    assert "config: path_modes rule 2 (knowledge-base/**) has mode 'Block'" in result.output
+    assert "config: path_modes rule for 'Knowledge-Base/**' matches no file" in result.output
+
+
 def test_kb_lint_report_lists_over_budget(kb_repo) -> None:
     kb_repo.write("knowledge-base/big.md", "x" * 20000 + "\n")
     result = runner.invoke(cli.app, ["kb", "lint", "--report", "--repo", str(kb_repo.root)])
