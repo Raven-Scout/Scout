@@ -9,7 +9,7 @@ hook prints ``kb-lint: privacy check could not run`` and then:
   ``SCOUT_READER`` set to anything but exactly ``owner``); the run's retry/park
   handling applies;
 - **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
-  naming the problem and ``scoutctl doctor``, and an audit row
+  naming the problem and ``scoutctl bootstrap doctor``, and an audit row
   (``event: "privacy.check_unavailable"``, no content) appended to
   ``.scout-logs/kb-reads.jsonl``, which the doctor counts.
 
@@ -76,7 +76,7 @@ cannot_run() {{
     exit 1
   fi
   echo "kb-lint: WARNING: the privacy check could not run ($1); this commit was NOT checked" \\
-    "for private links in shared files. Run scoutctl doctor." >&2
+    "for private links in shared files. Run scoutctl bootstrap doctor." >&2
   audit_unavailable
   exit 0
 }}

@@ -292,6 +292,21 @@ def test_overlay_local_only_add(tmp_path: Path) -> None:
     assert pol.warnings == ()
 
 
+def test_a_long_privacy_glob_is_never_dropped(tmp_path: Path) -> None:
+    """kb-lint caps its own globs at MAX_GLOB_STARS; a privacy rule must keep protecting its path."""
+    glob = "**/x/**/y/**/z/**"
+    pol = load_policy(
+        _overlay(
+            tmp_path,
+            f'privacy:\n  local_only_add: ["{glob}"]\n'
+            f'  visibility_defaults:\n    - {{glob: "{glob}", visibility: private}}\n',
+        )
+    )
+    label = classify("w/x/y/z/note.md", _fm("name: Note"), pol)
+    assert label.local_only is True and label.visibility == "private"
+    assert pol.warnings == ()
+
+
 def test_overlay_local_only_add_beats_sync_allow(tmp_path: Path) -> None:
     pol = load_policy(_overlay(tmp_path, 'privacy:\n  local_only_add: [".scout-state/id-map.json"]\n'))
     assert classify(".scout-state/id-map.json", None, pol).local_only is True

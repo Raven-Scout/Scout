@@ -4,20 +4,67 @@ Defaults ship in scout/defaults/scout-config.yaml under ``kb_lint``. A vault
 may add budgets with a top-level ``kb_budgets: {glob: bytes}`` map, which is
 consulted before the defaults (first match wins), and may set
 ``kb_lint.mode`` to ``block`` once report-mode tuning is done.
+
+``kb_lint.path_modes`` sets the mode per path instead: an ordered list of
+``{glob, mode, exclude?, exclude_logs?, checks?}`` rules. The FIRST rule that
+matches a finding decides its mode; a rule matches when ``glob`` matches the
+path, no ``exclude`` glob does, the path is not a log file (``log_globs``)
+when ``exclude_logs`` is true, and ``checks`` (if given) names the finding's
+check. A path no rule matches gets the global ``mode``. So a narrow rule goes
+before a broad one, and an excluded path falls through to the next rule.
+Privacy findings block whatever the mode (:data:`PRIVACY_BLOCKING`).
+
+A bad mode value means ``report``, never ``block``, so a config mistake can
+silently turn enforcement off. :attr:`LintConfig.warnings` names each mistake:
+the hook prints them on every commit, and ``kb lint --report`` and the doctor
+show them too. A rule whose fields have the wrong type is dropped, because
+guessing could widen it (``checks: 5`` reading as "every check"). A dropped rule
+or an over-complex glob (:data:`MAX_GLOB_STARS`) in a rule's ``glob`` or
+``exclude`` sends the path on to the next rule, which may block: that fails
+closed, and the warning says what happened.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scout.config import load_config
+from scout.config import load_config, user_value
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
+
+# Every check id `kb lint` reports. A new check registers its id here, and
+# test_every_finding_uses_a_known_check_id fails until it does.
+# The blocking checks a mode decides; only these are worth naming in `checks:`.
+MODE_CHECKS = frozenset({"size", "mega-line", "diary"})
+# Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
+PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+# Warnings: never block, whatever the mode.
+WARNING_CHECKS = frozenset(
+    {
+        "citation",
+        "dangling-link",
+        "missing-context-note",
+        "visibility-value",
+        "privacy-contradiction",
+        "federation-ceiling",
+        "frontmatter-unparseable",
+        "privacy-overlay-unreadable",
+    }
+)
+KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
+
+# More `*` than this and a kb-lint glob matches nothing (`_lint_match`): each one
+# multiplies the regex's backtracking, and `**a` ten times over ran for more than
+# 20 seconds on a long enough filename. `**/x/**/y/**` is the most a lint glob
+# needs. Privacy and sync rules never go through this cap: see `_lint_match`.
+MAX_GLOB_STARS = 6
 
 
 @lru_cache(maxsize=256)
@@ -54,6 +101,20 @@ def _any(globs: tuple[str, ...], rel: str) -> bool:
     return any(glob_match(g, rel) for g in globs)
 
 
+def _lint_match(glob: str, rel: str) -> bool:
+    """``glob_match`` for kb-lint's own lists, where an over-complex glob matches nothing.
+
+    Only for these: a lint glob that drops out warns and fails no safety rule.
+    A privacy or sync rule that dropped out would quietly stop protecting a
+    path, so ``scout.kb.privacy``, ``lint_privacy``, ``repo_sync`` and
+    ``kb.read`` call ``glob_match`` directly."""
+    return glob.count("*") <= MAX_GLOB_STARS and glob_match(glob, rel)
+
+
+def _lint_any(globs: tuple[str, ...], rel: str) -> bool:
+    return any(_lint_match(g, rel) for g in globs)
+
+
 CONFIG_FILE = "scout-config.yaml"
 
 
@@ -80,6 +141,18 @@ class Budget:
 
 
 @dataclass(frozen=True)
+class PathMode:
+    """One ``kb_lint.path_modes`` rule; see the module docstring for matching."""
+
+    glob: str
+    mode: str
+    exclude: tuple[str, ...] = ()
+    exclude_logs: bool = False
+    # Check ids this rule covers (``size``, ``mega-line``, …); empty means every check.
+    checks: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class LintConfig:
     mode: str
     max_line_chars: int
@@ -92,27 +165,63 @@ class LintConfig:
     # Dated records `--report` never ranks as shrink targets (past daily
     # action-items files; the legacy session log, migrated by one-time sharding).
     report_exclude_globs: tuple[str, ...] = ()
+    path_modes: tuple[PathMode, ...] = ()
+    # Config mistakes, for the person: what was wrong and what happens instead.
+    warnings: tuple[str, ...] = ()
+
+    def mode_for(self, rel: str, check: str) -> str:
+        """The mode a finding of ``check`` on ``rel`` is enforced in: the first
+        matching ``path_modes`` rule's, else the global ``mode``."""
+        for r in self.path_modes:
+            if r.checks and check not in r.checks:
+                continue
+            if not _lint_match(r.glob, rel) or _lint_any(r.exclude, rel):
+                continue
+            if r.exclude_logs and self.is_log(rel):
+                continue
+            return r.mode
+        return self.mode
+
+    @property
+    def mode_label(self) -> str:
+        """The mode for display: ``report``/``block``, plus ``per path`` when rules exist."""
+        return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _any(self.exclude_globs, rel)
+        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _lint_any(self.exclude_globs, rel)
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
-            if glob_match(b.glob, rel):
+            if _lint_match(b.glob, rel):
                 return b.bytes
         return None
 
     def report_excluded(self, rel: str) -> bool:
-        return _any(self.report_exclude_globs, rel)
+        return _lint_any(self.report_exclude_globs, rel)
 
     def is_log(self, rel: str) -> bool:
-        return _any(self.log_globs, rel)
+        return _lint_any(self.log_globs, rel)
 
     def is_topic(self, rel: str) -> bool:
-        return _any(self.topic_globs, rel)
+        return _lint_any(self.topic_globs, rel)
 
     def line_limit(self, rel: str) -> int:
-        return self.max_line_chars_strict if _any(self.strict_line_globs, rel) else self.max_line_chars
+        return self.max_line_chars_strict if _lint_any(self.strict_line_globs, rel) else self.max_line_chars
+
+    def rules_matching_nothing(self, tracked: list[str]) -> list[str]:
+        """A warning per ``path_modes`` rule whose glob matches no file kb-lint checks.
+
+        The loader can't see this one: ``Knowledge-Base/**`` is a fine glob
+        that enforces nothing, and it reads as a flip that was applied."""
+        linted = [rel for rel in tracked if self.in_scope(rel)]
+        return [
+            f"path_modes rule for {r.glob!r} matches no file kb-lint checks, so it does nothing"
+            for r in self.path_modes
+            if not any(_lint_match(r.glob, rel) for rel in linted)
+        ]
+
+
+Warn = Callable[[str], None]
 
 
 def _bytes(value: Any) -> int | None:
@@ -123,6 +232,125 @@ def _globs(raw: dict[str, Any], key: str) -> tuple[str, ...]:
     return tuple(str(g) for g in (raw.get(key) or []))
 
 
+def _mode(value: Any, where: str, warn: Warn) -> str:
+    """A mode value; anything but exactly ``report``/``block`` is ``report`` (never block by typo)."""
+    if isinstance(value, str) and value in _MODES:
+        return value
+    warn(f"{where} has mode {value!r}, not report or block, so it reports and blocks nothing")
+    return "report"
+
+
+def _str_tuple(value: Any) -> tuple[str, ...] | None:
+    """A string or a list of strings as a tuple; None for any other shape."""
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return tuple(value)
+    return None
+
+
+_RULE_KEYS = frozenset({"glob", "mode", "exclude", "exclude_logs", "checks"})
+
+
+def _rule_checks(value: Any, where: str, warn: Warn) -> frozenset[str] | None:
+    """A rule's ``checks`` (empty when absent, which means every check); None when
+    the rule must go: empty or malformed would otherwise read as every check."""
+    if value is None:
+        return frozenset()
+    checks = _str_tuple(value)
+    if not checks:
+        warn(f"{where} has checks {value!r}, not a list of check ids, so the rule is dropped")
+        return None
+    for check in checks:
+        if check not in KNOWN_CHECKS:
+            warn(f"{where} names unknown check {check!r}, which it can never match; known: {sorted(MODE_CHECKS)}")
+        elif check not in MODE_CHECKS:
+            warn(f"{where} names {check!r}, which no mode changes: privacy always blocks, warnings never do")
+    return frozenset(checks)
+
+
+def _path_mode(d: Any, where: str, warn: Warn) -> PathMode | None:
+    """One ``path_modes`` rule, or None (with a warning) when it can't be read as written."""
+    if not isinstance(d, dict):
+        warn(f"{where} is {d!r}, not a rule, so it is dropped")
+        return None
+    unknown = sorted(str(k) for k in d if k not in _RULE_KEYS)
+    if unknown:
+        warn(f"{where} has unknown key(s) {unknown}, ignored; known: {sorted(_RULE_KEYS)}")
+    glob = d.get("glob")
+    if not isinstance(glob, str) or not glob:
+        warn(f"{where} has glob {glob!r}, not a path glob, so the rule is dropped")
+        return None
+    where = f"{where} ({glob})"
+    if glob.startswith(("/", "./")):
+        warn(f"{where} starts with {glob.split('/')[0]}/, but paths are vault-relative, so it can never match")
+    raw_exclude = d.get("exclude")
+    exclude = () if raw_exclude is None else _str_tuple(raw_exclude)
+    if exclude is None:
+        warn(f"{where} has exclude {raw_exclude!r}, not a list of globs, so the rule is dropped")
+        return None
+    exclude_logs = d.get("exclude_logs", False)
+    if not isinstance(exclude_logs, bool):
+        warn(f"{where} has exclude_logs {exclude_logs!r}, not true or false, so the rule is dropped")
+        return None
+    checks = _rule_checks(d.get("checks"), where, warn)
+    if checks is None:
+        return None
+    return PathMode(glob, _mode(d.get("mode"), where, warn), exclude, exclude_logs, checks)
+
+
+def _path_modes(raw: Any, warn: Warn) -> tuple[PathMode, ...]:
+    """``kb_lint.path_modes`` in order, minus the rules that can't be read as written."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        warn(f"path_modes is a {type(raw).__name__}, not a list of rules, so every rule is ignored")
+        return ()
+    rules = (_path_mode(d, f"path_modes rule {i}", warn) for i, d in enumerate(raw, 1))
+    return tuple(r for r in rules if r is not None)
+
+
+def _complex_globs(cfg: LintConfig, warn: Warn) -> None:
+    rule_globs = (g for r in cfg.path_modes for g in (r.glob, *r.exclude))
+    lists = (cfg.log_globs, cfg.strict_line_globs, cfg.exclude_globs, cfg.topic_globs, cfg.report_exclude_globs)
+    for glob in dict.fromkeys((*rule_globs, *(b.glob for b in cfg.budgets), *(g for gs in lists for g in gs))):
+        if glob.count("*") > MAX_GLOB_STARS:
+            warn(f"glob {glob!r} has more than {MAX_GLOB_STARS} '*', so it matches nothing")
+
+
+_KB_LINT_KEYS = frozenset(
+    {
+        "mode",
+        "path_modes",
+        "max_line_chars",
+        "max_line_chars_strict",
+        "budgets",
+        "log_globs",
+        "strict_line_globs",
+        "exclude_globs",
+        "topic_globs",
+        "report_exclude_globs",
+    }
+)
+
+
+def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) -> None:
+    """A misspelt or misshapen ``kb_lint``: it reads as applied and enforces nothing.
+
+    The shape comes from the vault's own file, because the merge has already
+    swapped a non-mapping ``kb_lint`` for the defaults by the time ``cfg`` exists."""
+    written = user_value("kb_lint", data_dir)
+    if written is not None and not isinstance(written, dict):
+        warn(f"kb_lint is a {type(written).__name__}, not a mapping, so it is ignored and the defaults apply")
+    for key in cfg:
+        if key != "kb_lint" and re.sub(r"[-_\s]", "", str(key)).lower() == "kblint":
+            warn(f"top-level key {key!r} isn't kb_lint, so it is ignored")
+    raw = cfg.get("kb_lint")
+    unknown = sorted(str(k) for k in raw if k not in _KB_LINT_KEYS) if isinstance(raw, dict) else []
+    if unknown:
+        warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
+
+
 def load_lint_config(data_dir: Path | None = None) -> LintConfig:
     cfg = load_config(data_dir)
     raw = cfg.get("kb_lint") or {}
@@ -131,9 +359,11 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
     user_budgets = cfg.get("kb_budgets") or {}
     budgets = [Budget(str(g), _bytes(b)) for g, b in user_budgets.items()] if isinstance(user_budgets, dict) else []
     budgets += [Budget(str(d["glob"]), _bytes(d.get("bytes"))) for d in raw.get("budgets") or []]
-    mode = str(raw.get("mode", "report"))
-    return LintConfig(
-        mode=mode if mode in _MODES else "report",
+    warnings: list[str] = []
+    _section_mistakes(cfg, data_dir, warnings.append)
+    lint_cfg = LintConfig(
+        mode=_mode(raw.get("mode", "report"), "kb_lint", warnings.append),
+        path_modes=_path_modes(raw.get("path_modes"), warnings.append),
         max_line_chars=int(raw.get("max_line_chars", 1500)),
         max_line_chars_strict=int(raw.get("max_line_chars_strict", 500)),
         budgets=tuple(budgets),
@@ -143,3 +373,5 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
         topic_globs=_globs(raw, "topic_globs"),
         report_exclude_globs=_globs(raw, "report_exclude_globs"),
     )
+    _complex_globs(lint_cfg, warnings.append)
+    return dataclasses.replace(lint_cfg, warnings=tuple(warnings))

@@ -183,6 +183,16 @@ def config_load_problem(data_dir: Path | None = None) -> str | None:
     return None if data is None or isinstance(data, dict) else "not a mapping"
 
 
+def user_value(key: str, data_dir: Path | None = None) -> Any:
+    """``key`` as the vault's own file writes it, before any merging; None when
+    absent or unreadable (``load_config`` already warns about an unreadable file).
+    For telling a person what they wrote, which the merge can hide."""
+    try:
+        return _read_yaml(paths.config_path(data_dir)).get(key)
+    except (ConfigError, OSError, UnicodeDecodeError):
+        return None
+
+
 # ----- day boundary ---------------------------------------------------------
 #
 # Scout's "today" (daily action-items filename, trigger daily caps, freshness

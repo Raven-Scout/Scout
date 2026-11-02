@@ -188,7 +188,7 @@ def kb_lint(
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
 ) -> None:
-    """Lint the vault's KB structure. Exit 1 = blocked (block mode) or lossless tokens missing."""
+    """Lint the vault's KB structure. Exit 1 = blocked (block-mode path, or privacy) or lossless tokens missing."""
     root = _kb_repo(repo)
     if lossless_rev or lossless_path:
         from scout.kb.lossless import lossless_check
@@ -202,11 +202,14 @@ def kb_lint(
         print(f"lossless: {len(missing)} token(s) missing")
         raise typer.Exit(1 if missing else 0)
     if report:
-        from scout.kb.lint import over_budget
+        from scout.kb.lint import config_problems, over_budget
         from scout.kb.lint_config import load_lint_config
         from scout.kb.lint_privacy import format_report, privacy_report
 
-        rows = over_budget(root, load_lint_config(root))
+        cfg = load_lint_config(root)
+        for problem in config_problems(root, cfg):
+            print(f"config: {problem}")
+        rows = over_budget(root, cfg)
         print(f"{len(rows)} file(s) over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
