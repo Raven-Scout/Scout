@@ -29,6 +29,7 @@ import yaml
 
 from scout import config as scout_config
 from scout import custom_connectors, yaml_blocks
+from scout.errors import ConfigError
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -48,7 +49,7 @@ from scout.scripts.phase_assembly import (
 )
 from scout.scripts.three_way_merge import three_way_merge
 from scout.scripts.vault_drift import VaultEdit
-from scout.yaml_safe import load_yaml
+from scout.yaml_safe import load_yaml, yaml_problem
 
 
 @dataclass
@@ -493,8 +494,14 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
 
 
 def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
-    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped."""
+    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped.
+
+    A value PyYAML can't build stops the caller instead: assembling without the
+    file would take its connectors' sections out of the brain files.
+    """
     result = custom_connectors.load(cfg.vault, plugin_root=cfg.plugin_root)
+    if result.unbuildable:
+        raise ConfigError(f"{custom_connectors.CUSTOM_FILE} {result.issues[0].message}; fix it, then run this again")
     for issue in result.issues:
         print(f"warning: {custom_connectors.CUSTOM_FILE}: {issue.path}: {issue.message}", file=sys.stderr)
     return result.connectors
@@ -770,7 +777,11 @@ def config_from_vault(
     its instance/user/connectors/notify blocks, or connectors.inputs), or when
     notify.wrap_channels isn't a non-empty list of known wrap channels.
     """
-    existing = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    try:
+        existing = load_yaml(text)
+    except yaml.YAMLError as e:
+        raise yaml.YAMLError(yaml_problem(e, text)) from e  # the callers print it; a YAML error quotes the file
     if existing is None:
         existing = {}
     if not isinstance(existing, dict):
@@ -1025,7 +1036,7 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
 
     split = yaml_blocks.split_blocks(text, indent=0)
     try:
-        original = load_yaml(text) or {}
+        original = yaml.safe_load(text) or {}
     except yaml.YAMLError:
         return fallback("the file does not parse as YAML")
     if split is None or not isinstance(original, dict):

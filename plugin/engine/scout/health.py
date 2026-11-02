@@ -733,7 +733,7 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
 
 
 def config_findings(vault: Path) -> list[Finding]:
-    """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits are refused."""
+    """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits may be refused."""
     problem = config_load_problem(vault)
     if problem is None:
         return []
@@ -743,7 +743,7 @@ def config_findings(vault: Path) -> list[Finding]:
             severity="red",
             since=None,
             summary=f"scout-config.yaml doesn't load ({problem}), so runs use the default settings "
-            "and their commits are refused",
+            "and their commits may be refused",
             fix="Fix that line in scout-config.yaml, then check it with: scoutctl bootstrap doctor",
             source="config",
         )

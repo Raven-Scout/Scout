@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 
 from scout import paths
-from scout.yaml_safe import load_yaml
+from scout.yaml_safe import load_yaml, yaml_problem
 
 # The channels a vault may subscribe to. Only `stable` ships today.
 CHANNELS = ("stable",)
@@ -157,7 +157,9 @@ def apply_auto_update(text: str, *, enabled: bool | None = None, channel: str | 
     try:
         original = load_yaml(text)
     except yaml.YAMLError as e:
-        raise AutoUpdateWriteError(f"cannot parse scout-config.yaml, so it was not changed: {e}") from e
+        raise AutoUpdateWriteError(
+            f"cannot parse scout-config.yaml, so it was not changed: {yaml_problem(e, text)}"
+        ) from e
     if original is None:
         original = {}
     if not isinstance(original, dict):

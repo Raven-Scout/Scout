@@ -13,6 +13,8 @@ pins the frontmatter side; this file pins the config side:
 from __future__ import annotations
 
 import io
+import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,13 +28,21 @@ from scout import custom_connectors, health, health_notify
 from scout import schedule as scout_schedule
 from scout.cli import app
 from scout.errors import ConfigError
+from scout.hooks import mcp_tool_gate
 from scout.kb import outbound
 from scout.kb.lint import run_hook
 from scout.kb.lint_config import load_lint_config
 from scout.kb.lint_privacy import PolicyUnreadable, policy_from_config_text, privacy_staged
 from scout.kb.ontology import clear_frontmatter_cache
-from scout.kb.privacy import load_policy
-from scout.scripts import auto_update_config, bootstrap, connector_probes, models_config, privacy_migrate
+from scout.kb.privacy import _narrowing_overlay, load_policy
+from scout.scripts import (
+    auto_update_config,
+    bootstrap,
+    connector_probes,
+    custom_connector_ops,
+    models_config,
+    privacy_migrate,
+)
 from scout.scripts.auto_update_config import AutoUpdateWriteError
 from scout.scripts.bootstrap_doctor import run_doctor
 from scout.scripts.models_config import ModelsWriteError
@@ -292,6 +302,148 @@ def test_a_recovered_overlay_stays_flagged_unreadable(tmp_path: Path, body: str)
         assert ("knowledge-base/hidden/**", "private") in policy.visibility_defaults
 
 
+# ----- a broken config is never looser than the engine default ------------------
+
+
+QUIET_NOTE = "knowledge-base/personal/quiet-errand.md"  # private by the engine's own path default
+QUIET_LINK = "see [[quiet-errand]]\n"
+MAKES_IT_NORMAL = (
+    "privacy:\n  visibility_defaults:\n    - glob: 'knowledge-base/personal/**'\n      visibility: normal\n"
+)
+MADE_UP_SURFACE = "made_up_surface"
+MAKES_A_SURFACE_OWNER_ONLY = f"privacy:\n  surfaces:\n    owner_only: [{MADE_UP_SURFACE}]\n"
+TURNS_SHARING_ON = (
+    "privacy:\n"
+    "  federation:\n"
+    "    enabled: true\n"
+    "  federation_defaults:\n"
+    "    - glob: 'knowledge-base/topics/**'\n"
+    "      scope: org\n"
+)
+
+
+def _quiet_vault(vault: Path, config: str) -> None:
+    _write(vault, QUIET_NOTE, "# Quiet Errand\n\nBody.\n")
+    _break_config(vault, GOOD_CONFIG + config)
+    outbound.clear_cache()
+
+
+def _check_outbound(vault: Path, surface: str) -> int:
+    draft = vault / ".scout-cache" / "outbound-draft.md"
+    draft.parent.mkdir(exist_ok=True)
+    draft.write_text(QUIET_LINK, encoding="utf-8")
+    args = ["kb", "check-outbound", str(draft), "--surface", surface, "--repo", str(vault)]
+    return CliRunner().invoke(app, args).exit_code
+
+
+@pytest.mark.parametrize("body", BUILD_STAGE)
+def test_a_normal_default_doesnt_lift_a_block_on_the_owners_commit(vault: Path, body: str) -> None:
+    _quiet_vault(vault, MAKES_IT_NORMAL + body + "\n")
+    _write(vault, "drafts/post.md", QUIET_LINK)
+    git(vault, "add", "drafts/post.md")
+    assert _blocking(vault) == [("drafts/post.md", "private-link")]
+    assert run_hook(vault, env={}, out=io.StringIO()) == 1
+
+
+@pytest.mark.parametrize("body", BUILD_STAGE)
+def test_a_normal_default_doesnt_change_the_label(vault: Path, body: str) -> None:
+    _quiet_vault(vault, MAKES_IT_NORMAL + body + "\n")
+    result = CliRunner().invoke(app, ["kb", "classify", QUIET_NOTE, "--json", "--repo", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["visibility"] == "private"
+
+
+def test_a_normal_default_doesnt_open_a_shared_surface(vault: Path) -> None:
+    _quiet_vault(vault, MAKES_IT_NORMAL + "d: 2026-13-45\n")
+    assert _check_outbound(vault, "slack") == 1
+
+
+def test_an_owner_only_surface_only_the_overlay_lists_stays_shared(vault: Path) -> None:
+    _quiet_vault(vault, MAKES_A_SURFACE_OWNER_ONLY + "d: 2026-13-45\n")
+    assert _check_outbound(vault, MADE_UP_SURFACE) == 1
+
+
+def test_the_same_settings_apply_once_the_config_loads(vault: Path) -> None:
+    """They wait for the file to load; they are not gone. Against the three tests above."""
+    _quiet_vault(vault, MAKES_IT_NORMAL)
+    assert _check_outbound(vault, "slack") == 0
+    _break_config(vault, GOOD_CONFIG + MAKES_A_SURFACE_OWNER_ONLY)
+    outbound.clear_cache()
+    assert _check_outbound(vault, MADE_UP_SURFACE) == 0
+
+
+def test_sharing_stays_off() -> None:
+    policy = policy_from_config_text(TURNS_SHARING_ON + "d: 2026-13-45\n")
+    assert policy.federation_enabled is False and policy.federation_defaults == ()
+    assert "privacy-overlay-unreadable" in policy.warnings
+    assert policy_from_config_text(TURNS_SHARING_ON).federation_enabled is True
+
+
+def test_every_narrowing_setting_is_recovered() -> None:
+    text = (
+        "privacy:\n"
+        "  local_only_add: ['quiet/**']\n"
+        "  shared_files_add: ['extra/**']\n"
+        "  federation_ceilings:\n"
+        "    - {glob: 'knowledge-base/topics/**', ceiling: none}\n"
+        "  surfaces:\n"
+        "    shared: [vault]\n"
+        "d: 2026-13-45\n"
+    )
+    policy = policy_from_config_text(text)
+    assert "quiet/**" in policy.local_only and "extra/**" in policy.shared_files
+    assert [r.glob for r in policy.federation_ceilings_overlay] == ["knowledge-base/topics/**"]
+    assert "vault" in policy.shared_surfaces and "vault" not in policy.owner_only_surfaces
+
+
+def test_a_recovered_surface_move_is_checked(vault: Path) -> None:
+    _quiet_vault(vault, "privacy:\n  surfaces:\n    shared: [vault]\nd: 2026-13-45\n")
+    assert _check_outbound(vault, "vault") == 1
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param("{glob: 'a/**', visibility: normal}", id="normal"),
+        pytest.param("{glob: 'a/**', visibility: ' NORMAL '}", id="normal-as-the-parser-reads-it"),
+    ],
+)
+def test_only_the_normal_entries_of_visibility_defaults_are_dropped(entry: str) -> None:
+    text = (
+        "privacy:\n"
+        "  visibility_defaults:\n"
+        f"    - {entry}\n"
+        "    - {glob: 'a/secret/**', visibility: private}\n"
+        "    - {glob: 'b/**', visibility: nonsense}\n"
+        "d: 2026-13-45\n"
+    )
+    added = policy_from_config_text(text).visibility_defaults
+    assert ("a/**", "normal") not in added
+    assert added[:2] == (("a/secret/**", "private"), ("b/**", "private"))
+
+
+def test_a_key_nobody_has_shown_to_narrow_stays_out() -> None:
+    """An allowlist: a key added later doesn't apply on a broken config until it's put on the list."""
+    kept = _narrowing_overlay({"delegates": [{"person": "alex@example.com"}], "shared_files_add": ["extra/**"]})
+    assert kept == {"shared_files_add": ["extra/**"]}
+
+
+def test_a_bad_owner_only_list_doesnt_cost_the_shared_one() -> None:
+    policy = policy_from_config_text("privacy:\n  surfaces:\n    owner_only: 5\n    shared: [vault]\nd: 2026-13-45\n")
+    assert "vault" in policy.shared_surfaces and "vault" not in policy.owner_only_surfaces
+
+
+@pytest.mark.parametrize("key", ["visibility_defaults", "surfaces"])
+def test_a_wrong_shape_in_a_filtered_key_still_warns(key: str) -> None:
+    warnings = policy_from_config_text(f"privacy:\n  {key}: nope\nd: 2026-13-45\n").warnings
+    assert set(warnings) == {"privacy-overlay-invalid", "privacy-overlay-unreadable"}
+
+
+def test_a_privacy_block_that_isnt_a_mapping_still_warns() -> None:
+    warnings = policy_from_config_text("privacy: nope\nd: 2026-13-45\n").warnings
+    assert set(warnings) == {"privacy-overlay-invalid", "privacy-overlay-unreadable"}
+
+
 def test_a_recovered_overlay_keeps_its_own_warnings() -> None:
     text = "privacy:\n  shared_files_add: nope\nd: 2026-13-45\n"
     assert set(policy_from_config_text(text).warnings) == {"privacy-overlay-invalid", "privacy-overlay-unreadable"}
@@ -507,3 +659,280 @@ def test_bootstrap_and_probes_raise_a_yaml_error(tmp_path: Path, body: str) -> N
     probes.write_text(body + "\n", encoding="utf-8")
     with pytest.raises(yaml.YAMLError):
         connector_probes.load_registry(probes)
+
+
+# ----- connectors.custom.yaml: what a file nobody can read must still stop -------
+
+
+PLUGIN = Path(__file__).parent.parent.parent.parent
+SYNTAX_CANARY = "syntax_canary"
+SYNTAX_ERROR = f"{SYNTAX_CANARY}: [unclosed\n"
+RESTRICTED = {
+    "key": "first",
+    "display_name": "First",
+    "server": "srv_first",
+    "probe": "mcp__srv_first__ping",
+    "restrict_tools": True,
+    "inbound": {"tools": ["mcp__srv_first__list"], "focus": "Changes."},
+}
+THIRD = {
+    "key": "third",
+    "display_name": "Third",
+    "server": "srv_third",
+    "probe": "mcp__srv_third__ping",
+    "inbound": {"tools": ["mcp__srv_third__list"], "focus": "Changes."},
+}
+UNUSABLE_FILES = [
+    pytest.param(lambda t: t + "note: 2026-13-45\n", id="bad-value-at-top-level"),
+    pytest.param(lambda t: t.replace("  first:\n", "  first:\n    when: 2026-13-45\n"), id="bad-value-in-an-entry"),
+    pytest.param(lambda t: t + SYNTAX_ERROR, id="syntax-error"),
+    pytest.param(lambda _t: "- a\n- list\n", id="not-a-mapping"),
+    pytest.param(lambda t: t.replace("schema_version: 1", "schema_version: 9"), id="wrong-schema-version"),
+    pytest.param(lambda _t: "schema_version: 1\nconnectors: [a]\n", id="connectors-not-a-mapping"),
+    pytest.param(lambda _t: b"\xff\xfe restrict_tools", id="not-utf8"),
+]
+
+
+@pytest.fixture
+def installed(tmp_path: Path) -> Path:
+    """A real vault (jobs and claude skipped) with one restricted custom connector."""
+    v = tmp_path / "Scout"
+    bootstrap.install(
+        bootstrap.BootstrapConfig(
+            vault=v,
+            plugin_root=PLUGIN,
+            instance_name="TestScout",
+            instance_name_lower="testscout",
+            user_name="Alex",
+            user_email="alex@example.com",
+            timezone="UTC",
+            platform="macos",
+            plugin_version="0.0.0",
+            enabled_connectors={"slack"},
+            connector_inputs={},
+            skip_jobs=True,
+            skip_claude=True,
+        )
+    )
+    assert _custom_add(v, RESTRICTED).status == "applied"
+    return v
+
+
+def _custom_add(vault: Path, definition: dict, **kw: bool) -> custom_connector_ops.Outcome:
+    return custom_connector_ops.add(
+        vault, dict(definition), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={}, **kw
+    )
+
+
+def _break_custom(vault: Path, breakit: Callable[[str], str | bytes]) -> bytes:
+    path = vault / custom_connectors.CUSTOM_FILE
+    broken = breakit(path.read_text(encoding="utf-8"))
+    path.write_bytes(broken if isinstance(broken, bytes) else broken.encode())
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("breakit", UNUSABLE_FILES)
+def test_custom_add_leaves_a_file_it_cant_read_alone(installed: Path, breakit: Callable[[str], str | bytes]) -> None:
+    """Writing back the empty ``raw`` would delete the other entries and lift their ``restrict_tools``."""
+    before = _break_custom(installed, breakit)
+    config_before = (installed / "scout-config.yaml").read_bytes()
+    skill_before = (installed / "SKILL.md").read_bytes()
+    gate_before = custom_connectors.tool_gate(installed)
+
+    assert _custom_add(installed, THIRD, dry_run=True).status == "error"
+    out = _custom_add(installed, THIRD)
+
+    assert out.status == "error" and "fix it by hand" in (out.message or "")
+    assert (installed / custom_connectors.CUSTOM_FILE).read_bytes() == before
+    assert (installed / "scout-config.yaml").read_bytes() == config_before
+    assert (installed / "SKILL.md").read_bytes() == skill_before
+    assert custom_connectors.tool_gate(installed) == gate_before
+
+
+@pytest.mark.parametrize("breakit", UNUSABLE_FILES)
+def test_custom_remove_says_so_rather_than_no_such_connector(
+    installed: Path, breakit: Callable[[str], str | bytes]
+) -> None:
+    before = _break_custom(installed, breakit)
+    out = custom_connector_ops.remove(installed, "first", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert out.status == "error" and "fix it by hand" in (out.message or "")
+    assert (installed / custom_connectors.CUSTOM_FILE).read_bytes() == before
+
+
+def test_custom_remove_refuses_when_the_file_breaks_while_it_waits(
+    installed: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-read under the lock is the one that counts: a read before it can be stale."""
+    real_lock = custom_connector_ops.acquire_lock_with_wait
+
+    def breaks_then_locks(*a: object, **kw: object) -> None:
+        _break_custom(installed, lambda t: t + "note: 2026-13-45\n")
+        real_lock(*a, **kw)
+
+    monkeypatch.setattr(custom_connector_ops, "acquire_lock_with_wait", breaks_then_locks)
+    out = custom_connector_ops.remove(installed, "first", plugin_root=PLUGIN, plugin_version="0.0.0")
+    assert out.status == "error" and "fix it by hand" in (out.message or "")
+
+
+def test_custom_add_still_works_past_one_invalid_entry(installed: Path) -> None:
+    """Only a whole-file rejection refuses: an invalid entry is in ``raw``, so a rewrite keeps it."""
+    path = installed / custom_connectors.CUSTOM_FILE
+    path.write_text(path.read_text(encoding="utf-8") + "  broken:\n    display_name: B\n", encoding="utf-8")
+    assert _custom_add(installed, THIRD).status != "error"
+    assert {"first", "broken", "third"} <= set(yaml.safe_load(path.read_text(encoding="utf-8"))["connectors"])
+
+
+@pytest.mark.parametrize("body", UNCONSTRUCTIBLE)
+def test_custom_load_marks_an_unbuildable_value(tmp_path: Path, body: str) -> None:
+    (tmp_path / custom_connectors.CUSTOM_FILE).write_text(body + "\n", encoding="utf-8")
+    loaded = custom_connectors.load(tmp_path, plugin_root=tmp_path)
+    assert loaded.file_unusable and loaded.unbuildable and not loaded.raw
+
+
+@pytest.mark.parametrize("body", BUILD_STAGE)
+def test_an_upgrade_stops_rather_than_drop_the_custom_sections(installed: Path, body: str) -> None:
+    _break_custom(installed, lambda t: t + body + "\n")
+    cfg = bootstrap.config_from_vault(
+        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True, skip_claude=True
+    )
+    with pytest.raises(ConfigError, match="could not be read") as raised:
+        bootstrap.upgrade(cfg)
+    assert body.split(": ", 1)[1] not in str(raised.value)
+    assert "## First Inbound Scan" in (installed / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_an_upgrade_still_runs_past_a_syntax_error(installed: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Main's documented behaviour for a file that isn't YAML ("skipped until fixed"), unchanged here."""
+    _break_custom(installed, lambda t: t + SYNTAX_ERROR)
+    cfg = bootstrap.config_from_vault(
+        installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True, skip_claude=True
+    )
+    bootstrap.upgrade(cfg)
+    assert "could not be read: ParserError at line" in capsys.readouterr().err
+    assert "## First Inbound Scan" not in (installed / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_the_doctor_warns_on_a_bad_custom_file_and_does_not_crash(installed: Path, tmp_path: Path) -> None:
+    _break_custom(installed, lambda t: t + "note: 2026-13-45\n")
+    report = run_doctor(vault=installed, check_jobs=False, home=tmp_path / "home")
+    assert any("could not be read: ValueError at line" in w for w in report.warnings)
+    assert not any("2026-13-45" in line for line in report.warnings + report.errors)
+
+
+# Each hides the restricted server from the syntax-error regexes, with another server in plain sight.
+HIDDEN_FROM_THE_REGEXES = [
+    pytest.param("  writer: {server: writer, restrict_tools: true}\n", "", id="flow-style"),
+    pytest.param('  writer:\n    "server": writer\n    restrict_tools: true\n', "", id="quoted-key"),
+    pytest.param("  writer:\n    server: *n\n    restrict_tools: true\n", "name: &n writer\n", id="alias"),
+]
+
+
+@pytest.mark.parametrize(("entry", "before"), HIDDEN_FROM_THE_REGEXES)
+def test_the_tool_gate_denies_every_server_with_another_one_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str, before: str
+) -> None:
+    (tmp_path / custom_connectors.CUSTOM_FILE).write_text(
+        f"schema_version: 1\nwhen: 2026-13-45\n{before}connectors:\n  other:\n    server: other\n{entry}",
+        encoding="utf-8",
+    )
+    assert custom_connectors.tool_gate(tmp_path) == {custom_connectors.GATE_ALL: frozenset()}
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCOUT_MODE", "research")
+    for tool in ("mcp__writer__write", "mcp__other__list", "mcp__unrelated__list"):
+        decision = mcp_tool_gate.run(stdin=io.StringIO(json.dumps({"tool_name": tool, "tool_input": {}})))
+        assert decision is not None and decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ----- the push path can still reach the owner -----------------------------------
+
+
+@pytest.mark.parametrize("body", BUILD_STAGE)
+def test_notify_command_survives_a_bad_value_elsewhere(tmp_path: Path, body: str) -> None:
+    """``config.unreadable`` is the push that has to get out while the config is broken."""
+    (tmp_path / "scout-config.yaml").write_text(f"{body}\nnotify:\n  command: notify-me\n", encoding="utf-8")
+    assert health_notify._configured_command(tmp_path) == "notify-me"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param("notify:\n  command: notify-me\n  when: 2026-13-45\n", id="bad-value-inside"),
+        pytest.param("notify:\n  command: notify-me\n" + SYNTAX_ERROR, id="syntax-error"),
+    ],
+)
+def test_notify_command_is_none_when_its_own_block_cant_be_read(tmp_path: Path, config: str) -> None:
+    (tmp_path / "scout-config.yaml").write_text(config, encoding="utf-8")
+    assert health_notify._configured_command(tmp_path) is None
+
+
+def test_notify_command_on_a_healthy_config(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text("notify:\n  command: notify-me\n", encoding="utf-8")
+    assert health_notify._configured_command(tmp_path) == "notify-me"
+
+
+def test_notify_command_without_a_readable_config(tmp_path: Path) -> None:
+    assert health_notify._configured_command(tmp_path) is None
+    (tmp_path / "scout-config.yaml").write_bytes(b"\xff\xfe")
+    assert health_notify._configured_command(tmp_path) is None
+
+
+# ----- a syntax error doesn't put the file's text in a message --------------------
+
+
+def test_the_custom_issue_names_the_line_not_the_text(tmp_path: Path) -> None:
+    (tmp_path / custom_connectors.CUSTOM_FILE).write_text(SYNTAX_ERROR, encoding="utf-8")
+    loaded = custom_connectors.load(tmp_path, plugin_root=tmp_path)
+    assert loaded.file_unusable and not loaded.unbuildable
+    assert loaded.issues[0].message.startswith("could not be read: ParserError at line")
+    assert SYNTAX_CANARY not in loaded.issues[0].message
+
+
+def test_the_config_writers_name_the_line_not_the_text() -> None:
+    with pytest.raises(ModelsWriteError, match="ParserError at line") as models:
+        models_config.apply_models_default(SYNTAX_ERROR, "sonnet")
+    with pytest.raises(AutoUpdateWriteError, match="ParserError at line") as auto:
+        auto_update_config.apply_auto_update(SYNTAX_ERROR, enabled=True)
+    assert SYNTAX_CANARY not in str(models.value) and SYNTAX_CANARY not in str(auto.value)
+
+
+def test_config_from_vault_names_the_line_not_the_text(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text(SYNTAX_ERROR, encoding="utf-8")
+    with pytest.raises(yaml.YAMLError, match="ParserError at line") as raised:
+        bootstrap.config_from_vault(tmp_path, plugin_root=tmp_path, plugin_version="0")
+    assert SYNTAX_CANARY not in str(raised.value)
+    assert isinstance(raised.value.__cause__, yaml.YAMLError)
+
+
+def test_bootstrap_upgrade_prints_the_line_not_the_text(installed: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (installed / "scout-config.yaml").write_text(SYNTAX_ERROR, encoding="utf-8")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(installed))
+    result = CliRunner().invoke(app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
+    assert result.exit_code == ConfigError.exit_code
+    assert "is malformed: ParserError at line" in result.stderr
+    assert SYNTAX_CANARY not in result.output
+
+
+def test_the_doctor_names_the_line_of_a_schedule_syntax_error(tmp_path: Path) -> None:
+    vault = tmp_path / "v"
+    _seed_doctor(vault, "a: 1\n")
+    _write(vault, ".scout-state/schedule.yaml", SYNTAX_ERROR)
+    report = run_doctor(vault=vault, check_jobs=False, home=tmp_path / "home")
+    assert any(e.startswith("schedule.yaml invalid: ParserError at line") for e in report.errors)
+    assert not any(SYNTAX_CANARY in e for e in report.errors)
+
+
+# ----- load_yaml_key agrees with a whole parse ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("!!null privacy: {a: 1}\n", None, id="null-tagged-key"),
+        pytest.param("privacy: {a: 1}\n!!null privacy: {b: 2}\n", {"a": 1}, id="null-tagged-duplicate"),
+        pytest.param("!!str privacy: {a: 1}\n", {"a": 1}, id="str-tagged-key"),
+        pytest.param('"privacy": {a: 1}\n', {"a": 1}, id="quoted-key"),
+    ],
+)
+def test_only_a_key_that_builds_to_the_string_counts(text: str, expected: object) -> None:
+    assert load_yaml_key(text, "privacy") == expected
+    assert yaml.safe_load(text).get("privacy") == expected

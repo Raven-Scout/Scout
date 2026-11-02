@@ -116,8 +116,9 @@ _MESSAGES = {
     "federation-ceiling": "federation_scope is wider than this folder may share (people notes, emails: none; "
     "meetings and threads: named people only), so part of it is dropped",
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
-    "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so only its privacy: block if that part reads "
-    "cleanly, else the engine's default privacy policy, applies; a scheduled run's commit is refused until it does",
+    "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
+    "plus the stricter settings in its privacy: block if that part reads cleanly; "
+    "a scheduled run's commit is refused until it does",
 }
 
 

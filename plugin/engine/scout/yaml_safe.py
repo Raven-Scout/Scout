@@ -17,6 +17,8 @@ from typing import Any
 
 import yaml
 
+_KEY_TAGS = ("tag:yaml.org,2002:str", "tag:yaml.org,2002:value")  # what safe_load builds to a plain str
+
 
 class YAMLValueError(yaml.YAMLError):
     """YAML that scans but holds a value PyYAML can't build. Names the cause, never the text."""
@@ -49,7 +51,8 @@ def load_yaml_key(text: str, key: str) -> Any:
         for key_node, value_node in root.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
                 raise YAMLValueError("merge key")
-            if isinstance(key_node, yaml.ScalarNode) and key_node.value == key:
+            # A key tagged anything else (``!!null privacy:``) builds to something other than ``key``.
+            if isinstance(key_node, yaml.ScalarNode) and key_node.value == key and key_node.tag in _KEY_TAGS:
                 found = value_node  # the last one wins, as in safe_load
         return None if found is None else yaml.SafeLoader("").construct_document(found)
     except yaml.YAMLError:

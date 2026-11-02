@@ -21,7 +21,7 @@ from scout import paths
 from scout.errors import ConfigError
 from scout.models import validate_model
 from scout.scripts.auto_update_config import _edit_children, _entry_starts, _is_filler, _loads_as, _mtime_ns
-from scout.yaml_safe import load_yaml
+from scout.yaml_safe import load_yaml, yaml_problem
 
 _KEY = "models"
 _HEADER_RE = re.compile(r"models[ \t]*:(?P<rest>[ \t].*)?$")
@@ -55,7 +55,7 @@ def apply_models_default(text: str, model: str) -> str:
     try:
         original = load_yaml(text)
     except yaml.YAMLError as e:
-        raise ModelsWriteError(f"cannot parse scout-config.yaml, so it was not changed: {e}") from e
+        raise ModelsWriteError(f"cannot parse scout-config.yaml, so it was not changed: {yaml_problem(e, text)}") from e
     if original is None:
         original = {}
     if not isinstance(original, dict):
