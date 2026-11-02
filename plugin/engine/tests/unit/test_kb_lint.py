@@ -13,7 +13,7 @@ from scout.kb.lint import OVERRIDE_ENV, _frontmatter_aliases, lint_staged, overr
 from scout.kb.lint_config import load_lint_config
 
 TOPIC = "knowledge-base/topics/widget/retrieval.md"
-PROJECT = "knowledge-base/projects/acme-pilot/acme-pilot.md"
+PROJECT = "knowledge-base/projects/acme-pilot/documents/acme-pilot.md"
 
 
 def _small_budgets(kb_repo, mode: str = "block") -> None:
@@ -37,9 +37,7 @@ def test_under_budget_passes(kb_repo) -> None:
 def test_new_file_over_budget_blocks(kb_repo) -> None:
     _small_budgets(kb_repo)
     kb_repo.stage(PROJECT, "x" * 200 + "\n")
-    assert ("knowledge-base/projects/acme-pilot/acme-pilot.md", "size", True) in _checks(
-        lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
-    )
+    assert (PROJECT, "size", True) in _checks(lint_staged(kb_repo.root, load_lint_config(kb_repo.root)))
 
 
 def test_over_budget_file_growing_blocks_shrinking_passes(kb_repo) -> None:
@@ -56,9 +54,11 @@ def test_over_budget_file_growing_blocks_shrinking_passes(kb_repo) -> None:
 def test_rename_without_growth_passes(kb_repo) -> None:
     _small_budgets(kb_repo)
     diary = "## §59 · 2026-09-07 (1:0x AM ET, `overnight-research`)\n"
-    kb_repo.stage("knowledge-base/projects/old/old.md", diary + "x" * 2000 + "\n" + "a\n" * 100)
+    kb_repo.stage("knowledge-base/projects/old/documents/old.md", diary + "x" * 2000 + "\n" + "a\n" * 100)
     kb_repo.commit()
-    kb_repo.git("mv", "knowledge-base/projects/old/old.md", "knowledge-base/projects/old/renamed.md")
+    kb_repo.git(
+        "mv", "knowledge-base/projects/old/documents/old.md", "knowledge-base/projects/old/documents/renamed.md"
+    )
     assert lint_staged(kb_repo.root, load_lint_config(kb_repo.root)).blocking == []
 
 

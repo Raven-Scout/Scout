@@ -4,7 +4,8 @@
 files next to the front page, missing sections, run narration in the body, or
 a front page whose "Where it stands" froze while new knowledge kept landing in
 its folder. This is that measure, report-only, and ``--next`` picks the one
-project the dreaming run's nightly KB pass rebuilds.
+project the dreaming run's nightly KB pass rebuilds. ``kb lint``'s page checks
+reuse the per-page parts on the staged diff, to stop new debt.
 
 Per ``<projects_dir>/<name>/`` folder with a ``<name>.md`` front page:
 
@@ -26,6 +27,13 @@ schema's ``graph.exclude`` (KB-relative) are left out. A private front page is
 still checked, but its row carries only paths, counts and verdicts: no
 priority, dates, section names or marker names.
 
+``--next`` takes the first row in table order that the pass can act on, except
+that a rebuild left half done on an earlier night comes first. It never picks a
+page labelled private, shared or local-only, whose new copies could widen it or
+hit a hard privacy block, or a page whose only problem is a loose file with such
+a label, which the pass must leave where it is. Either would pin the target to a
+page no night can fix.
+
 History comes from ONE ``git log --name-only`` over the projects folder, not a
 call per folder.
 """
@@ -33,6 +41,7 @@ call per folder.
 from __future__ import annotations
 
 import datetime as dt
+import glob
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -46,7 +55,7 @@ from scout.config import load_config
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint_config import glob_match, load_lint_config
-from scout.kb.privacy import FULL_READERS, label_file, load_frontmatter_yaml, load_policy
+from scout.kb.privacy import FULL_READERS, Label, label_file, load_frontmatter_yaml, load_policy
 
 KB_PREFIX = "knowledge-base/"
 PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
@@ -221,14 +230,21 @@ def _folder_last_change(
     return newest
 
 
+def _pinned(label: Label) -> bool:
+    """A file the nightly pass must not copy or move (the phase's rule, enforced here for its pick)."""
+    return label.visibility == "private" or label.shared_file or label.local_only
+
+
 def check_folder(
     vault: Path,
     folder: _Folder,
     cfg: StructureConfig,
     history: dict[str, dt.date],
     excluded: Callable[[str], bool],
-    private: bool,
+    label: Label,
+    pinned_loose: int,
 ) -> dict[str, Any]:
+    private = label.visibility == "private"
     front = f"{folder.rel}/{folder.name}.md"
     raw = (vault / front).read_bytes()
     fm, body = split_page(raw.decode("utf-8", errors="replace"))
@@ -256,6 +272,11 @@ def check_folder(
         problems.append("no as_of")
     if stale:
         problems.append("stale" if private else f"stale (as_of {as_of}, folder changed {newest})")
+    # Everything but the loose count can be acted on, and so can any loose file that isn't pinned.
+    actionable = len(problems) > (1 if folder.loose else 0) or len(folder.loose) > pinned_loose
+    half_rebuilt = (missing or size > cfg.page_budget_bytes) and any(
+        (vault / folder.rel / "archive").glob(f"{glob.escape(folder.name)}-*-pre-restructure.md")
+    )
     return {
         "project": folder.name,
         "path": front,
@@ -275,6 +296,8 @@ def check_folder(
         "stale": stale,
         "conforms": not problems,
         "problems": problems,
+        "rebuild_target": actionable and not _pinned(label),
+        "resume": bool(half_rebuilt) and not _pinned(label),
         "_rank": (not problems, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
@@ -289,18 +312,57 @@ def _graph_excludes(vault: Path) -> tuple[str, ...]:
     return KnowledgeGraph(str(schema), str(kb), vault=vault).exclude_globs()
 
 
+def _excluder(vault: Path, lint_excludes: Sequence[str]) -> Callable[[str], bool]:
+    """Whether a vault-relative path is left out. The schema is read on the first KB path
+    that gets this far, so a commit that touches no project page never opens it."""
+    graph_excludes: tuple[str, ...] | None = None
+
+    def excluded(rel: str) -> bool:
+        nonlocal graph_excludes
+        if any(glob_match(g, rel) for g in lint_excludes):
+            return True
+        if not rel.startswith(KB_PREFIX):
+            return False
+        if graph_excludes is None:
+            graph_excludes = _graph_excludes(vault)
+        return any(glob_match(g, rel[len(KB_PREFIX) :]) for g in graph_excludes)
+
+    return excluded
+
+
+@dataclass(frozen=True)
+class PageRules:
+    """What ``kb lint``'s page checks need: the settings, and where a path sits in a project folder."""
+
+    cfg: StructureConfig
+    excluded: Callable[[str], bool]
+
+    def kind(self, rel: str) -> str | None:
+        """``front`` for a project's front page, ``loose`` for a ``.md`` beside it, else None.
+
+        Raises ``KBError`` when the KB schema is malformed."""
+        prefix = self.cfg.projects_dir + "/"
+        if not rel.startswith(prefix) or not rel.endswith(".md"):
+            return None
+        parts = rel[len(prefix) :].split("/")
+        if len(parts) != 2 or parts[0] in self.cfg.skip_projects:
+            return None
+        front = f"{prefix}{parts[0]}/{parts[0]}.md"
+        if self.excluded(front) or self.excluded(rel):
+            return None
+        return "front" if rel == front else "loose"
+
+
+def load_page_rules(vault: Path, lint_excludes: Sequence[str]) -> PageRules:
+    """``kb lint``'s view of the settings. Raises ``KBError`` when they are unusable."""
+    return PageRules(load_structure_config(vault), _excluder(vault, lint_excludes))
+
+
 def structure_rows(vault: Path) -> list[dict[str, Any]]:
     """Every checked project folder's row, rebuild order first: non-conforming,
     then 🔴 > 🟡 > 🟢 > none, then the largest front page."""
     cfg = load_structure_config(vault)
-    lint_excludes = load_lint_config(vault).exclude_globs
-    graph_excludes = _graph_excludes(vault)
-
-    def excluded(rel: str) -> bool:
-        if any(glob_match(g, rel) for g in lint_excludes):
-            return True
-        return rel.startswith(KB_PREFIX) and any(glob_match(g, rel[len(KB_PREFIX) :]) for g in graph_excludes)
-
+    excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
     root = vault / cfg.projects_dir
     if not root.is_dir():
         return []
@@ -316,8 +378,9 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
-        private = label_file(vault, front, policy).visibility == "private"
-        rows.append(check_folder(vault, folder, cfg, history, excluded, private))
+        pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
+        label = label_file(vault, front, policy)
+        rows.append(check_folder(vault, folder, cfg, history, excluded, label, pinned_loose))
     rows.sort(key=lambda r: r["_rank"])
     for r in rows:
         del r["_rank"]
@@ -325,7 +388,9 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
 
 
 def next_target(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    return next((r for r in rows if not r["conforms"]), None)
+    """The nightly pass's page: a half-done rebuild first, else the first row it can act on."""
+    targets = [r for r in rows if r["rebuild_target"]]
+    return next((r for r in targets if r["resume"]), targets[0] if targets else None)
 
 
 def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
@@ -351,5 +416,6 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
         mark = "✓" if r["conforms"] else "✗"
         pri = r["priority"] or "·"
         name = r["project"] + (" [private]" if r["private"] else "")
-        lines.append(f"{mark} {pri} {name:<30} {r['size'] // 1024:>4} KB  {'; '.join(r['problems']) or 'ok'}")
+        skipped = " [--next skips]" if not r["conforms"] and not r["rebuild_target"] else ""
+        lines.append(f"{mark} {pri} {name:<30} {r['size'] // 1024:>4} KB  {'; '.join(r['problems']) or 'ok'}{skipped}")
     return Output(data=rows, lines=lines, labels=labels)

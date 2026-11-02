@@ -127,6 +127,10 @@ kb_lint:
   # files, everything else reports (size too, since most pages start over budget):
   #   path_modes:
   #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
+  # The page standard's checks (`page-loose`, `page-sections`, `page-narration`:
+  # new debt on a project folder; `scoutctl kb structure` reports the existing
+  # debt) report until a rule names them in `checks:`. Neither `mode: block` nor
+  # a rule with no `checks:` makes them block.
   path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500

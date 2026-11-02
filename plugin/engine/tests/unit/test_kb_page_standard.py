@@ -86,7 +86,7 @@ def test_deep_work_records_verification_in_frontmatter(tmp_path: Path) -> None:
 def test_nightly_pass_rebuilds_one_project_page_in_the_standards_order(tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path / "Scout"), "DREAMING")
     step = _section(text, "### Step 2a-shrink", "### Step 2b")
-    assert "Rebuild **one** over-budget project page" in step
+    assert "Rebuild **one** project page" in step
     assert "One page per night, never more" in step
     order = [
         "**Archive the page verbatim**",
@@ -107,11 +107,21 @@ def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
     assert "with `nightly KB pass — <page>` as the commit summary" in step
 
 
-def test_nightly_pass_can_finish_or_resume_a_big_page(tmp_path: Path) -> None:
+def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
-    assert "**that you can finish this session**" in step
-    assert "resume it" in step
-    assert "when none is left, start the largest" in step
+    assert "`scripts/scoutctl kb structure --next` prints the project" in step
+    assert "take it as printed" in step
+    assert "An empty line means skip to Step 2b" in step
+    # The hand-written ranking is gone: the command owns the order and the skips.
+    assert "kb lint --report --top" not in step and "start the largest" not in step
+    # A page failing only on freshness or filing is refreshed, not rebuilt.
+    assert "**If it fails only on `stale`, `as_of`, narration or loose files, refresh it instead:**" in step
+    assert "`kb structure` row comes clear on the night you rewrite it" in step
+
+
+def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "It resumes a half-rebuilt page" in step
     # A partial night is a finished night, and the archive copy is made once.
     assert "**A page too big for one session** takes several nights" in step
     assert "once, on its first night" in step
@@ -120,8 +130,8 @@ def test_nightly_pass_can_finish_or_resume_a_big_page(tmp_path: Path) -> None:
 
 def test_nightly_pass_skips_pages_it_could_widen_and_keeps_the_lossless_rule(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
-    assert "kb classify --json <page>" in step
-    assert "`visibility: private`, `shared_file: true` or `local_only: true`" in step
+    # `--next` enforces the skip (tests/unit/test_kb_structure_next.py); the step says why.
+    assert "leaves out pages labelled private, shared or local-only" in step
     assert "Leave any loose file `kb classify` labels private, shared or local-only where it is" in step
     assert "name it in the commit message as deliberately dropped" in step
     assert "naming both paths of each move" in step

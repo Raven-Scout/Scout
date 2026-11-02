@@ -166,8 +166,8 @@ subject, e.g. `widgets-platform`.
 
 ## Restructuring an existing over-long page
 
-The `dreaming-nightly` run's KB pass rebuilds one over-budget project page a night this way. Do the
-same by hand for any page you restructure. The pass skips a page labelled private, shared or
+The `dreaming-nightly` run's KB pass rebuilds one project page a night this way, the one
+`scripts/scoutctl kb structure --next` picks. Do the same by hand for any page you restructure. The pass skips a page labelled private, shared or
 local-only (`kb classify`), because a new copy could widen it or hit a hard privacy block; restructure
 those by hand. On a local-only project nothing leaves the folder: keep source notes and moved files
 inside it. A page too big for one session takes several nights: archive it once, on the first night,

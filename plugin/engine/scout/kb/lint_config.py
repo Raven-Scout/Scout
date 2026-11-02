@@ -41,8 +41,12 @@ _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
 
 # Every check id `kb lint` reports. A new check registers its id here, and
 # test_every_finding_uses_a_known_check_id fails until it does.
+# Checks that report until a `path_modes` rule names them in `checks:`. A vault's
+# `mode: block` or a rule with no `checks:` was written before they existed, so
+# neither makes them block: every page starts out in debt to the page standard.
+REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration"})
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
-MODE_CHECKS = frozenset({"size", "mega-line", "diary"})
+MODE_CHECKS = frozenset({"size", "mega-line", "diary"}) | REPORT_UNTIL_NAMED
 # Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
 PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
 # Warnings: never block, whatever the mode.
@@ -56,6 +60,7 @@ WARNING_CHECKS = frozenset(
         "federation-ceiling",
         "frontmatter-unparseable",
         "privacy-overlay-unreadable",
+        "page-config",
     }
 )
 KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
@@ -171,16 +176,19 @@ class LintConfig:
 
     def mode_for(self, rel: str, check: str) -> str:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
-        matching ``path_modes`` rule's, else the global ``mode``."""
+        matching ``path_modes`` rule's, else the global ``mode``. A
+        :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
+        otherwise reports."""
+        named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
-            if r.checks and check not in r.checks:
+            if (r.checks or named_only) and check not in r.checks:
                 continue
             if not _lint_match(r.glob, rel) or _lint_any(r.exclude, rel):
                 continue
             if r.exclude_logs and self.is_log(rel):
                 continue
             return r.mode
-        return self.mode
+        return "report" if named_only else self.mode
 
     @property
     def mode_label(self) -> str:

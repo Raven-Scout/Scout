@@ -33,7 +33,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from scout import paths
 from scout.action_items.context_notes import context_note_rel
@@ -43,15 +43,20 @@ from scout.kb.git_io import (
     head_files,
     head_size,
     head_text,
+    head_text_lossy,
     main_root,
     staged_line_changes,
     staged_paths,
     staged_size,
     staged_text,
+    staged_text_lossy,
     tracked_files,
 )
 from scout.kb.lint_config import PRIVACY_BLOCKING, LintConfig, load_lint_config
 from scout.kb.lint_rules import has_citation, is_diary_heading, is_heading, normalize_line, wikilink_targets
+
+if TYPE_CHECKING:
+    from scout.kb.structure import PageRules
 
 OVERRIDE_ENV = "SCOUT_LINT_OVERRIDE"
 
@@ -455,6 +460,8 @@ class StagedFile:
     known_targets: Callable[[], set[str]]
     # The lines the commit removes, shared across its files (one line excuses one).
     debts: _LineDebt
+    # The page checks' settings, loaded once per lint on first use; None when unusable.
+    page_rules: Callable[[], PageRules | None]
     # A new daily file's earlier daily file; its lines count as this file's old version.
     baseline_text: str | None = None
 
@@ -484,12 +491,111 @@ def _links(f: StagedFile) -> list[Finding]:
     return _check_links(f.rel, f.added, f.known_targets())
 
 
+# The page standard's per-file checks. Like the rest of this ratchet they name only
+# what the commit makes worse, so a page already in debt can still be edited;
+# `scoutctl kb structure` reports the debt itself.
+
+
+def _page_kind(rules: PageRules, rel: str) -> str | None:
+    from scout.errors import KBError
+
+    try:
+        return rules.kind(rel)
+    except KBError:  # a malformed schema: `kb validate` names it, and the page checks step aside
+        return None
+
+
+def _page_private(f: StagedFile) -> bool:
+    """Whether the staged page is private, so its findings carry only paths, line numbers and counts."""
+    from scout.kb.privacy import classify, load_policy
+
+    return classify(f.rel, staged_text_lossy(f.repo, f.rel), load_policy(f.repo)).visibility == "private"
+
+
+def _page_rules(f: StagedFile) -> PageRules | None:
+    # Every project path has at least <dir>/<name>/<file>, so a shallower file loads nothing.
+    return f.page_rules() if f.rel.count("/") >= 2 else None
+
+
+def _page_loose(f: StagedFile) -> list[Finding]:
+    rules = _page_rules(f)
+    if rules is None or _page_kind(rules, f.rel) != "loose":
+        return []
+    if f.size_base is not None and _page_kind(rules, f.size_base) == "loose":
+        return []  # already beside a front page: an edit or a rename adds no debt
+    parent = PurePosixPath(f.rel).parent
+    front = str(parent / f"{parent.name}.md")
+    if front not in f.staged_rels and not (f.repo / front).is_file():
+        return []  # no front page, so `kb structure` doesn't count this folder as a project
+    return [
+        Finding(
+            f.rel,
+            "page-loose",
+            True,
+            "new file beside the project's front page — file it under one of "
+            + ", ".join(f"{d}/" for d in sorted(rules.cfg.allowed_dirs)),
+        )
+    ]
+
+
+def _page_sections(f: StagedFile) -> list[Finding]:
+    from scout.kb.structure import missing_sections, split_page
+
+    rules = _page_rules(f)
+    if rules is None or _page_kind(rules, f.rel) != "front":
+        return []
+    required = rules.cfg.required_sections
+    missing = missing_sections(split_page(staged_text_lossy(f.repo, f.rel))[1], required)
+    old = head_text_lossy(f.repo, f.size_base) if f.size_base else None
+    if old is not None:
+        already = set(missing_sections(split_page(old)[1], required))
+        missing = [s for s in missing if s not in already]
+    if not missing:
+        return []
+    verb = "new front page lacks" if old is None else "commit removes"
+    what = f"{len(missing)} required section(s)" if _page_private(f) else "required section(s) " + ", ".join(missing)
+    return [Finding(f.rel, "page-sections", True, f"{verb} {what} — see docs/kb-page-standard.md")]
+
+
+def _page_narration(f: StagedFile) -> list[Finding]:
+    from scout.kb.frontmatter import frontmatter_block
+    from scout.kb.structure import narration_found
+
+    rules = _page_rules(f)
+    if rules is None or _page_kind(rules, f.rel) != "front":
+        return []
+    hits = [(n, labels) for n, t in f.added if (labels := narration_found(t, rules.cfg.narration_markers))]
+    if not hits:
+        return []
+    lines = staged_text_lossy(f.repo, f.rel).split("\n")
+    block = frontmatter_block(lines)
+    body_starts = 0 if block is None else len(block) + 2  # frontmatter is where provenance belongs
+    private = _page_private(f)
+    out = []
+    for n, labels in hits:
+        if n > body_starts:
+            what = "run narration" if private else "run narration (" + ", ".join(labels) + ")"
+            out.append(
+                Finding(f.rel, "page-narration", True, f"line {n} adds {what} — keep it in the commit message", n)
+            )
+    return out
+
+
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
 # A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
 # It reports `Finding(blocking=True)` for what should refuse a commit, and the
 # path's mode (`LintConfig.mode_for`, which a `path_modes` rule can scope to
 # named checks) decides whether it does.
-STAGED_CHECKS: tuple[StagedCheck, ...] = (_size, _lines, _context_notes, _citations, _links)
+STAGED_CHECKS: tuple[StagedCheck, ...] = (
+    _size,
+    _lines,
+    _context_notes,
+    _citations,
+    _links,
+    _page_loose,
+    _page_sections,
+    _page_narration,
+)
 
 
 def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
@@ -502,6 +608,23 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
         if known is None:
             known = _link_targets(repo)
         return known
+
+    rules: PageRules | None = None
+    rules_loaded = False
+
+    def page_rules() -> PageRules | None:
+        """A bad `kb_structure` costs the page checks, not the size and line lint: it warns once."""
+        nonlocal rules, rules_loaded
+        if not rules_loaded:
+            from scout.errors import KBError
+            from scout.kb.structure import load_page_rules
+
+            rules_loaded = True
+            try:
+                rules = load_page_rules(repo, cfg.exclude_globs)
+            except KBError as e:
+                result.findings.append(Finding("scout-config.yaml", "page-config", False, f"{e}; page checks skipped"))
+        return rules
 
     staged_list = staged_paths(repo)
     staged_rels = {sp.rel for sp in staged_list}
@@ -522,7 +645,9 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
                 size_base = baseline
                 baseline_text = head_text(repo, baseline)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
-        staged = StagedFile(repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, baseline_text)
+        staged = StagedFile(
+            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text
+        )
         for check in STAGED_CHECKS:
             result.findings += check(staged)
     return result
@@ -573,7 +698,10 @@ def enforced(f: Finding, cfg: LintConfig | None) -> bool:
 
 def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
     mode = cfg.mode_label if cfg is not None else "?"
-    per_path = cfg is not None and bool(cfg.path_modes)
+    # Global `block` with no rules still has report findings: REPORT_UNTIL_NAMED's.
+    per_path = cfg is not None and (
+        bool(cfg.path_modes) or (cfg.mode == "block" and not all(enforced(f, cfg) for f in result.blocking))
+    )
     count = f"{len(result.blocking)} blocking"
     if per_path:
         count += f" ({sum(enforced(f, cfg) for f in result.blocking)} enforced)"
