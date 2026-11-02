@@ -560,6 +560,18 @@ def privacy_blocked_count(vault: Path, *, now: datetime) -> int:
     return sum(privacy_audit_counts(vault, now=now))
 
 
+def _check_kb_lint_config(*, vault: Path) -> list[str]:
+    """A lint config mistake falls back to report, which enforces nothing and fails
+    nothing: this is where the owner hears about it, since runs commit unattended."""
+    from scout.kb.lint import config_problems
+    from scout.kb.lint_config import load_lint_config
+
+    try:
+        return [f"kb-lint: {problem}" for problem in config_problems(vault, load_lint_config(vault))]
+    except Exception as e:  # noqa: BLE001 - the doctor reports it; the hook fails open on the same error
+        return [f"kb-lint: the kb_lint config can't be read ({type(e).__name__}), so no size or line check blocks"]
+
+
 def _check_privacy_audit(*, vault: Path, now: datetime | None) -> list[str]:
     blocked, unchecked = privacy_audit_counts(vault, now=now or datetime.now(UTC))
     out: list[str] = []
@@ -696,6 +708,7 @@ def run_doctor(
     warnings.extend(_check_custom_connectors(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_privacy_audit(vault=vault, now=now))
+    warnings.extend(_check_kb_lint_config(vault=vault))
 
     try:
         drift_warnings, drift_notes = _check_vault_drift(vault=vault)

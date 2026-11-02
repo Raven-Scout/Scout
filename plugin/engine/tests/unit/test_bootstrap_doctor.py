@@ -978,6 +978,41 @@ def test_doctor_privacy_count_takes_naive_times_as_utc(tmp_path):
     assert privacy_blocked_count(tmp_path / "nowhere", now=now) == 0
 
 
+def _kb_lint_warnings(vault: Path, block: str) -> list[str]:
+    _populate_minimal_vault(vault)
+    config = vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + block, encoding="utf-8")
+    report = run_doctor(vault=vault, check_jobs=False)
+    return [w for w in report.warnings if w.startswith("kb-lint:")]
+
+
+def test_doctor_names_a_kb_lint_config_mistake(tmp_path):
+    block = "kb_lint:\n  path_modes:\n    - {glob: 'knowledge-base/**', mode: Block, checks: [megaline]}\n"
+    warnings = _kb_lint_warnings(tmp_path, block)
+    assert any("mode 'Block'" in w for w in warnings) and any("unknown check 'megaline'" in w for w in warnings)
+
+
+def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
+    from scout.kb.git_io import git
+
+    block = "kb_lint:\n  path_modes:\n    - {glob: 'Knowledge-Base/**', mode: block}\n"
+    assert _kb_lint_warnings(tmp_path, block) == []  # not a git checkout: no file list to check against
+    git(tmp_path, "init", "-q")
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    (line,) = [w for w in report.warnings if w.startswith("kb-lint:")]
+    assert "'Knowledge-Base/**' matches no file kb-lint checks" in line
+
+
+def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
+    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
+
+
+def test_doctor_says_when_the_kb_lint_config_cant_be_read(tmp_path):
+    (line,) = _kb_lint_warnings(tmp_path, "kb_lint:\n  max_line_chars: lots\n")
+    assert "can't be read (ValueError)" in line
+
+
 def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
     from datetime import UTC, datetime, timedelta
 

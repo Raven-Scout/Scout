@@ -420,6 +420,18 @@ def test_a_conflicting_replay_writes_nothing(vault: Path, host: FakeHost, tmp_pa
     assert (vault / f"{rel}.proposed-merge").exists()
 
 
+def test_a_long_local_only_glob_is_still_refused_by_sync(vault: Path) -> None:
+    """kb-lint caps its own globs; a sync rule must keep the path on the laptop."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write('  local_only_add:\n    - "**/x/**/y/**/z/**"\n')
+    rules = rs.LocalOnlyRules.build([load_policy(vault)], ())
+    assert rules.local_only("w/x/y/z/note.md")
+    _commit(vault, "w/x/y/z/note.md", "held back\n", "deep local-only note")
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.check_mirror_commits(vault, rules, [git(vault, "rev-parse", "HEAD").strip()])
+    assert e.value.code == "local_only_path_in_push"
+
+
 def test_the_push_guard_refuses_a_mirror_commit_with_a_local_only_path(vault: Path) -> None:
     rules = rs.LocalOnlyRules.build([load_policy(vault)], ())
     head = git(vault, "rev-parse", "HEAD").strip()
