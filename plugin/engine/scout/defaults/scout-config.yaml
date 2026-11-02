@@ -115,14 +115,21 @@ kb_lint:
   mode: report
   max_line_chars: 1500
   max_line_chars_strict: 500
+  # A vault that sets its own exclude_globs replaces this list: keep the
+  # archive line. A restructure's verbatim copy of an over-budget page, diary
+  # headings and all, is a record the lint must not ask anyone to shrink.
   exclude_globs:
     - "action-items/archive/**"
     - "**/extracted/**"
+    - "knowledge-base/projects/**/archive/**"
   strict_line_globs:
     - "action-items/action-items-*.md"
     - "knowledge-base/session-log/**"
+  # Topic notes: cross-project ones under topics/, and each project's own in
+  # its knowledge/ folder (docs/kb-page-standard.md).
   topic_globs:
     - "knowledge-base/topics/**"
+    - "knowledge-base/projects/*/knowledge/**"
   # Files `kb lint --report` never ranks as dreaming shrink targets: the daily
   # file is rewritten by the briefings, the legacy session log is migrated by
   # a one-time sharding step, and the topic board's files are state the app
@@ -144,6 +151,7 @@ kb_lint:
     - "knowledge-base/review-queue.md"
     - "knowledge-base/review-queue/**"
     - "knowledge-base/decisions-log.md"
+    - "knowledge-base/projects/*/knowledge/*-decisions*.md"
     - "knowledge-base/projects/*/decision-log.md"
     - "knowledge-base/projects/*/decision-log/**"
     - "knowledge-base/projects/*/nav-history.md"
@@ -164,6 +172,12 @@ kb_lint:
     - {glob: "knowledge-base/kg-audits/**", bytes: null}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
+    # Verbatim pre-restructure copies: dated records, unbudgeted.
+    - {glob: "knowledge-base/projects/**/archive/**", bytes: null}
+    # The decisions note is the one dated log in a project; older rows shard to
+    # <name>-decisions-YYYY.md.
+    - {glob: "knowledge-base/projects/*/knowledge/*-decisions*.md", bytes: 51200}
+    - {glob: "knowledge-base/projects/*/knowledge/**", bytes: 10240}
     - {glob: "knowledge-base/people/**", bytes: 10240}
     - {glob: "knowledge-base/ontology/**", bytes: 10240}
     - {glob: "knowledge-base/personal/**", bytes: 10240}
