@@ -127,7 +127,7 @@ def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(
     assert lines == [
         UNAVAILABLE,
         f"kb-lint: WARNING: the privacy check could not run ({reason}); this commit was NOT checked "
-        "for private links in shared files. Run scoutctl doctor.",
+        "for private links in shared files. Run scoutctl bootstrap doctor.",
     ]
     log = vault / ".scout-logs" / "kb-reads.jsonl"
     (row,) = [json.loads(ln) for ln in log.read_text().splitlines()]
@@ -214,6 +214,17 @@ def test_hook_blocks_real_commit(kb_repo) -> None:
     proc = subprocess.run(["git", "commit", "-q", "-m", "big"], cwd=kb_repo.root, capture_output=True, text=True)
     assert proc.returncode != 0
     assert "kb-lint" in proc.stderr
+
+
+@pytest.mark.skipif(not _scoutctl_has_kb(), reason="installed scoutctl predates `kb` (passes after merge)")
+def test_the_real_hook_names_a_misspelt_path_modes_key(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_lint:\n  pathmodes:\n    - {glob: 'knowledge-base/**', mode: block}\n")
+    install_hook(kb_repo.root)
+    kb_repo.write("knowledge-base/topics/note.md", "A note.\n")
+    kb_repo.git("add", "-A")
+    proc = subprocess.run(["git", "commit", "-q", "-m", "note"], cwd=kb_repo.root, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "kb-lint: config: kb_lint has unknown key(s) ['pathmodes']" in proc.stderr
 
 
 @pytest.mark.skipif(not _scoutctl_has_kb(), reason="installed scoutctl predates `kb` (passes after merge)")

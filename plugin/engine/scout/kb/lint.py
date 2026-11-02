@@ -15,7 +15,9 @@ daily file, not against nothing.
 Existing debt must be able to drain, by hand or through the dreaming shrink
 pass, so an added line that replaces a line already breaking the same rule
 doesn't block either (:class:`_LineDebt`): an in-place edit that doesn't make
-the line longer, or a verbatim move into another file of the commit. Each
+the line longer, or a verbatim move into another file of the commit. An in-place
+edit is counted, not compared: any line no longer than one the file removes
+passes, since it can't raise the file's count of long lines or its longest. Each
 removed line excuses one added line, so splitting one long line into two long
 ones still blocks, as do growth, a copy, a reworded move and a new line.
 """
@@ -170,13 +172,15 @@ class _LineDebt:
                     debts[check].append(_Debt(rel, rel, norm, len(line), movable=False))
 
     def _may_move(self, debt: _Debt, rel: str, check: str) -> bool:
-        """Debt doesn't move from a report path into a block path: that would add it where it's enforced."""
+        """Debt doesn't cross from a report path into a block path, by a move or by a
+        rename: that would add it where it's enforced. (A rename that leaves the
+        line alone adds nothing, so it never gets here.)"""
         return self.cfg.mode_for(rel, check) != "block" or self.cfg.mode_for(debt.source, check) == "block"
 
     def _find(self, rel: str, check: str, text: str, debts: list[_Debt]) -> _Debt | None:
         # In place: the longest debt left that's no shorter. A diary heading has no length to grow.
         needed = len(text) if check == "mega-line" else 0
-        own = [d for d in debts if not d.spent and d.rel == rel and d.chars >= needed]
+        own = [d for d in debts if not d.spent and d.rel == rel and d.chars >= needed and self._may_move(d, rel, check)]
         if own:
             return max(own, key=lambda d: d.chars)
         norm = normalize_line(text)
@@ -501,7 +505,13 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
 
     staged_list = staged_paths(repo)
     staged_rels = {sp.rel for sp in staged_list}
-    for sp in staged_list:
+    # Block paths claim debt first, or a copy on a report path could spend what a
+    # move on a block path needs. Stable, so one mode everywhere keeps git's order.
+    claim_order = sorted(
+        staged_list,
+        key=lambda sp: "block" not in (cfg.mode_for(sp.rel, "mega-line"), cfg.mode_for(sp.rel, "diary")),
+    )
+    for sp in claim_order:
         if not cfg.in_scope(sp.rel):
             continue
         size_base = sp.head_rel
@@ -639,7 +649,7 @@ def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Findi
 def privacy_unavailable_warning(reason: str) -> str:
     return (
         f"kb-lint: WARNING: the privacy check could not run ({reason}); this commit was NOT checked "
-        "for private links in shared files. Run scoutctl doctor."
+        "for private links in shared files. Run scoutctl bootstrap doctor."
     )
 
 

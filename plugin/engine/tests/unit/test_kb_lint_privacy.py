@@ -222,6 +222,17 @@ def test_shared_files_add_in_the_overlay_widens_the_lint_scope(vault: Path) -> N
     assert checks(vault) == [("outbox/slack.txt", "private-mention", True, 1)]
 
 
+def test_a_long_shared_files_glob_still_blocks_a_private_link(vault: Path) -> None:
+    """kb-lint caps its own globs; this one must keep guarding the file, with or without a warning."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write('  shared_files_add:\n    - "**/x/**/y/**/z/**"\n')
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "a deep shared folder")
+    stage(vault, "w/x/y/z/note.txt", "Ask Sammy.\n")
+    assert checks(vault) == [("w/x/y/z/note.txt", "private-mention", True, 1)]
+    assert hook(vault)[0] == 1
+
+
 # ----- the warn / error rules ---------------------------------------------------
 
 

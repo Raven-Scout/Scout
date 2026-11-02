@@ -120,8 +120,9 @@ kb_lint:
   # it matches when `glob` matches, no `exclude` glob does, the path is not a
   # `log_globs` file (with `exclude_logs: true`) and, if `checks` is given, the
   # finding's check is listed. An excluded path falls through to the next rule.
-  # A mistake here reports instead of blocking: the commit hook, `kb lint
-  # --report` and `scoutctl doctor` all name it.
+  # The commit hook, `kb lint --report` and `scoutctl bootstrap doctor` all name
+  # a mistake here. A bad mode reports instead of blocking; a dropped rule or an
+  # over-complex glob sends a path on to the next rule, which may block.
   # Example — long lines and diary headings block in the KB except its log
   # files, everything else reports (size too, since most pages start over budget):
   #   path_modes:

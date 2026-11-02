@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from scout.config import user_value
 from scout.kb import lint_config
-from scout.kb.lint_config import MAX_GLOB_STARS, glob_match, load_lint_config
+from scout.kb.lint_config import MAX_GLOB_STARS, glob_match, in_privacy_scope, load_lint_config
 
 
 def test_glob_single_star_does_not_cross_slash() -> None:
@@ -314,16 +315,64 @@ def test_a_rule_matching_no_linted_file_is_named(tmp_path: Path) -> None:
     assert [p.split("'")[1] for p in problems] == ["Knowledge-Base/**", "drafts/**"]
 
 
+# ----- a misspelt or misshapen kb_lint ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("config", "said"),
+    [
+        ("kb_lint:\n  path_mode: []\n", "unknown key(s) ['path_mode']"),
+        ("kb_lint:\n  pathmodes: []\n", "unknown key(s) ['pathmodes']"),
+        ("kb-lint:\n  mode: block\n", "top-level key 'kb-lint'"),
+        ("KB_Lint:\n  mode: block\n", "top-level key 'KB_Lint'"),
+        ("kb_lint: nonsense\n", "kb_lint is a str, not a mapping"),
+        ("kb_lint: [a]\n", "kb_lint is a list, not a mapping"),
+        ("kb_lint: []\n", "kb_lint is a list, not a mapping"),
+    ],
+)
+def test_a_misspelt_or_misshapen_kb_lint_is_named(tmp_path: Path, config: str, said: str) -> None:
+    (tmp_path / "scout-config.yaml").write_text(config, encoding="utf-8")
+    cfg = load_lint_config(tmp_path)
+    assert [w for w in cfg.warnings if said in w]
+    assert cfg.mode == "report" and cfg.budgets  # the defaults still apply
+
+
+def test_an_empty_kb_lint_section_warns_about_nothing(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text("kb_lint:\n", encoding="utf-8")
+    assert load_lint_config(tmp_path).warnings == ()
+
+
+def test_user_value_reads_the_vaults_own_file(tmp_path: Path) -> None:
+    config = tmp_path / "scout-config.yaml"
+    assert user_value("kb_lint", tmp_path) is None
+    config.write_text("kb_lint: nonsense\n", encoding="utf-8")
+    assert user_value("kb_lint", tmp_path) == "nonsense"
+    assert user_value("absent", tmp_path) is None
+    config.write_text("kb_lint: [one\n", encoding="utf-8")
+    assert user_value("kb_lint", tmp_path) is None
+
+
 # ----- a glob can't hang the hook -----------------------------------------------
 
 
 def test_an_over_complex_glob_returns_at_once_and_matches_nothing(tmp_path: Path) -> None:
     glob = "**a" * 10 + "**b"
-    started = time.monotonic()
-    assert not glob_match(glob, "knowledge-base/" + "a" * 60 + ".md")
-    assert time.monotonic() - started < 1
     _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
-    assert any("matches nothing" in w for w in load_lint_config(tmp_path).warnings)
+    cfg = load_lint_config(tmp_path)
+    assert any("matches nothing" in w for w in cfg.warnings)
+    started = time.monotonic()
+    assert cfg.mode_for("knowledge-base/" + "a" * 60 + ".md", "mega-line") == "report"
+    assert time.monotonic() - started < 1
+
+
+def test_the_star_limit_is_kb_lints_and_never_the_shared_matcher(tmp_path: Path) -> None:
+    """Privacy and sync call glob_match: a rule of theirs must never drop out (test_kb_privacy has the labels)."""
+    glob, rel = "**/x/**/y/**/z/**", "knowledge-base/x/y/z/note.md"
+    assert glob.count("*") > MAX_GLOB_STARS
+    assert glob_match(glob, rel)
+    assert in_privacy_scope("w/x/y/z/note.txt", (glob,))
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
+    assert load_lint_config(tmp_path).mode_for(rel, "mega-line") == "report"
 
 
 def test_a_budget_glob_that_complex_warns_too(tmp_path: Path) -> None:

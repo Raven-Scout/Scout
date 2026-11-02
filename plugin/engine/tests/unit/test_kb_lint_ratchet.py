@@ -275,6 +275,46 @@ def test_a_rename_is_linted_under_its_new_path_mode(kb_repo) -> None:
     assert _blocked(kb_repo) == 0
 
 
+def test_a_rename_from_a_report_path_carries_no_debt_into_a_block_path(kb_repo) -> None:
+    body = "".join(f"line {i}\n" for i in range(40))
+    _setup(kb_repo, KB_BLOCKS, shard=body + _long() + "\n")
+    (kb_repo.root / PAGE).parent.mkdir(parents=True)
+    kb_repo.git("mv", SHARD, PAGE)
+    assert _blocked(kb_repo) == 0  # unchanged: the rename adds nothing to check
+    kb_repo.stage(PAGE, body + _long(1800) + "\n")
+    assert _blocked(kb_repo) == 1  # shortened, but it's a new long line here
+    kb_repo.stage(PAGE, body + _long(1800, "omega") + "\n")
+    assert _blocked(kb_repo) == 1
+
+
+def test_a_rename_between_block_paths_still_drains(kb_repo) -> None:
+    body = "".join(f"line {i}\n" for i in range(40))
+    _setup(kb_repo, KB_BLOCKS, page=body + _long() + "\n")
+    kb_repo.git("mv", PAGE, NOTE)
+    kb_repo.stage(NOTE, body + _long(1800) + "\n")
+    assert _blocked(kb_repo) == 0
+
+
+def test_a_block_path_claims_debt_before_a_report_path_copy(kb_repo) -> None:
+    """action-items/ sorts first, so without the claim order its copy would spend the debt."""
+    copy = "action-items/context/PROJ-1234.md"
+    _setup(kb_repo, KB_BLOCKS, page=_long() + "\n")
+    kb_repo.stage(PAGE, "moved\n")
+    kb_repo.stage(copy, _long() + "\n")
+    kb_repo.stage(NOTE, _long() + "\n")
+    assert _blocked(kb_repo) == 0
+    assert _findings(kb_repo) == [(copy, "mega-line")]  # logged as report, not enforced
+
+
+def test_one_mode_everywhere_keeps_the_staged_order(kb_repo) -> None:
+    _setup(kb_repo)
+    kb_repo.stage(OTHER, _long() + "\n")
+    kb_repo.stage(NOTE, _long() + "\n")
+    kb_repo.stage(DAY1, _long() + "\n")
+    result = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    assert [f.path for f in result.blocking] == [DAY1, OTHER, NOTE]
+
+
 # ----- a new daily file against its baseline ------------------------------------
 
 

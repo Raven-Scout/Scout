@@ -14,11 +14,14 @@ check. A path no rule matches gets the global ``mode``. So a narrow rule goes
 before a broad one, and an excluded path falls through to the next rule.
 Privacy findings block whatever the mode (:data:`PRIVACY_BLOCKING`).
 
-A config mistake falls back to ``report`` and never to ``block``, so it can
-silently turn enforcement off. :attr:`LintConfig.warnings` names each one: the
-hook prints them on every commit, and ``kb lint --report`` and the doctor show
-them too. A rule whose fields have the wrong type is dropped, because guessing
-could widen it (``checks: 5`` reading as "every check").
+A bad mode value means ``report``, never ``block``, so a config mistake can
+silently turn enforcement off. :attr:`LintConfig.warnings` names each mistake:
+the hook prints them on every commit, and ``kb lint --report`` and the doctor
+show them too. A rule whose fields have the wrong type is dropped, because
+guessing could widen it (``checks: 5`` reading as "every check"). A dropped rule
+or an over-complex glob (:data:`MAX_GLOB_STARS`) in a rule's ``glob`` or
+``exclude`` sends the path on to the next rule, which may block: that fails
+closed, and the warning says what happened.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scout.config import load_config
+from scout.config import load_config, user_value
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -57,11 +60,11 @@ WARNING_CHECKS = frozenset(
 )
 KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
 
-# More `*` than this and a glob matches nothing: each one multiplies the regex's
-# backtracking, and `**a**a**a**a**a**a**b` would hang the hook on an ordinary
-# path. `**/x/**/y/**` is the most a real glob needs.
+# More `*` than this and a kb-lint glob matches nothing (`_lint_match`): each one
+# multiplies the regex's backtracking, and `**a` ten times over ran for more than
+# 20 seconds on a long enough filename. `**/x/**/y/**` is the most a lint glob
+# needs. Privacy and sync rules never go through this cap: see `_lint_match`.
 MAX_GLOB_STARS = 6
-_NO_MATCH = re.compile("(?!)")
 
 
 @lru_cache(maxsize=256)
@@ -69,8 +72,6 @@ def _glob_re(glob: str) -> re.Pattern[str]:
     """Translate a path glob to a regex: ``*`` stays within one segment,
     ``**`` crosses segments. (fnmatch's ``*`` crosses ``/``, which would make
     ``projects/*/*.md`` match arbitrarily deep files.)"""
-    if glob.count("*") > MAX_GLOB_STARS:
-        return _NO_MATCH
     out: list[str] = []
     i = 0
     while i < len(glob):
@@ -98,6 +99,20 @@ def glob_match(glob: str, rel: str) -> bool:
 
 def _any(globs: tuple[str, ...], rel: str) -> bool:
     return any(glob_match(g, rel) for g in globs)
+
+
+def _lint_match(glob: str, rel: str) -> bool:
+    """``glob_match`` for kb-lint's own lists, where an over-complex glob matches nothing.
+
+    Only for these: a lint glob that drops out warns and fails no safety rule.
+    A privacy or sync rule that dropped out would quietly stop protecting a
+    path, so ``scout.kb.privacy``, ``lint_privacy``, ``repo_sync`` and
+    ``kb.read`` call ``glob_match`` directly."""
+    return glob.count("*") <= MAX_GLOB_STARS and glob_match(glob, rel)
+
+
+def _lint_any(globs: tuple[str, ...], rel: str) -> bool:
+    return any(_lint_match(g, rel) for g in globs)
 
 
 CONFIG_FILE = "scout-config.yaml"
@@ -160,7 +175,7 @@ class LintConfig:
         for r in self.path_modes:
             if r.checks and check not in r.checks:
                 continue
-            if not glob_match(r.glob, rel) or _any(r.exclude, rel):
+            if not _lint_match(r.glob, rel) or _lint_any(r.exclude, rel):
                 continue
             if r.exclude_logs and self.is_log(rel):
                 continue
@@ -173,25 +188,25 @@ class LintConfig:
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _any(self.exclude_globs, rel)
+        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _lint_any(self.exclude_globs, rel)
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
-            if glob_match(b.glob, rel):
+            if _lint_match(b.glob, rel):
                 return b.bytes
         return None
 
     def report_excluded(self, rel: str) -> bool:
-        return _any(self.report_exclude_globs, rel)
+        return _lint_any(self.report_exclude_globs, rel)
 
     def is_log(self, rel: str) -> bool:
-        return _any(self.log_globs, rel)
+        return _lint_any(self.log_globs, rel)
 
     def is_topic(self, rel: str) -> bool:
-        return _any(self.topic_globs, rel)
+        return _lint_any(self.topic_globs, rel)
 
     def line_limit(self, rel: str) -> int:
-        return self.max_line_chars_strict if _any(self.strict_line_globs, rel) else self.max_line_chars
+        return self.max_line_chars_strict if _lint_any(self.strict_line_globs, rel) else self.max_line_chars
 
     def rules_matching_nothing(self, tracked: list[str]) -> list[str]:
         """A warning per ``path_modes`` rule whose glob matches no file kb-lint checks.
@@ -202,7 +217,7 @@ class LintConfig:
         return [
             f"path_modes rule for {r.glob!r} matches no file kb-lint checks, so it does nothing"
             for r in self.path_modes
-            if not any(glob_match(r.glob, rel) for rel in linted)
+            if not any(_lint_match(r.glob, rel) for rel in linted)
         ]
 
 
@@ -303,6 +318,39 @@ def _complex_globs(cfg: LintConfig, warn: Warn) -> None:
             warn(f"glob {glob!r} has more than {MAX_GLOB_STARS} '*', so it matches nothing")
 
 
+_KB_LINT_KEYS = frozenset(
+    {
+        "mode",
+        "path_modes",
+        "max_line_chars",
+        "max_line_chars_strict",
+        "budgets",
+        "log_globs",
+        "strict_line_globs",
+        "exclude_globs",
+        "topic_globs",
+        "report_exclude_globs",
+    }
+)
+
+
+def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) -> None:
+    """A misspelt or misshapen ``kb_lint``: it reads as applied and enforces nothing.
+
+    The shape comes from the vault's own file, because the merge has already
+    swapped a non-mapping ``kb_lint`` for the defaults by the time ``cfg`` exists."""
+    written = user_value("kb_lint", data_dir)
+    if written is not None and not isinstance(written, dict):
+        warn(f"kb_lint is a {type(written).__name__}, not a mapping, so it is ignored and the defaults apply")
+    for key in cfg:
+        if key != "kb_lint" and re.sub(r"[-_\s]", "", str(key)).lower() == "kblint":
+            warn(f"top-level key {key!r} isn't kb_lint, so it is ignored")
+    raw = cfg.get("kb_lint")
+    unknown = sorted(str(k) for k in raw if k not in _KB_LINT_KEYS) if isinstance(raw, dict) else []
+    if unknown:
+        warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
+
+
 def load_lint_config(data_dir: Path | None = None) -> LintConfig:
     cfg = load_config(data_dir)
     raw = cfg.get("kb_lint") or {}
@@ -312,6 +360,7 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
     budgets = [Budget(str(g), _bytes(b)) for g, b in user_budgets.items()] if isinstance(user_budgets, dict) else []
     budgets += [Budget(str(d["glob"]), _bytes(d.get("bytes"))) for d in raw.get("budgets") or []]
     warnings: list[str] = []
+    _section_mistakes(cfg, data_dir, warnings.append)
     lint_cfg = LintConfig(
         mode=_mode(raw.get("mode", "report"), "kb_lint", warnings.append),
         path_modes=_path_modes(raw.get("path_modes"), warnings.append),

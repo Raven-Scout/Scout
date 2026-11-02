@@ -1003,6 +1003,11 @@ def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
     assert "'Knowledge-Base/**' matches no file kb-lint checks" in line
 
 
+def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
+    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
+
+
 def test_doctor_says_when_the_kb_lint_config_cant_be_read(tmp_path):
     (line,) = _kb_lint_warnings(tmp_path, "kb_lint:\n  max_line_chars: lots\n")
     assert "can't be read (ValueError)" in line
