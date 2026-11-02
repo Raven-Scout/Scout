@@ -118,6 +118,22 @@ def test_it_blocks_in_report_mode_and_ignores_the_override(vault: Path) -> None:
     assert not (vault / ".scout-logs" / "lint-overrides.log").exists()
 
 
+@pytest.mark.parametrize("rel", [DRAFT, WIDGET])
+def test_it_blocks_on_a_path_whose_rule_says_report(vault: Path, rel: str) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(
+            "kb_lint:\n  mode: block\n  path_modes:\n"
+            "    - {glob: 'knowledge-base/**', mode: report}\n    - {glob: 'drafts/**', mode: report}\n"
+        )
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "report paths")
+    append(vault, rel, "See [[sam]] for the details.")
+    rc, out = hook(vault, {"SCOUT_LINT_OVERRIDE": "need it now"})
+    assert rc == 1
+    assert "Commit blocked by the privacy checks" in out
+    assert "override accepted" not in out
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -204,6 +220,17 @@ def test_shared_files_add_in_the_overlay_widens_the_lint_scope(vault: Path) -> N
     commit(vault, "outbox is shared")
     stage(vault, "outbox/slack.txt", "Ask Sammy.\n")
     assert checks(vault) == [("outbox/slack.txt", "private-mention", True, 1)]
+
+
+def test_a_long_shared_files_glob_still_blocks_a_private_link(vault: Path) -> None:
+    """kb-lint caps its own globs; this one must keep guarding the file, with or without a warning."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write('  shared_files_add:\n    - "**/x/**/y/**/z/**"\n')
+    git(vault, "add", "scout-config.yaml")
+    commit(vault, "a deep shared folder")
+    stage(vault, "w/x/y/z/note.txt", "Ask Sammy.\n")
+    assert checks(vault) == [("w/x/y/z/note.txt", "private-mention", True, 1)]
+    assert hook(vault)[0] == 1
 
 
 # ----- the warn / error rules ---------------------------------------------------

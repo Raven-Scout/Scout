@@ -65,7 +65,7 @@ def _boundary_zone() -> ZoneInfo:
 # Per-filename freshness budget (in hours). Bash lines 33-37.
 FRESHNESS_OVERRIDES: dict[str, int] = {
     "linear-issues.md": 6,
-    "knowledge-base.md": 6,
+    "knowledge-base.md": 336,
     "people.md": 168,
     "channels.md": 336,
     "meetings.md": 336,
