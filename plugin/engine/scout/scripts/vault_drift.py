@@ -63,7 +63,7 @@ RENDER_HISTORY = Path(__file__).resolve().parent.parent / "defaults" / "render-h
 # Managed files the vault grows on purpose (bootstrap._CAT_MERGE_FILES, which
 # the read-only doctor can't import): their edits are vault content, so they
 # are never offered as a plugin patch.
-VAULT_DEVELOPED_FILES = frozenset({"knowledge-base/ontology/parser.py"})
+VAULT_DEVELOPED_FILES = frozenset({"knowledge-base/ontology/parser.py", "docs/kb-page-standard.md"})
 
 Merge = Callable[..., MergeResult]
 

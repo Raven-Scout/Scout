@@ -42,14 +42,14 @@ Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundre
 
 ## 2. Read the freshness gate, then answer
 
-Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The `**Last verified:** <timestamp> (<session type>)` line under the title, where present, is the last time a session checked the file against its sources even if nothing changed. Gate on the newer of the two:
+Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The frontmatter's `last_verified:` (with `verified_against:` naming the sources) is the last time a session checked the file against its sources even if nothing changed; older files carry it as a `**Last verified:** <timestamp> (<session type>)` line under the title instead. Gate on the newer of the two:
 
 - **Recently verified**: answer from the file and cite the timestamp. The recorded state *is* the current state; a live re-query returns the same facts and costs several turns.
 - **Old enough that the answer could mislead, or neither timestamp present**: answer from the file, say how old it is, and offer to drill.
 
 The file's own hedges are load-bearing and belong in your answer: `[unverified]`, `[single-source]`, "not yet decided - do not record a verdict". Carry them through rather than flattening them into fact.
 
-**You are done when you can state:** the status and owner, what moved most recently, what is still open, and which of it is the user's. The canonical file's header plus its newest dated update almost always supplies all four. Reaching for action items, meeting notes, or a second project file after that is re-investigating what the file already told you.
+**You are done when you can state:** the status and owner, what moved most recently, what is still open, and which of it is the user's. The canonical file's header plus its "Where it stands" section (in an older file, its newest dated update) almost always supplies all four. Reaching for action items, meeting notes, or a second project file after that is re-investigating what the file already told you.
 
 ## 3. Drill to live sources only when the gate opens
 

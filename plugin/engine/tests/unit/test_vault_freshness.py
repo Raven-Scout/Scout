@@ -213,6 +213,16 @@ def test_a_claim_older_than_the_last_commit_is_flagged_as_a_cosmetic_edit(vault:
     assert row["claimed_date"] == claimed
 
 
+def test_a_frontmatter_last_verified_is_a_claim(vault: Path) -> None:
+    claimed = (NOW - timedelta(days=40)).date().isoformat()
+    _commit(vault, "projects/roadmap.md", f"---\nlast_verified: {claimed}\n---\n# Roadmap\n", days_ago=2)
+
+    (row,) = _json(vault, "--divergence")["files"]
+
+    assert row["divergence"] == "claim-lags-git"
+    assert row["claimed_date"] == claimed
+
+
 def test_a_claim_newer_than_any_commit_is_flagged(vault: Path) -> None:
     claimed = (NOW - timedelta(days=1)).date().isoformat()
     _commit(vault, "projects/roadmap.md", f"Last updated: {claimed} (see the thread)\n", days_ago=20)
