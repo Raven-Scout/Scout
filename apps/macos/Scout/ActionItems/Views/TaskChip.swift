@@ -9,6 +9,8 @@ struct TaskChip: Identifiable, Equatable {
         case github, linear, slack, carry
         /// Sourced from a task's `- Refs:` sub-bullet.
         case entity, crossRef, plain
+        /// The comment count, shown when the display profile asks for it.
+        case comments
     }
 
     /// A single click target behind a chip. A chip may summarise several links

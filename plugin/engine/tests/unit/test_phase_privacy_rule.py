@@ -5,18 +5,25 @@ reads the KB raw: the vault's history comes through ``scoutctl kb delta``,
 queries through ``scoutctl kb query``, never ``parser.py``, ``git diff
 HEAD~1`` or a shell ``cat``/``rg``/``grep``/``ls``/``find`` into
 ``knowledge-base/``. Slack sends go through the outbound-draft check.
+
+The ``scout-ask`` skill (plan Task 10, spec §6.3 row 1) is held to the same
+rule, and its commands are run against the privacy fixture vault.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from scout.cli import app
 from scout.scripts.bootstrap import BootstrapConfig, _assemble
 from scout.scripts.phase_assembly import parse_phase_file
 from tests.eval.harness.checks.privacy_canary import raw_kb_read
+from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 KINDS = ("SKILL", "DREAMING", "RESEARCH")
@@ -193,3 +200,106 @@ def test_slack_wrap_sections_use_the_outbound_draft_step(kind: str, heading: str
     section = text.split(heading, 1)[1].split("\n## ", 1)[0]
     assert ".scout-cache/outbound-draft.md" in section
     assert "check-outbound" in section
+
+
+# --- the scout-ask skill (plan Task 10) ------------------------------------------------
+
+SCOUT_ASK = PLUGIN_ROOT / "skills" / "scout-ask" / "SKILL.md"
+KB_READ_COMMANDS = {"resolve", "files", "read", "search", "query", "related", "traverse", "path"}
+# Vault folders the KB read gate doesn't judge (it covers knowledge-base/ and action-items/context/).
+_SHELL_VAULT_READ = re.compile(r"\b(?:ls|rg|grep|find|cat|head|tail|tree)\s+[^|;&]*\b(?:action-items|meetings)/")
+SAM = "knowledge-base/people/sam.md"
+# The skill's placeholders, filled so its commands reach the fixture's private person note.
+_PLACEHOLDERS = {"<name>": "Sammy", "<entity>": CANARIES[SAM], "<path>": SAM}
+_AGENT = "agent:person:priya@example.com"
+
+
+def _scout_ask() -> tuple[str, str]:
+    """(frontmatter description, body)."""
+    _, fm, body = SCOUT_ASK.read_text(encoding="utf-8").split("---\n", 2)
+    (description,) = [ln.split(":", 1)[1].strip() for ln in fm.splitlines() if ln.startswith("description:")]
+    return description, body
+
+
+def _fenced_kb_calls(body: str) -> list[list[str]]:
+    """Each fenced ``scripts/scoutctl kb …`` line, as ``kb`` arguments with the placeholders filled."""
+    calls: list[list[str]] = []
+    fenced = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced and line.startswith("scripts/scoutctl kb "):
+            words = shlex.split(line.split("#", 1)[0])[2:]
+            calls.append([_PLACEHOLDERS.get(w, w) for w in words])
+    return calls
+
+
+def test_scout_ask_reads_the_vault_through_scoutctl_kb() -> None:
+    _, body = _scout_ask()
+    spans = _code_spans(body)
+    assert [s for s in spans if raw_kb_read(s)] == []
+    assert [s for s in spans if _SHELL_VAULT_READ.search(s)] == []
+    assert not re.search(r"python3?\s+\S*parser\.py", body)
+    # Prose that sends the reader to a KB path names the `kb` command for it on the same line.
+    assert [ln for ln in body.splitlines() if _READ_KB_PATH.search(ln) and not re.search(r"\bkb [a-z]", ln)] == []
+    used = set(re.findall(r"\bkb ([a-z-]+)", body))
+    assert used <= KB_READ_COMMANDS, used - KB_READ_COMMANDS
+    assert {"resolve", "files", "read", "search", "query"} <= used
+
+
+def test_scout_ask_keeps_the_session_reader_and_its_labels() -> None:
+    """`--reader "${SCOUT_READER:-owner}"` (the plan's wording) widens a SCOUT_MODE-only run, which
+    fails, so the skill's commands pass no reader. The label and denial rules are spelt out."""
+    _, body = _scout_ask()
+    assert "${SCOUT_READER" not in body
+    assert all("--reader" not in arg for call in _fenced_kb_calls(body) for arg in call)
+    for needle in ("Pass no `--reader`", "`[private]`", "owner", "`denied` (exit 3)", "never read around it"):
+        assert needle in body, needle
+
+
+def test_scout_ask_stays_cheap() -> None:
+    """#84: the description is in every session's context, the body in every scout-ask turn."""
+    description, body = _scout_ask()
+    assert len(description) <= 600
+    assert len(body.split()) <= 1250
+
+
+@pytest.fixture(scope="module")
+def privacy_vault(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_privacy_vault(tmp_path_factory.mktemp("scout-ask"))
+
+
+def _kb(vault: Path, args: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """``scoutctl kb …`` with ``env`` on top of the hermetic one (no SCOUT_* set: the owner)."""
+    result = CliRunner().invoke(app, ["kb", *args, "--repo", str(vault)], env=env)
+    return result.exit_code, result.output
+
+
+@pytest.mark.parametrize(
+    "env", [{}, {"SCOUT_MODE": "briefing"}, {"SCOUT_READER": "autonomous"}], ids=["owner", "run", "autonomous"]
+)
+def test_scout_ask_commands_label_a_private_note(privacy_vault: Path, env: dict[str, str]) -> None:
+    """Each fenced command runs as written, and those that reach the private person note label it."""
+    calls = _fenced_kb_calls(_scout_ask()[1])
+    assert len(calls) >= 4
+    labelled = 0
+    for args in calls:
+        code, out = _kb(privacy_vault, args, env)
+        assert code in (0, 1), (args, out)  # 1 = no match (resolve, search); never a usage error
+        if SAM in out:
+            assert all(ln.startswith("[private] ") for ln in out.splitlines() if SAM in ln), (args, out)
+            labelled += 1
+    assert labelled >= 3  # resolve by alias, read, the entity-folder search
+
+
+def test_scout_ask_commands_give_an_agent_reader_nothing(privacy_vault: Path) -> None:
+    calls = _fenced_kb_calls(_scout_ask()[1])
+    assert len(calls) >= 4
+    for args in calls:
+        code, out = _kb(privacy_vault, args, {"SCOUT_READER": _AGENT})
+        assert CANARIES[SAM] not in out and SAM not in out, (args, out)
+        if args[0] == "read":
+            assert code == 3 and '"denied": true' in out
+        else:
+            assert code in (0, 1), (args, out)

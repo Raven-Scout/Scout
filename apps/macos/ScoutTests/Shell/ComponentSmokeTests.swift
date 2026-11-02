@@ -18,14 +18,25 @@ enum SmokeFixtures {
         deepLinks: [TaskDeepLink] = [],
         details: [TaskDetail] = [],
         snoozedUntil: Date? = nil,
-        carriedInFrom: Date? = nil
+        carriedInFrom: Date? = nil,
+        plan: TaskPlan = .none
     ) -> ActionTask {
         ActionTask(
             id: UUID(), lineNumber: 4, done: done,
             subject: subject, plainSubject: subject, body: body,
             comments: comments, deepLinks: deepLinks, details: details,
-            snoozedUntil: snoozedUntil, carriedInFrom: carriedInFrom)
+            snoozedUntil: snoozedUntil, carriedInFrom: carriedInFrom, plan: plan)
     }
+
+    static let plan: TaskPlan = {
+        var plan = TaskPlan()
+        plan.estimateMinutes = 45
+        plan.rawMinutes = 30
+        plan.kind = "deep"
+        plan.block = PlannedBlock(date: "2026-06-15", start: "10:00", end: "10:45", eventID: nil)
+        plan.actualMinutes = 60
+        return plan
+    }()
 
     static let comments: [TaskComment] = [
         TaskComment(author: "alex", timestamp: "2026-06-15 10:00 AM ET",
@@ -156,6 +167,8 @@ struct ComponentSmokeTests {
             SmokeFixtures.task(body: ""),
             SmokeFixtures.task(body: "", details: SmokeFixtures.details),
             SmokeFixtures.task(details: SmokeFixtures.details),
+            SmokeFixtures.task(plan: SmokeFixtures.plan),
+            SmokeFixtures.task(done: true, plan: SmokeFixtures.plan),
         ]
         for task in variants {
             for kind in [ActionSection.Kind.urgent, .todo, .watching, .personal, .done] {
@@ -186,6 +199,44 @@ struct ComponentSmokeTests {
         ViewHost.render(TaskContextNoteSection(tag: "DETX", scoutDirectory: vault), size: cardSize)
         ViewHost.render(TaskContextNoteSection(tag: "NESTX", scoutDirectory: vault), size: cardSize)
         ViewHost.render(TaskContextNoteSection(tag: nil, scoutDirectory: vault), size: cardSize)
+    }
+
+    @Test("a task card renders compact and with every field flipped")
+    func taskCardRendersDisplayOptions() {
+        let task = SmokeFixtures.task(
+            comments: SmokeFixtures.comments, deepLinks: SmokeFixtures.deepLinks,
+            snoozedUntil: SmokeFixtures.day.addingTimeInterval(86_400))
+        let flipped = ActionItemsDisplay.Fields(refs: false, snooze: false, comments: true)
+        for (density, fields) in [(ActionItemsDisplay.Density.compact, ActionItemsDisplay.Fields()),
+                                  (.comfortable, flipped), (.compact, flipped)] {
+            for kind in [ActionSection.Kind.urgent, .todo] {
+                ViewHost.render(
+                    TaskCardView(
+                        task: task, kind: kind, displayedDate: SmokeFixtures.day,
+                        scoutDirectory: URL(fileURLWithPath: "/tmp/scout"),
+                        density: density, fields: fields,
+                        onOp: { _, _ in }),
+                    size: cardSize)
+            }
+        }
+    }
+
+    @Test("the View menu and the Settings section render")
+    func displayControlsRender() throws {
+        let vault = FileManager.default.temporaryDirectory.appendingPathComponent("controls-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let service = DisplayProfileService(scoutDirectory: vault, fileEvents: InjectableFS())
+        for mode in [ActionItemsViewMode.list, .board] {
+            ViewHost.render(
+                ActionItemsDisplayMenu(mode: mode).environmentObject(service),
+                size: CGSize(width: 300, height: 60))
+        }
+        try Data("{ broken".utf8).write(to: service.fileURL)
+        service.reload()
+        ViewHost.render(
+            ActionItemsDisplaySection().environmentObject(service),
+            size: CGSize(width: 720, height: 700))
     }
 
     @Test("a section renders for every kind")

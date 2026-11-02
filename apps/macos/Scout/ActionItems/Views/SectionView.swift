@@ -12,6 +12,12 @@ struct SectionView: View {
     /// Builds every remaining row; offered only for a small remainder.
     var onShowAll: () -> Void = {}
     let onOp: @MainActor (WriteOp, Int?) async throws -> Void
+    /// Display options from the profile (#52). Defaults draw today's cards.
+    var density: ActionItemsDisplay.Density = .comfortable
+    var fields = ActionItemsDisplay.Fields()
+    /// Source kind of tasks merged into a "One list" section, so each card
+    /// keeps its priority stripe and snooze's `--from-kind`.
+    var kinds: [UUID: ActionSection.Kind] = [:]
 
     /// Per-archive windows. Local: archive rows are never selectable, so
     /// nothing outside this view needs to know how many are shown.
@@ -61,10 +67,12 @@ struct SectionView: View {
                     ForEach(window.visible(section.tasks)) { task in
                         TaskCardView(
                             task: task,
-                            kind: section.kind,
+                            kind: kinds[task.id] ?? section.kind,
                             displayedDate: displayedDate,
                             scoutDirectory: scoutDirectory,
                             selection: selection,
+                            density: density,
+                            fields: fields,
                             onOp: onOp
                         )
                         // A cross-ref chip scrolls here by id and outlines the
@@ -121,7 +129,7 @@ struct SectionView: View {
                 ForEach(groupWindow.visible(group.tasks)) { task in
                     TaskCardView(
                         task: task,
-                        kind: section.kind,
+                        kind: kinds[task.id] ?? section.kind,
                         displayedDate: displayedDate,
                         scoutDirectory: scoutDirectory,
                         // Deliberately not selectable. `ActionItemsView`
@@ -132,6 +140,8 @@ struct SectionView: View {
                         // copy isn't what the button means. Every other action
                         // on the card still works.
                         selection: nil,
+                        density: density,
+                        fields: fields,
                         onOp: onOp
                     )
                 }
@@ -308,6 +318,8 @@ struct SectionView: View {
                             selection: selection,
                             startsExpanded: true,
                             onCollapse: { openDoneIDs.remove(t.id) },
+                            density: density,
+                            fields: fields,
                             onOp: onOp
                         )
                     } else if selection != nil {

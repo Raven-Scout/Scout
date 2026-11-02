@@ -9,46 +9,57 @@ Scout has already done the investigation. Every KB file is a synthesis that a pr
 
 Work the three steps in order. Most questions are done after step 2. Every path below is relative to the vault root.
 
+## Read through `scripts/scoutctl kb`
+
+Every vault read goes through `scripts/scoutctl kb` (`resolve`, `files`, `read`, `search`, `query`, `related`, `traverse`, `path`), never `ls`, `rg`, `grep`, `find`, `cat`, Read, Glob or `parser.py`. Only these label each result, and a scheduled run's KB read gate denies the raw reads.
+
+- **Pass no `--reader`.** The default is the session's reader: the owner here, `autonomous` in a scheduled run, an agent when a host sets `SCOUT_READER`. `--reader` only narrows; `--reader owner` fails in a run.
+- **`[private]` results are for the owner only.** Use them in an answer to the owner in this conversation. In anything bound for a shared place (Slack, a connector write or search, `drafts/`, text the user will forward), leave them out and don't hint they exist. In a scheduled run, the brain file's privacy rule decides.
+- **`denied` (exit 3), or no match for an agent reader, means stop.** Say Scout can't share that here; never read around it.
+
 ## 1. Resolve the entity to its canonical file
 
-One cheap listing beats a vault-wide search. For a project or initiative:
-
 ```bash
-ls knowledge-base/projects/          # match the user's words to a slug
+scripts/scoutctl kb resolve "<name>"       # name, alias or slug → canonical file; exit 1 = no match
+scripts/scoutctl kb read <path>            # when it resolves: you are done searching, go to step 2
 ```
 
-The listing also shows `projects.md` (the registry) and `archived/`. Neither is a project; look inside `archived/` only when the user asks about a finished or shelved project.
-
-Then read `knowledge-base/projects/<slug>/<slug>.md`. That single file is the canonical record: it carries the header status *and* every dated update in reverse-chronological order.
-
-Use the map below for other entity types. When the entity resolves to a file, you are done searching: read it and go to step 2.
-
-**When nothing matches**, search the entity files rather than the vault:
+For a project or initiative that doesn't resolve, list the projects and match the user's words to a slug:
 
 ```bash
-rg -l -i "<entity>" knowledge-base/projects knowledge-base/topics knowledge-base/sources knowledge-base/people knowledge-base/ontology/entities
+scripts/scoutctl kb files --glob 'knowledge-base/projects/*/*.md'
 ```
 
-Never read `knowledge-base/knowledge-base.md` whole: on older vaults it runs to hundreds of thousands of tokens. Reach it only through a scoped `rg` with line numbers, after the entity files come up empty.
+The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project. Use the map below for other entity types.
+
+**When nothing matches**, search the entity folders rather than the vault:
+
+```bash
+scripts/scoutctl kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**'
+```
+
+Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `scripts/scoutctl kb search "<entity>" --glob knowledge-base/knowledge-base.md` (matches print line numbers), after the entity folders come up empty.
 
 ## 2. Read the freshness gate, then answer
 
-Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The `**Last verified:** <timestamp> (<session type>)` line under the title, where present, is the last time a session checked the file against its sources even if nothing changed. Gate on the newer of the two:
+Two timestamps sit at the top of the file. The frontmatter's `last_updated:` is the last substantive change. The frontmatter's `last_verified:` (with `verified_against:` naming the sources) is the last time a session checked the file against its sources even if nothing changed; older files carry it as a `**Last verified:** <timestamp> (<session type>)` line under the title instead. Gate on the newer of the two:
 
 - **Recently verified**: answer from the file and cite the timestamp. The recorded state *is* the current state; a live re-query returns the same facts and costs several turns.
 - **Old enough that the answer could mislead, or neither timestamp present**: answer from the file, say how old it is, and offer to drill.
 
 The file's own hedges are load-bearing and belong in your answer: `[unverified]`, `[single-source]`, "not yet decided - do not record a verdict". Carry them through rather than flattening them into fact.
 
-**You are done when you can state:** the status and owner, what moved most recently, what is still open, and which of it is the user's. The canonical file's header plus its newest dated update almost always supplies all four. Reaching for action items, meeting notes, or a second project file after that is re-investigating what the file already told you.
+**You are done when you can state:** the status and owner, what moved most recently, what is still open, and which of it is the user's. The canonical file's header plus its "Where it stands" section (in an older file, its newest dated update) almost always supplies all four. Reaching for action items, meeting notes, or a second project file after that is re-investigating what the file already told you.
 
 ## 3. Drill to live sources only when the gate opens
 
 Drill when the gate is stale, when the user asks about something the file marks unresolved, or when they explicitly ask you to re-check.
 
-When you do, **use the reference the KB already recorded**: every synthesis cites its source with the exact coordinates (Slack channel + thread ts, `gh pr view <n> --repo <org>/<repo>`, Linear issue IDs, Drive doc IDs). Go straight to that coordinate. Re-discovering it through a search or an issue-list query is the expensive path Scout ran so you wouldn't have to.
+When you do, **use the reference the KB already recorded**: every synthesis cites its source with the exact coordinates (Slack channel + thread ts, `gh pr view <n> --repo <org>/<repo>`, Linear issue IDs, Drive doc IDs). Go straight to that coordinate. Re-discovering it through a search or an issue-list query is the expensive path Scout ran so you wouldn't have to. From a `[private]` note, use only the coordinate, never a search built from its text.
 
 ## Map
+
+Read each with `scripts/scoutctl kb read <path>`; list a folder with `kb files --glob '<folder>/*.md'`.
 
 | Question | Canonical file |
 |---|---|
@@ -58,8 +69,8 @@ When you do, **use the reference the KB already recorded**: every synthesis cite
 | A person | `knowledge-base/people/<name>.md`, then `knowledge-base/people.md`. Roster facts only; for current work, read the project files in its `works_on` |
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
 | A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
-| What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; read the newest part |
-| Typed / graph query | `python3 knowledge-base/ontology/parser.py query --type task --status open` (`--help` for traverse, related, path) |
+| What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
+| Typed / graph query | `scripts/scoutctl kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |
 
@@ -68,7 +79,8 @@ When you do, **use the reference the KB already recorded**: every synthesis cite
 | Mistake | Instead |
 |---|---|
 | `ls` the vault root to orient | Go straight to the map; the layout is fixed |
-| Vault-wide `grep` for the entity | `ls knowledge-base/projects/` and match the slug |
+| Vault-wide search for the entity | `kb resolve "<name>"`, then the project listing |
+| `cat`, Read, `rg` or `parser.py` on a vault file | `kb read`, `kb search`, `kb query`: they carry the `[private]` label |
 | Re-querying Linear/GitHub to confirm what the file states | Check the freshness gate; a recently verified timestamp is the confirmation |
 | Loading MCP connector schemas before reading the KB | Read the file first; most questions never need a connector |
-| Reading `knowledge-base/knowledge-base.md` to find where something lives | Entity files, then a scoped `rg` |
+| Reading `knowledge-base/knowledge-base.md` to find where something lives | Entity files, then a scoped `kb search` |

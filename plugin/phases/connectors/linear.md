@@ -12,10 +12,13 @@ Check for changes to {{USER_NAME}}'s assigned issues and any newly created or as
 
 ### {{USER_NAME}}'s Own Linear Activity Since Last Run (delta-scan — surface this first)
 
-Before the issue-state scan below, build an **actor-attributed** delta of what {{USER_NAME}} did in Linear since the last run — issues he created, moved (state change), commented on, or edited. This is the Linear analog of the Slack outbound scan and is a primary signal of completed/in-progress work. Surface it **early** in the run summary (before "Today's Wins") — never silently omit it.
+Report what {{USER_NAME}} did in Linear since the last run — the issues {{USER_NAME}} created, moved (state change), commented on, or edited. It is the Linear analog of the Slack outbound scan and a primary signal of completed/in-progress work. List each issue under `### Your Linear Activity` in today's 📋 Scout Digest (identifier, what {{USER_NAME}} did, where it stands now), and lead the wrap notification with it — never silently omit it. The digest is shared by the day's runs: name each issue on a line this run writes or updates, since a line left as an earlier run wrote it doesn't count.
 
-- **Volume-sanity gate:** if the delta is suspiciously empty (zero activity) for a normally-active window, re-fetch before concluding "no Linear activity" — a silent empty result erodes trust more than a slow run.
+- **Pre-fetched when the vault has a Linear API key** (`~/.scout-secrets/linear-api-key`): `.scout-cache/session-context.json` holds `linear_own_activity` (one row per issue, with {{USER_NAME}}'s `actions`) for the window from `linear_own_activity_since`. Report those rows; don't re-query Linear for them. When `linear_own_activity_truncated` is true a fetch limit cut the list: also check Linear for what's past it.
+- **Otherwise** (`linear_own_activity` is null; `linear_own_activity_status` says why), build it from Linear: issues updated since `linear_own_activity_since`, keeping only {{USER_NAME}}'s own actions. If it comes back empty for a normally-active window, re-fetch before writing `- None since <when>`. If Linear can't be read, write `- Linear unavailable: <error>`.
+- **Dated issues assigned to {{USER_NAME}}** are pre-fetched with the same key as `linear_assigned_due` (each open one with a due date, whoever touched it). Each needs a task line in a tier, with `due <date>` and `Refs: <identifier>`, not only a digest line; `check-tier-ceiling` (*Deadline-Distance Ceiling*) names any that has none.
 - **Re-fetch fast-moving issues at compose time:** any issue you're about to cite with a state framing ("In Review", "blocked") must be re-read at compose time, not carried from cache (mirrors the Gmail/Pattern #43 rule).
+- **Before committing**, run `scripts/scoutctl action-items check-linear-delta --data-dir {{SCOUT_DIR}}`. Exit 1 names what's missing: add it and run it again. Exit 2 (it couldn't check): note `linear-delta check could not run: <its message>` in this run's 🪵 Run notes entry.
 
 ### Project-Update Polling for {{USER_NAME}}-Led Projects (leadership pings)
 
@@ -119,33 +122,25 @@ After scanning Linear, update the knowledge base with current issue data. **Issu
 
 ### Issue Tracker Sync
 
-For every issue in the KB's issue tracker file:
-1. **Verify the status matches Linear.** If the KB says "To Do" but Linear says "In Progress," update the KB immediately.
-2. **Update priority** if it changed in Linear.
-3. **Add any new comments or context** that are relevant to understanding the issue.
-4. **Remove or archive issues** that are Done/Cancelled in Linear (move to a "Completed" section, don't delete — the history is useful).
+The issue tracker file is a thin index: one short row per tracked open issue. For every row:
+1. **Verify the state matches Linear** and fix a stale cell in place, immediately.
+2. **Move a Done/Cancelled issue** to the archive file (e.g. `issues-archive.md`) as one line.
+3. **Put new context in the project's `knowledge/` notes**, cited with the Linear URL, never in the index.
 
 ### Spot-Check Requirement
 
 Every run must spot-check at least 2-3 issue statuses against Linear as the source of truth. Pick issues that:
-- Are high priority (most impactful if stale)
-- Haven't been verified recently (check the "Last verified" note)
+- Belong to a high-priority project (most impactful if stale)
+- Haven't been verified recently (check the file's `last_verified:` frontmatter, or an older file's "Last verified" line)
 - Are referenced by current action items (most likely to cause errors if stale)
 
 ### New Issues
 
-Add any newly discovered issues to the issue tracker file with:
-- Issue identifier and title
-- Status, priority, assignee
-- Project/parent issue if applicable
-- Link to Linear
+Add each newly tracked issue as one row under its project: linked identifier, what it is, state, why it's tracked.
 
 ### Project File Updates
 
-If issue changes affect active projects, update the relevant project files:
-- Changed issue statuses in the project's issues section
-- New issues added to the project
-- Completed milestones or resolved blockers
+If issue changes affect an active project (a completed milestone, a resolved blocker), update its page's Where it stands or What's next, and its `knowledge/` notes.
 
 ---
 phase: connector

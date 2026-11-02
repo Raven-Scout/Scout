@@ -24,6 +24,12 @@ struct TaskCardView: View {
     /// Called when the user collapses the card. Recently Completed uses it to
     /// turn an opened done task back into its one-line row.
     let onCollapse: (() -> Void)?
+    /// Display options from the profile (#52). Defaults draw today's card.
+    let density: ActionItemsDisplay.Density
+    let fields: ActionItemsDisplay.Fields
+    /// Set when the caller decides the starting state (an opened done row);
+    /// a density change then leaves the card alone.
+    private let startsExpandedOverride: Bool?
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -40,6 +46,8 @@ struct TaskCardView: View {
         selection: Binding<Set<UUID>>? = nil,
         startsExpanded: Bool? = nil,
         onCollapse: (() -> Void)? = nil,
+        density: ActionItemsDisplay.Density = .comfortable,
+        fields: ActionItemsDisplay.Fields = .init(),
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
@@ -49,8 +57,23 @@ struct TaskCardView: View {
         self.selection = selection
         self.onOp = onOp
         self.onCollapse = onCollapse
-        // Urgent opens by default — its detail is what you want immediately.
-        _expanded = State(initialValue: startsExpanded ?? ((task.snoozedFromKind ?? kind) == .urgent))
+        self.density = density
+        self.fields = fields
+        self.startsExpandedOverride = startsExpanded
+        _expanded = State(initialValue: startsExpanded
+            ?? Self.startsExpanded(kind: task.snoozedFromKind ?? kind, density: density))
+    }
+
+    /// Urgent opens by default, since its detail is what you want right away.
+    /// Compact density starts every card collapsed.
+    static func startsExpanded(kind: ActionSection.Kind, density: ActionItemsDisplay.Density) -> Bool {
+        kind == .urgent && density == .comfortable
+    }
+
+    /// The chips the profile lets the collapsed card show. With `refs` off only
+    /// the "carried" chip stays: it is the task's age, not a reference.
+    static func visibleChips(_ chips: [TaskChip], fields: ActionItemsDisplay.Fields) -> [TaskChip] {
+        fields.refs ? chips : chips.filter { $0.glyph == .carry }
     }
 
     var body: some View {
@@ -98,6 +121,12 @@ struct TaskCardView: View {
         }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+        // Picking a density applies to the cards already on screen too, not
+        // only to cards created after the change.
+        .onChange(of: density) { _, newDensity in
+            guard startsExpandedOverride == nil else { return }
+            expanded = Self.startsExpanded(kind: effectiveKind, density: newDensity)
+        }
     }
 
     // MARK: - Header (always visible, scannable)
@@ -113,6 +142,7 @@ struct TaskCardView: View {
                 if selection != nil {
                     selectionButton
                 }
+                // Not selectable: a click on the title opens or closes the card.
                 InlineMarkdownText(task.subject)
                     .font(DS.serif(15.5, weight: .medium))
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
@@ -126,7 +156,7 @@ struct TaskCardView: View {
                 trailingStatus
                 chevron
             }
-            if !expanded && !summary.isEmpty {
+            if !expanded && !summary.isEmpty && density == .comfortable {
                 InlineMarkdownText(summary)
                     .font(DS.serif(13))
                     .foregroundStyle(DS.Ink.p3)
@@ -140,7 +170,7 @@ struct TaskCardView: View {
                 chipRow(chips)
             }
         }
-        .padding(14)
+        .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
     }
 
@@ -171,10 +201,14 @@ struct TaskCardView: View {
     // MARK: - Source/context chips
 
     private var chips: [TaskChip] {
-        TaskChip.chips(
-            for: task,
-            carriedLabel: task.carriedInFrom.map { dateShort($0) }
+        var chips = Self.visibleChips(
+            TaskChip.chips(for: task, carriedLabel: task.carriedInFrom.map { dateShort($0) }),
+            fields: fields
         )
+        if fields.comments && !task.comments.isEmpty {
+            chips.append(TaskChip(glyph: .comments, label: "\(task.comments.count)"))
+        }
+        return chips
     }
 
     private func chipRow(_ chips: [TaskChip]) -> some View {
@@ -268,6 +302,7 @@ struct TaskCardView: View {
         case .carry:    return "calendar"
         case .entity:   return "doc.text"
         case .crossRef: return "number.square"
+        case .comments: return "text.bubble"
         case .plain:    return "tag"
         }
     }
@@ -318,9 +353,10 @@ struct TaskCardView: View {
 
     @ViewBuilder
     private var trailingStatus: some View {
-        if task.done {
-            statusPill("Done", color: DS.Status.ok)
-        } else if let until = task.snoozedUntil {
+        switch Self.trailingStatus(task, fields: fields) {
+        case .done(let label):
+            statusPill(label, color: DS.Status.ok)
+        case .snoozed(let until):
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
@@ -330,8 +366,103 @@ struct TaskCardView: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(EditorialChipBackground())
+        case .plan(let label):
+            HStack(spacing: 3) {
+                Image(systemName: "clock").imageScale(.small)
+                Text(label)
+            }
+            .font(DS.mono(10.5))
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+            .help(Self.planChipHelp(task.plan))
+        case .none:
+            EmptyView()
         }
     }
+
+    enum TrailingStatus: Equatable {
+        case done(String)
+        case snoozed(Date)
+        case plan(String)
+        case none
+    }
+
+    /// What the header's trailing slot shows: "Done" ("Done · 1h" once
+    /// `/scout-plan` has the actual time), the snooze date, or the plan chip.
+    /// A snoozed task never shows the plan chip, also when the profile hides
+    /// its snooze date.
+    static func trailingStatus(_ task: ActionTask, fields: ActionItemsDisplay.Fields, today: Date = Date()) -> TrailingStatus {
+        if task.done {
+            guard fields.plan, let actual = task.plan.actualMinutes else { return .done("Done") }
+            return .done("Done · \(TaskPlan.formatDuration(actual))")
+        }
+        if let until = task.snoozedUntil {
+            return fields.snooze ? .snoozed(until) : .none
+        }
+        if fields.plan, let label = planChipLabel(task.plan, today: today) {
+            return .plan(label)
+        }
+        return .none
+    }
+
+    /// The `/scout-plan` chip: "10:00-10:45 · 45m", the weekday first when the
+    /// block is not today, "· took 1h" once the actual is in, "45m" for an
+    /// estimate without a block. Nil without a plan.
+    static func planChipLabel(_ plan: TaskPlan, today: Date = Date()) -> String? {
+        var parts: [String] = []
+        if let block = plan.block {
+            var range = "\(block.start)-\(block.end)"
+            if block.date != isoDay.string(from: today), let day = isoDay.date(from: block.date) {
+                range = "\(weekday.string(from: day)) " + range
+            }
+            parts.append(range)
+        }
+        if let estimate = plan.estimateMinutes {
+            parts.append(TaskPlan.formatDuration(estimate))
+        }
+        if let actual = plan.actualMinutes {
+            parts.append("took \(TaskPlan.formatDuration(actual))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Tooltip: "Planned 2026-09-30 10:00-10:45, estimate 45m (raw 30m), deep, took 1h on 2026-09-30".
+    static func planChipHelp(_ plan: TaskPlan) -> String {
+        var parts: [String] = []
+        if let block = plan.block {
+            parts.append("planned \(block.date) \(block.start)-\(block.end)")
+        }
+        if let estimate = plan.estimateMinutes {
+            var line = "estimate \(TaskPlan.formatDuration(estimate))"
+            if let raw = plan.rawMinutes, raw != estimate {
+                line += " (raw \(TaskPlan.formatDuration(raw)))"
+            }
+            if let kind = plan.kind { line += ", \(kind)" }
+            parts.append(line)
+        }
+        if let actual = plan.actualMinutes {
+            var line = "took \(TaskPlan.formatDuration(actual))"
+            if let day = plan.actualDate { line += " on \(day)" }
+            parts.append(line)
+        }
+        let text = parts.joined(separator: ", ")
+        return text.prefix(1).uppercased() + text.dropFirst()
+    }
+
+    private static let isoDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f
+    }()
 
     private func statusPill(_ label: String, color: Color) -> some View {
         Text(label)
@@ -352,7 +483,7 @@ struct TaskCardView: View {
             await runOp(.editComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: .index(index),
+                selector: task.commentSelector(at: index),
                 newText: newText
             ))
         }
@@ -364,7 +495,7 @@ struct TaskCardView: View {
             await runOp(.deleteComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: .index(index)
+                selector: task.commentSelector(at: index)
             ))
         }
     }
@@ -423,6 +554,7 @@ struct TaskCardView: View {
                     .font(DS.sans(11))
                     .foregroundStyle(DS.Status.err)
                     .padding(.top, 2)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -454,6 +586,7 @@ struct TaskCardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .textSelection(.enabled)
         }
         .padding(.vertical, 6)
         .padding(.leading, CGFloat(task.indentLevel) * 24 + 16)

@@ -31,7 +31,7 @@ from scout.hooks.kb_pre_filter import (
 
 def test_freshness_hours_special_files(tmp_path):
     assert freshness_hours_for(tmp_path / "linear-issues.md") == 6
-    assert freshness_hours_for(tmp_path / "knowledge-base.md") == 6
+    assert freshness_hours_for(tmp_path / "knowledge-base.md") == 336
     assert freshness_hours_for(tmp_path / "people.md") == 168
     assert freshness_hours_for(tmp_path / "channels.md") == 336
     assert freshness_hours_for(tmp_path / "ai-costs.md") == 168
