@@ -58,6 +58,10 @@ UPDATER=Versions/B/Updater.app
 INSTALLER=Versions/B/XPCServices/Installer.xpc
 DOWNLOADER=Versions/B/XPCServices/Downloader.xpc
 
+# The app's own entitlements. Under the hardened runtime, Apple events to
+# Terminal fail with no consent prompt unless this file grants them.
+APP_ENTITLEMENTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/Scout.entitlements"
+
 # State the EXIT trap cleans up (appcast only).
 WORK=""     # temp dir: stage/ and the unvalidated feed
 MNT=""      # temp mountpoint, deliberately outside WORK
@@ -188,6 +192,7 @@ cmd_sign() {
   [ -n "$ident" ] || die "empty codesign identity"
   # Check every path before signing anything.
   require_sparkle_tree "$app"
+  [ -f "$APP_ENTITLEMENTS" ] || die "missing $APP_ENTITLEMENTS"
   fw="$app/Contents/Frameworks/Sparkle.framework"
 
   # Inside-out. Never --deep on a signing line: it would re-sign the nested
@@ -197,7 +202,9 @@ cmd_sign() {
   sign_one "$ident" "$fw/$AUTOUPDATE"
   sign_one "$ident" "$fw/$UPDATER"
   sign_one "$ident" "$fw"
-  sign_one "$ident" "$app"
+  echo "→ codesign $app"
+  codesign --force --options runtime --timestamp --entitlements "$APP_ENTITLEMENTS" --sign "$ident" "$app" \
+    || die "codesign failed on $app"
 
   codesign --verify --strict --deep --verbose=2 "$app" || die "codesign --verify --strict --deep failed on $app"
   echo "✓ sparkle-release sign: Sparkle's nested code, Sparkle.framework and $app signed"
