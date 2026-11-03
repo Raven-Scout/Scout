@@ -91,7 +91,9 @@ def test_base_checkout_is_a_clean_detached_worktree_reused_by_commit(tmp_path: P
 def _plugin_copy_with_marker(tmp_path: Path) -> Checkout:
     """A stand-in base: a copy of plugin/ whose run-modes phase says something head's doesn't."""
     root = tmp_path / "other"
-    shutil.copytree(PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests"))
+    shutil.copytree(
+        PLUGIN_ROOT, root / "plugin", ignore=shutil.ignore_patterns(".venv", "__pycache__", "tests", ".coverage*")
+    )
     phase = root / "plugin" / "phases" / "core" / "00-run-modes.md"
     phase.write_text(phase.read_text() + "\nBASE-ARM-MARKER\n")
     return Checkout(label="base", root=root, commit="0" * 40, pythonpath=root / "plugin" / "engine")
