@@ -1029,6 +1029,13 @@ def cmd_validate(graph: KnowledgeGraph) -> Output:
     JSON: ``{"errors": [...], "known_gaps": [...]}``, each row labelled. A
     parse-error row's ``entity`` is the file's vault-relative path, labelled
     as that file (malformed frontmatter is private).
+
+    **Exits 3 when any error is found.** The exit code is the only part of
+    this command another program reads: the vault's dreaming preflight runs
+    it as the `graph-validate` row and prints ✅/🟡 from the code alone, so a
+    command that printed "N validation error(s) found." and still returned 0
+    made every one of those rows information-free. Known gaps are an accepted
+    backlog and never change the code.
     """
     errors = graph.validate()
     file_labels = {pe["path"]: pe["_label"] for pe in graph.parse_errors}
@@ -1054,7 +1061,7 @@ def cmd_validate(graph: KnowledgeGraph) -> Output:
             lines.append(f"  '{target}' — {by_target[target][0]['reason']}  (referenced by: {refs})")
     labels = [*_node_labels(graph, [e["entity"] for e in errors] + [g["entity"] for g in gaps])]
     labels += [lab for lab in file_labels.values() if lab]
-    return Output(data={"errors": rows, "known_gaps": gaps}, lines=lines, labels=labels)
+    return Output(data={"errors": rows, "known_gaps": gaps}, lines=lines, labels=labels, code=3 if rows else 0)
 
 
 # ----- the audit -----------------------------------------------------------------------

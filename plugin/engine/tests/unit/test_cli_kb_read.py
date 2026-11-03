@@ -184,7 +184,9 @@ def test_owner_and_autonomous_see_private_labelled(vault: Path, reader: str) -> 
     export = json.loads(kb(vault, "export", reader=reader).stdout)
     assert export["entities"]["sam"]["_label"]["visibility"] == "private"
     assert "Entities:" in kb(vault, "stats", reader=reader).stdout
-    assert kb(vault, "validate", reader=reader).exit_code == 0
+    # 3: this fixture vault carries a deliberately broken note, and `validate` reports
+    # findings through its exit code (see test_kb_validate_exit_code.py).
+    assert kb(vault, "validate", reader=reader).exit_code == 3
 
 
 # ----- agents: nothing ----------------------------------------------------------
