@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -495,6 +496,9 @@ def _links(f: StagedFile) -> list[Finding]:
 # what the commit makes worse, so a page already in debt can still be edited;
 # `scoutctl kb structure` reports the debt itself.
 
+# A rewrite can add hundreds of narrated lines, and a run reads every finding.
+PAGE_NARRATION_SHOWN = 10
+
 
 def _page_kind(rules: PageRules, rel: str) -> str | None:
     from scout.errors import KBError
@@ -521,9 +525,11 @@ def _page_loose(f: StagedFile) -> list[Finding]:
     rules = _page_rules(f)
     if rules is None or _page_kind(rules, f.rel) != "loose":
         return []
-    if f.size_base is not None and _page_kind(rules, f.size_base) == "loose":
-        return []  # already beside a front page: an edit or a rename adds no debt
     parent = PurePosixPath(f.rel).parent
+    if f.size_base is not None and _page_kind(rules, f.size_base) == "loose":
+        old_parent = PurePosixPath(f.size_base).parent
+        if old_parent == parent or not (f.repo / old_parent / f"{old_parent.name}.md").is_file():
+            return []  # an edit, a rename in the folder, or the whole project renamed: no new debt
     front = str(parent / f"{parent.name}.md")
     if front not in f.staged_rels and not (f.repo / front).is_file():
         return []  # no front page, so `kb structure` doesn't count this folder as a project
@@ -546,7 +552,9 @@ def _page_sections(f: StagedFile) -> list[Finding]:
         return []
     required = rules.cfg.required_sections
     missing = missing_sections(split_page(staged_text_lossy(f.repo, f.rel))[1], required)
-    old = head_text_lossy(f.repo, f.size_base) if f.size_base else None
+    # A note renamed into the front-page slot is a new front page: its old text isn't a baseline.
+    was_front = f.size_base is not None and _page_kind(rules, f.size_base) == "front"
+    old = head_text_lossy(f.repo, f.size_base) if f.size_base and was_front else None
     if old is not None:
         already = set(missing_sections(split_page(old)[1], required))
         missing = [s for s in missing if s not in already]
@@ -564,20 +572,33 @@ def _page_narration(f: StagedFile) -> list[Finding]:
     rules = _page_rules(f)
     if rules is None or _page_kind(rules, f.rel) != "front":
         return []
-    hits = [(n, labels) for n, t in f.added if (labels := narration_found(t, rules.cfg.narration_markers))]
+    markers = rules.cfg.narration_markers
+    hits = [(n, labels) for n, t in f.added if (labels := narration_found(t, markers))]
     if not hits:
         return []
     lines = staged_text_lossy(f.repo, f.rel).split("\n")
     block = frontmatter_block(lines)
     body_starts = 0 if block is None else len(block) + 2  # frontmatter is where provenance belongs
-    private = _page_private(f)
-    out = []
+    # Each marker the commit removes from this page excuses one added line with it, so
+    # fixing a typo on a narrated line is not new debt. A line needs all its markers covered.
+    spare = Counter(
+        label for line in changed_lines(f.repo, f.rel, f.size_base)[1] for label in narration_found(line, markers)
+    )
+    new = []
     for n, labels in hits:
-        if n > body_starts:
-            what = "run narration" if private else "run narration (" + ", ".join(labels) + ")"
-            out.append(
-                Finding(f.rel, "page-narration", True, f"line {n} adds {what} — keep it in the commit message", n)
-            )
+        if n <= body_starts:
+            continue
+        if all(spare[label] > 0 for label in labels):
+            spare.subtract(labels)
+        else:
+            new.append((n, labels))
+    private = bool(new) and _page_private(f)
+    out = []
+    for n, labels in new[:PAGE_NARRATION_SHOWN]:
+        what = "run narration" if private else "run narration (" + ", ".join(labels) + ")"
+        out.append(Finding(f.rel, "page-narration", True, f"line {n} adds {what} — keep it in the commit message", n))
+    if len(new) > PAGE_NARRATION_SHOWN:
+        out.append(Finding(f.rel, "page-narration", True, f"and {len(new) - PAGE_NARRATION_SHOWN} more narrated lines"))
     return out
 
 

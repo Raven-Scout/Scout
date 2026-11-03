@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from scout import cli
+from scout.errors import KBError
 from scout.kb import structure
 from scout.kb.structure import (
     load_structure_config,
@@ -102,8 +103,8 @@ def test_loose_files_and_odd_dirs(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
     kb_repo.write(f"{P}/widgets/notes.md", "loose\n")
     kb_repo.write(f"{P}/widgets/diagram.png", "not markdown\n")
-    kb_repo.write(f"{P}/widgets/scratch/a.md", "odd\n")
-    kb_repo.write(f"{P}/widgets/widgets-api/widgets-api.md", "a sub-project\n")
+    kb_repo.stage(f"{P}/widgets/scratch/a.md", "odd\n")
+    kb_repo.stage(f"{P}/widgets/widgets-api/widgets-api.md", "a sub-project\n")
     row = rows_by_name(kb_repo.root)["widgets"]
     assert row["loose"] == [f"{P}/widgets/notes.md"]
     assert row["odd_dirs"] == [f"{P}/widgets/scratch"]
@@ -229,6 +230,30 @@ def test_newest_changes_outside_a_repo_is_empty(tmp_path: Path) -> None:
     assert newest_changes(tmp_path, P) == {}
 
 
+def test_a_path_git_would_quote_still_counts_as_a_change(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-10-01"))
+    commit_at(kb_repo, "2026-10-01", monkeypatch)
+    kb_repo.write(f'{P}/widgets/knowledge/with"quote and\ttab.md', "n\n")
+    commit_at(kb_repo, "2026-10-20", monkeypatch)
+    assert rows_by_name(kb_repo.root)["widgets"]["stale"]
+
+
+def test_an_amend_does_not_make_a_page_stale(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-10-01"))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "n\n")
+    commit_at(kb_repo, "2026-10-01", monkeypatch)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-10-20T12:00:00+00:00")
+    kb_repo.git("commit", "-q", "--amend", "--no-edit", "--no-verify")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["stale"] and row["folder_last_change"] == "2026-10-01"
+
+
+def test_a_null_projects_dir_is_an_error_not_an_empty_table(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_structure:\n  projects_dir: null\n")
+    result = runner.invoke(cli.app, ["kb", "structure", "--next", "--repo", str(kb_repo.root)])
+    assert isinstance(result.exception, KBError) and "projects_dir" in str(result.exception)  # cli.main: exit 20
+
+
 def test_history_is_read_in_one_git_call(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("widgets", "gadgets", "sprockets"):
         kb_repo.write(f"{P}/{name}/{name}.md", page(name))
@@ -244,7 +269,7 @@ def test_history_is_read_in_one_git_call(kb_repo, monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(structure.subprocess, "run", spy)
     assert len(structure_rows(kb_repo.root)) == 3
-    assert [c for c in calls if "log" in c] == [calls[0]] and len(calls) == 1
+    assert sorted(c[1] for c in calls) == ["log", "ls-files"]
 
 
 # ----- order and --next ---------------------------------------------------------------

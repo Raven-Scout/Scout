@@ -5,7 +5,7 @@ files. It reads that from ONE `git log --name-only` over the projects folder,
 not a `git log -1` per folder. This builds a vault with 200 project folders and
 20,000 commits (most outside the projects folder, as in a vault whose runs
 commit action items and session logs all day) with `git fast-import`, then
-checks the whole table takes one git call and stays inside the budget. Best of
+checks the whole table takes one history call and stays inside the budget. Best of
 three runs, so one stall on a loaded runner doesn't fail it.
 """
 
@@ -84,6 +84,6 @@ def test_structure_reads_history_once_within_budget(tmp_path: Path, monkeypatch:
         rows = structure.structure_rows(vault)
         best = min(best, time.perf_counter() - start)
         assert len(rows) == FOLDERS
-        assert len([c for c in calls if c[:1] == ["git"]]) == 1
+        assert sorted(c[1] for c in calls if c[:1] == ["git"]) == ["log", "ls-files"]
     assert any(r["stale"] for r in rows)
     assert best < BUDGET_S, f"kb structure took {best:.2f}s over {COMMITS} commits (budget {BUDGET_S}s)"

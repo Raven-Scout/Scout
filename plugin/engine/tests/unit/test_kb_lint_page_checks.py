@@ -156,6 +156,66 @@ def test_narration_outside_a_front_page_is_not_this_checks_business(kb_repo) -> 
     assert findings(kb_repo) == []
 
 
+def test_editing_a_line_that_already_has_a_marker_is_not_new_debt(kb_repo) -> None:
+    committed_page(kb_repo, page(extra="Last verified Oct 3 against the tracker.\nFinding 3 from §4 holds.\n"))
+    kb_repo.stage(FRONT, page(extra="Last verified Oct 9 against the tracker.\nFinding 3 from §4 holds, mostly.\n"))
+    assert findings(kb_repo) == []
+
+
+def test_a_removed_marker_excuses_one_added_line_and_only_its_own_kind(kb_repo) -> None:
+    committed_page(kb_repo, page(extra="Finding 3 holds.\n"))
+    kb_repo.stage(FRONT, page(extra="Finding 3 holds, mostly.\nFinding 4 is new.\nPer §9 too.\n"))
+    found = findings(kb_repo)
+    assert [f.check for f in found] == ["page-narration", "page-narration"]
+    assert "§N" in found[1].message
+
+
+def test_a_line_with_a_new_marker_beside_an_old_one_is_still_new_debt(kb_repo) -> None:
+    committed_page(kb_repo, page(extra="Finding 3 holds.\n"))
+    kb_repo.stage(FRONT, page(extra="Finding 3 holds, per §9.\n"))
+    [f] = findings(kb_repo)
+    assert f.check == "page-narration" and "§N" in f.message
+
+
+def test_a_big_rewrite_prints_a_capped_list_of_narrated_lines(kb_repo) -> None:
+    committed_page(kb_repo)
+    kb_repo.stage(FRONT, page(extra="".join(f"Finding {n} holds.\n" for n in range(40))))
+    found = findings(kb_repo)
+    assert len(found) == 11 and all(f.check == "page-narration" for f in found)
+    assert found[-1].line is None and "30 more" in found[-1].message
+
+
+# ----- renames ---------------------------------------------------------------------
+
+
+def test_a_note_renamed_into_the_front_page_slot_is_a_new_front_page(kb_repo) -> None:
+    committed_page(kb_repo)
+    kb_repo.stage("knowledge-base/projects/gadgets/notes.md", "a line of notes\n" * 20)
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/projects/gadgets/notes.md", "knowledge-base/projects/gadgets/gadgets.md")
+    [f] = findings(kb_repo)
+    assert f.check == "page-sections" and "new front page lacks" in f.message
+
+
+def test_a_loose_file_moved_in_from_another_project_is_new_debt_there(kb_repo) -> None:
+    committed_page(kb_repo)
+    kb_repo.stage("knowledge-base/projects/gadgets/gadgets.md", page())
+    kb_repo.stage("knowledge-base/projects/gadgets/notes.md", "a line of notes\n" * 20)
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/projects/gadgets/notes.md", LOOSE)
+    [f] = findings(kb_repo)
+    assert (f.path, f.check) == (LOOSE, "page-loose")
+
+
+def test_renaming_a_whole_project_moves_its_loose_files_without_new_debt(kb_repo) -> None:
+    committed_page(kb_repo)
+    kb_repo.stage(LOOSE, "a line of notes\n" * 20)
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/projects/widgets", "knowledge-base/projects/gadgets")
+    kb_repo.git("mv", "knowledge-base/projects/gadgets/widgets.md", "knowledge-base/projects/gadgets/gadgets.md")
+    assert findings(kb_repo) == []
+
+
 # ----- privacy ------------------------------------------------------------------
 
 

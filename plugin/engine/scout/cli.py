@@ -941,7 +941,7 @@ def kb_structure(
     as_json: bool = typer.Option(False, "--json", help="Print the table (or, with --next, the target) as JSON."),
     repo: Path | None = _REPO,
 ) -> None:
-    """Check each project folder against the KB page standard. Report-only: exit 0.
+    """Check each project folder against the KB page standard. Report-only: exit 0, or 20 on a bad setting.
 
     Loose files, odd subfolders, front-page size, required sections, run
     narration, `as_of` and staleness; worst first. A private front page shows

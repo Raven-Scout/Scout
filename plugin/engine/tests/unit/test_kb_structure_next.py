@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from scout import cli
-from scout.kb.structure import load_structure_config, missing_sections, next_target, structure_rows
+from scout.config import today
+from scout.kb.structure import RESUME_DAYS, load_structure_config, missing_sections, next_target, structure_rows
 
 runner = CliRunner()
+
+
+def archive_copy(name: str, vault: Path, days_ago: int) -> str:
+    return f"{name}-{today(vault) - dt.timedelta(days=days_ago)}-pre-restructure.md"
+
 
 SECTIONS = ["Where it stands", "What's next", "Key decisions", "Open questions", "People", "Go deeper", "History"]
 P = "knowledge-base/projects"
@@ -85,9 +92,96 @@ def test_a_loose_private_file_with_other_work_left_stays_a_target(kb_repo) -> No
 def test_next_resumes_a_half_rebuilt_page_first(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", extra="x" * 17000))
-    kb_repo.write(f"{P}/gadgets/archive/gadgets-2026-10-30-pre-restructure.md", "the old page\n")
+    kb_repo.write(f"{P}/gadgets/archive/{archive_copy('gadgets', kb_repo.root, 3)}", "the old page\n")
     assert rows_by_name(kb_repo.root)["gadgets"]["resume"]
     assert picked(kb_repo.root) == "gadgets"
+
+
+def test_an_old_archive_copy_does_not_jump_the_queue(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", extra="x" * 17000))
+    kb_repo.write(f"{P}/gadgets/archive/{archive_copy('gadgets', kb_repo.root, RESUME_DAYS + 1)}", "the old page\n")
+    assert not rows_by_name(kb_repo.root)["gadgets"]["resume"]
+    assert picked(kb_repo.root) == "widgets"
+
+
+# ----- a share where the rebuild writes ------------------------------------------------
+
+
+def test_next_skips_a_folder_with_a_shared_subfolder(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "n\n")
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
+    args = ["kb", "share", f"{P}/widgets/knowledge", "--with", "alex@example.com", "--yes", "--repo", str(kb_repo.root)]
+    assert runner.invoke(cli.app, args).exit_code == 0
+    assert not rows_by_name(kb_repo.root)["widgets"]["rebuild_target"]
+    assert picked(kb_repo.root) == "gadgets"
+
+
+def test_next_skips_a_share_on_a_subfolder_with_nothing_in_it_yet(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/widgets/archive/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert not rows_by_name(kb_repo.root)["widgets"]["rebuild_target"]
+    assert picked(kb_repo.root) is None
+
+
+def test_next_skips_a_folder_holding_one_shared_note(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "---\nfederation_scope: org\n---\nn\n")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["rebuild_target"] and not row["resume"] and not row["conforms"]
+    table = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)]).output
+    assert "[--next skips]" in table
+
+
+def test_a_share_elsewhere_does_not_skip_the_folder(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/gadgets/knowledge/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) == "widgets"
+
+
+# ----- odd subfolders can't hold the pick ----------------------------------------------
+
+
+def test_an_odd_subfolder_alone_never_holds_the_pick(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴"))
+    kb_repo.stage(f"{P}/widgets/assets/diagram.md", "tracked\n")
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["odd_dirs"] and not row["conforms"] and not row["rebuild_target"]
+    assert picked(kb_repo.root) == "gadgets"
+    table = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)]).output
+    assert any("widgets" in line and "[--next skips]" in line for line in table.splitlines())
+
+
+def test_an_odd_subfolder_with_real_work_left_stays_a_target(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.stage(f"{P}/widgets/assets/diagram.md", "tracked\n")
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_a_folder_git_doesnt_track_is_not_odd(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
+    kb_repo.write(f"{P}/widgets/images/shot.md", "untracked\n")
+    kb_repo.write(f"{P}/widgets/.obsidian/workspace.md", "untracked\n")
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["odd_dirs"] == [] and row["conforms"]
+
+
+def test_a_gitignored_file_is_not_loose(kb_repo) -> None:
+    kb_repo.write(".gitignore", "scratch.md\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
+    kb_repo.write(f"{P}/widgets/scratch.md", "ignored\n")
+    kb_repo.write(f"{P}/widgets/notes.md", "untracked, not ignored\n")
+    assert rows_by_name(kb_repo.root)["widgets"]["loose"] == [f"{P}/widgets/notes.md"]
+
+
+def test_outside_a_repo_the_folder_itself_is_what_counts(tmp_path: Path) -> None:
+    (tmp_path / P / "widgets" / "assets").mkdir(parents=True)
+    (tmp_path / P / "widgets" / "widgets.md").write_text(page("widgets"), encoding="utf-8")
+    (tmp_path / P / "widgets" / "notes.md").write_text("n\n", encoding="utf-8")
+    row = rows_by_name(tmp_path)["widgets"]
+    assert row["odd_dirs"] == [f"{P}/widgets/assets"] and row["loose"] == [f"{P}/widgets/notes.md"]
 
 
 def test_a_finished_rebuild_that_lost_its_as_of_does_not_jump_the_queue(kb_repo) -> None:

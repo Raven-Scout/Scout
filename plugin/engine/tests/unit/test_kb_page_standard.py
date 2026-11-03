@@ -117,6 +117,10 @@ def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None
     # A page failing only on freshness or filing is refreshed, not rebuilt.
     assert "**If it fails only on `stale`, `as_of`, narration or loose files, refresh it instead:**" in step
     assert "`kb structure` row comes clear on the night you rewrite it" in step
+    # No archive copy on a refresh, so nothing may lean on it: facts move, and the lossless check still runs.
+    assert "move any narrated line's facts into the body" in step
+    assert "if you couldn't verify, leave `as_of` and say so" in step
+    assert "then do 5.5" in step
 
 
 def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
@@ -131,7 +135,7 @@ def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
 def test_nightly_pass_skips_pages_it_could_widen_and_keeps_the_lossless_rule(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     # `--next` enforces the skip (tests/unit/test_kb_structure_next.py); the step says why.
-    assert "leaves out pages labelled private, shared or local-only" in step
+    assert "leaves out pages whose new copies could widen them or hit a hard privacy block" in step
     assert "Leave any loose file `kb classify` labels private, shared or local-only where it is" in step
     assert "name it in the commit message as deliberately dropped" in step
     assert "naming both paths of each move" in step

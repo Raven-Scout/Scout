@@ -28,20 +28,19 @@ still checked, but its row carries only paths, counts and verdicts: no
 priority, dates, section names or marker names.
 
 ``--next`` takes the first row in table order that the pass can act on, except
-that a rebuild left half done on an earlier night comes first. It never picks a
+that a rebuild left half done in the last weeks comes first. It never picks a
 page labelled private, shared or local-only, whose new copies could widen it or
-hit a hard privacy block, or a page whose only problem is a loose file with such
-a label, which the pass must leave where it is. Either would pin the target to a
-page no night can fix.
+hit a hard privacy block, or a folder where a rebuild could write into a share.
+Nor does it pick a folder whose only problems are odd subfolders or loose files
+with such a label, which no night can clear: they would hold the pick for good.
 
 History comes from ONE ``git log --name-only`` over the projects folder, not a
-call per folder.
+call per folder, and what git tracks from one ``git ls-files``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import glob
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -51,14 +50,17 @@ from typing import Any
 
 import yaml
 
-from scout.config import load_config
+from scout.config import load_config, today
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
-from scout.kb.lint_config import glob_match, load_lint_config
-from scout.kb.privacy import FULL_READERS, Label, label_file, load_frontmatter_yaml, load_policy
+from scout.kb.lint_config import lint_any, load_lint_config
+from scout.kb.privacy import FULL_READERS, Label, Policy, classify, label_file, load_frontmatter_yaml, load_policy
 
 KB_PREFIX = "knowledge-base/"
 PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
+# An archive copy older than this is a finished rebuild, or one that stopped making
+# progress: either way the page goes back in line. A big page's rebuild runs for weeks.
+RESUME_DAYS = 45
 _HEADING = re.compile(r"^## +(.+?)\s*$", re.M)
 
 
@@ -104,9 +106,12 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
     raw = load_config(vault).get("kb_structure") or {}
     if not isinstance(raw, dict):
         raw = {}
+    projects_dir = raw.get("projects_dir", "knowledge-base/projects")
+    if not isinstance(projects_dir, str) or not projects_dir.strip("/"):
+        raise KBError("kb_structure.projects_dir must be a vault-relative folder")
     try:
         return StructureConfig(
-            projects_dir=str(raw.get("projects_dir", "knowledge-base/projects")).strip("/"),
+            projects_dir=projects_dir.strip("/"),
             skip_projects=frozenset(_strs(raw, "skip_projects")),
             allowed_dirs=frozenset(_strs(raw, "allowed_dirs")),
             page_target_bytes=int(raw.get("page_target_bytes", 8192)),
@@ -165,24 +170,59 @@ def newest_changes(vault: Path, pathspec: str) -> dict[str, dt.date]:
     """Each path ever committed under ``pathspec`` → the date of the newest commit touching it.
 
     One ``git log`` for the whole folder, newest first, so a path's first sighting
-    is its newest change. Paths are relative to ``vault``, which may sit inside a
-    larger repo. ``{}`` outside a repo, before the first commit, or without git.
+    is its newest change. The date is the author date, which an amend or a rebase
+    leaves alone. Paths are relative to ``vault``, which may sit inside a larger
+    repo. ``{}`` outside a repo, before the first commit, or without git.
     """
-    cmd = ["git", "-c", "core.quotepath=false", "log", "--relative", "--no-renames", "--name-only", "--format=%x00%cs"]
+    cmd = ["git", "log", "--relative", "--no-renames", "--name-only", "-z", "--format=%x00%as", "--", pathspec]
     try:
-        proc = subprocess.run([*cmd, "--", pathspec], cwd=vault, capture_output=True)
+        proc = subprocess.run(cmd, cwd=vault, capture_output=True)
     except OSError:
         return {}
     if proc.returncode != 0:
         return {}
     newest: dict[str, dt.date] = {}
     day: dt.date | None = None
-    for line in proc.stdout.decode("utf-8", errors="replace").split("\n"):
-        if line.startswith("\0"):
-            day = dt.date.fromisoformat(line[1:])
-        elif line and day is not None:
-            newest.setdefault(line, day)
+    # NUL-separated: empty, date, then the paths, the first with a leading newline.
+    for raw in proc.stdout.decode("utf-8", errors="replace").split("\0"):
+        token = raw.removeprefix("\n")
+        if token.startswith(pathspec + "/"):
+            if day is not None:
+                newest.setdefault(token, day)
+        elif token:
+            day = dt.date.fromisoformat(token)
     return newest
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """What git knows about the projects folder, from one ``git ls-files``."""
+
+    files: frozenset[str]  # tracked, or untracked and not ignored
+    tracked_dirs: frozenset[str]  # ``<project>/<subfolder>`` holding a tracked file
+
+
+def _listing(vault: Path, projects_dir: str) -> _Listing | None:
+    """None outside a repo or without git: the folder's own contents are then all there is to go on."""
+    cmd = ["git", "ls-files", "-z", "-t", "--cached", "--others", "--exclude-standard", "--", projects_dir]
+    try:
+        proc = subprocess.run(cmd, cwd=vault, capture_output=True)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    files: set[str] = set()
+    tracked_dirs: set[str] = set()
+    prefix = projects_dir + "/"
+    for entry in proc.stdout.decode("utf-8", errors="replace").split("\0"):
+        if not entry:
+            continue
+        tag, path = entry[0], entry[2:]
+        files.add(path)
+        parts = path.removeprefix(prefix).split("/")
+        if tag != "?" and len(parts) >= 3:
+            tracked_dirs.add(f"{parts[0]}/{parts[1]}")
+    return _Listing(frozenset(files), frozenset(tracked_dirs))
 
 
 # ----- the folder check ---------------------------------------------------------
@@ -197,19 +237,29 @@ class _Folder:
     other_dirs: set[str]  # subfolders whose changes count toward staleness (all but archive/)
 
 
-def _scan(vault: Path, rel: str, name: str, cfg: StructureConfig, excluded: Callable[[str], bool]) -> _Folder:
+def _scan(
+    vault: Path,
+    rel: str,
+    name: str,
+    cfg: StructureConfig,
+    excluded: Callable[[str], bool],
+    listing: _Listing | None,
+) -> _Folder:
+    """A folder of images or editor state git doesn't track isn't odd, and a gitignored file isn't loose."""
     folder = _Folder(name, rel, [], [], set())
     for entry in sorted((vault / rel).iterdir(), key=lambda p: p.name):
         entry_rel = f"{rel}/{entry.name}"
         if entry.is_dir():
             if excluded(entry_rel + "/"):
                 continue
-            if entry.name not in cfg.allowed_dirs and not (entry / f"{entry.name}.md").is_file():
+            tracked = listing is None or f"{name}/{entry.name}" in listing.tracked_dirs
+            if tracked and entry.name not in cfg.allowed_dirs and not (entry / f"{entry.name}.md").is_file():
                 folder.odd_dirs.append(entry.name)
             if entry.name != "archive":
                 folder.other_dirs.add(entry.name)
         elif entry.name.endswith(".md") and entry.name != f"{name}.md" and not excluded(entry_rel):
-            folder.loose.append(entry.name)
+            if listing is None or entry_rel in listing.files:
+                folder.loose.append(entry.name)
     return folder
 
 
@@ -235,6 +285,39 @@ def _pinned(label: Label) -> bool:
     return label.visibility == "private" or label.shared_file or label.local_only
 
 
+def _rebuild_writes_into_a_share(vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy) -> bool:
+    """Whether a rebuild of this folder could put page facts where someone else reads them.
+
+    The front page's own label doesn't say: a rebuild moves its facts into the
+    subfolders, and a share on one reaches its readers at the next sync, with no
+    way to recall them. So a new note in any subfolder the step writes to, and
+    every note already in the folder, must be unshared."""
+    probes = (f"{folder.rel}/{d}/{folder.name}-new-note.md" for d in sorted(cfg.allowed_dirs))
+    if any(classify(probe, None, policy).shared_file for probe in probes):
+        return True
+    return any(
+        label_file(vault, path.relative_to(vault).as_posix(), policy).shared_file
+        for path in (vault / folder.rel).rglob("*.md")
+    )
+
+
+def _rebuild_under_way(vault: Path, folder: _Folder, day: dt.date) -> bool:
+    """Whether the folder has an archive copy from the last :data:`RESUME_DAYS`."""
+    archive = vault / folder.rel / "archive"
+    if not archive.is_dir():
+        return False
+    copy = re.compile(re.escape(folder.name) + r"-(\d{4}-\d{2}-\d{2})-pre-restructure\.md")
+    for entry in archive.iterdir():
+        match = copy.fullmatch(entry.name)
+        if match:
+            try:
+                if (day - dt.date.fromisoformat(match.group(1))).days <= RESUME_DAYS:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
 def check_folder(
     vault: Path,
     folder: _Folder,
@@ -243,6 +326,7 @@ def check_folder(
     excluded: Callable[[str], bool],
     label: Label,
     pinned_loose: int,
+    day: dt.date,
 ) -> dict[str, Any]:
     private = label.visibility == "private"
     front = f"{folder.rel}/{folder.name}.md"
@@ -272,11 +356,11 @@ def check_folder(
         problems.append("no as_of")
     if stale:
         problems.append("stale" if private else f"stale (as_of {as_of}, folder changed {newest})")
-    # Everything but the loose count can be acted on, and so can any loose file that isn't pinned.
-    actionable = len(problems) > (1 if folder.loose else 0) or len(folder.loose) > pinned_loose
-    half_rebuilt = (missing or size > cfg.page_budget_bytes) and any(
-        (vault / folder.rel / "archive").glob(f"{glob.escape(folder.name)}-*-pre-restructure.md")
-    )
+    # A night can clear the page's own problems and any loose file that isn't pinned. Nothing
+    # in the step clears an odd subfolder, so one alone must not hold the pick night after night.
+    page_problems = len(problems) - bool(folder.loose) - bool(folder.odd_dirs)
+    actionable = page_problems > 0 or len(folder.loose) > pinned_loose
+    half_rebuilt = (bool(missing) or size > cfg.page_budget_bytes) and _rebuild_under_way(vault, folder, day)
     return {
         "project": folder.name,
         "path": front,
@@ -297,7 +381,7 @@ def check_folder(
         "conforms": not problems,
         "problems": problems,
         "rebuild_target": actionable and not _pinned(label),
-        "resume": bool(half_rebuilt) and not _pinned(label),
+        "resume": half_rebuilt and actionable and not _pinned(label),
         "_rank": (not problems, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
@@ -314,18 +398,22 @@ def _graph_excludes(vault: Path) -> tuple[str, ...]:
 
 def _excluder(vault: Path, lint_excludes: Sequence[str]) -> Callable[[str], bool]:
     """Whether a vault-relative path is left out. The schema is read on the first KB path
-    that gets this far, so a commit that touches no project page never opens it."""
+    that gets this far, so a commit that touches no project page never opens it.
+
+    Both lists go through ``lint_any``, which drops an over-complex glob: this runs in
+    the commit hook, and such a glob on a long path backtracks for hours."""
+    lint_globs = tuple(lint_excludes)
     graph_excludes: tuple[str, ...] | None = None
 
     def excluded(rel: str) -> bool:
         nonlocal graph_excludes
-        if any(glob_match(g, rel) for g in lint_excludes):
+        if lint_any(lint_globs, rel):
             return True
         if not rel.startswith(KB_PREFIX):
             return False
         if graph_excludes is None:
             graph_excludes = _graph_excludes(vault)
-        return any(glob_match(g, rel[len(KB_PREFIX) :]) for g in graph_excludes)
+        return lint_any(graph_excludes, rel[len(KB_PREFIX) :])
 
     return excluded
 
@@ -366,21 +454,26 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     root = vault / cfg.projects_dir
     if not root.is_dir():
         return []
+    listing = _listing(vault, cfg.projects_dir)
     folders: list[_Folder] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
         rel = f"{cfg.projects_dir}/{entry.name}"
         front = f"{rel}/{entry.name}.md"
         if entry.name in cfg.skip_projects or not (vault / front).is_file() or excluded(front):
             continue
-        folders.append(_scan(vault, rel, entry.name, cfg, excluded))
+        folders.append(_scan(vault, rel, entry.name, cfg, excluded, listing))
     history = newest_changes(vault, cfg.projects_dir) if folders else {}
     policy = load_policy(vault)
+    day = today(vault)
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
-        rows.append(check_folder(vault, folder, cfg, history, excluded, label, pinned_loose))
+        row = check_folder(vault, folder, cfg, history, excluded, label, pinned_loose, day)
+        if row["rebuild_target"] and _rebuild_writes_into_a_share(vault, folder, cfg, policy):
+            row["rebuild_target"] = row["resume"] = False
+        rows.append(row)
     rows.sort(key=lambda r: r["_rank"])
     for r in rows:
         del r["_rank"]

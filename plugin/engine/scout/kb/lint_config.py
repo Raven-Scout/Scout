@@ -39,12 +39,12 @@ from scout.config import load_config, user_value
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
 
-# Every check id `kb lint` reports. A new check registers its id here, and
-# test_every_finding_uses_a_known_check_id fails until it does.
 # Checks that report until a `path_modes` rule names them in `checks:`. A vault's
 # `mode: block` or a rule with no `checks:` was written before they existed, so
 # neither makes them block: every page starts out in debt to the page standard.
 REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration"})
+# Every check id `kb lint` reports. A new check registers its id here, and
+# test_every_finding_uses_a_known_check_id fails until it does.
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
 MODE_CHECKS = frozenset({"size", "mega-line", "diary"}) | REPORT_UNTIL_NAMED
 # Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
@@ -116,7 +116,8 @@ def _lint_match(glob: str, rel: str) -> bool:
     return glob.count("*") <= MAX_GLOB_STARS and glob_match(glob, rel)
 
 
-def _lint_any(globs: tuple[str, ...], rel: str) -> bool:
+def lint_any(globs: tuple[str, ...], rel: str) -> bool:
+    """Whether any glob matches, with the over-complex ones dropped; see ``_lint_match``. For anything in the hook."""
     return any(_lint_match(g, rel) for g in globs)
 
 
@@ -183,7 +184,7 @@ class LintConfig:
         for r in self.path_modes:
             if (r.checks or named_only) and check not in r.checks:
                 continue
-            if not _lint_match(r.glob, rel) or _lint_any(r.exclude, rel):
+            if not _lint_match(r.glob, rel) or lint_any(r.exclude, rel):
                 continue
             if r.exclude_logs and self.is_log(rel):
                 continue
@@ -196,7 +197,7 @@ class LintConfig:
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not _lint_any(self.exclude_globs, rel)
+        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not lint_any(self.exclude_globs, rel)
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
@@ -205,16 +206,16 @@ class LintConfig:
         return None
 
     def report_excluded(self, rel: str) -> bool:
-        return _lint_any(self.report_exclude_globs, rel)
+        return lint_any(self.report_exclude_globs, rel)
 
     def is_log(self, rel: str) -> bool:
-        return _lint_any(self.log_globs, rel)
+        return lint_any(self.log_globs, rel)
 
     def is_topic(self, rel: str) -> bool:
-        return _lint_any(self.topic_globs, rel)
+        return lint_any(self.topic_globs, rel)
 
     def line_limit(self, rel: str) -> int:
-        return self.max_line_chars_strict if _lint_any(self.strict_line_globs, rel) else self.max_line_chars
+        return self.max_line_chars_strict if lint_any(self.strict_line_globs, rel) else self.max_line_chars
 
     def rules_matching_nothing(self, tracked: list[str]) -> list[str]:
         """A warning per ``path_modes`` rule whose glob matches no file kb-lint checks.
