@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from scout import cli
@@ -138,6 +139,81 @@ def test_a_share_elsewhere_does_not_skip_the_folder(kb_repo) -> None:
     kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/gadgets/knowledge/**']\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
     assert picked(kb_repo.root) == "widgets"
+
+
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "knowledge-base/projects/*/knowledge/*-decisions.md",  # the note step 5.2 names
+        "knowledge-base/projects/*/knowledge/topic-*.md",
+        "knowledge-base/projects/widgets/knowledge/widgets-decisions.md",
+        "knowledge-base/projects/*/archive/*-pre-restructure.md",
+    ],
+)
+def test_next_skips_a_share_on_any_note_name_a_rebuild_could_write(kb_repo, glob: str) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{glob}']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+def test_next_skips_a_federation_default_on_one_note(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "privacy:\n  federation: {enabled: true}\n  federation_defaults:\n"
+        f"    - {{glob: '{P}/widgets/knowledge/widgets-decisions.md', scope: ['person:alex@example.com']}}\n",
+    )
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+def test_a_default_that_shares_nothing_does_not_shadow_a_real_share(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "privacy:\n  federation: {enabled: true}\n  federation_defaults:\n"
+        f"    - {{glob: '{P}/widgets/knowledge/private-*.md', scope: none}}\n"
+        f"    - {{glob: '{P}/widgets/knowledge/**', scope: ['person:alex@example.com']}}\n",
+    )
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+def test_next_skips_every_page_when_source_notes_are_shared(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "privacy:\n  shared_files_add: ['knowledge-base/sources/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
+    rows = rows_by_name(kb_repo.root)
+    assert not rows["widgets"]["rebuild_target"] and not rows["gadgets"]["rebuild_target"]
+    table = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)]).output
+    assert sum("[--next skips]" in line for line in table.splitlines()) == 2
+
+
+def test_next_skips_a_federation_default_on_meeting_source_notes(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "privacy:\n  federation: {enabled: true}\n  federation_defaults:\n"
+        "    - {glob: 'knowledge-base/sources/**', scope: ['person:alex@example.com']}\n",
+    )
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+def test_a_federation_default_with_sharing_off_does_not_skip(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        "privacy:\n  federation: {enabled: false}\n  federation_defaults:\n"
+        "    - {glob: 'knowledge-base/sources/**', scope: ['person:alex@example.com']}\n",
+    )
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_a_trimmed_allowed_dirs_still_probes_the_folders_the_step_writes(kb_repo) -> None:
+    kb_repo.write(
+        "scout-config.yaml",
+        f"kb_structure:\n  allowed_dirs: [knowledge]\nprivacy:\n  shared_files_add: ['{P}/widgets/archive/**']\n",
+    )
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
 
 
 # ----- odd subfolders can't hold the pick ----------------------------------------------

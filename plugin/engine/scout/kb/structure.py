@@ -30,9 +30,10 @@ priority, dates, section names or marker names.
 ``--next`` takes the first row in table order that the pass can act on, except
 that a rebuild left half done in the last weeks comes first. It never picks a
 page labelled private, shared or local-only, whose new copies could widen it or
-hit a hard privacy block, or a folder where a rebuild could write into a share.
-Nor does it pick a folder whose only problems are odd subfolders or loose files
-with such a label, which no night can clear: they would hold the pick for good.
+hit a hard privacy block, or a folder where a rebuild could write into a share,
+including a source note, which would skip every page. Nor does it pick a folder
+whose only problems are odd subfolders or loose files with such a label, which no
+night can clear: they would hold the pick for good.
 
 History comes from ONE ``git log --name-only`` over the projects folder, not a
 call per folder, and what git tracks from one ``git ls-files``.
@@ -40,12 +41,13 @@ call per folder, and what git tracks from one ``git ls-files``.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -61,6 +63,10 @@ PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
 # An archive copy older than this is a finished rebuild, or one that stopped making
 # progress: either way the page goes back in line. A big page's rebuild runs for weeks.
 RESUME_DAYS = 45
+# Where the nightly pass writes, whatever `allowed_dirs` says: the phase names these folders.
+_STEP_DIRS = frozenset({"knowledge", "documents", "research", "archive"})
+# A source note's `kind` values (phases/core/write-protocol.md).
+_SOURCE_KINDS = ("meeting", "doc", "thread", "pr", "email", "other")
 _HEADING = re.compile(r"^## +(.+?)\s*$", re.M)
 
 
@@ -107,11 +113,13 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
     if not isinstance(raw, dict):
         raw = {}
     projects_dir = raw.get("projects_dir", "knowledge-base/projects")
-    if not isinstance(projects_dir, str) or not projects_dir.strip("/"):
-        raise KBError("kb_structure.projects_dir must be a vault-relative folder")
+    # Normalised, because git prints paths this way and `newest_changes` matches them on this prefix.
+    parts = PurePosixPath(projects_dir.strip("/")).parts if isinstance(projects_dir, str) else ()
+    if not parts or ".." in parts:
+        raise KBError("kb_structure.projects_dir must be a folder inside the vault")
     try:
         return StructureConfig(
-            projects_dir=projects_dir.strip("/"),
+            projects_dir="/".join(parts),
             skip_projects=frozenset(_strs(raw, "skip_projects")),
             allowed_dirs=frozenset(_strs(raw, "allowed_dirs")),
             page_target_bytes=int(raw.get("page_target_bytes", 8192)),
@@ -187,8 +195,9 @@ def newest_changes(vault: Path, pathspec: str) -> dict[str, dt.date]:
     for raw in proc.stdout.decode("utf-8", errors="replace").split("\0"):
         token = raw.removeprefix("\n")
         if token.startswith(pathspec + "/"):
-            if day is not None:
-                newest.setdefault(token, day)
+            # The newest date wins, not the first sighting: author dates needn't follow commit order.
+            if day is not None and day > newest.get(token, dt.date.min):
+                newest[token] = day
         elif token:
             day = dt.date.fromisoformat(token)
     return newest
@@ -285,16 +294,46 @@ def _pinned(label: Label) -> bool:
     return label.visibility == "private" or label.shared_file or label.local_only
 
 
-def _rebuild_writes_into_a_share(vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy) -> bool:
+def _any_file_name(share_glob: str) -> str:
+    """``share_glob`` with its file name opened up. A rebuild picks its notes' names, so a
+    share on ``knowledge/*-decisions.md`` covers ``knowledge/`` for this check."""
+    head, sep, last = share_glob.rpartition("/")
+    return share_glob if "**" in last else f"{head}{sep}*"
+
+
+def _probe_policy(policy: Policy) -> Policy:
+    """``policy`` for labelling notes a rebuild would write, whatever it names them.
+
+    Entries that share nothing go, or one opened up here could shadow a real share
+    behind it: ``federation_defaults`` is first match wins."""
+    return dataclasses.replace(
+        policy,
+        shared_files=tuple(_any_file_name(g) for g in policy.shared_files),
+        federation_defaults=tuple(
+            dataclasses.replace(d, glob=_any_file_name(d.glob)) for d in policy.federation_defaults if d.scope != "none"
+        ),
+    )
+
+
+def _new_sources_shared(probes: Policy, day: dt.date) -> bool:
+    """Whether a source note a rebuild writes would be shared. They sit outside every project
+    folder, and a folder ceiling can depend on the note's ``kind``, so each kind is checked."""
+    rel = f"{KB_PREFIX}sources/{day:%Y-%m}/{day}-new-note.md"
+    return any(classify(rel, f"---\nkind: {kind}\n---\n", probes).shared_file for kind in _SOURCE_KINDS)
+
+
+def _rebuild_writes_into_a_share(
+    vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy, probes: Policy
+) -> bool:
     """Whether a rebuild of this folder could put page facts where someone else reads them.
 
     The front page's own label doesn't say: a rebuild moves its facts into the
     subfolders, and a share on one reaches its readers at the next sync, with no
     way to recall them. So a new note in any subfolder the step writes to, and
     every note already in the folder, must be unshared."""
-    probes = (f"{folder.rel}/{d}/{folder.name}-new-note.md" for d in sorted(cfg.allowed_dirs))
-    if any(classify(probe, None, policy).shared_file for probe in probes):
-        return True
+    for sub in sorted(cfg.allowed_dirs | _STEP_DIRS):
+        if classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes).shared_file:
+            return True
     return any(
         label_file(vault, path.relative_to(vault).as_posix(), policy).shared_file
         for path in (vault / folder.rel).rglob("*.md")
@@ -465,13 +504,17 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     history = newest_changes(vault, cfg.projects_dir) if folders else {}
     policy = load_policy(vault)
     day = today(vault)
+    probes = _probe_policy(policy)
+    sources_shared = _new_sources_shared(probes, day)
     rows = []
     for folder in folders:
         front = f"{folder.rel}/{folder.name}.md"
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
         row = check_folder(vault, folder, cfg, history, excluded, label, pinned_loose, day)
-        if row["rebuild_target"] and _rebuild_writes_into_a_share(vault, folder, cfg, policy):
+        if row["rebuild_target"] and (
+            sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes)
+        ):
             row["rebuild_target"] = row["resume"] = False
         rows.append(row)
     rows.sort(key=lambda r: r["_rank"])

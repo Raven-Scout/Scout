@@ -248,6 +248,32 @@ def test_an_amend_does_not_make_a_page_stale(kb_repo, monkeypatch: pytest.Monkey
     assert not row["stale"] and row["folder_last_change"] == "2026-10-01"
 
 
+def test_a_later_commit_with_an_older_author_date_does_not_hide_a_change(
+    kb_repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note = f"{P}/widgets/knowledge/widgets-notes.md"
+    kb_repo.write(note, "1\n")
+    commit_at(kb_repo, "2026-10-20", monkeypatch)
+    kb_repo.write(note, "2\n")
+    commit_at(kb_repo, "2026-10-01", monkeypatch)
+    assert str(newest_changes(kb_repo.root, P)[note]) == "2026-10-20"
+
+
+def test_a_dotted_projects_dir_reads_the_same_folder(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb_repo.write("scout-config.yaml", f"kb_structure:\n  projects_dir: ./{P}/\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-10-01"))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "n\n")
+    commit_at(kb_repo, "2026-10-20", monkeypatch)
+    assert load_structure_config(kb_repo.root).projects_dir == P
+    assert rows_by_name(kb_repo.root)["widgets"]["stale"]
+
+
+def test_a_projects_dir_outside_the_vault_is_an_error(kb_repo) -> None:
+    kb_repo.write("scout-config.yaml", "kb_structure:\n  projects_dir: ../elsewhere\n")
+    result = runner.invoke(cli.app, ["kb", "structure", "--repo", str(kb_repo.root)])
+    assert isinstance(result.exception, KBError) and "projects_dir" in str(result.exception)
+
+
 def test_a_null_projects_dir_is_an_error_not_an_empty_table(kb_repo) -> None:
     kb_repo.write("scout-config.yaml", "kb_structure:\n  projects_dir: null\n")
     result = runner.invoke(cli.app, ["kb", "structure", "--next", "--repo", str(kb_repo.root)])
