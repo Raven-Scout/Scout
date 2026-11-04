@@ -10,7 +10,14 @@ from typer.testing import CliRunner
 
 from scout import cli
 from scout.config import today
-from scout.kb.structure import RESUME_DAYS, load_structure_config, missing_sections, next_target, structure_rows
+from scout.kb.structure import (
+    RESUME_DAYS,
+    cmd_structure,
+    load_structure_config,
+    missing_sections,
+    next_target,
+    structure_rows,
+)
 
 runner = CliRunner()
 
@@ -360,6 +367,105 @@ def test_a_federation_default_with_sharing_off_does_not_skip(kb_repo) -> None:
     )
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
     assert picked(kb_repo.root) == "widgets"
+
+
+def federated(*defaults: str) -> str:
+    rows = "".join(f"    - {{glob: '{g}', scope: ['person:alex@example.com']}}\n" for g in defaults)
+    return f"privacy:\n  federation: {{enabled: true}}\n  federation_defaults:\n{rows}"
+
+
+def test_a_real_share_of_one_new_source_note_does_not_stop_the_pass(kb_repo, monkeypatch) -> None:
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    day = today(kb_repo.root)
+    note = f"knowledge-base/sources/{day:%Y-%m}/{day}-kickoff.md"
+    kb_repo.write("scout-config.yaml", "privacy:\n  federation: {enabled: true}\n")
+    kb_repo.write(note, "---\nkind: meeting\n---\nn\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    share = ["kb", "share", note, "--with", "alex@example.com", "--yes", "--repo", str(kb_repo.root)]
+    assert runner.invoke(cli.app, share).exit_code == 0
+    assert note in (kb_repo.root / "scout-config.yaml").read_text()
+    assert picked(kb_repo.root) == "widgets"
+
+
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "**/shared-notes.md",
+        "knowledge-base/**/roster.md",
+        f"{P}/*/knowledge/shared.md",
+        "knowledge-base/sources/2026-09/2026-09-14-kickoff.md",
+    ],
+)
+@pytest.mark.parametrize("federation", [False, True], ids=["glob", "default"])
+def test_an_exact_file_name_a_rebuild_wont_write_does_not_stop_the_pass(kb_repo, glob: str, federation: bool) -> None:
+    config = federated(glob) if federation else f"privacy:\n  shared_files_add: ['{glob}']\n"
+    kb_repo.write("scout-config.yaml", config)
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) == "widgets"
+
+
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "knowledge-base/sources/2026-09/**",
+        "knowledge-base/sources/2025-*/**",
+        "knowledge-base/sources/*/2026-09-14-*.md",
+        "knowledge-base/sources/2026-09/*-kickoff.md",
+        "knowledge-base/**/2026-09-14-*.md",
+    ],
+)
+@pytest.mark.parametrize("federation", [False, True], ids=["glob", "default"])
+def test_a_wildcard_share_on_an_older_month_of_sources_skips(kb_repo, glob: str, federation: bool) -> None:
+    config = federated(glob) if federation else f"privacy:\n  shared_files_add: ['{glob}']\n"
+    kb_repo.write("scout-config.yaml", config)
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+@pytest.mark.parametrize("glob", [f"{P}/*/knowledge/**-decisions.md", f"{P}/*/knowledge/**decisions*", f"{P}/**.md"])
+def test_a_double_star_inside_a_file_name_counts_as_a_wildcard(kb_repo, glob: str) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{glob}']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) is None
+
+
+@pytest.mark.parametrize("glob", ["drafts/**", "knowledge-base/people/*.md", f"{P}/*/README.md"])
+def test_a_share_that_cant_reach_a_rebuilds_notes_does_not_stop_the_pass(kb_repo, glob: str) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{glob}']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    assert picked(kb_repo.root) == "widgets"
+
+
+# ----- saying the pass stopped ----------------------------------------------------------
+
+
+def test_an_empty_pick_because_of_shares_says_so_on_stderr(kb_repo, capsys) -> None:
+    kb_repo.write("scout-config.yaml", "privacy:\n  shared_files_add: ['knowledge-base/sources/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == [""]
+    err = capsys.readouterr().err
+    assert "2 failing page(s)" in err and "nightly KB pass stopped" in err
+    assert "widgets" not in err and "gadgets" not in err
+
+
+def test_a_share_skip_with_another_page_to_pick_is_silent(kb_repo, capsys) -> None:
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/widgets/knowledge/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", as_of=None))
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == ["gadgets"]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "front",
+    [page("widgets"), page("widgets", as_of=None, frontmatter="visibility: private\n")],
+    ids=["done", "private"],
+)
+def test_an_empty_pick_for_any_other_reason_is_silent(kb_repo, capsys, front: str) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", front)
+    assert cmd_structure(kb_repo.root, "owner", next_only=True).lines == [""]
+    assert capsys.readouterr().err == ""
 
 
 def test_a_trimmed_allowed_dirs_still_probes_the_folders_the_step_writes(kb_repo) -> None:

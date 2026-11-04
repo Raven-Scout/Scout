@@ -33,7 +33,8 @@ first. A page failing only on size or narration ranks after every other
 failing page, so one that can't get small soon doesn't hold the pick. It never picks a
 page labelled private, shared or local-only, whose new copies could widen it or
 hit a hard privacy block, or a folder where a rebuild could write into a share,
-including a source note, which would skip every page. Nor does it pick a folder
+including a source note, which would skip every page. When that leaves it nothing
+to pick, a line on stderr says so, for the run's report. Nor does it pick a folder
 whose only problems are odd subfolders or loose files with such a label, which no
 night can clear: they would hold the pick for good.
 
@@ -47,6 +48,7 @@ import dataclasses
 import datetime as dt
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -186,13 +188,15 @@ def page_as_of(fm: dict[str, Any]) -> dt.date | None:
 # ----- history: one pass --------------------------------------------------------
 
 
-def newest_changes(vault: Path, pathspec: str) -> dict[str, dt.date]:
+def newest_changes(vault: Path, pathspec: str, now: dt.date) -> dict[str, dt.date]:
     """Each path ever committed under ``pathspec`` → the date of the newest commit touching it.
 
     One ``git log`` for the whole folder, newest first, so a path's first sighting
     is its newest change. The date is the author date, which an amend or a rebase
-    leaves alone. Paths are relative to ``vault``, which may sit inside a larger
-    repo. ``{}`` outside a repo, before the first commit, or without git.
+    leaves alone. A date after ``now`` doesn't count: one commit from a wrong
+    clock would otherwise keep the page stale until that date, whatever a night did.
+    Paths are relative to ``vault``, which may sit inside a larger repo. ``{}``
+    outside a repo, before the first commit, or without git.
     """
     cmd = ["git", "log", "--relative", "--no-renames", "--name-only", "-z", "--format=%x00%as", "--", pathspec]
     try:
@@ -208,7 +212,7 @@ def newest_changes(vault: Path, pathspec: str) -> dict[str, dt.date]:
         token = raw.removeprefix("\n")
         if token.startswith(pathspec + "/"):
             # The newest date wins, not the first sighting: author dates needn't follow commit order.
-            if day is not None and day > newest.get(token, dt.date.min):
+            if day is not None and day <= now and day > newest.get(token, dt.date.min):
                 newest[token] = day
         elif token:
             day = dt.date.fromisoformat(token)
@@ -307,10 +311,14 @@ def _pinned(label: Label) -> bool:
 
 
 def _any_file_name(share_glob: str) -> str:
-    """``share_glob`` with its file name opened up. A rebuild picks its notes' names, so a
-    share on ``knowledge/*-decisions.md`` covers ``knowledge/`` for this check."""
+    """``share_glob`` with a wildcard file name opened up. A rebuild picks its notes' names,
+    so a share on ``knowledge/*-decisions.md`` covers ``knowledge/`` for this check. An exact
+    name stays exact: a rebuild won't pick it (the one note it does name is probed as
+    such), one that exists is found in the folder, and ``kb share`` writes these for one note."""
     head, sep, last = share_glob.rpartition("/")
-    return share_glob if "**" in last else f"{head}{sep}*"
+    if "*" not in last and "?" not in last:
+        return share_glob
+    return f"{head}{sep}{'**' if '**' in last else '*'}"
 
 
 def _probe_policy(policy: Policy) -> Policy:
@@ -327,11 +335,29 @@ def _probe_policy(policy: Policy) -> Policy:
     )
 
 
+def _sources_wide(probe_glob: str) -> str:
+    """``probe_glob`` as all source notes, if its wildcard name could reach any of them. A
+    note files under its own date and a rebuild moves old meetings, so no one month stands
+    for the rest."""
+    sources = f"{KB_PREFIX}sources/"
+    literal = re.split(r"[*?]", probe_glob, maxsplit=1)[0]
+    reaches = literal != probe_glob and (sources.startswith(literal) or literal.startswith(sources))
+    last = probe_glob.rpartition("/")[2]
+    return f"{sources}**" if reaches and ("*" in last or "?" in last) else probe_glob
+
+
 def _new_sources_shared(probes: Policy, day: dt.date) -> bool:
     """Whether a source note a rebuild writes would be shared. They sit outside every project
     folder, and a folder ceiling can depend on the note's ``kind``, so each kind is checked."""
+    wide = dataclasses.replace(
+        probes,
+        shared_files=tuple(_sources_wide(g) for g in probes.shared_files),
+        federation_defaults=tuple(
+            dataclasses.replace(d, glob=_sources_wide(d.glob)) for d in probes.federation_defaults
+        ),
+    )
     rel = f"{KB_PREFIX}sources/{day:%Y-%m}/{day}-new-note.md"
-    return any(classify(rel, f"---\nkind: {kind}\n---\n", probes).shared_file for kind in _SOURCE_KINDS)
+    return any(classify(rel, f"---\nkind: {kind}\n---\n", wide).shared_file for kind in _SOURCE_KINDS)
 
 
 def _may_declare_a_share(text: str | None) -> bool:
@@ -367,6 +393,9 @@ def _rebuild_writes_into_a_share(
     for sub in sorted(cfg.allowed_dirs | _STEP_DIRS):
         if classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes).shared_file:
             return True
+    # The one note the step names itself, so an exact share on it counts.
+    if classify(f"{folder.rel}/knowledge/{folder.name}-decisions.md", None, probes).shared_file:
+        return True
     front = vault / folder.rel / f"{folder.name}.md"
     for path in (vault / folder.rel).rglob("*.md"):
         if path == front:
@@ -465,6 +494,7 @@ def check_folder(
         "problems": problems,
         "rebuild_target": actionable and not _pinned(label),
         "resume": half_rebuilt and actionable and not _pinned(label),
+        "share_blocked": False,
         "_rank": (not problems, in_shape, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
@@ -546,13 +576,13 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
             continue
         folders.append(_scan(vault, rel, entry.name, cfg, excluded, listing))
     # Grouped once: scanning the whole history for each folder is quadratic on a big vault.
+    day = today(vault)
     history: dict[str, dict[str, dt.date]] = {}
     if folders:
         prefix = cfg.projects_dir + "/"
-        for path, changed in newest_changes(vault, cfg.projects_dir).items():
+        for path, changed in newest_changes(vault, cfg.projects_dir, day).items():
             history.setdefault(path.removeprefix(prefix).split("/", 1)[0], {})[path] = changed
     policy = load_policy(vault)
-    day = today(vault)
     probes = _probe_policy(policy)
     sources_shared = _new_sources_shared(probes, day)
     rows = []
@@ -565,6 +595,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
             sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes)
         ):
             row["rebuild_target"] = row["resume"] = False
+            row["share_blocked"] = True
         rows.append(row)
     rows.sort(key=lambda r: r["_rank"])
     for r in rows:
@@ -589,6 +620,14 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
     ]
     if next_only:
         target = next_target(rows)
+        # An empty line reads as "nothing to do", so say when it isn't. On stderr: stdout is the pick.
+        blocked = sum(r["share_blocked"] for r in rows)
+        if target is None and blocked:
+            print(
+                f"No pick: {blocked} failing page(s) skipped because a rebuild's new notes could be shared "
+                "(`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass stopped.",
+                file=sys.stderr,
+            )
         data = None if target is None else {"project": target["project"], "path": target["path"]}
         return Output(
             data=data,

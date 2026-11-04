@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import subprocess
 from pathlib import Path
@@ -206,7 +207,7 @@ def test_newest_changes_maps_each_path_to_its_newest_day(kb_repo, monkeypatch: p
     commit_at(kb_repo, "2026-10-01", monkeypatch)
     kb_repo.write(f"{P}/widgets/knowledge/a b.md", "2\n")
     commit_at(kb_repo, "2026-10-03", monkeypatch)
-    history = newest_changes(kb_repo.root, P)
+    history = newest_changes(kb_repo.root, P, dt.date.max)
     assert str(history[f"{P}/widgets/knowledge/a b.md"]) == "2026-10-03"
     assert str(history[f"{P}/widgets/knowledge/é.md"]) == "2026-10-01"
 
@@ -214,7 +215,7 @@ def test_newest_changes_maps_each_path_to_its_newest_day(kb_repo, monkeypatch: p
 def test_a_vault_inside_a_larger_repo_still_gets_history(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
     kb_repo.write(f"nested/{P}/widgets/knowledge/widgets-notes.md", "n\n")
     commit_at(kb_repo, "2026-10-01", monkeypatch)
-    history = newest_changes(kb_repo.root / "nested", P)
+    history = newest_changes(kb_repo.root / "nested", P, dt.date.max)
     assert str(history[f"{P}/widgets/knowledge/widgets-notes.md"]) == "2026-10-01"
 
 
@@ -223,11 +224,11 @@ def test_newest_changes_without_git_is_empty(tmp_path: Path, monkeypatch: pytest
         raise FileNotFoundError("git")
 
     monkeypatch.setattr(structure.subprocess, "run", no_git)
-    assert newest_changes(tmp_path, P) == {}
+    assert newest_changes(tmp_path, P, dt.date.max) == {}
 
 
 def test_newest_changes_outside_a_repo_is_empty(tmp_path: Path) -> None:
-    assert newest_changes(tmp_path, P) == {}
+    assert newest_changes(tmp_path, P, dt.date.max) == {}
 
 
 def test_a_path_git_would_quote_still_counts_as_a_change(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,7 +257,27 @@ def test_a_later_commit_with_an_older_author_date_does_not_hide_a_change(
     commit_at(kb_repo, "2026-10-20", monkeypatch)
     kb_repo.write(note, "2\n")
     commit_at(kb_repo, "2026-10-01", monkeypatch)
-    assert str(newest_changes(kb_repo.root, P)[note]) == "2026-10-20"
+    assert str(newest_changes(kb_repo.root, P, dt.date.max)[note]) == "2026-10-20"
+
+
+def test_a_commit_from_a_wrong_clock_does_not_keep_a_page_stale(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-10-01"))
+    commit_at(kb_repo, "2026-10-01", monkeypatch)
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "1\n")
+    commit_at(kb_repo, "2099-01-01", monkeypatch)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["stale"] and row["folder_last_change"] is None
+
+
+def test_a_real_change_still_counts_beside_a_wrong_clock(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    note = f"{P}/widgets/knowledge/widgets-notes.md"
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of="2026-10-01"))
+    kb_repo.write(note, "1\n")
+    commit_at(kb_repo, "2026-10-10", monkeypatch)
+    kb_repo.write(note, "2\n")
+    commit_at(kb_repo, "2099-01-01", monkeypatch)
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert row["stale"] and row["folder_last_change"] == "2026-10-10"
 
 
 def test_a_dotted_projects_dir_reads_the_same_folder(kb_repo, monkeypatch: pytest.MonkeyPatch) -> None:
