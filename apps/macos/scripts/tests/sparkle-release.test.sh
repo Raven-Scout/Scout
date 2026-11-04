@@ -17,6 +17,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$(cd "$HERE/.." && pwd)/sparkle-release.sh"
+APP_ENTITLEMENTS="$(cd "$HERE/../.." && pwd)/Scout.entitlements"
 
 FEED_URL="https://github.com/Raven-Scout/Scout/releases/latest/download/appcast.xml"
 # Invented, base64-shaped stand-ins. Not keys.
@@ -347,9 +348,11 @@ EXPECTED="$ROOT/expected-sign.log"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$B/Autoupdate"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$B/Updater.app"
   printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$FW"
-  printf 'codesign|--force|--options|runtime|--timestamp|--sign|%s|%s\n' "$IDENT" "$APP"
+  printf 'codesign|--force|--options|runtime|--timestamp|--entitlements|%s|--sign|%s|%s\n' "$APP_ENTITLEMENTS" "$IDENT" "$APP"
   printf 'codesign|--verify|--strict|--deep|--verbose=2|%s\n' "$APP"
 } >"$EXPECTED"
+check "the app's entitlements allow Apple events (hardened runtime blocks the Terminal hand-off without it)" \
+  eq "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.automation.apple-events' "$APP_ENTITLEMENTS")" "true"
 check "sign runs exactly: Installer.xpc, Downloader.xpc, Autoupdate, Updater.app, Sparkle.framework, Scout.app, then verify" \
   diff -u "$EXPECTED" "$STUB_LOG"
 check "exactly six codesign --force lines" eq "$(log_count 'codesign|--force|')" 6
