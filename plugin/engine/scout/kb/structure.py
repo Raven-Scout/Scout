@@ -28,7 +28,9 @@ still checked, but its row carries only paths, counts and verdicts: no
 priority, dates, section names or marker names.
 
 ``--next`` takes the first row in table order that the pass can act on, except
-that a rebuild left half done in the last weeks comes first. It never picks a
+that a rebuild left half done in the last weeks, sections still missing, comes
+first. A page failing only on size or narration ranks after every other
+failing page, so one that can't get small soon doesn't hold the pick. It never picks a
 page labelled private, shared or local-only, whose new copies could widen it or
 hit a hard privacy block, or a folder where a rebuild could write into a share,
 including a source note, which would skip every page. Nor does it pick a folder
@@ -332,6 +334,22 @@ def _new_sources_shared(probes: Policy, day: dt.date) -> bool:
     return any(classify(rel, f"---\nkind: {kind}\n---\n", probes).shared_file for kind in _SOURCE_KINDS)
 
 
+def _may_declare_a_share(text: str | None) -> bool:
+    """Whether a note's text could set ``federation_scope``, without parsing it.
+
+    Fails closed: anchors and merges still spell the key out somewhere in the document,
+    so an escape in a quoted key (``"federation\\x5fscope"``) is the only way to hide
+    it, and any backslash in the frontmatter block counts."""
+    if text is None:
+        return False
+    if "federation_scope" in text:
+        return True
+    if "\\" not in text:
+        return False
+    block = frontmatter_block(text.removeprefix("\ufeff").splitlines())
+    return block is not None and any("\\" in line for line in block)
+
+
 def _rebuild_writes_into_a_share(
     vault: Path, folder: _Folder, cfg: StructureConfig, policy: Policy, probes: Policy
 ) -> bool:
@@ -344,8 +362,8 @@ def _rebuild_writes_into_a_share(
     labelled the front page unshared.
 
     Folders can hold many notes and few match a share rule, so a note is only classified
-    if a rule matches its path or its text names the frontmatter key: with neither,
-    nothing can make it shared."""
+    if a rule matches its path or :func:`_may_declare_a_share`: with neither, nothing
+    can make it shared."""
     for sub in sorted(cfg.allowed_dirs | _STEP_DIRS):
         if classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes).shared_file:
             return True
@@ -358,9 +376,7 @@ def _rebuild_writes_into_a_share(
         by_path = any(glob_match(g, rel) for g in policy.shared_files) or (
             policy.federation_enabled and first_default(policy, rel) is not None
         )
-        if (by_path or "federation_scope" in (text or "")) and classify(
-            rel, text, policy, unreadable=unreadable
-        ).shared_file:
+        if (by_path or _may_declare_a_share(text)) and classify(rel, text, policy, unreadable=unreadable).shared_file:
             return True
     return False
 
@@ -424,7 +440,10 @@ def check_folder(
     # in the step clears an odd subfolder, so one alone must not hold the pick night after night.
     page_problems = len(problems) - bool(folder.loose) - bool(folder.odd_dirs)
     actionable = page_problems > 0 or len(folder.loose) > pinned_loose
-    half_rebuilt = (bool(missing) or size > cfg.page_budget_bytes) and _rebuild_under_way(vault, folder, day)
+    # A page with its sections and a current date only needs shrinking, so it waits behind the
+    # pages a reader can't follow. Odd subfolders and pinned files don't count: no night clears them.
+    in_shape = not (missing or as_of is None or stale or len(folder.loose) > pinned_loose)
+    half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
     return {
         "project": folder.name,
         "path": front,
@@ -446,7 +465,7 @@ def check_folder(
         "problems": problems,
         "rebuild_target": actionable and not _pinned(label),
         "resume": half_rebuilt and actionable and not _pinned(label),
-        "_rank": (not problems, PRIORITY_RANK.get(priority, 3), -size, folder.name),
+        "_rank": (not problems, in_shape, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
 
@@ -511,8 +530,8 @@ def load_page_rules(vault: Path, lint_excludes: Sequence[str]) -> PageRules:
 
 
 def structure_rows(vault: Path) -> list[dict[str, Any]]:
-    """Every checked project folder's row, rebuild order first: non-conforming,
-    then 🔴 > 🟡 > 🟢 > none, then the largest front page."""
+    """Every checked project folder's row, rebuild order first: non-conforming, then pages
+    failing on more than size or narration, then 🔴 > 🟡 > 🟢 > none, then the largest front page."""
     cfg = load_structure_config(vault)
     excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
     root = vault / cfg.projects_dir

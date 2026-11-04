@@ -90,9 +90,14 @@ def test_a_loose_private_file_with_other_work_left_stays_a_target(kb_repo) -> No
     assert rows["widgets"]["rebuild_target"] and rows["gadgets"]["rebuild_target"]
 
 
+def old_shape_page(name: str, **kwargs) -> str:
+    """A big page that hasn't been rewritten yet: no standard sections."""
+    return page(name, **kwargs).replace("## ", "### ") + "x" * 17000
+
+
 def test_next_resumes_a_half_rebuilt_page_first(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
-    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", extra="x" * 17000))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", old_shape_page("gadgets"))
     kb_repo.write(f"{P}/gadgets/archive/{archive_copy('gadgets', kb_repo.root, 3)}", "the old page\n")
     assert rows_by_name(kb_repo.root)["gadgets"]["resume"]
     assert picked(kb_repo.root) == "gadgets"
@@ -100,10 +105,78 @@ def test_next_resumes_a_half_rebuilt_page_first(kb_repo) -> None:
 
 def test_an_old_archive_copy_does_not_jump_the_queue(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🔴", as_of=None))
-    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", extra="x" * 17000))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", old_shape_page("gadgets"))
     kb_repo.write(f"{P}/gadgets/archive/{archive_copy('gadgets', kb_repo.root, RESUME_DAYS + 1)}", "the old page\n")
     assert not rows_by_name(kb_repo.root)["gadgets"]["resume"]
     assert picked(kb_repo.root) == "widgets"
+
+
+def test_a_rewritten_page_still_over_budget_does_not_resume(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 17000))
+    kb_repo.write(f"{P}/gadgets/archive/{archive_copy('gadgets', kb_repo.root, 3)}", "the old page\n")
+    row = rows_by_name(kb_repo.root)["gadgets"]
+    assert row["rebuild_target"] and not row["resume"]
+    assert picked(kb_repo.root) == "widgets"
+
+
+# ----- pages that only need shrinking ---------------------------------------------------
+
+
+def test_a_page_failing_only_on_size_waits_behind_a_lower_priority_page(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 17000))
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_a_page_failing_only_on_narration_waits_behind_a_lower_priority_page(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="Last verified today.\n"))
+    assert picked(kb_repo.root) == "widgets"
+
+
+def test_a_big_page_is_still_picked_once_nothing_else_is_left(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets"))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", extra="x" * 17000))
+    assert picked(kb_repo.root) == "gadgets"
+
+
+def test_pages_that_only_need_shrinking_go_by_priority_then_size(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", extra="x" * 20000))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 16000))
+    kb_repo.write(f"{P}/gizmos/gizmos.md", page("gizmos", priority="🔴", extra="x" * 18000))
+    assert [r["project"] for r in structure_rows(kb_repo.root)] == ["gizmos", "gadgets", "widgets"]
+
+
+@pytest.mark.parametrize(
+    "stray",
+    [
+        pytest.param({"odd/note.md": "a note\n"}, id="an odd subfolder"),
+        pytest.param({"notes.md": PRIVATE_NOTE}, id="a pinned loose file"),
+    ],
+)
+def test_what_no_night_can_clear_does_not_lift_a_big_page(kb_repo, stray: dict[str, str]) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 17000))
+    for name, text in stray.items():
+        kb_repo.write(f"{P}/gadgets/{name}", text)
+    assert rows_by_name(kb_repo.root)["gadgets"]["rebuild_target"]
+    assert picked(kb_repo.root) == "widgets"
+
+
+@pytest.mark.parametrize(
+    ("big", "extra_file"),
+    [
+        pytest.param({"as_of": None}, None, id="no as_of"),
+        pytest.param({}, "notes.md", id="a loose file a night can move"),
+    ],
+)
+def test_a_big_page_with_other_work_left_keeps_its_place(kb_repo, big: dict, extra_file: str | None) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", priority="🟢", as_of=None))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🔴", extra="x" * 17000, **big))
+    if extra_file:
+        kb_repo.write(f"{P}/gadgets/{extra_file}", "a note\n")
+    assert picked(kb_repo.root) == "gadgets"
 
 
 # ----- a share where the rebuild writes ------------------------------------------------
@@ -153,6 +226,51 @@ def test_a_note_with_a_quoted_frontmatter_key_is_still_found(kb_repo) -> None:
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
     kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", '---\n"federation_scope": org\n---\nn\n')
     assert picked(kb_repo.root) is None
+
+
+def test_a_note_with_an_escaped_frontmatter_key_is_still_found(kb_repo) -> None:
+    """The escape is the one way text can hide the key from a substring check."""
+    note = '---\n"federation\\x5fscope": org\n---\nn\n'
+    assert "federation_scope" not in note
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", note)
+    assert picked(kb_repo.root) is None
+
+
+def test_a_harmless_backslash_in_frontmatter_is_classified_and_not_a_share(kb_repo, monkeypatch) -> None:
+    from scout.kb import structure
+
+    rel = f"{P}/widgets/knowledge/widgets-notes.md"
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(rel, '---\nname: "a \\"quoted\\" name"\n---\nn\n')
+    seen: list[str] = []
+    real = structure.classify
+
+    def spy(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(structure, "classify", spy)
+    assert picked(kb_repo.root) == "widgets"
+    assert rel in seen
+
+
+def test_a_backslash_in_the_body_is_not_classified(kb_repo, monkeypatch) -> None:
+    from scout.kb import structure
+
+    rel = f"{P}/widgets/knowledge/widgets-notes.md"
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(rel, "---\nname: plain\n---\nA path like C:\\temp in the body.\n")
+    seen: list[str] = []
+    real = structure.classify
+
+    def spy(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(structure, "classify", spy)
+    assert picked(kb_repo.root) == "widgets"
+    assert rel not in seen
 
 
 def test_plain_notes_are_not_classified_when_nothing_could_share_them(kb_repo, monkeypatch) -> None:
