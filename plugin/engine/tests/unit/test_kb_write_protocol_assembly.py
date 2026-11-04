@@ -38,7 +38,7 @@ def test_write_protocol_in_every_brain(kind: str, tmp_path: Path) -> None:
 
 def test_dreaming_has_shrink_pass(tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path), "DREAMING")
-    assert "Step 2a-shrink" in text and "scoutctl kb lint --report" in text
+    assert "Step 2a-shrink" in text and "scoutctl kb structure --next" in text
 
 
 def test_shrink_pass_never_targets_daily_files_or_legacy_session_log(tmp_path: Path) -> None:
