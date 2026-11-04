@@ -60,41 +60,119 @@ WARNING_CHECKS = frozenset(
 )
 KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
 
-# More `*` than this and a kb-lint glob matches nothing (`_lint_match`): each one
-# multiplies the regex's backtracking, and `**a` ten times over ran for more than
-# 20 seconds on a long enough filename. `**/x/**/y/**` is the most a lint glob
-# needs. Privacy and sync rules never go through this cap: see `_lint_match`.
+# More `*` than this and a kb-lint glob matches nothing (`_lint_match`). It dates
+# from when `glob_match` could backtrack; it can't now, and the cap goes in a
+# follow-up to #565. `**/x/**/y/**` is the most a lint glob needs. Privacy and sync
+# rules never go through this cap: see `_lint_match`.
 MAX_GLOB_STARS = 6
 
 
+@dataclass(frozen=True)
+class _CompiledGlob:
+    """A path glob as a set of positions to track at once, one bit per position."""
+
+    prefix: str  # literal text before the first wildcard, checked without tracking anything
+    start: int
+    accept: int
+    steps: dict[str, tuple[int, int]]  # character -> (positions it advances, positions it stays in)
+    other_step: tuple[int, int]  # the same, for any character not in ``steps``
+    free_moves: int  # positions that also count as later positions, consuming nothing
+    move_ends: dict[int, int]  # bit index of such a position -> the last position that reaches
+
+
 @lru_cache(maxsize=256)
-def _glob_re(glob: str) -> re.Pattern[str]:
-    """Translate a path glob to a regex: ``*`` stays within one segment,
-    ``**`` crosses segments. (fnmatch's ``*`` crosses ``/``, which would make
-    ``projects/*/*.md`` match arbitrarily deep files.)"""
-    out: list[str] = []
+def _compile_glob(glob: str) -> _CompiledGlob:
+    """Read a path glob: ``*`` stays within one segment, ``**`` crosses segments.
+    (fnmatch's ``*`` crosses ``/``, which would make ``projects/*/*.md`` match
+    arbitrarily deep files.)
+
+    The rest is exact and pinned by test_glob_match_differential: ``*`` and ``?``
+    match anything but ``/``, newlines included, while ``**`` matches anything but a
+    newline; ``**/`` is optional as a whole and otherwise ends on a ``/``; every other
+    character, ``[`` included, is itself.
+    """
+    prefix: list[str] = []
+    literals: dict[str, int] = {}
+    any_but_slash = in_segment = in_line = after_slash = 0
+    moves: dict[int, tuple[int, ...]] = {}
+    at = 0  # the position the next token starts from
     i = 0
     while i < len(glob):
+        here = 1 << at
         if glob.startswith("**/", i):
-            out.append("(?:.*/)?")
+            # `at` skips the whole token; `at + 1` is inside it and leaves only on a "/".
+            moves[at] = (at + 1, at + 2)
+            in_line |= here << 1
+            after_slash |= here << 1
+            at += 2
             i += 3
         elif glob.startswith("**", i):
-            out.append(".*")
+            moves[at] = (at + 1,)
+            in_line |= here
+            at += 1
             i += 2
         elif glob[i] == "*":
-            out.append("[^/]*")
+            moves[at] = (at + 1,)
+            in_segment |= here
+            at += 1
             i += 1
         elif glob[i] == "?":
-            out.append("[^/]")
+            any_but_slash |= here
+            at += 1
+            i += 1
+        elif at == 0:
+            prefix.append(glob[i])
             i += 1
         else:
-            out.append(re.escape(glob[i]))
+            literals[glob[i]] = literals.get(glob[i], 0) | here
+            at += 1
             i += 1
-    return re.compile("^" + "".join(out) + "$")
+
+    def step(char: str) -> tuple[int, int]:
+        advance = literals.get(char, 0)
+        advance |= after_slash if char == "/" else any_but_slash
+        return advance, (0 if char == "/" else in_segment) | (0 if char == "\n" else in_line)
+
+    move_ends: dict[int, int] = {}
+    for position in sorted(moves, reverse=True):
+        # Moves only go forward and to adjacent positions, so what one reaches is a contiguous run.
+        last = moves[position][-1]
+        move_ends[position] = move_ends.get(last, last)
+    return _CompiledGlob(
+        prefix="".join(prefix),
+        start=(1 << (move_ends.get(0, 0) + 1)) - 1,
+        accept=1 << at,
+        steps={char: step(char) for char in (*literals, "/", "\n")},
+        other_step=step(""),
+        free_moves=sum(1 << position for position in moves),
+        move_ends=move_ends,
+    )
+
+
+def _fullmatch(compiled: _CompiledGlob, text: str) -> bool:
+    """Whether the glob matches all of ``text``. One pass, whatever the glob: no choice is
+    ever retried, because every position still possible is carried forward together."""
+    if not text.startswith(compiled.prefix):
+        return False
+    states = compiled.start
+    for char in text[len(compiled.prefix) :]:
+        advance, stay = compiled.steps.get(char, compiled.other_step)
+        states = ((states & advance) << 1) | (states & stay)
+        moving = states & compiled.free_moves
+        while moving:
+            lowest = moving & -moving
+            reached = (1 << (compiled.move_ends[lowest.bit_length() - 1] + 1)) - lowest
+            states |= reached
+            moving &= ~reached
+        if not states:
+            return False
+    return bool(states & compiled.accept)
 
 
 def glob_match(glob: str, rel: str) -> bool:
-    return bool(_glob_re(glob).match(rel))
+    compiled = _compile_glob(glob)
+    # A trailing newline is optional in ``rel``: the regex this replaced ended in ``$``.
+    return _fullmatch(compiled, rel) or (rel.endswith("\n") and _fullmatch(compiled, rel[:-1]))
 
 
 def _any(globs: tuple[str, ...], rel: str) -> bool:
