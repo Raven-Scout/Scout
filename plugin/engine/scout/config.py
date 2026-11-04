@@ -31,6 +31,7 @@ import yaml
 
 from scout import paths
 from scout.errors import ConfigError
+from scout.yaml_safe import load_yaml, yaml_problem
 
 # The terminal fallback, used only when neither a configured override nor the
 # host's own zone resolves (see resolve_timezone). The packaged defaults leave
@@ -41,11 +42,11 @@ DEFAULT_TIMEZONE = "America/New_York"
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
+    text = path.read_text(encoding="utf-8")
     try:
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        data = load_yaml(text) or {}
     except yaml.YAMLError as e:
-        raise ConfigError(f"Invalid YAML in {path}: {e}") from e
+        raise ConfigError(f"Invalid YAML in {path}: {yaml_problem(e, text)}") from e
     if not isinstance(data, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level")
     return data
@@ -161,6 +162,25 @@ def load_config(data_dir: Path | None = None) -> dict[str, Any]:
     merged = _merge_user_layer(defaults, _normalize_legacy_keys(user_overrides))
     merged = _deep_merge(merged, env_overrides)
     return merged
+
+
+def config_load_problem(data_dir: Path | None = None) -> str | None:
+    """Why the vault's scout-config.yaml doesn't load, or None when it does (or isn't there).
+
+    The cause and line only, never the file's text: this reaches the doctor and
+    run-health pushes, and YAML errors can quote what they choked on.
+    """
+    try:
+        text = paths.config_path(data_dir).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        return type(e).__name__
+    try:
+        data = load_yaml(text)
+    except yaml.YAMLError as e:
+        return yaml_problem(e, text)
+    return None if data is None or isinstance(data, dict) else "not a mapping"
 
 
 def user_value(key: str, data_dir: Path | None = None) -> Any:

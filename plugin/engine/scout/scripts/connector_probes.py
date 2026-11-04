@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from scout.errors import ConfigError
+from scout.yaml_safe import load_yaml
 
 # Legacy probe/config keys and their canonical replacements. The probe key is
 # what gets written into scout-config.yaml `connectors.enabled`, and phase
@@ -46,7 +47,7 @@ class Probe:
 
 def load_registry(path: Path) -> dict[str, Probe]:
     """Parse connector-probes.yaml into typed Probe objects."""
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = load_yaml(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"connector-probes.yaml must be a YAML mapping at the top level, got {type(raw).__name__}")
     out: dict[str, Probe] = {}

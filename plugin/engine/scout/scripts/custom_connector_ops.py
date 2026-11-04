@@ -185,6 +185,15 @@ def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: st
     return cfg
 
 
+def _unusable(current: cc.CustomLoad, key: str) -> Outcome | None:
+    """A refusal when connectors.custom.yaml was rejected whole: ``raw`` is then empty, not what the
+    file holds, and writing it back would delete every other entry and lift its ``restrict_tools``."""
+    if not current.file_unusable:
+        return None
+    problem = current.issues[0]
+    return Outcome("error", key, message=f"{problem.path} {problem.message}; fix it by hand first")
+
+
 def _under_lock(vault: Path, key: str, change: Callable[[], Outcome], *, wait: bool = True) -> Outcome:
     """Run ``change`` holding the session lock.
 
@@ -315,6 +324,8 @@ def _add(
         before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
         if isinstance(before, Outcome):
             return before
+        if (refused := _unusable(cc.load(vault, plugin_root=plugin_root), key)) is not None:
+            return refused
         new_inputs, issues = _inputs_after(before, connector, inputs)
         if issues:
             return Outcome("invalid", key, issues)
@@ -342,6 +353,8 @@ def _add(
         if isinstance(before, Outcome):
             return before
         current = cc.load(vault, plugin_root=plugin_root)
+        if (refused := _unusable(current, key)) is not None:
+            return refused
         new_inputs, missing_inputs = _inputs_after(before, connector, inputs)
         if missing_inputs:  # needs the stored values, so it is checked under the lock
             return Outcome("invalid", key, missing_inputs)
@@ -372,11 +385,16 @@ def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wa
         return missing
     unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
     # Cheap early answer without waiting for the lock; re-checked under it below.
-    if key not in cc.load(vault, plugin_root=plugin_root).raw:
+    first_look = cc.load(vault, plugin_root=plugin_root)
+    if (refused := _unusable(first_look, key)) is not None:
+        return refused
+    if key not in first_look.raw:
         return unknown
 
     def change() -> Outcome:
         current = cc.load(vault, plugin_root=plugin_root)
+        if (refused := _unusable(current, key)) is not None:
+            return refused
         if key not in current.raw:
             return unknown
         before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)

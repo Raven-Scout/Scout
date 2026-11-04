@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from scout import yaml_blocks
+from scout.yaml_safe import YAMLValueError, load_yaml, yaml_problem
 
 CUSTOM_FILE = "connectors.custom.yaml"
 SCHEMA_VERSION = 1
@@ -144,6 +145,8 @@ class CustomLoad:
     connectors: dict[str, CustomConnector] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)  # every entry as written, valid or not
+    file_unusable: bool = False  # the whole file was rejected, so ``raw`` isn't what it holds: never write over it
+    unbuildable: bool = False  # rejected for a value PyYAML can't build; assembly stops on this, see load_custom
 
 
 def first_binary(cmd: str) -> str | None:
@@ -452,14 +455,20 @@ def parse_file(raw: Any, *, reserved: set[str], presets: dict[str, dict[str, str
     if raw is None:
         return CustomLoad()
     if not isinstance(raw, dict):
-        return CustomLoad(issues=[Issue(CUSTOM_FILE, "must be a mapping with schema_version and connectors")])
+        return CustomLoad(
+            issues=[Issue(CUSTOM_FILE, "must be a mapping with schema_version and connectors")], file_unusable=True
+        )
     if raw.get("schema_version") != SCHEMA_VERSION:
-        return CustomLoad(issues=[Issue(f"{CUSTOM_FILE}.schema_version", f"must be {SCHEMA_VERSION}")])
+        return CustomLoad(
+            issues=[Issue(f"{CUSTOM_FILE}.schema_version", f"must be {SCHEMA_VERSION}")], file_unusable=True
+        )
     conns = raw.get("connectors")
     if conns is None:
         conns = {}
     if not isinstance(conns, dict):
-        return CustomLoad(issues=[Issue(f"{CUSTOM_FILE}.connectors", "must be a mapping of key → definition")])
+        return CustomLoad(
+            issues=[Issue(f"{CUSTOM_FILE}.connectors", "must be a mapping of key → definition")], file_unusable=True
+        )
     out = CustomLoad(raw={str(k): v for k, v in conns.items()})
     for key, body in out.raw.items():
         try:
@@ -516,9 +525,17 @@ def load(vault: Path, *, plugin_root: Path | None = None) -> CustomLoad:
     if not path.exists():
         return CustomLoad()
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
-        return CustomLoad(issues=[Issue(CUSTOM_FILE, f"could not be read: {e}")])
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return CustomLoad(issues=[Issue(CUSTOM_FILE, f"could not be read: {e}")], file_unusable=True)
+    try:
+        raw = load_yaml(text)
+    except yaml.YAMLError as e:
+        return CustomLoad(
+            issues=[Issue(CUSTOM_FILE, f"could not be read: {yaml_problem(e, text)}")],
+            file_unusable=True,
+            unbuildable=isinstance(e, YAMLValueError),
+        )
     root = plugin_root or default_plugin_root()
     return parse_file(raw, reserved=reserved_keys(root), presets=load_presets(root))
 
@@ -663,7 +680,7 @@ def enabled_keys(vault: Path) -> set[str]:
     showing one Scout cannot confirm is enabled. Never raises.
     """
     try:
-        raw = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        raw = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return set()
     if not isinstance(raw, dict):
@@ -680,7 +697,7 @@ def enabled_keys(vault: Path) -> set[str]:
 def bash_binaries(vault: Path) -> dict[str, str]:
     """Binary → connector key for every bash probe/tool. Unvalidated and never raises (hook path)."""
     try:
-        raw = yaml.safe_load((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
+        raw = load_yaml((vault / CUSTOM_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return {}
     conns = raw.get("connectors") if isinstance(raw, dict) else None
@@ -718,9 +735,10 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     is gated even when it is otherwise invalid: ``load`` drops an invalid
     entry, and that must not quietly lift its restriction. A file that isn't
     YAML gates every server named in it with nothing allowed; one that exists
-    but can't be read, or a restricted entry that names no server, gates every
-    server (``GATE_ALL``). Enabled or not doesn't matter: a disabled
-    connector's server stays restricted.
+    but can't be read, holds a value PyYAML can't build (its layout may hide
+    a server from the regexes), or has a restricted entry that names no server,
+    gates every server (``GATE_ALL``). Enabled or not doesn't matter: a
+    disabled connector's server stays restricted.
     """
     try:
         text = (vault / CUSTOM_FILE).read_text(encoding="utf-8")
@@ -731,7 +749,9 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     if "restrict_tools" not in text:
         return {}
     try:
-        raw = yaml.safe_load(text)
+        raw = load_yaml(text)
+    except YAMLValueError:
+        return {GATE_ALL: frozenset()}
     except yaml.YAMLError:
         servers = set(_GATE_SERVER_RE.findall(text)) | set(_GATE_TOOL_RE.findall(text))
         return {s: frozenset() for s in servers} if servers else {GATE_ALL: frozenset()}
