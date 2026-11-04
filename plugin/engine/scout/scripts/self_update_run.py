@@ -364,7 +364,8 @@ def _vault_step(att: _Attempt, scoutctl: Path) -> list[str]:
     proc = att.run(argv, "vault", _vault_env(att.deps.vault))
     result = _parse_json(proc.stdout)
     if result is None:
-        raise att.stop("failed", "vault", f"bootstrap auto exited {proc.returncode} without a result: {proc.stderr}")
+        # Its stderr is in the update log (Attempt.run). The detail reaches pushes, and stderr can quote a file.
+        raise att.stop("failed", "vault", f"bootstrap auto exited {proc.returncode} without a result")
     if result.get("action") == "refused":
         error = str(result.get("error") or result.get("reason") or "")
         if result.get("mutated") is False and _LOCK_BUSY_MARK in error:
