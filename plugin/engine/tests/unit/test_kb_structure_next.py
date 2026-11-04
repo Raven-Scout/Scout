@@ -135,6 +135,43 @@ def test_next_skips_a_folder_holding_one_shared_note(kb_repo) -> None:
     assert "[--next skips]" in table
 
 
+def test_next_skips_a_shared_note_in_a_sub_project(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/widgets-api/widgets-api.md", "---\nfederation_scope: org\n---\nn\n")
+    assert picked(kb_repo.root) is None
+
+
+def test_next_skips_a_path_share_that_only_an_existing_note_matches(kb_repo) -> None:
+    """A folder the probes don't look in: only classifying the note itself finds this share."""
+    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/widgets/widgets-api/**']\n")
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/widgets-api/widgets-api.md", "no frontmatter\n")
+    assert picked(kb_repo.root) is None
+
+
+def test_a_note_with_a_quoted_frontmatter_key_is_still_found(kb_repo) -> None:
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", '---\n"federation_scope": org\n---\nn\n')
+    assert picked(kb_repo.root) is None
+
+
+def test_plain_notes_are_not_classified_when_nothing_could_share_them(kb_repo, monkeypatch) -> None:
+    from scout.kb import structure
+
+    kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))
+    kb_repo.write(f"{P}/widgets/knowledge/widgets-notes.md", "---\nname: a plain note\n---\nn\n")
+    seen: list[str] = []
+    real = structure.classify
+
+    def spy(rel, *args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(rel)
+        return real(rel, *args, **kwargs)
+
+    monkeypatch.setattr(structure, "classify", spy)
+    assert picked(kb_repo.root) == "widgets"
+    assert f"{P}/widgets/knowledge/widgets-notes.md" not in seen
+
+
 def test_a_share_elsewhere_does_not_skip_the_folder(kb_repo) -> None:
     kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{P}/gadgets/knowledge/**']\n")
     kb_repo.write(f"{P}/widgets/widgets.md", page("widgets", as_of=None))

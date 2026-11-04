@@ -55,8 +55,18 @@ import yaml
 from scout.config import load_config, today
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
-from scout.kb.lint_config import lint_any, load_lint_config
-from scout.kb.privacy import FULL_READERS, Label, Policy, classify, label_file, load_frontmatter_yaml, load_policy
+from scout.kb.lint_config import glob_match, lint_any, load_lint_config
+from scout.kb.privacy import (
+    FULL_READERS,
+    Label,
+    Policy,
+    classify,
+    first_default,
+    label_file,
+    load_frontmatter_yaml,
+    load_policy,
+    read_head,
+)
 
 KB_PREFIX = "knowledge-base/"
 PRIORITY_RANK = {"🔴": 0, "🟡": 1, "🟢": 2}
@@ -330,14 +340,29 @@ def _rebuild_writes_into_a_share(
     The front page's own label doesn't say: a rebuild moves its facts into the
     subfolders, and a share on one reaches its readers at the next sync, with no
     way to recall them. So a new note in any subfolder the step writes to, and
-    every note already in the folder, must be unshared."""
+    every note already in the folder, must be unshared. The caller has already
+    labelled the front page unshared.
+
+    Folders can hold many notes and few match a share rule, so a note is only classified
+    if a rule matches its path or its text names the frontmatter key: with neither,
+    nothing can make it shared."""
     for sub in sorted(cfg.allowed_dirs | _STEP_DIRS):
         if classify(f"{folder.rel}/{sub}/{folder.name}-new-note.md", None, probes).shared_file:
             return True
-    return any(
-        label_file(vault, path.relative_to(vault).as_posix(), policy).shared_file
-        for path in (vault / folder.rel).rglob("*.md")
-    )
+    front = vault / folder.rel / f"{folder.name}.md"
+    for path in (vault / folder.rel).rglob("*.md"):
+        if path == front:
+            continue
+        rel = path.relative_to(vault).as_posix()
+        text, unreadable = read_head(path)
+        by_path = any(glob_match(g, rel) for g in policy.shared_files) or (
+            policy.federation_enabled and first_default(policy, rel) is not None
+        )
+        if (by_path or "federation_scope" in (text or "")) and classify(
+            rel, text, policy, unreadable=unreadable
+        ).shared_file:
+            return True
+    return False
 
 
 def _rebuild_under_way(vault: Path, folder: _Folder, day: dt.date) -> bool:
@@ -501,7 +526,12 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         if entry.name in cfg.skip_projects or not (vault / front).is_file() or excluded(front):
             continue
         folders.append(_scan(vault, rel, entry.name, cfg, excluded, listing))
-    history = newest_changes(vault, cfg.projects_dir) if folders else {}
+    # Grouped once: scanning the whole history for each folder is quadratic on a big vault.
+    history: dict[str, dict[str, dt.date]] = {}
+    if folders:
+        prefix = cfg.projects_dir + "/"
+        for path, changed in newest_changes(vault, cfg.projects_dir).items():
+            history.setdefault(path.removeprefix(prefix).split("/", 1)[0], {})[path] = changed
     policy = load_policy(vault)
     day = today(vault)
     probes = _probe_policy(policy)
@@ -511,7 +541,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         front = f"{folder.rel}/{folder.name}.md"
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
-        row = check_folder(vault, folder, cfg, history, excluded, label, pinned_loose, day)
+        row = check_folder(vault, folder, cfg, history.get(folder.name, {}), excluded, label, pinned_loose, day)
         if row["rebuild_target"] and (
             sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes)
         ):
