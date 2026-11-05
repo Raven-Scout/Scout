@@ -90,8 +90,8 @@ def _tip_paths(host: FakeHost) -> set[str]:
         # The allowlist never overrides a Local-Only or secret rule.
         ("knowledge-base/projects/widget/.env", True),
         ("knowledge-base/projects/widget/key.pem", True),
-        # Compared the way the host compares paths.
-        ("Knowledge-Base/Projects/widget/widget.md", False),
+        # Matched as written: a spelling the list doesn't name stays home.
+        ("Knowledge-Base/Projects/widget/widget.md", True),
     ],
 )
 def test_refused_outside_the_allowlist(rel: str, refused: bool) -> None:
@@ -728,3 +728,155 @@ def test_cli_sync_only_shows_and_accepts(vault: Path, host: FakeHost) -> None:
 def test_cli_sync_only_needs_a_link(vault: Path) -> None:
     out = CliRunner().invoke(app, ["repo", "sync-only"])
     assert out.exit_code == 2
+
+
+# ----- review of #574: path spellings, the pin, symlinks, the push guard -----------------------
+
+
+def _add(vault: Path, rel: str, text: str, subject: str = "add") -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    git(vault, "add", "-f", "--", rel)
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+
+
+LOOKALIKES = [
+    "knowledge-base/projects\u200b",  # zero-width space
+    "knowledge-base/projects.",  # trailing dot
+    "knowledge-base/projects ",  # trailing space
+    "knowledge-base/\uff50rojects",  # fullwidth p
+]
+
+
+@pytest.mark.parametrize("folder", LOOKALIKES)
+def test_a_folder_that_only_folds_to_an_allowed_one_stays_home(vault: Path, host: FakeHost, folder: str) -> None:
+    assert _rules(ALLOWED).refused(f"{folder}/leak.md")
+    _set_privacy(vault, sync_only=[ALLOWED])
+    _add(vault, f"{folder}/leak.md", "LOOKALIKE-CANARY\n")
+    _link(vault, host)
+    assert "LOOKALIKE-CANARY" not in _mirror_text(host)
+
+
+def test_an_entry_matches_its_own_unicode_spelling() -> None:
+    decomposed = "cafe\u0301/**"  # NFD; the path below is NFC
+    assert not _rules(decomposed).refused("caf\u00e9/a.md")
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [".scout-state/Privacy-Policy.json", ".scout-state/privacy-policy.json.", ".scout-state/privacy\u200b-policy.json"],
+)
+def test_only_the_generated_policy_file_may_carry_its_name(vault: Path, host: FakeHost, rel: str) -> None:
+    assert _rules(ALLOWED).refused(rel)
+    assert rs.LocalOnlyRules.build([policy_from_overlay({})], ()).refused(rel)
+    _set_privacy(vault, sync_only=[ALLOWED])
+    _add(vault, rel, "POLICY-LOOKALIKE-CANARY\n")
+    _link(vault, host)
+    assert "POLICY-LOOKALIKE-CANARY" not in _mirror_text(host)
+
+
+def test_dropping_the_pin_from_the_state_file_does_not_lift_it(vault: Path, host: FakeHost) -> None:
+    _linked(vault, host)
+    data = json.loads(rs.state_path(vault).read_text())
+    del data["sync_only"]
+    rs.state_path(vault).write_text(json.dumps(data))
+    _write_privacy(vault, sync_only=None)  # uncommitted, so no hook sees it
+
+    rs.sync(vault, host)
+
+    assert HOME not in _tip_paths(host)
+    state = rs.load_state(vault)
+    assert state is not None and state.sync_only == [ALLOWED]
+
+
+def test_a_rewritten_history_whose_head_commits_the_key_still_arms(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    git(vault, "reset", "-q", "--hard", "HEAD~1")
+    _set_privacy(vault, sync_only=[ALLOWED])
+    _write_privacy(vault, sync_only=None)
+
+    rs.sync(vault, host)
+
+    state = rs.load_state(vault)
+    assert state is not None and state.sync_only == [ALLOWED]
+    assert HOME not in _tip_paths(host)
+
+
+def test_link_pins_heads_list_when_the_working_tree_dropped_it(vault: Path, host: FakeHost) -> None:
+    _set_privacy(vault, sync_only=[ALLOWED])
+    _write_privacy(vault, sync_only=None)
+    assert HOME not in rs.preview(vault).paths
+
+    _link(vault, host)
+
+    assert HOME not in mirror_history_paths(host.bare)
+    state = rs.load_state(vault)
+    assert state is not None and state.sync_only == [ALLOWED]
+
+
+def test_lifting_waits_while_head_still_commits_the_key(vault: Path, host: FakeHost) -> None:
+    _linked(vault, host)
+    _write_privacy(vault, sync_only=None)
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.accept_sync_only(vault)
+    assert e.value.code == "sync_only_pending"
+
+
+def test_a_symlink_naming_a_folder_outside_the_list_stays_home(vault: Path, host: FakeHost) -> None:
+    _set_privacy(vault, sync_only=[ALLOWED])
+    (vault / "outside-client").mkdir()
+    (vault / "outside-client" / "plan.md").write_text("x\n")
+    (vault / "knowledge-base/projects/widget/plan.md").symlink_to("../../../outside-client/plan.md")
+    (vault / "knowledge-base/projects/widget/up.md").symlink_to("/etc/hosts")
+    (vault / "knowledge-base/projects/widget/same.md").symlink_to("widget.md")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "links")
+
+    _link(vault, host)
+
+    assert "outside-client" not in _mirror_text(host)
+    assert "/etc/hosts" not in _mirror_text(host)
+    assert "knowledge-base/projects/widget/same.md" in _tip_paths(host)
+
+
+def _hand_built_mirror_commit(vault: Path, files: dict[str, str]) -> str:
+    lines = []
+    for rel, text in {**files, rs.POLICY_PATH: "{}\n"}.items():
+        sha = rs.git(vault, "hash-object", "-w", "--stdin", input=text).stdout.strip()
+        lines.append(f"100644 {sha}\t{rel}")
+    tree = rs._write_tree(vault, lines)
+    return rs.git(vault, "commit-tree", "--no-gpg-sign", tree, "-m", "hand-built").stdout.strip()
+
+
+@pytest.mark.parametrize("rel", [HOME, "knowledge-base/projects./leak.md", ".scout-state/Privacy-Policy.json"])
+def test_the_push_guard_refuses_what_the_allowlist_keeps_home(vault: Path, rel: str) -> None:
+    rules = _rules(ALLOWED)
+    rs.check_mirror_commits(vault, rules, [_hand_built_mirror_commit(vault, {WIDGET: "in\n"})])
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.check_mirror_commits(vault, rules, [_hand_built_mirror_commit(vault, {WIDGET: "in\n", rel: "out\n"})])
+    assert e.value.code == "local_only_path_in_push"
+
+
+def test_the_push_guard_refuses_a_symlink_out_of_the_allowlist(vault: Path) -> None:
+    sha = rs.git(vault, "hash-object", "-w", "--stdin", input="../../../outside-client/plan.md").stdout.strip()
+    doc = rs.git(vault, "hash-object", "-w", "--stdin", input="{}\n").stdout.strip()
+    tree = rs._write_tree(
+        vault, [f"120000 {sha}\tknowledge-base/projects/widget/plan.md", f"100644 {doc}\t{rs.POLICY_PATH}"]
+    )
+    rev = rs.git(vault, "commit-tree", "--no-gpg-sign", tree, "-m", "hand-built").stdout.strip()
+    with pytest.raises(rs.RepoSyncError):
+        rs.check_mirror_commits(vault, _rules(ALLOWED), [rev])
+
+
+def test_dropping_the_pin_and_committing_the_removal_does_not_lift_it(vault: Path, host: FakeHost) -> None:
+    """The last synced commit still had the key, and no --accept ran."""
+    _linked(vault, host)
+    data = json.loads(rs.state_path(vault).read_text())
+    del data["sync_only"]
+    rs.state_path(vault).write_text(json.dumps(data))
+    _set_privacy(vault, "drop", sync_only=None)  # --no-verify: past the hook's privacy-widening check
+
+    rs.sync(vault, host)
+
+    assert HOME not in _tip_paths(host)

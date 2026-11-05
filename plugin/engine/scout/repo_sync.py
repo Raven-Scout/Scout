@@ -53,6 +53,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import tempfile
@@ -151,6 +152,7 @@ SYNC_ONLY_HISTORY_NOTE = (
     "start, run scoutctl repo unlink --delete-remote, then link again"
 )
 REPLAY_SKIPPED_SHOWN = 20
+SYMLINK_MODE = "120000"
 
 
 class RepoSyncError(Exception):
@@ -224,11 +226,22 @@ def host_entry(glob: str) -> str | None:
 _WILDCARD = re.compile(r"[*?\[]")
 
 
-def _sync_entry_allows(entry: str, folded_path: str) -> bool:
-    """Whether a folded ``sync_only`` entry takes in a folded path: a glob, or a plain path and all below it."""
-    if glob_match(entry, folded_path):
+def _sync_entry_allows(entry: str, path: str) -> bool:
+    """Whether a ``sync_only`` entry takes in a path (both :func:`as_written`): a glob, or a plain path and below."""
+    if glob_match(entry, path):
         return True
-    return not _WILDCARD.search(entry) and folded_path.startswith(entry.rstrip("/") + "/")
+    return not _WILDCARD.search(entry) and path.startswith(entry.rstrip("/") + "/")
+
+
+def as_written(path: str) -> str:
+    """A path as an allowlist compares it: NFC only, so case, invisible marks and trailing dots still count.
+
+    Folding (:func:`fold`) makes a denylist over-match, which fails closed. An
+    allowlist compared that way would let in ``projects./`` or a fullwidth
+    ``ｐrojects/`` for ``projects/``, so it matches the spelling it names and
+    nothing else: a spelling it doesn't name stays home.
+    """
+    return unicodedata.normalize("NFC", path)
 
 
 def _literal_root(entry: str) -> str:
@@ -247,7 +260,7 @@ def _sync_lists(lists: Iterable[Sequence[str] | None]) -> tuple[tuple[str, ...],
     out: dict[tuple[str, ...], None] = {}
     for entries in lists:
         if entries is not None:
-            out[tuple(fold(e) for e in entries)] = None
+            out[tuple(as_written(e) for e in entries)] = None
     return tuple(out)
 
 
@@ -297,11 +310,11 @@ class LocalOnlyRules:
         )
 
     def outside_sync_only(self, rel: str) -> bool:
-        """True when an allowlist keeps ``rel`` home. The policy document is the one exception."""
-        f = fold(rel)
-        if f == POLICY_PATH:
+        """True when an allowlist keeps ``rel`` home. The policy document, by its exact name, is the one exception."""
+        if rel == POLICY_PATH:
             return False
-        return any(not any(_sync_entry_allows(e, f) for e in entries) for entries in self.sync_only)
+        path = as_written(rel)
+        return any(not any(_sync_entry_allows(e, path) for e in entries) for entries in self.sync_only)
 
     def entry_in_scope(self, entry: str) -> bool:
         """Whether a path entry may be named on the server: it only names folders the allowlist reaches.
@@ -312,7 +325,7 @@ class LocalOnlyRules:
         dropping an entry here can't send more, because the laptop still enforces
         all of them, and it is the only way to be sure the name stays home.
         """
-        e = fold(entry)
+        e = as_written(entry)
         root = _literal_root(e)
 
         def reaches(allowed: str) -> bool:
@@ -334,7 +347,9 @@ class LocalOnlyRules:
     def local_only(self, rel: str) -> bool:
         """True when ``rel`` must never leave the laptop."""
         f = fold(rel)
-        if self.outside_sync_only(f):
+        if rel != POLICY_PATH and f == POLICY_PATH:
+            return True  # only the generated file may carry that name; a lookalike would carry laptop content
+        if self.outside_sync_only(rel):
             return True
         if any(glob_match(g, f) for g in self.globs):
             return True
@@ -349,6 +364,20 @@ class LocalOnlyRules:
     def refused(self, rel: str) -> bool:
         """True when a mirror commit must not contain ``rel``."""
         return self.local_only(rel) or is_secret_file(rel)
+
+    def link_leaves(self, rel: str, target: bytes) -> bool:
+        """Whether a symlink at ``rel`` points outside what may upload. Its blob is the target path, a name.
+
+        A target outside the vault, or one that neither syncs itself nor holds a
+        file that does (a folder link), stays home with the link.
+        """
+        name = target.decode("utf-8", errors="replace")
+        if name.startswith("/"):
+            return True
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), name))
+        if resolved in (".", "..") or resolved.startswith("../"):
+            return True
+        return self.refused(resolved) and self.refused(f"{resolved}/x")
 
 
 # ----- git -------------------------------------------------------------------------------
@@ -626,7 +655,11 @@ class MirrorBuilder:
                 continue
             if entry.path == POLICY_PATH:
                 continue
-            if rules.refused(entry.path):
+            if rules.refused(entry.path) or (
+                rules.sync_only
+                and entry.mode == SYMLINK_MODE
+                and rules.link_leaves(entry.path, self.blobs.read(entry.sha))
+            ):
                 stripped += 1
                 continue
             kept.append(entry)
@@ -661,7 +694,15 @@ def _write_tree(vault: Path, index_lines: Sequence[str]) -> str:
 def check_mirror_commits(vault: Path, rules: LocalOnlyRules, revs: Iterable[str]) -> None:
     """Refuse when any mirror commit about to be pushed holds a Local-Only or secret path."""
     for rev in revs:
-        bad = sorted(e.path for e in ls_tree(vault, rev) if e.path != POLICY_PATH and rules.refused(e.path))
+        bad = sorted(
+            e.path
+            for e in ls_tree(vault, rev)
+            if e.path != POLICY_PATH
+            and (
+                rules.refused(e.path)
+                or (rules.sync_only and e.mode == SYMLINK_MODE and rules.link_leaves(e.path, cat_blob(vault, e.sha)))
+            )
+        )
         policy = _blob_at(vault, rev, POLICY_PATH)
         if bad:
             raise RepoSyncError(
@@ -1190,9 +1231,11 @@ def link(
             "refused: Agnes won't create a Personal Knowledge Repository for this account "
             "(ask an admin for the knowledge_repository rollout)",
         )
-    scope = LocalOnlyRules.build([policy], ())
+    # An uncommitted removal of the key is no owner step either: HEAD's committed list still pins.
+    pin = policy.sync_only if policy.sync_only is not None else _committed_sync_only(vault, None)
+    scope = LocalOnlyRules.build([policy], (), pinned=pin)
     wanted = tuple(dict.fromkeys((*status.local_only_paths, *_host_entries_for(policy, scope))))
-    rules = LocalOnlyRules.build([policy], wanted)
+    rules = LocalOnlyRules.build([policy], wanted, pinned=pin)
     trading_gate(vault, rules, confirm_sync)
     if rules.local_only(POLICY_PATH):
         raise RepoSyncError("policy_path_local_only", f"refused: a Local-Only Path covers {POLICY_PATH}")
@@ -1212,7 +1255,7 @@ def link(
     if len(wanted) > len(host_entries):
         host_entries = host.set_local_only(list(wanted))
         notes.append(f"Agnes now keeps {len(host_entries)} Local-Only Path(s) for this vault")
-    rules = LocalOnlyRules.build([policy], host_entries)
+    rules = LocalOnlyRules.build([policy], host_entries, pinned=pin)
     if existing is not None:
         fetch_remote(vault, host, status.clone_url)
 
@@ -1249,7 +1292,7 @@ def link(
             last_mirror=snapshot,
             pairs=[{"laptop": head, "mirror": snapshot, "kind": "snapshot"}],
             confirmed_sync=sorted(set(confirm_sync)),
-            sync_only=None if policy.sync_only is None else list(policy.sync_only),
+            sync_only=None if pin is None else list(pin),
         ),
     )
     return Result(action="link", pushed=[snapshot], stripped=stripped, notes=notes)
@@ -1415,8 +1458,7 @@ def _sync_under_lease(
     result = Result(action="sync")
     if state.sync_only is None and policy.sync_only is not None:
         _arm_sync_only(vault, state, policy.sync_only, result)
-    elif state.sync_only is None and (pending := _unsynced_sync_only(vault, state)) is not None:
-        # Added and removed again since the last sync: the removal is no owner step, so it stays armed.
+    elif state.sync_only is None and (pending := _committed_sync_only(vault, state.last_laptop)) is not None:
         _arm_sync_only(vault, state, pending, result)
     elif state.sync_only is not None and (mismatch := _sync_only_mismatch(state.sync_only, policy)):
         result.notes.append(mismatch)
@@ -1525,21 +1567,26 @@ def _broken(policy: Policy) -> bool:
     return "privacy-overlay-unreadable" in policy.warnings or SYNC_ONLY_INVALID in policy.warnings
 
 
-def _unsynced_sync_only(vault: Path, state: LinkState) -> tuple[str, ...] | None:
-    """The first ``sync_only`` list in a commit made here since the last sync, or None.
+def _committed_sync_only(vault: Path, since: str | None) -> tuple[str, ...] | None:
+    """A ``sync_only`` list still committed here, or None.
 
-    Read before anything reaches the host, so a pin armed from it filters this
-    sync's Local-Only list too. A commit whose config can't be trusted is skipped.
+    Looks at HEAD's config, then at the last synced commit ``since``, then at
+    every commit after it. An uncommitted removal, or one committed after the
+    last sync, is no owner step, so the list stays in force. That also covers a
+    link state edited by hand to drop its pin. A lift through
+    :func:`accept_sync_only` first needs the removal committed and synced. Read
+    before anything reaches the host. A commit whose config can't be trusted is
+    skipped.
     """
     head = _head(vault)
-    if not _is_ancestor(vault, state.last_laptop, head):
-        return None
-    revs = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
-    if not revs:
-        return None
+    revs = [head]
+    if since is not None and _rev(vault, since) is not None:
+        revs.append(since)
+        if _is_ancestor(vault, since, head):
+            revs += git(vault, "rev-list", "--reverse", "--first-parent", f"{since}..{head}").stdout.split()
     blobs = BlobReader(vault)
     try:
-        for rev in revs:
+        for rev in dict.fromkeys(revs):
             p = policy_at(vault, rev, blobs)
             if p.sync_only is not None and not _broken(p):
                 return p.sync_only
@@ -1581,7 +1628,6 @@ def accept_sync_only(vault: Path, *, env: Mapping[str, str] | None = None) -> Re
         raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
     policy = load_policy(vault)
     overlay_gate(policy)
-    head = _head(vault)
     result = Result(action="sync-only")
     if policy.sync_only is not None:
         state.sync_only = list(policy.sync_only)
@@ -1590,19 +1636,12 @@ def accept_sync_only(vault: Path, *, env: Mapping[str, str] | None = None) -> Re
         result.notes.append("no privacy.sync_only is set, and none is pinned; nothing to do")
         return result
     else:
-        if _is_ancestor(vault, state.last_laptop, head):
-            blobs = BlobReader(vault)
-            try:
-                revs = git(vault, "rev-list", f"{state.last_laptop}..{head}").stdout.split()
-                held = any(policy_at(vault, rev, blobs).sync_only is not None for rev in revs)
-            finally:
-                blobs.close()
-            if held:
-                raise RepoSyncError(
-                    "sync_only_pending",
-                    "refused: an unsynced commit still has privacy.sync_only, and the next sync would pin it again. "
-                    "Run scoutctl repo sync first, then lift it",
-                )
+        if _committed_sync_only(vault, state.last_laptop) is not None:
+            raise RepoSyncError(
+                "sync_only_pending",
+                "refused: HEAD or an unsynced commit still has privacy.sync_only, and the next sync would pin it "
+                "again. Commit its removal, run scoutctl repo sync, then lift it",
+            )
         state.sync_only = None
         result.notes.append(
             "lifted privacy.sync_only: the next scoutctl repo sync uploads the whole vault minus Local-Only Paths. "
@@ -1677,7 +1716,10 @@ def preview(vault: Path, *, depth: int = 2) -> Preview:
     policy = load_policy(vault)
     overlay_gate(policy)
     head = _head(vault)
-    pinned = state.sync_only if state is not None else None
+    if state is not None:
+        pinned = state.sync_only if state.sync_only is not None else _committed_sync_only(vault, state.last_laptop)
+    else:
+        pinned = policy.sync_only if policy.sync_only is not None else _committed_sync_only(vault, None)
     rules = LocalOnlyRules.build([policy], (), pinned=pinned)
     builder = MirrorBuilder(vault, rules, _host_entries_for(policy, rules))
     try:
@@ -1692,7 +1734,7 @@ def preview(vault: Path, *, depth: int = 2) -> Preview:
     confirmed = state.confirmed_sync if state is not None else ()
     return Preview(
         head=head,
-        sync_only=pinned if pinned is not None else (None if policy.sync_only is None else list(policy.sync_only)),
+        sync_only=None if pinned is None else list(pinned),
         config_sync_only=None if policy.sync_only is None else list(policy.sync_only),
         paths=uploaded,
         by_folder=by_folder,
