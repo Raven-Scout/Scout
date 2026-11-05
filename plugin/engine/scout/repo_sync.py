@@ -27,6 +27,14 @@ secret-carrier rule. Matching is case- and Unicode-folded like the host's, so
 a spelling the vault treats as different can't slip past either side. Every
 mirror commit is checked again against that set before anything is pushed.
 
+``privacy.sync_only`` turns this round for a vault that wants only named folders
+on the server: anything outside the list is Local-Only too, except the policy
+file, and the mirror names nothing outside it (the host's list, the policy file's
+entries, commit messages). The list is pinned in the link state, so editing
+``scout-config.yaml`` or mirroring an older commit without the key can only narrow
+it; widening or lifting takes the owner's :func:`accept_sync_only`. This is enforced
+on the laptop alone: the host has no matching check.
+
 Mirror objects live in the vault's own object store under ``refs/scout-mirror/``.
 A push sends only what a mirror commit reaches, so a Local-Only blob is never
 packed. The commit map is ``.scout-state/repo-sync.json`` (gitignored); the
@@ -134,6 +142,16 @@ TRADING_NAME_PARTS = (
     "holdings",
 )
 
+SYNC_ONLY_INVALID = "privacy-sync-only-invalid"
+# Under an allowlist every mirror commit has this message: a laptop subject, or a
+# squash's list of them, can name what the allowlist keeps home.
+GENERIC_MESSAGE = "Scout sync: mirror update\n"
+SYNC_ONLY_HISTORY_NOTE = (
+    "What is already on Agnes stays there: earlier commits and its Local-Only list keep their names. For a clean "
+    "start, run scoutctl repo unlink --delete-remote, then link again"
+)
+REPLAY_SKIPPED_SHOWN = 20
+
 
 class RepoSyncError(Exception):
     """A refusal or failure, with a stable code for ``--json`` callers."""
@@ -203,17 +221,56 @@ def host_entry(glob: str) -> str | None:
     return "/".join(parts) + ("/" if g.endswith("/") else "")
 
 
+_WILDCARD = re.compile(r"[*?\[]")
+
+
+def _sync_entry_allows(entry: str, folded_path: str) -> bool:
+    """Whether a folded ``sync_only`` entry takes in a folded path: a glob, or a plain path and all below it."""
+    if glob_match(entry, folded_path):
+        return True
+    return not _WILDCARD.search(entry) and folded_path.startswith(entry.rstrip("/") + "/")
+
+
+def _literal_root(entry: str) -> str:
+    """The folders an entry names outright, up to its first wildcard: ``a/b/*/c`` → ``a/b``."""
+    root: list[str] = []
+    for segment in entry.split("/"):
+        if not segment:
+            continue
+        if _WILDCARD.search(segment):
+            break
+        root.append(segment)
+    return "/".join(root)
+
+
+def _sync_lists(lists: Iterable[Sequence[str] | None]) -> tuple[tuple[str, ...], ...]:
+    out: dict[tuple[str, ...], None] = {}
+    for entries in lists:
+        if entries is not None:
+            out[tuple(fold(e) for e in entries)] = None
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class LocalOnlyRules:
-    """The union Local-Only set for one sync (see the module docstring)."""
+    """The union Local-Only set for one sync (see the module docstring).
+
+    ``sync_only`` holds one tuple per allowlist in force: the owner's pinned list,
+    the live config's and a mirrored commit's own. A path must be on all of them.
+    Empty means no allowlist; a list inside it that is empty allows nothing.
+    """
 
     globs: tuple[str, ...]
     always: tuple[str, ...]
     sync_allow: tuple[str, ...]
     host_entries: tuple[str, ...]
+    sync_only: tuple[tuple[str, ...], ...] = ()
 
     @classmethod
-    def build(cls, policies: Iterable[Policy], host_entries: Iterable[str]) -> LocalOnlyRules:
+    def build(
+        cls, policies: Iterable[Policy], host_entries: Iterable[str], *, pinned: Sequence[str] | None = None
+    ) -> LocalOnlyRules:
+        policies = list(policies)
         globs: list[str] = []
         always: list[str] = []
         sync_allow: list[str] = []
@@ -226,19 +283,59 @@ class LocalOnlyRules:
             always=tuple(dict.fromkeys(fold(g) for g in always)),
             sync_allow=tuple(dict.fromkeys(fold(g) for g in sync_allow)),
             host_entries=tuple(dict.fromkeys(host_entries)),
+            sync_only=_sync_lists([pinned, *(p.sync_only for p in policies)]),
         )
 
     def with_policy(self, policy: Policy) -> LocalOnlyRules:
+        """These rules for one commit: its Local-Only paths are added, and its allowlist can only narrow."""
         return LocalOnlyRules(
             globs=tuple(dict.fromkeys((*self.globs, *(fold(g) for g in policy.local_only)))),
             always=tuple(dict.fromkeys((*self.always, *(fold(g) for g in policy.local_only_always)))),
             sync_allow=self.sync_allow,
             host_entries=self.host_entries,
+            sync_only=_sync_lists([*self.sync_only, policy.sync_only]),
         )
+
+    def outside_sync_only(self, rel: str) -> bool:
+        """True when an allowlist keeps ``rel`` home. The policy document is the one exception."""
+        f = fold(rel)
+        if f == POLICY_PATH:
+            return False
+        return any(not any(_sync_entry_allows(e, f) for e in entries) for entries in self.sync_only)
+
+    def entry_in_scope(self, entry: str) -> bool:
+        """Whether a path entry may be named on the server: it only names folders the allowlist reaches.
+
+        True when, for every allowlist, the entry is on it, or the folder it names
+        outright is allowed, or the folder an allowlist entry names outright falls
+        under it. So ``**/name/**`` or ``other/*`` beside ``notes/**`` is False:
+        dropping an entry here can't send more, because the laptop still enforces
+        all of them, and it is the only way to be sure the name stays home.
+        """
+        e = fold(entry)
+        root = _literal_root(e)
+
+        def reaches(allowed: str) -> bool:
+            if e == allowed:
+                return True
+            if root and (_sync_entry_allows(allowed, root) or _sync_entry_allows(allowed, f"{root}/x")):
+                return True
+            allowed_root = _literal_root(allowed)
+            return bool(allowed_root) and (
+                _sync_entry_allows(e, allowed_root) or _sync_entry_allows(e, f"{allowed_root}/x")
+            )
+
+        return all(any(reaches(a) for a in entries) for entries in self.sync_only)
+
+    def in_scope_entries(self, entries: Iterable[str]) -> list[str]:
+        """``entries`` the server may be told about: all of them unless an allowlist is on."""
+        return [e for e in entries if not self.sync_only or self.entry_in_scope(e)]
 
     def local_only(self, rel: str) -> bool:
         """True when ``rel`` must never leave the laptop."""
         f = fold(rel)
+        if self.outside_sync_only(f):
+            return True
         if any(glob_match(g, f) for g in self.globs):
             return True
         if any(_host_matches(f, e) for e in self.host_entries):
@@ -433,13 +530,51 @@ def label_blob(rel: str, entry: TreeEntry, policy: Policy, blobs: BlobReader) ->
     return classify(rel, decode_head(blobs.read(entry.sha)[:HEAD_BYTES]), policy)
 
 
-def policy_document(policy: Policy, labels: Sequence[Label], *, host_entries: Sequence[str]) -> bytes:
+def scoped_policy_json(policy: Policy, rules: LocalOnlyRules, mirrored: Sequence[str]) -> dict[str, Any]:
+    """``policy.to_json()`` holding no name outside the allowlist, with every mirrored file's label unchanged.
+
+    The Agnes indexer classifies each file again from this document, so an entry
+    that decides a label is kept whenever it matches a file in this commit, however
+    its glob is written. One that matches none can't change any label here, so it
+    goes unless the engine ships it (those are public). ``local_only.default``
+    decides no mirrored file's label, since a mirrored file is never local-only, so
+    it keeps what :meth:`LocalOnlyRules.entry_in_scope` allows, for the host's check.
+    """
+    base = load_policy(None)
+
+    def hit(glob: str) -> bool:
+        return any(glob_match(glob, rel) for rel in mirrored)
+
+    doc = policy.to_json()
+    doc["local_only"]["default"] = rules.in_scope_entries(policy.local_only)
+    doc["visibility_defaults"] = [
+        {"glob": g, "visibility": v}
+        for g, v in policy.visibility_defaults
+        if (g, v) in base.visibility_defaults or hit(g)
+    ]
+    doc["shared_files"] = [g for g in policy.shared_files if g in base.shared_files or hit(g)]
+    doc["surfaces"] = {
+        "owner_only": sorted(policy.owner_only_surfaces & (base.owner_only_surfaces | base.shared_surfaces)),
+        "shared": sorted(policy.shared_surfaces & (base.owner_only_surfaces | base.shared_surfaces)),
+    }
+    doc["federation_ceilings_overlay"] = [r.to_json() for r in policy.federation_ceilings_overlay if hit(r.glob)]
+    doc["federation_defaults"] = [
+        d.to_json() for d in policy.federation_defaults if d in base.federation_defaults or hit(d.glob)
+    ]
+    doc["sync_only"] = rules.in_scope_entries(dict.fromkeys(e for entries in rules.sync_only for e in entries))
+    return doc
+
+
+def policy_document(
+    policy: Policy, labels: Sequence[Label], *, host_entries: Sequence[str], rules: LocalOnlyRules | None = None
+) -> bytes:
     """``.scout-state/privacy-policy.json``: the effective policy plus every mirrored file's label.
 
     The Agnes indexer reads ``policy`` (it accepts the document or its
-    ``policy`` key) and the ``labels`` manifest.
+    ``policy`` key) and the ``labels`` manifest. Under an allowlist (``rules``)
+    the policy and the host list are cut down so they name nothing it keeps home.
     """
-    doc = {
+    doc: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generator": "scoutctl repo sync",
         "engine_version": scout.__version__,
@@ -447,7 +582,20 @@ def policy_document(policy: Policy, labels: Sequence[Label], *, host_entries: Se
         "host_local_only_paths": list(host_entries),
         "labels": [label.to_json() for label in sorted(labels, key=lambda lb: lb.path)],
     }
+    if rules is not None and rules.sync_only:
+        doc["policy"] = scoped_policy_json(policy, rules, [lb.path for lb in labels])
+        doc["host_local_only_paths"] = rules.in_scope_entries(host_entries)
     return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+@dataclass(frozen=True)
+class MirrorPlan:
+    """What one vault commit's mirror holds, before anything is written to the object store."""
+
+    kept: tuple[TreeEntry, ...]
+    stripped: int
+    labels: tuple[Label, ...]
+    document: bytes
 
 
 class MirrorBuilder:
@@ -466,8 +614,8 @@ class MirrorBuilder:
     def policy(self, rev: str) -> Policy:
         return policy_at(self.vault, rev, self.blobs)
 
-    def tree(self, rev: str, policy: Policy) -> tuple[str, int]:
-        """``(tree sha, files stripped)`` for the mirror of vault commit ``rev``."""
+    def plan(self, rev: str, policy: Policy) -> MirrorPlan:
+        """The mirror of vault commit ``rev``. Reads only."""
         rules = self.rules.with_policy(policy)
         policy_key = hashlib.sha256(json.dumps(policy.to_json(), sort_keys=True).encode()).hexdigest()
         kept: list[TreeEntry] = []
@@ -490,11 +638,16 @@ class MirrorBuilder:
                 label = label_blob(entry.path, entry, policy, self.blobs)
                 self._labels[key] = label
             labels.append(label)
-        doc = policy_document(policy, labels, host_entries=self.host_entries)
-        doc_sha = git(self.vault, "hash-object", "-w", "--stdin", input=doc).stdout.strip()
-        lines = [f"{e.mode} {e.sha}\t{e.path}" for e in kept]
+        doc = policy_document(policy, labels, host_entries=self.host_entries, rules=rules)
+        return MirrorPlan(tuple(kept), stripped, tuple(labels), doc)
+
+    def tree(self, rev: str, policy: Policy) -> tuple[str, int]:
+        """``(tree sha, files stripped)`` for the mirror of vault commit ``rev``."""
+        plan = self.plan(rev, policy)
+        doc_sha = git(self.vault, "hash-object", "-w", "--stdin", input=plan.document).stdout.strip()
+        lines = [f"{e.mode} {e.sha}\t{e.path}" for e in plan.kept]
         lines.append(f"100644 {doc_sha}\t{POLICY_PATH}")
-        return _write_tree(self.vault, lines), stripped
+        return _write_tree(self.vault, lines), plan.stripped
 
 
 def _write_tree(vault: Path, index_lines: Sequence[str]) -> str:
@@ -678,9 +831,18 @@ class LinkState:
     pairs: list[dict[str, str]] = field(default_factory=list)
     confirmed_sync: list[str] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
+    sync_only: list[str] | None = None  # the owner's pinned allowlist; see accept_sync_only
 
     def to_json(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        """The state file's content, without ``sync_only`` when it is unset.
+
+        An older engine refuses a state file with a key it doesn't know. A pinned
+        allowlist it can't enforce should stop it; no other link should.
+        """
+        data = dataclasses.asdict(self)
+        if self.sync_only is None:
+            del data["sync_only"]
+        return data
 
 
 def state_path(vault: Path) -> Path:
@@ -817,6 +979,12 @@ def overlay_gate(policy: Policy) -> None:
             "refused: scout-config.yaml can't be read, so the vault's local-only paths are unknown "
             "(scoutctl kb policy warns privacy-overlay-unreadable). Fix the file, then sync",
         )
+    if SYNC_ONLY_INVALID in policy.warnings:
+        raise RepoSyncError(
+            "sync_only_invalid",
+            "refused: privacy.sync_only in scout-config.yaml isn't a list of vault paths or globs, so nothing can be "
+            "uploaded until it's fixed",
+        )
 
 
 def _trading_name(name: str) -> bool:
@@ -824,11 +992,24 @@ def _trading_name(name: str) -> bool:
     return any(part in folded for part in TRADING_NAME_PARTS)
 
 
+def _uploads_under(vault: Path, folder: str, rules: LocalOnlyRules) -> bool:
+    """Whether any file under ``folder`` would sync, for an allowlist that reaches into it from below."""
+    root = vault / folder
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        if any(not rules.refused((base / name).relative_to(vault).as_posix()) for name in filenames):
+            return True
+    return False
+
+
 def trading_candidates(vault: Path, rules: LocalOnlyRules) -> list[str]:
     """Paths that look like trading/brokerage data and would sync: root-level files and folders at any depth.
 
     Folders come from privacy-migrate's own detector (``trading/**`` style);
     root-level files (``TRADING.md``) use :data:`TRADING_NAME_PARTS`. Sorted.
+    Under an allowlist a folder it keeps home isn't asked about, but one it
+    reaches into is: ``trading/x`` is outside ``trading/reports/**``, and
+    ``trading/reports/q3.md`` is not.
     """
     from scout.scripts.privacy_migrate import local_only_proposals
 
@@ -840,7 +1021,7 @@ def trading_candidates(vault: Path, rules: LocalOnlyRules) -> list[str]:
             out.append(child.name)
     for glob in local_only_proposals(vault):
         folder = glob[:-3] if glob.endswith("/**") else glob
-        if not rules.refused(f"{folder}/x"):
+        if not rules.refused(f"{folder}/x") or (rules.sync_only and _uploads_under(vault, folder, rules)):
             out.append(glob)
     return sorted(dict.fromkeys(out))
 
@@ -945,6 +1126,7 @@ class Result:
     skipped: int = 0
     stripped: int = 0
     notes: list[str] = field(default_factory=list)
+    replay_skipped: list[dict[str, str]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -961,8 +1143,24 @@ def _head(vault: Path) -> str:
     return head
 
 
-def _host_entries_for(policy: Policy) -> list[str]:
-    return [e for e in (host_entry(g) for g in policy.local_only) if e is not None]
+def _host_entries_for(policy: Policy, rules: LocalOnlyRules) -> list[str]:
+    """The vault's Local-Only paths the host may be told about (under an allowlist, only the ones in scope)."""
+    return rules.in_scope_entries(e for e in (host_entry(g) for g in policy.local_only) if e is not None)
+
+
+def _sync_only_mismatch(pinned: Sequence[str], policy: Policy) -> str | None:
+    """What to tell the owner when ``scout-config.yaml``'s list isn't the pinned one, or None when it is."""
+    if policy.sync_only is None:
+        return (
+            "scout-config.yaml has no privacy.sync_only, but this link still uploads only the list pinned here. "
+            "To lift it, run scoutctl repo sync-only --accept"
+        )
+    if set(policy.sync_only) != set(pinned):
+        return (
+            "privacy.sync_only differs from the list pinned here: what it dropped stays home from now on, and what "
+            "it added stays home until you run scoutctl repo sync-only --accept"
+        )
+    return None
 
 
 def link(
@@ -992,7 +1190,8 @@ def link(
             "refused: Agnes won't create a Personal Knowledge Repository for this account "
             "(ask an admin for the knowledge_repository rollout)",
         )
-    wanted = tuple(dict.fromkeys((*status.local_only_paths, *_host_entries_for(policy))))
+    scope = LocalOnlyRules.build([policy], ())
+    wanted = tuple(dict.fromkeys((*status.local_only_paths, *_host_entries_for(policy, scope))))
     rules = LocalOnlyRules.build([policy], wanted)
     trading_gate(vault, rules, confirm_sync)
     if rules.local_only(POLICY_PATH):
@@ -1029,6 +1228,10 @@ def link(
         builder.close()
     meta = commit_meta(vault, head)
     message = f"Scout: link snapshot of {head[:12]}\n\nEarlier history stays on the laptop.\n"
+    if rules.sync_only:
+        message = GENERIC_MESSAGE
+        if existing is not None:
+            notes.append(SYNC_ONLY_HISTORY_NOTE)
     snapshot = _commit_tree(vault, tree, [existing] if existing else [], message, meta.env())
     check_mirror_commits(vault, rules, [snapshot])
     from scout import repo_lease
@@ -1046,6 +1249,7 @@ def link(
             last_mirror=snapshot,
             pairs=[{"laptop": head, "mirror": snapshot, "kind": "snapshot"}],
             confirmed_sync=sorted(set(confirm_sync)),
+            sync_only=None if policy.sync_only is None else list(policy.sync_only),
         ),
     )
     return Result(action="link", pushed=[snapshot], stripped=stripped, notes=notes)
@@ -1094,19 +1298,27 @@ def _merge3(vault: Path, base: TreeEntry, ours: TreeEntry, theirs: TreeEntry) ->
         return proc.stdout, proc.returncode == 0
 
 
-def replay_one(vault: Path, rules: LocalOnlyRules, parent: str, rev: str) -> str | None:
+def replay_one(
+    vault: Path, rules: LocalOnlyRules, parent: str, rev: str, skipped: list[dict[str, str]] | None = None
+) -> str | None:
     """Apply mirror commit ``rev`` (on ``parent``) to the vault as one commit; its sha, or None if empty.
 
     Local-Only paths and the generated policy file are never touched, so a
     server-made commit that drops a newly Local-Only path from the mirror
     leaves the laptop's copy alone. A path the laptop also changed is merged
     three ways; a conflict stops the sync before anything is written, with the
-    merge left in ``<path>.proposed-merge``.
+    merge left in ``<path>.proposed-merge``. A file written outside
+    ``privacy.sync_only`` is listed in ``skipped``: it can't come home, and the
+    sync's push takes it off the mirror's tip.
     """
     head = _head(vault)
     lines: list[str] = []
     for ch in mirror_changes(vault, parent, rev):
-        if ch.path == POLICY_PATH or rules.refused(ch.path):
+        if ch.path == POLICY_PATH:
+            continue
+        if rules.refused(ch.path):
+            if skipped is not None and ch.new is not None and rules.outside_sync_only(ch.path):
+                skipped.append({"path": ch.path, "mirror_commit": rev})
             continue
         ours = _blob_at(vault, head, ch.path)
         if ours == ch.new:
@@ -1200,17 +1412,23 @@ def _sync_under_lease(
         raise RepoSyncError(
             "remote_missing", "refused: the repository on Agnes is gone (erased?); unlink, then link again"
         )
+    result = Result(action="sync")
+    if state.sync_only is None and policy.sync_only is not None:
+        _arm_sync_only(vault, state, policy.sync_only, result)
+    elif state.sync_only is not None and (mismatch := _sync_only_mismatch(state.sync_only, policy)):
+        result.notes.append(mismatch)
+
     host_entries = status.local_only_paths
-    wanted = list(dict.fromkeys((*host_entries, *_host_entries_for(policy))))
+    scope = LocalOnlyRules.build([policy], (), pinned=state.sync_only)
+    wanted = list(dict.fromkeys((*host_entries, *_host_entries_for(policy, scope))))
     if len(wanted) > len(host_entries):
         host_entries = host.set_local_only(wanted)
-    rules = LocalOnlyRules.build([policy], host_entries)
+    rules = LocalOnlyRules.build([policy], host_entries, pinned=state.sync_only)
     confirmed = sorted(set(state.confirmed_sync) | set(confirm_sync))
     trading_gate(vault, rules, confirmed)
     if rules.local_only(POLICY_PATH):
         raise RepoSyncError("policy_path_local_only", f"refused: a Local-Only Path covers {POLICY_PATH}")
 
-    result = Result(action="sync")
     state.confirmed_sync = confirmed
 
     remote = remote_head(vault, host, status.clone_url)
@@ -1227,7 +1445,7 @@ def _sync_under_lease(
         revs = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_mirror}..{remote}").stdout.split()
         parent = state.last_mirror
         for rev in revs:
-            new = replay_one(vault, rules, parent, rev)
+            new = replay_one(vault, rules, parent, rev, result.replay_skipped)
             if new is not None:
                 result.replayed.append(new)
                 state.pairs.append({"laptop": new, "mirror": rev, "kind": "replay"})
@@ -1236,6 +1454,8 @@ def _sync_under_lease(
             state.last_mirror = rev
             parent = rev
             save_state(vault, state)
+        if result.replay_skipped:
+            result.notes.append(_replay_skipped_note(result.replay_skipped))
 
     head = _head(vault)
     replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
@@ -1250,7 +1470,14 @@ def _sync_under_lease(
     pushes: list[tuple[str, str]] = []
     try:
         policies = {c: builder.policy(c) for c in own}
-        squash = bool(result.replayed) or any("privacy-overlay-unreadable" in p.warnings for p in policies.values())
+        if state.sync_only is None:
+            # Added and removed again since the last sync: the removal is no owner step, so it stays armed.
+            pending = next((p.sync_only for p in policies.values() if p.sync_only is not None and not _broken(p)), None)
+            if pending is not None:
+                _arm_sync_only(vault, state, pending, result)
+                rules = LocalOnlyRules.build([policy], host_entries, pinned=state.sync_only)
+                builder.rules = rules
+        squash = bool(result.replayed) or any(_broken(p) for p in policies.values())
         subjects = [commit_meta(vault, c).message.splitlines()[0] for c in own]
         refresh_only = not own
         if squash or refresh_only:
@@ -1269,7 +1496,9 @@ def _sync_under_lease(
                     result.skipped += len(subjects) if squash else 1
                 continue
             meta = commit_meta(vault, c)
-            if not squash:
+            if rules.sync_only:
+                message = GENERIC_MESSAGE  # a laptop subject can name what the allowlist keeps home
+            elif not squash:
                 message = meta.message
             elif subjects:
                 message = f"Scout sync: {len(subjects)} commit(s) from the laptop\n\n" + "".join(
@@ -1293,6 +1522,175 @@ def _sync_under_lease(
     state.last_laptop = head
     save_state(vault, state)
     return result
+
+
+def _broken(policy: Policy) -> bool:
+    """A commit whose config can't be trusted: it goes up squashed, under HEAD's policy, never its own."""
+    return "privacy-overlay-unreadable" in policy.warnings or SYNC_ONLY_INVALID in policy.warnings
+
+
+def _arm_sync_only(vault: Path, state: LinkState, entries: Sequence[str], result: Result) -> None:
+    """Pin an allowlist the link didn't have. Narrowing needs no owner step; lifting it does."""
+    state.sync_only = list(entries)
+    save_state(vault, state)
+    result.notes.append(f"privacy.sync_only is now pinned for this link. {SYNC_ONLY_HISTORY_NOTE}")
+
+
+def _replay_skipped_note(skipped: Sequence[Mapping[str, str]]) -> str:
+    shown = [f"  {s['path']} (git show {s['mirror_commit'][:12]}:{s['path']})" for s in skipped[:REPLAY_SKIPPED_SHOWN]]
+    more = len(skipped) - len(shown)
+    if more:
+        shown.append(f"  and {more} more (--json lists them)")
+    return (
+        f"warning: {len(skipped)} file(s) written in Agnes are outside privacy.sync_only, so they weren't copied to "
+        "this computer and this sync removes them from Agnes's current files. Each one is still in the repository's "
+        "history; to keep one, copy it into the vault:\n" + "\n".join(shown)
+    )
+
+
+def accept_sync_only(vault: Path, *, env: Mapping[str, str] | None = None) -> Result:
+    """Make the link's pinned allowlist what ``scout-config.yaml`` says now: the one way to widen or lift it.
+
+    Refused from a scheduled run. Lifting also waits until no unsynced commit
+    still holds the key, because the next sync would pin it again.
+    """
+    env = os.environ if env is None else env
+    vault = vault.resolve()
+    headless_gate(env, "Changing what uploads")
+    state = load_state(vault)
+    if state is None:
+        raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
+    policy = load_policy(vault)
+    overlay_gate(policy)
+    head = _head(vault)
+    result = Result(action="sync-only")
+    if policy.sync_only is not None:
+        state.sync_only = list(policy.sync_only)
+        result.notes.append(f"pinned privacy.sync_only: {len(policy.sync_only)} entry(ies)")
+    elif state.sync_only is None:
+        result.notes.append("no privacy.sync_only is set, and none is pinned; nothing to do")
+        return result
+    else:
+        if _is_ancestor(vault, state.last_laptop, head):
+            blobs = BlobReader(vault)
+            try:
+                revs = git(vault, "rev-list", f"{state.last_laptop}..{head}").stdout.split()
+                held = any(policy_at(vault, rev, blobs).sync_only is not None for rev in revs)
+            finally:
+                blobs.close()
+            if held:
+                raise RepoSyncError(
+                    "sync_only_pending",
+                    "refused: an unsynced commit still has privacy.sync_only, and the next sync would pin it again. "
+                    "Run scoutctl repo sync first, then lift it",
+                )
+        state.sync_only = None
+        result.notes.append(
+            "lifted privacy.sync_only: the next scoutctl repo sync uploads the whole vault minus Local-Only Paths. "
+            "scoutctl repo preview lists what that is"
+        )
+    save_state(vault, state)
+    return result
+
+
+# ----- preview ---------------------------------------------------------------------------------------
+
+
+@dataclass
+class Preview:
+    """What a link or the next full push would upload from HEAD, worked out without touching Agnes."""
+
+    head: str
+    sync_only: list[str] | None
+    config_sync_only: list[str] | None
+    paths: list[str]
+    by_folder: dict[str, int]
+    kept: int
+    private: int
+    host_local_only_paths: list[str]
+    trading_unconfirmed: list[str]
+
+    @property
+    def total(self) -> int:
+        return len(self.paths)
+
+    def to_json(self, *, with_paths: bool) -> dict[str, Any]:
+        out = {**dataclasses.asdict(self), "total": self.total}
+        if not with_paths:
+            del out["paths"]
+        return out
+
+    def lines(self) -> list[str]:
+        out = [f"From HEAD {self.head[:12]}, this uploads {self.total} file(s) and keeps {self.kept} on this computer."]
+        if self.sync_only is None:
+            out.append("There is no privacy.sync_only, so the whole vault uploads minus Local-Only Paths.")
+        else:
+            out.append(f"Only these are allowed (privacy.sync_only): {', '.join(self.sync_only) or '(nothing)'}")
+        if self.sync_only is not None and self.config_sync_only is None:
+            out.append("scout-config.yaml has no privacy.sync_only; the list above is the one pinned for this link.")
+        elif self.config_sync_only is not None and set(self.config_sync_only) != set(self.sync_only or ()):
+            out.append(
+                f"scout-config.yaml lists {', '.join(self.config_sync_only) or '(nothing)'}; a file must be on both "
+                "lists until you run scoutctl repo sync-only --accept."
+            )
+        out.append("By folder:")
+        out += [f"  {folder}: {count}" for folder, count in sorted(self.by_folder.items())]
+        if self.private:
+            out.append(
+                f"{self.private} private note(s) are among them. Agnes keeps them from other readers, but whoever "
+                "runs the server can read what is pushed."
+            )
+        if "scout-config.yaml" in self.paths:
+            out.append("scout-config.yaml is among them, so the server sees its whole privacy: block, names included.")
+        if self.host_local_only_paths:
+            out.append("Agnes is told these Local-Only Paths: " + ", ".join(self.host_local_only_paths))
+        if self.trading_unconfirmed:
+            out.append("Link or sync will ask about these trading-looking paths first:")
+            out += [f"  {p}" for p in self.trading_unconfirmed]
+        out.append("Agnes's own Local-Only list can keep more home. Nothing was sent; only committed files count.")
+        return out
+
+
+def preview(vault: Path, *, depth: int = 2) -> Preview:
+    """Read-only: no network, no token, nothing written to the vault or its object store."""
+    vault = vault.resolve()
+    state = load_state(vault)
+    policy = load_policy(vault)
+    overlay_gate(policy)
+    head = _head(vault)
+    pinned = state.sync_only if state is not None else None
+    rules = LocalOnlyRules.build([policy], (), pinned=pinned)
+    builder = MirrorBuilder(vault, rules, _host_entries_for(policy, rules))
+    try:
+        plan = builder.plan(head, policy)
+    finally:
+        builder.close()
+    uploaded = sorted([*(e.path for e in plan.kept), POLICY_PATH])
+    by_folder: dict[str, int] = {}
+    for rel in uploaded:
+        folder = "/".join(rel.split("/")[:-1][: max(depth, 1)]) or "."
+        by_folder[folder] = by_folder.get(folder, 0) + 1
+    confirmed = state.confirmed_sync if state is not None else ()
+    return Preview(
+        head=head,
+        sync_only=pinned if pinned is not None else (None if policy.sync_only is None else list(policy.sync_only)),
+        config_sync_only=None if policy.sync_only is None else list(policy.sync_only),
+        paths=uploaded,
+        by_folder=by_folder,
+        kept=plan.stripped,
+        private=sum(1 for label in plan.labels if label.visibility == "private"),
+        host_local_only_paths=builder.host_entries,
+        trading_unconfirmed=[p for p in trading_candidates(vault, rules) if p not in set(confirmed)],
+    )
+
+
+def sync_scope(vault: Path, policy: Policy) -> LocalOnlyRules:
+    """The allowlist alone, for commands that decide what can reach Agnes. No allowlist: nothing is outside it."""
+    try:
+        state = load_state(vault)
+    except RepoSyncError:
+        state = None  # sync refuses this state, so nothing uploads; the live config still narrows
+    return LocalOnlyRules.build([policy], (), pinned=state.sync_only if state is not None else None)
 
 
 # ----- unlink ----------------------------------------------------------------------------------------

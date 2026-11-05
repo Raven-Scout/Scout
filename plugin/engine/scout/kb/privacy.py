@@ -68,6 +68,13 @@ Warning rule ids carried on a :class:`Policy` (from the overlay):
   and one with bad ``kinds`` applies to every kind, and a non-boolean
   ``federation.enabled`` is false. An entry without a string ``glob`` matches
   nothing and is dropped.
+- ``privacy-sync-only-invalid``: ``sync_only`` has the wrong shape or an entry
+  that can't name a vault path. It is kept as an empty list, which uploads
+  nothing, and ``scoutctl repo`` refuses until it is fixed.
+
+``sync_only`` is an upload allowlist for ``scoutctl repo`` (:mod:`scout.repo_sync`
+enforces it). It says nothing about who may read a note, so :func:`classify`
+never looks at it and no label depends on it.
 """
 
 from __future__ import annotations
@@ -185,6 +192,9 @@ class Policy:
     lower of the two first matches (no engine match: ``none``; no overlay match:
     no narrowing), so the overlay can narrow and never widen.
     ``federation_defaults`` comes from the overlay alone.
+
+    ``sync_only`` is None when the overlay has no such key, and a tuple
+    (possibly empty) of globs or plain paths when it does.
     """
 
     local_only_always: tuple[str, ...]
@@ -199,6 +209,7 @@ class Policy:
     federation_ceilings_overlay: tuple[CeilingRule, ...] = ()
     federation_defaults: tuple[ScopeDefault, ...] = ()
     warnings: tuple[str, ...] = ()
+    sync_only: tuple[str, ...] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The policy in ``privacy.yaml``'s shape (``schema_version`` aside).
@@ -207,8 +218,10 @@ class Policy:
         included. Surface ids are sorted (they are sets). The overlay's
         ceilings stay a list of their own, ``federation_ceilings_overlay``,
         because a narrowing entry can't be folded into the engine's list.
+        ``sync_only`` appears only when it is set, so the engine default's
+        snapshot and every other vault's policy hash stay as they were.
         """
-        return {
+        out: dict[str, Any] = {
             "local_only": {
                 "always": list(self.local_only_always),
                 "default": list(self.local_only),
@@ -226,6 +239,9 @@ class Policy:
             "federation_defaults": [d.to_json() for d in self.federation_defaults],
             "warnings": list(self.warnings),
         }
+        if self.sync_only is not None:
+            out["sync_only"] = list(self.sync_only)
+        return out
 
 
 @dataclass(frozen=True)
@@ -384,6 +400,26 @@ def _dedup(items: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(items))
 
 
+def _sync_only_entries(value: Any) -> tuple[str, ...] | None:
+    """A ``sync_only`` value's entries, trimmed and without a leading ``./``; None if it can't be used.
+
+    One bad entry spoils the whole list, because an allowlist the owner mistyped
+    must stop the upload rather than be read as something narrower or wider.
+    """
+    raw = _str_list(value)
+    if raw is None:
+        return None
+    entries: list[str] = []
+    for item in raw:
+        entry = item.strip().replace("\\", "/")
+        while entry.startswith("./"):
+            entry = entry[2:]
+        if not entry or entry.startswith("/") or ".." in entry.split("/"):
+            return None
+        entries.append(entry)
+    return _dedup(entries)
+
+
 def load_policy(vault: Path | None) -> Policy:
     """Engine default merged with ``<vault>/scout-config.yaml → privacy:``.
 
@@ -391,9 +427,9 @@ def load_policy(vault: Path | None) -> Policy:
     mean the engine default. The overlay keys are ``local_only_add``,
     ``visibility_defaults`` (placed before the engine's, so the owner's entry
     wins), ``shared_files_add``, ``surfaces: {owner_only, shared}``,
-    ``federation: {enabled}``, ``federation_ceilings`` (narrowing only) and
-    ``federation_defaults``. Other keys are ignored. See the module docstring
-    for the warnings it records on ``Policy.warnings``.
+    ``federation: {enabled}``, ``federation_ceilings`` (narrowing only),
+    ``federation_defaults`` and ``sync_only``. Other keys are ignored. See the
+    module docstring for the warnings it records on ``Policy.warnings``.
     """
     base = _engine_default()
     if vault is None:
@@ -448,16 +484,19 @@ def _narrowing_overlay(overlay: Any) -> Any:
 
     An allowlist, so a key added later stays out until it is shown to narrow.
     ``shared_files_add`` and ``local_only_add`` only add checks and exclusions;
-    ``federation_ceilings`` can only lower a ceiling; a ``private`` default (or a
-    bad value, kept as ``private``) only adds private notes; ``surfaces.shared``
-    moves a surface to the class that gets checked. Left out: ``normal`` defaults,
-    ``surfaces.owner_only`` (private text may go there), ``federation`` and
-    ``federation_defaults``. A wrong shape passes through, for its warning.
+    ``federation_ceilings`` can only lower a ceiling; ``sync_only`` only keeps
+    paths home; a ``private`` default (or a bad value, kept as ``private``) only
+    adds private notes; ``surfaces.shared`` moves a surface to the class that gets
+    checked. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
+    may go there), ``federation`` and ``federation_defaults``. A wrong shape passes
+    through, for its warning.
     """
     if not isinstance(overlay, Mapping):
         return overlay
     kept = {
-        key: overlay[key] for key in ("local_only_add", "shared_files_add", "federation_ceilings") if key in overlay
+        key: overlay[key]
+        for key in ("local_only_add", "shared_files_add", "federation_ceilings", "sync_only")
+        if key in overlay
     }
     if "visibility_defaults" in overlay:
         entries = overlay["visibility_defaults"]
@@ -583,6 +622,13 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
                     added_defaults.append(default)
             scope_defaults = (*added_defaults, *scope_defaults)
 
+    sync_only: tuple[str, ...] | None = None
+    if "sync_only" in overlay:
+        sync_only = _sync_only_entries(overlay["sync_only"])
+        if sync_only is None:
+            warnings.append("privacy-sync-only-invalid")
+            sync_only = ()
+
     return Policy(
         local_only_always=base.local_only_always,
         local_only=local_only,
@@ -596,6 +642,7 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
         federation_ceilings_overlay=ceilings_overlay,
         federation_defaults=scope_defaults,
         warnings=_dedup(warnings),
+        sync_only=sync_only,
     )
 
 

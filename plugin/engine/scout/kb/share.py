@@ -84,7 +84,7 @@ _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WILDCARDS = re.compile(r"[*?\[]")
 _EVERYONE = "everyone"
 
-ExcludeReason = Literal["private", "local-only", "ceiling", "frontmatter", "earlier-entry"]
+ExcludeReason = Literal["private", "local-only", "outside-sync-only", "ceiling", "frontmatter", "earlier-entry"]
 
 
 class ShareRefused(Exception):
@@ -494,6 +494,7 @@ def _exclude_reason(label: Label, *, below_ceiling: bool) -> ExcludeReason:
 _REASON_TEXT: dict[str, str] = {
     "private": "private (private always wins)",
     "local-only": "local-only (never leaves the laptop)",
+    "outside-sync-only": "outside privacy.sync_only (never reaches Agnes)",
     "ceiling": "its folder can't be shared this widely",
     "frontmatter": "its own federation_scope decides (edit the note to share it)",
     "earlier-entry": "an earlier federation_defaults entry decides",
@@ -626,6 +627,18 @@ def plan_share(
     if not target.folder and not notes:
         notes = [target.rel]
 
+    from scout.repo_sync import sync_scope
+
+    reach = sync_scope(vault, before)
+    if reach.sync_only and (
+        reach.outside_sync_only(target.rel)
+        if not target.folder
+        else all(reach.outside_sync_only(rel) for rel in notes) and not reach.entry_in_scope(target.glob)
+    ):
+        raise ShareRefused(
+            f"refused: {target.rel} is outside privacy.sync_only, so it never reaches Agnes and nobody could read it"
+        )
+
     if target.folder:
         inside = target.rel + "/"
         for prefix in _people_ceiling_folders(before):
@@ -683,6 +696,9 @@ def plan_share(
     plan.enabling = not before.federation_enabled
     plan.changed = data != overlay.data
     for rel in notes:
+        if reach.outside_sync_only(rel):
+            plan.excluded.append((rel, "outside-sync-only"))
+            continue
         old, new = labels_before.get(rel), labels_after.get(rel)
         if new is None:
             continue
@@ -862,9 +878,12 @@ class ShareRow:
 
 def list_shares(vault: Path, policy: Policy | None = None) -> tuple[bool, list[ShareRow]]:
     """``(sharing on, rows)``: each ``federation_defaults`` entry and each self-sharing note, with its notes."""
+    from scout.repo_sync import sync_scope
+
     vault = vault.resolve()
     policy = policy or load_policy(vault)
     labels = _labels(vault, policy, persist=True)
+    reach = sync_scope(vault, policy)
     rows: list[ShareRow] = []
     by_glob: dict[str, ShareRow] = {}
     for d in policy.federation_defaults:
@@ -877,6 +896,10 @@ def list_shares(vault: Path, policy: Policy | None = None) -> tuple[bool, list[S
         label = labels[rel]
         default = first_default(policy, rel)
         row = by_glob.get(default.glob) if default is not None else None
+        if reach.outside_sync_only(rel):
+            if row is not None:
+                row.excluded.setdefault("outside-sync-only", []).append(rel)
+            continue
         if label.federation_source == "frontmatter" and label.federation_scope != "none":
             rows.append(ShareRow(glob=rel, source="frontmatter", principals=_principals_of(label.federation_scope)))
             rows[-1].shared.append(rel)
