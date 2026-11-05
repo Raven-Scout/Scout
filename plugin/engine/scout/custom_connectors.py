@@ -723,6 +723,13 @@ def bash_binaries(vault: Path) -> dict[str, str]:
 # Every server is gated when the file can't be read at all: the hook can't tell
 # which servers a restricted entry names, so it denies every MCP call.
 GATE_ALL = "*"
+# Agnes's read-only tools for notes other people share with this person (Agnes Shared Areas §7).
+# `scoutctl connectors custom allow-shared-notes <key>` lists them on a restricted connector.
+SHARED_READ_TOOLS = ("shared_with_me", "shared_knowledge_search", "shared_knowledge_read")
+SHARED_NOTES_WHEN = (
+    "When a question may be answered by notes a colleague shared with you, find them with these tools. "
+    "They are private to you."
+)
 _GATE_SERVER_RE = re.compile(r"^\s*server:\s*[\"']?([A-Za-z0-9_-]+)", re.MULTILINE)
 _GATE_TOOL_RE = re.compile(r"mcp__([A-Za-z0-9_-]+?)__[A-Za-z0-9_-]+")
 
