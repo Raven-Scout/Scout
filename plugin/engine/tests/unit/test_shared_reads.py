@@ -331,21 +331,22 @@ def test_a_shared_notes_title_or_slug_is_refused(read_vault: Path, text: str) ->
     [
         SENTENCE,
         f'Priya wrote: "{SENTENCE}"',
-        "> the VENDOR missed its **audit deadline**",
-        "the vendor missed its audit deadline",
-        "THE WIDGET ROLLOUT SLIPS TO MARCH",
-        "renegotiate the support contract before the board",
-        "the_vendor_missed_its_audit_deadline",
-        "the%20vendor%20missed%20its%20audit%20deadline",
+        "> March because the VENDOR missed its **audit deadline**. Alex will",
+        "because the vendor missed its audit deadline. Alex will renegotiate",
+        "THE WIDGET ROLLOUT SLIPS TO MARCH BECAUSE THE VENDOR MISSED",
+        "Alex will renegotiate the support contract before the board meets",
+        "march_because_the_vendor_missed_its_audit_deadline_alex_will",
+        "march%20because%20the%20vendor%20missed%20its%20audit%20deadline%20alex%20will",
     ],
     ids=["whole", "quoted", "formatted", "cut", "upper", "second-sentence", "snake", "url-encoded"],
 )
 def test_a_quoted_excerpt_is_refused(read_vault: Path, text: str) -> None:
+    """Ten words in a row of the note (QUOTE_WORDS), across a sentence break too."""
     assert lines(read_vault, text) == [1]
 
 
 def test_a_quote_across_a_line_break_flags_both_lines(read_vault: Path) -> None:
-    assert lines(read_vault, "Fine.\nthe vendor missed\nits audit deadline\nFine.") == [2, 3]
+    assert lines(read_vault, "Fine.\nmarch because the vendor missed\nits audit deadline. Alex will\nFine.") == [2, 3]
 
 
 @pytest.mark.parametrize(
@@ -414,7 +415,6 @@ def test_a_search_snippet_and_its_fenced_title_are_recorded(vault: Path) -> None
 def test_the_listing_records_the_folder(vault: Path) -> None:
     record(vault, "shared_with_me", listing_response())
     assert lines(vault, "It is under knowledge-base/projects/widget now.") == [1]
-    assert lines(vault, "It is under projects/widget now.") == [1]
 
 
 def test_a_structured_answer_is_read_too(vault: Path) -> None:
@@ -523,6 +523,40 @@ def test_a_clean_message_passes_the_real_command(read_vault: Path, tmp_path: Pat
     assert kb(read_vault, "check-outbound", str(draft), "--surface", "slack").exit_code == 0
 
 
+# --- the thresholds, pinned against a held-out corpus ----------------------------------------
+# The ledger never expires, so a false positive on ordinary writing never goes away either. The
+# reader writes about the same projects in the same words; that must still pass (S2a design check).
+
+HELD_OUT = json.loads(
+    (Path(__file__).parent.parent / "fixtures" / "shared-reads" / "held-out-corpus.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.fixture
+def held_out_vault(vault: Path) -> Path:
+    for note in HELD_OUT["shared"]:
+        answer = {**note, "owner_email": HELD_OUT["owner"], "owner_name": "Priya", "frontmatter": {}}
+        shared_reads.record_tool_call(vault, {}, answer)
+    return vault
+
+
+@pytest.mark.parametrize("text", HELD_OUT["ordinary"], ids=[f"ordinary-{i}" for i in range(len(HELD_OUT["ordinary"]))])
+def test_the_readers_own_writing_on_the_same_projects_passes(held_out_vault: Path, text: str) -> None:
+    assert lines(held_out_vault, text) == []
+
+
+@pytest.mark.parametrize("text", HELD_OUT["refused"], ids=[f"refused-{i}" for i in range(len(HELD_OUT["refused"]))])
+def test_a_long_quote_or_close_rewording_is_still_refused(held_out_vault: Path, text: str) -> None:
+    assert lines(held_out_vault, text) == [1]
+
+
+def test_a_shared_folder_matches_only_its_full_path(vault: Path) -> None:
+    """The reader's own vault has the same layout: `projects/widget` there is their own folder."""
+    record(vault, "shared_with_me", listing_response())
+    assert lines(vault, "Moved my notes into projects/widget today.") == []
+    assert lines(vault, "It is under knowledge-base/projects/widget now.") == [1]
+
+
 # --- what check-outbound can't catch ---------------------------------------------------------
 # Stated as tests so a change in the limit shows up here. The phase rule covers these cases, and only it does.
 
@@ -532,7 +566,7 @@ def test_a_clean_message_passes_the_real_command(read_vault: Path, tmp_path: Pat
     [
         "Our launch is running two months late; a supplier didn't pass its review in time.",  # a full paraphrase
         "Widget moves to March.",  # one fact, short
-        "the rollout slips to March",  # a quote under six words
+        "the vendor missed its audit deadline",  # a quote under ten words
         "Das Widget verschiebt sich auf März, weil der Lieferant das Audit verpasst hat.",  # a translation
     ],
     ids=["paraphrase", "single-fact", "short-quote", "translation"],
