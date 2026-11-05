@@ -16,10 +16,12 @@ import pytest
 from scout.kb import outbound, shared_reads
 from tests.unit.privacy_vault_helpers import build_privacy_vault
 
+pytestmark = pytest.mark.perf
+
 NOTES = 500
 WORDS = 3500
-COLD_BUDGET_S = 6.0
-WARM_BUDGET_S = 0.5
+COLD_BUDGET_S = 3.0
+WARM_BUDGET_S = 0.3
 
 
 def _text(rng: random.Random, vocabulary: list[str]) -> str:
@@ -41,16 +43,19 @@ def vault(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_a_long_ledger_stays_inside_the_hook_timeout(vault: Path) -> None:
-    outbound.clear_cache()
+    """Best of three, as the other perf tests do: one slow runner tick isn't a regression."""
     text = "The standup moved to ten, and the widget rollout is on track for the review.\n" * 20
-    start = time.perf_counter()
-    assert outbound.check_outbound(vault, text, "slack") == []
-    cold = time.perf_counter() - start
-    start = time.perf_counter()
-    assert outbound.check_outbound(vault, text, "slack") == []
-    warm = time.perf_counter() - start
-    assert cold < COLD_BUDGET_S, cold
-    assert warm < WARM_BUDGET_S, warm
+    colds, warms = [], []
+    for _ in range(3):
+        outbound.clear_cache()
+        start = time.perf_counter()
+        assert outbound.check_outbound(vault, text, "slack") == []
+        colds.append(time.perf_counter() - start)
+        start = time.perf_counter()
+        assert outbound.check_outbound(vault, text, "slack") == []
+        warms.append(time.perf_counter() - start)
+    assert min(colds) < COLD_BUDGET_S, f"cold check took {min(colds):.2f}s (budget {COLD_BUDGET_S}s)"
+    assert min(warms) < WARM_BUDGET_S, f"warm check took {min(warms):.2f}s (budget {WARM_BUDGET_S}s)"
 
 
 def test_a_hit_is_found_in_a_long_ledger(vault: Path) -> None:

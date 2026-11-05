@@ -271,7 +271,9 @@ def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
 
     Its path, or a trailing part of two segments or more. Its title and slug only
     at three words or more: a note named ``plan`` or ``documents`` must not turn
-    that word into a term (the reader's Slack says "plan" all day).
+    that word into a term (the reader's Slack says "plan" all day). ``pattern``
+    is left out: :func:`with_shared` compiles every shared note's terms as one,
+    since a regex per note was most of a cold hook's time on a long ledger.
     """
     rel = _strip_md(path)
     parts = rel.split("/")
@@ -285,7 +287,7 @@ def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
         terms=terms,
         link_keys=frozenset(keys),
         link_path=rel.casefold(),
-        pattern=_term_regex(terms),
+        pattern=None,
     )
 
 
@@ -325,10 +327,18 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         _shared_note(key, group[0].path, next((r.title for r in group if r.title), None))
         for key, group in merged.items()
     ]
-    notes = (*terms.notes, _CITATION, *shared)
-    any_term = re.compile("|".join(n.pattern.pattern for n in notes if n.pattern is not None))
-    excerpts = ExcerptIndex((key, [s for r in group for s in r.sentences]) for key, group in merged.items())
-    return PrivateTerms(notes=notes, any_term=any_term, excerpts=excerpts)
+    paths = _term_regex(t for n in shared for t in n.terms)
+    together = PrivateNote(
+        path="shared-note-paths",
+        slug="shared-note-paths",
+        terms=(),
+        link_keys=frozenset(),
+        link_path="",
+        pattern=paths,
+    )
+    notes = (*terms.notes, _CITATION, together, *shared)
+    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
+    return PrivateTerms(notes=notes, any_term=re.compile("|".join(patterns)), excerpts=ExcerptIndex(merged))
 
 
 def _link_target(inner: str) -> str:

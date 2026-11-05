@@ -37,14 +37,17 @@ and the conformance corpus Agnes vendors don't change.
 
 from __future__ import annotations
 
+import base64
 import bisect
 import hashlib
 import json
 import math
 import os
 import re
+import sys
 import tempfile
 import unicodedata
+from array import array
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -56,6 +59,7 @@ import yaml
 from scout.kb.privacy import classifier_block, load_frontmatter_yaml, read_head
 
 LEDGER_DIR = ".scout-cache/shared-reads"
+LEDGER_VERSION = 1
 SHARED_SOURCE_PREFIX = "shared:"
 
 QUOTE_WORDS = 6
@@ -82,12 +86,17 @@ class SharedReadsUnreadable(Exception):
 
 @dataclass(frozen=True)
 class SharedRecord:
-    """One answer's worth of one shared note or folder. ``sentences`` holds :func:`_word` hashes."""
+    """One answer's worth of one shared note or folder.
+
+    ``words`` is the text as :func:`_word` hashes, one after another; ``lengths``
+    cuts it into sentences.
+    """
 
     owner: str
     path: str
     title: str | None
-    sentences: tuple[tuple[int, ...], ...]
+    words: Sequence[int] = ()
+    lengths: tuple[int, ...] = ()
     owner_name: str | None = None  # for the label only; never written
 
     @property
@@ -118,39 +127,56 @@ def _word(raw: str) -> int:
     return value if content else -value
 
 
-def sentences_of(text: str) -> tuple[tuple[int, ...], ...]:
-    """``text`` as sentences of word hashes."""
-    out = []
+def words_of(text: str) -> tuple[array[int], tuple[int, ...]]:
+    """``text`` as word hashes and the length of each sentence."""
+    words: array[int] = array("q")
+    lengths: list[int] = []
     for sentence in _SENTENCE_BREAK.split(unicodedata.normalize("NFC", text)):
-        words = tuple(_word(m.group(0)) for m in _TOKEN.finditer(sentence))
-        if words:
-            out.append(words)
-    return tuple(out)
+        before = len(words)
+        words.extend(_word(m.group(0)) for m in _TOKEN.finditer(sentence))
+        if len(words) > before:
+            lengths.append(len(words) - before)
+    return words, tuple(lengths)
 
 
-@dataclass(frozen=True)
 class _Indexed:
-    key: str
-    flat: tuple[int, ...]
-    words: frozenset[int]
-    bags: tuple[frozenset[int], ...]  # sentences with enough content words to be reworded
+    """One shared note's words; its sentence sets are built only when a text could reword one."""
+
+    def __init__(self, key: str, records: Sequence[SharedRecord]) -> None:
+        self.key = key
+        self.flat: array[int] = array("q")
+        self.lengths: list[int] = []
+        for record in records:
+            self.flat.extend(record.words)
+            self.lengths.extend(record.lengths)
+        self.words = frozenset(self.flat)
+        self._bags: list[frozenset[int]] | None = None
+
+    @property
+    def bags(self) -> list[frozenset[int]]:
+        """Sentences with enough content words to be reworded."""
+        if self._bags is None:
+            bags, start = [], 0
+            for length in self.lengths:
+                bag = frozenset(w for w in self.flat[start : start + length] if w > 0)
+                if len(bag) >= REWORD_MIN_CONTENT:
+                    bags.append(bag)
+                start += length
+            self._bags = bags
+        return self._bags
 
 
 class ExcerptIndex:
     """Finds the quotes and close rewordings of shared notes in a text.
 
     It scans from the text, which is short, over a ledger that only grows: a
-    note whose words miss the text's is skipped in one set operation. So a hook
-    with a timeout stays quick on a long-lived vault (``tests/perf``).
+    note whose words miss the text's is skipped in one set operation, and its
+    sentences are looked at only when they could match. So a hook with a timeout
+    stays quick on a long-lived vault (``tests/perf``).
     """
 
-    def __init__(self, records: Iterable[tuple[str, Sequence[Sequence[int]]]]) -> None:
-        self._notes: list[_Indexed] = []
-        for key, sentences in records:
-            flat = tuple(word for sentence in sentences for word in sentence)
-            bags = (frozenset(w for w in sentence if w > 0) for sentence in sentences)
-            kept = tuple(bag for bag in bags if len(bag) >= REWORD_MIN_CONTENT)
-            self._notes.append(_Indexed(key, flat, frozenset(flat), kept))
+    def __init__(self, records: Mapping[str, Sequence[SharedRecord]]) -> None:
+        self._notes = [_Indexed(key, group) for key, group in records.items()]
 
     def hits(self, text: str) -> list[tuple[str, int, int]]:
         """``(record key, first line, last line)``, 0-based, of every quote and close rewording in ``text``."""
@@ -179,7 +205,7 @@ class ExcerptIndex:
             if first_words & note.words:
                 for i in range(len(note.flat) - QUOTE_WORDS + 1):
                     if note.flat[i] in first_words:
-                        span = quotes.get(note.flat[i : i + QUOTE_WORDS])
+                        span = quotes.get(tuple(note.flat[i : i + QUOTE_WORDS]))
                         if span is not None:
                             found.append((note.key, *span))
             for span_words, first, last in spans:
@@ -291,7 +317,7 @@ def _records_from(answer: Any, tool_input: Mapping[str, Any]) -> Iterator[Shared
     if isinstance(answer, str):
         # Plain text: a short one is an error code, a long one is content in a shape nobody expected.
         if len(_TOKEN.findall(answer)) >= QUOTE_WORDS:
-            yield SharedRecord(input_owner, input_path, None, sentences_of(_unfence(answer)))
+            yield SharedRecord(input_owner, input_path, None, *words_of(_unfence(answer)))
         return
     if not isinstance(answer, Mapping) or "error" in answer or "detail" in answer:
         return
@@ -305,20 +331,22 @@ def _records_from(answer: Any, tool_input: Mapping[str, Any]) -> Iterator[Shared
                 if isinstance(folder, Mapping) and _str(folder.get("folder")):
                     name = _str(owner.get("owner_name"))
                     email = _str(owner.get("owner_email")) or input_owner
-                    yield SharedRecord(email, folder["folder"], None, (), name)
+                    yield SharedRecord(email, folder["folder"], None, owner_name=name)
     elif _str(answer.get("path")) and ("text" in answer or "frontmatter" in answer):
         yield _note_record(answer, _text_of([answer.get("text"), answer.get("frontmatter")]), input_owner)
     else:
-        yield SharedRecord(input_owner, input_path, None, sentences_of(_text_of(answer)))
+        yield SharedRecord(input_owner, input_path, None, *words_of(_text_of(answer)))
 
 
 def _note_record(item: Mapping[str, Any], text: str, input_owner: str) -> SharedRecord:
     title = _str(item.get("title"))
+    words, lengths = words_of(text)
     return SharedRecord(
         owner=_str(item.get("owner_email")) or input_owner,
         path=item["path"],
         title=_unfence(title) if title else None,
-        sentences=sentences_of(text),
+        words=words,
+        lengths=lengths,
         owner_name=_str(item.get("owner_name")),
     )
 
@@ -336,10 +364,33 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _pack(words: Sequence[int]) -> str:
+    """Word hashes as little-endian int64, base64: a fifth of the JSON-list size, and decoded in C."""
+    packed = array("q", words)
+    if sys.byteorder == "big":
+        packed.byteswap()
+    return base64.b64encode(packed.tobytes()).decode("ascii")
+
+
+def _unpack(text: str) -> array[int]:
+    packed: array[int] = array("q")
+    packed.frombytes(base64.b64decode(text, validate=True))
+    if sys.byteorder == "big":
+        packed.byteswap()
+    return packed
+
+
 def _write(vault: Path, record: SharedRecord) -> None:
     """Atomically, under a name made of the note and the content: an answer seen twice is one file."""
     body = json.dumps(
-        {"v": 1, "owner": record.owner, "path": record.path, "title": record.title, "sentences": record.sentences},
+        {
+            "v": LEDGER_VERSION,
+            "owner": record.owner,
+            "path": record.path,
+            "title": record.title,
+            "lengths": record.lengths,
+            "words": _pack(record.words),
+        },
         ensure_ascii=False,
     )
     directory = vault / LEDGER_DIR
@@ -378,13 +429,20 @@ def load_ledger(vault: Path) -> list[SharedRecord]:
     for path in files:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            if data["v"] != LEDGER_VERSION:
+                raise ValueError(f"ledger version {data['v']!r}")
             title = data["title"]
+            words = _unpack(data["words"])
+            lengths = tuple(int(n) for n in data["lengths"])
+            if sum(lengths) != len(words):
+                raise ValueError("sentence lengths don't match the words")
             out.append(
                 SharedRecord(
                     owner=str(data["owner"]),
                     path=str(data["path"]),
                     title=title if isinstance(title, str) else None,
-                    sentences=tuple(tuple(int(w) for w in sentence) for sentence in data["sentences"]),
+                    words=words,
+                    lengths=lengths,
                 )
             )
         except (OSError, ValueError, KeyError, TypeError) as e:
@@ -405,8 +463,8 @@ def source_note_records(vault: Path, rels: Iterable[str]) -> list[SharedRecord]:
         if not parsed:
             continue
         try:
-            sentences = sentences_of(path.read_bytes().decode("utf-8", errors="replace"))
+            words, lengths = words_of(path.read_bytes().decode("utf-8", errors="replace"))
         except OSError:
-            sentences = ()
-        out += [SharedRecord(owner, cited, None, sentences) for owner, cited in parsed]
+            words, lengths = array("q"), ()
+        out += [SharedRecord(owner, cited, None, words, lengths) for owner, cited in parsed]
     return out
