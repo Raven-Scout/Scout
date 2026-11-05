@@ -1,8 +1,9 @@
-"""A glob with many ``**`` can't hang the commit hook or the graph commands (#565).
+"""A glob with many ``**`` can't hang the outbound gate, the commit hook or the graph commands (#565).
 
-The regex behind ``glob_match`` used to backtrack without end on these inputs: a
-``git commit`` stuck in its hook, and ``kb stats`` / ``kb validate`` stuck in
-``KnowledgeGraph.load``. Each test also shows the glob is still obeyed, because
+The regex behind ``glob_match`` used to backtrack without end on these inputs: the
+outbound gate gave no answer within its hook's timeout, which lets the send
+through, a ``git commit`` stuck in its hook, and ``kb stats`` / ``kb validate``
+stuck in ``KnowledgeGraph.load``. Each test also shows the glob is still obeyed, because
 dropping or capping a glob would stop the hang too and quietly lift a privacy rule.
 
 Every timed command runs in its own process group, and the whole group is killed
@@ -16,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import resource
+import shlex
 import signal
 import subprocess
 import sys
@@ -47,12 +49,20 @@ def _kill_group(pgid: int) -> None:
         pass
 
 
-def _run_bounded(argv: list[str], cwd: Path, deadline_s: float = DEADLINE_S) -> subprocess.CompletedProcess[str]:
+def _run_bounded(
+    argv: list[str],
+    cwd: Path,
+    deadline_s: float = DEADLINE_S,
+    *,
+    env: dict[str, str] | None = None,
+    stdin: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run ``argv`` in a new process group; fail the test at the deadline, leaving nothing running."""
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
-        env=git_env(),
+        env=git_env() if env is None else env,
+        stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -60,11 +70,11 @@ def _run_bounded(argv: list[str], cwd: Path, deadline_s: float = DEADLINE_S) -> 
         preexec_fn=_limit_cpu,
     )
     try:
-        out, _ = proc.communicate(timeout=deadline_s)
+        out, _ = proc.communicate(input=stdin, timeout=deadline_s)
     except subprocess.TimeoutExpired:
         _kill_group(proc.pid)
         proc.communicate()
-        pytest.fail(f"{argv[1:4]} still running after {deadline_s:.0f} s")
+        pytest.fail(f"{shlex.join(argv)[:100]} still running after {deadline_s:.0f} s")
     finally:
         _kill_group(proc.pid)
     return subprocess.CompletedProcess(argv, proc.returncode, out)
@@ -177,6 +187,60 @@ def test_kb_validate_returns_on_a_many_star_graph_exclude_and_still_excludes(vau
     _exclude_in_schema(vault, [GLOB, GLOB + ".md"])
     report = _run_bounded(argv, vault).stdout
     assert "Kept Note" in report and "Excluded Note" not in report
+
+
+PLUGIN = Path(__file__).resolve().parents[3]
+SEND = "mcp__claude_ai_Slack__slack_send_message"
+RUN = {"SCOUT_MODE": "morning-briefing", "SCOUT_READER": "autonomous"}
+
+
+def _gate_hook() -> tuple[str, float]:
+    """The outbound gate's command and timeout, as hooks.json gives them to Claude Code."""
+    entries = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    (hook,) = [e["hooks"][0] for e in entries if "outbound-gate" in e["hooks"][0]["command"]]
+    return hook["command"], float(hook["timeout"])
+
+
+def _private_by_glob(vault: Path) -> None:
+    """A note private only through a many-star ``visibility_defaults`` glob, beside one it doesn't match."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(f'  visibility_defaults:\n    - {{glob: "{GLOB}.md", visibility: private}}\n')
+    _note(vault, f"knowledge-base/{FOLDER}/keep.md", "Kept Harbor Note")
+    _note(vault, f"knowledge-base/{FOLDER}/notb.md", "Zeta Harbor Plan")
+
+
+def _gate(vault: Path, message: str, run: dict[str, str]) -> dict | None:
+    """The gate's answer through the real hooks.json command, which must come before Claude Code's timeout."""
+    command, timeout_s = _gate_hook()
+    clean = {k: v for k, v in git_env().items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
+    env = {**clean, **run, "SCOUT_DATA_DIR": str(vault), "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
+    payload = json.dumps({"tool_name": SEND, "tool_input": {"text": f"Briefing.\n- {message}"}, "cwd": str(vault)})
+    proc = _run_bounded(["sh", "-c", command], vault, timeout_s, env=env, stdin=payload)
+    assert proc.returncode == 0, proc.stdout
+    assert "ran out of time" not in proc.stdout  # an answer, not the gate's own deadline
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
+
+def test_the_outbound_gate_denies_a_run_on_a_many_star_visibility_glob(vault: Path) -> None:
+    _private_by_glob(vault)
+    out = _gate(vault, "Zeta Harbor Plan is on track.", RUN)
+    assert out is not None
+    decision = out["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "line 2" in decision["permissionDecisionReason"] and "private note" in decision["permissionDecisionReason"]
+
+
+def test_the_outbound_gate_warns_the_owner_on_a_many_star_visibility_glob(vault: Path) -> None:
+    _private_by_glob(vault)
+    out = _gate(vault, "Zeta Harbor Plan is on track.", {})
+    assert out is not None and "Privacy warning" in out["systemMessage"]
+    assert "permissionDecision" not in out["hookSpecificOutput"]
+
+
+def test_the_outbound_gate_lets_a_run_name_the_note_the_glob_misses(vault: Path) -> None:
+    """The glob still matches only what it did: the near miss, never private, goes through."""
+    _private_by_glob(vault)
+    assert _gate(vault, "Kept Harbor Note is on track.", RUN) is None
 
 
 def test_the_matcher_returns_on_far_worse_input_than_the_issues(tmp_path: Path) -> None:
