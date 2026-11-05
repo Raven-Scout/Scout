@@ -39,6 +39,10 @@ private note (a term spanning lines only when every line carries the marker).
 Sends pass ``allow_markers=False``: a marker is not a send pass (spec §8.2),
 and since the marker itself names the slug, such a line is a hit.
 
+**Notes shared with this person** (Agnes Shared Areas §7): :func:`with_shared`
+adds their paths, long titles, quotes and close rewordings, whatever the vault's
+own sharing switch says. :mod:`scout.kb.shared_reads` says how and what it can't see.
+
 A result is only ever line numbers: no function here returns the matched term,
 the note or its path to a caller that would print it.
 """
@@ -66,8 +70,17 @@ from scout.kb.privacy import (
     surface_class,
 )
 from scout.kb.read import Output, UsageError, all_labels, policy_hash
+from scout.kb.shared_reads import (
+    LEDGER_DIR,
+    ExcerptIndex,
+    SharedReadsUnreadable,
+    SharedRecord,
+    load_ledger,
+    source_note_records,
+)
 
 MIN_TERM_CHARS = 4
+MIN_SHARED_NAME_WORDS = 3
 
 _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 # The one definition of the lint override marker (spec §8.2): ``%%privacy:allow <slug>%%``,
@@ -108,12 +121,25 @@ class PrivateNote:
         return False
 
 
+# The citing form a run writes (`<owner>'s shared note <path>`, `source: shared:<owner-email>:<path>`):
+# refused on a shared surface with nothing recorded, so a citation pasted from the daily file can't pass.
+_CITATION = PrivateNote(
+    path="shared-note-citation",
+    slug="shared-note-citation",
+    terms=(),
+    link_keys=frozenset(),
+    link_path="",
+    pattern=re.compile(r"['’]s shared note(?![^\W_])|(?<![^\W_])shared:[^\s:@]+@[^\s:@]+:\S"),
+)
+
+
 @dataclass(frozen=True)
 class PrivateTerms:
     """Every private note's terms and link keys (what :func:`find_mentions` consumes)."""
 
     notes: tuple[PrivateNote, ...]
     any_term: re.Pattern[str] | None  # a fast pre-check: any note's term
+    excerpts: ExcerptIndex | None = None  # quotes of notes shared with this person (with_shared)
 
     def __bool__(self) -> bool:
         return bool(self.notes)
@@ -193,11 +219,13 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
 
 
 _CACHE: dict[str, tuple[Any, PrivateTerms]] = {}
+_SHARED_CACHE: dict[str, tuple[Any, PrivateTerms]] = {}
 
 
 def clear_cache() -> None:
     """Forget the per-process term lists (tests)."""
     _CACHE.clear()
+    _SHARED_CACHE.clear()
 
 
 def _stat(path: Path) -> tuple[int, int, int] | None:
@@ -232,6 +260,75 @@ def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
         seen.setdefault((n.path, n.terms, n.link_keys), n)
     kept = tuple(seen.values())
     return PrivateTerms(notes=kept, any_term=_term_regex(t for n in kept for t in n.terms))
+
+
+def _words(text: str) -> int:
+    return len([w for w in _SPLIT.split(text) if w])
+
+
+def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
+    """The matchable forms of a note or folder someone shared with this person.
+
+    Its path, or a trailing part of two segments or more. Its title and slug only
+    at three words or more: a note named ``plan`` or ``documents`` must not turn
+    that word into a term (the reader's Slack says "plan" all day).
+    """
+    rel = _strip_md(path)
+    parts = rel.split("/")
+    slug = parts[-1]
+    names = [n for n in (title, slug) if n and _words(n) >= MIN_SHARED_NAME_WORDS]
+    terms = tuple(dict.fromkeys(["/".join(parts[i:]) for i in range(len(parts) - 1)] + names))
+    keys = {slug.casefold(), path.rsplit("/", 1)[-1].casefold()} if slug in names else set()
+    return PrivateNote(
+        path=key,
+        slug=slug,
+        terms=terms,
+        link_keys=frozenset(keys),
+        link_path=rel.casefold(),
+        pattern=_term_regex(terms),
+    )
+
+
+def with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
+    """``terms`` plus what this person has read of other people's shared notes, and the citing form.
+
+    Raises :class:`~scout.kb.shared_reads.SharedReadsUnreadable` when the ledger
+    can't be read, so a caller fails closed. ``source:`` of the private notes
+    in ``terms`` counts too, so a cleared cache keeps what was filed in the vault.
+    Cached per process like :func:`private_terms`: the outbound gate checks a tool
+    call's every field, and the ledger only grows.
+    """
+    root = vault.resolve()
+    ledger = root / LEDGER_DIR
+    try:
+        entries = sorted(p.name for p in ledger.iterdir())
+    except OSError:
+        entries = []
+    signature = (
+        tuple((name, _stat(ledger / name)) for name in entries),
+        tuple((n.path, _stat(root / n.path)) for n in terms.notes),
+    )
+    cached = _SHARED_CACHE.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    merged_terms = _with_shared(terms, root)
+    _SHARED_CACHE[str(root)] = (signature, merged_terms)
+    return merged_terms
+
+
+def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
+    records = [*load_ledger(vault), *source_note_records(vault, (n.path for n in terms.notes))]
+    merged: dict[str, list[SharedRecord]] = {}
+    for record in records:
+        merged.setdefault(record.key, []).append(record)
+    shared = [
+        _shared_note(key, group[0].path, next((r.title for r in group if r.title), None))
+        for key, group in merged.items()
+    ]
+    notes = (*terms.notes, _CITATION, *shared)
+    any_term = re.compile("|".join(n.pattern.pattern for n in notes if n.pattern is not None))
+    excerpts = ExcerptIndex((key, [s for r in group for s in r.sentences]) for key, group in merged.items())
+    return PrivateTerms(notes=notes, any_term=any_term, excerpts=excerpts)
 
 
 def _link_target(inner: str) -> str:
@@ -273,6 +370,8 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
         for note in terms.notes:
             if note.pattern is not None:
                 found += [(note.path, line(m.start()), line(m.end() - 1)) for m in note.pattern.finditer(folded)]
+    if terms.excerpts is not None:
+        found += terms.excerpts.hits(text)
     return found
 
 
@@ -345,7 +444,14 @@ def check_outbound(vault: Path, text: str, surface: str) -> list[int]:
     policy = load_policy(root)
     if is_owner_only(policy, surface):
         return []
-    return find_mentions(text, private_terms(root, policy), allow_markers=False)
+    return find_mentions(text, with_shared(private_terms(root, policy), root), allow_markers=False)
+
+
+def _checked(vault: Path, text: str, surface: str) -> list[int]:
+    try:
+        return check_outbound(vault, text, surface)
+    except SharedReadsUnreadable as e:
+        raise UsageError(str(e)) from e
 
 
 def _refuse_agents(reader: str) -> None:
@@ -359,6 +465,7 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
     """``kb check-outbound``: exit 1 with the offending line numbers, else 0 (``ok``).
 
     A file that can't be read is a ``UsageError`` (exit 2); its content is never echoed.
+    So is a ledger of shared reads that can't be read: the check can't say what it covers.
     """
     _refuse_agents(reader)
     try:
@@ -366,7 +473,7 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
             text = fh.read().decode("utf-8", errors="replace")  # bad UTF-8 never skips the check
     except OSError as e:
         raise UsageError(f"can't read {path}: {e.strerror or type(e).__name__}") from e
-    lines = check_outbound(vault, text, surface)
+    lines = _checked(vault, text, surface)
     if lines:
         return Output(
             data={"ok": False, "lines": lines},
@@ -381,6 +488,6 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
 def cmd_check_query(vault: Path, reader: str, text: str, surface: str) -> Output:
     """``kb check-query``: exit 1 and ``blocked`` when the query names a private note, else 0 (``ok``)."""
     _refuse_agents(reader)
-    if check_outbound(vault, text, surface):
+    if _checked(vault, text, surface):
         return Output(data={"ok": False}, lines=["blocked"], code=1, surface=surface, blocked=True)
     return Output(data={"ok": True}, lines=["ok"], surface=surface)

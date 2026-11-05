@@ -324,6 +324,17 @@ Agnes can host a private copy of the vault, which Agnes calls your **Personal Kn
 
 **Link refuses** until `/scout-update` has walked you through the privacy step, while `scout-config.yaml` can't be read, and while a root-level file or a folder that looks like trading or brokerage data (`TRADING.md`, `portfolio.csv`, `brokerage/`) would sync: make it local-only (`scoutctl bootstrap privacy-migrate --local-only '<path>'`) or confirm it once with `--confirm-sync '<path>'`. Sync re-checks the last two every time.
 
+### Reading what colleagues share with you
+
+A colleague can share a folder or a note of their Agnes repository with you. Your Scout reads it through your Agnes connector:
+
+1. Connect Agnes as a custom connector on a **personal access token** (`/scout-connect`). Agnes doesn't offer these tools to a connector signed in through its OAuth flow.
+2. If the connector has `restrict_tools: true`, run `scoutctl connectors custom allow-shared-notes <key>` (`/scout-update` offers it). It adds the three read-only tools and nothing else. Without `restrict_tools`, the connector can already call them.
+
+**What it reads stays private to you**, on the same surfaces as your own private notes, and that doesn't depend on your own sharing being on. A run cites it as `<owner>'s shared note <path>` with a short excerpt. A note it files from one carries `source: shared:<owner-email>:<path>` and `visibility: private`; `kb lint` blocks one that isn't private, and blocks one in anything you share. Agnes shows the owner which notes you were shown, never what you searched for.
+
+**What `check-outbound` refuses and what it can't.** It refuses the note's path, a title of three words or more, a quote of six words or more, a close rewording and the citing form, on every shared surface. It can't see a paraphrase in other words, a single fact, a shorter quote, a translation, or a read made where the hook doesn't run (the `agnes` CLI in a shell, another computer). The phase rule tells a run not to write those, but that is an instruction, not a check. What you've read can't be recalled, by you or the owner; removing a share stops future reads only.
+
 ## Budget System
 
 Scout includes a budget tracking and rate limit detection system:

@@ -42,7 +42,16 @@ Rules:
 
 A note with an effective share (Stage 2, a ``federation_defaults`` entry with
 sharing on) is a shared file too: :attr:`Label.shared_file` says so, so the two
-blocking checks cover it (Agnes #6090 §4).
+blocking checks cover it (Agnes #6090 §4). Those checks also refuse the path and
+text of notes other people shared with this person (:mod:`scout.kb.shared_reads`).
+
+**Provenance** (Agnes #6090 §7): a staged note whose ``source:`` starts with
+``shared:`` was built from someone's shared note, wherever it lives, and whatever
+this vault's own sharing switch says. ``shared-source-private`` blocks one that
+isn't private; an explicit ``visibility: normal`` is the owner's call (a warning)
+and blocks only in a scheduled run. ``shared-source-reshared`` (**block**, always)
+refuses one in a shared file. ``shared-source-malformed`` warns. Other ``source:``
+values are left alone. The classifier never reads ``source:``, so labels don't change.
 
 No message names a private note, its title or a matched term: findings carry
 the staged file, a line number and the rule id. The hook runs
@@ -82,6 +91,7 @@ from scout.kb.outbound import (
     note_from_text,
     private_terms,
     terms_of,
+    with_shared,
 )
 from scout.kb.privacy import (
     FederationScope,
@@ -98,6 +108,7 @@ from scout.kb.privacy import (
     read_head,
 )
 from scout.kb.read import all_labels, policy_hash
+from scout.kb.shared_reads import parse_shared_source, shared_sources
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -108,7 +119,13 @@ _HINT_ALLOW = "remove it, or (owner only) add %%privacy:allow <note-slug>%% on t
 _MESSAGES = {
     "private-link": "line {n} links a private note, and this file is shared — " + _HINT_ALLOW + " (a note made "
     "normal in this same commit still counts as private: commit that change first)",
-    "private-mention": "line {n} names a private note, and this file is shared — " + _HINT_ALLOW,
+    "private-mention": "line {n} names a private note or quotes a note shared with you, and this file is shared — "
+    + _HINT_ALLOW,
+    "shared-source-private": "this note cites a note someone shared with you (source: shared:…), so it stays "
+    "visibility: private; only the owner of this vault may choose otherwise",
+    "shared-source-reshared": "this note cites a note someone shared with you (source: shared:…), and this file is "
+    "shared — your sharing must not pass on theirs; move it out of the shared file or the share",
+    "shared-source-malformed": "source: shared: isn't shared:<owner-email>:<vault path>",
     "visibility-value": "visibility isn't normal/private (the note counts as private), "
     "or federation_scope doesn't parse (it counts as none)",
     "privacy-contradiction": "visibility: private with a federation_scope other than none",
@@ -231,7 +248,7 @@ def _union_terms(ctx: _Ctx) -> PrivateTerms:
             window = _head_window(rel, text)
             if classify(rel, window, policy).visibility == "private":
                 notes.append(note_from_text(rel, window))
-    return terms_of(notes)
+    return with_shared(terms_of(notes), repo)
 
 
 def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
@@ -252,7 +269,7 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             if not _md(rel):
                 continue
             staged = staged_text_lossy(repo, rel)
-            if _facts(rel, staged).declared == "none":
+            if _facts(rel, staged).declared == "none" and not shared_sources(_head_window(rel, staged)):
                 continue  # R23: a note declaring federation_scope is shared wherever it lives
         out += _file_findings(ctx, sp, staged if staged is not None else staged_text_lossy(repo, rel))
     if ctx.scheduled and ctx.config_removed and _privacy_block(_config_data(ctx.head_config)) is not None:
@@ -273,6 +290,7 @@ def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
         head_facts = _facts(sp.head_rel, head_text)
         head_label = label_from_facts(sp.head_rel, head_facts, ctx.head_policy)
 
+    out += _provenance_findings(ctx, rel, staged, facts, label)
     if ctx.is_shared(rel, label):
         # A file that wasn't shared at HEAD (or didn't exist) has every line checked.
         was_shared = (
@@ -282,6 +300,25 @@ def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
         out += _shared_findings(ctx, rel, staged, added_line_numbers(base, staged))
     if ctx.scheduled:
         out += _widening(ctx, sp, staged, facts, label, head_text, head_facts, head_label)
+    return out
+
+
+def _provenance_findings(ctx: _Ctx, rel: str, staged: str, facts: NoteFacts, label: Label) -> list[Finding]:
+    """A note built from someone's shared note stays private and out of the reader's own sharing (Agnes §7)."""
+    sources = shared_sources(_head_window(rel, staged))
+    if not sources:
+        return []
+    out: list[Finding] = []
+
+    def finding(check: str, blocking: bool) -> None:
+        out.append(Finding(rel, check, blocking, _MESSAGES[check]))
+
+    if any(parse_shared_source(s) is None for s in sources):
+        finding("shared-source-malformed", False)
+    if ctx.is_shared(rel, label):
+        finding("shared-source-reshared", True)
+    if label.visibility != "private":
+        finding("shared-source-private", ctx.scheduled or facts.visibility != "normal")
     return out
 
 
@@ -454,13 +491,15 @@ def privacy_report(repo: Path) -> PrivacyReport:
             for w in label.warnings
             if w in LABEL_WARNINGS
         ]
+        if _md(rel) and label.visibility != "private" and shared_sources(read_head(path)[0]):
+            rep.problems.append((rel, "shared-source-private", "warn"))
         if not label.shared_file:
             continue
         text = path.read_bytes().decode("utf-8", errors="replace")
         for n, line in enumerate(text.split("\n"), 1):
             rep.markers += [(rel, n, target) for target in markers(line)]
         if terms is None:
-            terms = private_terms(repo, policy)
+            terms = with_shared(private_terms(repo, policy), repo)
         rep.unmarked += [(rel, n) for n in find_mentions(text, terms, allow_markers=True)]
     return rep
 

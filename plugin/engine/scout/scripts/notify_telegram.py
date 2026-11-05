@@ -242,6 +242,7 @@ def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
     from scout.kb.outbound import check_outbound
     from scout.kb.read_log import log_event
     from scout.kb.reader import resolve_reader
+    from scout.kb.shared_reads import SharedReadsUnreadable
 
     vault = _guard_vault()
     if vault is None:
@@ -249,10 +250,13 @@ def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
             "refused — the target is a group or channel, and no Scout vault was found to check the message "
             "against (run inside the vault, or set SCOUT_DATA_DIR)"
         )
-    found = set(check_outbound(vault, body, surface))
-    if parse_mode == "html":
-        # What Telegram shows: tags stripped, entities decoded (`Sam<b></b>my`, `&#83;ammy`).
-        found |= set(check_outbound(vault, html.unescape(_TAG_RE.sub("", body)), surface))
+    try:
+        found = set(check_outbound(vault, body, surface))
+        if parse_mode == "html":
+            # What Telegram shows: tags stripped, entities decoded (`Sam<b></b>my`, `&#83;ammy`).
+            found |= set(check_outbound(vault, html.unescape(_TAG_RE.sub("", body)), surface))
+    except SharedReadsUnreadable as e:
+        raise OutboundBlockedError(f"refused — the target is a group or channel, and the check can't run: {e}") from e
     lines = sorted(found)
     if not lines:
         return
