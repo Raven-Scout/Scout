@@ -269,7 +269,8 @@ def _words(text: str) -> int:
 def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
     """The matchable forms of a note or folder someone shared with this person.
 
-    Its path, or a trailing part of two segments or more. Its title and slug only
+    A note: its path, or a trailing part of two segments or more. A folder: its full
+    path only. Its title and slug only
     at three words or more: a note named ``plan`` or ``documents`` must not turn
     that word into a term (the reader's Slack says "plan" all day). ``pattern``
     is left out: :func:`with_shared` compiles every shared note's terms as one,
@@ -278,6 +279,10 @@ def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
     rel = _strip_md(path)
     parts = rel.split("/")
     slug = parts[-1]
+    if not path.lower().endswith(".md"):
+        # A folder from `shared_with_me`: the reader's vault has the same layout, so `projects/widget`
+        # is likely their own folder too. Only the full path names the owner's.
+        return PrivateNote(path=key, slug=slug, terms=(rel,), link_keys=frozenset(), link_path="", pattern=None)
     names = [n for n in (title, slug) if n and _words(n) >= MIN_SHARED_NAME_WORDS]
     terms = tuple(dict.fromkeys(["/".join(parts[i:]) for i in range(len(parts) - 1)] + names))
     keys = {slug.casefold(), path.rsplit("/", 1)[-1].casefold()} if slug in names else set()

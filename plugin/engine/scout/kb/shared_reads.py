@@ -21,13 +21,15 @@ is what lets ``kb check-outbound`` recognise it:
 accents, punctuation and Markdown don't count, and plurals and verb endings are
 cut. A *quote* is :data:`QUOTE_WORDS` words in a row of the note, at least
 :data:`QUOTE_MIN_CONTENT` of them content words, so a stock phrase isn't one. A
-*close rewording* is a sentence holding at least :data:`REWORD_SHARE` of the
-content words of one of the note's sentences (:data:`REWORD_MIN_CONTENT` at
-least), in any order. Terms for the path and title are built in
-:func:`scout.kb.outbound.with_shared`.
+*close rewording* is a run of words, at most :data:`REWORD_WINDOW` times as long
+as one of the note's sentences, holding at least :data:`REWORD_SHARE` of that
+sentence's content words (:data:`REWORD_MIN_CONTENT` at least), in any order. The
+window keeps a long paragraph from collecting a short sentence's words by chance.
+Both thresholds are pinned against ``tests/fixtures/shared-reads/held-out-corpus.json``.
+Terms for the path and title are built in :func:`scout.kb.outbound.with_shared`.
 
 **What it can't see.** A paraphrase in other words, a single fact, a quote under
-six words, a translation, and anything read where the hook doesn't run (the
+ten words, a translation, and anything read where the hook doesn't run (the
 ``agnes`` CLI in a shell, another computer, a cleared cache with nothing filed in
 the vault). The phase rule covers those, and only it does.
 
@@ -65,10 +67,13 @@ SHARED_SOURCE_PREFIX = "shared:"
 # no path to refuse, and the hook says so.
 UNKNOWN_PATH = "unknown"
 
-QUOTE_WORDS = 6
+# Pinned against tests/fixtures/shared-reads/held-out-corpus.json: at 6 words, a reader writing about the
+# same project in the same words was refused (S2a design check: 12 of 60 unshared docs flagged; at 10, 1).
+QUOTE_WORDS = 10
 QUOTE_MIN_CONTENT = 3
 REWORD_MIN_CONTENT = 5
 REWORD_SHARE = 0.7
+REWORD_WINDOW = 2  # a rewording sits within twice its sentence's length, not anywhere in a long paragraph
 
 _TOKEN = re.compile(r"[^\W_]+")
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n\s*\n|\n\s*(?:[-*+]|\d+\.|#+)\s+")
@@ -153,20 +158,40 @@ class _Indexed:
             self.flat.extend(record.words)
             self.lengths.extend(record.lengths)
         self.words = frozenset(self.flat)
-        self._bags: list[frozenset[int]] | None = None
+        self._bags: list[tuple[frozenset[int], int]] | None = None
 
     @property
-    def bags(self) -> list[frozenset[int]]:
-        """Sentences with enough content words to be reworded."""
+    def bags(self) -> list[tuple[frozenset[int], int]]:
+        """``(content words, length in words)`` of the sentences with enough content words to be reworded."""
         if self._bags is None:
             bags, start = [], 0
             for length in self.lengths:
                 bag = frozenset(w for w in self.flat[start : start + length] if w > 0)
                 if len(bag) >= REWORD_MIN_CONTENT:
-                    bags.append(bag)
+                    bags.append((bag, length))
                 start += length
             self._bags = bags
         return self._bags
+
+
+def _reworded(tokens: Sequence[tuple[int, int]], bag: frozenset[int], length: int) -> tuple[int, int] | None:
+    """The lines of the first window of ``REWORD_WINDOW * length`` words in ``tokens`` holding enough of ``bag``."""
+    need = max(REWORD_MIN_CONTENT, math.ceil(REWORD_SHARE * len(bag)))
+    width = max(REWORD_WINDOW * length, need)
+    counts: dict[int, int] = {}
+    for end, (word, _line) in enumerate(tokens):
+        if word in bag:
+            counts[word] = counts.get(word, 0) + 1
+        start = end - width
+        if start >= 0:
+            old = tokens[start][0]
+            if old in counts:
+                counts[old] -= 1
+                if not counts[old]:
+                    del counts[old]
+        if len(counts) >= need:
+            return tokens[max(start + 1, 0)][1], tokens[end][1]
+    return None
 
 
 class ExcerptIndex:
@@ -200,9 +225,8 @@ class ExcerptIndex:
         first_words = {window[0] for window in quotes}
         sentences: dict[int, list[tuple[int, int]]] = {}
         for word, line, sentence in tokens:
-            if word > 0:
-                sentences.setdefault(sentence, []).append((word, line))
-        spans = [(frozenset(w for w, _ in members), members[0][1], members[-1][1]) for members in sentences.values()]
+            sentences.setdefault(sentence, []).append((word, line))
+        spans = [(frozenset(w for w, _ in members if w > 0), members) for members in sentences.values()]
         found: list[tuple[str, int, int]] = []
         for note in self._notes:
             if first_words & note.words:
@@ -211,14 +235,16 @@ class ExcerptIndex:
                         span = quotes.get(tuple(note.flat[i : i + QUOTE_WORDS]))
                         if span is not None:
                             found.append((note.key, *span))
-            for span_words, first, last in spans:
+            for span_words, members in spans:
                 if len(span_words & note.words) < REWORD_MIN_CONTENT:
                     continue
-                if any(
-                    len(span_words & bag) >= max(REWORD_MIN_CONTENT, math.ceil(REWORD_SHARE * len(bag)))
-                    for bag in note.bags
-                ):
-                    found.append((note.key, first, last))
+                for bag, length in note.bags:
+                    if len(span_words & bag) < max(REWORD_MIN_CONTENT, math.ceil(REWORD_SHARE * len(bag))):
+                        continue
+                    lines = _reworded(members, bag, length)
+                    if lines is not None:
+                        found.append((note.key, *lines))
+                        break
         return found
 
 
