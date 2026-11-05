@@ -67,7 +67,7 @@ Check DMs received by {{USER_NAME}} from frequent contacts. Inbound DMs often co
 
 ### Replies on {{INSTANCE_NAME}}'s Own DM Threads (mandatory)
 
-{{USER_NAME}} often replies *inside the thread* of a {{INSTANCE_NAME}} notification DM rather than starting a new message — those replies are invisible to a flat DM/mention search and silently drop task-asks. For **every** message {{INSTANCE_NAME}} (the bot) sent into the `{{USER_SLACK_ID}}` DM within the lookback window, call `slack_read_thread` on that message's timestamp and read all replies. This mirrors the dreaming Step 1a feedback harvest, but here the goal is **action items**: any reply that asks {{INSTANCE_NAME}} to do something, corrects a fact, or assigns a task becomes a candidate action item (a direct task-ask is 🔴 for today).
+{{USER_NAME}} often replies *inside the thread* of a {{INSTANCE_NAME}} notification DM rather than starting a new message — those replies are invisible to a flat DM/mention search and silently drop task-asks. For **every** message {{INSTANCE_NAME}} (the bot) sent into the `{{USER_SLACK_ID}}` DM within the lookback window, call `slack_read_thread` on that message's timestamp and read all replies. Once the Scout Slack app is installed (`~/.scout-secrets/slack-bot-token` exists), wraps live in {{USER_NAME}}'s DM with the **Scout** app, not the self-DM: read that conversation too (the `dm_channel` in a `scoutctl notify slack` send's stdout, or the `notification.sent` event with `source: cli:notify_slack`), and keep reading the self-DM for older wraps. This mirrors the dreaming Step 1a feedback harvest, but here the goal is **action items**: any reply that asks {{INSTANCE_NAME}} to do something, corrects a fact, or assigns a task becomes a candidate action item (a direct task-ask is 🔴 for today).
 
 **Coverage assertion:** do not claim "0 inbound" / "quiet window" until you have confirmed every in-window bot DM had its thread read. State the count checked (e.g., "read threads on 4 bot DMs since last run") so the coverage is auditable.
 
@@ -198,6 +198,21 @@ requires: slack
 ## Slack Notification
 
 Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
+
+### Send it as Scout when the Scout app is installed
+
+If `~/.scout-secrets/slack-bot-token` exists, send the DM **as the Scout app bot**, not through the Slack connector (which posts as {{USER_NAME}}, into their self-DM, with no phone notification). Write the body to stdin with a quoted heredoc; the command runs the same outbound check itself, so the draft-file step above is optional here:
+
+```bash
+scoutctl notify slack --body-file - <<'SCOUT_WRAP'
+Scout consolidation complete.
+- Action items: 3 new, 2 completed, 5 carried forward
+SCOUT_WRAP
+```
+
+- **Replying to {{USER_NAME}}'s thread replies:** a reply under a Scout bot DM is answered in that thread with `scoutctl notify slack --thread-ts <parent ts> --body-file -`. The parent ts is the bot message's ts (stdout JSON `payload.ts` of the send that posted it, or the thread's parent as `slack_read_thread` shows it).
+- Exit 4 means the outbound check dropped it: fix the body, never resend it through the connector. Exit 10 (no token / no `user.slack_user_id`) or exit 2 (Slack refused): send this one DM through the connector as before, and say in the wrap that the Scout app send failed.
+- With no token file, use the connector (`slack_send_message` to `{{USER_SLACK_ID}}`) as before.
 
 **Send this DM even when SKILL.md also has a Telegram Notification section:** the wrap then goes to both, and this DM still carries non-private items only. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a notification section, so if this section is here, send it.
 

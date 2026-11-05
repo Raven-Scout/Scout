@@ -1,0 +1,36 @@
+{
+  "_metadata": {
+    "major_version": 2,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "Scout",
+    "description": "Your Scout run summaries and replies, posted by Scout instead of as you.",
+    "long_description": "Scout is an autonomous briefing and knowledge-management assistant that runs on your own Mac. This app gives it its own Slack identity: run summaries and replies to your feedback arrive as direct messages from Scout, so they notify you and never look like messages you wrote. The app can only post; it cannot read channels or messages. Source: https://github.com/Raven-Scout/Scout",
+    "background_color": "#1d2b36"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Scout",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "im:write"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

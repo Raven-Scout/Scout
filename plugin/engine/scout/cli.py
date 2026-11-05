@@ -2421,14 +2421,14 @@ _register_triggers()
 
 
 def _register_notify() -> None:
-    """scoutctl notify {telegram} — outbound notification commands.
+    """scoutctl notify {telegram,slack} — outbound notification commands.
 
     `notify:telegram` is registered in connectors.yaml with capabilities=[outbound].
     The Claude session calls `scoutctl notify telegram` from inside its prompt at
     session-wrap time (Bash tool). Plan 7 will Pythonize the runner; for v0.4 the
     CLI command IS the integration point.
     """
-    notify_app = typer.Typer(help="Outbound notifications (Telegram, etc.).")
+    notify_app = typer.Typer(help="Outbound notifications (Telegram, the Scout Slack app).")
     app.add_typer(notify_app, name="notify")
 
     @notify_app.command("telegram")
@@ -2553,6 +2553,94 @@ def _register_notify() -> None:
         # [dry-run] lines) is intentionally routed through stderr inside
         # send() so this stdout is always pure JSON and parsable by tests
         # / downstream scripts.
+        typer.echo(_json.dumps(asdict(ev), indent=2))
+
+    @notify_app.command("slack")
+    def cli_notify_slack(
+        body: str | None = typer.Option(
+            None,
+            "--body",
+            help="Message body (Slack mrkdwn). Exactly one of --body / --body-file.",
+        ),
+        body_file: Path | None = typer.Option(
+            None,
+            "--body-file",
+            help="Read the message body from this UTF-8 file ('-' = stdin) instead of --body (keeps it off the shell).",
+        ),
+        thread_ts: str | None = typer.Option(
+            None,
+            "--thread-ts",
+            help="Reply inside this thread of the bot's DM with the owner (the ts of an earlier Scout message).",
+        ),
+        dry_run: bool = typer.Option(
+            False,
+            "--dry-run",
+            help="Print the requests without POSTing. Still requires the token and user.slack_user_id.",
+        ),
+        allow_duplicate: bool = typer.Option(
+            False,
+            "--allow-duplicate",
+            help="Send even if a byte-identical message went to this thread in the last 10 minutes.",
+        ),
+    ) -> None:
+        """DM the owner as the Scout Slack app bot (not as the owner).
+
+        The receipt is `id=<ulid>` on the first line of stderr; stdout is the Event JSON,
+        whose payload `ts` is the thread to answer in with --thread-ts.
+        """
+        import json as _json
+        from dataclasses import asdict
+
+        import requests as _requests
+
+        from scout.errors import ConfigError as _ConfigError
+        from scout.redact import redact_secrets
+        from scout.scripts.notify_slack import DuplicateSendError, OutboundBlockedError, SlackAPIError, send
+
+        if body is not None and body_file is None:
+            text = body
+        elif body is None and body_file is not None:
+            try:
+                text = _read_text_arg(body_file)
+            except (OSError, UnicodeDecodeError) as e:
+                typer.echo(f"scoutctl notify slack: could not read --body-file {body_file}: {e}", err=True)
+                raise typer.Exit(code=1) from e
+        else:
+            typer.echo("scoutctl notify slack: pass exactly one of --body or --body-file", err=True)
+            raise typer.Exit(code=1)
+
+        try:
+            ev = send(
+                body=text,
+                thread_ts=thread_ts,
+                dry_run=dry_run,
+                allow_duplicate=allow_duplicate,
+                receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
+            )
+        except DuplicateSendError as e:
+            typer.echo(f"id={e.original_id}", err=True)
+            typer.echo(
+                f"scoutctl notify slack: refused — byte-identical message sent at {e.sent_at} "
+                f"(id {e.original_id}); pass --allow-duplicate to send it again",
+                err=True,
+            )
+            raise typer.Exit(code=DuplicateSendError.exit_code) from e
+        except OutboundBlockedError as e:
+            typer.echo(f"scoutctl notify slack: {e}", err=True)
+            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
+        except _ConfigError as e:
+            typer.echo(f"scoutctl notify slack: {e}", err=True)
+            raise typer.Exit(code=_ConfigError.exit_code) from e
+        except SlackAPIError as e:
+            typer.echo(f"scoutctl notify slack: {e}", err=True)
+            raise typer.Exit(code=SlackAPIError.exit_code) from e
+        except ValueError as e:
+            typer.echo(f"scoutctl notify slack: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        except _requests.RequestException as e:
+            typer.echo(f"scoutctl notify slack: HTTP error: {redact_secrets(str(e))}", err=True)
+            raise typer.Exit(code=2) from None
+
         typer.echo(_json.dumps(asdict(ev), indent=2))
 
 

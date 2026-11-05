@@ -233,7 +233,9 @@ def _guard_vault() -> Path | None:
     return vault if (vault / paths.VAULT_MARKER).is_file() else None
 
 
-def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
+def _check_shared(
+    body: str, surface: str, parse_mode: str = "none", *, channel: str = "telegram", command: str = "notify telegram"
+) -> None:
     """Refuse a body that names a private note (spec §8.4); records the block, never the content.
 
     Raises :class:`OutboundBlockedError` on a hit, and when no vault can be
@@ -264,15 +266,15 @@ def _check_shared(body: str, surface: str, parse_mode: str = "none") -> None:
         append_event(
             paths.logs_dir(vault),
             kind="privacy.outbound_blocked",
-            source="cli:notify_telegram",
-            payload={"surface": surface, "channel": "telegram", "lines": lines},
+            source=f"cli:{command.replace(' ', '_')}",
+            payload={"surface": surface, "channel": channel, "lines": lines},
         )
     except OSError:
         pass  # the message is dropped either way
     log_event(
         vault,
         reader=resolve_reader(None, os.environ),
-        command="notify telegram",
+        command=command,
         surface=surface,
         args=[surface],
         returned=0,
