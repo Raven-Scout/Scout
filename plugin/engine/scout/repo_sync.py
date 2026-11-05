@@ -1415,6 +1415,9 @@ def _sync_under_lease(
     result = Result(action="sync")
     if state.sync_only is None and policy.sync_only is not None:
         _arm_sync_only(vault, state, policy.sync_only, result)
+    elif state.sync_only is None and (pending := _unsynced_sync_only(vault, state)) is not None:
+        # Added and removed again since the last sync: the removal is no owner step, so it stays armed.
+        _arm_sync_only(vault, state, pending, result)
     elif state.sync_only is not None and (mismatch := _sync_only_mismatch(state.sync_only, policy)):
         result.notes.append(mismatch)
 
@@ -1470,13 +1473,6 @@ def _sync_under_lease(
     pushes: list[tuple[str, str]] = []
     try:
         policies = {c: builder.policy(c) for c in own}
-        if state.sync_only is None:
-            # Added and removed again since the last sync: the removal is no owner step, so it stays armed.
-            pending = next((p.sync_only for p in policies.values() if p.sync_only is not None and not _broken(p)), None)
-            if pending is not None:
-                _arm_sync_only(vault, state, pending, result)
-                rules = LocalOnlyRules.build([policy], host_entries, pinned=state.sync_only)
-                builder.rules = rules
         squash = bool(result.replayed) or any(_broken(p) for p in policies.values())
         subjects = [commit_meta(vault, c).message.splitlines()[0] for c in own]
         refresh_only = not own
@@ -1527,6 +1523,29 @@ def _sync_under_lease(
 def _broken(policy: Policy) -> bool:
     """A commit whose config can't be trusted: it goes up squashed, under HEAD's policy, never its own."""
     return "privacy-overlay-unreadable" in policy.warnings or SYNC_ONLY_INVALID in policy.warnings
+
+
+def _unsynced_sync_only(vault: Path, state: LinkState) -> tuple[str, ...] | None:
+    """The first ``sync_only`` list in a commit made here since the last sync, or None.
+
+    Read before anything reaches the host, so a pin armed from it filters this
+    sync's Local-Only list too. A commit whose config can't be trusted is skipped.
+    """
+    head = _head(vault)
+    if not _is_ancestor(vault, state.last_laptop, head):
+        return None
+    revs = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
+    if not revs:
+        return None
+    blobs = BlobReader(vault)
+    try:
+        for rev in revs:
+            p = policy_at(vault, rev, blobs)
+            if p.sync_only is not None and not _broken(p):
+                return p.sync_only
+    finally:
+        blobs.close()
+    return None
 
 
 def _arm_sync_only(vault: Path, state: LinkState, entries: Sequence[str], result: Result) -> None:

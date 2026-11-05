@@ -372,6 +372,19 @@ def test_a_key_in_any_unsynced_commit_arms_the_allowlist(vault: Path, host: Fake
     assert _tip_paths(host) == {rs.POLICY_PATH, WIDGET, "knowledge-base/projects/widget/notes.md"}
 
 
+def test_a_pin_armed_from_an_unsynced_commit_filters_the_host_list_in_the_same_sync(
+    vault: Path, host: FakeHost
+) -> None:
+    _link(vault, host)
+    _set_privacy(vault, "on", sync_only=[ALLOWED], local_only_add=["trading/**", "closed-client/**"])
+    _set_privacy(vault, "off", sync_only=None)
+
+    rs.sync(vault, host)
+
+    assert not any("closed-client" in e for put in host.puts for e in put)
+    assert "closed-client" not in _mirror_text(host)
+
+
 def test_lifting_is_an_owner_step_at_the_keyboard(vault: Path, host: FakeHost) -> None:
     _linked(vault, host)
     _set_privacy(vault, sync_only=None)
