@@ -612,6 +612,28 @@ def test_a_hook_that_cannot_record_says_so(vault: Path, monkeypatch: pytest.Monk
     assert "could not record" in text and "shared surface" in text
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        [{"type": "text", "text": BODY}],
+        {"results": [{"title": TITLE, "snippet": SENTENCE}]},
+        {"surprise": {"body": BODY}},
+    ],
+    ids=["plain-text", "hit-without-path", "unknown-shape"],
+)
+def test_an_answer_whose_path_it_cannot_tell_says_so(vault: Path, response: object) -> None:
+    """No path in the answer or the tool's input: the text is hashed, but the path can't be refused."""
+    stdin = io.StringIO(json.dumps(payload(vault, "shared_knowledge_read", response)))
+    out = shared_read_record.run(stdin=stdin, env={})
+    assert out is not None and "could not record" in context(out)
+
+
+def test_an_empty_listing_is_not_a_failure(vault: Path) -> None:
+    stdin = io.StringIO(json.dumps(payload(vault, "shared_with_me", blocks({"owners": []}))))
+    out = shared_read_record.run(stdin=stdin, env={})
+    assert out is not None and "could not record" not in context(out)
+
+
 def test_outside_a_vault_it_only_labels(tmp_path: Path) -> None:
     out = record(tmp_path, owner=OWNER, path=NOTE)
     assert "shared surface" in context(out)

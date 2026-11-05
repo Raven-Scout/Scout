@@ -113,6 +113,11 @@ def _context(payload: Mapping[str, Any], *, reader: str) -> str | None:
             f"shared surfaces yourself. {RULE}"
         )
     _log(vault, reader=reader, records=records)
+    if any(r.path == shared_reads.UNKNOWN_PATH for r in records):
+        return (
+            f"{MARK} Scout could not record which note this answer came from, so check-outbound won't recognise its "
+            f"path or title: keep them off shared surfaces yourself. {_text(records)}"
+        )
     return _text(records)
 
 

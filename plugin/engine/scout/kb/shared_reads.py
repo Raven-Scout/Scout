@@ -61,6 +61,9 @@ from scout.kb.privacy import classifier_block, load_frontmatter_yaml, read_head
 LEDGER_DIR = ".scout-cache/shared-reads"
 LEDGER_VERSION = 1
 SHARED_SOURCE_PREFIX = "shared:"
+# An answer that shows text without saying which note it is: the text is still hashed, but there is
+# no path to refuse, and the hook says so.
+UNKNOWN_PATH = "unknown"
 
 QUOTE_WORDS = 6
 QUOTE_MIN_CONTENT = 3
@@ -313,7 +316,7 @@ def _str(value: Any) -> str | None:
 
 def _records_from(answer: Any, tool_input: Mapping[str, Any]) -> Iterator[SharedRecord]:
     input_owner = _str(tool_input.get("owner")) or "unknown"
-    input_path = _str(tool_input.get("path")) or "unknown"
+    input_path = _str(tool_input.get("path")) or UNKNOWN_PATH
     if isinstance(answer, str):
         # Plain text: a short one is an error code, a long one is content in a shape nobody expected.
         if len(_TOKEN.findall(answer)) >= QUOTE_WORDS:
@@ -323,8 +326,12 @@ def _records_from(answer: Any, tool_input: Mapping[str, Any]) -> Iterator[Shared
         return
     if isinstance(answer.get("results"), list):
         for hit in answer["results"]:
-            if isinstance(hit, Mapping) and _str(hit.get("path")):
-                yield _note_record(hit, _text_of([hit.get("section"), hit.get("snippet")]), input_owner)
+            if isinstance(hit, Mapping):
+                yield _note_record(
+                    {**hit, "path": _str(hit.get("path")) or UNKNOWN_PATH},
+                    _text_of([hit.get("title"), hit.get("section"), hit.get("snippet")]),
+                    input_owner,
+                )
     elif isinstance(answer.get("owners"), list):
         for owner in answer["owners"]:
             for folder in owner.get("folders", []) if isinstance(owner, Mapping) else []:

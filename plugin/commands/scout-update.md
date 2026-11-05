@@ -292,7 +292,7 @@ If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKI
   templated, so upgrades leave them untouched — and every upgrade re-renders the
   custom connectors' sections from the current templates.
 
-  That means a new tool never reaches a `restrict_tools` allowlist on its own. Run `"$SCOUTCTL" connectors custom list`. If a connector reads Agnes and has `restrict_tools: true`, tell the user: *colleagues can share notes with you through Agnes. Your Scout can read them only if this connector lists the three read-only tools for it; what it reads stays private to you.* Ask first, and on a yes run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'` (`SCOUTCTL` as set in the block above). Skip this step if nothing is restricted or the user says no; ask again on a later update only if they raise it.
+  That means a new tool never reaches a `restrict_tools` allowlist on its own. Run `"$SCOUTCTL" connectors custom list`. If a connector reads Agnes and has `restrict_tools: true`, tell the user: *colleagues can share notes with you through Agnes. Your Scout can read them only if this connector lists the three read-only tools for it; what it reads stays private to you.* Ask first, and on a yes run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'` (`SCOUTCTL` as set in the block above). Also tell them the connector must sign in with their Agnes personal access token: Agnes doesn't offer shared notes to a connector signed in through its OAuth flow (`/mcp`). Skip this step if nothing is restricted or the user says no; ask again on a later update only if they raise it.
 
 ## Step 3b: Per-note privacy — legacy markers and local-only trading paths
 
