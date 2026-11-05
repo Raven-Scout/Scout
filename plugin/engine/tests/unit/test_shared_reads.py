@@ -628,8 +628,36 @@ def test_an_answer_whose_path_it_cannot_tell_says_so(vault: Path, response: obje
     assert out is not None and "could not record" in context(out)
 
 
-def test_an_empty_listing_is_not_a_failure(vault: Path) -> None:
-    stdin = io.StringIO(json.dumps(payload(vault, "shared_with_me", blocks({"owners": []}))))
+@pytest.mark.parametrize(
+    "response",
+    [
+        [{"type": "text", "text": "Widget moves to March."}],  # a short note, not JSON
+        blocks({"owners": [{"owner_email": OWNER, "folders": [{"notes": 3}]}]}),  # a folder with no name
+    ],
+    ids=["short-plain-text", "folder-without-name"],
+)
+@pytest.mark.parametrize("where", ["vault", "no-vault"])
+def test_a_non_error_answer_that_records_nothing_says_so(
+    vault: Path, tmp_path: Path, response: object, where: str
+) -> None:
+    cwd = vault if where == "vault" else tmp_path
+    stdin = io.StringIO(json.dumps(payload(cwd, "shared_knowledge_read", response, owner=OWNER, path=NOTE)))
+    out = shared_read_record.run(stdin=stdin, env={})
+    assert out is not None and "could not record" in context(out)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        blocks({"owners": []}),
+        blocks({"results": []}),
+        {"isError": True, "content": [{"type": "text", "text": BODY}]},
+        blocks({"detail": {"code": "file_not_found"}}),
+    ],
+    ids=["empty-listing", "no-hits", "is-error", "error-detail"],
+)
+def test_an_empty_or_error_answer_is_not_a_failure(vault: Path, response: object) -> None:
+    stdin = io.StringIO(json.dumps(payload(vault, "shared_with_me", response)))
     out = shared_read_record.run(stdin=stdin, env={})
     assert out is not None and "could not record" not in context(out)
 

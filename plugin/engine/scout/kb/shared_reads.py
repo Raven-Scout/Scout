@@ -364,6 +364,20 @@ def records_from_response(tool_input: Any, response: Any) -> list[SharedRecord]:
     return [record for answer in _answers(response) for record in _records_from(answer, given)]
 
 
+def _empty_or_error(answer: Any) -> bool:
+    if not isinstance(answer, Mapping):
+        return False
+    return "error" in answer or "detail" in answer or answer.get("results") == [] or answer.get("owners") == []
+
+
+def unrecorded(response: Any, records: Sequence[SharedRecord]) -> bool:
+    """Whether an answer showed something the ledger couldn't pin to a note: text with no path, or
+    a non-error answer that gave no record at all. An error, or an empty listing, shows nothing."""
+    if any(r.path == UNKNOWN_PATH for r in records):
+        return True
+    return not records and not all(_empty_or_error(answer) for answer in _answers(response))
+
+
 # ----- the ledger ----------------------------------------------------------------
 
 
