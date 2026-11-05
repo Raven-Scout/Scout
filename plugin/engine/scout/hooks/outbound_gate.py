@@ -16,7 +16,9 @@ check can't be skipped:
     ``SCOUT_MODE`` set, or a reader other than exactly ``owner``): a hit
     denies the call with the field and line numbers only, records the block in
     ``.scout-logs/kb-reads.jsonl`` and a ``privacy.outbound_blocked`` event;
-    a payload or vault that can't be checked denies too.
+    a payload or vault that can't be checked denies too, and so does a check
+    that runs past :data:`DEADLINE_S` (Claude Code lets a timed-out hook's call
+    through, so the gate can't leave that to hooks.json's timeout).
   - **The owner's interactive sessions get a warning, not a block**: a hit
     shows a warning to the owner and to the session and lets the call go on
     (normal permission prompts still apply), with an audit row
@@ -34,6 +36,7 @@ import json
 import os
 import re
 import sys
+import threading
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import IO, Any
@@ -42,6 +45,7 @@ from scout import paths
 
 GATE = "outbound-gate"
 MARK = f"[scout:{GATE}]"
+DEADLINE_S = 10.0  # hooks.json gives the hook 15 s; a timed-out hook lets the call through
 
 # A service prefix (`slack_read_channel`), then a read verb. Only known prefixes are skipped, so
 # `create_list` and `add_list_record` stay writes.
@@ -218,9 +222,39 @@ def run(*, stdin: IO[str] | None = None, env: Mapping[str, str] | None = None) -
     return decide(payload, scheduled=scheduled, reader=resolve_reader(None, env))
 
 
-def main() -> int:
-    """CLI entry point: scoutctl hook outbound-gate."""
+def _out_of_time(scheduled: bool) -> dict[str, Any]:
+    why = f"Scout's outbound privacy check ran out of time ({DEADLINE_S:.0f} s)"
+    if scheduled:
+        return _deny(
+            f"{MARK} {why}, so this call is blocked in a scheduled run. Put the content in the daily "
+            "file or the owner's Telegram chat instead, and say so in the run notes."
+        )
+    return _warn(f"{MARK} Warning: {why}; this call was not checked for private content.")
+
+
+def main(*, deadline_s: float | None = None) -> int:
+    """CLI entry point: scoutctl hook outbound-gate.
+
+    Claude Code lets a call through when a PreToolUse hook times out, and drops
+    the hook's output (hooks reference, "Timeouts"). So the gate keeps its own
+    deadline, inside hooks.json's 15 s: past it, a run is denied and the owner
+    warned, exactly as when the check can't run.
+    """
+    from scout.kb.reader import is_scheduled
+
+    lock = threading.Lock()
+
+    def expire() -> None:
+        if lock.acquire(blocking=False):
+            print(json.dumps(_out_of_time(is_scheduled(os.environ))), flush=True)
+            os._exit(0)
+
+    timer = threading.Timer(DEADLINE_S if deadline_s is None else deadline_s, expire)
+    timer.daemon = True
+    timer.start()
     decision = run()
+    lock.acquire()  # held by expire() only on its way to exiting
+    timer.cancel()
     if decision is not None:
         print(json.dumps(decision))
     return 0
