@@ -401,3 +401,98 @@ def test_log_fallback_reads_only_the_tail_and_survives_unreadable_logs(tmp_path)
     broken = v / ".scout-logs" / "dreaming-broken.log"
     broken.symlink_to(v / "does-not-exist")  # glob finds it; stat() raises
     assert health.evaluate(v, now=NOW).severity == "green"
+
+
+def _recurring(report: health.RunHealth) -> health.Finding:
+    (f,) = [f for f in report.findings if f.id == "runs.recurring"]
+    return f
+
+
+def test_failures_with_successes_between_them_stay_visible(tmp_path):
+    """A vault failing about twice a day must not read green after each success (runs.failing alone does)."""
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=40), code=1, klass="budget", slot="morning-consolidation"),
+            _row(NOW - timedelta(hours=38)),
+            _row(NOW - timedelta(hours=26), code=1, klass="budget", slot="evening-consolidation"),
+            _row(NOW - timedelta(hours=24)),
+            _row(NOW - timedelta(hours=9), code=1, klass="budget", slot="morning-consolidation"),
+            _row(NOW - timedelta(hours=3), outcome="skipped_lock"),
+            _row(NOW - timedelta(hours=1)),
+        ],
+    )
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"runs.recurring": "yellow"}
+    f = _recurring(report)
+    assert f.summary == (
+        "3 of the last 6 scheduled runs failed in the past 48 h, with successes in between (budget ×3). "
+        "Failed slots: evening-consolidation, morning-consolidation."
+    )
+    assert f.since == NOW - timedelta(hours=40)
+    assert "connectors.inputs.max_budget" in f.fix and "claude --max-budget-usd" in f.fix
+
+
+def test_two_failures_in_two_days_are_not_a_pattern(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=30), code=1),
+            _row(NOW - timedelta(hours=20)),
+            _row(NOW - timedelta(hours=10), code=1),
+            _row(NOW - timedelta(hours=1)),
+        ],
+    )
+    assert health.evaluate(v, now=NOW).severity == "green"
+
+
+def test_recurring_failures_name_every_class_and_point_at_the_newest_log(tmp_path):
+    v = _vault(tmp_path)
+    rows = [
+        _row(NOW - timedelta(hours=10), code=1, klass="network"),
+        _row(NOW - timedelta(hours=8)),
+        _row(NOW - timedelta(hours=6), code=1, klass="network"),
+        _row(NOW - timedelta(hours=4), code=1, klass="budget"),
+        _row(NOW - timedelta(hours=2)),
+    ]
+    _ledger(v, rows)
+    f = _recurring(health.evaluate(v, now=NOW))
+    assert "(network ×2, budget ×1)" in f.summary
+    assert f.fix == f"Run scoutctl bootstrap doctor and read the newest failed log: .scout-logs/{rows[3]['log']}"
+
+
+def test_an_unbroken_streak_is_runs_failing_only(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(v, [_row(NOW - timedelta(hours=h), code=1) for h in (6, 4, 2)])
+    assert _ids(health.evaluate(v, now=NOW)) == {"runs.failing": "red"}
+
+
+def test_a_failing_last_run_after_earlier_failures_is_both(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=8), code=1),
+            _row(NOW - timedelta(hours=6), code=1),
+            _row(NOW - timedelta(hours=4)),
+            _row(NOW - timedelta(hours=2), code=1),
+        ],
+    )
+    assert _ids(health.evaluate(v, now=NOW)) == {"runs.failing": "yellow", "runs.recurring": "yellow"}
+
+
+def test_failures_older_than_two_days_do_not_recur(tmp_path):
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=60), code=1),
+            _row(NOW - timedelta(hours=50), code=1),
+            _row(NOW - timedelta(hours=20)),
+            _row(NOW - timedelta(hours=10), code=1),
+            _row(NOW - timedelta(hours=1)),
+        ],
+    )
+    assert health.evaluate(v, now=NOW).severity == "green"
