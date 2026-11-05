@@ -991,6 +991,39 @@ def budget_check_cmd(
     raise typer.Exit(budget_run(verbose=verbose))
 
 
+@budget_app.command("record-run")
+def budget_record_run_cmd(
+    run_type: str = typer.Argument(..., help="The row's type: the slot (run-scout.sh), dreaming or research."),
+    name: str = typer.Option(..., "--name", help="The --name the runner gave claude for this run."),
+    started: int = typer.Option(..., "--started", help="When the run's claude call started, epoch seconds."),
+    cap: float = typer.Option(0.0, "--cap", help="The run's --max-budget-usd."),
+    exit_code: int = typer.Option(0, "--exit-code", help="The run's exit code."),
+) -> None:
+    """Append the runner's usage-tracker row with what the run cost by claude's own figure.
+
+    Sums the cost-state of every transcript carrying --name since --started (retry
+    attempts included). With none found the row records $0, as before, without
+    cost_source.
+    """
+    from datetime import UTC, datetime
+
+    from scout.scripts.run_cost import record
+
+    _row, cost = record(
+        run_type,
+        name=name,
+        started=datetime.fromtimestamp(started, UTC),
+        cap=cap,
+        exit_code=exit_code,
+    )
+    if cost.measured:
+        typer.echo(
+            f"run cost: ${cost.usd:.2f} by claude's figure ({cost.measured} of {cost.attempts} attempt(s) measured)"
+        )
+    else:
+        typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+
+
 @budget_app.command("resets-at")
 def budget_resets_at_cmd(
     log: Path = typer.Argument(..., help="A run log that ended on a Claude usage limit."),
