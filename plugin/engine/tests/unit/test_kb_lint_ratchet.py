@@ -10,9 +10,9 @@ from scout.kb.git_io import staged_line_changes
 from scout.kb.lint import lint_staged, run_hook
 from scout.kb.lint_config import load_lint_config
 
-PAGE = "knowledge-base/projects/acme-pilot/acme-pilot.md"
-NOTE = "knowledge-base/projects/acme-pilot/retrieval.md"
-OTHER = "knowledge-base/projects/acme-pilot/other.md"
+PAGE = "knowledge-base/projects/acme-pilot/documents/acme-pilot.md"
+NOTE = "knowledge-base/projects/acme-pilot/documents/retrieval.md"
+OTHER = "knowledge-base/projects/acme-pilot/documents/other.md"
 SHARD = "knowledge-base/session-log/2026-09.md"
 DAY1 = "action-items/action-items-2026-09-27.md"
 DAY2 = "action-items/action-items-2026-09-28.md"

@@ -127,6 +127,10 @@ kb_lint:
   # files, everything else reports (size too, since most pages start over budget):
   #   path_modes:
   #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
+  # The page standard's checks (`page-loose`, `page-sections`, `page-narration`:
+  # new debt on a project folder; `scoutctl kb structure` reports the existing
+  # debt) report until a rule names them in `checks:`. Neither `mode: block` nor
+  # a rule with no `checks:` makes them block.
   path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500
@@ -203,3 +207,39 @@ kb_lint:
     - {glob: "knowledge-base/projects/*/decision-log/**", bytes: 51200}
     - {glob: "knowledge-base/projects/*/nav-history/**", bytes: 51200}
     - {glob: "knowledge-base/**", bytes: 15360}
+
+# KB structure check — `scoutctl kb structure` (report-only): does each
+# project folder meet docs/kb-page-standard.md? `--next` picks the dreaming
+# run's nightly rebuild target. The defaults match the standard the plugin
+# seeds; a vault that tailors its standard tailors these to match. Lists
+# replace the defaults, they don't add to them. Folders and files matching
+# `kb_lint.exclude_globs` or the KB schema's `graph.exclude` are skipped.
+kb_structure:
+  projects_dir: knowledge-base/projects
+  # Folders under projects_dir that are not a project (e.g. a parking folder).
+  skip_projects: [archived]
+  # Subfolders a project folder may hold. A sub-project folder with its own
+  # <sub>/<sub>.md front page is always allowed.
+  allowed_dirs: [knowledge, documents, research, archive]
+  page_target_bytes: 8192
+  page_budget_bytes: 15360
+  # Stale = a commit to another file in the folder (archive/ aside) landed
+  # more than this many days after the front page's `as_of`.
+  stale_days: 3
+  required_sections:
+    - "Where it stands"
+    - "What's next"
+    - "Key decisions"
+    - "Open questions"
+    - "People"
+    - "Go deeper"
+    - "History"
+  # Run narration that belongs in the commit message and session log, not
+  # the page body (Python regexes; the label is what the report prints).
+  narration_markers:
+    - {label: "Last verified", pattern: "(?i)last verified"}
+    - {label: "Finding N", pattern: "\\bFinding \\d+"}
+    - {label: "§N", pattern: "§\\d+"}
+    - {label: "masked time", pattern: "\\b\\d{1,2}:\\dx\\b"}
+    - label: "session name"
+      pattern: "\\b(?:(?:morning|midday|afternoon|evening)-consolidation|(?:morning|weekend)-briefing|dreaming-(?:evening|nightly|weekend-morning))\\b"

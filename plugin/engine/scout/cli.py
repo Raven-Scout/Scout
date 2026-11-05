@@ -114,7 +114,7 @@ def hook_session_tool_log() -> None:
 
 @hook_app.command("mcp-tool-gate")
 def hook_mcp_tool_gate() -> None:
-    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools in scheduled runs."""
+    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools, in every session in the vault."""
     from scout.hooks.mcp_tool_gate import main as mcp_tool_gate_main
 
     raise typer.Exit(mcp_tool_gate_main())
@@ -134,6 +134,14 @@ def hook_kb_read_label() -> None:
     from scout.hooks.kb_read_label import main as kb_read_label_main
 
     raise typer.Exit(kb_read_label_main())
+
+
+@hook_app.command("shared-read-record")
+def hook_shared_read_record() -> None:
+    """PostToolUse hook: record what an Agnes shared-notes tool showed, so check-outbound recognises it."""
+    from scout.hooks.shared_read_record import main as shared_read_record_main
+
+    raise typer.Exit(shared_read_record_main())
 
 
 @hook_app.command("outbound-gate")
@@ -932,6 +940,27 @@ def kb_validate(
     _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_validate(g))
 
 
+@kb_app.command("structure")
+def kb_structure(
+    next_: bool = typer.Option(
+        False, "--next", help="Print only the next rebuild target (a project name), or an empty line if all conform."
+    ),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help="Print the table (or, with --next, the target) as JSON."),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check each project folder against the KB page standard. Report-only: exit 0, or 20 on a bad setting.
+
+    Loose files, odd subfolders, front-page size, required sections, run
+    narration, `as_of` and staleness; worst first. A private front page shows
+    only paths, counts and verdicts. Settings: `kb_structure` in scout-config.yaml.
+    """
+    args = _kb_args("structure", dict(locals()))
+    from scout.kb.structure import cmd_structure
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -1493,6 +1522,23 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import remove
 
         outcome = remove(
+            _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
+        )
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("allow-shared-notes")
+    def cli_custom_allow_shared_notes(
+        key: str,
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
+    ) -> None:
+        """List Agnes's three read-only shared-notes tools on a restrict_tools connector (not from a scheduled run)."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import allow_shared_notes
+
+        outcome = allow_shared_notes(
             _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
         )
         _emit(outcome.to_json(), outcome.exit_code)
