@@ -270,6 +270,42 @@ def test_a_person_keeps_a_name_that_is_an_ordinary_word(tmp_path: Path, rel: str
     assert outbound.find_mentions(f"{CLEAN}\nAsk Grace about it.", terms, allow_markers=False) == [2]
 
 
+@pytest.mark.parametrize("kind", ["organization", "pet", "Company", "client", "org"])
+def test_an_organization_or_pet_keeps_a_name_that_is_an_ordinary_word(tmp_path: Path, kind: str) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/ontology/entities/vision.md", f"name: Vision\ntype: {kind}\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nWe met Vision today.", terms, allow_markers=False) == [2]
+
+
+def test_a_project_named_with_an_ordinary_word_still_drops_it(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/projects/vision/vision.md", "name: vision\ntype: project\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(
+        "Our vision is clear.\nSee projects/vision/vision.md", terms, allow_markers=False
+    ) == [2]
+
+
+def test_a_vault_root_file_named_with_an_ordinary_word_matches_by_its_file_name() -> None:
+    """At the vault root there's no second path segment: the file name with its extension is the term."""
+    terms = outbound.terms_of(
+        [
+            outbound.note_from_text("billing.md", "---\nvisibility: private\n---\n"),
+            outbound.note_from_text("documents.csv", None),
+        ]
+    )
+    lines = [
+        "The billing terms changed.",
+        "See billing.md for the terms.",
+        "The documents are in.",
+        "documents.csv attached",
+    ]
+    assert outbound.find_mentions("\n".join(lines), terms, allow_markers=False) == [2, 4]
+
+
 def test_an_alias_is_a_term_even_when_it_is_an_ordinary_word(tmp_path: Path) -> None:
     own = build_privacy_vault(tmp_path)
     outbound.clear_cache()
@@ -283,7 +319,7 @@ MATURE_SLUGS = (
     "plan notes documents readme index todo ideas journal inbox meetings agenda overview summary "
     "roadmap backlog goals decisions research reading status updates review retro report budget "
     "finance pricing billing invoices taxes payroll hiring interviews onboarding travel health "
-    "contracts vendors customers strategy marketing sales roadmap launch release migration "
+    "contracts vendors customers strategy marketing sales launch release migration "
     "metrics analytics security privacy legal admin operations process checklist runbook guide "
     "family home house garden recipes books gifts shopping wishlist archive misc draft scratch"
 ).split()
