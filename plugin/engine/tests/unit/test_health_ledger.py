@@ -484,7 +484,8 @@ def test_a_failing_last_run_after_earlier_failures_is_both(tmp_path):
     )
     report = health.evaluate(v, now=NOW)
     assert _ids(report) == {"runs.failing": "yellow", "runs.recurring": "yellow"}
-    assert _recurring(report).summary.startswith("3 of the last 5 scheduled runs failed")  # the trailing one is runs.failing's
+    # The trailing failure is runs.failing's, not counted again here.
+    assert _recurring(report).summary.startswith("3 of the last 5 scheduled runs failed")
 
 
 def test_a_streak_that_has_ended_is_green(tmp_path):
