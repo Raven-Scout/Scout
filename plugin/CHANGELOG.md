@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer add to a note that is already shared** (#569; `engine/scout/kb/lint_privacy.py`, `phases/core/privacy.md`). With sharing on, a run could append a fact from an unshared page to a shared note, such as a meeting note a folder default shares, and the commit passed: the widening check compared the note's label, and only the content changed. `kb lint` now refuses, as `privacy-widening`, a scheduled run's commit that adds or rewords a line in a note with an effective share both at HEAD and in the commit. Removing or moving lines, writing a new note into a shared folder, and the owner's own commits are unchanged. The phase text tells a run to put such material in an unshared note or propose the edit in the review queue. Labels, the privacy corpus and `CLASSIFIER_VERSION` are unchanged.
+
 ## [0.18.9] - 2026-11-05
 
 ### Fixed

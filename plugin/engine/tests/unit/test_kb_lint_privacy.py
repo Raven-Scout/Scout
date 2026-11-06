@@ -511,6 +511,90 @@ def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> N
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
 
 
+# ----- a run adding to a note that is already shared (#569) -----------------------
+
+SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
+_SHARE_SOURCES = (
+    "  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n'
+)
+_SOURCE_TEXT = (
+    "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\n"
+    "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n"
+)
+
+
+def _share(vault: Path, overlay: str) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(overlay)
+    git(vault, "add", "scout-config.yaml")
+
+
+def _shared_source(vault: Path) -> None:
+    """A meeting note shared with Priya by a folder default, committed by the owner."""
+    _share(vault, _SHARE_SOURCES)
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes with Priya")
+
+
+def test_a_run_may_not_add_a_pages_fact_to_a_shared_source_note(vault: Path) -> None:
+    """The label doesn't change, only the content: Priya would read what the page says."""
+    _shared_source(vault)
+    n = append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+    rc, out = hook(vault, {**RUN, "SCOUT_LINT_OVERRIDE": "x"})
+    assert rc == 1 and "[privacy-widening]" in out and "already shared" in out
+    # The owner may.
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    n = append(vault, PLAIN, "A new fact from another page.")
+    assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, n)]
+
+
+def test_a_run_may_not_reword_a_line_of_a_shared_note(vault: Path) -> None:
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, 9)]
+
+
+def test_a_run_may_remove_or_move_lines_of_a_shared_note(vault: Path) -> None:
+    """Nothing Priya couldn't already read."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("Priya walked through the rollout plan.\n\n", ""))
+    assert checks(vault, RUN) == []
+    stage(
+        vault,
+        SOURCE,
+        _SOURCE_TEXT.replace(
+            "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n",
+            "The pilot starts next week.\n\nPriya walked through the rollout plan.\n",
+        ),
+    )
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_write_a_new_note_into_a_share(vault: Path) -> None:
+    """A new note gets its folder's share from the owner's default; only adding to a shared one is refused."""
+    _share(vault, _SHARE_SOURCES)
+    commit(vault, "share source notes with Priya")
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
+    """``widget.md`` declares ``org``, but nothing is shared until federation is enabled."""
+    _share(vault, _SHARE_SOURCES.replace("enabled: true", "enabled: false"))
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes later")
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    append(vault, WIDGET, "A new fact.")
+    assert checks(vault, RUN) == []
+
+
 # ----- kb lint --report -----------------------------------------------------------
 
 
