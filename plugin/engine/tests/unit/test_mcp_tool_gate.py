@@ -116,12 +116,77 @@ def test_restricted_entry_naming_no_server_gates_everything(tmp_path):
     assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
 
 
-def test_non_yaml_file_gates_every_server_named_in_it(tmp_path):
+def test_non_yaml_file_gates_every_server(tmp_path):
+    # Its layout could hide a restricted server from any reading short of a parse (#564).
     (tmp_path / cc.CUSTOM_FILE).write_text(
         "connectors:\n  company_kb:\n    server: knowledge\n    restrict_tools: true\n"
         "    probe: mcp__knowledge__whoami\n    lookup: [unclosed\n"
     )
-    assert cc.tool_gate(tmp_path) == {"knowledge": frozenset()}
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+# Each hides the restricted server from a line-by-line reading, with another server in plain sight.
+HIDDEN_RESTRICTED = [
+    pytest.param("  writer: {server: writer, restrict_tools: true}\n", "", id="flow-style"),
+    pytest.param('  writer:\n    "server": writer\n    restrict_tools: true\n', "", id="quoted-key"),
+    pytest.param("  writer:\n    server: *n\n    restrict_tools: true\n", "name: &n writer\n", id="alias"),
+]
+
+
+@pytest.mark.parametrize(("entry", "before"), HIDDEN_RESTRICTED)
+def test_a_syntax_error_gates_a_hidden_restricted_server(tmp_path, monkeypatch, entry, before):
+    (tmp_path / cc.CUSTOM_FILE).write_text(
+        f"schema_version: 1\n{before}connectors:\n  other:\n    server: other\n"
+        "    probe: mcp__other__ping\n" + entry + "  broken: [unclosed\n"
+    )
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    for tool in ("mcp__writer__write", "mcp__other__ping", "mcp__unrelated__list"):
+        out = gate_hook.run(stdin=_payload(tool))
+        assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny", tool
+
+
+@pytest.mark.parametrize(
+    ("text", "where"),
+    [
+        pytest.param("restrict_tools: true\nconnectors: [unclosed\n", "ParserError at line 3", id="syntax-error"),
+        pytest.param("restrict_tools: true\nwhen: 2026-13-45\n", "ValueError at line 2", id="value-error"),
+        pytest.param("- restrict_tools\n", "no connectors mapping", id="not-a-mapping"),
+        pytest.param(
+            "connectors:\n  broken:\n    restrict_tools: true\n", "'broken' names no MCP server", id="no-server"
+        ),
+    ],
+)
+def test_the_deny_reason_names_the_file_and_where(tmp_path, monkeypatch, text, where):
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__suite__search"))
+    assert out is not None
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert cc.CUSTOM_FILE in reason and where in reason and "\n" not in reason
+    assert "unclosed" not in reason and "2026-13-45" not in reason
+
+
+def test_the_deny_reason_on_an_unreadable_file(tmp_path, monkeypatch):
+    (tmp_path / cc.CUSTOM_FILE).write_bytes(b"\xff\xfe restrict_tools")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__suite__search"))
+    assert out is not None
+    assert (
+        f"{cc.CUSTOM_FILE} could not be read (UnicodeDecodeError)"
+        in (out["hookSpecificOutput"]["permissionDecisionReason"])
+    )
+
+
+def test_the_doctor_says_every_mcp_tool_is_blocked(tmp_path):
+    from scout.scripts.bootstrap_doctor import _check_custom_connectors
+
+    (tmp_path / cc.CUSTOM_FILE).write_text("restrict_tools: true\nconnectors: [unclosed\n")
+    warnings = _check_custom_connectors(vault=tmp_path)
+    (line,) = [w for w in warnings if "every MCP tool" in w]
+    assert line.startswith(f"{cc.CUSTOM_FILE} could not be read: ParserError at line 3")
+    _write(tmp_path, {"company_kb": READER})
+    assert not any("every MCP tool" in w for w in _check_custom_connectors(vault=tmp_path))
 
 
 @pytest.mark.parametrize("text", ["restrict_tools: true\n: : [", "- restrict_tools\n- x\n"])
