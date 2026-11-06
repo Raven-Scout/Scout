@@ -11,7 +11,7 @@ from scout.kb.lint_config import MODE_CHECKS, REPORT_UNTIL_NAMED, load_lint_conf
 SECTIONS = ["Where it stands", "What's next", "Key decisions", "Open questions", "People", "Go deeper", "History"]
 FRONT = "knowledge-base/projects/widgets/widgets.md"
 LOOSE = "knowledge-base/projects/widgets/notes.md"
-PAGE_CHECKS = {"page-loose", "page-sections", "page-narration"}
+PAGE_CHECKS = {"page-loose", "page-sections", "page-narration", "page-bullet"}
 NAMED_BLOCK = (
     "kb_lint:\n  path_modes:\n"
     "    - {glob: 'knowledge-base/projects/**', mode: block, checks: [page-loose, page-sections, page-narration]}\n"

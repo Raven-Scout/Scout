@@ -88,7 +88,15 @@ def _kb(n: int) -> str:
     return f"{n / 1024:.1f} KB"
 
 
-def _check_size(repo: Path, rel: str, head_rel: str | None, cfg: LintConfig) -> list[Finding]:
+# A front page holds current state only (docs/kb-page-standard.md); its detail has a home to go to first.
+FRONT_PAGE_FIX = (
+    "move the detail into a note in the project's knowledge/ folder first and link it from the page "
+    "(write protocol: split before you exceed), then make the edit"
+)
+GROWTH_FIX = "move content into topic/source notes (or the log's monthly shard) instead of adding here"
+
+
+def _check_size(repo: Path, rel: str, head_rel: str | None, cfg: LintConfig, front: bool = False) -> list[Finding]:
     budget = cfg.budget_for(rel)
     if budget is None:
         return []
@@ -97,22 +105,16 @@ def _check_size(repo: Path, rel: str, head_rel: str | None, cfg: LintConfig) -> 
         return []
     old = head_size(repo, head_rel) if head_rel else None
     if old is None:
-        return [
-            Finding(
-                rel,
-                "size",
-                True,
-                f"new file is {_kb(new)}, over its {_kb(budget)} budget — split it into smaller linked notes",
-            )
-        ]
+        fix = FRONT_PAGE_FIX if front else "split it into smaller linked notes"
+        return [Finding(rel, "size", True, f"new file is {_kb(new)}, over its {_kb(budget)} budget — {fix}")]
     if new > old:
+        fix = FRONT_PAGE_FIX if front else GROWTH_FIX
         return [
             Finding(
                 rel,
                 "size",
                 True,
-                f"{_kb(new)} is over its {_kb(budget)} budget and grew by {_kb(new - old)} — "
-                "move content into topic/source notes (or the log's monthly shard) instead of adding here",
+                f"{_kb(new)} is over its {_kb(budget)} budget and grew by {_kb(new - old)} — {fix}",
             )
         ]
     return []
@@ -471,7 +473,7 @@ StagedCheck = Callable[[StagedFile], list[Finding]]
 
 
 def _size(f: StagedFile) -> list[Finding]:
-    return _check_size(f.repo, f.rel, f.size_base, f.cfg)
+    return _check_size(f.repo, f.rel, f.size_base, f.cfg, front=_is_front(f))
 
 
 def _lines(f: StagedFile) -> list[Finding]:
@@ -496,7 +498,7 @@ def _links(f: StagedFile) -> list[Finding]:
 # what the commit makes worse, so a page already in debt can still be edited;
 # `scoutctl kb structure` reports the debt itself.
 
-# A rewrite can add hundreds of narrated lines, and a run reads every finding.
+# A rewrite can add hundreds of narrated lines or long entries, and a run reads every finding.
 PAGE_NARRATION_SHOWN = 10
 
 
@@ -519,6 +521,11 @@ def _page_private(f: StagedFile) -> bool:
 def _page_rules(f: StagedFile) -> PageRules | None:
     # Every project path has at least <dir>/<name>/<file>, so a shallower file loads nothing.
     return f.page_rules() if f.rel.count("/") >= 2 else None
+
+
+def _is_front(f: StagedFile) -> bool:
+    rules = _page_rules(f)
+    return rules is not None and _page_kind(rules, f.rel) == "front"
 
 
 def _page_loose(f: StagedFile) -> list[Finding]:
@@ -602,6 +609,54 @@ def _page_narration(f: StagedFile) -> list[Finding]:
     return out
 
 
+def _page_bullets(f: StagedFile) -> list[Finding]:
+    """A long entry the commit adds to "Where it stands": how a rebuilt page turns back into paragraphs.
+
+    Like ``mega-line``, an entry the commit removes that was already too long excuses one
+    added entry no longer than it, so shortening or fixing a long bullet is not new debt."""
+    from scout.kb.structure import section_entries
+
+    rules = _page_rules(f)
+    if rules is None or _page_kind(rules, f.rel) != "front":
+        return []
+    limit, sections = rules.cfg.max_bullet_chars, rules.cfg.bullet_sections
+    added = {n for n, _ in f.added}
+    entries = section_entries(staged_text_lossy(f.repo, f.rel), sections)
+    long = [(first, len(t)) for first, last, t in entries if len(t) > limit and any(first <= n <= last for n in added)]
+    if not long:
+        return []
+    was_front = f.size_base is not None and _page_kind(rules, f.size_base) == "front"
+    old = head_text_lossy(f.repo, f.size_base) if f.size_base and was_front else None
+    kept = {t for _, _, t in entries}
+    spare = sorted(
+        (len(t) for _, _, t in section_entries(old or "", sections) if len(t) > limit and t not in kept), reverse=True
+    )
+    new = []
+    # Longest first, each taking the longest debt left: that excuses as many as any order could.
+    for first, chars in sorted(long, key=lambda e: -e[1]):
+        if spare and spare[0] >= chars:
+            spare.pop(0)
+        else:
+            new.append((first, chars))
+    new.sort()
+    where = "" if not new or _page_private(f) else " in " + " / ".join(f'"{s}"' for s in sections)
+    out = [
+        Finding(
+            f.rel,
+            "page-bullet",
+            True,
+            f"line {n} adds a {chars}-char entry{where} (limit {limit}) — move the detail into a note in "
+            "the project's knowledge/ folder first and link it, keeping one line of current state here "
+            "(write protocol: split before you exceed)",
+            n,
+        )
+        for n, chars in new[:PAGE_NARRATION_SHOWN]
+    ]
+    if len(new) > PAGE_NARRATION_SHOWN:
+        out.append(Finding(f.rel, "page-bullet", True, f"and {len(new) - PAGE_NARRATION_SHOWN} more long entries"))
+    return out
+
+
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
 # A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
 # It reports `Finding(blocking=True)` for what should refuse a commit, and the
@@ -616,6 +671,7 @@ STAGED_CHECKS: tuple[StagedCheck, ...] = (
     _page_loose,
     _page_sections,
     _page_narration,
+    _page_bullets,
 )
 
 
