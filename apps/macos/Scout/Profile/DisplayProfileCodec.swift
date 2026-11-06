@@ -101,11 +101,12 @@ nonisolated enum DisplayProfileCodec {
         if let v: ActionItemsDisplay.Sort = option(dict, "sort", in: path, &warnings) { out.sort = v }
         if let v: ActionItemsDisplay.Grouping = option(dict, "group", in: path, &warnings) { out.grouping = v }
         if let v: ActionItemsDisplay.Density = option(dict, "density", in: path, &warnings) { out.density = v }
-        if let fields = object(dict, "fields", in: path, known: ["refs", "snooze", "comments"], &warnings) {
+        if let fields = object(dict, "fields", in: path, known: ["refs", "snooze", "comments", "plan"], &warnings) {
             let fieldsPath = "\(path).fields"
             if let v = flag(fields, "refs", in: fieldsPath, &warnings) { out.fields.refs = v }
             if let v = flag(fields, "snooze", in: fieldsPath, &warnings) { out.fields.snooze = v }
             if let v = flag(fields, "comments", in: fieldsPath, &warnings) { out.fields.comments = v }
+            if let v = flag(fields, "plan", in: fieldsPath, &warnings) { out.fields.plan = v }
         }
         if let topics = object(dict, "topics", in: path, known: ["doneRange"], &warnings),
            let v: DoneRange = option(topics, "doneRange", in: "\(path).topics", &warnings) {

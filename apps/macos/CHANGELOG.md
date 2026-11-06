@@ -6,6 +6,15 @@ Keep an `## [Unreleased]` section at the top. `scripts/release.sh prepare` promo
 
 ## [Unreleased]
 
+## [0.18.9] - 2026-11-05
+
+## [0.18.8] - 2026-11-05
+
+## [0.18.7] - 2026-11-04
+
+### Added
+- **A planned task shows its `/scout-plan` time on the card** (`Scout/ActionItems/Models/TaskPlan.swift`, `Scout/ActionItems/ActionItemsParser.swift`, `Scout/ActionItems/Models/ActionTask.swift`, `Scout/ActionItems/Views/TaskCardView.swift`, `Scout/Profile/DisplayProfile.swift`, `Scout/Shell/ActionItemsDisplaySection.swift`). The `- estimate:`, `- block:` and `- actual:` lines `/scout-plan` writes under a task are read into the task instead of showing as three comments. An open task gets a clock chip in its header: `10:00-10:45 · 45m`, with the weekday first when the block isn't today, `· took 1h` once the actual time is logged, or just `45m` for an estimate without a block. A done task reads `Done · 1h`. The tooltip spells out the date, estimate, raw estimate, kind and actual. The app reads exactly the lines the engine treats as markers, so a hand-written `- block: waiting on Priya` stays a comment. `scoutctl`'s `--index` still counts the markers, so editing or deleting a comment adds the markers above it back into the index it sends, and the right comment changes with any engine version. Settings → Action Items has a Planned time switch (`actionItems.fields.plan` in `scout-display.json`, on by default) that hides the chip and the actual time on done tasks. A snoozed task never shows the chip, also when Snooze date is off.
+
 ## [0.18.6] - 2026-10-31
 
 ## [0.18.5] - 2026-10-30

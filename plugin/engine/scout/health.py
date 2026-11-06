@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import takewhile
 from pathlib import Path
 
+from scout.config import config_load_problem
 from scout.engine_checkout import WORKTREES_HINT, checkout_state
 from scout.errors import ConfigError
 from scout.schedule import Schedule, SlotRuntime, SlotType, load_schedule
@@ -117,7 +118,7 @@ class Finding:
     since: datetime | None
     summary: str
     fix: str
-    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token"
+    source: str  # "ledger" | "log" | "schedule" | "events" | "git" | "token" | "config"
     # A failed run's own error line, verbatim (#445): what Claude Code or git said, not the class.
     detail: str | None = None
     # Absolute path of that run's log, when it is still on disk.
@@ -729,6 +730,24 @@ def _load_schedule(vault: Path) -> tuple[Schedule, datetime] | None:
         return schedule, datetime.fromtimestamp(schedule_path.stat().st_mtime, UTC)
     except (ConfigError, OSError):
         return None
+
+
+def config_findings(vault: Path) -> list[Finding]:
+    """Red while scout-config.yaml doesn't load: runs fall back to the defaults, and their commits may be refused."""
+    problem = config_load_problem(vault)
+    if problem is None:
+        return []
+    return [
+        Finding(
+            id="config.unreadable",
+            severity="red",
+            since=None,
+            summary=f"scout-config.yaml doesn't load ({problem}), so runs use the default settings "
+            "and their commits may be refused",
+            fix="Fix that line in scout-config.yaml, then check it with: scoutctl bootstrap doctor",
+            source="config",
+        )
+    ]
 
 
 def schedule_findings(
@@ -1363,4 +1382,7 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     )
     updates = update_findings(vault, read_updates(vault), now=now)
     engine = engine_findings(home=home)
-    return build_report(found + sched + lanes + updates + engine, now=now, last_ok_at=_last_ok_at(rows), slots=slots)
+    config = config_findings(vault)
+    return build_report(
+        found + sched + lanes + updates + engine + config, now=now, last_ok_at=_last_ok_at(rows), slots=slots
+    )

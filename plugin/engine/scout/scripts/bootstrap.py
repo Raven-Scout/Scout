@@ -29,6 +29,7 @@ import yaml
 
 from scout import config as scout_config
 from scout import custom_connectors, yaml_blocks
+from scout.errors import ConfigError
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -48,6 +49,7 @@ from scout.scripts.phase_assembly import (
 )
 from scout.scripts.three_way_merge import three_way_merge
 from scout.scripts.vault_drift import VaultEdit
+from scout.yaml_safe import load_yaml, yaml_problem
 
 
 @dataclass
@@ -156,14 +158,17 @@ _CAT1_FILES_FROM_PLUGIN = {
 }
 
 # Plugin-owned files the vault is known to extend, not just patch: parser.py is
-# grown by dreaming sessions in the vault (Pattern #68). They are managed files
-# like the rest, with one difference: when there is no recorded base to merge
-# against, the vault's version stays live and the plugin's is parked. Engines
-# before last-rendered/ merged these into a blocking `<file>.proposed-merge`
-# sidecar; one an older engine left behind still blocks the upgrade
-# (_refuse_pending_sidecars), so the name stays.
+# grown by dreaming sessions in the vault (Pattern #68), and the KB page
+# standard is tailored by vaults that wrote their own before the plugin shipped
+# one. They are managed files like the rest, with one difference: when there is
+# no recorded base to merge against, the vault's version stays live and the
+# plugin's is parked. Engines before last-rendered/ merged parser.py into a
+# blocking `<file>.proposed-merge` sidecar; one an older engine left behind
+# still blocks the upgrade (_refuse_pending_sidecars), so the name stays.
 _CAT_MERGE_FILES = {
     "knowledge-base/ontology/parser.py": "templates/knowledge-base/ontology/parser.py",
+    # What a KB page must look like; the write protocol and kb-deep-work link it.
+    "docs/kb-page-standard.md": "templates/docs/kb-page-standard.md",
 }
 
 _CAT1_TEMPLATES = (
@@ -489,8 +494,14 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
 
 
 def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConnector]:
-    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped."""
+    """Valid custom connectors in ``cfg.vault``; each problem is warned on stderr and that entry skipped.
+
+    A value PyYAML can't build stops the caller instead: assembling without the
+    file would take its connectors' sections out of the brain files.
+    """
     result = custom_connectors.load(cfg.vault, plugin_root=cfg.plugin_root)
+    if result.unbuildable:
+        raise ConfigError(f"{custom_connectors.CUSTOM_FILE} {result.issues[0].message}; fix it, then run this again")
     for issue in result.issues:
         print(f"warning: {custom_connectors.CUSTOM_FILE}: {issue.path}: {issue.message}", file=sys.stderr)
     return result.connectors
@@ -766,7 +777,11 @@ def config_from_vault(
     its instance/user/connectors/notify blocks, or connectors.inputs), or when
     notify.wrap_channels isn't a non-empty list of known wrap channels.
     """
-    existing = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    text = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    try:
+        existing = load_yaml(text)
+    except yaml.YAMLError as e:
+        raise yaml.YAMLError(yaml_problem(e, text)) from e  # the callers print it; a YAML error quotes the file
     if existing is None:
         existing = {}
     if not isinstance(existing, dict):

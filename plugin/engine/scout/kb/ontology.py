@@ -83,6 +83,7 @@ from scout.kb.privacy import (
     label_from_facts,
     load_frontmatter_yaml,
     load_policy,
+    load_yaml,
     normalize_rel,
     note_facts,
     read_head,
@@ -363,7 +364,7 @@ class KnowledgeGraph:
     def _load_schema(self) -> dict[str, Any]:
         try:
             with open(self.schema_path, encoding="utf-8") as f:
-                return yaml.safe_load(f)
+                return load_yaml(f)
         except OSError as e:
             raise KBSchemaError(f"KB schema not found at {self.schema_path}: {e}") from e
         except yaml.YAMLError as e:
@@ -389,7 +390,7 @@ class KnowledgeGraph:
         self._adj = None
         if not self._full:
             return self
-        exclude = self._exclude_globs()
+        exclude = self.exclude_globs()
 
         labeller = _Labeller(self.kb_root, self.vault)
         root_key = os.path.abspath(self.kb_root)
@@ -534,7 +535,7 @@ class KnowledgeGraph:
         match = re.search(r"\[\[(.+?)]]", text)
         return match.group(1) if match else text
 
-    def _exclude_globs(self) -> tuple[str, ...]:
+    def exclude_globs(self) -> tuple[str, ...]:
         """The schema's ``graph.exclude`` (KB-relative globs), else :data:`DEFAULT_EXCLUDE`."""
         graph = self.schema.get("graph") if isinstance(self.schema, dict) else None
         if not isinstance(graph, dict) or "exclude" not in graph:

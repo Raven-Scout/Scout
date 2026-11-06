@@ -353,9 +353,10 @@ struct TaskCardView: View {
 
     @ViewBuilder
     private var trailingStatus: some View {
-        if task.done {
-            statusPill("Done", color: DS.Status.ok)
-        } else if fields.snooze, let until = task.snoozedUntil {
+        switch Self.trailingStatus(task, fields: fields) {
+        case .done(let label):
+            statusPill(label, color: DS.Status.ok)
+        case .snoozed(let until):
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
@@ -365,8 +366,103 @@ struct TaskCardView: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(EditorialChipBackground())
+        case .plan(let label):
+            HStack(spacing: 3) {
+                Image(systemName: "clock").imageScale(.small)
+                Text(label)
+            }
+            .font(DS.mono(10.5))
+            .foregroundStyle(DS.Ink.p3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(EditorialChipBackground())
+            .help(Self.planChipHelp(task.plan))
+        case .none:
+            EmptyView()
         }
     }
+
+    enum TrailingStatus: Equatable {
+        case done(String)
+        case snoozed(Date)
+        case plan(String)
+        case none
+    }
+
+    /// What the header's trailing slot shows: "Done" ("Done · 1h" once
+    /// `/scout-plan` has the actual time), the snooze date, or the plan chip.
+    /// A snoozed task never shows the plan chip, also when the profile hides
+    /// its snooze date.
+    static func trailingStatus(_ task: ActionTask, fields: ActionItemsDisplay.Fields, today: Date = Date()) -> TrailingStatus {
+        if task.done {
+            guard fields.plan, let actual = task.plan.actualMinutes else { return .done("Done") }
+            return .done("Done · \(TaskPlan.formatDuration(actual))")
+        }
+        if let until = task.snoozedUntil {
+            return fields.snooze ? .snoozed(until) : .none
+        }
+        if fields.plan, let label = planChipLabel(task.plan, today: today) {
+            return .plan(label)
+        }
+        return .none
+    }
+
+    /// The `/scout-plan` chip: "10:00-10:45 · 45m", the weekday first when the
+    /// block is not today, "· took 1h" once the actual is in, "45m" for an
+    /// estimate without a block. Nil without a plan.
+    static func planChipLabel(_ plan: TaskPlan, today: Date = Date()) -> String? {
+        var parts: [String] = []
+        if let block = plan.block {
+            var range = "\(block.start)-\(block.end)"
+            if block.date != isoDay.string(from: today), let day = isoDay.date(from: block.date) {
+                range = "\(weekday.string(from: day)) " + range
+            }
+            parts.append(range)
+        }
+        if let estimate = plan.estimateMinutes {
+            parts.append(TaskPlan.formatDuration(estimate))
+        }
+        if let actual = plan.actualMinutes {
+            parts.append("took \(TaskPlan.formatDuration(actual))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Tooltip: "Planned 2026-09-30 10:00-10:45, estimate 45m (raw 30m), deep, took 1h on 2026-09-30".
+    static func planChipHelp(_ plan: TaskPlan) -> String {
+        var parts: [String] = []
+        if let block = plan.block {
+            parts.append("planned \(block.date) \(block.start)-\(block.end)")
+        }
+        if let estimate = plan.estimateMinutes {
+            var line = "estimate \(TaskPlan.formatDuration(estimate))"
+            if let raw = plan.rawMinutes, raw != estimate {
+                line += " (raw \(TaskPlan.formatDuration(raw)))"
+            }
+            if let kind = plan.kind { line += ", \(kind)" }
+            parts.append(line)
+        }
+        if let actual = plan.actualMinutes {
+            var line = "took \(TaskPlan.formatDuration(actual))"
+            if let day = plan.actualDate { line += " on \(day)" }
+            parts.append(line)
+        }
+        let text = parts.joined(separator: ", ")
+        return text.prefix(1).uppercased() + text.dropFirst()
+    }
+
+    private static let isoDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f
+    }()
 
     private func statusPill(_ label: String, color: Color) -> some View {
         Text(label)
@@ -387,7 +483,7 @@ struct TaskCardView: View {
             await runOp(.editComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: .index(index),
+                selector: task.commentSelector(at: index),
                 newText: newText
             ))
         }
@@ -399,7 +495,7 @@ struct TaskCardView: View {
             await runOp(.deleteComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: .index(index)
+                selector: task.commentSelector(at: index)
             ))
         }
     }

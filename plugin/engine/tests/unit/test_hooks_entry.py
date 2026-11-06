@@ -30,6 +30,7 @@ run("kb-read-gate", {"tool_name": "Bash", "tool_input": {"command": "cat knowled
 run("kb-read-gate", {"tool_name": "Grep", "tool_input": {"pattern": "x"}})
 run("kb-read-label", {"tool_name": "Read", "tool_input": {"file_path": str(vault / "knowledge-base/people/sam.md")}})
 run("outbound-gate", {"tool_name": "mcp__s__slack_send_message", "tool_input": {"message": "Ask Sammy."}})
+run("shared-read-record", {"tool_name": "mcp__s__shared_with_me", "tool_response": {"owners": []}})
 heavy = sorted(m for m in sys.modules if m == "typer" or m.startswith("typer.") or m in ("click", "scout.cli"))
 print("HEAVY=" + json.dumps(heavy))
 """
