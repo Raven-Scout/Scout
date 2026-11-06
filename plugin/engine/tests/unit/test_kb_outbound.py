@@ -2,7 +2,8 @@
 
 Over the privacy fixture vault (spec §11.1). Private notes there: ``sam``
 (``name: sam``, alias ``Sammy``), ``task-renew-permit``, ``billing`` (a plain
-note, slug only), ``draft`` and ``broken``. A draft or a query naming one of
+note, slug only: an ordinary word, so a link or its path names it, #576),
+``draft`` and ``broken``. A draft or a query naming one of
 them fails for every shared surface and passes for owner-only ones; the
 output names line numbers only, never the matched term.
 """
@@ -37,7 +38,8 @@ HITS = {
     "wikilink-display": "See [[sam|our contractor]] for details.",
     "wikilink-path": "See [[people/sam#Open questions]].",
     "wikilink-alias": "See [[Sammy]].",
-    "plain-slug": "The billing terms changed.",
+    "common-word-slug-link": "See [[billing]] for the terms.",
+    "common-word-slug-path": "Filed under topics/billing/billing.md today.",
     "multi-word-name-case": "TASK-RENEW-PERMIT is due.",
 }
 
@@ -113,7 +115,7 @@ def test_marker_allows_only_its_own_target_and_only_for_lint(vault: Path) -> Non
     terms = outbound.private_terms(vault, load_policy(vault))
     allowed = "See [[sam]] %%privacy:allow sam%%"
     other = "See [[sam]] %%privacy:allow billing%%"
-    two = "See [[sam]] and the billing terms %%privacy:allow sam%%"
+    two = "See [[sam]] and [[billing]] %%privacy:allow sam%%"
     text = "\n".join([allowed, other, two])
     assert outbound.find_mentions(text, terms, allow_markers=True) == [2, 3]
     # sends ignore markers: every line is a hit
@@ -191,11 +193,112 @@ def test_terms_follow_vault_edits(vault: Path, tmp_path: Path) -> None:
     assert outbound.find_mentions("Ask (pri pri two)!", terms, allow_markers=False) == [1]
 
 
+# ----- a private note named with an ordinary word (#576) -------------------------------
+
+
+def _private(vault: Path, rel: str, frontmatter: str = "") -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}visibility: private\n---\n\nBody.\n", encoding="utf-8")
+
+
+def test_a_common_word_slug_is_not_a_term(vault: Path) -> None:
+    """``billing``, ``draft`` and ``broken`` are private slugs here, and ordinary words."""
+    terms = outbound.private_terms(vault, load_policy(vault))
+    text = "The billing terms changed.\nKeep the draft short.\nThe build is broken."
+    assert outbound.find_mentions(text, terms, allow_markers=False) == []
+    assert outbound.check_outbound(vault, text, "slack") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "See [[billing]].",
+        "See [[topics/billing/billing|the terms]].",
+        "Filed under knowledge-base/topics/billing/billing.md",
+        "see `billing/billing`",
+        "Status: Billing CANARY-PRIV-3B5L",  # its two-word title
+    ],
+)
+def test_a_common_word_slug_still_matches_as_a_link_its_path_or_title(vault: Path, line: str) -> None:
+    terms = outbound.private_terms(vault, load_policy(vault))
+    assert outbound.find_mentions(f"{CLEAN}\n{line}", terms, allow_markers=False) == [2]
+
+
+def test_a_distinctive_one_word_slug_still_matches(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/projects/zephyrine/zephyrine.md")
+    _private(own, "knowledge-base/topics/pricing/pricing.md", "name: pricing\ntype: topic\ntitle: Pricing\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    text = "The pricing page moved.\nThe Zephyrine launch moved.\nq=zephyrine"
+    assert outbound.find_mentions(text, terms, allow_markers=False) == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("rel", "frontmatter"),
+    [
+        ("knowledge-base/people/grace.md", "name: grace\ntype: person\n"),
+        ("knowledge-base/people/grace.md", ""),  # no `type:`: the people folder says it
+        ("knowledge-base/contacts/grace.md", "name: Grace\ntype: Person\n"),
+    ],
+)
+def test_a_person_keeps_a_name_that_is_an_ordinary_word(tmp_path: Path, rel: str, frontmatter: str) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, rel, frontmatter)
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nAsk Grace about it.", terms, allow_markers=False) == [2]
+
+
+def test_an_alias_is_a_term_even_when_it_is_an_ordinary_word(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    _private(own, "knowledge-base/topics/house-move/house-move.md", "aliases: [Budget]\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert outbound.find_mentions(f"{CLEAN}\nThe budget is due.", terms, allow_markers=False) == [2]
+
+
+# The file names a mature vault files its private notes under: one word each.
+MATURE_SLUGS = (
+    "plan notes documents readme index todo ideas journal inbox meetings agenda overview summary "
+    "roadmap backlog goals decisions research reading status updates review retro report budget "
+    "finance pricing billing invoices taxes payroll hiring interviews onboarding travel health "
+    "contracts vendors customers strategy marketing sales roadmap launch release migration "
+    "metrics analytics security privacy legal admin operations process checklist runbook guide "
+    "family home house garden recipes books gifts shopping wishlist archive misc draft scratch"
+).split()
+
+
+def test_a_mature_vault_of_one_word_slugs_lets_ordinary_text_through(tmp_path: Path) -> None:
+    own = build_privacy_vault(tmp_path)
+    outbound.clear_cache()
+    for i, slug in enumerate(MATURE_SLUGS):
+        folder = ("topics", "projects", "personal", "areas")[i % 4]
+        _private(own, f"knowledge-base/{folder}/{slug}/{slug}.md", f"name: {slug}\ntitle: {slug.title()}\n")
+    _private(own, "knowledge-base/people/priyanka.md", "name: priyanka\ntype: person\n")
+    _private(own, "knowledge-base/projects/zephyrine/zephyrine.md", "name: zephyrine\ntype: project\n")
+    terms = outbound.private_terms(own, load_policy(own))
+    assert {n.slug for n in terms.notes} >= set(MATURE_SLUGS)
+    ordinary = (
+        "Status update: the plan for the release is in the notes; see the roadmap and the backlog.\n"
+        "Budget review and pricing decisions moved to the agenda for the next meeting.\n"
+        "Hiring, onboarding and security reviews are on track. Reading list in the inbox.\n"
+        "README and index documents need a refresh before launch; the draft checklist is in misc."
+    )
+    assert outbound.find_mentions(ordinary, terms, allow_markers=False) == []
+    assert outbound.find_mentions(f"{ordinary}\nAsk Priyanka.\nZephyrine slipped.", terms, allow_markers=False) == [
+        5,
+        6,
+    ]
+    assert outbound.find_mentions("See [[roadmap]].\nSee topics/plan/plan.md", terms, allow_markers=False) == [1, 2]
+
+
 # ----- check_outbound ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("surface", SHARED + QUERY_SURFACES)
-@pytest.mark.parametrize("kind", ["slug", "alias", "wikilink", "plain-slug"])
+@pytest.mark.parametrize("kind", ["slug", "alias", "wikilink", "common-word-slug-path"])
 def test_check_outbound_blocks_shared(vault: Path, surface: str, kind: str) -> None:
     assert outbound.check_outbound(vault, f"{CLEAN}\n\n{HITS[kind]}", surface) == [3]
 
