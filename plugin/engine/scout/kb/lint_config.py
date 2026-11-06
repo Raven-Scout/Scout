@@ -14,6 +14,10 @@ check. A path no rule matches gets the global ``mode``. So a narrow rule goes
 before a broad one, and an excluded path falls through to the next rule.
 Privacy findings block whatever the mode (:data:`PRIVACY_BLOCKING`).
 
+A ``scout-config.yaml`` that doesn't load at all is the exception: nothing says
+which paths its ``kb_lint`` blocked, so every check a mode decides blocks
+until the file loads again (:attr:`LintConfig.config_problem`, #567).
+
 A bad mode value means ``report``, never ``block``, so a config mistake can
 silently turn enforcement off. :attr:`LintConfig.warnings` names each mistake:
 the hook prints them on every commit, and ``kb lint --report`` and the doctor
@@ -33,7 +37,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scout.config import load_config, user_value
+from scout.config import config_load_problem, load_config, user_value
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -231,12 +235,16 @@ class LintConfig:
     path_modes: tuple[PathMode, ...] = ()
     # Config mistakes, for the person: what was wrong and what happens instead.
     warnings: tuple[str, ...] = ()
+    # Why scout-config.yaml doesn't load (``config_load_problem``); while set, every check blocks.
+    config_problem: str | None = None
 
     def mode_for(self, rel: str, check: str) -> str:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
         matching ``path_modes`` rule's, else the global ``mode``. A
         :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
-        otherwise reports."""
+        otherwise reports. ``block`` for every check while the config doesn't load."""
+        if self.config_problem is not None:
+            return "block"
         named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
             if (r.checks or named_only) and check not in r.checks:
@@ -251,6 +259,8 @@ class LintConfig:
     @property
     def mode_label(self) -> str:
         """The mode for display: ``report``/``block``, plus ``per path`` when rules exist."""
+        if self.config_problem is not None:
+            return f"block, {CONFIG_FILE} unusable"
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
@@ -409,7 +419,17 @@ def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) ->
         warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
 
 
+def _fail_closed(cfg: LintConfig, problem: str) -> LintConfig:
+    """``cfg`` (the packaged defaults) with every check blocking, and one line saying why."""
+    warning = (
+        f"{CONFIG_FILE} could not be used ({problem}), so its kb_lint and kb_budgets settings are not "
+        "applied and every size, line, diary and page check blocks until it is fixed"
+    )
+    return dataclasses.replace(cfg, mode="block", config_problem=problem, warnings=(warning, *cfg.warnings))
+
+
 def load_lint_config(data_dir: Path | None = None) -> LintConfig:
+    problem = config_load_problem(data_dir)
     cfg = load_config(data_dir)
     raw = cfg.get("kb_lint") or {}
     if not isinstance(raw, dict):
@@ -431,4 +451,5 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
         topic_globs=_globs(raw, "topic_globs"),
         report_exclude_globs=_globs(raw, "report_exclude_globs"),
     )
-    return dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    lint_cfg = dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    return lint_cfg if problem is None else _fail_closed(lint_cfg, problem)
