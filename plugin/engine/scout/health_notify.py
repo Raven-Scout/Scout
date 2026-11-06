@@ -28,11 +28,16 @@ from scout.scripts import notify_telegram
 from scout.yaml_safe import load_yaml, load_yaml_key
 
 AUTH_FINDING_ID = "auth.expired"
-AUTH_ALERT_WINDOW_S = 24 * 3600
 COMMAND_TIMEOUT_S = 30
 STATE_FILE = ".scout-state/health-notify.json"
 LOCK_FILE = ".scout-state/health-notify.lock"
 REMIND_AFTER = timedelta(hours=24)
+# A sign-in failure blocks every run and only a person can fix it, so a missed
+# first alert is reminded within hours, not a day. The desktop channel defers to
+# the wrapper's own (daily) banner only for this long, so the reminder reaches a
+# desktop-only vault too.
+AUTH_REMIND_AFTER = timedelta(hours=2)
+AUTH_ALERT_WINDOW_S = AUTH_REMIND_AFTER.total_seconds()
 # At wake, launchd fires the missed heartbeat and schedule tick together, and the
 # tick's completion lands only at its end: a sweep that runs first sees a stalled
 # scheduler that isn't. These findings push only once present for GRACE.
@@ -303,7 +308,7 @@ def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], 
         if last_pushed is None:
             any_new = True
             listed.append((key, f, None))
-        elif now - last_pushed >= REMIND_AFTER:
+        elif now - last_pushed >= (AUTH_REMIND_AFTER if key == AUTH_FINDING_ID else REMIND_AFTER):
             listed.append((key, f, _elapsed_words(now - (f.since or first_seen))))
     pushes: list[Push] = []
     if listed:

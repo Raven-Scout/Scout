@@ -59,6 +59,13 @@ def test_desktop_sends_auth_when_marker_is_25h_old(tmp_path):
     assert res["ok"] is True
 
 
+def test_desktop_sends_the_auth_reminder_once_the_wrapper_banner_is_auth_remind_after_old(tmp_path):
+    """The wrapper re-alerts only daily; the notifier's sooner auth reminder must reach the desktop."""
+    _marker(tmp_path, str(int(NOW.timestamp() - hn.AUTH_REMIND_AFTER.total_seconds())))
+    res = hn.desktop_channel(_push("auth.expired", kind="reminder"), vault=tmp_path, now=NOW, send=lambda t, b: True)
+    assert res is not None and res["ok"] is True
+
+
 def test_desktop_marker_garbage_falls_back_to_mtime(tmp_path):
     p = _marker(tmp_path, "not a number")
     recent = NOW.timestamp() - 600

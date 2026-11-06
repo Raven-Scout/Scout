@@ -583,6 +583,56 @@ def test_auth_expired_is_listed_first_even_when_another_red_sorts_before_it():
     assert pushes[0].finding_ids == ("auth.expired", "a")
 
 
+def test_a_sign_in_failure_is_reminded_after_auth_remind_after_not_a_day():
+    """A missed first alert must not mean a day of failed runs in silence."""
+    _, state = health_notify.plan(_report(_finding("auth.expired")), {}, now=NOW)
+    early = NOW + health_notify.AUTH_REMIND_AFTER - timedelta(minutes=1)
+    assert _run(_report(_finding("auth.expired")), state, early)[0] == []
+    kinds, pushes, state = _run(_report(_finding("auth.expired")), state, NOW + health_notify.AUTH_REMIND_AFTER)
+    assert kinds == ["reminder"]
+    assert pushes[0].body.startswith("Still failing after ")
+    assert pushes[0].body.endswith("auth.expired is broken\nFix: fix auth.expired")
+    assert state["findings"]["auth.expired"]["pushes"] == 2
+
+
+def test_auth_remind_after_is_hours_not_a_day():
+    assert timedelta(hours=1) <= health_notify.AUTH_REMIND_AFTER <= timedelta(hours=3)
+
+
+def test_the_shorter_auth_reminder_leaves_other_reds_on_the_daily_one():
+    _, state = health_notify.plan(_report(_finding("a"), _finding("auth.expired")), {}, now=NOW)
+    pushes, _ = health_notify.plan(
+        _report(_finding("a"), _finding("auth.expired")), state, now=NOW + health_notify.AUTH_REMIND_AFTER
+    )
+    assert [(p.kind, p.finding_ids) for p in pushes] == [("reminder", ("auth.expired",))]
+
+
+def test_a_desktop_only_vault_is_reminded_of_a_sign_in_failure_on_the_desktop(tmp_path, monkeypatch):
+    """The incident, on a vault with only the desktop channel (no Telegram, no
+    notify.command): the wrapper's own banner covers the first failure, and the
+    notifier's desktop reminder follows AUTH_REMIND_AFTER later, not a day later."""
+    from scout.errors import ConfigError
+
+    vault = _vault(tmp_path, monkeypatch)
+    (vault / ".scout-logs" / ".auth-alert-sent").write_text(str(int(NOW.timestamp())))
+    desktop: list[str] = []
+    monkeypatch.setattr(health_notify.notify_desktop, "send", lambda t, b: desktop.append(b) or True)
+
+    def no_telegram(tier, body):
+        raise ConfigError("telegram not configured")
+
+    monkeypatch.setattr(health_notify.notify_telegram, "send", no_telegram)
+    red = _report(_finding("auth.expired"))
+
+    health_notify.notify(vault, now=NOW, report=red)  # the wrapper's banner already said it
+    health_notify.notify(vault, now=NOW + timedelta(minutes=30), report=red)
+    assert desktop == []
+    health_notify.notify(vault, now=NOW + health_notify.AUTH_REMIND_AFTER, report=red)
+    assert desktop == ["auth.expired is broken\nFix: fix auth.expired"]
+    health_notify.notify(vault, now=NOW + health_notify.AUTH_REMIND_AFTER + timedelta(minutes=30), report=red)
+    assert len(desktop) == 1  # de-duplicated until the next reminder or recovery
+
+
 def test_two_overdue_reminders_are_one_push():
     _, state = health_notify.plan(_report(_finding("a"), _finding("b")), {}, now=NOW)
     pushes, state = health_notify.plan(_report(_finding("a"), _finding("b")), state, now=NOW + timedelta(hours=25))
