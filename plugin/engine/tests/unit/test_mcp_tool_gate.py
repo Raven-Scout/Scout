@@ -394,3 +394,124 @@ def test_hook_command_denies_through_the_real_cli(vault):
     )
     assert res.returncode == 0, res.stderr
     assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# --- a key spelled with YAML escapes (#590) ------------------------------------------
+# A double-quoted YAML key processes escapes, so the parsed key can be restrict_tools while the
+# file's text never says so. The gate goes by the parsed file, and the shell guard must start
+# Python for any file that might set the key.
+
+NOTES_ENTRY = (
+    "schema_version: 1\nconnectors:\n  notes_reader:\n    display_name: Notes reader\n"
+    "    server: notes\n    probe: mcp__notes__whoami\n{key}"
+    "    lookup:\n      tools: [mcp__notes__search]\n      when: Before answering, search the notes.\n"
+)
+KEY_SPELLINGS = [
+    pytest.param("    restrict_tools: true\n", id="plain"),
+    pytest.param('    "restrict_tools": true\n', id="double-quoted"),
+    pytest.param('    "restrict\\x5ftools": true\n', id="x5f"),
+    pytest.param('    "restrict\\u005ftools": true\n', id="u005f"),
+    pytest.param('    "restrict\\U0000005ftools": true\n', id="U0000005f"),
+]
+NOTES_GATE = {"notes": frozenset({"mcp__notes__whoami", "mcp__notes__search"})}
+
+
+@pytest.mark.parametrize("key", KEY_SPELLINGS)
+def test_the_gate_reads_the_parsed_key_however_it_is_spelled(tmp_path, monkeypatch, key):
+    (tmp_path / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    assert cc.load(tmp_path, plugin_root=PLUGIN).connectors["notes_reader"].restrict_tools is True
+    assert cc.tool_gate(tmp_path) == NOTES_GATE
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    out = gate_hook.run(stdin=_payload("mcp__notes__delete_note"))
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("", id="no-key"),
+        # YAML's \_ is a no-break space, not an underscore: the parsed key isn't restrict_tools.
+        pytest.param('    "restrict\\_tools": true\n', id="nbsp-escape"),
+    ],
+)
+def test_no_parsed_key_means_no_gate(tmp_path, key):
+    (tmp_path / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    # `load` drops the nbsp entry for its unknown key; either way it isn't restricted.
+    loaded = cc.load(tmp_path, plugin_root=PLUGIN).connectors.get("notes_reader")
+    assert loaded is None or loaded.restrict_tools is False
+    assert cc.tool_gate(tmp_path) == {}
+
+
+def test_an_absent_file_means_no_gate(tmp_path):
+    assert cc.tool_gate(tmp_path) == {} and cc.tool_gate_problem(tmp_path) is None
+
+
+def test_a_syntax_error_gates_everything_without_the_literal_key(tmp_path):
+    # With no literal-text shortcut, every parse failure fails closed (#564's rule).
+    (tmp_path / cc.CUSTOM_FILE).write_text('connectors:\n  w:\n    "restrict\\x5ftools": true\n    x: [unclosed\n')
+    assert cc.tool_gate(tmp_path) == {cc.GATE_ALL: frozenset()}
+
+
+def _stub_plugin_root(tmp_path: Path) -> Path:
+    """A CLAUDE_PLUGIN_ROOT whose scoutctl only says it ran, to see whether the shell guard starts Python."""
+    stub = tmp_path / "stub-plugin" / "engine" / "bin" / "scoutctl"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("#!/bin/sh\necho ran\n")
+    stub.chmod(0o755)
+    return tmp_path / "stub-plugin"
+
+
+def _guard(tmp_path: Path, vault: Path) -> str:
+    env = {**os.environ, "SCOUT_DATA_DIR": str(vault), "CLAUDE_PLUGIN_ROOT": str(_stub_plugin_root(tmp_path))}
+    res = subprocess.run(["sh", "-c", _pre_tool_use_command()], env=env, input="{}", capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    return res.stdout
+
+
+@pytest.mark.parametrize("key", KEY_SPELLINGS)
+def test_hook_command_starts_python_for_every_spelling_of_the_key(tmp_path, key):
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key=key))
+    assert _guard(tmp_path, v) == "ran\n"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(NOTES_ENTRY.format(key="    restrict_tools: true\n").encode("utf-16"), id="utf-16"),
+        pytest.param(b"connectors: {}\n\x00\n", id="nul-byte"),
+    ],
+)
+def test_hook_command_starts_python_for_a_file_grep_cannot_read_as_text(tmp_path, content):
+    # Another encoding hides the key's bytes from grep; Python can't read the file either, so it gates everything.
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_bytes(content)
+    assert _guard(tmp_path, v) == "ran\n"
+
+
+@pytest.mark.parametrize("custom_file", [None, "", NOTES_ENTRY.format(key=""), "schema_version: 1\nconnectors: {}\n"])
+def test_hook_command_skips_python_for_a_file_that_cannot_set_the_key(tmp_path, custom_file):
+    v = tmp_path / "vault"
+    v.mkdir()
+    if custom_file is not None:
+        (v / cc.CUSTOM_FILE).write_text(custom_file)
+    assert _guard(tmp_path, v) == ""
+
+
+def test_hook_command_denies_an_escaped_key_through_the_real_cli(tmp_path):
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / cc.CUSTOM_FILE).write_text(NOTES_ENTRY.format(key='    "restrict\\x5ftools": true\n'))
+    env = {**os.environ, "SCOUT_DATA_DIR": str(v), "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
+    res = subprocess.run(
+        ["sh", "-c", _pre_tool_use_command()],
+        env=env,
+        input=json.dumps({"tool_name": "mcp__notes__delete_note"}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

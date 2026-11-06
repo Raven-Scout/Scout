@@ -16,9 +16,10 @@ lists (``custom_connectors.tool_gate``).
     connector that needs writes is defined without ``restrict_tools``.
   - The vault is SCOUT_DATA_DIR, else the one containing the session's cwd; a
     session in no vault is not gated (no ``~/Scout`` fallback). hooks.json
-    finds it the same way in the shell and greps its file for
-    ``restrict_tools``, so Python starts (~0.15 s a call) only for sessions in
-    a vault that uses it.
+    finds it the same way in the shell, and starts Python (~0.13 s a call)
+    only when its file might set ``restrict_tools``: the literal text, any
+    backslash (a double-quoted YAML key can spell it with escapes, #590), or a
+    NUL byte (another encoding, which grep can't read and Python gates).
   - Fails closed: a gate that can't be computed denies the call.
   - Prints a PreToolUse deny decision, or nothing to let the call through.
 """
@@ -44,7 +45,7 @@ def decide(tool_name: str, gate: dict[str, frozenset[str]], problem: str | None 
     if GATE_ALL in gate:
         return (
             f"Scout blocks every MCP tool in this session: {problem or f'{CUSTOM_FILE} could not be read'}, "
-            "and a connector there restricts its tools. Carry on without MCP tools; "
+            "and a connector there may restrict its tools. Carry on without MCP tools; "
             "`scoutctl connectors custom list` shows the problem."
         )
     # Match the server case-insensitively so a differently-cased name can't slip past.

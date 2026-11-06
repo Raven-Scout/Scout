@@ -736,9 +736,10 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     """Server → the MCP tools a scheduled run may call, for each ``restrict_tools`` entry.
 
     Read on the hook path, so unvalidated and never raises — and it fails
-    closed. An entry whose ``restrict_tools`` is anything but absent or false
-    is gated even when it is otherwise invalid: ``load`` drops an invalid
-    entry, and that must not quietly lift its restriction. A file that exists
+    closed. It goes by the parsed file only, never its text. An entry whose
+    ``restrict_tools`` is anything but absent or false is gated even when it is
+    otherwise invalid: ``load`` drops an invalid entry, and that must not
+    quietly lift its restriction. A file that exists
     but can't be read or parsed (a syntax error, or a value PyYAML can't build:
     either way its layout may hide a restricted server), isn't a mapping of
     connectors, or has a restricted entry that names no server, gates every
@@ -763,8 +764,7 @@ def _tool_gate(vault: Path) -> tuple[dict[str, frozenset[str]], str | None]:
         return {}, None
     except (OSError, UnicodeDecodeError) as e:
         return gate_all, f"{CUSTOM_FILE} could not be read ({type(e).__name__})"
-    if "restrict_tools" not in text:
-        return {}, None
+    # No shortcut on the text: a double-quoted key like "restrict\x5ftools" parses to restrict_tools (#590).
     try:
         raw = load_yaml(text)
     except yaml.YAMLError as e:
