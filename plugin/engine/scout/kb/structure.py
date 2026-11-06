@@ -16,6 +16,8 @@ Per ``<projects_dir>/<name>/`` folder with a ``<name>.md`` front page:
   one over ``page_target_bytes``.
 - **sections**: the standard's ``##`` headings, all present.
 - **narration**: run-log markers in the body (``narration_markers``).
+- **bullets** (``kb lint`` only): an entry in a ``bullet_sections`` section over
+  ``max_bullet_chars``, a bullet with its wrapped lines or a paragraph.
 - **as_of**: the front page's frontmatter has one.
 - **stale**: the newest commit touching any other file in the folder (the
   front page and ``archive/`` aside) is more than ``stale_days`` after ``as_of``.
@@ -108,6 +110,8 @@ class StructureConfig:
     stale_days: int
     required_sections: tuple[str, ...]
     narration_markers: tuple[Marker, ...]
+    max_bullet_chars: int = 300
+    bullet_sections: tuple[str, ...] = ("Where it stands",)
 
 
 def _strs(raw: dict[str, Any], key: str) -> tuple[str, ...]:
@@ -140,6 +144,9 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
     if not parts or ".." in parts:
         raise KBError("kb_structure.projects_dir must be a folder inside the vault")
     try:
+        max_bullet_chars = int(raw.get("max_bullet_chars", 300))
+        if max_bullet_chars <= 0:
+            raise ValueError(f"max_bullet_chars must be a positive number, not {max_bullet_chars}")
         return StructureConfig(
             projects_dir="/".join(parts),
             skip_projects=frozenset(_strs(raw, "skip_projects")),
@@ -149,6 +156,8 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
             stale_days=int(raw.get("stale_days", 3)),
             required_sections=_strs(raw, "required_sections"),
             narration_markers=_markers(raw),
+            max_bullet_chars=max_bullet_chars,
+            bullet_sections=_strs(raw, "bullet_sections") if "bullet_sections" in raw else ("Where it stands",),
         )
     except (TypeError, ValueError) as e:
         raise KBError(f"kb_structure: {e}") from e
@@ -179,6 +188,53 @@ def missing_sections(body: str, required: Sequence[str]) -> list[str]:
 def narration_found(body: str, markers: Sequence[Marker]) -> list[str]:
     """The labels of the markers that occur in the body, sorted."""
     return sorted({m.label for m in markers if m.pattern.search(body)})
+
+
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+_SECTION_START = re.compile(r"^#{1,2}\s")
+
+
+def section_entries(text: str, sections: Sequence[str]) -> list[tuple[int, int, str]]:
+    """``(first_line, last_line, text)`` per entry under the ``## <section>`` headings named:
+    a bullet with its wrapped lines, or a paragraph. 1-based; the text is its lines
+    stripped and joined with spaces. Headings, tables, fenced code and blank lines end an
+    entry, and nothing inside a fence counts: a ``# comment`` there is not a heading."""
+    wanted = set(sections)
+    out: list[tuple[int, int, str]] = []
+    entry: list[str] = []
+    start = 0
+    inside = in_fence = False
+
+    def flush(end: int) -> None:
+        if entry:
+            out.append((start, end, " ".join(entry)))
+            entry.clear()
+
+    lines = text.split("\n")
+    for n, line in enumerate(lines, 1):
+        if line.lstrip().startswith(("```", "~~~")):
+            flush(n - 1)
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if _SECTION_START.match(line):
+            flush(n - 1)
+            heading = _HEADING.match(line)
+            inside = heading is not None and heading.group(1) in wanted
+            continue
+        if not inside:
+            continue
+        if not line.strip() or line.lstrip().startswith(("#", "|")):
+            flush(n - 1)
+            continue
+        if _BULLET.match(line):
+            flush(n - 1)
+        if not entry:
+            start = n
+        entry.append(line.strip())
+    flush(len(lines))
+    return out
 
 
 def page_as_of(fm: dict[str, Any]) -> dt.date | None:

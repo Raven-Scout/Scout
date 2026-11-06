@@ -55,7 +55,9 @@ projects/<name>/
    `last_verified:` and `verified_against:`, never in a "Last verified" line or blockquote at the
    top.
 4. **Plain sentences, short bullets.** Keep a bullet to two lines at most, with one bold phrase at
-   most. No walls of bold. Use tables only for people, decisions and dates.
+   most; in "Where it stands", at most ~300 characters, which `kb lint` checks. What doesn't fit
+   goes in the linked topic note, not in a second long bullet. No walls of bold. Use tables only
+   for people, decisions and dates.
 5. **Absolute dates.** Write "Mar 12", or "Mar 12, 2026" when the year matters. Never "yesterday" or
    "last run". Times only when they matter, labelled with their zone (`%Z`).
 6. **Current state replaces old state.** When a fact changes, rewrite it where it sits. Old states
@@ -87,8 +89,8 @@ verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[s
 
 ## Where it stands
 _As of Mar 14, 2026._
-- <up to 6 bullets of current state, the most important first. Each ends with a link to the
-  topic note holding the detail.>
+- <up to 6 bullets of current state, the most important first, each at most ~300 characters.
+  Each ends with a link to the topic note holding the detail.>
 
 ## What's next
 | When | What | Who |

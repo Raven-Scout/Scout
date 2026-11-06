@@ -494,8 +494,8 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
     if problem := tool_gate_problem(vault):
         warnings.append(
-            f"{problem}, so every MCP tool is blocked in every session in this vault until it is fixed "
-            "(a connector there restricts its tools)"
+            f"{problem}, so Scout can't tell whether a connector there restricts its tools "
+            "and may block every MCP tool in this vault's sessions until it is fixed"
         )
     try:
         cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
