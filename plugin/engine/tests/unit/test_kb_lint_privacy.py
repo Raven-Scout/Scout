@@ -518,6 +518,177 @@ def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> N
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
 
 
+# ----- moves out of a local-only path (#562) ---------------------------------------
+
+POSITIONS = "trading/positions.md"  # local-only through the fixture overlay's local_only_add
+
+
+@pytest.mark.parametrize("dst", ["knowledge-base/topics/misc/positions.md", "notes/positions.md"])
+def test_a_run_may_not_move_a_note_out_of_a_local_only_path(vault: Path, dst: str) -> None:
+    """In the privacy scope or outside it: once moved, repo sync would upload it."""
+    (vault / dst).parent.mkdir(parents=True, exist_ok=True)
+    git(vault, "mv", POSITIONS, dst)
+    assert checks(vault, RUN) == [(dst, "privacy-widening", True, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-widening]" in out and "local-only" in out
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_write_then_delete_move_out_of_a_local_only_path_is_blocked(vault: Path) -> None:
+    text = _read(vault, POSITIONS)
+    git(vault, "rm", "-q", POSITIONS)
+    stage(vault, "notes/positions.md", text + "\nOne more line.\n")
+    assert checks(vault, RUN) == [("notes/positions.md", "privacy-widening", True, None)]
+
+
+def test_a_run_may_not_move_any_file_out_of_a_local_only_path(vault: Path) -> None:
+    stage(vault, "trading/ledger.csv", "date,amount\n2026-01-02,10\n2026-01-03,20\n")
+    commit(vault)
+    (vault / "exports").mkdir()
+    git(vault, "mv", "trading/ledger.csv", "exports/ledger.csv")
+    assert checks(vault, RUN) == [("exports/ledger.csv", "privacy-widening", True, None)]
+
+
+def test_a_run_may_move_a_note_within_local_only_paths(vault: Path) -> None:
+    (vault / "trading/archive").mkdir()
+    git(vault, "mv", POSITIONS, "trading/archive/positions.md")
+    assert checks(vault, RUN) == []
+
+
+def _with_sync_only(vault: Path, entries: str) -> None:
+    text = _read(vault, "scout-config.yaml")
+    stage(vault, "scout-config.yaml", text + f"  sync_only: {entries}\n")
+    commit(vault, "owner sets sync_only")
+
+
+def test_a_run_may_move_a_local_only_note_to_a_path_outside_sync_only(vault: Path) -> None:
+    """Outside the upload allowlist the note stays home, so nothing leaves."""
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    git(vault, "mv", POSITIONS, "positions.md")
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_move_a_file_into_sync_only(vault: Path) -> None:
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    stage(vault, "inbox/idea.md", "# Idea\n\nA stand-in note that never syncs.\n")
+    commit(vault)
+    git(vault, "mv", "inbox/idea.md", "knowledge-base/topics/misc/idea.md")
+    assert checks(vault, RUN) == [("knowledge-base/topics/misc/idea.md", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_still_move_ordinary_notes(vault: Path) -> None:
+    git(vault, "mv", PLAIN, "knowledge-base/topics/misc/plain-renamed.md")
+    assert checks(vault, RUN) == []
+
+
+# ----- a run adding to a note that is already shared (#569) -----------------------
+
+SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
+_SHARE_SOURCES = (
+    "  federation:\n    enabled: true\n  federation_defaults:\n"
+    '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n'
+)
+_SOURCE_TEXT = (
+    "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\n"
+    "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n"
+)
+
+
+def _share(vault: Path, overlay: str) -> None:
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(overlay)
+    git(vault, "add", "scout-config.yaml")
+
+
+def _shared_source(vault: Path) -> None:
+    """A meeting note shared with Priya by a folder default, committed by the owner."""
+    _share(vault, _SHARE_SOURCES)
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes with Priya")
+
+
+def test_a_run_may_not_add_a_pages_fact_to_a_shared_source_note(vault: Path) -> None:
+    """The label doesn't change, only the content: Priya would read what the page says."""
+    _shared_source(vault)
+    n = append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+    rc, out = hook(vault, {**RUN, "SCOUT_LINT_OVERRIDE": "x"})
+    assert rc == 1 and "[privacy-widening]" in out and "already shared" in out
+    # The owner may.
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    n = append(vault, PLAIN, "A new fact from another page.")
+    assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, n)]
+
+
+def test_a_run_may_not_reword_a_line_of_a_shared_note(vault: Path) -> None:
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, 9)]
+
+
+def test_a_run_may_remove_or_move_lines_of_a_shared_note(vault: Path) -> None:
+    """Nothing Priya couldn't already read."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("Priya walked through the rollout plan.\n\n", ""))
+    assert checks(vault, RUN) == []
+    stage(
+        vault,
+        SOURCE,
+        _SOURCE_TEXT.replace(
+            "Priya walked through the rollout plan.\n\nThe pilot starts next week.\n",
+            "The pilot starts next week.\n\nPriya walked through the rollout plan.\n",
+        ),
+    )
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_write_a_new_note_into_a_share(vault: Path) -> None:
+    """A new note gets its folder's share from the owner's default; only adding to a shared one is refused."""
+    _share(vault, _SHARE_SOURCES)
+    commit(vault, "share source notes with Priya")
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_reshare_a_note_by_dropping_its_federation_scope_none(vault: Path) -> None:
+    """Declaring ``none`` and appending narrows; dropping the line again shares the fact with Priya."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nfederation_scope: none\n", 1))
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == []
+    commit(vault, "run: narrow and append")
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("federation_scope: none\n", "", 1))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_move_a_note_into_a_shared_folder(vault: Path) -> None:
+    """#586: the declared scope doesn't change, the folder default shares it."""
+    _share(vault, _SHARE_TOPICS)
+    stage(vault, "knowledge-base/topics/other/rollout.md", "# Rollout\n\nThe pilot starts next week.\n")
+    commit(vault, "share topics/misc with Priya")
+    moved = "knowledge-base/topics/misc/rollout.md"
+    git(vault, "mv", "knowledge-base/topics/other/rollout.md", moved)
+    assert checks(vault, RUN) == [(moved, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
+    """``widget.md`` declares ``org``, but nothing is shared until federation is enabled."""
+    _share(vault, _SHARE_SOURCES.replace("enabled: true", "enabled: false"))
+    stage(vault, SOURCE, _SOURCE_TEXT)
+    commit(vault, "share source notes later")
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    append(vault, WIDGET, "A new fact.")
+    assert checks(vault, RUN) == []
+
+
 # ----- kb lint --report -----------------------------------------------------------
 
 

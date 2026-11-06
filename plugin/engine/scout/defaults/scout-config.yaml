@@ -127,10 +127,16 @@ kb_lint:
   # files, everything else reports (size too, since most pages start over budget):
   #   path_modes:
   #     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
-  # The page standard's checks (`page-loose`, `page-sections`, `page-narration`:
-  # new debt on a project folder; `scoutctl kb structure` reports the existing
-  # debt) report until a rule names them in `checks:`. Neither `mode: block` nor
-  # a rule with no `checks:` makes them block.
+  # The page standard's checks (`page-loose`, `page-sections`, `page-narration`,
+  # `page-bullet`: new debt on a project folder; `scoutctl kb structure`
+  # reports the existing debt) report until a rule names them in `checks:`.
+  # Neither `mode: block` nor a rule with no `checks:` makes them block.
+  # A rule's glob and exclude may use `{folder}`, the name of the folder the
+  # file is in: once, in the last segment, beside plain text only. Example —
+  # project front pages may not regrow, and nothing else changes:
+  #     - glob: "knowledge-base/projects/*/{folder}.md"
+  #       mode: block
+  #       checks: [size, page-narration, page-sections, page-bullet]
   path_modes: []
   max_line_chars: 1500
   max_line_chars_strict: 500
@@ -236,6 +242,11 @@ kb_structure:
     - "History"
   # Run narration that belongs in the commit message and session log, not
   # the page body (Python regexes; the label is what the report prints).
+  # kb lint's `page-bullet`: an entry the commit adds to one of these
+  # sections (a bullet with its wrapped lines, or a paragraph) over this many
+  # characters. The detail belongs in a knowledge/ note the bullet links to.
+  max_bullet_chars: 300
+  bullet_sections: ["Where it stands"]
   narration_markers:
     - {label: "Last verified", pattern: "(?i)last verified"}
     - {label: "Finding N", pattern: "\\bFinding \\d+"}
