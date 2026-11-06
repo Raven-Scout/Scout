@@ -743,7 +743,8 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     but can't be read or parsed (a syntax error, or a value PyYAML can't build:
     either way its layout may hide a restricted server), isn't a mapping of
     connectors, or has a restricted entry that names no server, gates every
-    server (``GATE_ALL``); :func:`tool_gate_problem` says why. Enabled or not
+    server (``GATE_ALL``); :func:`tool_gate_problem` says why. An empty file,
+    or one with no ``connectors`` yet, restricts nothing. Enabled or not
     doesn't matter: a disabled connector's server stays restricted.
     """
     return _tool_gate(vault)[0]
@@ -770,6 +771,8 @@ def _tool_gate(vault: Path) -> tuple[dict[str, frozenset[str]], str | None]:
     except yaml.YAMLError as e:
         return gate_all, f"{CUSTOM_FILE} could not be read: {yaml_problem(e, text)}"
     conns = raw.get("connectors") if isinstance(raw, dict) else None
+    if raw is None or (isinstance(raw, dict) and conns is None):
+        return {}, None  # empty, comments only, or no connectors yet: nothing to restrict
     if not isinstance(conns, dict):
         return gate_all, f"{CUSTOM_FILE} has no connectors mapping"
     gate: dict[str, set[str]] = {}

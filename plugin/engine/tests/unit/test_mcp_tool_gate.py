@@ -442,6 +442,23 @@ def test_no_parsed_key_means_no_gate(tmp_path, key):
     assert cc.tool_gate(tmp_path) == {}
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("# connector notes\n", id="comments-only"),
+        pytest.param("# C:\\tools\n", id="comment-with-backslash"),
+        pytest.param("schema_version: 1\n", id="schema-only"),
+        pytest.param("schema_version: 1\nconnectors:\n", id="bare-connectors"),
+        pytest.param('schema_version: 1\n# C:\\tools\n"connectors":\n', id="bare-connectors-with-backslash"),
+    ],
+)
+def test_a_file_with_no_connectors_means_no_gate(tmp_path, text):
+    # The guard starts Python for the backslash ones; with nothing to restrict, the gate stays off.
+    (tmp_path / cc.CUSTOM_FILE).write_text(text)
+    assert cc.tool_gate(tmp_path) == {} and cc.tool_gate_problem(tmp_path) is None
+
+
 def test_an_absent_file_means_no_gate(tmp_path):
     assert cc.tool_gate(tmp_path) == {} and cc.tool_gate_problem(tmp_path) is None
 
