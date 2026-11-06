@@ -55,8 +55,17 @@ PRICED_BY_USAGE = "usage"
 # `scoutctl budget record-attempt`'s exit code when no retry should follow.
 EXIT_NO_RETRY = 3
 
-# Below this, a retry's --max-budget-usd can't buy a turn.
-_MIN_RETRY_CAP = 0.01
+# claude checks --max-budget-usd after a turn, so a retry runs at least one, and
+# a scheduled run's first turn (system prompt, phase reads, cache write) costs
+# far more than a cent. A retry needs this much left: $1, or 10% of the run's cap,
+# but never more than the cap itself, so a run with a cap under $1 still retries.
+_MIN_RETRY_USD = 1.00
+_MIN_RETRY_FRACTION = 0.10
+
+
+def _retry_floor(cap: float) -> float:
+    return min(max(_MIN_RETRY_USD, _MIN_RETRY_FRACTION * cap), cap)
+
 
 # The same guard write-session-cost.sh puts on SCOUT_MODEL: only a plain model
 # name is written.
@@ -140,6 +149,7 @@ def _usage_cost(path: Path) -> float:
 
     Claude Code writes one row per content block, each repeating its message's
     usage, so rows are deduped by ``message.id`` (the last row of a message wins).
+    It is a floor: subagent turns live in their own transcripts and aren't read.
     """
     turns: dict[str, dict] = {}
     try:
@@ -341,9 +351,15 @@ def record_attempt(
     if cap > 0:
         # Rounded before the floor, so float error (16.599999…) doesn't cost a cent.
         next_cap = math.floor(round(max(cap - cost.usd, 0.0) * 100, 6)) / 100
-        if next_cap < _MIN_RETRY_CAP:
+        floor = _retry_floor(cap)
+        if next_cap < floor:
             return AttemptOutcome(
-                cost, new, False, next_cap, f"this run's attempts spent ${cost.usd:.2f} of its ${cap:.2f} cap"
+                cost,
+                new,
+                False,
+                next_cap,
+                f"this run's attempts spent ${cost.usd:.2f} of its ${cap:.2f} cap; "
+                f"${next_cap:.2f} left, under the ${floor:.2f} a retry needs",
             )
 
     config = budget_check.load_config(paths.config_path(target))

@@ -311,6 +311,28 @@ def test_no_retry_once_the_runs_cap_is_spent(env):
     assert not outcome.retry and "cap" in outcome.reason
 
 
+@pytest.mark.parametrize(
+    ("cap", "spent", "retry", "next_cap"),
+    [
+        # claude checks its cap after a turn, so a retry needs enough for one: $1, or 10% of the cap.
+        (20.0, 18.5, False, 1.5),  # $1.50 left, under 10% of $20
+        (20.0, 17.5, True, 2.5),
+        (5.0, 4.2, False, 0.8),  # $0.80 left, under the $1 floor
+        (5.0, 3.9, True, 1.1),
+        (0.5, 0.0, True, 0.5),  # a cap under $1: the floor is the cap, so a first retry still runs
+    ],
+)
+def test_no_retry_without_enough_left_to_buy_a_turn(env, cap, spent, retry, next_cap):
+    vault, projects = env
+    _transcript(projects, vault, "a1", name=NAME, cost=spent)
+    outcome = run_cost.record_attempt(
+        "research", name=NAME, started=STARTED, cap=cap, exit_code=1, vault=vault, now=STARTED
+    )
+    assert outcome.retry is retry and outcome.next_cap == next_cap
+    if not retry:
+        assert "a retry needs" in outcome.reason
+
+
 def test_no_retry_once_the_window_reaches_the_skip_threshold(env):
     vault, projects = env
     # A $6 window budget, skipped at $3.00.

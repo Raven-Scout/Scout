@@ -173,6 +173,58 @@ def test_no_retry_once_the_attempts_spent_the_runs_cap(tmp_path: Path) -> None:
     assert "no retry" in log and "Transient API error detected" not in log
 
 
+def _failure_class(rig: Rig, exit_code: int) -> str:
+    """run-outcome.sh's class for the wrapper's log, as the runner records it."""
+    text = (TEMPLATE.parent / "run-outcome.sh.tmpl").read_text(encoding="utf-8")
+    for placeholder, value in {
+        "{{SCOUT_DIR}}": str(rig.vault),
+        "{{SCOUTCTL_BIN}}": str(rig.scoutctl),
+        "{{INSTANCE_NAME}}": "Scout",
+    }.items():
+        text = text.replace(placeholder, value)
+    script = _exe(rig.vault / "scripts" / "run-outcome.sh", text)
+    result = subprocess.run(
+        ["bash", "-c", f'. "{script}"; classify_failure "{rig.log}" {exit_code}'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def test_a_retry_withheld_for_budget_is_a_budget_failure(tmp_path: Path) -> None:
+    """The run spent its cap and then lost its connection: run health must say budget, not network."""
+    rig = Rig(tmp_path, costs=[25.0, 1.0], outputs=[TRANSIENT, "done"], codes=[1, 0])
+
+    result = rig.run()
+
+    assert result.returncode == 1
+    assert _failure_class(rig, result.returncode) == "budget"
+
+
+def test_a_retry_that_hit_its_reduced_cap_is_a_budget_failure(tmp_path: Path) -> None:
+    rig = Rig(tmp_path, costs=[8.4, 16.6], outputs=[TRANSIENT, "Error: Exceeded USD budget (16.6)"], codes=[1, 1])
+
+    result = rig.run()
+
+    assert result.returncode == 1 and rig.attempts() == 2 and rig.cap_of(2) == "16.60"
+    assert _failure_class(rig, result.returncode) == "budget"
+
+
+def test_engine_output_cannot_push_the_attempts_error_out_of_its_tail(tmp_path: Path) -> None:
+    """The attempt is classified before record-attempt writes to the log."""
+    rig = Rig(tmp_path, costs=[8.4, 5.0], outputs=[TRANSIENT, "done"], codes=[1, 0])
+    noisy = _exe(
+        tmp_path / "bin" / "noisy-scoutctl",
+        '#!/bin/bash\nfor i in $(seq 1 60); do echo "engine line $i" >&2; done\nexit 1\n',
+    )
+
+    result = rig.run(scoutctl=noisy)
+
+    assert result.returncode == 0, rig.log.read_text()
+    assert rig.attempts() == 2 and rig.cap_of(2) == CAP
+
+
 def test_without_scoutctl_the_retry_runs_as_before(tmp_path: Path) -> None:
     rig = Rig(tmp_path, costs=[8.4, 5.0], outputs=[TRANSIENT, "done"], codes=[1, 0])
 

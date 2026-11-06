@@ -1058,7 +1058,8 @@ def budget_record_attempt_cmd(
         err=True,
     )
     if not outcome.retry:
-        typer.echo(f"no retry: {outcome.reason}", err=True)
+        # run-outcome.sh's BUDGET_RE and health.FAILURE_LINE_RES match this line.
+        typer.echo(f"budget spent, no retry: {outcome.reason}", err=True)
         raise typer.Exit(EXIT_NO_RETRY)
     if outcome.next_cap is not None:
         typer.echo(f"{outcome.next_cap:.2f}")
