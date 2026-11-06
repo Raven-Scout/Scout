@@ -585,6 +585,29 @@ def test_a_run_may_write_a_new_note_into_a_share(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
+def test_a_run_may_not_reshare_a_note_by_dropping_its_federation_scope_none(vault: Path) -> None:
+    """Declaring ``none`` and appending narrows; dropping the line again shares the fact with Priya."""
+    _shared_source(vault)
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nfederation_scope: none\n", 1))
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == []
+    commit(vault, "run: narrow and append")
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("federation_scope: none\n", "", 1))
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_not_move_a_note_into_a_shared_folder(vault: Path) -> None:
+    """#586: the declared scope doesn't change, the folder default shares it."""
+    _share(vault, _SHARE_TOPICS)
+    stage(vault, "knowledge-base/topics/other/rollout.md", "# Rollout\n\nThe pilot starts next week.\n")
+    commit(vault, "share topics/misc with Priya")
+    moved = "knowledge-base/topics/misc/rollout.md"
+    git(vault, "mv", "knowledge-base/topics/other/rollout.md", moved)
+    assert checks(vault, RUN) == [(moved, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
 def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
     """``widget.md`` declares ``org``, but nothing is shared until federation is enabled."""
     _share(vault, _SHARE_SOURCES.replace("enabled: true", "enabled: false"))
