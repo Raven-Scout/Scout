@@ -67,7 +67,7 @@ import yaml
 from scout.config import load_config, today
 from scout.errors import KBError
 from scout.kb.frontmatter import frontmatter_block
-from scout.kb.lint_config import glob_match, lint_any, load_lint_config
+from scout.kb.lint_config import any_match, glob_match, load_lint_config
 from scout.kb.privacy import (
     FULL_READERS,
     Label,
@@ -533,20 +533,20 @@ def _excluder(vault: Path, lint_excludes: Sequence[str]) -> Callable[[str], bool
     """Whether a vault-relative path is left out. The schema is read on the first KB path
     that gets this far, so a commit that touches no project page never opens it.
 
-    Both lists go through ``lint_any``, which drops an over-complex glob: this runs in
-    the commit hook, and such a glob on a long path backtracks for hours."""
+    ``graph.exclude`` is read as ``kb stats`` and ``kb validate`` read it: KB-relative,
+    through ``glob_match``."""
     lint_globs = tuple(lint_excludes)
     graph_excludes: tuple[str, ...] | None = None
 
     def excluded(rel: str) -> bool:
         nonlocal graph_excludes
-        if lint_any(lint_globs, rel):
+        if any_match(lint_globs, rel):
             return True
         if not rel.startswith(KB_PREFIX):
             return False
         if graph_excludes is None:
             graph_excludes = _graph_excludes(vault)
-        return lint_any(graph_excludes, rel[len(KB_PREFIX) :])
+        return any_match(graph_excludes, rel[len(KB_PREFIX) :])
 
     return excluded
 

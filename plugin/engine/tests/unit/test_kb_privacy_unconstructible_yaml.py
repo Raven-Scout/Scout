@@ -141,7 +141,7 @@ def test_a_good_date_is_still_fine() -> None:
 
 @pytest.mark.parametrize("body", UNCONSTRUCTIBLE)
 def test_outbound_terms_and_migration_skip_it(body: str) -> None:
-    assert outbound._names_from_text(_fm(body)) == []
+    assert outbound._frontmatter(_fm(body)) == {}
     assert privacy_migrate._frontmatter(_fm(body)) is None
 
 
