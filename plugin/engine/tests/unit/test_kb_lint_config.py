@@ -10,7 +10,7 @@ import pytest
 
 from scout.config import user_value
 from scout.kb import lint_config
-from scout.kb.lint_config import MAX_GLOB_STARS, glob_match, in_privacy_scope, load_lint_config
+from scout.kb.lint_config import glob_match, in_privacy_scope, load_lint_config
 
 
 def test_glob_single_star_does_not_cross_slash() -> None:
@@ -352,38 +352,62 @@ def test_user_value_reads_the_vaults_own_file(tmp_path: Path) -> None:
     assert user_value("kb_lint", tmp_path) is None
 
 
-# ----- a glob can't hang the hook -----------------------------------------------
+# ----- a long glob is a glob like any other (#565) -------------------------------
+
+LONG_GLOB = "**a" * 10 + "**b"  # 22 `*`: kb-lint used to drop any glob over 6
+LONG_PATH = "knowledge-base/" + "a" * 60 + "/notb.md"
 
 
-def test_an_over_complex_glob_returns_at_once_and_matches_nothing(tmp_path: Path) -> None:
-    glob = "**a" * 10 + "**b"
-    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
+def test_a_long_path_modes_glob_applies_and_returns_at_once(tmp_path: Path) -> None:
+    _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{LONG_GLOB}.md', mode: block}}\n")
     cfg = load_lint_config(tmp_path)
-    assert any("matches nothing" in w for w in cfg.warnings)
+    assert cfg.warnings == ()
     started = time.monotonic()
-    assert cfg.mode_for("knowledge-base/" + "a" * 60 + ".md", "mega-line") == "report"
+    assert cfg.mode_for(LONG_PATH, "mega-line") == "block"
+    assert cfg.mode_for("knowledge-base/" + "a" * 60 + "/keep.md", "mega-line") == "report"
     assert time.monotonic() - started < 1
 
 
-def test_the_star_limit_is_kb_lints_and_never_the_shared_matcher(tmp_path: Path) -> None:
-    """Privacy and sync call glob_match: a rule of theirs must never drop out (test_kb_privacy has the labels)."""
+def test_a_long_exclude_in_a_rule_sends_the_path_on(tmp_path: Path) -> None:
+    rule = f"{{glob: 'knowledge-base/**', mode: block, exclude: ['{LONG_GLOB}.md']}}"
+    _path_modes(tmp_path, f"  path_modes:\n    - {rule}\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for(LONG_PATH, "mega-line") == "report"
+    assert cfg.mode_for("knowledge-base/keep.md", "mega-line") == "block"
+
+
+def test_a_long_glob_means_the_same_in_kb_lint_as_in_privacy(tmp_path: Path) -> None:
+    """Privacy and sync call glob_match; kb-lint's lists now do too (test_kb_privacy has the labels)."""
     glob, rel = "**/x/**/y/**/z/**", "knowledge-base/x/y/z/note.md"
-    assert glob.count("*") > MAX_GLOB_STARS
     assert glob_match(glob, rel)
     assert in_privacy_scope("w/x/y/z/note.txt", (glob,))
     _path_modes(tmp_path, f"  path_modes:\n    - {{glob: '{glob}', mode: block}}\n")
-    assert load_lint_config(tmp_path).mode_for(rel, "mega-line") == "report"
+    assert load_lint_config(tmp_path).mode_for(rel, "mega-line") == "block"
 
 
-def test_a_budget_glob_that_complex_warns_too(tmp_path: Path) -> None:
-    (tmp_path / "scout-config.yaml").write_text("kb_budgets:\n  '*a*a*a*a*a*a*a*b': 100\n", encoding="utf-8")
-    assert any("matches nothing" in w for w in load_lint_config(tmp_path).warnings)
-
-
-def test_every_shipped_glob_stays_under_the_star_limit(tmp_path: Path) -> None:
+def test_a_long_budget_glob_applies(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text(f"kb_budgets:\n  '{LONG_GLOB}.md': 100\n", encoding="utf-8")
     cfg = load_lint_config(tmp_path)
-    globs = [b.glob for b in cfg.budgets] + [*cfg.log_globs, *cfg.strict_line_globs, *cfg.exclude_globs]
-    assert globs and all(g.count("*") <= MAX_GLOB_STARS for g in globs)
+    assert cfg.warnings == ()
+    assert cfg.budget_for(LONG_PATH) == 100
+
+
+@pytest.mark.parametrize(
+    ("key", "applies"),
+    [
+        ("exclude_globs", lambda cfg, rel: not cfg.in_scope(rel)),
+        ("report_exclude_globs", lambda cfg, rel: cfg.report_excluded(rel)),
+        ("log_globs", lambda cfg, rel: cfg.is_log(rel)),
+        ("topic_globs", lambda cfg, rel: cfg.is_topic(rel)),
+        ("strict_line_globs", lambda cfg, rel: cfg.line_limit(rel) == cfg.max_line_chars_strict),
+    ],
+)
+def test_a_long_glob_in_each_lint_list_applies(tmp_path: Path, key: str, applies) -> None:
+    _path_modes(tmp_path, f"  {key}: ['{LONG_GLOB}.md']\n")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.warnings == ()
+    assert applies(cfg, LONG_PATH)
+    assert not applies(cfg, "knowledge-base/" + "a" * 60 + "/keep.md")
 
 
 # ----- the check ids ------------------------------------------------------------

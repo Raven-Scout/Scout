@@ -293,7 +293,7 @@ def test_overlay_local_only_add(tmp_path: Path) -> None:
 
 
 def test_a_long_privacy_glob_is_never_dropped(tmp_path: Path) -> None:
-    """kb-lint caps its own globs at MAX_GLOB_STARS; a privacy rule must keep protecting its path."""
+    """However many `*` it has, a privacy rule keeps protecting its path (kb-lint once dropped such globs)."""
     glob = "**/x/**/y/**/z/**"
     pol = load_policy(
         _overlay(
