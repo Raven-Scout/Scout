@@ -125,6 +125,16 @@ def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None
     assert "then do 5.5" in step
 
 
+def test_nightly_pass_only_cuts_a_shared_page(tmp_path: Path) -> None:
+    """A trim-only pick is shared: the run may remove lines, never add or reword one there (#569)."""
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    assert "**If the next line says `trim-only`, the page is shared: trim it instead.**" in step
+    assert "Cut whole lines only; never shorten, reword or reorder one" in step
+    assert "only into a note on a `move-to:` line" in step
+    assert "Never archive, copy or create a note, never add a line to the page" in step
+    assert "lines cut, lines moved and where" in step
+
+
 def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "It resumes a half-rebuilt page" in step
