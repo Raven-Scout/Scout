@@ -311,3 +311,27 @@ def test_page_bullet_reports_by_default_and_blocks_under_the_lock(kb_repo) -> No
     kb_repo.write("scout-config.yaml", FRONT_PAGE_LOCK)
     code, out = _hook(kb_repo)
     assert code == 1 and "[page-bullet]" in out and "Commit blocked" in out
+
+
+def test_a_code_fence_neither_ends_the_section_nor_counts_as_an_entry(kb_repo) -> None:
+    kb_repo.stage(FRONT, page([SHORT]))
+    kb_repo.commit()
+    fence = ["```", "# a comment, not a heading", "run --a-long-flag " + "x" * 400, "```"]
+    text = page([SHORT, *fence, LONG])
+    kb_repo.stage(FRONT, text)
+    [f] = bullets(kb_repo)
+    assert f.line == text.split("\n").index(LONG) + 1
+
+
+@pytest.mark.parametrize("limit", [0, -5])
+def test_a_bullet_limit_that_isnt_positive_is_a_bad_setting(kb_repo, limit: int) -> None:
+    kb_repo.write("scout-config.yaml", f"kb_structure:\n  max_bullet_chars: {limit}\n")
+    kb_repo.stage(FRONT, page([LONG]))
+    result = lint_staged(kb_repo.root, load_lint_config(kb_repo.root))
+    [config] = [f for f in result.findings if f.check.startswith("page-")]
+    assert config.check == "page-config" and "max_bullet_chars" in config.message
+
+
+def test_a_folder_glob_keeps_glob_matchs_trailing_newline_tolerance(tmp_path: Path) -> None:
+    _config(tmp_path, _rule("knowledge-base/projects/*/{folder}.md"))
+    assert load_lint_config(tmp_path).mode_for(FRONT + "\n", "size") == "block"

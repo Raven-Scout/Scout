@@ -208,6 +208,7 @@ def rule_glob_match(glob: str, rel: str) -> bool:
         return glob_match(glob, rel)
     if folder_problem(glob) is not None:
         return False  # the loader drops such a rule; this keeps the function total
+    rel = rel.removesuffix("\n")  # optional, as in glob_match
     head, _, last = glob.rpartition("/")
     before, _, after = last.partition(FOLDER_TOKEN)
     parent, _, name = rel.rpartition("/")
