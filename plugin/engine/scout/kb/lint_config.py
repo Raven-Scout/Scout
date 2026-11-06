@@ -14,14 +14,17 @@ check. A path no rule matches gets the global ``mode``. So a narrow rule goes
 before a broad one, and an excluded path falls through to the next rule.
 Privacy findings block whatever the mode (:data:`PRIVACY_BLOCKING`).
 
+A ``scout-config.yaml`` that doesn't load at all is the exception: nothing says
+which paths its ``kb_lint`` blocked, so every check a mode decides blocks
+until the file loads again (:attr:`LintConfig.config_problem`, #567).
+
 A bad mode value means ``report``, never ``block``, so a config mistake can
 silently turn enforcement off. :attr:`LintConfig.warnings` names each mistake:
 the hook prints them on every commit, and ``kb lint --report`` and the doctor
 show them too. A rule whose fields have the wrong type is dropped, because
 guessing could widen it (``checks: 5`` reading as "every check"). A dropped rule
-or an over-complex glob (:data:`MAX_GLOB_STARS`) in a rule's ``glob`` or
-``exclude`` sends the path on to the next rule, which may block: that fails
-closed, and the warning says what happened.
+sends the path on to the next rule, which may block: that fails closed, and the
+warning says what happened.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scout.config import load_config, user_value
+from scout.config import config_load_problem, load_config, user_value
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -64,12 +67,6 @@ WARNING_CHECKS = frozenset(
     }
 )
 KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
-
-# More `*` than this and a kb-lint glob matches nothing (`_lint_match`). It dates
-# from when `glob_match` could backtrack; it can't now, and the cap goes in a
-# follow-up to #565. `**/x/**/y/**` is the most a lint glob needs. Privacy and sync
-# rules never go through this cap: see `_lint_match`.
-MAX_GLOB_STARS = 6
 
 
 @dataclass(frozen=True)
@@ -180,23 +177,9 @@ def glob_match(glob: str, rel: str) -> bool:
     return _fullmatch(compiled, rel) or (rel.endswith("\n") and _fullmatch(compiled, rel[:-1]))
 
 
-def _any(globs: tuple[str, ...], rel: str) -> bool:
+def any_match(globs: tuple[str, ...], rel: str) -> bool:
+    """Whether any of ``globs`` matches ``rel``."""
     return any(glob_match(g, rel) for g in globs)
-
-
-def _lint_match(glob: str, rel: str) -> bool:
-    """``glob_match`` for kb-lint's own lists, where an over-complex glob matches nothing.
-
-    Only for these: a lint glob that drops out warns and fails no safety rule.
-    A privacy or sync rule that dropped out would quietly stop protecting a
-    path, so ``scout.kb.privacy``, ``lint_privacy``, ``repo_sync`` and
-    ``kb.read`` call ``glob_match`` directly."""
-    return glob.count("*") <= MAX_GLOB_STARS and glob_match(glob, rel)
-
-
-def lint_any(globs: tuple[str, ...], rel: str) -> bool:
-    """Whether any glob matches, with the over-complex ones dropped; see ``_lint_match``. For anything in the hook."""
-    return any(_lint_match(g, rel) for g in globs)
 
 
 CONFIG_FILE = "scout-config.yaml"
@@ -215,7 +198,7 @@ def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
         return True
     if rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES):
         return True
-    return _any(shared_files, rel)
+    return any_match(shared_files, rel)
 
 
 @dataclass(frozen=True)
@@ -252,17 +235,21 @@ class LintConfig:
     path_modes: tuple[PathMode, ...] = ()
     # Config mistakes, for the person: what was wrong and what happens instead.
     warnings: tuple[str, ...] = ()
+    # Why scout-config.yaml doesn't load (``config_load_problem``); while set, every check blocks.
+    config_problem: str | None = None
 
     def mode_for(self, rel: str, check: str) -> str:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
         matching ``path_modes`` rule's, else the global ``mode``. A
         :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
-        otherwise reports."""
+        otherwise reports. ``block`` for every check while the config doesn't load."""
+        if self.config_problem is not None:
+            return "block"
         named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
             if (r.checks or named_only) and check not in r.checks:
                 continue
-            if not _lint_match(r.glob, rel) or lint_any(r.exclude, rel):
+            if not glob_match(r.glob, rel) or any_match(r.exclude, rel):
                 continue
             if r.exclude_logs and self.is_log(rel):
                 continue
@@ -272,28 +259,30 @@ class LintConfig:
     @property
     def mode_label(self) -> str:
         """The mode for display: ``report``/``block``, plus ``per path`` when rules exist."""
+        if self.config_problem is not None:
+            return f"block, {CONFIG_FILE} unusable"
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not lint_any(self.exclude_globs, rel)
+        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
-            if _lint_match(b.glob, rel):
+            if glob_match(b.glob, rel):
                 return b.bytes
         return None
 
     def report_excluded(self, rel: str) -> bool:
-        return lint_any(self.report_exclude_globs, rel)
+        return any_match(self.report_exclude_globs, rel)
 
     def is_log(self, rel: str) -> bool:
-        return lint_any(self.log_globs, rel)
+        return any_match(self.log_globs, rel)
 
     def is_topic(self, rel: str) -> bool:
-        return lint_any(self.topic_globs, rel)
+        return any_match(self.topic_globs, rel)
 
     def line_limit(self, rel: str) -> int:
-        return self.max_line_chars_strict if lint_any(self.strict_line_globs, rel) else self.max_line_chars
+        return self.max_line_chars_strict if any_match(self.strict_line_globs, rel) else self.max_line_chars
 
     def rules_matching_nothing(self, tracked: list[str]) -> list[str]:
         """A warning per ``path_modes`` rule whose glob matches no file kb-lint checks.
@@ -304,7 +293,7 @@ class LintConfig:
         return [
             f"path_modes rule for {r.glob!r} matches no file kb-lint checks, so it does nothing"
             for r in self.path_modes
-            if not any(_lint_match(r.glob, rel) for rel in linted)
+            if not any(glob_match(r.glob, rel) for rel in linted)
         ]
 
 
@@ -397,14 +386,6 @@ def _path_modes(raw: Any, warn: Warn) -> tuple[PathMode, ...]:
     return tuple(r for r in rules if r is not None)
 
 
-def _complex_globs(cfg: LintConfig, warn: Warn) -> None:
-    rule_globs = (g for r in cfg.path_modes for g in (r.glob, *r.exclude))
-    lists = (cfg.log_globs, cfg.strict_line_globs, cfg.exclude_globs, cfg.topic_globs, cfg.report_exclude_globs)
-    for glob in dict.fromkeys((*rule_globs, *(b.glob for b in cfg.budgets), *(g for gs in lists for g in gs))):
-        if glob.count("*") > MAX_GLOB_STARS:
-            warn(f"glob {glob!r} has more than {MAX_GLOB_STARS} '*', so it matches nothing")
-
-
 _KB_LINT_KEYS = frozenset(
     {
         "mode",
@@ -438,7 +419,17 @@ def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) ->
         warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
 
 
+def _fail_closed(cfg: LintConfig, problem: str) -> LintConfig:
+    """``cfg`` (the packaged defaults) with every check blocking, and one line saying why."""
+    warning = (
+        f"{CONFIG_FILE} could not be used ({problem}), so its kb_lint and kb_budgets settings are not "
+        "applied and every size, line, diary and page check blocks until it is fixed"
+    )
+    return dataclasses.replace(cfg, mode="block", config_problem=problem, warnings=(warning, *cfg.warnings))
+
+
 def load_lint_config(data_dir: Path | None = None) -> LintConfig:
+    problem = config_load_problem(data_dir)
     cfg = load_config(data_dir)
     raw = cfg.get("kb_lint") or {}
     if not isinstance(raw, dict):
@@ -460,5 +451,5 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
         topic_globs=_globs(raw, "topic_globs"),
         report_exclude_globs=_globs(raw, "report_exclude_globs"),
     )
-    _complex_globs(lint_cfg, warnings.append)
-    return dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    lint_cfg = dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    return lint_cfg if problem is None else _fail_closed(lint_cfg, problem)

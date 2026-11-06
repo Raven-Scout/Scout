@@ -32,19 +32,19 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
-from scout.custom_connectors import GATE_ALL, tool_gate
+from scout.custom_connectors import CUSTOM_FILE, GATE_ALL, tool_gate, tool_gate_problem
 
 
-def decide(tool_name: str, gate: dict[str, frozenset[str]]) -> str | None:
-    """The deny reason for ``tool_name``, or None to allow it."""
+def decide(tool_name: str, gate: dict[str, frozenset[str]], problem: str | None = None) -> str | None:
+    """The deny reason for ``tool_name``, or None to allow it. ``problem`` says why the gate is ``GATE_ALL``."""
     if not tool_name.startswith("mcp__"):
         return None
     parts = tool_name.split("__")
     server = parts[1] if len(parts) >= 3 else ""
     if GATE_ALL in gate:
         return (
-            "Scout could not read connectors.custom.yaml, so every MCP tool is blocked in this session "
-            "(a connector there restricts its tools). Carry on without MCP tools; "
+            f"Scout blocks every MCP tool in this session: {problem or f'{CUSTOM_FILE} could not be read'}, "
+            "and a connector there restricts its tools. Carry on without MCP tools; "
             "`scoutctl connectors custom list` shows the problem."
         )
     # Match the server case-insensitively so a differently-cased name can't slip past.
@@ -82,7 +82,8 @@ def run(*, stdin: IO[str] | None = None) -> dict[str, Any] | None:
         vault = session_vault(data)
         if vault is None:
             return None  # not in a vault: no connectors.custom.yaml applies
-        reason = decide(tool_name, tool_gate(vault))
+        gate = tool_gate(vault)
+        reason = decide(tool_name, gate, tool_gate_problem(vault) if GATE_ALL in gate else None)
     except Exception as exc:  # noqa: BLE001 — fail closed: an unknown gate denies
         reason = f"Scout's MCP tool gate failed ({exc!r}), so {tool_name} is blocked in this session."
     if reason is None:

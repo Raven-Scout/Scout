@@ -711,7 +711,8 @@ def _hard(f: Finding) -> bool:
 def enforced(f: Finding, cfg: LintConfig | None) -> bool:
     """Whether ``f`` refuses the commit: a privacy block always; any other
     blocking finding only where its path's mode is ``block``. Without a config
-    (it failed to load) the size/diary lint fails open."""
+    (loading it crashed) the size/diary lint fails open; a scout-config.yaml that
+    doesn't parse is not that case: it loads as every check blocking."""
     if _hard(f):
         return True
     return f.blocking and cfg is not None and cfg.mode_for(f.path, f.check) == "block"

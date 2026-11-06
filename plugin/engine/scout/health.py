@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from itertools import takewhile
@@ -38,6 +39,13 @@ LEASE_UNAVAILABLE_RED = 3
 LEDGER_NAME = "run-outcomes.jsonl"
 LOCK_SKIP_THRESHOLD = 3
 LOCK_SKIP_WINDOW = timedelta(hours=24)
+# Runs that fail, succeed, then fail again never form a trailing streak, so
+# runs.failing clears on every success between them. This many failed runs in
+# the window, with a success after the first of them, is a pattern of its own.
+RECURRING_FINDING_ID = "runs.recurring"
+# Two days, not one: failures about twice a day can leave one inside any 24 h.
+RECURRING_FAILURE_THRESHOLD = 3
+RECURRING_FAILURE_WINDOW = timedelta(hours=48)
 # A Claude usage limit that named its reset: runs wait for it (#424).
 PAUSED_FINDING_ID = "runs.paused"
 
@@ -400,6 +408,63 @@ def _window_text(row: OutcomeRow) -> str:
     return f" {row.commits_in_window} commit(s) in that run's window{newest}."
 
 
+_RECURRING_FIX = {
+    "budget": (
+        "These runs reached the per-session cap (claude --max-budget-usd, set by connectors.inputs.max_budget "
+        "in scout-config.yaml). Compare what the runs cost with that cap, then raise it or move those slots "
+        "to a cheaper model (the slot's model: in .scout-state/schedule.yaml)."
+    ),
+}
+
+
+def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> Finding | None:
+    """Failed runs in the last 48 h with a success between them, which the trailing streak can't show.
+
+    A vault whose runs fail about twice a day reads green after every success
+    under runs.failing alone. This names how many failed, of how many ran, and
+    the failure classes, so the pattern stays visible between failures.
+
+    Only runs up to the last success count: a trailing streak is reported by
+    runs.failing, auth.expired or runs.paused, and counting it here would add a
+    doctor fix next to a pause, or advice for an older class next to a login
+    that has expired. A single streak that has already ended isn't a pattern
+    either, so a success must fall between the first and last failure counted.
+    """
+    cutoff = now - RECURRING_FAILURE_WINDOW
+    recent = [r for r in rows if r.outcome not in SKIP_OUTCOMES and r.finished_at >= cutoff]
+    oks = [r.finished_at for r in recent if r.outcome == "ok"]
+    if not oks:
+        return None
+    settled = [r for r in recent if r.finished_at <= max(oks)]
+    failed = [r for r in settled if r.outcome == "failed"]
+    if len(failed) < RECURRING_FAILURE_THRESHOLD:
+        return None
+    first, last = failed[0].finished_at, failed[-1].finished_at
+    if not any(r.outcome == "ok" and first < r.finished_at < last for r in settled):
+        return None  # one streak that has ended: nothing recurs
+    classes = Counter(r.failure_class for r in failed).most_common()
+    class_text = ", ".join(f"{klass} ×{n}" for klass, n in classes)
+    slots = ", ".join(sorted({r.slot for r in failed}))
+    newest = failed[-1]
+    log = _run_log(vault, newest)
+    log_hint = f": .scout-logs/{newest.log}" if newest.log else ""
+    return Finding(
+        id=RECURRING_FINDING_ID,
+        severity="yellow",
+        since=first,
+        summary=(
+            f"{len(failed)} of the last {len(settled)} scheduled runs failed in the past 48 h, "
+            f"with successes in between ({class_text}). Failed slots: {slots}."
+        ),
+        fix=_RECURRING_FIX.get(
+            classes[0][0], f"Run scoutctl bootstrap doctor and read the newest failed log{log_hint}"
+        ),
+        source="ledger",
+        detail=failure_line(log, newest.failure_class) if log else None,
+        log=str(log) if log else None,
+    )
+
+
 def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
     """Findings derived from the ledger (or the newest log when there is no ledger)."""
     if not rows:
@@ -470,6 +535,10 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
                     log=log_path,
                 )
             )
+
+    recurring = recurring_failures(rows, vault=vault, now=now)
+    if recurring is not None:
+        findings.append(recurring)
 
     cutoff = now - LOCK_SKIP_WINDOW
     findings.extend(lease_findings(rows, vault=vault, cutoff=cutoff))
