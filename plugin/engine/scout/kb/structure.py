@@ -40,6 +40,14 @@ to pick, a line on stderr says so, for the run's report. Nor does it pick a fold
 whose only problems are odd subfolders or loose files with such a label, which no
 night can clear: they would hold the pick for good.
 
+A front page with an effective ``federation_scope`` (not private or local-only) over
+budget or with narration is the exception: ``--next`` may pick it **trim-only**, after
+every other page it can act on. The pass then only cuts whole lines from it, and moves detail only into the
+existing notes in its folder that aren't shared (``move_to``), never into a new note
+or a copy. Removing lines widens nothing, so no share where a rebuild would write can
+block it. Adding a date or a section would add to a shared note, so the page's other
+problems stay the owner's.
+
 History comes from ONE ``git log --name-only`` over the projects folder, not a
 call per folder, and what git tracks from one ``git ls-files``.
 """
@@ -366,6 +374,14 @@ def _pinned(label: Label) -> bool:
     return label.visibility == "private" or label.shared_file or label.local_only
 
 
+def _trimmable(label: Label) -> bool:
+    """A pinned page the pass may still cut lines from: an effective share, and nothing else. The
+    hook's shared-note check (#569) refuses a run's added or reworded line there, not a removed one.
+    It checks the effective ``federation_scope`` only, so a page shared by path or one that declares
+    a scope while sharing is off has no such guard, and stays skipped."""
+    return label.federation_scope != "none" and label.visibility != "private" and not label.local_only
+
+
 def _any_file_name(share_glob: str) -> str:
     """``share_glob`` with a wildcard file name opened up. A rebuild picks its notes' names,
     so a share on ``knowledge/*-decisions.md`` covers ``knowledge/`` for this check. An exact
@@ -529,6 +545,9 @@ def check_folder(
     # pages a reader can't follow. Odd subfolders and pinned files don't count: no night clears them.
     in_shape = not (missing or as_of is None or stale or len(folder.loose) > pinned_loose)
     half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
+    # Cutting lines fixes size and narration only. It ranks after every page that only needs
+    # shrinking: a trim may find nothing it can cut, and must not hold the pick night after night.
+    trim_only = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration))
     return {
         "project": folder.name,
         "path": front,
@@ -548,10 +567,11 @@ def check_folder(
         "stale": stale,
         "conforms": not problems,
         "problems": problems,
-        "rebuild_target": actionable and not _pinned(label),
+        "rebuild_target": (actionable and not _pinned(label)) or trim_only,
         "resume": half_rebuilt and actionable and not _pinned(label),
+        "trim_only": trim_only,
         "share_blocked": False,
-        "_rank": (not problems, in_shape, PRIORITY_RANK.get(priority, 3), -size, folder.name),
+        "_rank": (not problems, in_shape or trim_only, trim_only, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
 
@@ -647,8 +667,10 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
         pinned_loose = sum(_pinned(label_file(vault, f"{folder.rel}/{n}", policy)) for n in folder.loose)
         label = label_file(vault, front, policy)
         row = check_folder(vault, folder, cfg, history.get(folder.name, {}), excluded, label, pinned_loose, day)
-        if row["rebuild_target"] and (
-            sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes)
+        if (
+            row["rebuild_target"]
+            and not row["trim_only"]
+            and (sources_shared or _rebuild_writes_into_a_share(vault, folder, cfg, policy, probes))
         ):
             row["rebuild_target"] = row["resume"] = False
             row["share_blocked"] = True
@@ -657,6 +679,31 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     for r in rows:
         del r["_rank"]
     return rows
+
+
+def trim_destinations(vault: Path, front: str) -> list[Label]:
+    """Where a trim of ``front`` may move detail: the folder's existing notes that aren't shared, by path.
+
+    Not the front page or ``archive/``, nor a note left out of the KB or gitignored.
+    Unshared is narrower than any share the page has; a note shared with the same or
+    other people isn't, and the hook's shared-note check (#569) refuses a run's addition to it anyway."""
+    cfg = load_structure_config(vault)
+    excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
+    listing = _listing(vault, cfg.projects_dir)
+    policy = load_policy(vault)
+    folder = PurePosixPath(front).parent
+    out: list[Label] = []
+    for path in sorted((vault / folder).rglob("*.md")):
+        rel = path.relative_to(vault).as_posix()
+        inside = PurePosixPath(rel).relative_to(folder).parts
+        if rel == front or inside[0] == "archive" or excluded(rel):
+            continue
+        if listing is not None and rel not in listing.files:
+            continue
+        label = label_file(vault, rel, policy)
+        if not label.shared_file:
+            out.append(label)
+    return out
 
 
 def next_target(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
@@ -684,12 +731,17 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
                 "(`scoutctl kb structure` marks them). Say in this run's report that the nightly KB pass stopped.",
                 file=sys.stderr,
             )
-        data = None if target is None else {"project": target["project"], "path": target["path"]}
-        return Output(
-            data=data,
-            lines=[target["project"] if target else ""],
-            labels=[label for label in labels if target and label["path"] == target["path"]],
-        )
+        if target is None:
+            return Output(data=None, lines=[""], labels=[])
+        data: dict[str, Any] = {"project": target["project"], "path": target["path"]}
+        picked = [label for label in labels if label["path"] == target["path"]]
+        lines = [target["project"]]
+        if target["trim_only"]:
+            move_to = trim_destinations(vault, target["path"])
+            data |= {"mode": "trim", "move_to": [d.path for d in move_to]}
+            picked += [{"path": d.path, "visibility": d.visibility} for d in move_to]
+            lines += ["trim-only", *(f"move-to: {d.path}" for d in move_to)]
+        return Output(data=data, lines=lines, labels=picked)
     ok = sum(1 for r in rows if r["conforms"])
     lines = [f"{ok}/{len(rows)} project folders meet the KB page standard", ""]
     for r in rows:
@@ -697,5 +749,6 @@ def cmd_structure(vault: Path, reader: str, next_only: bool) -> Any:
         pri = r["priority"] or "·"
         name = r["project"] + (" [private]" if r["private"] else "")
         skipped = " [--next skips]" if not r["conforms"] and not r["rebuild_target"] else ""
+        skipped = " [trim-only]" if r["trim_only"] else skipped
         lines.append(f"{mark} {pri} {name:<30} {r['size'] // 1024:>4} KB  {'; '.join(r['problems']) or 'ok'}{skipped}")
     return Output(data=rows, lines=lines, labels=labels)
