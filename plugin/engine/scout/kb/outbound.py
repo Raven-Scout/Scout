@@ -11,7 +11,14 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
 - whole-word *terms*: the file's slug (its name without the extension), and
   for a markdown note its frontmatter ``name:``, ``aliases:`` and ``title:``
   (spec §4.2 counts the title as private content; ruling R17), each kept only
-  when it has 4 or more characters.
+  when it has 4 or more characters. A slug, ``name:`` or ``title:`` that is one
+  ordinary word (:data:`~scout.kb.ordinary_words.ORDINARY_WORDS`: ``plan``,
+  ``notes``, ``billing``) is not a term, unless the note names a proper noun
+  (:data:`PROPER_NOUN_TYPES` such as ``type: person`` or ``organization``, or in
+  a ``people/`` folder). A note with such a slug matches by its path instead,
+  from its last two segments up (``billing/billing``), as a note shared with
+  this person does, or by its file name (``billing.md``) at the vault root
+  (#576). Aliases are always terms.
 - *wikilinks*: ``[[target]]``, ``[[target|display]]`` (``\\|`` inside a table
   too), ``[[target#heading]]``, ``![[target]]`` and ``[[path/to/target]]``
   whose target is the note's slug, file name, ``name:``, an alias, or its vault
@@ -60,6 +67,7 @@ from urllib.parse import unquote_plus
 
 import yaml
 
+from scout.kb.ordinary_words import ORDINARY_WORDS
 from scout.kb.privacy import (
     FULL_READERS,
     Policy,
@@ -81,6 +89,9 @@ from scout.kb.shared_reads import (
 
 MIN_TERM_CHARS = 4
 MIN_SHARED_NAME_WORDS = 3
+# Entity types whose names are proper nouns (schema.yaml's, and free-form ones vaults use):
+# a one-word name stays a term even when it's an ordinary word (#576).
+PROPER_NOUN_TYPES = frozenset({"person", "organization", "pet", "org", "company", "client"})
 
 _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 # The one definition of the lint override marker (spec §8.2): ``%%privacy:allow <slug>%%``,
@@ -167,23 +178,30 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
-def _names_from_text(text: str | None) -> list[str]:
-    """``name:``, ``aliases:`` and ``title:`` of a note's (leading) text; [] when it has none or they don't parse."""
+def _frontmatter(text: str | None) -> dict[Any, Any]:
+    """A note's (leading) text's frontmatter; {} when it has none or it doesn't parse."""
     if text is None:
-        return []
+        return {}
     block = classifier_block(text)
     if block is None:
-        return []
+        return {}
     try:
         data = load_frontmatter_yaml("\n".join(block))
     except yaml.YAMLError:
-        return []
-    if not isinstance(data, dict):
-        return []
-    out: list[str] = []
-    for key in ("name", "aliases", "title"):
-        out += _strings(data.get(key))
-    return out
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ordinary(name: str) -> bool:
+    """``name`` is one ordinary word (#576): a note named so doesn't make it a term."""
+    return _words(name) == 1 and name.strip().casefold() in ORDINARY_WORDS
+
+
+def _names_a_proper_noun(rel: str, data: dict[Any, Any]) -> bool:
+    kind = data.get("type")
+    return (isinstance(kind, str) and kind.strip().casefold() in PROPER_NOUN_TYPES) or (
+        "people" in rel.casefold().split("/")[:-1]
+    )
 
 
 def _strip_md(name: str) -> str:
@@ -203,10 +221,19 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
     """
     name = rel.rsplit("/", 1)[-1]
     slug = _strip_md(name) if name.lower().endswith(".md") else Path(name).stem
+    data = _frontmatter(text) if name.lower().endswith(".md") else {}
+    proper = _names_a_proper_noun(rel, data)
     names = [slug]
-    if name.lower().endswith(".md"):
-        names += _names_from_text(text)
-    terms = tuple(dict.fromkeys(n for n in names if len(n) >= MIN_TERM_CHARS))
+    named = [slug] if proper or not _ordinary(slug) else []
+    for key in ("name", "aliases", "title"):
+        for n in _strings(data.get(key)):
+            names.append(n)
+            if key == "aliases" or proper or not _ordinary(n):
+                named.append(n)
+    if _ordinary(slug) and not proper:
+        parts = (rel[: len(rel) - len(name)] + slug).split("/")
+        named += ["/".join(parts[i:]) for i in range(len(parts) - 1)] if len(parts) > 1 else [name]
+    terms = tuple(dict.fromkeys(n for n in named if len(n) >= MIN_TERM_CHARS))
     keys = {n.casefold() for n in names} | {name.casefold(), _strip_md(name).casefold()}
     return PrivateNote(
         path=rel,
