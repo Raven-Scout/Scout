@@ -91,6 +91,13 @@ REPLAY_TRAILER = "Scout-Mirror-Commit"
 LEASE_TOKEN_HEADER = "X-Agnes-Lease-Token"
 LEASE_GENERATION_HEADER = "X-Agnes-Lease-Generation"
 
+# git sends a pack over its http.postBuffer (1 MiB by default) chunked, after a
+# bare ``0000`` probe POST that Agnes refuses as malformed (HTTP 400). Agnes caps
+# a repository at max_repository_mb (500 by default), so a buffer of that plus
+# slack sends every pack it would accept in one request.
+GIT_DEFAULT_POST_BUFFER = 1024 * 1024
+POST_BUFFER_BYTES = (500 + 100) * 1024 * 1024
+
 # A real vault syncs only once the engine has the per-note privacy guard that
 # stops a scheduled run from un-privating a note right before it syncs (#504:
 # ``scout.kb.lint_privacy``, run by the vault's pre-commit hook). A vault the
@@ -822,11 +829,13 @@ class AgnesHost:
     def git_env(self) -> dict[str, str]:
         basic = base64.b64encode(f"scout:{self._token}".encode()).decode()
         return {
-            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_COUNT": "3",
             "GIT_CONFIG_KEY_0": "http.extraHeader",
             "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
             "GIT_CONFIG_KEY_1": "credential.helper",
             "GIT_CONFIG_VALUE_1": "",
+            "GIT_CONFIG_KEY_2": "http.postBuffer",
+            "GIT_CONFIG_VALUE_2": str(POST_BUFFER_BYTES),
         }
 
     def lease_acquire(self, holder_ref: str, holder_label: str) -> dict[str, Any]:
@@ -1143,6 +1152,14 @@ def fetch_remote(vault: Path, host: Host, clone_url: str) -> str:
 
 
 _REFUSAL = re.compile(r"\b(local_only_path_pushed|secret_file_pushed|repository_\w+)\b")
+_HTTP_400 = re.compile(r"\bHTTP 400\b")
+
+
+def _push_size(vault: Path, rev: str) -> int | None:
+    """Roughly the pack a push of *rev* sends: its objects' size on disk, less what Agnes already has."""
+    known = [ref for ref in (REMOTE_REF, MIRROR_REF) if _rev(vault, ref)]
+    proc = git(vault, "rev-list", "--objects", "--disk-usage", rev, "--not", *known, check=False)
+    return int(proc.stdout) if proc.returncode == 0 and proc.stdout.strip().isdigit() else None
 
 
 def push(vault: Path, host: Host, clone_url: str, rev: str, lease: tuple[str, int] | None = None) -> None:
@@ -1150,8 +1167,18 @@ def push(vault: Path, host: Host, clone_url: str, rev: str, lease: tuple[str, in
     proc = git(vault, "push", "--porcelain", clone_url, f"{rev}:{REMOTE_BRANCH}", env=env, check=False)
     if proc.returncode != 0:
         m = _REFUSAL.search(proc.stdout + proc.stderr)
-        code = m.group(1) if m else "push_failed"
         tail = (proc.stderr.strip() or proc.stdout.strip()).splitlines()[-3:]
+        if m is None and _HTTP_400.search(proc.stderr):
+            # git hides the body of an HTTP error, so Agnes's refusal code never shows.
+            message = "Agnes refused the push as malformed (HTTP 400)"
+            size = _push_size(vault, rev)
+            if size is not None and size > GIT_DEFAULT_POST_BUFFER:
+                message += (
+                    f"; the pack is about {size / 2**20:.1f} MiB, over git's 1 MiB http.postBuffer,"
+                    " so git may have sent the bare probe Agnes refuses"
+                )
+            raise RepoSyncError("repository_push_malformed", message + ": " + " | ".join(tail))
+        code = m.group(1) if m else "push_failed"
         raise RepoSyncError(code, "Agnes refused the push" + (f" ({code})" if m else "") + ": " + " | ".join(tail))
     git(vault, "update-ref", MIRROR_REF, rev)
 
