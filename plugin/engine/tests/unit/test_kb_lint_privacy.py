@@ -518,6 +518,70 @@ def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> N
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
 
 
+# ----- moves out of a local-only path (#562) ---------------------------------------
+
+POSITIONS = "trading/positions.md"  # local-only through the fixture overlay's local_only_add
+
+
+@pytest.mark.parametrize("dst", ["knowledge-base/topics/misc/positions.md", "notes/positions.md"])
+def test_a_run_may_not_move_a_note_out_of_a_local_only_path(vault: Path, dst: str) -> None:
+    """In the privacy scope or outside it: once moved, repo sync would upload it."""
+    (vault / dst).parent.mkdir(parents=True, exist_ok=True)
+    git(vault, "mv", POSITIONS, dst)
+    assert checks(vault, RUN) == [(dst, "privacy-widening", True, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-widening]" in out and "local-only" in out
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_write_then_delete_move_out_of_a_local_only_path_is_blocked(vault: Path) -> None:
+    text = _read(vault, POSITIONS)
+    git(vault, "rm", "-q", POSITIONS)
+    stage(vault, "notes/positions.md", text + "\nOne more line.\n")
+    assert checks(vault, RUN) == [("notes/positions.md", "privacy-widening", True, None)]
+
+
+def test_a_run_may_not_move_any_file_out_of_a_local_only_path(vault: Path) -> None:
+    stage(vault, "trading/ledger.csv", "date,amount\n2026-01-02,10\n2026-01-03,20\n")
+    commit(vault)
+    (vault / "exports").mkdir()
+    git(vault, "mv", "trading/ledger.csv", "exports/ledger.csv")
+    assert checks(vault, RUN) == [("exports/ledger.csv", "privacy-widening", True, None)]
+
+
+def test_a_run_may_move_a_note_within_local_only_paths(vault: Path) -> None:
+    (vault / "trading/archive").mkdir()
+    git(vault, "mv", POSITIONS, "trading/archive/positions.md")
+    assert checks(vault, RUN) == []
+
+
+def _with_sync_only(vault: Path, entries: str) -> None:
+    text = _read(vault, "scout-config.yaml")
+    stage(vault, "scout-config.yaml", text + f"  sync_only: {entries}\n")
+    commit(vault, "owner sets sync_only")
+
+
+def test_a_run_may_move_a_local_only_note_to_a_path_outside_sync_only(vault: Path) -> None:
+    """Outside the upload allowlist the note stays home, so nothing leaves."""
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    git(vault, "mv", POSITIONS, "positions.md")
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_not_move_a_file_into_sync_only(vault: Path) -> None:
+    _with_sync_only(vault, '["knowledge-base/**"]')
+    stage(vault, "inbox/idea.md", "# Idea\n\nA stand-in note that never syncs.\n")
+    commit(vault)
+    git(vault, "mv", "inbox/idea.md", "knowledge-base/topics/misc/idea.md")
+    assert checks(vault, RUN) == [("knowledge-base/topics/misc/idea.md", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def test_a_run_may_still_move_ordinary_notes(vault: Path) -> None:
+    git(vault, "mv", PLAIN, "knowledge-base/topics/misc/plain-renamed.md")
+    assert checks(vault, RUN) == []
+
+
 # ----- a run adding to a note that is already shared (#569) -----------------------
 
 SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
