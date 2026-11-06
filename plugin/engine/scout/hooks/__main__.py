@@ -3,7 +3,7 @@
 ``scoutctl hook <name>`` goes through ``scout.cli``, whose import (typer and
 every subcommand) costs ~0.7 s, and these hooks run on tool calls: the
 kb-read-label hook on every Read of a KB note, in the owner's sessions too.
-``engine/bin/scoutctl`` sends ``hook kb-read-gate|kb-read-label|outbound-gate``
+``engine/bin/scoutctl`` sends ``hook kb-read-gate|kb-read-label|outbound-gate|shared-read-record``
 here instead, so hooks.json is unchanged. Nothing reachable from this module
 may import typer or ``scout.cli`` (``tests/unit/test_hooks_entry.py``).
 
@@ -19,6 +19,7 @@ HOOKS = {
     "kb-read-gate": "scout.hooks.kb_read_gate",
     "kb-read-label": "scout.hooks.kb_read_label",
     "outbound-gate": "scout.hooks.outbound_gate",
+    "shared-read-record": "scout.hooks.shared_read_record",
 }
 
 

@@ -317,12 +317,35 @@ Agnes can host a private copy of the vault, which Agnes calls your **Personal Kn
 - `scoutctl repo link --agnes-url https://agnes.example.com` asks for an Agnes personal access token and keeps it in `~/.scout-secrets/`, outside the vault. It creates the repository if needed and pushes one snapshot of the vault's HEAD; earlier history stays on this computer. It also turns OTLP content export off for sessions in the vault (`.claude/settings.json`).
 - `scoutctl repo sync` replays commits made in Agnes onto the vault, one vault commit each, then pushes one Agnes commit per new vault commit.
 - `scoutctl repo unlink` forgets the link here (`--delete-remote` also deletes the repository on Agnes).
+- `scoutctl repo preview` shows what would upload from HEAD, without network or token: counts by folder, and every path with `--paths`. Run it before you link.
+
+**Only named folders (`privacy.sync_only`).** To put only some folders on the server, list them in `scout-config.yaml`:
+
+```yaml
+privacy:
+  sync_only:
+    - "knowledge-base/projects/**"
+    - "notes/shared"          # a plain path takes in everything under it
+```
+
+Everything else stays on this computer, a new folder included, and isn't named on the server either: the commit messages, the Local-Only list Agnes is told, and `.scout-state/privacy-policy.json` hold nothing outside the list. Local-Only and secret paths inside the list still stay home. Entries match paths exactly as written, case included: `Projects/` is not `projects/`. The list is pinned when you link, or at the first sync after you add it. Narrowing it in the config takes effect at once. Widening or removing it needs `scoutctl repo sync-only --accept`, which a scheduled run can't do; to remove it, commit the removal and sync first. What was on Agnes before the list stays in its history; for a clean start, `scoutctl repo unlink --delete-remote`, then link again. A note written in Agnes outside the list can't come home: sync warns, names the commit that still has it, and takes it off Agnes's current files. The check runs on this computer only, so an older engine or another clone of the vault could push more. Keep `scout-config.yaml` off the list unless the server may see your whole `privacy:` block. Agnes's planned share-stop write-back edits that file, so it won't reach a vault that doesn't mirror it.
 
 **What never leaves this computer:** machine plumbing (`.scout-logs/`, `.scout-cache/`, `.claude/`, `.venv/`, `.obsidian/`, `.mcp.json`, `.env*`, most of `.scout-state/`), secret files (`*.pem`, `id_rsa*`, `.scout-secrets/`), every `privacy.local_only_add` path in `scout-config.yaml` (trading folders, once `/scout-update` asked you), and every path Agnes keeps on your Local-Only list. Personal notes and the inbox do sync, marked private: only you and your own runs see them. Each pushed commit carries `.scout-state/privacy-policy.json`, the effective privacy policy plus every file's label, which Agnes indexes by.
 
 **One writer at a time.** Agnes lets one place write the repository at a time, this computer or a run in Agnes, through its **Repository Writer Lease**. Once the vault is linked, every scheduled run takes the lease before it writes anything, renews it every five minutes while it runs, and gives it back when it ends, on an error too. If Agnes holds it (an Agnes-hosted run), the run is skipped and recorded as `lease_held`. If Agnes can't be reached, the run is skipped as `lease_unavailable`: a run that can't take the lease can't tell whether Agnes is writing. Both show in `scoutctl health` (`lease.held`, `lease.unavailable`) next to the other run outcomes. Link and sync push under the lease too: a `scoutctl repo sync` during a scheduled run uses that run's lease rather than asking for another, because Agnes ends the old lease when the same holder asks again. The lease token lives in `~/.scout-secrets/agnes-knowledge-repo/<vault id>.lease.json` (mode 600), never in the vault or on a command line. `scoutctl repo lease status` says who holds it. A run killed before it gives the lease back has it released by its keepalive or the next run, and Agnes ends it after 20 minutes in any case. An unlinked vault never asks for the lease.
 
 **Link refuses** until `/scout-update` has walked you through the privacy step, while `scout-config.yaml` can't be read, and while a root-level file or a folder that looks like trading or brokerage data (`TRADING.md`, `portfolio.csv`, `brokerage/`) would sync: make it local-only (`scoutctl bootstrap privacy-migrate --local-only '<path>'`) or confirm it once with `--confirm-sync '<path>'`. Sync re-checks the last two every time.
+
+### Reading what colleagues share with you
+
+A colleague can share a folder or a note of their Agnes repository with you. Your Scout reads it through your Agnes connector:
+
+1. Connect Agnes as a custom connector on a **personal access token** (`/scout-connect`). Agnes doesn't offer these tools to a connector signed in through its OAuth flow.
+2. If the connector has `restrict_tools: true`, run `scoutctl connectors custom allow-shared-notes <key>` (`/scout-update` offers it). It adds the three read-only tools and nothing else. Without `restrict_tools`, the connector can already call them.
+
+**What it reads stays private to you**, on the same surfaces as your own private notes, and that doesn't depend on your own sharing being on. A run cites it as `<owner>'s shared note <path>` with a short excerpt. A note it files from one carries `source: shared:<owner-email>:<path>` and `visibility: private`; `kb lint` blocks one that isn't private, and blocks one in anything you share. Agnes shows the owner which notes you were shown, never what you searched for.
+
+**What `check-outbound` refuses and what it can't.** It refuses the note's path (a shared folder by its full path only), a title of three words or more, a quote of ten words or more, a close rewording of one of its sentences and the citing form, on every shared surface. It can't see a paraphrase in other words, a single fact, a shorter quote, a translation, or a read made where the hook doesn't run (the `agnes` CLI in a shell, another computer). The phase rule tells a run not to write those, but that is an instruction, not a check. It also can't tell public text from private: when a shared note quotes a public document (product docs, a published page), that public text becomes refusable too, so a scheduled run's Slack draft quoting the same document is blocked and the owner's own send is warned. What you've read can't be recalled, by you or the owner; removing a share stops future reads only.
 
 ## Budget System
 

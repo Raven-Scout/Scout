@@ -226,6 +226,41 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
+def _measured_runs(rows: list[tuple[datetime, dict]]) -> list[tuple[datetime, datetime]]:
+    """The (start, end) of each run whose runner row holds claude's own figure (scout.scripts.run_cost)."""
+    spans: list[tuple[datetime, datetime]] = []
+    for ts, row in rows:
+        if row.get("source") != "runner" or row.get("cost_source") != "transcript":
+            continue
+        started = _parse_ts(row.get("run_started"))
+        if started is None:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        spans.append((started, ts))
+    return spans
+
+
+def _window_cost(rows: list[tuple[datetime, dict]]) -> float:
+    """Sum ``budget_spent`` over the window's rows, counting a measured run once.
+
+    A runner row with ``cost_source: "transcript"`` is what the run cost by
+    claude's figure, retry attempts included. A ``source: "session"`` row
+    written during that run is the session's own report of the same spend
+    ($0, or a guess), so it is left out rather than added on top.
+    """
+    spans = _measured_runs(rows)
+    total = 0.0
+    for ts, row in rows:
+        if row.get("source") == "session" and any(start <= ts <= end for start, end in spans):
+            continue
+        try:
+            total += float(row.get("budget_spent", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
 def decide(
     tracker_path: Path,
     config: BudgetConfig,
@@ -248,11 +283,11 @@ def decide(
     window_start = now - timedelta(hours=config.window_hours)
     rate_limit_cutoff = now - timedelta(minutes=config.failure_backoff_min * 2)
 
-    total_cost = 0.0
     last_exit: int | None = None
     last_ts: datetime | None = None
     saw_recent_rate_limit = False
     limit_lifts_at: datetime | None = None
+    in_window: list[tuple[datetime, dict]] = []
 
     for row in _iter_tracker_rows(tracker_path):
         ts = _parse_ts(row.get("ts"))
@@ -278,15 +313,14 @@ def decide(
         if ts < window_start:
             continue
 
-        try:
-            total_cost += float(row.get("budget_spent", 0) or 0)
-        except (TypeError, ValueError):
-            pass
+        in_window.append((ts, row))
         try:
             last_exit = int(row.get("exit_code", 0))
         except (TypeError, ValueError):
             pass
         last_ts = ts
+
+    total_cost = _window_cost(in_window)
 
     if limit_lifts_at is not None:
         lifts = limit_lifts_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

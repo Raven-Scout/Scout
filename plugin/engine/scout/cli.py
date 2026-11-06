@@ -114,7 +114,7 @@ def hook_session_tool_log() -> None:
 
 @hook_app.command("mcp-tool-gate")
 def hook_mcp_tool_gate() -> None:
-    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools in scheduled runs."""
+    """PreToolUse hook: deny a restrict_tools custom connector's unlisted MCP tools, in every session in the vault."""
     from scout.hooks.mcp_tool_gate import main as mcp_tool_gate_main
 
     raise typer.Exit(mcp_tool_gate_main())
@@ -134,6 +134,14 @@ def hook_kb_read_label() -> None:
     from scout.hooks.kb_read_label import main as kb_read_label_main
 
     raise typer.Exit(kb_read_label_main())
+
+
+@hook_app.command("shared-read-record")
+def hook_shared_read_record() -> None:
+    """PostToolUse hook: record what an Agnes shared-notes tool showed, so check-outbound recognises it."""
+    from scout.hooks.shared_read_record import main as shared_read_record_main
+
+    raise typer.Exit(shared_read_record_main())
 
 
 @hook_app.command("outbound-gate")
@@ -188,7 +196,7 @@ def kb_lint(
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
 ) -> None:
-    """Lint the vault's KB structure. Exit 1 = blocked (block mode) or lossless tokens missing."""
+    """Lint the vault's KB structure. Exit 1 = blocked (block-mode path, or privacy) or lossless tokens missing."""
     root = _kb_repo(repo)
     if lossless_rev or lossless_path:
         from scout.kb.lossless import lossless_check
@@ -202,11 +210,14 @@ def kb_lint(
         print(f"lossless: {len(missing)} token(s) missing")
         raise typer.Exit(1 if missing else 0)
     if report:
-        from scout.kb.lint import over_budget
+        from scout.kb.lint import config_problems, over_budget
         from scout.kb.lint_config import load_lint_config
         from scout.kb.lint_privacy import format_report, privacy_report
 
-        rows = over_budget(root, load_lint_config(root))
+        cfg = load_lint_config(root)
+        for problem in config_problems(root, cfg):
+            print(f"config: {problem}")
+        rows = over_budget(root, cfg)
         print(f"{len(rows)} file(s) over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
@@ -307,11 +318,220 @@ def kb_policy(
             "surfaces.owner_only:  " + " ".join(data["surfaces"]["owner_only"]),
             "surfaces.shared:      " + " ".join(data["surfaces"]["shared"]),
             "shared_files:         " + (" ".join(data["shared_files"]) or "(none)"),
+            "federation.enabled:   " + ("true" if data["federation"]["enabled"] else "false"),
+            "federation_ceilings:",
+            *(_ceiling_line(entry) for entry in data["federation_ceilings"]),
+            *(
+                ["federation_ceilings (overlay, narrowing only):"]
+                + [_ceiling_line(entry) for entry in data["federation_ceilings_overlay"]]
+                if data["federation_ceilings_overlay"]
+                else []
+            ),
+            "federation_defaults:" + ("" if data["federation_defaults"] else "  (none)"),
+            *(f"  {entry['glob']} -> {_scope_text(entry['scope'])}" for entry in data["federation_defaults"]),
             "warnings:             " + (" ".join(data["warnings"]) or "(none)"),
         ]
         return Output(data=data, lines=lines)
 
     _kb_run(args, reader, repo, as_json, body)
+
+
+# ----- Shared Areas (Agnes #6090 §4, slice S1a): logic in scout/kb/share.py -------
+
+
+def _share_values(extra: list[str], with_: list[str]) -> list[str]:
+    """``--with a --with b``, ``--with a,b`` and ``--with a b`` (spare positionals) all name people."""
+    return [v.strip() for raw in (*with_, *extra) for v in raw.split(",") if v.strip()]
+
+
+def _owner_only(as_json: bool) -> None:
+    """Sharing is the owner's act: a scheduled run (or any non-owner reader) may not change it (#486 §8.3)."""
+    import os
+
+    from scout.kb.reader import is_scheduled
+
+    if is_scheduled(os.environ):
+        _share_refused("refused: only the owner, in their own interactive session, may change what is shared", as_json)
+
+
+def _share_refused(message: str, as_json: bool, code: int = 1) -> NoReturn:
+    import json
+
+    if as_json:
+        print(json.dumps({"refused": message, "written": False}, indent=2))
+    print(message, file=sys.stderr)
+    raise typer.Exit(code)
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _pick_groups(directory: object) -> list[str]:
+    """``--pick-group``: number the owner's Agnes share targets (Everyone left out) and read a choice."""
+    from scout.kb.share import Directory
+
+    if not isinstance(directory, Directory) or not _interactive():
+        _share_refused("refused: --pick-group needs a vault linked to Agnes and a terminal", False)
+    targets = [t for t in directory.share_targets() or [] if not t.is_everyone]
+    if not targets:
+        _share_refused("refused: Agnes returned no groups you can share with", False)
+    for n, t in enumerate(targets, 1):
+        print(f"  {n}. {t.name}  (group:{t.id})")
+    answer = typer.prompt("Groups to share with (numbers, comma-separated)")
+    picked: list[str] = []
+    for part in answer.split(","):
+        if not part.strip().isdigit() or not 1 <= int(part) <= len(targets):
+            _share_refused(f"refused: {part.strip()!r} isn't one of the numbers above", False, 2)
+        picked.append(f"group:{targets[int(part) - 1].id}")
+    return picked
+
+
+@kb_app.command("share")
+def kb_share(
+    target: str = typer.Argument(..., help="A folder (shared as <folder>/**) or one note of the vault."),
+    extra: list[str] = typer.Argument(None, help="More people for --with (`--with a@example.com b@example.com`)."),
+    with_: list[str] = typer.Option(
+        [], "--with", help="An email, person:<email>, or group:<id or name>. Repeatable; commas work too."
+    ),
+    pick_group: bool = typer.Option(False, "--pick-group", help="Choose groups from your Agnes share targets."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Write without asking (after reading the preview)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the preview; write nothing."),
+    as_json: bool = typer.Option(False, "--json", help="Print the preview (and whether it was written) as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Share a folder or note with named people or your Agnes groups (owner only).
+
+    Previews the notes that would be newly shared, the ones left out (private,
+    local-only, over their ceiling, deciding for themselves) and the copy
+    warning, then writes scout-config.yaml → privacy.federation_defaults and
+    turns sharing on. Agnes enforces it from your next `scoutctl repo sync`.
+    Exit 1 = refused or not confirmed, 2 = bad argument.
+    """
+    import json
+
+    from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_share
+
+    _owner_only(as_json)
+    root = _kb_repo(repo)
+    directory = directory_for(root)
+    values = _share_values(extra or [], with_)
+    if pick_group:
+        values += _pick_groups(directory)
+    try:
+        plan = plan_share(root, target, values, directory=directory)
+    except ShareUsage as e:
+        _share_refused(f"error: {e}", as_json, 2)
+    except ShareRefused as e:
+        _share_refused(str(e), as_json)
+    if not as_json:
+        for line in plan.lines():
+            print(line)
+    written = False
+    if plan.changed and not dry_run:
+        if not yes:
+            if not _interactive() or as_json:
+                if as_json:
+                    print(json.dumps({**plan.to_json(), "written": False}, indent=2))
+                print("Preview only: nothing was written. Re-run with --yes to share.", file=sys.stderr)
+                raise typer.Exit(1)
+            if not typer.confirm("Share these notes?"):
+                print("Nothing was written.")
+                raise typer.Exit(1)
+        apply(root, plan)
+        written = True
+    if as_json:
+        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+    elif written:
+        from scout.kb.share import SYNC_NOTE
+
+        print("Wrote scout-config.yaml → privacy.federation_defaults.")
+        print(SYNC_NOTE)
+    elif not plan.changed:
+        print("Nothing to change: already shared that way.")
+
+
+@kb_app.command("unshare")
+def kb_unshare(
+    target: str = typer.Argument(..., help="A shared folder or note."),
+    extra: list[str] = typer.Argument(None, help="More people for --with."),
+    with_: list[str] = typer.Option(
+        [], "--with", help="Stop sharing with this person or group only (default: everyone). Repeatable."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would stop; write nothing."),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """Stop sharing a folder or note, with some people or everyone (owner only).
+
+    Narrows scout-config.yaml → privacy.federation_defaults. In this release it
+    is vault only, so Agnes stops the share at your next `scoutctl repo sync`.
+    A note that shares itself in its own frontmatter is listed, not edited.
+    """
+    import json
+
+    from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_unshare
+
+    _owner_only(as_json)
+    root = _kb_repo(repo)
+    values = _share_values(extra or [], with_)
+    try:
+        plan = plan_unshare(root, target, values, directory=directory_for(root) if values else None)
+    except ShareUsage as e:
+        _share_refused(f"error: {e}", as_json, 2)
+    except ShareRefused as e:
+        _share_refused(str(e), as_json)
+    written = False
+    if plan.changed and not dry_run:
+        apply(root, plan)
+        written = True
+    if as_json:
+        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+        return
+    for line in plan.lines():
+        print(line)
+    if not plan.changed:
+        print("Nothing to change: it wasn't shared that way.")
+
+
+@kb_app.command("shares")
+def kb_shares(
+    reader: str | None = typer.Option(
+        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
+    repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
+) -> None:
+    """List what this vault shares: per folder or note, the people, the notes shared and the notes left out.
+
+    Owner and autonomous readers only; another person's agent is denied
+    (exit 3). Group names come from Agnes when the vault is linked.
+    """
+    args = _kb_args("shares", dict(locals()))
+
+    def body(who: str, root: Path) -> object:
+        from scout.kb.privacy import FULL_READERS
+        from scout.kb.read import Output
+        from scout.kb.share import directory_for, group_names, list_shares, shares_lines
+
+        if who not in FULL_READERS:
+            return Output(data={"denied": True}, lines=["denied"], denied=1, code=3)
+        enabled, rows = list_shares(root)
+        names = group_names(directory_for(root), rows)
+        data = {"enabled": enabled, "group_names": names, "shares": [row.to_json() for row in rows]}
+        return Output(data=data, lines=shares_lines(enabled, rows, names))
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
+def _ceiling_line(entry: dict[str, object]) -> str:
+    kinds = entry.get("kinds")
+    only = f" (kind: {', '.join(str(k) for k in kinds)})" if isinstance(kinds, list) else ""
+    return f"  {entry['glob']}{only} -> {entry['ceiling']}"
+
+
+def _scope_text(scope: object) -> str:
+    return ", ".join(str(p) for p in scope) if isinstance(scope, list) else str(scope)
 
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
@@ -720,6 +940,27 @@ def kb_validate(
     _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_validate(g))
 
 
+@kb_app.command("structure")
+def kb_structure(
+    next_: bool = typer.Option(
+        False, "--next", help="Print only the next rebuild target (a project name), or an empty line if all conform."
+    ),
+    reader: str | None = _R,
+    as_json: bool = typer.Option(False, "--json", help="Print the table (or, with --next, the target) as JSON."),
+    repo: Path | None = _REPO,
+) -> None:
+    """Check each project folder against the KB page standard. Report-only: exit 0, or 20 on a bad setting.
+
+    Loose files, odd subfolders, front-page size, required sections, run
+    narration, `as_of` and staleness; worst first. A private front page shows
+    only paths, counts and verdicts. Settings: `kb_structure` in scout-config.yaml.
+    """
+    args = _kb_args("structure", dict(locals()))
+    from scout.kb.structure import cmd_structure
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -748,6 +989,39 @@ def budget_check_cmd(
     from scout.scripts.budget_check import run as budget_run
 
     raise typer.Exit(budget_run(verbose=verbose))
+
+
+@budget_app.command("record-run")
+def budget_record_run_cmd(
+    run_type: str = typer.Argument(..., help="The row's type: the slot (run-scout.sh), dreaming or research."),
+    name: str = typer.Option(..., "--name", help="The --name the runner gave claude for this run."),
+    started: int = typer.Option(..., "--started", help="When the run's claude call started, epoch seconds."),
+    cap: float = typer.Option(0.0, "--cap", help="The run's --max-budget-usd."),
+    exit_code: int = typer.Option(0, "--exit-code", help="The run's exit code."),
+) -> None:
+    """Append the runner's usage-tracker row with what the run cost by claude's own figure.
+
+    Sums the cost-state of every transcript carrying --name since --started (retry
+    attempts included). With none found the row records $0, as before, without
+    cost_source.
+    """
+    from datetime import UTC, datetime
+
+    from scout.scripts.run_cost import record
+
+    _row, cost = record(
+        run_type,
+        name=name,
+        started=datetime.fromtimestamp(started, UTC),
+        cap=cap,
+        exit_code=exit_code,
+    )
+    if cost.measured:
+        typer.echo(
+            f"run cost: ${cost.usd:.2f} by claude's figure ({cost.measured} of {cost.attempts} attempt(s) measured)"
+        )
+    else:
+        typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
 
 
 @budget_app.command("resets-at")
@@ -1281,6 +1555,23 @@ def _register_connectors() -> None:
         from scout.scripts.custom_connector_ops import remove
 
         outcome = remove(
+            _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
+        )
+        _emit(outcome.to_json(), outcome.exit_code)
+
+    @custom_app.command("allow-shared-notes")
+    def cli_custom_allow_shared_notes(
+        key: str,
+        no_wait: bool = typer.Option(
+            False, "--no-wait", help="Don't wait for a held session lock; fail fast with status busy."
+        ),
+    ) -> None:
+        """List Agnes's three read-only shared-notes tools on a restrict_tools connector (not from a scheduled run)."""
+        from scout import __version__
+        from scout import paths as _paths
+        from scout.scripts.custom_connector_ops import allow_shared_notes
+
+        outcome = allow_shared_notes(
             _paths.data_dir(), key, plugin_root=_plugin_root(), plugin_version=__version__, wait=not no_wait
         )
         _emit(outcome.to_json(), outcome.exit_code)
@@ -3645,7 +3936,7 @@ def _register_repo() -> None:
             typer.echo(note)
         if result.replayed:
             typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
-        if result.action != "unlink":
+        if result.action in ("link", "sync"):
             typer.echo(
                 f"pushed {len(result.pushed)} commit(s)"
                 + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
@@ -3673,6 +3964,7 @@ def _register_repo() -> None:
         Refuses a vault that hasn't been through /scout-update's privacy step, an
         unreadable scout-config.yaml, and trading-looking paths that aren't
         local-only or confirmed. Turns OTLP content export off for the vault.
+        Run scoutctl repo preview first to see what would upload.
         """
         from scout import paths as _paths
         from scout.repo_sync import AgnesHost, RepoSyncError, link, save_token
@@ -3725,6 +4017,72 @@ def _register_repo() -> None:
         except RepoSyncError as e:
             _fail(e, as_json)
         _done(result, as_json)
+
+    @repo_app.command("preview")
+    def cli_repo_preview(
+        with_paths: bool = typer.Option(False, "--paths", help="List every file that would upload."),
+        depth: int = typer.Option(2, "--depth", help="How many folder levels the counts group by."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show what would upload to Agnes from HEAD. Read-only: no network, no token, nothing written.
+
+        Counts by folder, and with --paths every file. Works before linking and
+        after, and follows privacy.sync_only.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError, preview
+
+        try:
+            result = preview(_paths.data_dir(), depth=depth)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json(with_paths=with_paths)}, indent=2, sort_keys=True))
+            return
+        for line in result.lines():
+            typer.echo(line)
+        if with_paths:
+            typer.echo("Files:")
+            for rel in result.paths:
+                typer.echo(f"  {rel}")
+
+    @repo_app.command("sync-only")
+    def cli_repo_sync_only(
+        accept: bool = typer.Option(
+            False, "--accept", help="Pin the list in scout-config.yaml now. With no list there, lift the allowlist."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show this link's pinned privacy.sync_only next to scout-config.yaml's, or accept the config's.
+
+        Editing the config can only narrow what uploads. Widening or removing the
+        list takes --accept from you at the keyboard; a scheduled run is refused.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.kb.privacy import load_policy
+        from scout.repo_sync import RepoSyncError, accept_sync_only, load_state
+
+        vault = _paths.data_dir()
+        try:
+            if accept:
+                _done(accept_sync_only(vault), as_json)
+                return
+            state = load_state(vault)
+            if state is None:
+                raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        config = load_policy(vault).sync_only
+        if as_json:
+            body = {"ok": True, "pinned": state.sync_only, "config": None if config is None else list(config)}
+            typer.echo(_json.dumps(body, indent=2, sort_keys=True))
+            return
+        typer.echo("Pinned for this link: " + ("none" if state.sync_only is None else ", ".join(state.sync_only)))
+        typer.echo("scout-config.yaml: " + ("no privacy.sync_only" if config is None else ", ".join(config)))
 
     @repo_app.command("unlink")
     def cli_repo_unlink(

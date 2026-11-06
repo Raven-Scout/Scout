@@ -1,7 +1,22 @@
 """Per-note privacy: the policy and the pure classifier (#453).
 
 Spec: ``docs/superpowers/specs/2026-10-20-per-note-privacy-design.md`` §3, §4.2,
-§5 and §12.1–12.2.
+§5 and §12, with Stage 2 as amended by the Agnes Shared Areas design
+(keboola/agnes-the-ai-analyst#6090, Part 2 §4).
+
+Stage 2 (sharing with named people): a note's effective ``federation_scope`` is
+its declared frontmatter scope, else the first matching ``federation_defaults``
+entry, else ``none``; capped by its ceiling (``none`` < ``people`` < ``org``;
+``people`` keeps only ``person:`` principals); ``none`` for a private or
+local-only note; and ``none`` everywhere while ``federation.enabled`` is false.
+The label's ``ceiling`` is the effective one: the folder ceiling (first matching
+``federation_ceilings`` entry, ``kinds`` checked against frontmatter ``kind``,
+lowered by the overlay's own entries), and ``none`` for a private or local-only
+note. ``federation_source`` names the step that decided the scope:
+``disabled`` (the switch is off), ``frontmatter`` (the note's own key),
+``default`` (a ``federation_defaults`` entry, or no entry and so ``none``), or
+``ceiling`` (the ceiling cut the scope from either). Unknown overlay keys are
+ignored, so later sections (``delegates``, #550) are additive.
 
 ``classify(rel_path, text, policy)`` turns (path, frontmatter, policy) into a
 :class:`Label`. It is a pure function of its arguments so the Agnes indexer can
@@ -16,7 +31,8 @@ move a surface to ``shared``. It can't remove ``local_only.always``, and it
 can't move an engine-default shared surface to ``owner_only``.
 
 Fail-closed everywhere: an unknown ``visibility`` value, an unparseable
-frontmatter block and a frontmatter fence that never closes all classify as
+frontmatter block (a value PyYAML can't build, like ``date: 2026-13-45``,
+included) and a frontmatter fence that never closes all classify as
 ``private``; an unparseable ``federation_scope`` counts as ``none``.
 
 Warning rule ids carried on a :class:`Label` (kb-lint ids, spec §8.2):
@@ -29,20 +45,36 @@ Warning rule ids carried on a :class:`Label` (kb-lint ids, spec §8.2):
   with ``visibility_source == "forced"``.
 - ``file-unreadable``: the caller passed ``unreadable=True`` (an existing
   markdown file that couldn't be read); private, ``forced``.
+- ``federation-ceiling``: the note's own ``federation_scope`` is wider than its
+  folder ceiling, so the ceiling drops part or all of it (a ``people`` ceiling
+  drops ``org`` and ``group:``; ``none`` drops everything). Set whether or not
+  sharing is on, so the owner sees it before turning sharing on.
 
 Warning rule ids carried on a :class:`Policy` (from the overlay):
 
-- ``federation-reserved``: the overlay sets a Stage 2 key
-  (``federation_ceilings``, ``federation_defaults``, ``federation``); ignored.
 - ``surface-widen-ignored``: the overlay lists an engine-default shared surface
   under ``owner_only``; ignored.
 - ``visibility-value``: an overlay ``visibility_defaults`` entry has a value
   other than ``normal``/``private``; it is kept as ``private``.
 - ``privacy-overlay-unreadable``: ``scout-config.yaml`` exists but can't be
-  read or parsed (or isn't a mapping); the whole overlay is dropped and the
-  engine default applies. Later tasks refuse sync while it is set.
+  read or parsed (or isn't a mapping). The settings in its ``privacy:`` block that
+  narrow still apply if that part alone can be built; everything else in it is
+  dropped and the engine default applies. Later tasks refuse sync while it is set.
 - ``privacy-overlay-invalid``: the ``privacy:`` block or one of its keys has the
-  wrong shape; that part is ignored.
+  wrong shape; that part is ignored. Federation entries fail closed instead of
+  being dropped where dropping could widen: a ``federation_defaults`` entry with
+  a bad scope is kept with scope ``none`` (dropping it would let a broader entry
+  match), a ``federation_ceilings`` entry with a bad ceiling is kept as ``none``
+  and one with bad ``kinds`` applies to every kind, and a non-boolean
+  ``federation.enabled`` is false. An entry without a string ``glob`` matches
+  nothing and is dropped.
+- ``privacy-sync-only-invalid``: ``sync_only`` has the wrong shape or an entry
+  that can't name a vault path. It is kept as an empty list, which uploads
+  nothing, and ``scoutctl repo`` refuses until it is fixed.
+
+``sync_only`` is an upload allowlist for ``scoutctl repo`` (:mod:`scout.repo_sync`
+enforces it). It says nothing about who may read a note, so :func:`classify`
+never looks at it and no label depends on it.
 """
 
 from __future__ import annotations
@@ -62,6 +94,7 @@ import yaml
 from scout import paths
 from scout.kb.frontmatter import FENCE, frontmatter_block
 from scout.kb.lint_config import glob_match
+from scout.yaml_safe import load_yaml, load_yaml_key
 
 SCHEMA_VERSION = 1
 
@@ -70,7 +103,7 @@ SCHEMA_VERSION = 1
 # changed default, a different YAML parse): caches of labels or NoteFacts (the
 # kb read index, .scout-cache/privacy-index.json) record it and rebuild on a
 # mismatch, so a stale label can never outlive the rules that made it.
-CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader (ruling R15)
+CLASSIFIER_VERSION = 3  # 3: Stage 2 effective scope, ceiling, frontmatter kind (Agnes #6090 §4)
 
 
 # Frontmatter is parsed with pure ``yaml.SafeLoader``, never libyaml's C
@@ -85,7 +118,7 @@ CLASSIFIER_VERSION = 2  # 2: frontmatter YAML parses exactly as pure SafeLoader 
 # goes through :func:`load_frontmatter_yaml`.
 def load_frontmatter_yaml(text: str) -> Any:
     """``yaml.safe_load`` of a frontmatter block: pure ``SafeLoader``, never libyaml."""
-    return yaml.safe_load(text)  # pure SafeLoader, never the C loader
+    return load_yaml(text)  # pure SafeLoader, never the C loader
 
 
 VISIBILITIES = ("normal", "private")
@@ -94,8 +127,11 @@ VisibilitySource = Literal["frontmatter", "path_default", "default", "forced"]
 SurfaceClass = Literal["owner_only", "shared"]
 # Declared federation scope: "none", "org", or a tuple of principal strings.
 FederationScope = str | tuple[str, ...]
+CeilingLevel = Literal["none", "people", "org"]
+CEILING_LEVELS: tuple[CeilingLevel, ...] = ("none", "people", "org")  # narrowest first
+FederationSource = Literal["frontmatter", "default", "ceiling", "disabled"]
+FEDERATION_SOURCES: tuple[FederationSource, ...] = ("frontmatter", "default", "ceiling", "disabled")
 
-_STAGE2_KEYS = ("federation_ceilings", "federation_defaults", "federation")
 FULL_READERS = frozenset({"owner", "autonomous"})
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
@@ -104,6 +140,41 @@ _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
 # The vault's Python-importable alias for knowledge-base/ (a symlink).
 _KB_DIR = "knowledge-base"
 _KB_ALIAS = "knowledge_base"
+
+
+def _scope_json(scope: FederationScope) -> str | list[str]:
+    return list(scope) if isinstance(scope, tuple) else scope
+
+
+@dataclass(frozen=True)
+class CeilingRule:
+    """One ``federation_ceilings`` entry. ``kinds`` None: every note under the glob."""
+
+    glob: str
+    ceiling: CeilingLevel
+    kinds: tuple[str, ...] | None = None
+
+    def matches(self, rel: str, kind: str | None) -> bool:
+        if not glob_match(self.glob, rel):
+            return False
+        return self.kinds is None or (kind is not None and kind in self.kinds)
+
+    def to_json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"glob": self.glob, "ceiling": self.ceiling}
+        if self.kinds is not None:
+            out["kinds"] = list(self.kinds)
+        return out
+
+
+@dataclass(frozen=True)
+class ScopeDefault:
+    """One ``federation_defaults`` entry: notes under ``glob`` with no ``federation_scope`` key get ``scope``."""
+
+    glob: str
+    scope: FederationScope
+
+    def to_json(self) -> dict[str, Any]:
+        return {"glob": self.glob, "scope": _scope_json(self.scope)}
 
 
 @dataclass(frozen=True)
@@ -115,6 +186,15 @@ class Policy:
     because no overlay can remove it. ``sync_allow`` carves paths out of
     ``local_only_always`` only. Lists are first-match-wins where order matters
     (``visibility_defaults``: overlay entries first).
+
+    Stage 2: ``federation_ceilings`` is the engine's list and
+    ``federation_ceilings_overlay`` the owner's; a note's folder ceiling is the
+    lower of the two first matches (no engine match: ``none``; no overlay match:
+    no narrowing), so the overlay can narrow and never widen.
+    ``federation_defaults`` comes from the overlay alone.
+
+    ``sync_only`` is None when the overlay has no such key, and a tuple
+    (possibly empty) of globs or plain paths when it does.
     """
 
     local_only_always: tuple[str, ...]
@@ -124,15 +204,24 @@ class Policy:
     owner_only_surfaces: frozenset[str]
     shared_surfaces: frozenset[str]
     shared_files: tuple[str, ...]
+    federation_enabled: bool = False
+    federation_ceilings: tuple[CeilingRule, ...] = ()
+    federation_ceilings_overlay: tuple[CeilingRule, ...] = ()
+    federation_defaults: tuple[ScopeDefault, ...] = ()
     warnings: tuple[str, ...] = ()
+    sync_only: tuple[str, ...] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The policy in ``privacy.yaml``'s shape (``schema_version`` aside).
 
         ``local_only.default`` holds the *effective* list, overlay additions
-        included. Surface ids are sorted (they are sets).
+        included. Surface ids are sorted (they are sets). The overlay's
+        ceilings stay a list of their own, ``federation_ceilings_overlay``,
+        because a narrowing entry can't be folded into the engine's list.
+        ``sync_only`` appears only when it is set, so the engine default's
+        snapshot and every other vault's policy hash stay as they were.
         """
-        return {
+        out: dict[str, Any] = {
             "local_only": {
                 "always": list(self.local_only_always),
                 "default": list(self.local_only),
@@ -144,42 +233,50 @@ class Policy:
                 "shared": sorted(self.shared_surfaces),
             },
             "shared_files": list(self.shared_files),
+            "federation": {"enabled": self.federation_enabled},
+            "federation_ceilings": [r.to_json() for r in self.federation_ceilings],
+            "federation_ceilings_overlay": [r.to_json() for r in self.federation_ceilings_overlay],
+            "federation_defaults": [d.to_json() for d in self.federation_defaults],
             "warnings": list(self.warnings),
         }
+        if self.sync_only is not None:
+            out["sync_only"] = list(self.sync_only)
+        return out
 
 
 @dataclass(frozen=True)
 class Label:
     """One file's privacy label (spec §5.4).
 
-    ``federation_scope_declared`` is ``"none"``, ``"org"``, or a tuple of
-    principals. Principals are canonicalised: whitespace trimmed, a
-    ``person:`` principal lower-cased whole (emails compare
-    case-insensitively, §12.2), a ``group:`` id kept as written (it's an
-    opaque host id), duplicates dropped in first-seen order. ``to_json``
-    renders the tuple as a list. In v1 ``federation_scope`` is always
-    ``"none"`` and ``federation_source`` always ``"reserved"``.
+    ``federation_scope`` (effective) and ``federation_scope_declared`` are
+    ``"none"``, ``"org"``, or a tuple of principals. Principals are
+    canonicalised: whitespace trimmed, a ``person:`` principal lower-cased
+    whole (emails compare case-insensitively, §12.2), a ``group:`` id kept as
+    written (it's an opaque host id), duplicates dropped in first-seen order.
+    ``to_json`` renders a tuple as a list. ``ceiling`` and ``federation_source``
+    are described in the module docstring.
     """
 
     path: str
     visibility: Visibility
     visibility_source: VisibilitySource
-    federation_scope: str = "none"
+    federation_scope: FederationScope = "none"
     federation_scope_declared: FederationScope = "none"
-    federation_source: Literal["reserved"] = "reserved"
+    federation_source: FederationSource = "disabled"
+    ceiling: CeilingLevel = "none"
     local_only: bool = False
     shared_file: bool = False
     warnings: tuple[str, ...] = field(default=())
 
     def to_json(self) -> dict[str, Any]:
-        declared = self.federation_scope_declared
         return {
             "path": self.path,
             "visibility": self.visibility,
             "visibility_source": self.visibility_source,
-            "federation_scope": self.federation_scope,
-            "federation_scope_declared": list(declared) if isinstance(declared, tuple) else declared,
+            "federation_scope": _scope_json(self.federation_scope),
+            "federation_scope_declared": _scope_json(self.federation_scope_declared),
             "federation_source": self.federation_source,
+            "ceiling": self.ceiling,
             "local_only": self.local_only,
             "shared_file": self.shared_file,
             "warnings": list(self.warnings),
@@ -222,6 +319,21 @@ def _parse_engine_yaml(raw: dict[str, Any]) -> Policy:
         if vis is None:
             raise ValueError(f"privacy.yaml: bad visibility {entry['visibility']!r}")
         defaults.append((str(entry["glob"]), vis))
+    ceilings: list[CeilingRule] = []
+    for entry in raw["federation_ceilings"]:
+        rule, bad = _ceiling_rule(entry)
+        if rule is None or bad:
+            raise ValueError(f"privacy.yaml: bad federation_ceilings entry {entry!r}")
+        ceilings.append(rule)
+    scope_defaults: list[ScopeDefault] = []
+    for entry in raw["federation_defaults"]:
+        default, bad = _scope_default(entry)
+        if default is None or bad:
+            raise ValueError(f"privacy.yaml: bad federation_defaults entry {entry!r}")
+        scope_defaults.append(default)
+    enabled = raw["federation"]["enabled"]
+    if not isinstance(enabled, bool):
+        raise ValueError(f"privacy.yaml: federation.enabled must be a boolean, not {enabled!r}")
     return Policy(
         local_only_always=_strs(lo["always"]),
         local_only=_strs(lo.get("default")),
@@ -230,7 +342,51 @@ def _parse_engine_yaml(raw: dict[str, Any]) -> Policy:
         owner_only_surfaces=frozenset(_strs(raw["surfaces"]["owner_only"])),
         shared_surfaces=frozenset(_strs(raw["surfaces"]["shared"])),
         shared_files=_strs(raw.get("shared_files")),
+        federation_enabled=enabled,
+        federation_ceilings=tuple(ceilings),
+        federation_defaults=tuple(scope_defaults),
     )
+
+
+def _parse_ceiling(value: Any) -> CeilingLevel | None:
+    if isinstance(value, str):
+        v = value.strip().lower()
+        for level in CEILING_LEVELS:
+            if v == level:
+                return level
+    return None
+
+
+def _ceiling_rule(entry: Any) -> tuple[CeilingRule | None, bool]:
+    """``(rule, malformed)`` for a ``federation_ceilings`` entry; rule None when it has no glob.
+
+    Fails closed: a bad ceiling is ``none``; bad ``kinds`` (not a list of
+    strings) apply the entry to every kind. Kinds compare trimmed and lower-cased.
+    """
+    if not isinstance(entry, dict) or not isinstance(entry.get("glob"), str):
+        return None, True
+    bad = False
+    ceiling = _parse_ceiling(entry.get("ceiling"))
+    if ceiling is None:
+        ceiling, bad = "none", True
+    kinds: tuple[str, ...] | None = None
+    if "kinds" in entry:
+        raw = _str_list(entry["kinds"])
+        if raw is None:
+            bad = True
+        else:
+            kinds = _dedup(k.strip().lower() for k in raw)
+    return CeilingRule(glob=entry["glob"], ceiling=ceiling, kinds=kinds), bad
+
+
+def _scope_default(entry: Any) -> tuple[ScopeDefault | None, bool]:
+    """``(default, malformed)`` for a ``federation_defaults`` entry; a bad scope is kept as ``none``."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("glob"), str):
+        return None, True
+    scope = _parse_federation_scope(entry.get("scope"))
+    if scope is None:
+        return ScopeDefault(glob=entry["glob"], scope="none"), True
+    return ScopeDefault(glob=entry["glob"], scope=scope), False
 
 
 def _str_list(value: Any) -> tuple[str, ...] | None:
@@ -244,13 +400,35 @@ def _dedup(items: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(items))
 
 
+def _sync_only_entries(value: Any) -> tuple[str, ...] | None:
+    """A ``sync_only`` value's entries, trimmed and without a leading ``./``; None if it can't be used.
+
+    One bad entry spoils the whole list, because an allowlist the owner mistyped
+    must stop the upload rather than be read as something narrower or wider.
+    """
+    raw = _str_list(value)
+    if raw is None:
+        return None
+    entries: list[str] = []
+    for item in raw:
+        entry = item.strip().replace("\\", "/")
+        while entry.startswith("./"):
+            entry = entry[2:]
+        if not entry or entry.startswith("/") or ".." in entry.split("/"):
+            return None
+        entries.append(entry)
+    return _dedup(entries)
+
+
 def load_policy(vault: Path | None) -> Policy:
     """Engine default merged with ``<vault>/scout-config.yaml → privacy:``.
 
     ``vault=None``, a missing config file, or a missing ``privacy:`` key all
     mean the engine default. The overlay keys are ``local_only_add``,
     ``visibility_defaults`` (placed before the engine's, so the owner's entry
-    wins), ``shared_files_add`` and ``surfaces: {owner_only, shared}``. See the
+    wins), ``shared_files_add``, ``surfaces: {owner_only, shared}``,
+    ``federation: {enabled}``, ``federation_ceilings`` (narrowing only),
+    ``federation_defaults`` and ``sync_only``. Other keys are ignored. See the
     module docstring for the warnings it records on ``Policy.warnings``.
     """
     base = _engine_default()
@@ -260,14 +438,77 @@ def load_policy(vault: Path | None) -> Policy:
     if not config.exists():
         return base
     try:
-        data = yaml.safe_load(config.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        text = config.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+    return policy_from_config_text(text)
+
+
+def policy_from_config_text(text: str | None) -> Policy:
+    """:func:`load_policy` for a ``scout-config.yaml`` text (None: the engine default).
+
+    When the file doesn't load whole, the settings in its ``privacy:`` block that
+    narrow still apply if that part can be built (a bad date elsewhere must not
+    lift the owner's own rules, and must not turn on anything looser than the engine
+    default either; see :func:`_narrowing_overlay`), with
+    ``privacy-overlay-unreadable`` set either way, so everything that refuses on
+    that warning (sync, a scheduled run's commit) still refuses. If it can't be
+    built, the engine default applies.
+    """
+    if text is None:
+        return _engine_default()
+    try:
+        data = load_yaml(text)
+    except yaml.YAMLError:
+        return _unreadable_policy(text)
     if data is None:
-        return base
+        return _engine_default()
     if not isinstance(data, dict):
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+        return _unreadable_policy(None)
     return policy_from_overlay(data.get("privacy"))
+
+
+def _unreadable_policy(text: str | None) -> Policy:
+    overlay: Any = None
+    if text is not None:
+        try:
+            overlay = load_yaml_key(text, "privacy")
+        except yaml.YAMLError:
+            overlay = None
+    policy = policy_from_overlay(_narrowing_overlay(overlay))
+    return dataclasses.replace(policy, warnings=(*policy.warnings, "privacy-overlay-unreadable"))
+
+
+def _narrowing_overlay(overlay: Any) -> Any:
+    """What of a ``privacy:`` block may apply while its file doesn't load: only what tightens the engine default.
+
+    An allowlist, so a key added later stays out until it is shown to narrow.
+    ``shared_files_add`` and ``local_only_add`` only add checks and exclusions;
+    ``federation_ceilings`` can only lower a ceiling; ``sync_only`` only keeps
+    paths home; a ``private`` default (or a bad value, kept as ``private``) only
+    adds private notes; ``surfaces.shared`` moves a surface to the class that gets
+    checked. Left out: ``normal`` defaults, ``surfaces.owner_only`` (private text
+    may go there), ``federation`` and ``federation_defaults``. A wrong shape passes
+    through, for its warning.
+    """
+    if not isinstance(overlay, Mapping):
+        return overlay
+    kept = {
+        key: overlay[key]
+        for key in ("local_only_add", "shared_files_add", "federation_ceilings", "sync_only")
+        if key in overlay
+    }
+    if "visibility_defaults" in overlay:
+        entries = overlay["visibility_defaults"]
+        kept["visibility_defaults"] = (
+            [e for e in entries if not (isinstance(e, dict) and _parse_visibility(e.get("visibility")) == "normal")]
+            if isinstance(entries, list)
+            else entries
+        )
+    if "surfaces" in overlay:
+        surfaces = overlay["surfaces"]
+        kept["surfaces"] = {"shared": surfaces.get("shared", [])} if isinstance(surfaces, dict) else surfaces
+    return kept
 
 
 def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
@@ -284,9 +525,6 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
     warnings: list[str] = []
     if not isinstance(overlay, Mapping):
         return dataclasses.replace(base, warnings=("privacy-overlay-invalid",))
-
-    if any(k in overlay for k in _STAGE2_KEYS):
-        warnings.append("federation-reserved")
 
     local_only = base.local_only
     if "local_only_add" in overlay:
@@ -342,6 +580,55 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
                 shared.update(want_shared)
                 owner_only -= shared  # shared wins: the narrower class
 
+    enabled = base.federation_enabled
+    if "federation" in overlay:
+        fed = overlay["federation"]
+        if not isinstance(fed, Mapping):
+            warnings.append("privacy-overlay-invalid")
+        elif "enabled" in fed:
+            if isinstance(fed["enabled"], bool):
+                enabled = fed["enabled"]
+            else:
+                warnings.append("privacy-overlay-invalid")
+                enabled = False
+
+    ceilings_overlay: tuple[CeilingRule, ...] = ()
+    if "federation_ceilings" in overlay:
+        entries = overlay["federation_ceilings"]
+        if not isinstance(entries, list):
+            warnings.append("privacy-overlay-invalid")
+        else:
+            rules: list[CeilingRule] = []
+            for entry in entries:
+                rule, bad = _ceiling_rule(entry)
+                if bad:
+                    warnings.append("privacy-overlay-invalid")
+                if rule is not None:
+                    rules.append(rule)
+            ceilings_overlay = tuple(rules)
+
+    scope_defaults = base.federation_defaults
+    if "federation_defaults" in overlay:
+        entries = overlay["federation_defaults"]
+        if not isinstance(entries, list):
+            warnings.append("privacy-overlay-invalid")
+        else:
+            added_defaults: list[ScopeDefault] = []
+            for entry in entries:
+                default, bad = _scope_default(entry)
+                if bad:
+                    warnings.append("privacy-overlay-invalid")
+                if default is not None:
+                    added_defaults.append(default)
+            scope_defaults = (*added_defaults, *scope_defaults)
+
+    sync_only: tuple[str, ...] | None = None
+    if "sync_only" in overlay:
+        sync_only = _sync_only_entries(overlay["sync_only"])
+        if sync_only is None:
+            warnings.append("privacy-sync-only-invalid")
+            sync_only = ()
+
     return Policy(
         local_only_always=base.local_only_always,
         local_only=local_only,
@@ -350,7 +637,12 @@ def policy_from_overlay(overlay: Mapping[str, Any] | None) -> Policy:
         owner_only_surfaces=frozenset(owner_only),
         shared_surfaces=frozenset(shared),
         shared_files=shared_files,
+        federation_enabled=enabled,
+        federation_ceilings=base.federation_ceilings,
+        federation_ceilings_overlay=ceilings_overlay,
+        federation_defaults=scope_defaults,
         warnings=_dedup(warnings),
+        sync_only=sync_only,
     )
 
 
@@ -404,7 +696,8 @@ def _frontmatter(text: str | None) -> dict[str, Any] | None:
     return data
 
 
-def _parse_principal(entry: Any) -> str | None:
+def parse_principal(entry: Any) -> str | None:
+    """A canonical ``person:``/``group:`` principal (§12.2), or None."""
     if not isinstance(entry, str):
         return None
     p = entry.strip()
@@ -424,7 +717,7 @@ def _parse_federation_scope(value: Any) -> FederationScope | None:
         v = value.strip().lower()
         return v if v in ("none", "org") else None
     if isinstance(value, list):
-        principals = [_parse_principal(e) for e in value]
+        principals = [parse_principal(e) for e in value]
         if any(p is None for p in principals):
             return None
         canon = _dedup(p for p in principals if p is not None)
@@ -443,7 +736,11 @@ class NoteFacts:
 
     ``state`` is ``ok``, ``unparseable`` or ``unreadable``. ``visibility`` is the
     parsed frontmatter value (an unknown value already ``private``), or None
-    when the key is absent. ``warnings`` are the text-only ones, in
+    when the key is absent. ``declared_present`` says the note has a
+    ``federation_scope`` key at all: an explicit (or unparseable, so ``none``)
+    value overrides the folder defaults, so a note can keep itself out of a
+    shared folder. ``kind`` is the frontmatter ``kind`` string, trimmed and
+    lower-cased, or None. ``warnings`` are the text-only ones, in
     :func:`classify`'s order.
     """
 
@@ -451,6 +748,8 @@ class NoteFacts:
     visibility: Visibility | None = None
     declared: FederationScope = "none"
     warnings: tuple[str, ...] = ()
+    declared_present: bool = False
+    kind: str | None = None
 
 
 def note_facts(text: str | None, *, unreadable: bool = False) -> NoteFacts:
@@ -480,7 +779,70 @@ def facts_from_frontmatter(fm: Mapping[str, Any]) -> NoteFacts:
             warnings.append("visibility-value")
         else:
             declared = scope
-    return NoteFacts(visibility=visibility, declared=declared, warnings=tuple(warnings))
+    kind = fm.get("kind")
+    return NoteFacts(
+        visibility=visibility,
+        declared=declared,
+        warnings=tuple(warnings),
+        declared_present="federation_scope" in fm,
+        kind=(kind.strip().lower() or None) if isinstance(kind, str) else None,
+    )
+
+
+def _level(level: CeilingLevel) -> int:
+    return CEILING_LEVELS.index(level)
+
+
+def folder_ceiling(policy: Policy, rel: str, kind: str | None) -> CeilingLevel:
+    """The widest scope a note at ``rel`` with frontmatter ``kind`` may have, before private/local-only.
+
+    The engine's first matching entry (``none`` when none matches), lowered to
+    the overlay's first matching entry when there is one.
+    """
+    engine = next((r for r in policy.federation_ceilings if r.matches(rel, kind)), None)
+    if engine is None:
+        return "none"
+    narrowed = next((r for r in policy.federation_ceilings_overlay if r.matches(rel, kind)), None)
+    if narrowed is not None and _level(narrowed.ceiling) < _level(engine.ceiling):
+        return narrowed.ceiling
+    return engine.ceiling
+
+
+def cap_scope(scope: FederationScope, ceiling: CeilingLevel) -> FederationScope:
+    """``scope`` cut to ``ceiling``: ``people`` keeps ``person:`` principals only; empty is ``none``."""
+    if scope == "none" or ceiling == "none":
+        return "none"
+    if ceiling == "org":
+        return scope
+    if not isinstance(scope, tuple):  # "org" (or anything else) is wider than people
+        return "none"
+    return tuple(p for p in scope if p.startswith("person:")) or "none"
+
+
+def scope_admits(scope: FederationScope, principal: str) -> bool:
+    """Whether ``scope`` lists ``principal``. ``org`` admits nobody by name (Agnes ruling 7)."""
+    return isinstance(scope, tuple) and principal in scope
+
+
+def first_default(policy: Policy, rel: str) -> ScopeDefault | None:
+    return next((d for d in policy.federation_defaults if glob_match(d.glob, rel)), None)
+
+
+def _federation(
+    policy: Policy, rel: str, facts: NoteFacts, ceiling: CeilingLevel
+) -> tuple[FederationScope, FederationSource]:
+    """The effective scope and its source (module docstring), ``ceiling`` already effective."""
+    if not policy.federation_enabled:
+        return "none", "disabled"
+    wanted: FederationScope
+    source: FederationSource
+    if facts.declared_present:
+        wanted, source = facts.declared, "frontmatter"
+    else:
+        default = first_default(policy, rel)
+        wanted, source = (default.scope if default else "none"), "default"
+    scope = cap_scope(wanted, ceiling)
+    return scope, ("ceiling" if scope != wanted else source)
 
 
 def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
@@ -496,6 +858,7 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
             path=rel,
             visibility="private",
             visibility_source="forced",
+            federation_source=_federation(policy, rel, facts, "none")[1],
             local_only=local_only,
             shared_file=shared_by_path,
             warnings=("file-unreadable",) if facts.state == "unreadable" else ("frontmatter-unparseable",),
@@ -519,13 +882,23 @@ def label_from_facts(rel_path: str, facts: NoteFacts, policy: Policy) -> Label:
     if visibility == "private" and declared != "none":
         warnings.append("privacy-contradiction")
 
+    by_folder = folder_ceiling(policy, rel, facts.kind)
+    forced_none = visibility == "private" or local_only
+    ceiling: CeilingLevel = "none" if forced_none else by_folder
+    if not forced_none and cap_scope(declared, by_folder) != declared:
+        warnings.append("federation-ceiling")
+
+    scope, fed_source = _federation(policy, rel, facts, ceiling)
     return Label(
         path=rel,
         visibility=visibility,
         visibility_source=source,
+        federation_scope=scope,
         federation_scope_declared=declared,
+        federation_source=fed_source,
+        ceiling=ceiling,
         local_only=local_only,
-        shared_file=shared_by_path or declared != "none",
+        shared_file=shared_by_path or declared != "none" or scope != "none",
         warnings=_dedup(warnings),
     )
 
@@ -650,13 +1023,16 @@ def normalize_rel(vault: Path, path: str | Path) -> str:
 
 
 def visible_to(label: Label, reader: str) -> bool:
-    """Whether ``reader`` may see the labelled file at all (spec §4.1, v1).
+    """Whether ``reader`` may see the labelled file at all (spec §4.1).
 
     ``owner`` and ``autonomous`` see every file (labelled); every
-    ``agent:<principal>`` reader sees nothing in v1. Any other reader id is
-    denied (fail-closed). The Agnes indexer applies its own rules (§9).
+    ``agent:<principal>`` reader sees nothing. Any other reader id is denied
+    (fail-closed). That stays so in Stage 2: another person reads a shared note
+    only through Agnes's shared reader, which applies the effective
+    ``federation_scope`` from the synced labels (Agnes #6090 §5.2); the laptop
+    engine never serves another person.
     """
-    del label  # v1: the decision doesn't depend on the label yet (Stage 2 will)
+    del label  # the laptop never serves another person, whatever the label says
     return reader in FULL_READERS
 
 

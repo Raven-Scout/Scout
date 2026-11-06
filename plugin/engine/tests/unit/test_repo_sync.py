@@ -420,6 +420,18 @@ def test_a_conflicting_replay_writes_nothing(vault: Path, host: FakeHost, tmp_pa
     assert (vault / f"{rel}.proposed-merge").exists()
 
 
+def test_a_long_local_only_glob_is_still_refused_by_sync(vault: Path) -> None:
+    """kb-lint caps its own globs; a sync rule must keep the path on the laptop."""
+    with (vault / "scout-config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write('  local_only_add:\n    - "**/x/**/y/**/z/**"\n')
+    rules = rs.LocalOnlyRules.build([load_policy(vault)], ())
+    assert rules.local_only("w/x/y/z/note.md")
+    _commit(vault, "w/x/y/z/note.md", "held back\n", "deep local-only note")
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.check_mirror_commits(vault, rules, [git(vault, "rev-parse", "HEAD").strip()])
+    assert e.value.code == "local_only_path_in_push"
+
+
 def test_the_push_guard_refuses_a_mirror_commit_with_a_local_only_path(vault: Path) -> None:
     rules = rs.LocalOnlyRules.build([load_policy(vault)], ())
     head = git(vault, "rev-parse", "HEAD").strip()
@@ -544,6 +556,26 @@ def test_agnes_host_speaks_the_rest_contract(monkeypatch: pytest.MonkeyPatch) ->
     assert calls[0][3]["Authorization"] == "Bearer pat-stand-in"
     env = host.git_env()
     assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader" and "pat-stand-in" not in env["GIT_CONFIG_VALUE_0"]
+
+
+def _git_config(env: dict[str, str]) -> list[tuple[str, str]]:
+    n = int(env["GIT_CONFIG_COUNT"])
+    assert not any(k.startswith("GIT_CONFIG_KEY_") and int(k.rsplit("_", 1)[1]) >= n for k in env)
+    return [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(n)]
+
+
+def test_agnes_git_env_sends_packs_up_to_the_repository_cap_in_one_post() -> None:
+    """Over http.postBuffer git sends a bare ``0000`` probe first, and Agnes 400s it."""
+    env = rs.AgnesHost("https://agnes.example.com", "t").git_env()
+    config = dict(_git_config(env))
+    assert int(config["http.postBuffer"]) == rs.POST_BUFFER_BYTES > 500 * 1024 * 1024
+    leased = _git_config(rs.lease_git_env(env, "lt", 3))
+    assert leased[: len(config)] == _git_config(env)
+    assert ("http.postBuffer", str(rs.POST_BUFFER_BYTES)) in leased
+    assert [v for k, v in leased if k == "http.extraHeader"][1:] == [
+        "X-Agnes-Lease-Token: lt",
+        "X-Agnes-Lease-Generation: 3",
+    ]
 
 
 @pytest.mark.parametrize(

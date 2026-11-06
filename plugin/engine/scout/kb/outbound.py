@@ -11,7 +11,14 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
 - whole-word *terms*: the file's slug (its name without the extension), and
   for a markdown note its frontmatter ``name:``, ``aliases:`` and ``title:``
   (spec §4.2 counts the title as private content; ruling R17), each kept only
-  when it has 4 or more characters.
+  when it has 4 or more characters. A slug, ``name:`` or ``title:`` that is one
+  ordinary word (:data:`~scout.kb.ordinary_words.ORDINARY_WORDS`: ``plan``,
+  ``notes``, ``billing``) is not a term, unless the note names a proper noun
+  (:data:`PROPER_NOUN_TYPES` such as ``type: person`` or ``organization``, or in
+  a ``people/`` folder). A note with such a slug matches by its path instead,
+  from its last two segments up (``billing/billing``), as a note shared with
+  this person does, or by its file name (``billing.md``) at the vault root
+  (#576). Aliases are always terms.
 - *wikilinks*: ``[[target]]``, ``[[target|display]]`` (``\\|`` inside a table
   too), ``[[target#heading]]``, ``![[target]]`` and ``[[path/to/target]]``
   whose target is the note's slug, file name, ``name:``, an alias, or its vault
@@ -39,6 +46,10 @@ private note (a term spanning lines only when every line carries the marker).
 Sends pass ``allow_markers=False``: a marker is not a send pass (spec §8.2),
 and since the marker itself names the slug, such a line is a hit.
 
+**Notes shared with this person** (Agnes Shared Areas §7): :func:`with_shared`
+adds their paths, long titles, quotes and close rewordings, whatever the vault's
+own sharing switch says. :mod:`scout.kb.shared_reads` says how and what it can't see.
+
 A result is only ever line numbers: no function here returns the matched term,
 the note or its path to a caller that would print it.
 """
@@ -56,6 +67,7 @@ from urllib.parse import unquote_plus
 
 import yaml
 
+from scout.kb.ordinary_words import ORDINARY_WORDS
 from scout.kb.privacy import (
     FULL_READERS,
     Policy,
@@ -66,8 +78,20 @@ from scout.kb.privacy import (
     surface_class,
 )
 from scout.kb.read import Output, UsageError, all_labels, policy_hash
+from scout.kb.shared_reads import (
+    LEDGER_DIR,
+    ExcerptIndex,
+    SharedReadsUnreadable,
+    SharedRecord,
+    load_ledger,
+    source_note_records,
+)
 
 MIN_TERM_CHARS = 4
+MIN_SHARED_NAME_WORDS = 3
+# Entity types whose names are proper nouns (schema.yaml's, and free-form ones vaults use):
+# a one-word name stays a term even when it's an ordinary word (#576).
+PROPER_NOUN_TYPES = frozenset({"person", "organization", "pet", "org", "company", "client"})
 
 _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 # The one definition of the lint override marker (spec §8.2): ``%%privacy:allow <slug>%%``,
@@ -108,12 +132,25 @@ class PrivateNote:
         return False
 
 
+# The citing form a run writes (`<owner>'s shared note <path>`, `source: shared:<owner-email>:<path>`):
+# refused on a shared surface with nothing recorded, so a citation pasted from the daily file can't pass.
+_CITATION = PrivateNote(
+    path="shared-note-citation",
+    slug="shared-note-citation",
+    terms=(),
+    link_keys=frozenset(),
+    link_path="",
+    pattern=re.compile(r"['’]s shared note(?![^\W_])|(?<![^\W_])shared:[^\s:@]+@[^\s:@]+:\S"),
+)
+
+
 @dataclass(frozen=True)
 class PrivateTerms:
     """Every private note's terms and link keys (what :func:`find_mentions` consumes)."""
 
     notes: tuple[PrivateNote, ...]
     any_term: re.Pattern[str] | None  # a fast pre-check: any note's term
+    excerpts: ExcerptIndex | None = None  # quotes of notes shared with this person (with_shared)
 
     def __bool__(self) -> bool:
         return bool(self.notes)
@@ -141,23 +178,30 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
-def _names_from_text(text: str | None) -> list[str]:
-    """``name:``, ``aliases:`` and ``title:`` of a note's (leading) text; [] when it has none or they don't parse."""
+def _frontmatter(text: str | None) -> dict[Any, Any]:
+    """A note's (leading) text's frontmatter; {} when it has none or it doesn't parse."""
     if text is None:
-        return []
+        return {}
     block = classifier_block(text)
     if block is None:
-        return []
+        return {}
     try:
         data = load_frontmatter_yaml("\n".join(block))
-    except (yaml.YAMLError, RecursionError, ValueError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    out: list[str] = []
-    for key in ("name", "aliases", "title"):
-        out += _strings(data.get(key))
-    return out
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ordinary(name: str) -> bool:
+    """``name`` is one ordinary word (#576): a note named so doesn't make it a term."""
+    return _words(name) == 1 and name.strip().casefold() in ORDINARY_WORDS
+
+
+def _names_a_proper_noun(rel: str, data: dict[Any, Any]) -> bool:
+    kind = data.get("type")
+    return (isinstance(kind, str) and kind.strip().casefold() in PROPER_NOUN_TYPES) or (
+        "people" in rel.casefold().split("/")[:-1]
+    )
 
 
 def _strip_md(name: str) -> str:
@@ -177,10 +221,19 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
     """
     name = rel.rsplit("/", 1)[-1]
     slug = _strip_md(name) if name.lower().endswith(".md") else Path(name).stem
+    data = _frontmatter(text) if name.lower().endswith(".md") else {}
+    proper = _names_a_proper_noun(rel, data)
     names = [slug]
-    if name.lower().endswith(".md"):
-        names += _names_from_text(text)
-    terms = tuple(dict.fromkeys(n for n in names if len(n) >= MIN_TERM_CHARS))
+    named = [slug] if proper or not _ordinary(slug) else []
+    for key in ("name", "aliases", "title"):
+        for n in _strings(data.get(key)):
+            names.append(n)
+            if key == "aliases" or proper or not _ordinary(n):
+                named.append(n)
+    if _ordinary(slug) and not proper:
+        parts = (rel[: len(rel) - len(name)] + slug).split("/")
+        named += ["/".join(parts[i:]) for i in range(len(parts) - 1)] if len(parts) > 1 else [name]
+    terms = tuple(dict.fromkeys(n for n in named if len(n) >= MIN_TERM_CHARS))
     keys = {n.casefold() for n in names} | {name.casefold(), _strip_md(name).casefold()}
     return PrivateNote(
         path=rel,
@@ -193,11 +246,13 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
 
 
 _CACHE: dict[str, tuple[Any, PrivateTerms]] = {}
+_SHARED_CACHE: dict[str, tuple[Any, PrivateTerms]] = {}
 
 
 def clear_cache() -> None:
     """Forget the per-process term lists (tests)."""
     _CACHE.clear()
+    _SHARED_CACHE.clear()
 
 
 def _stat(path: Path) -> tuple[int, int, int] | None:
@@ -232,6 +287,90 @@ def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
         seen.setdefault((n.path, n.terms, n.link_keys), n)
     kept = tuple(seen.values())
     return PrivateTerms(notes=kept, any_term=_term_regex(t for n in kept for t in n.terms))
+
+
+def _words(text: str) -> int:
+    return len([w for w in _SPLIT.split(text) if w])
+
+
+def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
+    """The matchable forms of a note or folder someone shared with this person.
+
+    A note: its path, or a trailing part of two segments or more. A folder: its full
+    path only. Its title and slug only
+    at three words or more: a note named ``plan`` or ``documents`` must not turn
+    that word into a term (the reader's Slack says "plan" all day). ``pattern``
+    is left out: :func:`with_shared` compiles every shared note's terms as one,
+    since a regex per note was most of a cold hook's time on a long ledger.
+    """
+    rel = _strip_md(path)
+    parts = rel.split("/")
+    slug = parts[-1]
+    if not path.lower().endswith(".md"):
+        # A folder from `shared_with_me`: the reader's vault has the same layout, so `projects/widget`
+        # is likely their own folder too. Only the full path names the owner's.
+        return PrivateNote(path=key, slug=slug, terms=(rel,), link_keys=frozenset(), link_path="", pattern=None)
+    names = [n for n in (title, slug) if n and _words(n) >= MIN_SHARED_NAME_WORDS]
+    terms = tuple(dict.fromkeys(["/".join(parts[i:]) for i in range(len(parts) - 1)] + names))
+    keys = {slug.casefold(), path.rsplit("/", 1)[-1].casefold()} if slug in names else set()
+    return PrivateNote(
+        path=key,
+        slug=slug,
+        terms=terms,
+        link_keys=frozenset(keys),
+        link_path=rel.casefold(),
+        pattern=None,
+    )
+
+
+def with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
+    """``terms`` plus what this person has read of other people's shared notes, and the citing form.
+
+    Raises :class:`~scout.kb.shared_reads.SharedReadsUnreadable` when the ledger
+    can't be read, so a caller fails closed. ``source:`` of the private notes
+    in ``terms`` counts too, so a cleared cache keeps what was filed in the vault.
+    Cached per process like :func:`private_terms`: the outbound gate checks a tool
+    call's every field, and the ledger only grows.
+    """
+    root = vault.resolve()
+    ledger = root / LEDGER_DIR
+    try:
+        entries = sorted(p.name for p in ledger.iterdir())
+    except OSError:
+        entries = []
+    signature = (
+        tuple((name, _stat(ledger / name)) for name in entries),
+        tuple((n.path, _stat(root / n.path)) for n in terms.notes),
+    )
+    cached = _SHARED_CACHE.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    merged_terms = _with_shared(terms, root)
+    _SHARED_CACHE[str(root)] = (signature, merged_terms)
+    return merged_terms
+
+
+def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
+    records = [*load_ledger(vault), *source_note_records(vault, (n.path for n in terms.notes))]
+    merged: dict[str, list[SharedRecord]] = {}
+    for record in records:
+        merged.setdefault(record.key, []).append(record)
+    shared = [
+        _shared_note(key, group[0].path, next((r.title for r in group if r.title), None))
+        for key, group in merged.items()
+    ]
+    paths = _term_regex(t for n in shared for t in n.terms)
+    together = PrivateNote(
+        path="shared-note-paths",
+        slug="shared-note-paths",
+        terms=(),
+        link_keys=frozenset(),
+        link_path="",
+        pattern=paths,
+    )
+    notes = (*terms.notes, _CITATION, together, *shared)
+    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
+    return PrivateTerms(notes=notes, any_term=re.compile("|".join(patterns)), excerpts=ExcerptIndex(merged))
 
 
 def _link_target(inner: str) -> str:
@@ -273,6 +412,8 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
         for note in terms.notes:
             if note.pattern is not None:
                 found += [(note.path, line(m.start()), line(m.end() - 1)) for m in note.pattern.finditer(folded)]
+    if terms.excerpts is not None:
+        found += terms.excerpts.hits(text)
     return found
 
 
@@ -345,7 +486,14 @@ def check_outbound(vault: Path, text: str, surface: str) -> list[int]:
     policy = load_policy(root)
     if is_owner_only(policy, surface):
         return []
-    return find_mentions(text, private_terms(root, policy), allow_markers=False)
+    return find_mentions(text, with_shared(private_terms(root, policy), root), allow_markers=False)
+
+
+def _checked(vault: Path, text: str, surface: str) -> list[int]:
+    try:
+        return check_outbound(vault, text, surface)
+    except SharedReadsUnreadable as e:
+        raise UsageError(str(e)) from e
 
 
 def _refuse_agents(reader: str) -> None:
@@ -359,6 +507,7 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
     """``kb check-outbound``: exit 1 with the offending line numbers, else 0 (``ok``).
 
     A file that can't be read is a ``UsageError`` (exit 2); its content is never echoed.
+    So is a ledger of shared reads that can't be read: the check can't say what it covers.
     """
     _refuse_agents(reader)
     try:
@@ -366,7 +515,7 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
             text = fh.read().decode("utf-8", errors="replace")  # bad UTF-8 never skips the check
     except OSError as e:
         raise UsageError(f"can't read {path}: {e.strerror or type(e).__name__}") from e
-    lines = check_outbound(vault, text, surface)
+    lines = _checked(vault, text, surface)
     if lines:
         return Output(
             data={"ok": False, "lines": lines},
@@ -381,6 +530,6 @@ def cmd_check_outbound(vault: Path, reader: str, path: str, surface: str) -> Out
 def cmd_check_query(vault: Path, reader: str, text: str, surface: str) -> Output:
     """``kb check-query``: exit 1 and ``blocked`` when the query names a private note, else 0 (``ok``)."""
     _refuse_agents(reader)
-    if check_outbound(vault, text, surface):
+    if _checked(vault, text, surface):
         return Output(data={"ok": False}, lines=["blocked"], code=1, surface=surface, blocked=True)
     return Output(data={"ok": True}, lines=["ok"], surface=surface)
