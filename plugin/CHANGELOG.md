@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer move a file out of a local-only path** (#562; `engine/scout/kb/lint_privacy.py`, `phases/core/privacy.md`). The pre-commit hook's widening guard compared a note's privacy label before and after a commit but never looked at where the file lived, so a run could `git mv` a note out of a `privacy.local_only_add` folder and `kb lint` passed it; from its new path, `repo sync` would upload it. In a scheduled run, a commit that moves any file, markdown or not and inside the KB or not, from a path repo sync keeps home to one it uploads now blocks with `privacy-widening`. Local-only means what repo sync decides: the engine's lists, `local_only_add`, and the `sync_only` allowlist (pinned or in the config), so moving a file from outside the allowlist into it blocks too, and moving one to a path that still stays home doesn't. Git pairs the paths, so `git mv` and a delete plus an add of similar content in one commit are both caught; a copy, or a delete in a later commit, isn't, as with a new note built from a private one. The owner's own commits are unchanged.
+
 ## [0.18.9] - 2026-11-05
 
 ### Fixed

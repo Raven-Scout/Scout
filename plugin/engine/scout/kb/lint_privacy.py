@@ -31,8 +31,10 @@ Rules:
   line of a note that was ``private`` where its path default is private too,
   sets or widens ``federation_scope``, adds a marker (a line whose marker
   targets aren't among those of the lines it replaces, or more markers per
-  target), or touches the ``privacy:`` block of ``scout-config.yaml``. The
-  owner's interactive commits aren't checked.
+  target), touches the ``privacy:`` block of ``scout-config.yaml``, or moves
+  any file from a path repo sync keeps home to one it uploads
+  (:func:`_local_only_moves`, #562). The owner's interactive commits aren't
+  checked.
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
@@ -109,6 +111,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
+from scout.repo_sync import LocalOnlyRules, RepoSyncError, load_state
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -133,6 +136,8 @@ _MESSAGES = {
     "federation-ceiling": "federation_scope is wider than this folder may share (people notes, emails: none; "
     "meetings and threads: named people only), so part of it is dropped",
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
+    "local-only-move": "a scheduled run may not move a file out of a local-only path (repo sync would upload it "
+    "from its new path) — leave that to the owner",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -259,7 +264,10 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         if ctx.scheduled:
             raise PolicyUnreadable("the commit's scout-config.yaml doesn't parse")
         out.append(Finding(CONFIG_FILE, "privacy-overlay-unreadable", False, _MESSAGES["privacy-overlay-unreadable"]))
-    for sp in staged_paths(repo):
+    paths = staged_paths(repo)
+    if ctx.scheduled:
+        out += _local_only_moves(ctx, paths)
+    for sp in paths:
         rel = sp.rel
         if rel == CONFIG_FILE:
             out += _config_findings(ctx, sp)
@@ -276,6 +284,35 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         # Deleting the config drops its privacy: block (staged_paths lists no deletions).
         out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
     return out
+
+
+def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
+    """Renames that take a file from a path repo sync keeps home to one it uploads (#562).
+
+    Any file, in the privacy scope or not, because repo sync excludes by path.
+    Local-only is what :class:`scout.repo_sync.LocalOnlyRules` says: the
+    engine's lists, ``local_only_add`` and the upload allowlist (pinned for the
+    link, or in the config), so a move into ``sync_only`` from outside it counts
+    too. The source is judged under every policy in play, the destination under
+    the commit's alone. Git pairs the two paths (``git mv``, or a delete and an
+    add of similar content in one commit); a copy, or a delete in a later
+    commit, isn't seen.
+    """
+    moves = [(sp.head_rel, sp.rel) for sp in paths if sp.head_rel is not None and sp.head_rel != sp.rel]
+    if not moves:
+        return []
+    try:
+        state = load_state(ctx.repo)
+    except RepoSyncError:
+        state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
+    pinned = state.sync_only if state is not None else None
+    was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], (), pinned=pinned)
+    now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
+    return [
+        Finding(rel, "privacy-widening", True, _MESSAGES["local-only-move"])
+        for src, rel in moves
+        if was.local_only(src) and not now.local_only(rel)
+    ]
 
 
 def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
