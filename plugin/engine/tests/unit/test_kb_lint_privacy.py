@@ -149,7 +149,7 @@ def test_a_link_by_alias_display_name_or_path_is_a_private_link(vault: Path, lin
 
 
 @pytest.mark.parametrize(
-    "line", ["Ask Sammy about the contract.", "Remember task-renew-permit before Friday.", "The billing terms changed."]
+    "line", ["Ask Sammy about the contract.", "Remember task-renew-permit before Friday.", "See billing/billing."]
 )
 def test_naming_a_private_note_in_a_shared_file_is_a_private_mention(vault: Path, line: str) -> None:
     n = append(vault, DRAFT, line)
@@ -157,6 +157,13 @@ def test_naming_a_private_note_in_a_shared_file_is_a_private_mention(vault: Path
     rc, out = hook(vault)
     assert rc == 1
     assert_no_private_words(out)
+
+
+def test_an_ordinary_word_a_private_note_is_named_with_is_not_a_mention(vault: Path) -> None:
+    """``billing`` is a private note's slug, and an ordinary word (#576)."""
+    append(vault, DRAFT, "The billing terms changed.")
+    assert checks(vault) == []
+    assert hook(vault)[0] == 0
 
 
 def test_the_same_line_marker_lets_exactly_that_link_through(vault: Path) -> None:
@@ -177,7 +184,7 @@ def test_a_marker_on_another_line_allows_nothing(vault: Path) -> None:
 
 
 def test_a_marker_allows_one_target_not_a_second_one_on_the_line(vault: Path) -> None:
-    n = append(vault, DRAFT, "See [[sam]] and the billing terms. %%privacy:allow sam%%")
+    n = append(vault, DRAFT, "See [[sam]] and the task-renew-permit terms. %%privacy:allow sam%%")
     assert checks(vault) == [(DRAFT, "private-mention", True, n)]
 
 
