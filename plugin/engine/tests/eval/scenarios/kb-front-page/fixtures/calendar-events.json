@@ -1,0 +1,30 @@
+{
+  "events": [
+    {
+      "id": "evt-report-sync",
+      "summary": "Report builder weekly sync",
+      "start": {
+        "dateTime": "{{d-1}}T15:00:00Z"
+      },
+      "end": {
+        "dateTime": "{{d-1}}T15:30:00Z"
+      },
+      "attendees": [
+        {
+          "email": "alex@example.com",
+          "responseStatus": "accepted"
+        },
+        {
+          "email": "priya@example.com",
+          "responseStatus": "accepted"
+        },
+        {
+          "email": "sam@example.com",
+          "responseStatus": "accepted"
+        }
+      ],
+      "description": "Weekly sync on the report builder. Notes are sent by mail after the meeting.",
+      "recurrence": "weekly"
+    }
+  ]
+}

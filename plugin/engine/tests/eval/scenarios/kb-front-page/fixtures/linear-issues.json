@@ -1,0 +1,22 @@
+{
+  "issues": [
+    {
+      "identifier": "PROJ-1240",
+      "title": "Retire the nightly PDF job",
+      "state": {
+        "name": "Done",
+        "type": "completed"
+      },
+      "completedAt": "{{d-1}}T14:20:00Z",
+      "updatedAt": "{{d-1}}T14:20:00Z",
+      "creator": {
+        "name": "Priya Example"
+      },
+      "assignee": {
+        "name": "Sam Example"
+      },
+      "dueDate": null,
+      "url": "https://linear.app/example-org/issue/PROJ-1240"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "messages": [
+    {
+      "id": "msg-sync-notes",
+      "threadId": "thr-sync-notes",
+      "from": "Meeting notes <notes@example.com>",
+      "to": "alex@example.com, priya@example.com, sam@example.com",
+      "subject": "Notes: Report builder weekly sync",
+      "date": "{{d-1}}T15:40:00Z",
+      "snippet": "Decisions: the export row cap goes up from 50,000 to 200,000 rows now that streaming is merged. The pilot opens on {{d+7}}."
+    }
+  ]
+}

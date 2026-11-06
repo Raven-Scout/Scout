@@ -126,6 +126,31 @@ eval_reminder() {
   echo "  then paste the summary it prints into the release PR."
 }
 
+# kb_gate_reminder: print the KB-writing gate step. It IS a release gate, but one the maintainer runs:
+# it starts a model session on their own Claude login, so neither this script nor CI can run or check
+# it. Print only; callers run it as `kb_gate_reminder || true`. Its result dirs are
+# kb-front-page-kb-gate-<YYYYMMDD-HHMMSS>-1/, each with a kb-gate-report.json.
+kb_gate_reminder() {
+  local newest="" verdict="" d stamp
+  for d in "$REPO_ROOT"/.eval-results/*-kb-gate-*/; do
+    [ -f "$d/kb-gate-report.json" ] || continue
+    stamp="$(basename "$d" | sed -nE 's/.*-([0-9]{8}-[0-9]{6})-[0-9]+$/\1/p')"
+    [ -z "$stamp" ] || [[ "$stamp" < "$newest" ]] || {
+      newest="$stamp"
+      verdict="$(sed -nE 's/^  "verdict": "([a-z]+)",?$/\1/p' "$d/kb-gate-report.json")"
+    }
+  done
+  if [ -z "$newest" ]; then
+    echo "→ KB-writing gate (a release gate, run locally): no local result yet."
+  else
+    echo "→ KB-writing gate (a release gate, run locally): newest local result" \
+      "${newest:0:4}-${newest:4:2}-${newest:6:2} ${newest:9:2}:${newest:11:2}: ${verdict:-unreadable}."
+  fi
+  echo "  On the release branch, before merging the release PR (1 session on your Claude login, no API key):"
+  echo "    plugin/scripts/eval.sh kb-gate"
+  echo "  Merge only on \"verdict\": \"pass\" (exit 0), with its JSON report pasted into the release PR."
+}
+
 cmd_prepare() {
   local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t
   slug="$(require_slug)"
@@ -172,6 +197,7 @@ cmd_prepare() {
   "$PY" -m scout.scripts.release_notes --repo-root "$REPO_ROOT" "$new" --repo "$slug" --out "$notes" \
     ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
   eval_reminder "${prev%% *}" || true
+  kb_gate_reminder || true
   echo "→ Headless self-update rehearsal (not a gate): the previous release updating itself to this one,"
   echo "  in a throwaway Linux container (or run the e2e-self-update workflow on $branch):"
   echo "    scripts/e2e/self-update/run.sh --from ${prev%% *} --to $branch"
@@ -185,7 +211,9 @@ cmd_prepare() {
     printf '%s\n\n%s\n\n---\n\n' "Release prep for Scout v$new. Once the four required checks pass, merge it with \
 **Create a merge commit** (not squash), so the final build's number is above every release candidate's. \
 Then run \`scripts/release.sh finalize v$new\`." \
-      "- [ ] Eval (local, not a gate): ran \`plugin/scripts/eval.sh\` on my own Claude login \
+      "- [ ] KB-writing gate (local, **a release gate**): \`plugin/scripts/eval.sh kb-gate\` passed (exit 0) \
+on this branch, on my own Claude login, and I pasted its JSON report here. A fail blocks the merge.
+- [ ] Eval (local, not a gate): ran \`plugin/scripts/eval.sh\` on my own Claude login \
 (\`compare --base <last tag>\` if \`plugin/phases/\` changed) and pasted its summary here, or said why not.
 - [ ] Headless self-update rehearsal (not a gate): \`scripts/e2e/self-update/run.sh --from ${prev%% *} --to $branch\` \
 (or the e2e-self-update workflow on \`$branch\`) passed, or I said why not."

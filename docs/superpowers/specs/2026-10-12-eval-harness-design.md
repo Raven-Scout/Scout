@@ -595,6 +595,29 @@ run depends on someone's local subscription (§13 Q2).
   write no report file.
 - **The release PR body gains an unticked eval checkbox.** Nothing reads that checkbox.
 
+*The KB-writing gate (2026-11-06, lock 3 of 3, #196):* one check is a release gate, by the
+maintainer's decision. §13 Q2 still holds for everything else, and `release.sh` still only reminds,
+because the gate needs a Claude login that neither the script nor CI has.
+- **`eval.sh kb-gate`** runs ONE sample of `scenarios/kb-front-page/` (`morning-consolidation`,
+  Sonnet unless `--opus`) and writes `kb-gate-report.json` into the result dir (and to `--report`).
+  Exit 0 is a pass, 1 a fail, 2 a sample that aborted or a check that couldn't be scored.
+- **The fixture** is one project folder that meets the KB page standard (`kb structure` ✓), plus a
+  day of scripted signals about it: a merged PR (fake `gh`), a ticket moved to Done (Linear stub),
+  and a meeting's notes (Calendar event, notes mail). It targets why rebuilt front pages regrew:
+  consolidation runs wrote narration paragraphs onto them.
+- **Four checks** (`checks/kb_writing.py`), any failure fails the gate: `kb_structure` (the folder
+  is still ✓), `front_page_growth` (at most `max_front_page_growth` bytes, default 512; a run that
+  follows the standard shrinks this page), `kb_facts_cited` (each `expected_kb_facts` entry is in a
+  new or changed block of a `knowledge/` note, and that block has a URL or a `[[sources/…]]` link)
+  and `front_page_no_narration` (no marker from `kb_structure.narration_markers`, and no section
+  gaining a prose paragraph or a heading; a bullet or a row rewritten in place is fine).
+- **"Before" is the fixture commit, "after" the working tree**, so uncommitted edits count.
+  `eval.sh kb-score <vault>` re-scores a kept vault without a session. Tier 0 scores canned
+  snapshots (`golden/kb-front-page/`: one good run, four bad ones) and runs the command end to end
+  with a stand-in claude.
+- **The release checklist** (README "Releases", `release.sh prepare`'s reminder, and a release-PR
+  checkbox) says to run it on the release branch and not to merge on a fail.
+
 ## 10. Error handling
 
 - **A sample that crashes, hits its budget brake or times out** is `aborted`, kept with its logs,

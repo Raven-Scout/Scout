@@ -1,0 +1,36 @@
+{
+  "number": 57,
+  "title": "Stream CSV exports in chunks",
+  "url": "https://github.com/example-org/api/pull/57",
+  "author": {
+    "login": "alex-example"
+  },
+  "headRefName": "export-streaming",
+  "baseRefName": "main",
+  "isDraft": false,
+  "state": "MERGED",
+  "reviewRequests": [],
+  "latestReviews": [
+    {
+      "author": {
+        "login": "priya-example"
+      },
+      "state": "APPROVED",
+      "submittedAt": "{{d-2}}T10:00:00Z"
+    }
+  ],
+  "reviewDecision": "APPROVED",
+  "mergeStateStatus": "CLEAN",
+  "statusCheckRollup": [
+    {
+      "name": "test",
+      "conclusion": "SUCCESS"
+    }
+  ],
+  "body": "Writes CSV exports in chunks of 5,000 rows instead of building the whole file in memory. Memory use stays flat at about 40 MB whatever the export size.",
+  "mergedAt": "{{d-1}}T13:20:00Z",
+  "mergedBy": {
+    "login": "alex-example"
+  },
+  "closedAt": "{{d-1}}T13:20:00Z"
+}
