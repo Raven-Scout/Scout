@@ -235,6 +235,25 @@ def test_a_distinctive_one_word_slug_still_matches(tmp_path: Path) -> None:
     assert outbound.find_mentions(text, terms, allow_markers=False) == [2, 3]
 
 
+@pytest.mark.parametrize("ext", ["csv", "json", "pdf", "xlsx"])
+def test_a_private_file_that_isnt_a_note_follows_the_same_rule(ext: str) -> None:
+    """A non-markdown private file has only its stem: ``documents.csv`` must not make "documents" a term."""
+    terms = outbound.terms_of(
+        [
+            outbound.note_from_text(f"private/x/data/documents.{ext}", None),
+            outbound.note_from_text(f"private/x/data/zephyrine.{ext}", None),
+        ]
+    )
+    lines = [
+        "The documents are in the shared folder.",
+        f"See private/x/data/documents.{ext}",
+        f"See data/documents.{ext}",
+        f"See [[documents.{ext}]]",
+        "Zephyrine numbers are in.",
+    ]
+    assert outbound.find_mentions("\n".join(lines), terms, allow_markers=False) == [2, 3, 4, 5]
+
+
 @pytest.mark.parametrize(
     ("rel", "frontmatter"),
     [
