@@ -121,6 +121,74 @@ def test_decide_ignores_rows_outside_window(tmp_path: Path) -> None:
     assert decide(tracker, cfg, now=_now()).exit_code == EXIT_PROCEED
 
 
+ROOMY = BudgetConfig(daily_budget_usd=1000)  # threshold far above these rows
+
+
+def _measured_runner_row(started: datetime, ended: datetime, spent: float) -> str:
+    return _row(
+        ended,
+        budget_spent=spent,
+        exit_code=0,
+        source="runner",
+        cost_source="transcript",
+        run_started=started.isoformat().replace("+00:00", "Z"),
+    )
+
+
+def test_decide_counts_a_measured_run_once(tmp_path: Path) -> None:
+    """The runner's measured row replaces the session's own report of the same run (scout.scripts.run_cost)."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _row(start + timedelta(minutes=14), budget_spent=19.5, exit_code=0, source="session")
+        + _row(start + timedelta(minutes=14, seconds=5), budget_spent=19.5, exit_code=0, source="session")
+        + _measured_runner_row(start, start + timedelta(minutes=15), 20.14)
+    )
+    assert "$20.14 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_decide_still_counts_session_rows_outside_a_measured_run(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _row(start - timedelta(minutes=30), budget_spent=3.0, exit_code=0, source="session")
+        + _measured_runner_row(start, start + timedelta(minutes=15), 20.0)
+        + _row(start + timedelta(minutes=40), budget_spent=1.5, exit_code=0, source="session-tokens")
+    )
+    assert "$24.50 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_decide_keeps_session_rows_when_the_runner_row_was_not_measured(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _row(start + timedelta(minutes=14), budget_spent=6.0, exit_code=0, source="session")
+        + _row(
+            start + timedelta(minutes=15),
+            budget_spent=0,
+            exit_code=0,
+            source="runner",
+            run_started=start.isoformat().replace("+00:00", "Z"),
+        )
+    )
+    assert "$6.00 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_two_measured_runs_in_the_window_can_reach_the_skip_threshold(tmp_path: Path) -> None:
+    """Two runs at about the per-session cap in a 3 h window: the gate sees $40, not $0."""
+    tracker = tmp_path / "tracker.jsonl"
+    cfg = BudgetConfig(daily_budget_usd=300, window_hours=3, skip_threshold_pct=90)  # skip at $33.75
+    first = _now() - timedelta(hours=2, minutes=30)
+    second = _now() - timedelta(hours=1)
+    tracker.write_text(
+        _measured_runner_row(first, first + timedelta(minutes=16), 20.1)
+        + _measured_runner_row(second, second + timedelta(minutes=16), 19.9)
+    )
+    decision = decide(tracker, cfg, now=_now())
+    assert decision.exit_code == EXIT_SKIP_OVER_BUDGET
+    assert "window cost $40.00" in decision.reason
+
+
 def test_decide_backoffs_on_recent_rate_limit(tmp_path: Path) -> None:
     tracker = tmp_path / "tracker.jsonl"
     cfg = BudgetConfig(failure_backoff_min=60)
