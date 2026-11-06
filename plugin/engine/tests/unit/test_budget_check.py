@@ -189,6 +189,127 @@ def test_two_measured_runs_in_the_window_can_reach_the_skip_threshold(tmp_path: 
     assert "window cost $40.00" in decision.reason
 
 
+SID_A = "0b5c6f9e-1d2a-4c3b-9e8f-7a6b5c4d3e2f"
+SID_B = "5e4d3c2b-1a09-4f8e-b7d6-c5b4a3928170"
+
+
+def test_two_session_rows_from_one_session_count_once(tmp_path: Path) -> None:
+    """#560: a session that re-runs write-session-cost.sh reports its running total twice."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=1)
+    tracker.write_text(
+        _row(start, budget_spent=26.33, exit_code=0, source="session", session_id=SID_A)
+        + _row(start + timedelta(seconds=20), budget_spent=26.58, exit_code=0, source="session", session_id=SID_A)
+    )
+    assert "$26.58 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_session_tokens_deltas_from_one_session_still_sum(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=1)
+    tracker.write_text(
+        _row(start, budget_spent=1.25, exit_code=0, source="session-tokens", session_id=SID_A)
+        + _row(start + timedelta(minutes=5), budget_spent=0.75, exit_code=0, source="session-tokens", session_id=SID_A)
+    )
+    assert "$2.00 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_rows_without_a_session_id_each_count(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=1)
+    tracker.write_text(
+        _row(start, budget_spent=4.0, exit_code=0, source="session")
+        + _row(start + timedelta(minutes=1), budget_spent=4.0, exit_code=0, source="session")
+        + _row(start + timedelta(minutes=2), budget_spent=26.0, exit_code=0, source="session", session_id=SID_A)
+    )
+    assert "$34.00 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_a_session_row_and_token_deltas_for_one_session_count_the_larger(tmp_path: Path) -> None:
+    """Both are that session's running total, measured two ways; a $0 session row must not erase the deltas."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=1)
+    tracker.write_text(
+        _row(start, budget_spent=3.0, exit_code=0, source="session-tokens", session_id=SID_A)
+        + _row(start + timedelta(minutes=5), budget_spent=2.0, exit_code=0, source="session-tokens", session_id=SID_A)
+        + _row(start + timedelta(minutes=6), budget_spent=0, exit_code=0, source="session", session_id=SID_A)
+        + _row(start, budget_spent=1.0, exit_code=0, source="session-tokens", session_id=SID_B)
+        + _row(start + timedelta(minutes=9), budget_spent=7.5, exit_code=0, source="session", session_id=SID_B)
+    )
+    assert "$12.50 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def _attempt_row(ts: datetime, sid: str, spent: float, exit_code: int = 1) -> str:
+    return _row(ts, budget_spent=spent, exit_code=exit_code, source="attempt", session_id=sid)
+
+
+def test_a_failed_attempt_counts_before_the_runner_row_lands(tmp_path: Path) -> None:
+    """#561: claude-with-retry.sh records a dying attempt, so a retry is gated on its spend."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)  # past the failure backoff the attempt's exit code starts
+    tracker.write_text(_attempt_row(start + timedelta(minutes=9), SID_A, 8.4))
+    assert "$8.40 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_runner_row_listing_its_sessions_replaces_their_attempt_rows(tmp_path: Path) -> None:
+    """The runner's row already sums every attempt; the attempt rows it lists are not added again."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _attempt_row(start + timedelta(minutes=9), SID_A, 8.4)
+        + _attempt_row(start + timedelta(minutes=9, seconds=3), SID_A, 8.4)
+        + _row(
+            start + timedelta(minutes=30),
+            budget_spent=19.9,
+            exit_code=0,
+            source="runner",
+            cost_source="transcript",
+            run_started=start.isoformat().replace("+00:00", "Z"),
+            sessions=[SID_A, SID_B],
+        )
+    )
+    assert "$19.90 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_an_attempt_the_runner_row_does_not_list_still_counts(tmp_path: Path) -> None:
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _attempt_row(start + timedelta(minutes=9), SID_A, 8.4)
+        + _row(
+            start + timedelta(minutes=30),
+            budget_spent=11.5,
+            exit_code=0,
+            source="runner",
+            cost_source="transcript",
+            run_started=start.isoformat().replace("+00:00", "Z"),
+            sessions=[SID_B],
+        )
+    )
+    assert "$19.90 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
+def test_a_runner_row_listing_sessions_drops_only_its_own_session_rows(tmp_path: Path) -> None:
+    """With ids to go by, another session's row inside the run's span is not this run's."""
+    tracker = tmp_path / "tracker.jsonl"
+    start = _now() - timedelta(hours=2)
+    tracker.write_text(
+        _row(start + timedelta(minutes=10), budget_spent=0, exit_code=0, source="session", session_id=SID_A)
+        + _row(start + timedelta(minutes=11), budget_spent=0, exit_code=0, source="session")
+        + _row(start + timedelta(minutes=12), budget_spent=5.0, exit_code=0, source="session", session_id=SID_B)
+        + _row(
+            start + timedelta(minutes=30),
+            budget_spent=19.9,
+            exit_code=0,
+            source="runner",
+            cost_source="transcript",
+            run_started=start.isoformat().replace("+00:00", "Z"),
+            sessions=[SID_A],
+        )
+    )
+    assert "$24.90 spent" in decide(tracker, ROOMY, now=_now()).reason
+
+
 def test_decide_backoffs_on_recent_rate_limit(tmp_path: Path) -> None:
     tracker = tmp_path / "tracker.jsonl"
     cfg = BudgetConfig(failure_backoff_min=60)

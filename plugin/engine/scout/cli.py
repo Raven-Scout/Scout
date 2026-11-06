@@ -1024,6 +1024,46 @@ def budget_record_run_cmd(
         typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
 
 
+@budget_app.command("record-attempt")
+def budget_record_attempt_cmd(
+    run_type: str = typer.Argument(..., help="The row's type: the slot (run-scout.sh), dreaming or research."),
+    name: str = typer.Option(..., "--name", help="The --name the runner gave claude for this run."),
+    started: int = typer.Option(..., "--started", help="When the run's claude call started, epoch seconds."),
+    cap: float = typer.Option(0.0, "--cap", help="The run's --max-budget-usd, before any retry."),
+    exit_code: int = typer.Option(1, "--exit-code", help="The failed attempt's exit code."),
+) -> None:
+    """Record a failed attempt's spend; print the retry's --max-budget-usd, or exit 3 for no retry.
+
+    claude-with-retry.sh calls this after every failed attempt. Each attempt not
+    yet recorded gets a source=attempt row, priced by claude's cost-state or else
+    by its usage. stdout holds only the next attempt's cap (what the run has left;
+    empty with no --cap). Exit 3 means no retry should follow: the run's attempts
+    spent its cap, or the window reached the skip threshold. The rest goes to stderr.
+    """
+    from datetime import UTC, datetime
+
+    from scout.scripts.run_cost import EXIT_NO_RETRY, record_attempt
+
+    outcome = record_attempt(
+        run_type,
+        name=name,
+        started=datetime.fromtimestamp(started, UTC),
+        cap=cap,
+        exit_code=exit_code,
+    )
+    attempt_usd = sum(a.usd for a in outcome.recorded)
+    typer.echo(
+        f"attempt cost: ${attempt_usd:.2f} ({len(outcome.recorded)} attempt(s) recorded); "
+        f"this run so far ${outcome.cost.usd:.2f}; {outcome.reason}",
+        err=True,
+    )
+    if not outcome.retry:
+        typer.echo(f"no retry: {outcome.reason}", err=True)
+        raise typer.Exit(EXIT_NO_RETRY)
+    if outcome.next_cap is not None:
+        typer.echo(f"{outcome.next_cap:.2f}")
+
+
 @budget_app.command("resets-at")
 def budget_resets_at_cmd(
     log: Path = typer.Argument(..., help="A run log that ended on a Claude usage limit."),

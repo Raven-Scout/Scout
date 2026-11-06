@@ -157,8 +157,11 @@ START_TIME=$(date +%s)
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
 # ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+# With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
+# and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
+    "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \
     --permission-mode auto \
