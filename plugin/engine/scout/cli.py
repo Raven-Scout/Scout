@@ -3903,7 +3903,7 @@ def _register_repo() -> None:
             typer.echo(note)
         if result.replayed:
             typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
-        if result.action != "unlink":
+        if result.action in ("link", "sync"):
             typer.echo(
                 f"pushed {len(result.pushed)} commit(s)"
                 + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
@@ -3931,6 +3931,7 @@ def _register_repo() -> None:
         Refuses a vault that hasn't been through /scout-update's privacy step, an
         unreadable scout-config.yaml, and trading-looking paths that aren't
         local-only or confirmed. Turns OTLP content export off for the vault.
+        Run scoutctl repo preview first to see what would upload.
         """
         from scout import paths as _paths
         from scout.repo_sync import AgnesHost, RepoSyncError, link, save_token
@@ -3983,6 +3984,72 @@ def _register_repo() -> None:
         except RepoSyncError as e:
             _fail(e, as_json)
         _done(result, as_json)
+
+    @repo_app.command("preview")
+    def cli_repo_preview(
+        with_paths: bool = typer.Option(False, "--paths", help="List every file that would upload."),
+        depth: int = typer.Option(2, "--depth", help="How many folder levels the counts group by."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show what would upload to Agnes from HEAD. Read-only: no network, no token, nothing written.
+
+        Counts by folder, and with --paths every file. Works before linking and
+        after, and follows privacy.sync_only.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError, preview
+
+        try:
+            result = preview(_paths.data_dir(), depth=depth)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json(with_paths=with_paths)}, indent=2, sort_keys=True))
+            return
+        for line in result.lines():
+            typer.echo(line)
+        if with_paths:
+            typer.echo("Files:")
+            for rel in result.paths:
+                typer.echo(f"  {rel}")
+
+    @repo_app.command("sync-only")
+    def cli_repo_sync_only(
+        accept: bool = typer.Option(
+            False, "--accept", help="Pin the list in scout-config.yaml now. With no list there, lift the allowlist."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show this link's pinned privacy.sync_only next to scout-config.yaml's, or accept the config's.
+
+        Editing the config can only narrow what uploads. Widening or removing the
+        list takes --accept from you at the keyboard; a scheduled run is refused.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.kb.privacy import load_policy
+        from scout.repo_sync import RepoSyncError, accept_sync_only, load_state
+
+        vault = _paths.data_dir()
+        try:
+            if accept:
+                _done(accept_sync_only(vault), as_json)
+                return
+            state = load_state(vault)
+            if state is None:
+                raise RepoSyncError("not_linked", "refused: this vault isn't linked; run scoutctl repo link")
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        config = load_policy(vault).sync_only
+        if as_json:
+            body = {"ok": True, "pinned": state.sync_only, "config": None if config is None else list(config)}
+            typer.echo(_json.dumps(body, indent=2, sort_keys=True))
+            return
+        typer.echo("Pinned for this link: " + ("none" if state.sync_only is None else ", ".join(state.sync_only)))
+        typer.echo("scout-config.yaml: " + ("no privacy.sync_only" if config is None else ", ".join(config)))
 
     @repo_app.command("unlink")
     def cli_repo_unlink(

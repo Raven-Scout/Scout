@@ -317,6 +317,18 @@ Agnes can host a private copy of the vault, which Agnes calls your **Personal Kn
 - `scoutctl repo link --agnes-url https://agnes.example.com` asks for an Agnes personal access token and keeps it in `~/.scout-secrets/`, outside the vault. It creates the repository if needed and pushes one snapshot of the vault's HEAD; earlier history stays on this computer. It also turns OTLP content export off for sessions in the vault (`.claude/settings.json`).
 - `scoutctl repo sync` replays commits made in Agnes onto the vault, one vault commit each, then pushes one Agnes commit per new vault commit.
 - `scoutctl repo unlink` forgets the link here (`--delete-remote` also deletes the repository on Agnes).
+- `scoutctl repo preview` shows what would upload from HEAD, without network or token: counts by folder, and every path with `--paths`. Run it before you link.
+
+**Only named folders (`privacy.sync_only`).** To put only some folders on the server, list them in `scout-config.yaml`:
+
+```yaml
+privacy:
+  sync_only:
+    - "knowledge-base/projects/**"
+    - "notes/shared"          # a plain path takes in everything under it
+```
+
+Everything else stays on this computer, a new folder included, and isn't named on the server either: the commit messages, the Local-Only list Agnes is told, and `.scout-state/privacy-policy.json` hold nothing outside the list. Local-Only and secret paths inside the list still stay home. Entries match paths exactly as written, case included: `Projects/` is not `projects/`. The list is pinned when you link, or at the first sync after you add it. Narrowing it in the config takes effect at once. Widening or removing it needs `scoutctl repo sync-only --accept`, which a scheduled run can't do; to remove it, commit the removal and sync first. What was on Agnes before the list stays in its history; for a clean start, `scoutctl repo unlink --delete-remote`, then link again. A note written in Agnes outside the list can't come home: sync warns, names the commit that still has it, and takes it off Agnes's current files. The check runs on this computer only, so an older engine or another clone of the vault could push more. Keep `scout-config.yaml` off the list unless the server may see your whole `privacy:` block. Agnes's planned share-stop write-back edits that file, so it won't reach a vault that doesn't mirror it.
 
 **What never leaves this computer:** machine plumbing (`.scout-logs/`, `.scout-cache/`, `.claude/`, `.venv/`, `.obsidian/`, `.mcp.json`, `.env*`, most of `.scout-state/`), secret files (`*.pem`, `id_rsa*`, `.scout-secrets/`), every `privacy.local_only_add` path in `scout-config.yaml` (trading folders, once `/scout-update` asked you), and every path Agnes keeps on your Local-Only list. Personal notes and the inbox do sync, marked private: only you and your own runs see them. Each pushed commit carries `.scout-state/privacy-policy.json`, the effective privacy policy plus every file's label, which Agnes indexes by.
 

@@ -558,6 +558,26 @@ def test_agnes_host_speaks_the_rest_contract(monkeypatch: pytest.MonkeyPatch) ->
     assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader" and "pat-stand-in" not in env["GIT_CONFIG_VALUE_0"]
 
 
+def _git_config(env: dict[str, str]) -> list[tuple[str, str]]:
+    n = int(env["GIT_CONFIG_COUNT"])
+    assert not any(k.startswith("GIT_CONFIG_KEY_") and int(k.rsplit("_", 1)[1]) >= n for k in env)
+    return [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(n)]
+
+
+def test_agnes_git_env_sends_packs_up_to_the_repository_cap_in_one_post() -> None:
+    """Over http.postBuffer git sends a bare ``0000`` probe first, and Agnes 400s it."""
+    env = rs.AgnesHost("https://agnes.example.com", "t").git_env()
+    config = dict(_git_config(env))
+    assert int(config["http.postBuffer"]) == rs.POST_BUFFER_BYTES > 500 * 1024 * 1024
+    leased = _git_config(rs.lease_git_env(env, "lt", 3))
+    assert leased[: len(config)] == _git_config(env)
+    assert ("http.postBuffer", str(rs.POST_BUFFER_BYTES)) in leased
+    assert [v for k, v in leased if k == "http.extraHeader"][1:] == [
+        "X-Agnes-Lease-Token: lt",
+        "X-Agnes-Lease-Generation: 3",
+    ]
+
+
 @pytest.mark.parametrize(
     ("reply", "code"),
     [(_Resp(401), "host_auth"), (_Resp(404), "host_not_enabled"), (_Resp(500, text="boom"), "host_error")],
