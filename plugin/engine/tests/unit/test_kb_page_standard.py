@@ -133,6 +133,20 @@ def test_nightly_pass_only_cuts_a_shared_page(tmp_path: Path) -> None:
     assert "only into a note on a `move-to:` line" in step
     assert "Never archive, copy or create a note, never add a line to the page" in step
     assert "lines cut, lines moved and where" in step
+    # A cut heading strands the page as "sections missing", which no trim may fix.
+    assert "Never cut a heading line" in step
+    # Moving a marker line adds a marker to its destination, which the hook refuses.
+    assert "A line with a `%%privacy:allow%%` marker: cut it, never move it." in step
+    # The once-a-night gate looks for this summary, and the trim skips step 5's lead.
+    assert "Commit with `nightly KB pass — <page>` as the summary" in step
+
+
+def test_a_trim_pick_is_read_before_the_size_and_refresh_rules(tmp_path: Path) -> None:
+    """A trim pick fails only on size, so the size rule (5.2, new notes) would match it first."""
+    step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
+    trim = step.index("**If the next line says `trim-only`")
+    assert trim < step.index("**If it fails only on `stale`") and trim < step.index("**If it fails only on size")
+    assert "the first line is the project" in step
 
 
 def test_nightly_pass_can_resume_a_big_page(tmp_path: Path) -> None:

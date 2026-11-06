@@ -38,9 +38,9 @@ to pick, a line on stderr says so, for the run's report. Nor does it pick a fold
 whose only problems are odd subfolders or loose files with such a label, which no
 night can clear: they would hold the pick for good.
 
-A shared front page (not private or local-only) over budget or with narration is the
-exception: ``--next`` may pick it **trim-only**, ranked like a page failing only on
-size. The pass then only cuts whole lines from it, and moves detail only into the
+A front page with an effective ``federation_scope`` (not private or local-only) over
+budget or with narration is the exception: ``--next`` may pick it **trim-only**, after
+every other page it can act on. The pass then only cuts whole lines from it, and moves detail only into the
 existing notes in its folder that aren't shared (``move_to``), never into a new note
 or a copy. Removing lines widens nothing, so no share where a rebuild would write can
 block it. Adding a date or a section would add to a shared note, so the page's other
@@ -319,9 +319,11 @@ def _pinned(label: Label) -> bool:
 
 
 def _trimmable(label: Label) -> bool:
-    """A pinned page the pass may still cut lines from: shared, and nothing else. The hook's
-    shared-note check (#569) refuses a run's added or reworded line there, not a removed one."""
-    return label.shared_file and label.visibility != "private" and not label.local_only
+    """A pinned page the pass may still cut lines from: an effective share, and nothing else. The
+    hook's shared-note check (#569) refuses a run's added or reworded line there, not a removed one.
+    It checks the effective ``federation_scope`` only, so a page shared by path or one that declares
+    a scope while sharing is off has no such guard, and stays skipped."""
+    return label.federation_scope != "none" and label.visibility != "private" and not label.local_only
 
 
 def _any_file_name(share_glob: str) -> str:
@@ -487,7 +489,8 @@ def check_folder(
     # pages a reader can't follow. Odd subfolders and pinned files don't count: no night clears them.
     in_shape = not (missing or as_of is None or stale or len(folder.loose) > pinned_loose)
     half_rebuilt = bool(missing) and _rebuild_under_way(vault, folder, day)
-    # Cutting lines fixes size and narration only. It ranks as a page that only needs shrinking.
+    # Cutting lines fixes size and narration only. It ranks after every page that only needs
+    # shrinking: a trim may find nothing it can cut, and must not hold the pick night after night.
     trim_only = _trimmable(label) and (size > cfg.page_budget_bytes or bool(narration))
     return {
         "project": folder.name,
@@ -512,7 +515,7 @@ def check_folder(
         "resume": half_rebuilt and actionable and not _pinned(label),
         "trim_only": trim_only,
         "share_blocked": False,
-        "_rank": (not problems, in_shape or trim_only, PRIORITY_RANK.get(priority, 3), -size, folder.name),
+        "_rank": (not problems, in_shape or trim_only, trim_only, PRIORITY_RANK.get(priority, 3), -size, folder.name),
     }
 
 

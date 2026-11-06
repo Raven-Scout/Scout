@@ -44,11 +44,22 @@ def test_a_shared_front_page_over_budget_is_picked_trim_only(kb_repo) -> None:
     assert json.loads(result.output) == {"project": "widgets", "path": FRONT, "mode": "trim", "move_to": []}
 
 
-def test_a_page_shared_by_path_is_trimmed_too(kb_repo) -> None:
-    kb_repo.write("scout-config.yaml", f"privacy:\n  shared_files_add: ['{FRONT}']\n")
-    kb_repo.write(FRONT, page("widgets", extra="x" * 17000))
-    assert rows_by_name(kb_repo.root)["widgets"]["trim_only"]
-    assert picked(kb_repo.root) == "widgets"
+@pytest.mark.parametrize(
+    ("config", "frontmatter"),
+    [
+        pytest.param(f"privacy:\n  shared_files_add: ['{FRONT}']\n", "", id="shared by path"),
+        pytest.param(
+            "privacy:\n  federation: {enabled: false}\n", f"federation_scope: {ALEX}\n", id="declared, sharing off"
+        ),
+    ],
+)
+def test_a_page_shared_without_an_effective_scope_is_still_skipped(kb_repo, config: str, frontmatter: str) -> None:
+    """The hook's shared-note check (#569) only guards an effective ``federation_scope``, so these get no trim."""
+    kb_repo.write("scout-config.yaml", config)
+    kb_repo.write(FRONT, page("widgets", frontmatter=frontmatter, extra="x" * 17000))
+    row = rows_by_name(kb_repo.root)["widgets"]
+    assert not row["trim_only"] and not row["rebuild_target"]
+    assert picked(kb_repo.root) is None
 
 
 def test_narration_on_a_shared_page_is_trimmed(kb_repo) -> None:
@@ -114,6 +125,15 @@ def test_a_trim_waits_behind_a_page_that_needs_a_rebuild(kb_repo) -> None:
     kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**"))
     kb_repo.write(FRONT, old_shape_page("widgets", priority="🔴"))
     kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🟢", as_of=None))
+    assert picked(kb_repo.root) == "gadgets"
+
+
+def test_a_trim_waits_behind_an_unshared_page_that_only_needs_shrinking(kb_repo) -> None:
+    """A trim that finds nothing to cut must not hold the pick ahead of shrinks it could leave to other nights."""
+    kb_repo.write("scout-config.yaml", federated(f"{P}/widgets/**"))
+    kb_repo.write(FRONT, page("widgets", priority="🔴", extra="x" * 20000))
+    kb_repo.write(f"{P}/gadgets/gadgets.md", page("gadgets", priority="🟢", extra="Last verified today.\n"))
+    assert [r["project"] for r in structure_rows(kb_repo.root)][:2] == ["gadgets", "widgets"]
     assert picked(kb_repo.root) == "gadgets"
 
 
