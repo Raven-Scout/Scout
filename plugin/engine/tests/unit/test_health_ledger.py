@@ -474,13 +474,58 @@ def test_a_failing_last_run_after_earlier_failures_is_both(tmp_path):
     _ledger(
         v,
         [
+            _row(NOW - timedelta(hours=10), code=1),
+            _row(NOW - timedelta(hours=9)),
             _row(NOW - timedelta(hours=8), code=1),
             _row(NOW - timedelta(hours=6), code=1),
             _row(NOW - timedelta(hours=4)),
             _row(NOW - timedelta(hours=2), code=1),
         ],
     )
-    assert _ids(health.evaluate(v, now=NOW)) == {"runs.failing": "yellow", "runs.recurring": "yellow"}
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"runs.failing": "yellow", "runs.recurring": "yellow"}
+    assert _recurring(report).summary.startswith("3 of the last 5 scheduled runs failed")  # the trailing one is runs.failing's
+
+
+def test_a_streak_that_has_ended_is_green(tmp_path):
+    """A login that expired for three runs and was renewed is fixed, not recurring."""
+    v = _vault(tmp_path)
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=20)),
+            *[_row(NOW - timedelta(hours=h), code=1, klass="oauth_expired") for h in (16, 12, 8)],
+            *[_row(NOW - timedelta(hours=h)) for h in (6, 4, 2)],
+        ],
+    )
+    assert health.evaluate(v, now=NOW).severity == "green"
+
+
+def test_a_trailing_streak_is_left_to_its_own_finding(tmp_path):
+    """A usage-limit pause stays the only finding (#424), and a trailing login
+    failure isn't counted as one more class of the recurring pattern."""
+    v = _vault(tmp_path)
+    resets = int((NOW + timedelta(hours=3)).timestamp())
+    _ledger(
+        v,
+        [
+            _row(NOW - timedelta(hours=10), code=1, klass="network"),
+            _row(NOW - timedelta(hours=8)),
+            _row(NOW - timedelta(hours=4), code=1, klass="rate_limited"),
+            _row(NOW - timedelta(hours=2), code=1, klass="rate_limited", resets_at=resets),
+        ],
+    )
+    assert _ids(health.evaluate(v, now=NOW)) == {"runs.paused": "yellow"}
+
+    budget = [
+        _row(NOW - timedelta(hours=h), code=1, klass="budget") if h % 2 == 0 else _row(NOW - timedelta(hours=h))
+        for h in (30, 29, 28, 27, 26, 25)
+    ]
+    oauth = [_row(NOW - timedelta(hours=h), code=1, klass="oauth_expired") for h in (6, 4, 2)]
+    _ledger(v, [*budget, *oauth])
+    report = health.evaluate(v, now=NOW)
+    assert _ids(report) == {"auth.expired": "red", "runs.recurring": "yellow"}
+    assert "(budget ×3)" in _recurring(report).summary
 
 
 def test_failures_older_than_two_days_do_not_recur(tmp_path):

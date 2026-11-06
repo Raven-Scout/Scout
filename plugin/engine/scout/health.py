@@ -423,15 +423,25 @@ def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
     A vault whose runs fail about twice a day reads green after every success
     under runs.failing alone. This names how many failed, of how many ran, and
     the failure classes, so the pattern stays visible between failures.
+
+    Only runs up to the last success count: a trailing streak is reported by
+    runs.failing, auth.expired or runs.paused, and counting it here would add a
+    doctor fix next to a pause, or advice for an older class next to a login
+    that has expired. A single streak that has already ended isn't a pattern
+    either, so a success must fall between the first and last failure counted.
     """
     cutoff = now - RECURRING_FAILURE_WINDOW
     recent = [r for r in rows if r.outcome not in SKIP_OUTCOMES and r.finished_at >= cutoff]
-    failed = [r for r in recent if r.outcome == "failed"]
+    oks = [r.finished_at for r in recent if r.outcome == "ok"]
+    if not oks:
+        return None
+    settled = [r for r in recent if r.finished_at <= max(oks)]
+    failed = [r for r in settled if r.outcome == "failed"]
     if len(failed) < RECURRING_FAILURE_THRESHOLD:
         return None
-    first = failed[0].finished_at
-    if not any(r.outcome == "ok" and r.finished_at > first for r in recent):
-        return None  # one unbroken streak: runs.failing already says it
+    first, last = failed[0].finished_at, failed[-1].finished_at
+    if not any(r.outcome == "ok" and first < r.finished_at < last for r in settled):
+        return None  # one streak that has ended: nothing recurs
     classes = Counter(r.failure_class for r in failed).most_common()
     class_text = ", ".join(f"{klass} ×{n}" for klass, n in classes)
     slots = ", ".join(sorted({r.slot for r in failed}))
@@ -443,7 +453,7 @@ def recurring_failures(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
         severity="yellow",
         since=first,
         summary=(
-            f"{len(failed)} of the last {len(recent)} scheduled runs failed in the past 48 h, "
+            f"{len(failed)} of the last {len(settled)} scheduled runs failed in the past 48 h, "
             f"with successes in between ({class_text}). Failed slots: {slots}."
         ),
         fix=_RECURRING_FIX.get(
