@@ -774,6 +774,43 @@ def test_other_federation_keys_survive_a_share(vault: Path) -> None:
     assert overlay(vault)["federation"] == {"enabled": True, "note": "mine"}
 
 
+HAND_ANNOTATED_PRIVACY = """\
+# Privacy overlay, edited by hand
+privacy:  # see the privacy docs
+  # never leaves this laptop
+  local_only_add:
+    - "trading/**"    # personal
+    - "health/**"
+  sync_only:  # the folders Agnes may index
+    - "knowledge-base/projects/**"
+    - "knowledge-base/people/**"  # names only
+
+  federation:  # the switch
+    enabled: false  # off until the first share
+    note: mine  # kept as is
+"""
+
+
+def test_a_share_edits_only_the_keys_it_changes(vault: Path) -> None:
+    """A hand-annotated ``privacy:`` block keeps its comments, quoting and indentation; only the share's keys move."""
+    config = vault / "scout-config.yaml"
+    config.write_text("user:\n  name: Alex  # the owner\n\n" + HAND_ANNOTATED_PRIVACY, encoding="utf-8")
+    before = config.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+
+    after = config.read_text(encoding="utf-8").splitlines(keepends=True)
+    enabled_line = "    enabled: false  # off until the first share\n"
+    assert enabled_line not in after
+    # Every other line comes back byte for byte, in order; the share's keys are the only new lines.
+    assert [line for line in after if line in before] == [line for line in before if line != enabled_line]
+    for kept in ('    - "trading/**"    # personal\n', "  sync_only:  # the folders Agnes may index\n"):
+        assert kept in after
+    assert overlay(vault)["federation"] == {"enabled": True, "note": "mine"}
+    assert overlay(vault)["federation_defaults"] == [{"glob": f"{WIDGET}/**", "scope": [PRIYA]}]
+    assert overlay(vault)["sync_only"] == ["knowledge-base/projects/**", "knowledge-base/people/**"]
+
+
 def test_a_non_mapping_federation_key_is_replaced_by_the_switch(vault: Path) -> None:
     _privacy(vault, "  federation: true\n")
     assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
