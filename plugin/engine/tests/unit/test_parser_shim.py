@@ -465,7 +465,10 @@ relationship_types:
 
 # Two people who reference each other: well typed, neither orphaned.
 _CONTRACT_CLEAN = {
-    "people/ann.md": '---\nname: Ann\ntype: person\nrelationships:\n  - type: works_with\n    target: "[[people/bo]]"\n---\n\n# Ann\n',
+    "people/ann.md": (
+        "---\nname: Ann\ntype: person\nrelationships:\n"
+        '  - type: works_with\n    target: "[[people/bo]]"\n---\n\n# Ann\n'
+    ),
     "people/bo.md": "---\nname: Bo\ntype: person\n---\n\n# Bo\n",
 }
 
