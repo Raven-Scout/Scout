@@ -6,7 +6,7 @@
 pins the frontmatter side; this file pins the config side:
 
 - privacy findings keep blocking, under the ``privacy:`` block when it is intact;
-- the other lint settings fall back to the defaults with a warning;
+- the other lint settings fall back to the defaults, with every check blocking (#567);
 - ``load_config`` degrades, and the doctor and run health say what is wrong.
 """
 
@@ -29,7 +29,7 @@ from scout import schedule as scout_schedule
 from scout.cli import app
 from scout.errors import ConfigError
 from scout.hooks import mcp_tool_gate
-from scout.kb import outbound
+from scout.kb import lint_config, outbound
 from scout.kb.lint import run_hook
 from scout.kb.lint_config import load_lint_config
 from scout.kb.lint_privacy import PolicyUnreadable, policy_from_config_text, privacy_staged
@@ -474,7 +474,23 @@ def test_an_unrecoverable_overlay_warns_the_owner(vault: Path, config: str) -> N
     assert _blocking(vault) == [("drafts/post.md", "private-link")]
 
 
-# ----- the other lint settings fall back ---------------------------------------
+# ----- the other lint settings fail closed (#567) -------------------------------
+
+# The owner's kb_lint can't be read, so nothing says which paths it blocked: every
+# check a mode decides blocks until the file loads again.
+BLOCKS_PER_PATH = "kb_lint:\n  path_modes:\n    - glob: 'knowledge-base/**'\n      mode: block\n"
+BLOCKS_EVERYWHERE = "kb_lint:\n  mode: block\n"
+REPORTS = "kb_lint:\n  mode: report\n"
+LONG_NOTE = "knowledge-base/topics/misc/long.md"
+BROKEN_TAILS = [
+    pytest.param("d: 2026-13-45\n", "ValueError at line", id="value-error"),
+    pytest.param("n: [unclosed\n", "ParserError at line", id="syntax-error"),
+]
+
+
+def _stage_a_mega_line(vault: Path) -> None:
+    _write(vault, LONG_NOTE, "# Long\n\n" + "word " * 400 + "\n")
+    git(vault, "add", LONG_NOTE)
 
 
 @pytest.mark.parametrize("body", UNCONSTRUCTIBLE)
@@ -486,7 +502,51 @@ def test_the_size_lint_runs_on_the_defaults(vault: Path, capfd: pytest.CaptureFi
     assert run_hook(vault, env={}, out=out) == 0
     assert "size/diary check failed" not in out.getvalue()
     assert "ignoring unreadable scout-config.yaml" in capfd.readouterr().err
-    assert load_lint_config(vault).mode == "report"
+    assert load_lint_config(vault).mode == "block"
+
+
+@pytest.mark.parametrize("config", [BLOCKS_PER_PATH, BLOCKS_EVERYWHERE], ids=["per-path", "block"])
+def test_a_mega_line_blocks_on_a_healthy_blocking_config(vault: Path, config: str) -> None:
+    """The control for the tests below: this commit is one the owner's config refuses."""
+    _break_config(vault, GOOD_CONFIG.replace("kb_lint:\n  mode: block\n", "") + config)
+    _stage_a_mega_line(vault)
+    assert run_hook(vault, env={}, out=io.StringIO()) == 1
+    _break_config(vault, REPORTS)
+    _stage_a_mega_line(vault)
+    assert run_hook(vault, env={}, out=io.StringIO()) == 0
+
+
+@pytest.mark.parametrize("config", [BLOCKS_PER_PATH, BLOCKS_EVERYWHERE, REPORTS], ids=["per-path", "block", "report"])
+@pytest.mark.parametrize(("tail", "problem"), BROKEN_TAILS)
+@pytest.mark.parametrize("env", [pytest.param({}, id="owner"), pytest.param(RUN, id="scheduled")])
+def test_a_broken_config_keeps_blocking(vault: Path, config: str, tail: str, problem: str, env: dict[str, str]) -> None:
+    _write(vault, "scout-config.yaml", config + tail)  # the working tree only: HEAD and the index are fine
+    _stage_a_mega_line(vault)
+    out = io.StringIO()
+    assert run_hook(vault, env=env, out=out) == 1
+    text = out.getvalue()
+    assert "report mode — not blocking" not in text
+    (line,) = [ln for ln in text.splitlines() if "scout-config.yaml could not be used" in ln]
+    assert problem in line and "kb_lint" in line and "blocks" in line
+    assert "unclosed" not in text and "2026-13-45" not in text
+
+
+@pytest.mark.parametrize(("tail", "problem"), BROKEN_TAILS)
+def test_every_mode_check_blocks_on_a_broken_config(tmp_path: Path, tail: str, problem: str) -> None:
+    (tmp_path / "scout-config.yaml").write_text(BLOCKS_PER_PATH + tail, encoding="utf-8")
+    cfg = load_lint_config(tmp_path)
+    for check in sorted(lint_config.MODE_CHECKS):
+        assert cfg.mode_for("drafts/anything.md", check) == "block", check
+    assert "unusable" in cfg.mode_label
+    assert any(problem in w for w in cfg.warnings)
+
+
+def test_a_healthy_config_has_no_such_warning(tmp_path: Path) -> None:
+    (tmp_path / "scout-config.yaml").write_text(REPORTS, encoding="utf-8")
+    cfg = load_lint_config(tmp_path)
+    assert cfg.mode_for("knowledge-base/x.md", "size") == "report"
+    assert not any("could not be used" in w for w in cfg.warnings)
+    assert load_lint_config(tmp_path / "no-config-here").warnings == ()
 
 
 def test_kb_lint_report_keeps_working(vault: Path) -> None:
@@ -494,6 +554,15 @@ def test_kb_lint_report_keeps_working(vault: Path) -> None:
     result = CliRunner().invoke(app, ["kb", "lint", "--report", "--repo", str(vault)])
     assert result.exit_code == 0, result.output
     assert "file(s) over budget" in result.stdout
+    assert "config: scout-config.yaml could not be used (ValueError at line 1)" in result.stdout
+
+
+def test_the_doctor_says_the_lint_blocks(tmp_path: Path) -> None:
+    vault = tmp_path / "v"
+    _seed_doctor(vault, BLOCKS_PER_PATH + "n: [unclosed\n")
+    report = run_doctor(vault=vault, check_jobs=False, home=tmp_path / "home")
+    expected = "kb-lint: scout-config.yaml could not be used (ParserError at line"
+    assert any(w.startswith(expected) for w in report.warnings)
 
 
 # ----- where the owner hears about it ------------------------------------------

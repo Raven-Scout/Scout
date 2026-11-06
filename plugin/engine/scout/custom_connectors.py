@@ -730,8 +730,6 @@ SHARED_NOTES_WHEN = (
     "When a question may be answered by notes a colleague shared with you, find them with these tools. "
     "They are private to you."
 )
-_GATE_SERVER_RE = re.compile(r"^\s*server:\s*[\"']?([A-Za-z0-9_-]+)", re.MULTILINE)
-_GATE_TOOL_RE = re.compile(r"mcp__([A-Za-z0-9_-]+?)__[A-Za-z0-9_-]+")
 
 
 def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
@@ -740,33 +738,42 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
     Read on the hook path, so unvalidated and never raises — and it fails
     closed. An entry whose ``restrict_tools`` is anything but absent or false
     is gated even when it is otherwise invalid: ``load`` drops an invalid
-    entry, and that must not quietly lift its restriction. A file that isn't
-    YAML gates every server named in it with nothing allowed; one that exists
-    but can't be read, holds a value PyYAML can't build (its layout may hide
-    a server from the regexes), or has a restricted entry that names no server,
-    gates every server (``GATE_ALL``). Enabled or not doesn't matter: a
-    disabled connector's server stays restricted.
+    entry, and that must not quietly lift its restriction. A file that exists
+    but can't be read or parsed (a syntax error, or a value PyYAML can't build:
+    either way its layout may hide a restricted server), isn't a mapping of
+    connectors, or has a restricted entry that names no server, gates every
+    server (``GATE_ALL``); :func:`tool_gate_problem` says why. Enabled or not
+    doesn't matter: a disabled connector's server stays restricted.
     """
+    return _tool_gate(vault)[0]
+
+
+def tool_gate_problem(vault: Path) -> str | None:
+    """Why :func:`tool_gate` gates every server, in one line naming the file and where; None when it doesn't.
+
+    The error's cause and line only, never the file's text, which YAML errors can quote."""
+    return _tool_gate(vault)[1]
+
+
+def _tool_gate(vault: Path) -> tuple[dict[str, frozenset[str]], str | None]:
+    gate_all: dict[str, frozenset[str]] = {GATE_ALL: frozenset()}
     try:
         text = (vault / CUSTOM_FILE).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
-    except (OSError, UnicodeDecodeError):
-        return {GATE_ALL: frozenset()}
+        return {}, None
+    except (OSError, UnicodeDecodeError) as e:
+        return gate_all, f"{CUSTOM_FILE} could not be read ({type(e).__name__})"
     if "restrict_tools" not in text:
-        return {}
+        return {}, None
     try:
         raw = load_yaml(text)
-    except YAMLValueError:
-        return {GATE_ALL: frozenset()}
-    except yaml.YAMLError:
-        servers = set(_GATE_SERVER_RE.findall(text)) | set(_GATE_TOOL_RE.findall(text))
-        return {s: frozenset() for s in servers} if servers else {GATE_ALL: frozenset()}
+    except yaml.YAMLError as e:
+        return gate_all, f"{CUSTOM_FILE} could not be read: {yaml_problem(e, text)}"
     conns = raw.get("connectors") if isinstance(raw, dict) else None
     if not isinstance(conns, dict):
-        return {GATE_ALL: frozenset()}
+        return gate_all, f"{CUSTOM_FILE} has no connectors mapping"
     gate: dict[str, set[str]] = {}
-    for body in conns.values():
+    for key, body in conns.items():
         if not isinstance(body, dict) or body.get("restrict_tools") in (None, False):
             continue
         refs: list[Any] = [body.get("probe")]
@@ -779,7 +786,7 @@ def tool_gate(vault: Path) -> dict[str, frozenset[str]]:
         if isinstance(body.get("server"), str) and body["server"]:
             servers.add(body["server"])
         if not servers:
-            return {GATE_ALL: frozenset()}
+            return gate_all, f"{CUSTOM_FILE}: restricted connector {str(key)!r} names no MCP server"
         for server in servers:
             gate.setdefault(server, set()).update(t for t in tools if t.split("__")[1] == server)
-    return {s: frozenset(t) for s, t in gate.items()}
+    return {s: frozenset(t) for s, t in gate.items()}, None
