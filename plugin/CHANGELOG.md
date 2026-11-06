@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The budget gate sees what scheduled runs cost; it counted every one as $0** (`engine/scout/scripts/run_cost.py`, `engine/scout/scripts/budget_check.py`, `engine/scout/cli.py`, `templates/run-{scout,dreaming,research}.sh.tmpl`; part of #561). A scheduled session logs its cost with `write-session-cost.sh ... "${CLAUDE_BUDGET_SPENT_USD:-0}"`, a variable Claude Code never sets, and the runner's fallback row is $0. The session-tokens hook adds spend to `usage-tracker.jsonl` only for runs without a runner. So every scheduled run reached the tracker as $0 (or as a figure the session guessed), and `[budget-check]` said "$0.00 spent" before each run, however much the runs cost; the window and daily budgets never applied. The runner now calls `scoutctl budget record-run` after claude exits. It reads claude's own figure (the `cost-state` row claude writes to the transcript at exit, the one `--max-budget-usd` is checked against) from every transcript carrying the run's `--name`. Retry attempts reuse that name, so a failed attempt's spend is counted too. The runner's row now carries that amount, with `cost_source: "transcript"`, `run_started` and `attempts`. `budget_check.decide()` counts such a row in place of any `source: "session"` row written during the run, so the session's own $0 or guess isn't added on top. A run with no transcript found (or none with a `cost-state`) records $0 without `cost_source`, and its session rows count as before. An engine without the command falls back to the old row. **Expect the gate to start skipping runs** on vaults whose real spend crosses their window threshold: `scoutctl budget check --verbose` prints the window's spend against it, and `scoutctl budget show` the threshold.
+
 ## [0.18.9] - 2026-11-05
 
 ### Fixed
