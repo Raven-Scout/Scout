@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A `scout-config.yaml` that doesn't load no longer turns `kb lint`'s blocking off** (#567; `engine/scout/kb/lint_config.py`). Before, the size, line and diary lint fell back to report mode, so a `mode: block` or a blocking `path_modes` rule stopped applying and the commit went through with `(report mode — not blocking)`, which read like the vault's own setting. Nothing can say which paths the file blocked, so every check a mode decides (size, mega-line, diary and the page checks) now blocks until the file loads again, on the owner's commits and scheduled runs alike, and `SCOUT_LINT_OVERRIDE` still applies as usual. The hook, `kb lint --report` and the doctor print one line naming the file, the error and its line (never the file's text): `scout-config.yaml could not be used (ParserError at line 7), so its kb_lint and kb_budgets settings are not applied and every size, line, diary and page check blocks until it is fixed`. The mode reads `block, scout-config.yaml unusable`. Commands that only read the config keep running on the packaged defaults with their `scout-config:` warning, as before.
+
 ## [0.18.9] - 2026-11-05
 
 ### Fixed
