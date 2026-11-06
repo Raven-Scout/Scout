@@ -235,7 +235,9 @@ def test_parse_errors_survive_the_cross_process_index(tmp_path: Path) -> None:
     first = kb(vault, "validate", "--json")
     clear_frontmatter_cache()
     second = kb(vault, "validate", "--json")
-    assert first.exit_code == second.exit_code == 0, first.output
+    # 3 both times: the planted parse failure is an error, and the point of the test is that
+    # the cached second pass reports it identically to the first.
+    assert first.exit_code == second.exit_code == 3, first.output
     assert json.loads(first.stdout) == json.loads(second.stdout)
     (row,) = [e for e in json.loads(second.stdout)["errors"] if "YAML parse failure" in e["message"]]
     assert row["entity"] == "knowledge-base/people/priya.md"
