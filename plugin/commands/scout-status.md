@@ -73,11 +73,12 @@ The "Last briefing / consolidation / dreaming / research" lines come from `slots
 find "SCOUT_DIR/knowledge-base" -type f -name "*.md" | sort
 ```
 
-For each file found, read it and look for a line matching either:
-- `**Last verified:**`
-- `**Last updated:**`
+For each file found, read it and take its date from the first of:
+- the frontmatter `last_verified:` or `last_updated:` key (the newer of the two)
+- a `**Last verified:**` line (older files)
+- a `**Last updated:**` line (older files)
 
-Extract the date from that line. Compare it to today's date to determine staleness.
+Extract the date. Compare it to today's date to determine staleness.
 
 Staleness thresholds (apply per-file based on its content — if no priority signal is obvious, default to medium):
 

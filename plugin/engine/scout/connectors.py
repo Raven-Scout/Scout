@@ -20,6 +20,7 @@ import yaml
 from scout import paths
 from scout.errors import ConfigError
 from scout.schedule import SlotType
+from scout.yaml_safe import load_yaml
 
 
 class Tier(enum.Enum):
@@ -209,7 +210,7 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = load_yaml(f)
     except OSError as e:
         raise ConfigError(f"connectors yaml at {path} could not be read: {e}") from e
     except yaml.YAMLError as e:

@@ -10,7 +10,8 @@ from __future__ import annotations
 import base64
 import dataclasses
 import datetime
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 import yaml
 
 from scout import custom_connectors as cc
+from scout.kb.reader import is_scheduled
 from scout.scripts.bootstrap import (
     BootstrapConfig,
     CustomApplyResult,
@@ -185,6 +187,15 @@ def _read_config(vault: Path, key: str, *, plugin_root: Path, plugin_version: st
     return cfg
 
 
+def _unusable(current: cc.CustomLoad, key: str) -> Outcome | None:
+    """A refusal when connectors.custom.yaml was rejected whole: ``raw`` is then empty, not what the
+    file holds, and writing it back would delete every other entry and lift its ``restrict_tools``."""
+    if not current.file_unusable:
+        return None
+    problem = current.issues[0]
+    return Outcome("error", key, message=f"{problem.path} {problem.message}; fix it by hand first")
+
+
 def _under_lock(vault: Path, key: str, change: Callable[[], Outcome], *, wait: bool = True) -> Outcome:
     """Run ``change`` holding the session lock.
 
@@ -315,6 +326,8 @@ def _add(
         before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
         if isinstance(before, Outcome):
             return before
+        if (refused := _unusable(cc.load(vault, plugin_root=plugin_root), key)) is not None:
+            return refused
         new_inputs, issues = _inputs_after(before, connector, inputs)
         if issues:
             return Outcome("invalid", key, issues)
@@ -342,6 +355,8 @@ def _add(
         if isinstance(before, Outcome):
             return before
         current = cc.load(vault, plugin_root=plugin_root)
+        if (refused := _unusable(current, key)) is not None:
+            return refused
         new_inputs, missing_inputs = _inputs_after(before, connector, inputs)
         if missing_inputs:  # needs the stored values, so it is checked under the lock
             return Outcome("invalid", key, missing_inputs)
@@ -360,6 +375,84 @@ def _add(
     return _under_lock(vault, key, change, wait=wait)
 
 
+def allow_shared_notes(
+    vault: Path,
+    key: str,
+    *,
+    plugin_root: Path,
+    plugin_version: str,
+    env: Mapping[str, str] | None = None,
+    wait: bool = True,
+) -> Outcome:
+    """List Agnes's three read-only shared-notes tools on the restricted connector ``key``.
+
+    The allowlist lives in each vault's ``connectors.custom.yaml``, so a plugin
+    release can't change it; this is how a reader's vault gets the tools. Only
+    those three, only where the owner names the connector, and a scheduled run
+    may not call it: a run never widens its own allowlist.
+    """
+    try:
+        return _allow_shared_notes(
+            vault,
+            key,
+            plugin_root=plugin_root,
+            plugin_version=plugin_version,
+            env=os.environ if env is None else env,
+            wait=wait,
+        )
+    except Exception as e:  # noqa: BLE001 — see the contract note above validate()
+        return Outcome("error", key, message=_unexpected(e))
+
+
+def _allow_shared_notes(
+    vault: Path, key: str, *, plugin_root: Path, plugin_version: str, env: Mapping[str, str], wait: bool
+) -> Outcome:
+    if (missing := _no_vault(vault)) is not None:
+        return missing
+    base = f"connectors.{key}"
+    if is_scheduled(env):
+        return Outcome("invalid", key, [cc.Issue(base, "a scheduled run may not widen a connector's allowlist")])
+
+    def change() -> Outcome:
+        before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)
+        if isinstance(before, Outcome):
+            return before
+        current = cc.load(vault, plugin_root=plugin_root)
+        if (refused := _unusable(current, key)) is not None:
+            return refused
+        body = current.raw.get(key)
+        if not isinstance(body, dict):
+            return Outcome("invalid", key, [cc.Issue(base, "no custom connector has this key")])
+        server = body.get("server")
+        if body.get("restrict_tools") is not True or not isinstance(server, str):
+            issue = cc.Issue(f"{base}.restrict_tools", "this connector has no restrict_tools allowlist to add to")
+            return Outcome("invalid", key, [issue])
+        block = body.get("lookup")
+        lookup = dict(block) if isinstance(block, dict) else {}
+        listed = list(lookup.get("tools") or [])
+        new_tools = [t for t in (f"mcp__{server}__{name}" for name in cc.SHARED_READ_TOOLS) if t not in listed]
+        if not new_tools:
+            return Outcome("unchanged", key, message="Already allowed.")
+        lookup["tools"] = listed + new_tools
+        lookup.setdefault("when", cc.SHARED_NOTES_WHEN)
+        new_body = {**body, "lookup": lookup}
+        connector, issues = cc.parse_connector(
+            key, new_body, reserved=cc.reserved_keys(plugin_root), presets=cc.load_presets(plugin_root)
+        )
+        if issues or connector is None:
+            return Outcome("invalid", key, issues)
+        return _commit(
+            key,
+            before,
+            before,
+            current.connectors,
+            {**current.connectors, key: connector},
+            {**current.raw, key: new_body},
+        )
+
+    return _under_lock(vault, key, change, wait=wait)
+
+
 def remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wait: bool = True) -> Outcome:
     try:
         return _remove(vault, key, plugin_root=plugin_root, plugin_version=plugin_version, wait=wait)
@@ -372,11 +465,16 @@ def _remove(vault: Path, key: str, *, plugin_root: Path, plugin_version: str, wa
         return missing
     unknown = Outcome("invalid", key, [cc.Issue(f"connectors.{key}", "no such custom connector")])
     # Cheap early answer without waiting for the lock; re-checked under it below.
-    if key not in cc.load(vault, plugin_root=plugin_root).raw:
+    first_look = cc.load(vault, plugin_root=plugin_root)
+    if (refused := _unusable(first_look, key)) is not None:
+        return refused
+    if key not in first_look.raw:
         return unknown
 
     def change() -> Outcome:
         current = cc.load(vault, plugin_root=plugin_root)
+        if (refused := _unusable(current, key)) is not None:
+            return refused
         if key not in current.raw:
             return unknown
         before = _read_config(vault, key, plugin_root=plugin_root, plugin_version=plugin_version)

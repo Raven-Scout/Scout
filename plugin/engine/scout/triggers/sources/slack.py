@@ -20,6 +20,7 @@ import yaml
 
 from scout.errors import ConfigError
 from scout.triggers.sources.base import ConnectorEvent
+from scout.yaml_safe import load_yaml
 
 SUPPORTED_MATCH_TYPES: list[str] = ["mention"]
 
@@ -63,7 +64,7 @@ def _user_id_from_config(vault: Path) -> str | None:
     if not cfg_path.exists():
         return None
     try:
-        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        cfg = load_yaml(cfg_path.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, UnicodeDecodeError, OSError):
         return None
     value = ((cfg.get("connectors") or {}).get("inputs") or {}).get("user_slack_id")

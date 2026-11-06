@@ -2,8 +2,9 @@ import Foundation
 
 /// Selector identifying which comment under a task to act on.
 enum CommentSelector: Sendable, Equatable {
-    /// 1-based index, counting only user-authored sub-bullets (the
-    /// `snoozed-until` marker is filtered).
+    /// 1-based index as `scoutctl --index` counts: user-authored sub-bullets
+    /// and the `/scout-plan` markers (the `snoozed-until` marker is filtered).
+    /// A card builds it with `ActionTask.commentSelector(at:)`.
     case index(Int)
     /// Case-insensitive substring of the comment body.
     case text(String)
