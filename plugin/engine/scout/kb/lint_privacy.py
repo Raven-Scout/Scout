@@ -31,8 +31,14 @@ Rules:
   line of a note that was ``private`` where its path default is private too,
   sets or widens ``federation_scope``, adds a marker (a line whose marker
   targets aren't among those of the lines it replaces, or more markers per
-  target), or touches the ``privacy:`` block of ``scout-config.yaml``. The
-  owner's interactive commits aren't checked.
+  target), touches the ``privacy:`` block of ``scout-config.yaml``, widens a
+  note's effective share whatever the cause (a move into a shared folder, a
+  dropped ``federation_scope: none``, a ``kind`` change; #586), or adds text to
+  a note already shared (an effective share at HEAD and in the commit, #569).
+  The last is a content check: the label doesn't change, but the people the
+  note is shared with would read whatever the run brought in from notes they
+  can't see. A removed or moved line, or a new note in a shared folder, isn't
+  refused. The owner's interactive commits aren't checked.
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
@@ -402,9 +408,31 @@ def _widening(
             block("remove the visibility: private line of a note — leave that to the owner")
     if _widens(head_declared, label.federation_scope_declared):
         block("set or widen federation_scope — leave that to the owner")
+    elif head is not None and _widens(head.federation_scope, label.federation_scope):
+        # The effective scope: a move into a shared folder, a dropped `federation_scope: none`, a kind change.
+        block("widen who this note is shared with — leave that to the owner")
     for n in added_marker_lines(head_text, staged):
         block("add a %%privacy:allow%% marker — only the owner may", n)
+    if head is not None and head.federation_scope != "none" and label.federation_scope != "none":
+        first = _first_new_line(head_text, staged)
+        if first is not None:
+            block(
+                "add to a note that is already shared — the people it is shared with would read it; "
+                "put the new material in a different note that isn't shared, or propose the edit in the "
+                "review queue; never narrow this note's share to make room",
+                first,
+            )
     return out
+
+
+def _first_new_line(old: str | None, new: str) -> int | None:
+    """The first added line of ``new`` with text ``old`` lacks (#569); a removed or moved line adds nothing."""
+    old_lines = set(old.split("\n")) if old is not None else set()
+    lines = new.split("\n")
+    return next(
+        (n for n in sorted(added_line_numbers(old, new)) if lines[n - 1].strip() and lines[n - 1] not in old_lines),
+        None,
+    )
 
 
 class _Unparseable:
