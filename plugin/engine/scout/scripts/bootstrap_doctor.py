@@ -486,11 +486,17 @@ def _check_vault_drift(*, vault: Path) -> tuple[list[str], list[str]]:
 
 def _check_custom_connectors(*, vault: Path) -> list[str]:
     """One warning per problem in connectors.custom.yaml, or in a custom connector's input
-    stored in scout-config.yaml (#344); that connector is skipped until fixed."""
-    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues
+    stored in scout-config.yaml (#344); that connector is skipped until fixed. And one
+    when the tool gate blocks every MCP tool because of the file (#564)."""
+    from scout.custom_connectors import CUSTOM_FILE, load, stored_input_issues, tool_gate_problem
 
     custom = load(vault)
     warnings = [f"{CUSTOM_FILE}: {i.path}: {i.message} (skipped until fixed)" for i in custom.issues]
+    if problem := tool_gate_problem(vault):
+        warnings.append(
+            f"{problem}, so every MCP tool is blocked in every session in this vault until it is fixed "
+            "(a connector there restricts its tools)"
+        )
     try:
         cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
         inputs = cfg["connectors"]["inputs"]
