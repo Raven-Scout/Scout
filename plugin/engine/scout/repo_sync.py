@@ -38,7 +38,12 @@ on the laptop alone: the host has no matching check.
 Mirror objects live in the vault's own object store under ``refs/scout-mirror/``.
 A push sends only what a mirror commit reaches, so a Local-Only blob is never
 packed. The commit map is ``.scout-state/repo-sync.json`` (gitignored); the
-Agnes token is kept outside the vault, in ``~/.scout-secrets/``.
+Agnes token is kept outside the vault, in ``~/.scout-secrets/``. Each link, sync
+and scheduled run's lease also writes the host's Local-Only list, with when it
+was read and from which Agnes, to ``.scout-state/repo-sync-host.json``
+(gitignored), so the commit hook can block a scheduled run's move out of a path
+only Agnes keeps home without asking Agnes. Sync itself refuses to push such a
+move, judged against the list it has just fetched, unless the owner confirms it.
 
 Every push goes up under the Repository Writer Lease (R2, ``scout.repo_lease``):
 a sync during a scheduled run reuses the run's lease, read from this computer's
@@ -60,7 +65,7 @@ import tempfile
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -84,6 +89,19 @@ SCHEMA_VERSION = 1
 STATE_FILE = "repo-sync.json"
 POLICY_PATH = ".scout-state/privacy-policy.json"
 STATE_REL = f".scout-state/{STATE_FILE}"
+# The host's Local-Only list as the last link, sync or run lease read it, for the
+# commit hook, which runs offline (#596). Its own file: an older engine refuses a
+# link state with a key it doesn't know, and this one must not stop it.
+HOST_CACHE_FILE = "repo-sync-host.json"
+HOST_CACHE_REL = f".scout-state/{HOST_CACHE_FILE}"
+# Every scheduled run on a linked vault takes the Repository Writer Lease first,
+# and taking it refreshes the cache (scout.repo_lease.acquire_for_run), so a
+# cache a week old means no run has reached Agnes in a week (an expired token,
+# Agnes unreachable), not a long weekend with the laptop shut. Only the owner
+# edits the host list, in Agnes, and rarely.
+HOST_CACHE_MAX_AGE = timedelta(days=7)
+# A fetch time this far ahead of the clock is skew or a hand edit, and counts as stale.
+HOST_CACHE_MAX_SKEW = timedelta(minutes=5)
 MIRROR_REF = "refs/scout-mirror/main"
 REMOTE_REF = "refs/scout-mirror/remote"
 REMOTE_BRANCH = "refs/heads/main"
@@ -920,6 +938,64 @@ def save_state(vault: Path, state: LinkState) -> None:
     os.replace(tmp, p)
 
 
+@dataclass(frozen=True)
+class HostCache:
+    local_only_paths: tuple[str, ...]
+    fetched_at: datetime
+
+
+def host_cache_path(vault: Path) -> Path:
+    return paths.state_dir(vault) / HOST_CACHE_FILE
+
+
+def save_host_cache(vault: Path, entries: Iterable[str], *, agnes_url: str, now: datetime | None = None) -> None:
+    p = host_cache_path(vault)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "schema_version": SCHEMA_VERSION,
+        "agnes_url": agnes_url,
+        "fetched_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
+        "local_only_paths": list(dict.fromkeys(entries)),
+    }
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def load_host_cache(vault: Path, *, agnes_url: str) -> HostCache | None:
+    """The host list cached for the link to ``agnes_url``, or None (the caller treats every None alike).
+
+    None when the cache is missing or can't be read, or came from another Agnes:
+    an older engine's ``unlink`` leaves the file behind, and the vault may since
+    have been linked elsewhere.
+    """
+    try:
+        data = json.loads(host_cache_path(vault).read_text(encoding="utf-8"))
+        entries = data["local_only_paths"]
+        if data.get("schema_version") != SCHEMA_VERSION or not isinstance(entries, list):
+            return None
+        if data.get("agnes_url") != agnes_url:
+            return None
+        fetched = datetime.fromisoformat(data["fetched_at"])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    return HostCache(tuple(str(e) for e in entries), fetched)
+
+
+def host_cache_problem(cache: HostCache | None, *, now: datetime | None = None) -> str | None:
+    """Why a linked vault's cached host list may be incomplete, or None. It never names an entry."""
+    if cache is None:
+        return "Agnes's Local-Only list isn't cached on this computer"
+    age = (now or datetime.now(UTC)) - cache.fetched_at
+    if age < -HOST_CACHE_MAX_SKEW:
+        return "Agnes's Local-Only list has a fetch time in the future (clock skew or a hand edit)"
+    if age > HOST_CACHE_MAX_AGE:
+        return f"Agnes's Local-Only list was last fetched {age.days} days ago"
+    return None
+
+
 def _vault_id(vault: Path) -> str:
     return hashlib.sha256(str(vault.resolve()).encode()).hexdigest()[:16]
 
@@ -1125,15 +1201,21 @@ def otlp_content_off(vault: Path) -> bool:
     return True
 
 
-def ensure_ignored(vault: Path) -> bool:
-    """Add ``.scout-state/repo-sync.json`` to the vault's .gitignore unless git already ignores it."""
-    if git(vault, "check-ignore", "-q", STATE_REL, check=False).returncode == 0:
-        return False
+def ensure_ignored(vault: Path) -> list[str]:
+    """Add the link state and the host cache to the vault's .gitignore unless git already ignores them.
+
+    Returns the paths it added.
+    """
+    rels = (STATE_REL, HOST_CACHE_REL)
+    missing = [rel for rel in rels if git(vault, "check-ignore", "-q", rel, check=False).returncode]
+    if not missing:
+        return []
     gi = vault / ".gitignore"
     text = gi.read_text(encoding="utf-8") if gi.exists() else ""
     head = text if not text or text.endswith("\n") else text + "\n"
-    gi.write_text(f"{head}# Agnes sync commit map (scoutctl repo): this computer's state\n{STATE_REL}\n", "utf-8")
-    return True
+    lines = "".join(f"{rel}\n" for rel in missing)
+    gi.write_text(f"{head}# Agnes sync state (scoutctl repo): this computer's state\n{lines}", "utf-8")
+    return missing
 
 
 # ----- remote ----------------------------------------------------------------------------------
@@ -1286,8 +1368,8 @@ def link(
     if existing is not None:
         fetch_remote(vault, host, status.clone_url)
 
-    if ensure_ignored(vault):
-        notes.append(f"added {STATE_REL} to .gitignore")
+    if added := ensure_ignored(vault):
+        notes.append(f"added {', '.join(added)} to .gitignore")
     if otlp_content_off(vault):
         notes.append("turned OTLP content export off for sessions in this vault (.claude/settings.json)")
 
@@ -1322,6 +1404,7 @@ def link(
             sync_only=None if pin is None else list(pin),
         ),
     )
+    save_host_cache(vault, host_entries, agnes_url=agnes_url)
     return Result(action="link", pushed=[snapshot], stripped=stripped, notes=notes)
 
 
@@ -1495,11 +1578,17 @@ def _sync_under_lease(
     wanted = list(dict.fromkeys((*host_entries, *_host_entries_for(policy, scope))))
     if len(wanted) > len(host_entries):
         host_entries = host.set_local_only(wanted)
+    if added := ensure_ignored(vault):
+        result.notes.append(f"added {', '.join(added)} to .gitignore")
+    save_host_cache(vault, host_entries, agnes_url=state.agnes_url)  # before any refusal: the list is current
     rules = LocalOnlyRules.build([policy], host_entries, pinned=state.sync_only)
     confirmed = sorted(set(state.confirmed_sync) | set(confirm_sync))
     trading_gate(vault, rules, confirmed)
     if rules.local_only(POLICY_PATH):
         raise RepoSyncError("policy_path_local_only", f"refused: a Local-Only Path covers {POLICY_PATH}")
+    # Before the replay, so a refusal leaves HEAD and the link state as they were.
+    own_entries = {fold(e) for e in _host_entries_for(policy, scope)}
+    host_moves_gate(vault, state, rules, [e for e in host_entries if fold(e) not in own_entries], confirm_sync)
 
     state.confirmed_sync = confirmed
 
@@ -1587,6 +1676,77 @@ def _sync_under_lease(
     state.last_laptop = head
     save_state(vault, state)
     return result
+
+
+def host_only_moves(
+    vault: Path, rules: LocalOnlyRules, host_entries: Sequence[str], spans: Iterable[tuple[str, str]]
+) -> list[str]:
+    """New paths of files moved, in ``spans`` (``(old, new)`` revisions), out of a path on Agnes's list.
+
+    Only moves to a path that uploads count. Git pairs the paths as the commit
+    hook does (a rename, or a delete and an add of similar content in one span).
+    """
+    out: dict[str, None] = {}
+    for old, new in spans:
+        raw = git(vault, "diff-tree", "-r", "-z", "-M", "--no-commit-id", "--name-status", old, new).stdout
+        fields = raw.split("\0")
+        i = 0
+        while i < len(fields) - 1:
+            status = fields[i]
+            if status.startswith(("R", "C")):
+                src, dst = fields[i + 1], fields[i + 2]
+                i += 3
+                if status.startswith("R") and _on_host_list(src, host_entries) and not rules.refused(dst):
+                    out[dst] = None
+            else:
+                i += 2
+    return list(out)
+
+
+def _on_host_list(rel: str, host_entries: Sequence[str]) -> bool:
+    f = fold(rel)
+    return any(_host_matches(f, e) for e in host_entries)
+
+
+def host_moves_gate(
+    vault: Path, state: LinkState, rules: LocalOnlyRules, host_only: Sequence[str], confirmed: Sequence[str]
+) -> None:
+    """Refuse a sync whose commits move a file out of a path only Agnes keeps local-only (#596).
+
+    The commit hook judges a run's moves by a cached copy of the list, which may
+    be missing or stale; this is the one place with Agnes's current list.
+    ``host_only`` leaves out the entries the vault's own policy put there, which
+    #562 already guards (the owner may move out of those). Only this call's
+    ``--confirm-sync`` paths are allowed, each once: a span is checked only
+    until a sync gets past it.
+    """
+    if not host_only:
+        return
+    head = _head(vault)
+    if _is_ancestor(vault, state.last_laptop, head):
+        replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
+        revs = git(vault, "rev-list", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
+        spans = [(f"{c}^", c) for c in revs if c not in replayed and _rev(vault, f"{c}^") is not None]
+    else:
+        # History rewritten: compare HEAD with the newest synced commit this vault still has.
+        known = [state.last_laptop, *(p["laptop"] for p in reversed(state.pairs))]
+        base = next((c for c in known if _rev(vault, c) is not None), None)
+        if base is None:
+            raise RepoSyncError(
+                "local_only_move_unchecked",
+                "refused: no commit this vault last synced is in its history any more, so a file moved out of a "
+                "path Agnes keeps local-only can't be found. Run scoutctl repo unlink, then scoutctl repo link "
+                "--replace-remote",
+            )
+        spans = [(base, head)]
+    if unconfirmed := [p for p in host_only_moves(vault, rules, host_only, spans) if p not in set(confirmed)]:
+        raise RepoSyncError(
+            "local_only_move",
+            "refused: a commit since the last sync moves a file out of a path Agnes keeps local-only, so it "
+            f"would upload from {', '.join(unconfirmed)}. If it should, run scoutctl repo sync --confirm-sync "
+            "<path>; if not, add the path to privacy.local_only_add in scout-config.yaml, then sync again",
+            {"paths": unconfirmed},
+        )
 
 
 def _broken(policy: Policy) -> bool:
@@ -1799,6 +1959,7 @@ def unlink(
     for ref in (MIRROR_REF, REMOTE_REF):
         git(vault, "update-ref", "-d", ref, check=False)
     state_path(vault).unlink(missing_ok=True)
+    host_cache_path(vault).unlink(missing_ok=True)
     token_path(vault).unlink(missing_ok=True)
     if not delete_remote:
         result.notes.append("the repository on Agnes is kept; delete it with --delete-remote or in Agnes")

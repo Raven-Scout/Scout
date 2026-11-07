@@ -123,7 +123,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
-from scout.repo_sync import LocalOnlyRules, RepoSyncError, load_state
+from scout.repo_sync import LocalOnlyRules, RepoSyncError, host_cache_problem, load_host_cache, load_state
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -150,6 +150,10 @@ _MESSAGES = {
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
     "local-only-move": "a scheduled run may not move a file out of a local-only path (repo sync would upload it "
     "from its new path) — leave that to the owner",
+    "local-only-unchecked": "a scheduled run moved this file, and this computer's copy of Agnes's Local-Only list "
+    "is missing or out of date, so the move can't be checked against it. A scheduled run must not run scoutctl "
+    "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
+    "push a move out of a path Agnes keeps local-only, and says how to allow one",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -305,10 +309,11 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
 
     Any file, in the privacy scope or not, because repo sync excludes by path.
     Local-only is what :class:`scout.repo_sync.LocalOnlyRules` says: the
-    engine's lists, ``local_only_add`` and the upload allowlist (pinned for the
+    engine's lists, ``local_only_add``, the upload allowlist (pinned for the
     link, or in the config), so a move into ``sync_only`` from outside it counts
-    too. The source is judged under every policy in play, the destination under
-    the commit's alone. Git pairs the two paths (``git mv``, or a delete and an
+    too, and on a linked vault the host's list as last cached (sources only).
+    The source is judged under every policy in play, the destination under the
+    commit's alone. Git pairs the two paths (``git mv``, or a delete and an
     add of similar content in one commit); a copy, or a delete in a later
     commit, isn't seen.
     """
@@ -320,13 +325,29 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     except RepoSyncError:
         state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
     pinned = state.sync_only if state is not None else None
-    was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], (), pinned=pinned)
+    # A linked vault adds the host's list as last cached (#596): a missing or stale
+    # cache still counts what it has, and every other move that would upload gets
+    # a warning, since the hook can't ask Agnes. The cache only adds blocks: it
+    # judges sources, never the destination, so a stale entry or a cache a run
+    # wrote can't make a destination count as staying home. Sync re-checks every
+    # move against the list it fetches (repo_sync.host_only_moves).
+    host_entries: tuple[str, ...] = ()
+    unchecked = False
+    if state is not None:
+        cache = load_host_cache(ctx.repo, agnes_url=state.agnes_url)
+        host_entries = cache.local_only_paths if cache is not None else ()
+        unchecked = host_cache_problem(cache) is not None
+    was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], host_entries, pinned=pinned)
     now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
-    return [
-        Finding(rel, "privacy-widening", True, _MESSAGES["local-only-move"])
-        for src, rel in moves
-        if was.local_only(src) and not now.local_only(rel)
-    ]
+    out: list[Finding] = []
+    for src, rel in moves:
+        if now.local_only(rel):
+            continue
+        if was.local_only(src):
+            out.append(Finding(rel, "privacy-widening", True, _MESSAGES["local-only-move"]))
+        elif unchecked:
+            out.append(Finding(rel, "local-only-unchecked", False, _MESSAGES["local-only-unchecked"]))
+    return out
 
 
 def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:

@@ -65,6 +65,7 @@ WARNING_CHECKS = frozenset(
         "federation-ceiling",
         "frontmatter-unparseable",
         "privacy-overlay-unreadable",
+        "local-only-unchecked",
         "page-config",
     }
 )
