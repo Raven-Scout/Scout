@@ -811,6 +811,15 @@ def test_a_share_edits_only_the_keys_it_changes(vault: Path) -> None:
     assert overlay(vault)["sync_only"] == ["knowledge-base/projects/**", "knowledge-base/people/**"]
 
 
+@pytest.mark.parametrize("loose", ["1", "1.0"])
+def test_a_switch_that_only_compares_equal_to_true_is_rewritten(vault: Path, loose: str) -> None:
+    """``enabled: 1`` is ``== True`` but isn't a bool, so privacy reads it as off: the share must write ``true``."""
+    _privacy(vault, f"  federation:\n    enabled: {loose}  # hand-typed\n")
+    assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0
+    assert overlay(vault)["federation"]["enabled"] is True
+    assert share.list_shares(vault)[0] is True
+
+
 def test_a_non_mapping_federation_key_is_replaced_by_the_switch(vault: Path) -> None:
     _privacy(vault, "  federation: true\n")
     assert kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes").exit_code == 0

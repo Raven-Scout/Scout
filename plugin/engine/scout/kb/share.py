@@ -437,12 +437,12 @@ def load_overlay(vault: Path) -> Overlay:
 
 def write_overlay(vault: Path, overlay: Overlay, data: dict[str, Any]) -> None:
     """Write ``data`` over ``scout-config.yaml``, keeping every line but the changed federation keys byte for byte."""
-    from scout.scripts.bootstrap import _dump_keeping_comments
+    from scout.scripts.bootstrap import _dump_keeping_comments, _same_value
     from scout.scripts.privacy_migrate import _atomic_write_bytes
 
     config = paths.config_path(vault)
     result = _dump_keeping_comments(overlay.text, data)
-    if (yaml.safe_load(result) or {}) != data:
+    if not _same_value(yaml.safe_load(result) or {}, data):
         raise RuntimeError("could not write scout-config.yaml → privacy")
     if config.exists():
         _atomic_write_bytes(config, result.encode("utf-8"))

@@ -1022,9 +1022,27 @@ def _dump_at(value: dict, indent: int) -> str:
     return "".join(" " * indent + line if line.strip() else line for line in dumped.splitlines(keepends=True))
 
 
+def _same_value(a: object, b: object) -> bool:
+    """``a == b`` for parsed YAML, but type-strict all the way down.
+
+    Python's ``1 == True`` and ``1.0 == 1`` would let ``enabled: 1`` pass for
+    ``enabled: true``, and readers such as the privacy overlay take only a real
+    bool. Raises ``RecursionError`` on a cyclic alias, like ``==`` does.
+    """
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        assert isinstance(b, dict)
+        return len(a) == len(b) and all(k in b and _same_value(v, b[k]) for k, v in a.items())
+    if isinstance(a, list):
+        assert isinstance(b, list)
+        return len(a) == len(b) and all(_same_value(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
 def _loads_back(text: str, value: object) -> bool:
     try:
-        return bool(yaml.safe_load(text) == value)
+        return _same_value(yaml.safe_load(text), value)
     except (yaml.YAMLError, RecursionError):
         return False
 
@@ -1037,9 +1055,13 @@ def _rewrite_block(key: str, block: list[str], old: object, new: object, indent:
     level: unchanged ones byte for byte, changed ones recursed into or
     re-dumped. Otherwise, or when that rebuild does not load back as
     ``{key: new}``, the whole block is re-dumped -- losing only its own comments.
+    So is a mapping with a non-string key (``1:``, YAML 1.1's ``on:``):
+    ``split_blocks`` names keys by ``str()``, which wouldn't match it.
     """
     plain = _dump_at({key: new}, indent)
     if not (isinstance(old, dict) and isinstance(new, dict)) or len(block) < 2:
+        return plain
+    if not all(isinstance(k, str) for k in (*old, *new)):
         return plain
     head, body = block[0], block[1:]
     try:
@@ -1078,7 +1100,7 @@ def _rebuild_mapping(
             prev_intact = False
             continue
         try:
-            unchanged = key in original and original[key] == data[key]
+            unchanged = key in original and _same_value(original[key], data[key])
         except RecursionError:
             unchanged = False  # a cyclic alias equality can't decide -- treat as changed
         block_text = "".join(block) if unchanged else _rewrite_block(key, block, original.get(key), data[key], indent)
@@ -1134,7 +1156,7 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
     except yaml.YAMLError:
         return fallback("the block-wise rewrite did not parse")
     try:
-        mismatch = loaded != data
+        mismatch = not _same_value(loaded, data)
     except RecursionError:
         mismatch = True
     if mismatch:
