@@ -340,17 +340,30 @@ V0_18_10_STATE_KEYS = frozenset(
 )
 
 
+AGNES = "https://agnes.example.com"
+_CACHE = {
+    "agnes_url": AGNES,
+    "schema_version": 1,
+    "fetched_at": "2026-11-01T00:00:00+00:00",
+    "local_only_paths": ["Raw/"],
+}
+
+
+def _cache(vault: Path) -> rs.HostCache | None:
+    return rs.load_host_cache(vault, agnes_url=AGNES)
+
+
 def test_link_and_sync_cache_the_host_local_only_list(vault: Path, host: FakeHost) -> None:
     host.local_only = ("Raw/",)
     _link(vault, host)
-    cache = rs.load_host_cache(vault)
+    cache = _cache(vault)
     assert cache is not None and {"Raw/", "trading/"} <= set(cache.local_only_paths)
     assert rs.host_cache_problem(cache) is None
     assert git(vault, "check-ignore", rs.HOST_CACHE_REL).strip() == rs.HOST_CACHE_REL
 
     host.local_only = (*host.local_only, "Later/")  # the owner adds one in Agnes
     rs.sync(vault, host)
-    cache = rs.load_host_cache(vault)
+    cache = _cache(vault)
     assert cache is not None and "Later/" in cache.local_only_paths
 
 
@@ -367,9 +380,9 @@ def test_an_older_engine_still_reads_the_link_state(vault: Path, host: FakeHost)
 def test_sync_rewrites_a_cache_an_older_engine_never_wrote(vault: Path, host: FakeHost) -> None:
     _link(vault, host)
     rs.host_cache_path(vault).unlink()  # linked, or last synced, by an engine without the cache
-    assert rs.load_host_cache(vault) is None
+    assert _cache(vault) is None
     rs.sync(vault, host)
-    assert rs.load_host_cache(vault) is not None
+    assert _cache(vault) is not None
 
 
 def test_a_sync_on_an_old_gitignore_ignores_the_cache_too(vault: Path, host: FakeHost) -> None:
@@ -387,23 +400,27 @@ def test_a_sync_on_an_old_gitignore_ignores_the_cache_too(vault: Path, host: Fak
     [
         (None, False),
         ("not json", False),
-        ('{"schema_version": 99, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": []}', False),
-        ('{"schema_version": 1, "fetched_at": "yesterday", "local_only_paths": []}', False),
-        ('{"schema_version": 1, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": "Raw/"}', False),
-        ('{"schema_version": 1, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": ["Raw/"]}', True),
+        (json.dumps({**_CACHE, "schema_version": 99}), False),
+        (json.dumps({**_CACHE, "fetched_at": "yesterday"}), False),
+        (json.dumps({**_CACHE, "local_only_paths": "Raw/"}), False),
+        (json.dumps({k: v for k, v in _CACHE.items() if k != "agnes_url"}), False),
+        (json.dumps({**_CACHE, "agnes_url": "https://other.example.com"}), False),
+        (json.dumps(_CACHE), True),
     ],
+    ids=["missing", "not-json", "schema", "bad-time", "not-a-list", "no-host", "other-host", "ok"],
 )
-def test_an_unreadable_host_cache_counts_as_missing(vault: Path, body: str | None, readable: bool) -> None:
+def test_an_unreadable_or_foreign_host_cache_counts_as_missing(vault: Path, body: str | None, readable: bool) -> None:
+    """A cache from another Agnes (a link an older engine's unlink left behind) is not this link's list."""
     if body is not None:
         rs.host_cache_path(vault).parent.mkdir(parents=True, exist_ok=True)
         rs.host_cache_path(vault).write_text(body, encoding="utf-8")
-    assert (rs.load_host_cache(vault) is not None) is readable
+    assert (_cache(vault) is not None) is readable
 
 
 def test_the_host_cache_goes_stale_after_a_week(vault: Path) -> None:
     fetched = datetime(2026, 11, 1, 8, 0, tzinfo=UTC)
-    rs.save_host_cache(vault, ["Raw/"], now=fetched)
-    cache = rs.load_host_cache(vault)
+    rs.save_host_cache(vault, ["Raw/"], agnes_url=AGNES, now=fetched)
+    cache = _cache(vault)
     assert cache is not None and cache.local_only_paths == ("Raw/",) and cache.fetched_at == fetched
     assert rs.host_cache_problem(cache, now=fetched + timedelta(days=7)) is None
     stale = rs.host_cache_problem(cache, now=fetched + timedelta(days=8))
@@ -412,10 +429,69 @@ def test_the_host_cache_goes_stale_after_a_week(vault: Path) -> None:
     assert "Raw" not in (stale or "")  # it never names a host entry
 
 
+def test_a_host_cache_fetched_in_the_future_counts_as_stale(vault: Path) -> None:
+    """Clock skew or a hand edit must not hide the warning for good."""
+    now = datetime(2026, 11, 1, 8, 0, tzinfo=UTC)
+    rs.save_host_cache(vault, ["Raw/"], agnes_url=AGNES, now=now + timedelta(days=3650))
+    problem = rs.host_cache_problem(_cache(vault), now=now)
+    assert problem is not None and "future" in problem
+    rs.save_host_cache(vault, ["Raw/"], agnes_url=AGNES, now=now + timedelta(minutes=2))
+    assert rs.host_cache_problem(_cache(vault), now=now) is None  # a little skew is fine
+
+
 def test_unlink_forgets_the_host_cache(vault: Path, host: FakeHost) -> None:
     _link(vault, host)
     rs.unlink(vault, host, env={})
     assert not rs.host_cache_path(vault).exists()
+
+
+# ----- sync refuses a move out of a host-only path (#596) --------------------------------------
+
+SCAN = "scans/scan.md"  # local-only on Agnes's list alone
+
+
+def _linked_with_scan(vault: Path, host: FakeHost) -> None:
+    _commit(vault, SCAN, "# Scan\n\nA stand-in for a file Agnes keeps local-only.\n", "scan")
+    host.local_only = ("Scans/",)
+    _link(vault, host)
+    assert SCAN not in mirror_history_paths(host.bare)
+
+
+def _move(vault: Path, src: str, dst: str, subject: str) -> None:
+    (vault / dst).parent.mkdir(parents=True, exist_ok=True)
+    git(vault, "mv", src, dst)
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+
+
+def test_sync_refuses_to_push_a_move_out_of_a_host_only_path(vault: Path, host: FakeHost) -> None:
+    """The hook may have only warned (no cache, or a stale one); sync has the fresh list."""
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    _commit(vault, "knowledge-base/people/priya.md", "Priya owns PROJ-1234.\n", "people: priya")
+    before = _bare_git(host.bare, "rev-parse", "main")
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "local_only_move"
+    assert "notes/scan.md" in str(e.value) and "--confirm-sync" in str(e.value)
+    assert "scans" not in str(e.value).lower().replace("notes/scan.md", "")  # never names the host entry
+    assert _bare_git(host.bare, "rev-parse", "main") == before
+    assert "notes/scan.md" not in mirror_history_paths(host.bare)
+
+
+def test_the_owner_confirms_a_move_out_of_a_host_only_path(vault: Path, host: FakeHost) -> None:
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    rs.sync(vault, host, confirm_sync=["notes/scan.md"])
+    assert "notes/scan.md" in mirror_history_paths(host.bare)
+
+
+def test_sync_lets_a_move_between_paths_that_stay_home_through(vault: Path, host: FakeHost) -> None:
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "trading/scan.md", "file the scan with trading")
+    _move(vault, PERSONAL, "knowledge-base/topics/misc/task-renew-permit.md", "an ordinary move")
+    rs.sync(vault, host)
+    files = mirror_history_paths(host.bare)
+    assert "trading/scan.md" not in files and "knowledge-base/topics/misc/task-renew-permit.md" in files
 
 
 def test_sync_refuses_while_the_overlay_is_unreadable(vault: Path, host: FakeHost) -> None:

@@ -38,10 +38,12 @@ on the laptop alone: the host has no matching check.
 Mirror objects live in the vault's own object store under ``refs/scout-mirror/``.
 A push sends only what a mirror commit reaches, so a Local-Only blob is never
 packed. The commit map is ``.scout-state/repo-sync.json`` (gitignored); the
-Agnes token is kept outside the vault, in ``~/.scout-secrets/``. Each link and
-sync also writes the host's Local-Only list, with when it was read, to
-``.scout-state/repo-sync-host.json`` (gitignored), so the commit hook can block a
-scheduled run's move out of a path only Agnes keeps home without asking Agnes.
+Agnes token is kept outside the vault, in ``~/.scout-secrets/``. Each link, sync
+and scheduled run's lease also writes the host's Local-Only list, with when it
+was read and from which Agnes, to ``.scout-state/repo-sync-host.json``
+(gitignored), so the commit hook can block a scheduled run's move out of a path
+only Agnes keeps home without asking Agnes. Sync itself refuses to push such a
+move, judged against the list it has just fetched, unless the owner confirms it.
 
 Every push goes up under the Repository Writer Lease (R2, ``scout.repo_lease``):
 a sync during a scheduled run reuses the run's lease, read from this computer's
@@ -87,15 +89,19 @@ SCHEMA_VERSION = 1
 STATE_FILE = "repo-sync.json"
 POLICY_PATH = ".scout-state/privacy-policy.json"
 STATE_REL = f".scout-state/{STATE_FILE}"
-# The host's Local-Only list as the last link or sync read it, for the commit hook,
-# which runs offline (#596). Its own file: an older engine refuses a link state
-# with a key it doesn't know, and this one must not stop it.
+# The host's Local-Only list as the last link, sync or run lease read it, for the
+# commit hook, which runs offline (#596). Its own file: an older engine refuses a
+# link state with a key it doesn't know, and this one must not stop it.
 HOST_CACHE_FILE = "repo-sync-host.json"
 HOST_CACHE_REL = f".scout-state/{HOST_CACHE_FILE}"
-# Scheduled runs sync several times a day, so a week without a fetch means sync
-# has stopped (an expired token, Agnes unreachable), not a long weekend with the
-# laptop shut. Only the owner edits the host list, in Agnes, and rarely.
+# Every scheduled run on a linked vault takes the Repository Writer Lease first,
+# and taking it refreshes the cache (scout.repo_lease.acquire_for_run), so a
+# cache a week old means no run has reached Agnes in a week (an expired token,
+# Agnes unreachable), not a long weekend with the laptop shut. Only the owner
+# edits the host list, in Agnes, and rarely.
 HOST_CACHE_MAX_AGE = timedelta(days=7)
+# A fetch time this far ahead of the clock is skew or a hand edit, and counts as stale.
+HOST_CACHE_MAX_SKEW = timedelta(minutes=5)
 MIRROR_REF = "refs/scout-mirror/main"
 REMOTE_REF = "refs/scout-mirror/remote"
 REMOTE_BRANCH = "refs/heads/main"
@@ -942,11 +948,12 @@ def host_cache_path(vault: Path) -> Path:
     return paths.state_dir(vault) / HOST_CACHE_FILE
 
 
-def save_host_cache(vault: Path, entries: Iterable[str], *, now: datetime | None = None) -> None:
+def save_host_cache(vault: Path, entries: Iterable[str], *, agnes_url: str, now: datetime | None = None) -> None:
     p = host_cache_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     doc = {
         "schema_version": SCHEMA_VERSION,
+        "agnes_url": agnes_url,
         "fetched_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
         "local_only_paths": list(dict.fromkeys(entries)),
     }
@@ -955,12 +962,19 @@ def save_host_cache(vault: Path, entries: Iterable[str], *, now: datetime | None
     os.replace(tmp, p)
 
 
-def load_host_cache(vault: Path) -> HostCache | None:
-    """The cached host list, or None when it is missing or can't be read (the caller treats both alike)."""
+def load_host_cache(vault: Path, *, agnes_url: str) -> HostCache | None:
+    """The host list cached for the link to ``agnes_url``, or None (the caller treats every None alike).
+
+    None when the cache is missing or can't be read, or came from another Agnes:
+    an older engine's ``unlink`` leaves the file behind, and the vault may since
+    have been linked elsewhere.
+    """
     try:
         data = json.loads(host_cache_path(vault).read_text(encoding="utf-8"))
         entries = data["local_only_paths"]
         if data.get("schema_version") != SCHEMA_VERSION or not isinstance(entries, list):
+            return None
+        if data.get("agnes_url") != agnes_url:
             return None
         fetched = datetime.fromisoformat(data["fetched_at"])
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -975,6 +989,8 @@ def host_cache_problem(cache: HostCache | None, *, now: datetime | None = None) 
     if cache is None:
         return "Agnes's Local-Only list isn't cached on this computer"
     age = (now or datetime.now(UTC)) - cache.fetched_at
+    if age < -HOST_CACHE_MAX_SKEW:
+        return "Agnes's Local-Only list has a fetch time in the future (clock skew or a hand edit)"
     if age > HOST_CACHE_MAX_AGE:
         return f"Agnes's Local-Only list was last fetched {age.days} days ago"
     return None
@@ -1388,7 +1404,7 @@ def link(
             sync_only=None if pin is None else list(pin),
         ),
     )
-    save_host_cache(vault, host_entries)
+    save_host_cache(vault, host_entries, agnes_url=agnes_url)
     return Result(action="link", pushed=[snapshot], stripped=stripped, notes=notes)
 
 
@@ -1564,7 +1580,7 @@ def _sync_under_lease(
         host_entries = host.set_local_only(wanted)
     if added := ensure_ignored(vault):
         result.notes.append(f"added {', '.join(added)} to .gitignore")
-    save_host_cache(vault, host_entries)  # before any refusal below: the list itself is current
+    save_host_cache(vault, host_entries, agnes_url=state.agnes_url)  # before any refusal: the list is current
     rules = LocalOnlyRules.build([policy], host_entries, pinned=state.sync_only)
     confirmed = sorted(set(state.confirmed_sync) | set(confirm_sync))
     trading_gate(vault, rules, confirmed)
@@ -1603,10 +1619,23 @@ def _sync_under_lease(
     replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
     if _is_ancestor(vault, state.last_laptop, head):
         todo = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
+        own = [c for c in todo if c not in replayed]
+        spans = [(f"{c}^", c) for c in own if _rev(vault, f"{c}^") is not None]
     else:
         todo = [head]
+        own = [c for c in todo if c not in replayed]
+        spans = [(state.last_laptop, head)] if _rev(vault, state.last_laptop) is not None else []
         result.notes.append("the vault's history no longer contains the last synced commit; pushing its HEAD")
-    own = [c for c in todo if c not in replayed]
+    # The hook's cache may have been missing or stale; only here is Agnes's list current (#596).
+    moved = host_only_moves(vault, rules, host_entries, spans)
+    if unconfirmed := [p for p in moved if p not in set(confirmed)]:
+        raise RepoSyncError(
+            "local_only_move",
+            "refused: a commit since the last sync moves a file out of a path Agnes keeps local-only, so it "
+            f"would upload from {', '.join(unconfirmed)}. If it should, run scoutctl repo sync --confirm-sync "
+            "<path>; if not, add the path to privacy.local_only_add in scout-config.yaml, then sync again",
+            {"paths": unconfirmed},
+        )
 
     builder = MirrorBuilder(vault, rules, host_entries)
     pushes: list[tuple[str, str]] = []
@@ -1657,6 +1686,36 @@ def _sync_under_lease(
     state.last_laptop = head
     save_state(vault, state)
     return result
+
+
+def host_only_moves(
+    vault: Path, rules: LocalOnlyRules, host_entries: Sequence[str], spans: Iterable[tuple[str, str]]
+) -> list[str]:
+    """New paths of files moved, in ``spans`` (``(old, new)`` revisions), out of a path on Agnes's list.
+
+    Only moves to a path that uploads count. Git pairs the paths as the commit
+    hook does (a rename, or a delete and an add of similar content in one span).
+    """
+    out: dict[str, None] = {}
+    for old, new in spans:
+        raw = git(vault, "diff-tree", "-r", "-z", "-M", "--no-commit-id", "--name-status", old, new).stdout
+        fields = raw.split("\0")
+        i = 0
+        while i < len(fields) - 1:
+            status = fields[i]
+            if status.startswith(("R", "C")):
+                src, dst = fields[i + 1], fields[i + 2]
+                i += 3
+                if status.startswith("R") and _on_host_list(src, host_entries) and not rules.refused(dst):
+                    out[dst] = None
+            else:
+                i += 2
+    return list(out)
+
+
+def _on_host_list(rel: str, host_entries: Sequence[str]) -> bool:
+    f = fold(rel)
+    return any(_host_matches(f, e) for e in host_entries)
 
 
 def _broken(policy: Policy) -> bool:

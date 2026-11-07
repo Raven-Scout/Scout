@@ -4035,7 +4035,10 @@ def _register_repo() -> None:
     @repo_app.command("sync")
     def cli_repo_sync(
         confirm_sync: list[str] = typer.Option(
-            [], "--confirm-sync", help="Sync this trading-looking path anyway, exactly as listed. Repeatable."
+            [],
+            "--confirm-sync",
+            help="Sync this path anyway, exactly as listed: a trading-looking one, or a file moved out of a path "
+            "Agnes keeps local-only. Repeatable.",
         ),
         as_json: bool = typer.Option(False, "--json", help="Print JSON."),
     ) -> None:

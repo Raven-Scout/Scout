@@ -588,16 +588,22 @@ SCAN = "scans/scan.md"  # local-only on the host's list alone, never in the vaul
 RENAMED = "knowledge-base/topics/misc/plain-renamed.md"
 
 
-def _linked(vault: Path, host_entries: list[str] | None, *, fetched_days_ago: int = 0) -> None:
+AGNES = "https://agnes.example.com"
+
+
+def _linked(
+    vault: Path, host_entries: list[str] | None, *, fetched_days_ago: int = 0, cached_from: str = AGNES
+) -> None:
     """The vault as ``repo link`` leaves it, with the host list cached (None: no cache)."""
     from datetime import UTC, datetime, timedelta
 
     from scout import repo_sync as rs
 
     head = git(vault, "rev-parse", "HEAD").strip()
-    rs.save_state(vault, rs.LinkState("https://agnes.example.com", "https://agnes.example.com/r.git", "", head, head))
+    rs.save_state(vault, rs.LinkState(AGNES, f"{AGNES}/r.git", "", head, head))
     if host_entries is not None:
-        rs.save_host_cache(vault, host_entries, now=datetime.now(UTC) - timedelta(days=fetched_days_ago))
+        when = datetime.now(UTC) - timedelta(days=fetched_days_ago)
+        rs.save_host_cache(vault, host_entries, agnes_url=cached_from, now=when)
 
 
 def _with_scan(vault: Path) -> None:
@@ -629,7 +635,9 @@ def test_a_missing_host_cache_warns_on_a_run_move(vault: Path) -> None:
     git(vault, "mv", SCAN, "notes.md")
     assert checks(vault, RUN) == [("notes.md", "local-only-unchecked", False, None)]
     rc, out = hook(vault, RUN)
-    assert rc == 0 and "[local-only-unchecked]" in out and "scoutctl repo sync" in out
+    assert rc == 0 and "[local-only-unchecked]" in out
+    # The run is told not to sync (that would upload the move); the owner is told what to do.
+    assert "must not run scoutctl repo sync" in out and "owner" in out
     assert checks(vault) == []
 
 
@@ -658,12 +666,39 @@ def test_a_move_out_of_a_config_local_only_path_blocks_without_a_cache(vault: Pa
     assert checks(vault, RUN) == [("positions.md", "privacy-widening", True, None)]
 
 
+@pytest.mark.parametrize("entries", [["elsewhere/"], ["*"], ["notes/"]])
+def test_the_cache_never_relaxes_a_move_out_of_a_config_local_only_path(vault: Path, entries: list[str]) -> None:
+    """The cache only adds blocks: the destination is judged by the vault's own rules.
+
+    A stale cache (an entry since removed in Agnes) or one a run wrote must not
+    let a ``local_only_add`` file move somewhere repo sync would upload it.
+    """
+    _linked(vault, entries)
+    (vault / "elsewhere").mkdir()
+    git(vault, "mv", POSITIONS, "elsewhere/positions.md")
+    assert ("elsewhere/positions.md", "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_cache_fetched_in_the_future_warns(vault: Path) -> None:
+    _linked(vault, ["Scans/"], fetched_days_ago=-3650)
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == [(RENAMED, "local-only-unchecked", False, None)]
+
+
+def test_a_cache_from_another_agnes_is_not_this_links_list(vault: Path) -> None:
+    """An older engine's unlink leaves the cache behind; a relink to another host must not use it."""
+    _with_scan(vault)
+    _linked(vault, ["Scans/"], cached_from="https://other.example.com")
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "local-only-unchecked", False, None)]
+
+
 def test_an_unlinked_vault_ignores_a_leftover_host_cache(vault: Path) -> None:
     """No link, no upload: the moves judged are the config's, as before #596."""
     from scout import repo_sync as rs
 
     _with_scan(vault)
-    rs.save_host_cache(vault, ["scans/"])
+    rs.save_host_cache(vault, ["scans/"], agnes_url=AGNES)
     git(vault, "mv", SCAN, "notes.md")
     git(vault, "mv", PLAIN, RENAMED)
     assert checks(vault, RUN) == []

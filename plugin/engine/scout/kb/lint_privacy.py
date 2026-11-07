@@ -145,8 +145,9 @@ _MESSAGES = {
     "local-only-move": "a scheduled run may not move a file out of a local-only path (repo sync would upload it "
     "from its new path) — leave that to the owner",
     "local-only-unchecked": "a scheduled run moved this file, and this computer's copy of Agnes's Local-Only list "
-    "is missing or more than a week old, so the move can't be checked against it (repo sync uploads it from its "
-    "new path if Agnes kept the old one local-only) — run scoutctl repo sync, and check the move",
+    "is missing or out of date, so the move can't be checked against it. A scheduled run must not run scoutctl "
+    "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
+    "push a move out of a path Agnes keeps local-only, and says how to allow one",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -302,8 +303,8 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     Local-only is what :class:`scout.repo_sync.LocalOnlyRules` says: the
     engine's lists, ``local_only_add``, the upload allowlist (pinned for the
     link, or in the config), so a move into ``sync_only`` from outside it counts
-    too, and on a linked vault the host's list as ``repo sync`` cached it. The
-    source is judged under every policy in play, the destination under the
+    too, and on a linked vault the host's list as last cached (sources only).
+    The source is judged under every policy in play, the destination under the
     commit's alone. Git pairs the two paths (``git mv``, or a delete and an
     add of similar content in one commit); a copy, or a delete in a later
     commit, isn't seen.
@@ -316,17 +317,20 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     except RepoSyncError:
         state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
     pinned = state.sync_only if state is not None else None
-    # A linked vault adds the host's list as the last sync cached it (#596): a
-    # missing or stale cache still counts what it has, and every other move that
-    # would upload gets a warning, since the hook can't ask Agnes.
+    # A linked vault adds the host's list as last cached (#596): a missing or stale
+    # cache still counts what it has, and every other move that would upload gets
+    # a warning, since the hook can't ask Agnes. The cache only adds blocks: it
+    # judges sources, never the destination, so a stale entry or a cache a run
+    # wrote can't make a destination count as staying home. Sync re-checks every
+    # move against the list it fetches (repo_sync.host_only_moves).
     host_entries: tuple[str, ...] = ()
     unchecked = False
     if state is not None:
-        cache = load_host_cache(ctx.repo)
+        cache = load_host_cache(ctx.repo, agnes_url=state.agnes_url)
         host_entries = cache.local_only_paths if cache is not None else ()
         unchecked = host_cache_problem(cache) is not None
     was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], host_entries, pinned=pinned)
-    now = LocalOnlyRules.build([ctx.policy], host_entries, pinned=pinned)
+    now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
     out: list[Finding] = []
     for src, rel in moves:
         if now.local_only(rel):

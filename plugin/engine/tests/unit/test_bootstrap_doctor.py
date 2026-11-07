@@ -1053,7 +1053,9 @@ def _repo_sync_warnings(vault: Path, *, cache_age_days: int | None, linked: bool
     if linked:
         rs.save_state(vault, rs.LinkState("https://agnes.example.com", "https://agnes.example.com/r.git", "", "a", "b"))
     if cache_age_days is not None:
-        rs.save_host_cache(vault, ["raw/"], now=now - timedelta(days=cache_age_days))
+        rs.save_host_cache(
+            vault, ["raw/"], agnes_url="https://agnes.example.com", now=now - timedelta(days=cache_age_days)
+        )
     report = run_doctor(vault=vault, check_jobs=False, now=now)
     return [w for w in report.warnings if w.startswith("repo sync:")]
 

@@ -602,22 +602,25 @@ def _check_repo_sync_host_cache(*, vault: Path, now: datetime | None) -> list[st
     """A linked vault whose cached Agnes Local-Only list is missing or stale (#596).
 
     The commit hook checks a run's moves against that cache, offline; without a
-    current one it can only warn, so a move out of a folder only Agnes keeps
-    local-only could upload on the next sync.
+    current one it can only warn. Each linked run refreshes it when it takes the
+    lease, so a stale one means runs aren't reaching Agnes. ``repo sync`` still
+    refuses such a move against the list it fetches.
     """
     from scout.repo_sync import RepoSyncError, host_cache_problem, load_host_cache, load_state
 
     try:
-        if load_state(vault) is None:
-            return []
+        state = load_state(vault)
     except RepoSyncError:
         return []  # repo sync refuses this state, so it uploads nothing
-    problem = host_cache_problem(load_host_cache(vault), now=now)
+    if state is None:
+        return []
+    problem = host_cache_problem(load_host_cache(vault, agnes_url=state.agnes_url), now=now)
     if problem is None:
         return []
     return [
         f"repo sync: {problem}, so the commit hook can't block a scheduled run's move out of a path only Agnes "
-        "keeps local-only (it warns instead) — run scoutctl repo sync; if it fails, fix what it reports"
+        "keeps local-only (it warns instead). Scheduled runs refresh it when they take the Agnes lease, so check "
+        "their logs for a lease or Agnes error; scoutctl repo sync refreshes it too"
     ]
 
 
