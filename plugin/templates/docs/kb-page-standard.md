@@ -55,7 +55,9 @@ projects/<name>/
    `last_verified:` and `verified_against:`, never in a "Last verified" line or blockquote at the
    top.
 4. **Plain sentences, short bullets.** Keep a bullet to two lines at most, with one bold phrase at
-   most. No walls of bold. Use tables only for people, decisions and dates.
+   most; in "Where it stands", at most ~300 characters, which `kb lint` checks. What doesn't fit
+   goes in the linked topic note, not in a second long bullet. No walls of bold. Use tables only
+   for people, decisions and dates.
 5. **Absolute dates.** Write "Mar 12", or "Mar 12, 2026" when the year matters. Never "yesterday" or
    "last run". Times only when they matter, labelled with their zone (`%Z`).
 6. **Current state replaces old state.** When a fact changes, rewrite it where it sits. Old states
@@ -87,8 +89,8 @@ verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[s
 
 ## Where it stands
 _As of Mar 14, 2026._
-- <up to 6 bullets of current state, the most important first. Each ends with a link to the
-  topic note holding the detail.>
+- <up to 6 bullets of current state, the most important first, each at most ~300 characters.
+  Each ends with a link to the topic note holding the detail.>
 
 ## What's next
 | When | What | Who |
@@ -169,7 +171,9 @@ subject, e.g. `widgets-platform`.
 The `dreaming-nightly` run's KB pass rebuilds one project page a night this way, the one
 `scripts/scoutctl kb structure --next` picks. Do the same by hand for any page you restructure. The pass skips a page labelled private, shared or
 local-only (`kb classify`), because a new copy could widen it or hit a hard privacy block, and a folder
-where a rebuild could write into a share; restructure those by hand. On a local-only project nothing leaves the folder: keep source notes and moved files
+where a rebuild could write into a share; restructure those by hand. The pass only trims a
+shared page that is over budget or carries narration: it cuts whole lines (never a heading), and
+moves a line only into an existing note in the folder that isn't shared. On a local-only project nothing leaves the folder: keep source notes and moved files
 inside it. A page too big for one session takes several nights: archive it once, on the first night,
 move one area into `knowledge/` a night (the page only has to shrink), and rewrite it once the rest
 fits.

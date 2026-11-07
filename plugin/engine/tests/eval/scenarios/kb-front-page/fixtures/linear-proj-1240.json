@@ -1,0 +1,15 @@
+{
+  "identifier": "PROJ-1240",
+  "title": "Retire the nightly PDF job",
+  "description": "Turn off the nightly PDF report job. Exports run on demand now.",
+  "state": {
+    "name": "Done",
+    "type": "completed"
+  },
+  "completedAt": "{{d-1}}T14:20:00Z",
+  "updatedAt": "{{d-1}}T14:20:00Z",
+  "assignee": {
+    "name": "Sam Example"
+  },
+  "url": "https://linear.app/example-org/issue/PROJ-1240"
+}

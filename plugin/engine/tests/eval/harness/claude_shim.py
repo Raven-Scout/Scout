@@ -148,6 +148,16 @@ def build_command(
     return cmd, prompt
 
 
+# System events claude may print before init that carry no model output, tool call or billing: the
+# guard waits past them for init. Anything else first still aborts (no_init).
+PRE_INIT_EVENTS = frozenset({("system", "session_title_changed")})
+
+
+def pre_init(event: dict[str, Any]) -> bool:
+    """A known harmless event claude prints before its init (claude 2.1.3xx titles the session first)."""
+    return (event.get("type"), event.get("subtype")) in PRE_INIT_EVENTS
+
+
 def guard_init(event: dict[str, Any], allowed: set[str]) -> dict[str, Any] | None:
     """Why an init event must abort the session, or None when it is safe."""
     if event.get("type") != "system" or event.get("subtype") != "init":
@@ -262,7 +272,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not checked:  # the first event must be a clean init, or nothing runs
+                if not checked:  # the first event past PRE_INIT_EVENTS must be a clean init, or nothing runs
+                    if pre_init(event):
+                        continue
                     checked = True
                     why = guard_init(event, allowed)
                     if why:

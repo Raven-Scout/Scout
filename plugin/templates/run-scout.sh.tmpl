@@ -149,19 +149,25 @@ fi
 export SCOUT_MODEL
 echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
 
+# The session's --name. Every retry attempt gets the same one, so the cost step
+# below can find each attempt's transcript by it.
+RUN_NAME="{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)"
 START_TIME=$(date +%s)
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
 # ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+# With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
+# and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
+    "$SCOUT_DIR/scripts/claude-with-retry.sh" \
     "$LOG_FILE" \
     "$CLAUDE_BIN" \
     --permission-mode auto \
     --model "$SCOUT_MODEL" \
     --max-budget-usd {{MAX_BUDGET}} \
-    --name "{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)" \
+    --name "$RUN_NAME" \
     -p "$PROMPT" \
     || EXIT_CODE=$?
 END_TIME=$(date +%s)
@@ -210,9 +216,15 @@ else
     echo "connector-health roll-up skipped: scoutctl not found at $SCOUTCTL_BIN" >> "$LOG_FILE"
 fi
 
-# Track session cost (skill self-reports actual cost from inside the session via the
-# same script; this runner call is a fallback so failed/crashed runs still leave a row).
+# Track session cost. A session can't know its own spend, so the runner records it:
+# `scoutctl budget record-run` reads claude's own figure (the cost-state row it writes
+# at exit) from every attempt's transcript and writes the runner's row with it, which
+# the budget check counts in place of the session's row. Without that command (an
+# older engine), the old fallback row with $0, so a failed run still leaves a row.
 COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
-if [ -x "$COST_TRACKER" ]; then
+if [ -x "$SCOUTCTL_BIN" ] && "$SCOUTCTL_BIN" budget record-run "$MODE" --name "$RUN_NAME" \
+    --started "$START_TIME" --cap {{MAX_BUDGET}} --exit-code "$EXIT_CODE" >> "$LOG_FILE" 2>&1; then
+    :
+elif [ -x "$COST_TRACKER" ]; then
     "$COST_TRACKER" "$MODE" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
 fi

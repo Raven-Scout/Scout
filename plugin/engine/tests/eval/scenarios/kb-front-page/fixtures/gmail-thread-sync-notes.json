@@ -1,0 +1,13 @@
+{
+  "id": "thr-sync-notes",
+  "messages": [
+    {
+      "id": "msg-sync-notes",
+      "from": "Meeting notes <notes@example.com>",
+      "to": "alex@example.com, priya@example.com, sam@example.com",
+      "subject": "Notes: Report builder weekly sync",
+      "date": "{{d-1}}T15:40:00Z",
+      "body": "Report builder weekly sync, {{d-1}} 15:00 UTC. Attendees: Alex, Priya, Sam.\n\nSummary\n- The export streaming PR (example-org/api#57) merged on {{d-1}}. Memory use stays flat at about 40 MB per export.\n- Sam turned off the nightly PDF job (PROJ-1240 is done).\n\nDecisions\n- The export row cap goes up from 50,000 to 200,000 rows now that exports stream. Priya decided; streaming removed the memory limit that set the old cap.\n- The pilot opens to three workspaces on {{d+7}}, three days earlier than planned.\n\nNext steps\n- Alex: raise the row cap in the export settings before the pilot.\n- Priya: pick the three pilot workspaces by {{d+3}}.\n\nNext sync: {{d+6}} 15:00 UTC."
+    }
+  ]
+}
