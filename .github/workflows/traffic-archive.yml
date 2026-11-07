@@ -1,0 +1,32 @@
+name: traffic-archive
+# GitHub keeps clone/view traffic for 14 days. This saves it daily to CSVs on the
+# orphan `metrics` branch, with CI-run counts and release download counts beside it.
+# See scripts/metrics/README.md.
+on:
+  schedule:
+    - cron: "17 5 * * *"   # 05:17 UTC daily; any time works, the window is 14 days
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit to the metrics branch
+  actions: read     # count CI runs per day
+
+concurrency:
+  group: traffic-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # This checkout is itself one clone a day in the traffic it records.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/metrics
+          sparse-checkout-cone-mode: true
+      - name: Archive traffic
+        run: python3 scripts/metrics/archive_traffic.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
