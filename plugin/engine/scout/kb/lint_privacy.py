@@ -40,7 +40,11 @@ Rules:
   The last is a content check: the label doesn't change, but the people the
   note is shared with would read whatever the run brought in from notes they
   can't see. A removed or moved line, or a new note in a shared folder, isn't
-  refused. The owner's interactive commits aren't checked.
+  refused. The owner's interactive commits aren't checked. A non-note file a
+  share covers (``.csv``, ``.xlsx``, extensionless, …) gets the same guard in
+  a scheduled run (:func:`_non_note_findings`, #594): its text is compared
+  line by line, one that isn't UTF-8 text blocks on any change, and one new to
+  the share has its lines checked for private notes.
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
@@ -78,8 +82,10 @@ import yaml
 
 from scout.kb.git_io import (
     StagedPath,
+    head_blob,
     head_text_lossy,
     index_text_lossy,
+    staged_blob,
     staged_paths,
     staged_text_lossy,
     tracked_files,
@@ -285,6 +291,8 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         staged: str | None = None
         if not in_privacy_scope(rel, ctx.shared_globs):
             if not _md(rel):
+                if ctx.scheduled:
+                    out += _non_note_findings(ctx, sp)
                 continue
             staged = staged_text_lossy(repo, rel)
             if _facts(rel, staged).declared == "none" and not shared_sources(_head_window(rel, staged)):
@@ -472,15 +480,108 @@ def _widening(
     for n in added_marker_lines(head_text, staged):
         block("add a %%privacy:allow%% marker — only the owner may", n)
     if head is not None and head.federation_scope != "none" and label.federation_scope != "none":
-        first = _first_new_line(head_text, staged)
-        if first is not None:
-            block(
-                "add to a note that is already shared — the people it is shared with would read it; "
-                "put the new material in a different note that isn't shared, or propose the edit in the "
-                "review queue; never narrow this note's share to make room",
-                first,
-            )
+        if _md(rel):
+            first = _first_new_line(head_text, staged)
+            if first is not None:
+                block(_ADD_TO_SHARED.format(what="note"), first)
+        elif sp.head_rel is not None:
+            out += _changed_shared_file(ctx, sp.head_rel, rel)
     return out
+
+
+_ADD_TO_SHARED = (
+    "add to a {what} that is already shared — the people it is shared with would read it; put the new material "
+    "in a different {what} that isn't shared, or propose the edit in the review queue; never narrow this "
+    "{what}'s share to make room"
+)
+_NOT_TEXT = "isn't UTF-8 text (binary, or another encoding), so kb lint can't tell what it holds"
+
+
+def _non_note_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
+    """A scheduled run's change to a non-note file a share covers (#594), outside the privacy scope.
+
+    A folder default shares every file under it, ``.csv``, ``.xlsx`` and
+    extensionless ones included, and they upload with the folder. The file's
+    label comes from its path alone. The rules are a shared note's (#569,
+    #586): a move into a share or to a wider one, or added or reworded text in
+    a file already shared, blocks; a removed or moved line, or a move out of
+    the share, doesn't. A file that isn't UTF-8 text blocks on any change.
+    A file new to the share has its lines checked for private notes (the
+    widening guard never sees its text); one that isn't text fails closed.
+
+    Owner commits don't come here: a data export naming a project is the
+    owner's call, and Agnes serves readers only ``.md``. Nor does a vault with
+    sharing off, where no label is shared. The private-note scan reads only a
+    file new to the share; an edit to one already shared blocks on its first
+    new line without a scan, so a big ``.csv`` costs a line diff, not a scan.
+    """
+    rel = sp.rel
+    label = classify(rel, None, ctx.policy)
+    if not label.shared_file:
+        return []  # no share covers it, or the run moved it out of one
+    head: Label | None = None
+    if sp.head_rel is not None:
+        # A note renamed to a non-note name keeps its HEAD label: its frontmatter, not just its folder default.
+        head_text = head_text_lossy(ctx.repo, sp.head_rel) if _md(sp.head_rel) else None
+        head = classify(sp.head_rel, _head_window(sp.head_rel, head_text), ctx.head_policy)
+    out: list[Finding] = []
+
+    def block(message: str, line: int | None = None) -> None:
+        out.append(Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}", line))
+
+    if head is not None and _widens(head.federation_scope, label.federation_scope):
+        block("widen who this file is shared with — leave that to the owner")
+    if sp.head_rel is not None and head is not None and head.federation_scope != "none":
+        return out + _changed_shared_file(ctx, sp.head_rel, rel)
+    text = _as_text(staged_blob(ctx.repo, rel))
+    if text is None:
+        block(f"add this file to a share: it {_NOT_TEXT} — leave that to the owner")
+        return out
+    return out + _shared_findings(ctx, rel, text, added_line_numbers(None, text))
+
+
+def _changed_shared_file(ctx: _Ctx, head_rel: str, rel: str) -> list[Finding]:
+    """What a run's commit adds to a non-note file shared at HEAD and in the commit (#594).
+
+    The raw blobs are compared, so two bad bytes that decode alike still
+    count. Text is compared line by line, as a note is, after a BOM and CRLF
+    line endings are set aside; a change to those alone blocks with its own
+    message, since nothing was added. A file that isn't UTF-8 text on either
+    side blocks on any change.
+    """
+    old, new = head_blob(ctx.repo, head_rel), staged_blob(ctx.repo, rel)
+    if old is None or old == new:
+        return []
+    old_text, new_text = _as_text(old), _as_text(new)
+    if old_text is None or new_text is None:
+        message = f"change a file that is already shared: it {_NOT_TEXT}, so any change counts — leave it to the owner"
+        return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
+    first = _first_new_line(_plain(old_text), _plain(new_text))
+    if first is None:
+        if _first_new_line(old_text, new_text) is None:
+            return []  # lines only removed or moved
+        message = (
+            "change the encoding or line endings of a file that is already shared (a byte-order mark, or CRLF and "
+            "LF swapped): nothing was added, but the file is rewritten — leave it as it is"
+        )
+        return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
+    message = "a scheduled run may not " + _ADD_TO_SHARED.format(what="file")
+    return [Finding(rel, "privacy-widening", True, message, first)]
+
+
+def _plain(text: str) -> str:
+    """``text`` without a leading byte-order mark and with CRLF read as LF (line numbers are kept)."""
+    return text.removeprefix("\ufeff").replace("\r\n", "\n")
+
+
+def _as_text(data: bytes) -> str | None:
+    """``data`` as UTF-8 text, or None for a binary file (a NUL in the first 8,000 bytes, git's test) or bad UTF-8."""
+    if b"\0" in data[:8000]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _first_new_line(old: str | None, new: str) -> int | None:
