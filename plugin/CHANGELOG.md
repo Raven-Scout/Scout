@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`kb share` edits only the privacy keys it changes; the rest of `scout-config.yaml` stays as you wrote it** (#584; `engine/scout/scripts/bootstrap.py`, `engine/scout/kb/share.py`). Writing `privacy.federation_defaults` and `privacy.federation.enabled` re-dumped the whole `privacy:` block, so its comments were dropped, quoted list items lost their quotes and nested lists were re-indented, against `scoutctl config`'s promise to edit in place. The writer now rebuilds a changed mapping key by key, at every depth: an unchanged key comes back byte for byte, a changed one is rewritten (its own line's comment goes with it), and a new one goes at the end of its mapping. A level whose rebuild doesn't load back to the wanted values is re-dumped whole, as before, and so is one that is flow-style or has a non-string key. Values are now compared type-strictly, so a hand-typed `enabled: 1` (which privacy reads as off) is rewritten to `true` by a share instead of being kept because `1 == True`. The other writers on the same path keep comments inside a changed block too: the upgrade version stamp, the connector config, and `privacy-migrate`'s fallback.
+
 ## [0.18.10] - 2026-11-07
 
 ### Added
