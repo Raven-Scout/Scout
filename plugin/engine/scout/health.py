@@ -90,6 +90,8 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"hit your .{0,20}limit|limit.{0,20}resets", re.IGNORECASE),
         re.compile(r"API Error: 429|too many requests|overloaded", re.IGNORECASE),
     ),
+    # claude's cap message, or the engine's line when the retry wrapper withheld a retry (#561).
+    "budget": (re.compile(r"Exceeded USD budget|budget spent.{0,8}no retry", re.IGNORECASE),),
 }
 FAILURE_LINE_MAX = 300
 

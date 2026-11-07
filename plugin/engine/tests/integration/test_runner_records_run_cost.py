@@ -111,6 +111,25 @@ def test_runner_records_the_run_by_the_name_it_gave_claude(tmp_path: Path, name:
 
 
 @pytest.mark.parametrize(("name", "slot_key", "run_type"), RUNNERS)
+def test_runner_tells_the_retry_wrapper_how_to_record_a_failed_attempt(
+    tmp_path: Path, name: str, slot_key: str, run_type: str
+):
+    """claude-with-retry.sh records each failed attempt's spend with the run's type and start (#561)."""
+    scout_dir, script, calls, _argv, _fallback = _setup(tmp_path, name, record_run_ok=True)
+    env_file = scout_dir / "wrapper.env"
+    wrapper = scout_dir / "scripts" / "claude-with-retry.sh"
+    _stub(wrapper, f'env | grep -E "^(SCOUT_RUN_|SCOUTCTL_BIN=)" > "{env_file}"\n')
+
+    _run(script, slot_key)
+
+    seen = dict(line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines())
+    assert seen["SCOUTCTL_BIN"] == str(tmp_path / "bin" / "scoutctl")
+    assert seen["SCOUT_RUN_TYPE"] == run_type
+    call = _record_run_call(calls)
+    assert seen["SCOUT_RUN_STARTED"] == call[call.index("--started") + 1]
+
+
+@pytest.mark.parametrize(("name", "slot_key", "run_type"), RUNNERS)
 def test_an_engine_without_record_run_falls_back_to_the_old_row(
     tmp_path: Path, name: str, slot_key: str, run_type: str
 ):
