@@ -22,7 +22,7 @@
 <main><article class="doc">
   <p class="eyebrow">Legal</p>
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: June 23, 2026</p>
+  <p class="updated">Last updated: October 13, 2026</p>
 
   <p>This Privacy Policy explains how the <b>Scout</b> project (&ldquo;Scout&rdquo;, &ldquo;we&rdquo;,
   &ldquo;us&rdquo;, or &ldquo;the project&rdquo; &mdash; the maintainers who publish the
@@ -37,6 +37,10 @@
     it produces &mdash; your knowledge base, action items, logs, and configuration &mdash; is written to files on
     <i>your</i> machine (by default, the <code>~/Scout/</code> folder) and to <i>your</i> own git history. Your data
     never reaches us, because there is nowhere for it to go.</p>
+    <p>The one number we can see is how many times Scout's installer has run. The installer downloads a small
+    version file from our GitHub Releases page, and GitHub publicly shows a running total of downloads for each
+    release file. That total is all we get: no IP address, no identity, nothing about you or your machine. See
+    <a href="#version-check">&ldquo;The installer's version check&rdquo;</a>.</p>
   </div>
   <p>Because we never receive your data, there is nothing for us to sell, share, mine, or lose. The honest
   privacy story for Scout is one of <b>architecture, not promises</b>: the data stays where you are.</p>
@@ -104,6 +108,20 @@
   <p>We are not a party to any of it. To understand how your data is handled there, see
   <a href="https://www.anthropic.com/legal/privacy">Anthropic's Privacy Policy</a> and the privacy policy of each
   service you connect.</p>
+
+  <h3 id="version-check">The installer's version check</h3>
+  <p>When you run Scout's one-command installer (<code>install.sh</code>), it downloads a small file,
+  <code>scout-release.json</code>, from the latest release on
+  <a href="https://github.com/Raven-Scout/Scout/releases">github.com/Raven-Scout/Scout/releases</a>. The file names
+  the current version, and the installer uses it to warn you if the copy it just installed is out of date.</p>
+  <p>GitHub counts how many times each release file is downloaded and shows that total publicly on its API. That
+  running total is the only measure of Scout's use available to us. It contains no IP address, account, device or
+  vault information, and we receive nothing else. The download request itself goes to GitHub, like any other
+  download from GitHub, and is governed by
+  <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement">GitHub's Privacy
+  Statement</a>.</p>
+  <p>To skip the check, run the installer with <code>SCOUT_NO_RELEASE_CHECK=1</code>. The install works the same
+  without it.</p>
 
   <h2>This website</h2>
   <p>Our website (<code>raven-scout.github.io</code>) is a static informational site hosted on <b>GitHub Pages</b>.
