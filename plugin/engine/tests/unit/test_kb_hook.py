@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -148,13 +149,57 @@ def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
-def _hold_lock(vault: Path, pid: int, marker: str | None) -> None:
-    """The session lock as a runner holds it (#595): the lock names ``pid``; the run marker beside it."""
+def _hold_lock(vault: Path, pid: int, marker: str | None = None) -> None:
+    """The session lock naming ``pid``, with a run marker beside it (#595)."""
     logs = vault / ".scout-logs"
     logs.mkdir(exist_ok=True)
     (logs / ".scout-session.lock").write_text(f"{pid}\n")
     if marker is not None:
         (logs / ".scout-session.lock.run").write_text(marker)
+
+
+@pytest.fixture
+def live(tmp_path):
+    """Start a live process in the vault named like ``run-scout.sh`` or ``scripts/claude-with-retry.sh``."""
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def start(vault: Path, rel: str) -> int:
+        script = vault / rel
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/bash\nsleep 60\n")
+        script.chmod(0o755)
+        procs.append(subprocess.Popen([str(script)]))
+        time.sleep(0.2)  # let bash exec, so ps shows the script's argv
+        return procs[-1].pid
+
+    yield start
+    for proc in procs:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.parametrize("which", SCENARIOS)
+@pytest.mark.parametrize("owner_env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
+@pytest.mark.parametrize("marked_by", ["runner", "runner-no-marker", "wrapper"])
+def test_a_commit_during_a_live_run_is_refused_when_the_check_cant_run_whatever_its_env(
+    tmp_path, live, which: str, owner_env: dict[str, str], marked_by: str
+) -> None:
+    """Without scoutctl the hook can't tell whose commit it is, so any live run refuses it (fail closed)."""
+    vault = _git_vault(tmp_path)
+    if marked_by == "wrapper":
+        live(vault, "scripts/claude-with-retry.sh")  # the runner was killed; its wrapper lives on
+    else:
+        pid = live(vault, "run-scout.sh")
+        _hold_lock(vault, pid, None if marked_by == "runner-no-marker" else f"{pid} morning-briefing\n")
+    scoutctl, _reason = _scenario(tmp_path, which)
+    proc = _run_in_vault(vault, scoutctl, **owner_env)
+    assert proc.returncode == 1
+    lines = [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")]
+    assert lines == [
+        UNAVAILABLE,
+        "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run.",
+    ]
+    assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
 
 
 def _dead_pid() -> int:
@@ -163,30 +208,18 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-@pytest.mark.parametrize("which", SCENARIOS)
-@pytest.mark.parametrize("owner_env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
-def test_a_live_runs_commit_is_refused_when_the_check_cant_run_whatever_its_env(
-    tmp_path, which: str, owner_env: dict[str, str]
-) -> None:
-    vault = _git_vault(tmp_path)
-    _hold_lock(vault, os.getpid(), f"{os.getpid()} morning-briefing\n")
-    scoutctl, _reason = _scenario(tmp_path, which)
-    proc = _run_in_vault(vault, scoutctl, **owner_env)
-    assert proc.returncode == 1
-    assert [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")] == [UNAVAILABLE]
-    assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
-
-
-@pytest.mark.parametrize("holder", ["dead", "other-holder", "bootstrap"])
-def test_a_marker_without_its_live_run_leaves_the_owner_commit_alone(tmp_path, holder: str) -> None:
+@pytest.mark.parametrize("holder", ["dead", "not-a-runner", "another-vaults-wrapper"])
+def test_no_live_run_leaves_the_owner_commit_alone(tmp_path, live, holder: str) -> None:
     vault = _git_vault(tmp_path)
     if holder == "dead":
         pid = _dead_pid()
         _hold_lock(vault, pid, f"{pid} morning-briefing\n")
-    elif holder == "other-holder":
-        _hold_lock(vault, os.getpid(), f"{_dead_pid()} morning-briefing\n")
+    elif holder == "not-a-runner":
+        _hold_lock(vault, os.getpid(), f"{os.getpid()} morning-briefing\n")  # e.g. scoutctl bootstrap, or a reused PID
     else:
-        _hold_lock(vault, os.getpid(), None)
+        other = tmp_path / "other"
+        other.mkdir()
+        live(other, "scripts/claude-with-retry.sh")
     proc = _run_in_vault(vault, str(tmp_path / "nope"))
     assert proc.returncode == 0 and "WARNING" in proc.stderr
 

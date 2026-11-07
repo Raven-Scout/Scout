@@ -1,18 +1,22 @@
-"""End to end: a scheduled run can't get the owner's commit rules by unsetting SCOUT_MODE (#595).
+"""End to end: a scheduled run can't get the owner's commit rules by hiding that it's a run (#595).
 
 A real runner (``run-*.sh`` with the real ``scout-lock.sh``) starts a "session"
 (``claude-with-retry.sh``, stubbed) in the privacy fixture vault, which has the
 real pre-commit hook installed. The session moves a note out of a local-only
 path, which a scheduled run may not do (#562), and commits it with
-``env -u SCOUT_MODE -u SCOUT_READER git commit`` and with ``SCOUT_MODE=``. The
-hook still refuses it: the runner holds the session lock and its run marker for
-the whole session. Once the run has ended, the owner's identical commit goes
-through.
+``env -u SCOUT_MODE -u SCOUT_READER git commit`` after one more step:
+
+- none, or blanking the variables instead of unsetting them;
+- deleting the run marker by a glob;
+- killing the runner holding the session lock (the session lives on);
+- double-forking the commit, so git is re-parented and has no run in its ancestry.
+
+The hook refuses every one, and the routes that break the lock leave a line in
+``failures.log``. Once the run has ended, the owner's identical commit goes through.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,18 +67,28 @@ def _render(tmpl: Path, out: Path, scout_dir: Path) -> Path:
     return _script(out, text)
 
 
-# The "session": two ways to commit the move with the run's env taken away. Each
-# result lands in the vault's .scout-cache/ (gitignored), with the marker it saw.
+COMMIT = 'env -u SCOUT_MODE -u SCOUT_READER git commit -q -m "move positions" >"$out/commit.out" 2>&1'
+ROUTES = {
+    "unset": COMMIT,
+    "blank": 'SCOUT_MODE= SCOUT_READER=owner git commit -q -m "move positions" >"$out/commit.out" 2>&1',
+    "rm-marker": f"rm -f .scout-logs/.*.run\n{COMMIT}",
+    "kill-holder": f'kill -9 "$(cat .scout-logs/.scout-sess*n.lock)"\nsleep 0.5\n{COMMIT}',
+    # The outer subshell exits at once, so git's parent is re-parented to init/launchd.
+    "double-fork": f'( ( {COMMIT}; echo $? >"$out/commit.rc" ) & )\n'
+    'for _ in $(seq 1 600); do [ -s "$out/commit.rc" ] && break; sleep 0.1; done',
+}
+
+# The "session". Its result lands in the vault's .scout-cache/ (gitignored),
+# with the marker it saw when it started.
 SESSION = """#!/bin/bash
 cd "$SCOUT_DATA_DIR" || exit 1
 out=.scout-cache/e2e
 mkdir -p "$out" notes
 cp .scout-logs/.scout-session.lock.run "$out/marker" 2>/dev/null || true
 git mv {positions} {moved}
-env -u SCOUT_MODE -u SCOUT_READER git commit -q -m "move positions" >"$out/unset.out" 2>&1
-echo $? >"$out/unset.rc"
-SCOUT_MODE= SCOUT_READER=owner git commit -q -m "move positions" >"$out/blank.out" 2>&1
-echo $? >"$out/blank.rc"
+{route}
+rc=$?
+[ -s "$out/commit.rc" ] || echo "$rc" >"$out/commit.rc"
 git reset -q --hard
 exit 0
 """
@@ -90,45 +104,86 @@ def vault(tmp_path: Path) -> Path:
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")  # the runner's own scoutctl calls
     _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
     _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
-    _script(v / "scripts" / "claude-with-retry.sh", SESSION.format(positions=POSITIONS, moved=MOVED))
     return v
 
 
-def _env() -> dict[str, str]:
-    env = {k: v for k, v in git_env().items() if not k.startswith("SCOUT_")}
-    return {**env, "SCOUT_FORCE_MODE": SLOT, "SCOUT_LOCK_POLL_SECS": "1", "SCOUT_LOCK_WAIT_SECS": "30"}
+def _clean_env() -> dict[str, str]:
+    return {k: v for k, v in git_env().items() if not k.startswith("SCOUT_")}
+
+
+def _run(vault: Path, runner: str, route: str) -> subprocess.CompletedProcess[str]:
+    session = SESSION.format(positions=POSITIONS, moved=MOVED, route=ROUTES[route])
+    _script(vault / "scripts" / "claude-with-retry.sh", session)
+    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    env = {**_clean_env(), "SCOUT_FORCE_MODE": SLOT, "SCOUT_LOCK_POLL_SECS": "1", "SCOUT_LOCK_WAIT_SECS": "30"}
+    return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=180)
 
 
 def _result(vault: Path, name: str) -> str:
     return (vault / ".scout-cache" / "e2e" / name).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("runner", ["run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"])
-def test_a_scheduled_runs_commit_with_its_env_taken_away_is_still_refused(vault: Path, runner: str) -> None:
-    head = git(vault, "rev-parse", "HEAD")
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
-    proc = subprocess.run([str(script)], env=_env(), capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 0, proc.stderr
+def _failures(vault: Path) -> str:
+    path = vault / ".scout-logs" / "failures.log"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
-    assert _result(vault, "marker").split()[1] == SLOT, "the runner holds a run marker during the session"
-    for how in ("unset", "blank"):
-        out = _result(vault, f"{how}.out")
-        assert _result(vault, f"{how}.rc").strip() != "0", out
-        assert "[privacy-widening]" in out and "local-only" in out
-        assert f"kb-lint: a scheduled run ({SLOT}) holds the session lock" in out
+
+def _assert_refused(vault: Path, head: str, mode: str = SLOT) -> None:
+    out = _result(vault, "commit.out")
+    assert _result(vault, "commit.rc").strip() != "0", out
+    assert "[privacy-widening]" in out and "local-only" in out
+    assert f"kb-lint: this commit comes from a scheduled run ({mode})" in out
     assert git(vault, "rev-parse", "HEAD") == head
-    assert not (vault / MARKER).exists(), "the runner removes its marker when it releases the lock"
 
-    # The run has ended: the owner's identical commit is the owner's again.
+
+def _assert_owner_commits(vault: Path) -> None:
+    """The run has ended: the owner's identical commit is the owner's again."""
     (vault / MOVED).parent.mkdir(parents=True, exist_ok=True)
     git(vault, "mv", POSITIONS, MOVED)
     owner = subprocess.run(
-        ["git", "commit", "-q", "-m", "move positions"],
-        cwd=vault,
-        env={k: v for k, v in git_env().items() if not k.startswith("SCOUT_")},
-        capture_output=True,
-        text=True,
+        ["git", "commit", "-q", "-m", "move positions"], cwd=vault, env=_clean_env(), capture_output=True, text=True
     )
     assert owner.returncode == 0, owner.stderr
-    assert "holds the session lock" not in owner.stderr
-    assert os.path.exists(vault / MOVED)
+    assert "comes from a scheduled run" not in owner.stderr
+    assert (vault / MOVED).exists()
+
+
+@pytest.mark.parametrize("runner", ["run-scout.sh.tmpl", "run-dreaming.sh.tmpl", "run-research.sh.tmpl"])
+@pytest.mark.parametrize("route", ["unset", "blank"])
+def test_a_runs_commit_with_its_env_taken_away_is_still_refused(vault: Path, runner: str, route: str) -> None:
+    head = git(vault, "rev-parse", "HEAD")
+    proc = _run(vault, runner, route)
+    assert proc.returncode == 0, proc.stderr
+    assert _result(vault, "marker").split()[1] == SLOT, "the runner holds a run marker during the session"
+    _assert_refused(vault, head)
+    assert not (vault / MARKER).exists(), "the runner removes its marker when it releases the lock"
+    assert _failures(vault) == "", "an untouched run leaves no tamper line"
+    _assert_owner_commits(vault)
+
+
+def test_deleting_the_marker_changes_nothing_and_is_logged_at_release(vault: Path) -> None:
+    head = git(vault, "rev-parse", "HEAD")
+    proc = _run(vault, "run-scout.sh.tmpl", "rm-marker")
+    assert proc.returncode == 0, proc.stderr
+    _assert_refused(vault, head, mode="scheduled")  # the marker only named the mode
+    assert "run marker" in _failures(vault) and SLOT in _failures(vault)
+    _assert_owner_commits(vault)
+
+
+def test_killing_the_runner_changes_nothing_and_the_next_run_logs_it(vault: Path) -> None:
+    head = git(vault, "rev-parse", "HEAD")
+    _run(vault, "run-scout.sh.tmpl", "kill-holder")  # killed: no exit code to check
+    _assert_refused(vault, head)
+    # The next run finds the dead holder's lock and says so.
+    proc = _run(vault, "run-scout.sh.tmpl", "blank")
+    assert proc.returncode == 0, proc.stderr
+    assert "died without releasing the session lock" in _failures(vault)
+    _assert_owner_commits(vault)
+
+
+def test_a_double_forked_commit_during_a_run_is_still_refused(vault: Path) -> None:
+    head = git(vault, "rev-parse", "HEAD")
+    proc = _run(vault, "run-scout.sh.tmpl", "double-fork")
+    assert proc.returncode == 0, proc.stderr
+    _assert_refused(vault, head)
+    _assert_owner_commits(vault)

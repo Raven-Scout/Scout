@@ -183,16 +183,23 @@ def test_a_search_outside_the_vault_is_allowed(vault, tmp_path):
         "SCOUT_MODE= SCOUT_READER=owner git commit -m notes",
         "unset SCOUT_MODE; scripts/git-safe-commit.sh notes notes/a.md",
         "env -i PATH=/usr/bin git commit -m notes",
-        "rm -f .scout-logs/.scout-session.lock.run",
     ],
 )
-def test_run_denies_a_command_that_changes_its_run_env_or_marker(vault, command):
+def test_run_denies_a_command_that_changes_its_run_env(vault, command):
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert "SCOUT_MODE" in reason and "owner" in reason
+    assert "lock" not in reason and "PID" not in reason
 
 
-def test_run_may_read_its_run_env(vault):
-    assert _decision(vault, "Bash", {"command": 'echo "$SCOUT_MODE ${SCOUT_READER:-}"'}) is None
+@pytest.mark.parametrize("command", ["nohup git commit -m x", "( git commit -m x & )", "osascript -e 'x'"])
+def test_run_denies_a_command_that_detaches(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "foreground" in reason
+
+
+@pytest.mark.parametrize("command", ['echo "$SCOUT_MODE ${SCOUT_READER:-}"', "printenv SCOUT_MODE", "env | grep SCOUT"])
+def test_run_may_read_its_run_env(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
 
 
 @pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
@@ -334,10 +341,23 @@ def test_run_grep_always_reaches_python(vault, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "command", ["env -u SCOUT_MODE git commit -m x", "env -i git commit -m x", "rm .scout-logs/.scout-session.lock.run"]
+    "command",
+    [
+        "env -u SCOUT_MODE git commit -m x",
+        "env -i git commit -m x",
+        "unset SCOUT_READER",
+        "nohup git commit -m x",
+        "git commit -m x &",
+        "(git commit -m x &)",
+        "setsid git commit",
+        "osascript -e x",
+        "open -a Terminal x.command",
+        "echo x | at now",
+        "tmux new -d x",
+    ],
 )
-def test_a_run_env_change_reaches_python_from_the_shell(vault, tmp_path, command):
-    # No KB word in the payload, so only the run-env patterns can send it to Python (here: missing, so exit 2).
+def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word in the payload, so only the run-escape patterns can send it to Python (here: missing, so exit 2).
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
@@ -348,3 +368,13 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0, res.stderr
     assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+)
+def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""

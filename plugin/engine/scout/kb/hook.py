@@ -6,9 +6,10 @@ line), or any exit other than 0 (pass) or 1 with a ``kb-lint:`` verdict, the
 hook prints ``kb-lint: privacy check could not run`` and then:
 
 - **a scheduled run's commit is refused** (``SCOUT_MODE`` set, or
-  ``SCOUT_READER`` set to anything but exactly ``owner``, or a live run holding
-  the session lock with its run marker, whatever the environment says:
-  ``scout.kb.live_run``, #595); the run's retry/park handling applies;
+  ``SCOUT_READER`` set to anything but exactly ``owner``); the run's
+  retry/park handling applies. So is any commit while a run of the vault is
+  live (its runner, ``claude-with-retry.sh`` or ``claude`` session in the
+  process table), since without scoutctl the hook can't tell whose it is (#595);
 - **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
   naming the problem and ``scoutctl bootstrap doctor``, and an audit row
   (``event: "privacy.check_unavailable"``, no content) appended to
@@ -58,25 +59,23 @@ vault_root() {{
   fi
 }}
 
-# A scheduled run's runner holds the session lock and writes its run marker
-# beside it (scripts/scout-lock.sh). While the lock's PID is alive and the
-# marker names it (or nothing parseable), the commit is the run's, whatever its
-# environment says (#595; scout.kb.live_run).
+# A run of this vault is live while its runner holds the session lock, or its
+# claude-with-retry.sh or claude session is alive (#595; scout.kb.live_run). Without
+# scoutctl the hook can't tell whose commit it is, so any live run refuses it.
 live_run() {{
   root="$(vault_root)" && [ -n "$root" ] || return 1
-  lock="$root/.scout-logs/.scout-session.lock"
-  [ -f "$lock.run" ] || return 1
-  pid="$(tr -d ' \\t\\r\\n' <"$lock" 2>/dev/null)"
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$pid" -gt 0 ] && {{ kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1; }} || return 1
-  run_pid="$(head -n 1 "$lock.run" 2>/dev/null)"
-  run_pid="${{run_pid%% *}}"
-  case "$run_pid" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$run_pid" -eq "$pid" ] 2>/dev/null
+  holder="$(tr -d ' \t\r\n' <"$root/.scout-logs/.scout-session.lock" 2>/dev/null)"
+  ps -A -w -w -o pid=,stat=,command= 2>/dev/null | awk -v root="$root" -v holder="$holder" '
+    $2 ~ /^Z/ {{ next }}
+    {{ cmd = $0; sub(/^ *[0-9]+ +[^ ]+ */, "", cmd) }}
+    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research)\\.sh( |$)/ {{ found = 1 }}
+    index(cmd, root "/scripts/claude-with-retry.sh") {{ found = 1 }}
+    index(cmd, "--max-budget-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}
+    END {{ exit !found }}'
 }}
 
 scheduled() {{
-  [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }} || live_run
+  [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }}
 }}
 
 audit_unavailable() {{
@@ -95,6 +94,10 @@ audit_unavailable() {{
 cannot_run() {{
   echo "kb-lint: privacy check could not run" >&2
   if scheduled; then
+    exit 1
+  fi
+  if live_run; then
+    echo "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run." >&2
     exit 1
   fi
   echo "kb-lint: WARNING: the privacy check could not run ($1); this commit was NOT checked" \\

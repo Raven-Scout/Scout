@@ -826,40 +826,42 @@ def is_scheduled(env: Mapping[str, str]) -> bool:
 
 
 def _with_live_run(repo: Path, env: Mapping[str, str], out: TextIO) -> Mapping[str, str]:
-    """``env``, or the live run's when a scheduled run holds the session lock and ``env`` says owner (#595).
+    """``env``, or a scheduled run's when the commit comes from a live run whatever ``env`` says (#595).
 
-    The run can unset or blank ``SCOUT_MODE`` for one ``git commit``, but not
-    the lock its runner holds (:mod:`scout.kb.live_run`), so the commit is
-    checked as the run's and the event ``kb_lint.scheduled_by_lock`` leaves a
-    trace. An owner's commit during a run gets the run's rules too, and the
-    line printed here says why.
+    A run can unset or blank ``SCOUT_MODE`` for one ``git commit``, but not the
+    processes it runs in (:mod:`scout.kb.live_run`): a commit whose ancestry
+    passes through the run, or one detached from it while it is live, is
+    checked as the run's, and the event ``kb_lint.scheduled_by_process`` leaves
+    a trace. The owner's commit from their own terminal or app during a run
+    keeps the owner's rules, with a one-line notice.
     """
     if is_scheduled(env):
         return env
-    from scout.kb.live_run import live_run
+    from scout.kb.live_run import commit_source_now
 
     root = main_root(repo)
-    run = live_run(root)
-    if run is None:
+    src = commit_source_now(root)
+    if src is None:
         return env
-    _say(
-        out,
-        f"kb-lint: a scheduled run ({run.mode}) holds the session lock (PID {run.pid}), so this commit is "
-        "checked as that run's, whatever SCOUT_MODE and SCOUT_READER say. If you are the owner, commit "
-        "again once the run has ended.",
-    )
+    if not src.runs:
+        _say(
+            out,
+            "kb-lint: a scheduled run is in progress; this commit comes from your own session, so your rules apply.",
+        )
+        return env
+    _say(out, f"kb-lint: this commit comes from a scheduled run ({src.mode}), so the scheduled-run checks apply.")
     try:
         from scout.events import append_event
 
         append_event(
             paths.logs_dir(root),
-            kind="kb_lint.scheduled_by_lock",
+            kind="kb_lint.scheduled_by_process",
             source="hook:kb-lint",
-            payload={"mode": run.mode, "pid": run.pid},
+            payload={"mode": src.mode, "by": src.by},
         )
     except Exception:  # noqa: BLE001, S110 - the verdict stands without the event
         pass
-    return {**env, "SCOUT_MODE": run.mode, "SCOUT_READER": "autonomous"}
+    return {**env, "SCOUT_MODE": src.mode, "SCOUT_READER": "autonomous"}
 
 
 def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
