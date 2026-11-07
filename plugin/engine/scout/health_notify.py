@@ -33,7 +33,9 @@ STATE_FILE = ".scout-state/health-notify.json"
 LOCK_FILE = ".scout-state/health-notify.lock"
 REMIND_AFTER = timedelta(hours=24)
 # A sign-in failure blocks every run and only a person can fix it, so a missed
-# first alert is reminded within hours, not a day. The desktop channel defers to
+# first alert is reminded within hours, not a day, while scheduled runs keep
+# failing on it. With no failed run since the last push (signed in again, waiting
+# for the next slot) it falls back to REMIND_AFTER. The desktop channel defers to
 # the wrapper's own (daily) banner only for this long, so the reminder reaches a
 # desktop-only vault too.
 AUTH_REMIND_AFTER = timedelta(hours=2)
@@ -67,9 +69,13 @@ def _result(channel: str, ok: bool, detail: str) -> ChannelResult:
 # ----- desktop ----------------------------------------------------------
 
 
+def _wrapper_alert_marker(vault: Path) -> Path:
+    return vault / ".scout-logs" / ".auth-alert-sent"
+
+
 def _wrapper_alert_age_s(vault: Path, now: datetime) -> float | None:
-    """Seconds since the launch wrapper last sent its own auth alert, if ever."""
-    marker = vault / ".scout-logs" / ".auth-alert-sent"
+    """Seconds since the last desktop auth alert (the wrapper's or ours), if ever."""
+    marker = _wrapper_alert_marker(vault)
     try:
         text = marker.read_text(encoding="utf-8").strip()
         stamp = float(text) if text.isdigit() else marker.stat().st_mtime
@@ -79,13 +85,21 @@ def _wrapper_alert_age_s(vault: Path, now: datetime) -> float | None:
 
 
 def desktop_channel(push: Push, *, vault: Path, now: datetime, send: Callable | None = None) -> ChannelResult | None:
-    """Desktop notification; skipped when it is only about auth and the wrapper alerted today."""
-    if (push.finding_ids or (push.finding_id,)) == (AUTH_FINDING_ID,):
+    """Desktop notification; skipped when it is only about auth and a desktop auth
+    alert went out in the last AUTH_ALERT_WINDOW_S. A sent auth push stamps the
+    wrapper's marker, so the wrapper's daily banner doesn't double it."""
+    ids = push.finding_ids or (push.finding_id,)
+    if ids == (AUTH_FINDING_ID,):
         age = _wrapper_alert_age_s(vault, now)
         if age is not None and 0 <= age < AUTH_ALERT_WINDOW_S:
             return None
     send = send or notify_desktop.send
     if send(push.title, push.body):
+        if AUTH_FINDING_ID in ids:
+            try:
+                _wrapper_alert_marker(vault).write_text(str(int(now.timestamp())), encoding="utf-8")
+            except OSError:
+                pass  # best-effort: the wrapper may alert again, as before
         return _result("desktop", True, "sent")
     return _result("desktop", False, "unavailable or failed")
 
@@ -240,6 +254,20 @@ def _notify_key(finding_id: str) -> str:
     return finding_id
 
 
+def _run_failed_since(report: RunHealth, since: datetime) -> bool:
+    """A scheduled run failed after ``since``: fresh evidence, not just a standing finding."""
+    return any(
+        s.last_outcome is not None and s.last_outcome.outcome == "failed" and s.last_outcome.finished_at > since
+        for s in report.slots
+    )
+
+
+def _remind_after(key: str, report: RunHealth, last_pushed: datetime) -> timedelta:
+    if key == AUTH_FINDING_ID and _run_failed_since(report, last_pushed):
+        return AUTH_REMIND_AFTER
+    return REMIND_AFTER
+
+
 def _graced(finding_id: str) -> bool:
     return finding_id.startswith(GRACED_PREFIXES)
 
@@ -308,7 +336,7 @@ def plan(report: RunHealth, state: dict, *, now: datetime) -> tuple[list[Push], 
         if last_pushed is None:
             any_new = True
             listed.append((key, f, None))
-        elif now - last_pushed >= (AUTH_REMIND_AFTER if key == AUTH_FINDING_ID else REMIND_AFTER):
+        elif now - last_pushed >= _remind_after(key, report, last_pushed):
             listed.append((key, f, _elapsed_words(now - (f.since or first_seen))))
     pushes: list[Push] = []
     if listed:
