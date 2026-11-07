@@ -81,7 +81,8 @@ FAILURE_LINE_RES: dict[str, tuple[re.Pattern[str], ...]] = {
     "network": (
         re.compile(
             r"ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up"
-            r"|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response",
+            r"|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response"
+            r"|FailedToOpenSocket",
             re.IGNORECASE,
         ),
     ),
