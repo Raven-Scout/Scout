@@ -72,21 +72,29 @@ GIT_LOCK_RE='index\.lock|HEAD\.lock'
 # were labelled `unknown`. `limit.{0,20}resets` keys on the self-declared reset rather than
 # the wording, so a rewording ("weekly limit", "5-hour limit") still matches.
 RATE_LIMIT_RE='rate.?limit|too many requests|API Error: 429|overloaded|usage limit|session limit|hit your .{0,20}limit|limit.{0,20}resets'
-BUDGET_RE='Exceeded USD budget'
+# claude's own cap message, and the line `scoutctl budget record-attempt` writes when
+# claude-with-retry.sh withholds a retry because the run's budget is spent (#561).
+BUDGET_RE='Exceeded USD budget|budget spent.{0,8}no retry'
 
 # classify_failure <log_file> <exit_code> — name the failure class, so a streak
 # of failures reads as "three auth expiries and a network blip" rather than
 # "four runs produced nothing".
+#
+# Budget is judged first, on the last attempt's output only (after the retry
+# wrapper's last `=== Claude retry attempt` banner): a retry that hit the reduced
+# cap it was given, or was withheld for budget, still has the first attempt's
+# network error in the tail, but the budget is what ended the run.
 classify_failure() {
-    local log="$1" code="$2" tail_txt
+    local log="$1" code="$2" tail_txt last_txt
     [ "$code" -eq 0 ] && { echo "ok"; return; }
     [ -f "$log" ] || { echo "unknown"; return; }
     tail_txt="$(tail -c 20000 "$log" 2>/dev/null || true)"
-    if grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
+    last_txt="$(awk '/^=== Claude retry attempt /{buf=""; next} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$tail_txt" 2>/dev/null || true)"
+    if grep -qiE "$BUDGET_RE" <<<"$last_txt"; then echo "budget"
+    elif grep -qE "$AUTH_RE" <<<"$tail_txt"; then echo "oauth_expired"
     elif grep -qiE "$NETWORK_RE" <<<"$tail_txt"; then echo "network"
     elif grep -qiE "$GIT_LOCK_RE" <<<"$tail_txt"; then echo "git_lock"
     elif grep -qiE "$RATE_LIMIT_RE" <<<"$tail_txt"; then echo "rate_limited"
-    elif grep -qiE "$BUDGET_RE" <<<"$tail_txt"; then echo "budget"
     else echo "unknown"
     fi
 }

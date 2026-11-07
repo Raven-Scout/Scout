@@ -12,7 +12,13 @@ path, no ``exclude`` glob does, the path is not a log file (``log_globs``)
 when ``exclude_logs`` is true, and ``checks`` (if given) names the finding's
 check. A path no rule matches gets the global ``mode``. So a narrow rule goes
 before a broad one, and an excluded path falls through to the next rule.
+A rule's ``glob`` and ``exclude`` may also use ``{folder}`` (:func:`rule_glob_match`),
+so ``knowledge-base/projects/*/{folder}.md`` is every project's front page and nothing else.
 Privacy findings block whatever the mode (:data:`PRIVACY_BLOCKING`).
+
+A ``scout-config.yaml`` that doesn't load at all is the exception: nothing says
+which paths its ``kb_lint`` blocked, so every check a mode decides blocks
+until the file loads again (:attr:`LintConfig.config_problem`, #567).
 
 A bad mode value means ``report``, never ``block``, so a config mistake can
 silently turn enforcement off. :attr:`LintConfig.warnings` names each mistake:
@@ -33,7 +39,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scout.config import load_config, user_value
+from scout.config import config_load_problem, load_config, user_value
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -41,7 +47,7 @@ _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
 # Checks that report until a `path_modes` rule names them in `checks:`. A vault's
 # `mode: block` or a rule with no `checks:` was written before they existed, so
 # neither makes them block: every page starts out in debt to the page standard.
-REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration"})
+REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration", "page-bullet"})
 # Every check id `kb lint` reports. A new check registers its id here, and
 # test_every_finding_uses_a_known_check_id fails until it does.
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
@@ -178,6 +184,42 @@ def any_match(globs: tuple[str, ...], rel: str) -> bool:
     return any(glob_match(g, rel) for g in globs)
 
 
+FOLDER_TOKEN = "{folder}"
+
+
+def folder_problem(glob: str) -> str | None:
+    """What's wrong with ``glob``'s ``{folder}``, or None when it's usable or absent."""
+    if FOLDER_TOKEN not in glob:
+        return None
+    head, sep, last = glob.rpartition("/")
+    before, _, after = last.partition(FOLDER_TOKEN)
+    if sep and FOLDER_TOKEN not in head + after and not any(c in before + after for c in "*?"):
+        return None
+    return f"uses {FOLDER_TOKEN} in {glob!r}, which works only once, in the last segment, beside plain text"
+
+
+def rule_glob_match(glob: str, rel: str) -> bool:
+    """:func:`glob_match`, plus ``{folder}``: the name of the folder the file is in.
+
+    Only ``path_modes`` reads it. Every other glob goes through :func:`glob_match`,
+    whose language privacy, sync and the Agnes indexer share, and there ``{`` is
+    itself. ``{folder}`` is a back-reference, which no glob automaton can carry, so
+    it is allowed only where it needs none: once, in the last segment, with no
+    wildcard beside it. Then the file name is fixed by the path, and the rest is the
+    glob with ``*`` in its place. One string comparison, and nothing is ever retried.
+    """
+    if FOLDER_TOKEN not in glob:
+        return glob_match(glob, rel)
+    if folder_problem(glob) is not None:
+        return False  # the loader drops such a rule; this keeps the function total
+    rel = rel.removesuffix("\n")  # optional, as in glob_match
+    head, _, last = glob.rpartition("/")
+    before, _, after = last.partition(FOLDER_TOKEN)
+    parent, _, name = rel.rpartition("/")
+    folder = parent.rpartition("/")[2]
+    return bool(folder) and name == f"{before}{folder}{after}" and glob_match(f"{head}/{before}*{after}", rel)
+
+
 CONFIG_FILE = "scout-config.yaml"
 
 
@@ -231,17 +273,21 @@ class LintConfig:
     path_modes: tuple[PathMode, ...] = ()
     # Config mistakes, for the person: what was wrong and what happens instead.
     warnings: tuple[str, ...] = ()
+    # Why scout-config.yaml doesn't load (``config_load_problem``); while set, every check blocks.
+    config_problem: str | None = None
 
     def mode_for(self, rel: str, check: str) -> str:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
         matching ``path_modes`` rule's, else the global ``mode``. A
         :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
-        otherwise reports."""
+        otherwise reports. ``block`` for every check while the config doesn't load."""
+        if self.config_problem is not None:
+            return "block"
         named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
             if (r.checks or named_only) and check not in r.checks:
                 continue
-            if not glob_match(r.glob, rel) or any_match(r.exclude, rel):
+            if not rule_glob_match(r.glob, rel) or any(rule_glob_match(g, rel) for g in r.exclude):
                 continue
             if r.exclude_logs and self.is_log(rel):
                 continue
@@ -251,6 +297,8 @@ class LintConfig:
     @property
     def mode_label(self) -> str:
         """The mode for display: ``report``/``block``, plus ``per path`` when rules exist."""
+        if self.config_problem is not None:
+            return f"block, {CONFIG_FILE} unusable"
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
@@ -283,7 +331,7 @@ class LintConfig:
         return [
             f"path_modes rule for {r.glob!r} matches no file kb-lint checks, so it does nothing"
             for r in self.path_modes
-            if not any(glob_match(r.glob, rel) for rel in linted)
+            if not any(rule_glob_match(r.glob, rel) for rel in linted)
         ]
 
 
@@ -355,6 +403,10 @@ def _path_mode(d: Any, where: str, warn: Warn) -> PathMode | None:
     if exclude is None:
         warn(f"{where} has exclude {raw_exclude!r}, not a list of globs, so the rule is dropped")
         return None
+    for g in (glob, *exclude):
+        if (problem := folder_problem(g)) is not None:
+            warn(f"{where} {problem}, so the rule is dropped")
+            return None
     exclude_logs = d.get("exclude_logs", False)
     if not isinstance(exclude_logs, bool):
         warn(f"{where} has exclude_logs {exclude_logs!r}, not true or false, so the rule is dropped")
@@ -409,7 +461,17 @@ def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) ->
         warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
 
 
+def _fail_closed(cfg: LintConfig, problem: str) -> LintConfig:
+    """``cfg`` (the packaged defaults) with every check blocking, and one line saying why."""
+    warning = (
+        f"{CONFIG_FILE} could not be used ({problem}), so its kb_lint and kb_budgets settings are not "
+        "applied and every size, line, diary and page check blocks until it is fixed"
+    )
+    return dataclasses.replace(cfg, mode="block", config_problem=problem, warnings=(warning, *cfg.warnings))
+
+
 def load_lint_config(data_dir: Path | None = None) -> LintConfig:
+    problem = config_load_problem(data_dir)
     cfg = load_config(data_dir)
     raw = cfg.get("kb_lint") or {}
     if not isinstance(raw, dict):
@@ -431,4 +493,5 @@ def load_lint_config(data_dir: Path | None = None) -> LintConfig:
         topic_globs=_globs(raw, "topic_globs"),
         report_exclude_globs=_globs(raw, "report_exclude_globs"),
     )
-    return dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    lint_cfg = dataclasses.replace(lint_cfg, warnings=tuple(warnings))
+    return lint_cfg if problem is None else _fail_closed(lint_cfg, problem)

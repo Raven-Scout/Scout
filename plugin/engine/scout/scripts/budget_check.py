@@ -199,7 +199,7 @@ def load_config(config_path: Path) -> BudgetConfig:
     return load_config_with_source(config_path)[0]
 
 
-def _iter_tracker_rows(tracker_path: Path) -> Iterable[dict]:
+def iter_tracker_rows(tracker_path: Path) -> Iterable[dict]:
     """Yield decoded JSON rows from the tracker; skip malformed lines silently."""
     try:
         with tracker_path.open("r", encoding="utf-8") as f:
@@ -226,9 +226,35 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
-def _measured_runs(rows: list[tuple[datetime, dict]]) -> list[tuple[datetime, datetime]]:
-    """The (start, end) of each run whose runner row holds claude's own figure (scout.scripts.run_cost)."""
-    spans: list[tuple[datetime, datetime]] = []
+def _row_ts(row: dict) -> datetime | None:
+    ts = _parse_ts(row.get("ts"))
+    if ts is not None and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts
+
+
+def _session_id(row: dict) -> str | None:
+    sid = row.get("session_id")
+    return sid if isinstance(sid, str) and sid else None
+
+
+def _spent(row: dict) -> float:
+    try:
+        return float(row.get("budget_spent", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@dataclass(frozen=True)
+class _MeasuredRun:
+    start: datetime
+    end: datetime
+    sessions: frozenset[str] | None  # None: a runner row from before rows listed them
+
+
+def _measured_runs(rows: list[tuple[datetime, dict]]) -> list[_MeasuredRun]:
+    """Each run whose runner row was priced from its transcripts (scout.scripts.run_cost)."""
+    runs: list[_MeasuredRun] = []
     for ts, row in rows:
         if row.get("source") != "runner" or row.get("cost_source") != "transcript":
             continue
@@ -237,28 +263,66 @@ def _measured_runs(rows: list[tuple[datetime, dict]]) -> list[tuple[datetime, da
             continue
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
-        spans.append((started, ts))
-    return spans
+        listed = row.get("sessions")
+        sessions = frozenset(s for s in listed if isinstance(s, str)) if isinstance(listed, list) else None
+        runs.append(_MeasuredRun(started, ts, sessions))
+    return runs
 
 
 def _window_cost(rows: list[tuple[datetime, dict]]) -> float:
-    """Sum ``budget_spent`` over the window's rows, counting a measured run once.
+    """Sum ``budget_spent`` over the window's rows, counting each session once.
 
-    A runner row with ``cost_source: "transcript"`` is what the run cost by
-    claude's figure, retry attempts included. A ``source: "session"`` row
-    written during that run is the session's own report of the same spend
-    ($0, or a guess), so it is left out rather than added on top.
+    - A runner row priced from the transcripts (``cost_source: "transcript"``) is
+      what its run cost, every attempt included. It lists the ``sessions`` it
+      measured, and any other row for one of them is left out. A ``source:
+      "session"`` row with no id written during that run (or during an older
+      runner row's run, which lists none) is left out too: it is the session's
+      own report of the same spend, $0 or a guess.
+    - Otherwise rows that share a ``session_id`` are one session's running total
+      reported more than once (#560): a ``session`` row written twice, an
+      ``attempt`` row from claude-with-retry.sh. They count as their largest.
+      ``session-tokens`` rows are deltas of that total, so they are summed, and a
+      session with both kinds counts the larger figure: a $0 ``session`` row must
+      not erase what the deltas measured.
+    - Rows with no ``session_id`` each count, as before.
     """
-    spans = _measured_runs(rows)
+    runs = _measured_runs(rows)
+    claimed: set[str] = set()
+    for run in runs:
+        claimed |= run.sessions or set()
     total = 0.0
+    largest: dict[str, float] = {}
+    deltas: dict[str, float] = {}
     for ts, row in rows:
-        if row.get("source") == "session" and any(start <= ts <= end for start, end in spans):
+        source = row.get("source")
+        sid = _session_id(row) if source != "runner" else None
+        if sid is not None and sid in claimed:
             continue
-        try:
-            total += float(row.get("budget_spent", 0) or 0)
-        except (TypeError, ValueError):
-            pass
+        if source == "session" and any(
+            run.start <= ts <= run.end and (sid is None or run.sessions is None) for run in runs
+        ):
+            continue
+        spent = _spent(row)
+        if sid is None:
+            total += spent
+        elif source == "session-tokens":
+            deltas[sid] = deltas.get(sid, 0.0) + spent
+        else:
+            largest[sid] = max(largest.get(sid, 0.0), spent)
+    for sid in largest.keys() | deltas.keys():
+        total += max(largest.get(sid, 0.0), deltas.get(sid, 0.0))
     return total
+
+
+def window_cost(tracker_path: Path, config: BudgetConfig, *, now: datetime | None = None) -> float:
+    """What the rows in the window ending *now* cost, as :func:`decide` counts it."""
+    window_start = (now or datetime.now(UTC)) - timedelta(hours=config.window_hours)
+    rows = []
+    for row in iter_tracker_rows(tracker_path):
+        ts = _row_ts(row)
+        if ts is not None and ts >= window_start:
+            rows.append((ts, row))
+    return _window_cost(rows)
 
 
 def decide(
@@ -289,12 +353,10 @@ def decide(
     limit_lifts_at: datetime | None = None
     in_window: list[tuple[datetime, dict]] = []
 
-    for row in _iter_tracker_rows(tracker_path):
-        ts = _parse_ts(row.get("ts"))
+    for row in iter_tracker_rows(tracker_path):
+        ts = _row_ts(row)
         if ts is None:
             continue
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
 
         if row.get("type") == "rate_limit":
             # A usage limit that named its reset (#407) is waited out exactly:
@@ -402,7 +464,9 @@ __all__ = [
     "BudgetConfig",
     "BudgetDecision",
     "decide",
+    "iter_tracker_rows",
     "load_config",
     "load_config_with_source",
     "run",
+    "window_cost",
 ]
