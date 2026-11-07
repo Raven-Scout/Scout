@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer add to a non-note file in a shared folder** (#594; `engine/scout/kb/lint_privacy.py`, `engine/scout/kb/git_io.py`, `phases/core/privacy.md`). A `privacy.federation_defaults` entry shares every file under its folder, and a `.csv`, `.xlsx`, `.html` or extensionless file uploads with the folder, but `kb lint` checked only `.md` notes there, so a run could append a row to a shared `.csv` and #569's check never saw it. In a scheduled run such a file now gets a shared note's guard, as `privacy-widening`: an added or reworded line in a file shared at HEAD and in the commit blocks, and so does a move into a share or to a wider one (#586); removing or reordering lines, and moving the file out of the share, don't. Text is compared line by line. A file that isn't UTF-8 text (a NUL in its first 8,000 bytes, as git tests, or bad UTF-8) blocks on any byte change, and the message says kb lint can't tell what it holds. A file new to a share has its lines checked for private notes, as a new shared note's are; a new one that isn't text blocks, since it can't be checked. An edit to a file already shared blocks on its first new line without that scan, so a 100,000-row `.csv` costs a line diff, not a scan. Owner commits are unchanged: non-note files outside `shared_files` still aren't checked for private notes, since a data export naming a project is the owner's call and Agnes serves readers only `.md`. A vault with sharing off is unchanged. Labels, the privacy corpus and `CLASSIFIER_VERSION` are unchanged.
+
 ## [0.18.10] - 2026-11-07
 
 ### Added
