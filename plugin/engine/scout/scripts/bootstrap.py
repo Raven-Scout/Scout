@@ -1016,16 +1016,123 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
 
 
+def _dump_at(value: dict, indent: int) -> str:
+    """``yaml.safe_dump(value)`` with every non-blank line shifted right by ``indent`` spaces."""
+    dumped = yaml.safe_dump(value, sort_keys=False)
+    return "".join(" " * indent + line if line.strip() else line for line in dumped.splitlines(keepends=True))
+
+
+def _same_value(a: object, b: object) -> bool:
+    """``a == b`` for parsed YAML, but type-strict all the way down.
+
+    Python's ``1 == True`` and ``1.0 == 1`` would let ``enabled: 1`` pass for
+    ``enabled: true``, and readers such as the privacy overlay take only a real
+    bool. Raises ``RecursionError`` on a cyclic alias, like ``==`` does.
+    """
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        assert isinstance(b, dict)
+        return len(a) == len(b) and all(k in b and _same_value(v, b[k]) for k, v in a.items())
+    if isinstance(a, list):
+        assert isinstance(b, list)
+        return len(a) == len(b) and all(_same_value(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
+def _loads_back(text: str, value: object) -> bool:
+    try:
+        return _same_value(yaml.safe_load(text), value)
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def _rewrite_block(key: str, block: list[str], old: object, new: object, indent: int) -> str:
+    """The changed ``key`` block (its key line + body, at ``indent``) rewritten to hold ``new``.
+
+    When both values are mappings and ``block`` is block-style (a bare ``key:``
+    line, a trailing comment allowed), its children are rebuilt like the top
+    level: unchanged ones byte for byte, changed ones recursed into or
+    re-dumped. Otherwise, or when that rebuild does not load back as
+    ``{key: new}``, the whole block is re-dumped -- losing only its own comments.
+    So is a mapping with a non-string key (``1:``, YAML 1.1's ``on:``):
+    ``split_blocks`` names keys by ``str()``, which wouldn't match it.
+    """
+    plain = _dump_at({key: new}, indent)
+    if not (isinstance(old, dict) and isinstance(new, dict)) or len(block) < 2:
+        return plain
+    if not all(isinstance(k, str) for k in (*old, *new)):
+        return plain
+    head, body = block[0], block[1:]
+    try:
+        bare = yaml.safe_load(head[indent:]) == {key: None}
+    except yaml.YAMLError:
+        bare = False
+    content = (line for line in body if line.strip() and not line.lstrip().startswith("#"))
+    child = next((len(line) - len(line.lstrip(" ")) for line in content), None)
+    if not bare or child is None or child <= indent:
+        return plain
+    split = yaml_blocks.split_blocks("".join(body), indent=child)
+    if split is None:
+        return plain
+    _header, segments, trailer = split
+    rebuilt = head + "".join(_rebuild_mapping(segments, trailer, old, new, indent=child))
+    return rebuilt if _loads_back(rebuilt, {key: new}) else plain
+
+
+def _rebuild_mapping(
+    segments: list[yaml_blocks.Segment], trailer: list[str], original: dict, data: dict, *, indent: int
+) -> list[str]:
+    """The lines of a mapping at ``indent`` holding ``data``, rebuilt over the split of its ``original`` text."""
+    # See custom_connectors._rebuild_entries for what `prev_block_text`/
+    # `prev_intact` track and why: a `leading` run is only safe to emit
+    # verbatim when the thing right before it in `out` is still what it
+    # originally followed in `text`. A removed key's own `leading` is kept
+    # here (unlike custom_connectors, which drops it with the key) -- that's
+    # this function's existing, tested behavior -- but it still needs the
+    # same boundary check once something *else* has already changed.
+    out: list[str] = []
+    prev_block_text = ""
+    prev_intact = True
+    for key, leading, block in segments:
+        out += leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=indent)
+        if key not in data:
+            prev_intact = False
+            continue
+        try:
+            unchanged = key in original and _same_value(original[key], data[key])
+        except RecursionError:
+            unchanged = False  # a cyclic alias equality can't decide -- treat as changed
+        block_text = "".join(block) if unchanged else _rewrite_block(key, block, original.get(key), data[key], indent)
+        out.append(block_text)
+        prev_block_text = block_text
+        prev_intact = unchanged
+    added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
+    if added:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        added_text = _dump_at(added, indent)
+        out.append(added_text)
+        prev_block_text = added_text
+        prev_intact = False
+    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=indent)
+    return out
+
+
 def _dump_keeping_comments(text: str, data: dict) -> str:
     """``yaml.safe_dump(data)``, but written over ``text`` so its comments survive.
 
     Each top-level block whose value is unchanged comes back byte-for-byte, with
-    every comment inside it. A changed block is re-dumped under its original
-    leading comments; comments inside a changed block are lost. New keys are
-    appended at the end. Falls back to a plain dump whenever the text cannot be
-    split safely, or the result would not load back as ``data``, and then warns
-    on stderr if that loses comments. Splitting itself is shared with
-    ``custom_connectors.write`` — see ``yaml_blocks.split_blocks``.
+    every comment inside it. A changed block-style mapping is rebuilt the same
+    way one level down, and so on (see ``_rewrite_block``): only the keys that
+    changed are re-dumped, so ``kb share`` setting ``privacy.federation.enabled``
+    keeps every other line of ``privacy:``. Any other changed block is re-dumped
+    under its original leading comments, losing the comments inside it. New keys
+    are appended at the end of their mapping. Falls back to a plain dump
+    whenever the text cannot be split safely, or the result would not load back
+    as ``data``, and then warns on stderr if that loses comments. Splitting
+    itself is shared with ``custom_connectors.write`` — see
+    ``yaml_blocks.split_blocks``.
     """
     plain = yaml.safe_dump(data, sort_keys=False)
 
@@ -1043,46 +1150,13 @@ def _dump_keeping_comments(text: str, data: dict) -> str:
         return fallback("its layout cannot be rewritten block by block")
     _header, segments, trailer = split
 
-    # See custom_connectors._rebuild_entries for what `prev_block_text`/
-    # `prev_intact` track and why: a `leading` run is only safe to emit
-    # verbatim when the thing right before it in `out` is still what it
-    # originally followed in `text`. A removed key's own `leading` is kept
-    # here (unlike custom_connectors, which drops it with the key) -- that's
-    # this function's existing, tested behavior -- but it still needs the
-    # same boundary check once something *else* has already changed.
-    out: list[str] = []
-    prev_block_text = ""
-    prev_intact = True
-    for key, leading, block in segments:
-        out += leading if prev_intact else yaml_blocks.fit_leading(prev_block_text, leading, indent=0)
-        if key not in data:
-            prev_intact = False
-            continue
-        try:
-            unchanged = key in original and original[key] == data[key]
-        except RecursionError:
-            unchanged = False  # a cyclic alias equality can't decide -- treat as changed
-        block_text = "".join(block) if unchanged else yaml.safe_dump({key: data[key]}, sort_keys=False)
-        out.append(block_text)
-        prev_block_text = block_text
-        prev_intact = unchanged
-    added = {key: value for key, value in data.items() if key not in {k for k, _, _ in segments}}
-    if added:
-        if out and not out[-1].endswith("\n"):
-            out.append("\n")
-        added_text = yaml.safe_dump(added, sort_keys=False)
-        out.append(added_text)
-        prev_block_text = added_text
-        prev_intact = False
-    out += trailer if prev_intact else yaml_blocks.fit_leading(prev_block_text, trailer, indent=0)
-
-    result = "".join(out)
+    result = "".join(_rebuild_mapping(segments, trailer, original, data, indent=0))
     try:
         loaded = yaml.safe_load(result)
     except yaml.YAMLError:
         return fallback("the block-wise rewrite did not parse")
     try:
-        mismatch = loaded != data
+        mismatch = not _same_value(loaded, data)
     except RecursionError:
         mismatch = True
     if mismatch:
