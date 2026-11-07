@@ -11,11 +11,12 @@ case lists only the files a run changed or added, as vault-relative paths; every
 | `placeholder` | Left `_None right now._` in the emptied Open questions section | nothing |
 | `lazy-wrap` | Rewrote a bullet with its second line unindented (a lazy continuation) | nothing |
 | `meeting-cite` | Filed the row cap with a link to the meeting's own note under `knowledge-base/meetings/` | nothing |
+| `status-front` | Filed PROJ-1240's close only as a cited "Where it stands" bullet, as real runs do; the decision behind it is already a decisions row | nothing |
 | `narrated` | Left the page as it was and added an update paragraph with narration (+243 bytes) | structure, narration |
 | `bullet-diary` | Added the run's update as a dated bullet ("… update: checked gh … this morning") | narration |
 | `grown` | Kept every new detail on the front page as extra bullets and rows (+996 bytes, 7 bullets) | growth, bullets |
 | `long-bullet` | Rewrote one "Where it stands" bullet in place past the 300-char cap | bullets |
 | `uncited` | Filed the facts in `knowledge/` with no source links | facts |
 | `dangling-cite` | Filed the row cap with a link to a source note that was never written | facts |
-| `negated` | Filed "is not merged yet" and "isn't done", with the right links | facts |
+| `negated` | Filed "is not merged yet" and "isn't done", with the right links, and "isn't retired yet" on the front page | facts |
 | `broken` | Also put an updates file at the top of the project folder | structure |

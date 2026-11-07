@@ -248,6 +248,26 @@ def test_facts_written_as_their_negation_have_not_landed(tmp_path: Path, scenari
     assert {d.split(":", 1)[0] for d in failing["kb_facts_cited"]} == {"pr-57-merged", "proj-1240-done"}
 
 
+def test_a_ticket_closed_on_the_front_page_only_passes(tmp_path: Path, scenario) -> None:
+    """The shape real runs write: PROJ-1240's close is a rewritten, cited "Where it stands" bullet,
+    and no knowledge/ note repeats it, because the decision behind it is already a decisions row."""
+    results = {c.name: c for c in score_kb(_snapshot(tmp_path, "good", "status-front"), spec_for(scenario))}
+    assert {n: c.passed for n, c in results.items()} == dict.fromkeys(KB_CHECKS, True)
+    assert (
+        "proj-1240-done: front page (status; decision in "
+        f"{PROJECT}/knowledge/report-builder-decisions.md)" in results["kb_facts_cited"].details
+    )
+
+
+def test_the_scenarios_status_decision_matches_the_fixtures_decisions_row(scenario) -> None:
+    [fact] = [f for f in scenario.expected_kb_facts if f.id == "proj-1240-done"]
+    assert fact.status_decision
+    note = (SCENARIO / "vault" / PROJECT / "knowledge" / "report-builder-decisions.md").read_text(encoding="utf-8")
+    rows = [b for _k, b in blocks(note) if all(p.search(b) for p in fact.status_decision)]
+    assert len(rows) == 1 and "Exports run on demand, not on a nightly schedule" in rows[0]
+    assert all(not f.status_decision for f in scenario.expected_kb_facts if f.id != "proj-1240-done")
+
+
 def test_the_fixture_vault_runs_the_front_page_lock_with_its_hook(tmp_path: Path, scenario) -> None:
     """The gate tests the config a live vault runs: #597's FRONT_PAGE_LOCK, enforced by the
     kb-lint pre-commit hook. The block must stay the one test_kb_lint_front_pages pins."""
@@ -361,6 +381,84 @@ def test_a_negated_fact_has_not_landed() -> None:
     assert kb_facts_cited({}, {"k.md": f"PR #57 merged on Tuesday {url}.\n"}, [fact]).passed is True
 
 
+TICKET = "([PROJ-1240](https://linear.app/example-org/issue/PROJ-1240))"
+
+
+def _status_fact() -> KbFact:
+    return KbFact(
+        "status",
+        (re.compile("PROJ-1240"), re.compile(r"(?i)\bretired\b")),
+        (re.compile(r"(?i)n't\s+retired"),),
+        status_decision=(re.compile(r"(?i)on[- ]demand"), re.compile(r"(?i)\bexports?\b")),
+    )
+
+
+DECISIONS = {"k/decisions.md": "# D\n\n| Date | Decision |\n|---|---|\n| 2026-10-01 | Exports run on demand |\n"}
+FRONT = (
+    "# P\n\n## Where it stands\n- The nightly PDF job is being retired {cite}.\n\n## History\n- Started as a script.\n"
+)
+
+
+def _status(knowledge: dict[str, str], front_after: str, fact: KbFact | None = None):
+    before = FRONT.format(cite=TICKET)
+    facts = [fact or _status_fact()]
+    return kb_facts_cited(knowledge, knowledge, facts, front_before=before, front_after=front_after)
+
+
+def test_a_status_fact_on_a_cited_where_it_stands_bullet_passes() -> None:
+    after = FRONT.format(cite=TICKET).replace("is being retired", "is retired")
+    result = _status(DECISIONS, after)
+    assert result.passed is True
+    assert result.details == ("status: front page (status; decision in k/decisions.md)",)
+
+
+def test_a_status_fact_passes_with_the_decision_written_by_the_run() -> None:
+    after = FRONT.format(cite=TICKET).replace("is being retired", "is retired")
+    before = FRONT.format(cite=TICKET)
+    result = kb_facts_cited({}, DECISIONS, [_status_fact()], front_before=before, front_after=after)
+    assert result.passed is True
+
+
+def test_a_status_fact_without_its_decision_in_knowledge_fails() -> None:
+    after = FRONT.format(cite=TICKET).replace("is being retired", "is retired")
+    result = _status({"k/decisions.md": "# D\n\n| 2026-10-01 | CSV only |\n"}, after)
+    assert result.passed is False
+    assert result.details == (
+        "status: on the front page's 'Where it stands', but no knowledge/ note records the decision behind it",
+    )
+
+
+def test_a_status_fact_on_the_front_page_without_a_citation_fails() -> None:
+    after = FRONT.format(cite=TICKET).replace(f"is being retired {TICKET}", "is retired (PROJ-1240)")
+    result = _status(DECISIONS, after)
+    assert result.passed is False
+    assert result.details == (
+        "status: on the front page's 'Where it stands' without a citation "
+        "(a URL, or a link to an existing note under sources/ or meetings/)",
+    )
+
+
+def test_a_status_fact_outside_where_it_stands_fails() -> None:
+    after = FRONT.format(cite=TICKET).replace("- Started as a script.", f"- The nightly PDF job is retired {TICKET}.")
+    result = _status(DECISIONS, after)
+    assert result.passed is False
+    assert result.details == ("status: in no new or changed block of a knowledge/ note",)
+
+
+def test_a_negated_status_on_the_front_page_fails() -> None:
+    after = FRONT.format(cite=TICKET).replace("is being retired", "isn't retired yet")
+    assert _status(DECISIONS, after).passed is False
+
+
+def test_a_fact_without_status_decision_on_the_front_page_only_fails() -> None:
+    import dataclasses
+
+    after = FRONT.format(cite=TICKET).replace("is being retired", "is retired")
+    result = _status(DECISIONS, after, dataclasses.replace(_status_fact(), status_decision=()))
+    assert result.passed is False
+    assert result.details == ("status: in no new or changed block of a knowledge/ note",)
+
+
 def test_rewriting_a_bullet_or_row_in_place_is_not_narration() -> None:
     before = "# P\n\n## Where it stands\n_As of 2026-10-13._\n- PR in review.\n\n## Key decisions\n| a | b |\n"
     after = "# P\n\n## Where it stands\n_As of 2026-10-14._\n- PR merged.\n- Pilot moved.\n\n## Key decisions\n"
@@ -436,6 +534,8 @@ def _probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> str:
         ("kb_project: p\nmax_front_page_growth: lots", "max_front_page_growth"),
         ("kb_project: p\nexpected_kb_facts: [{id: x, all: ['(']}]", "bad pattern"),
         ("kb_project: p\nexpected_kb_facts: [{id: x}]", "an `all` list"),
+        ("kb_project: p\nexpected_kb_facts: [{id: x, all: [a], status_decision: ['(']}]", "bad pattern"),
+        ("kb_project: p\nexpected_kb_facts: [{id: x, all: [a], status_decision: a}]", "`status_decision` must be"),
     ],
 )
 def test_bad_kb_settings_fail_before_a_session_is_spent(
