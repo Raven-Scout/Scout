@@ -35,15 +35,15 @@ pytestmark = pytest.mark.perf
 
 FILES = 3000
 WARM_BUDGET_S = 0.300
-# The commands, net of the baseline, run about 2.7x slower on GitHub's macOS
-# runners than on a dev Mac: 302-321 ms in the four jobs that failed on
-# 2026-11-06 (#600) against 105-120 ms locally. Each was a best of three, so
-# that is the runner's floor, not a stall, and more runs can't lower it. The
-# runners' baseline (70-135 ms) is no slower than a dev Mac's (81-90 ms), so a
-# ratio to it would have to allow ~6x, which a 3x regression on a dev Mac
-# passes. Twice the budget clears that floor with 1.9x to spare, and still
-# fails a 3x regression there (~930 ms). Ubuntu runners and dev machines keep
-# the spec's 300 ms.
+# GitHub's macOS runners vary about 2x from job to job: the commands, net of
+# the baseline, took 302-321 ms in the four jobs that failed on 2026-11-06
+# (#600) and 158-233 ms in others, against 105-120 ms on a dev Mac. Each is a
+# best of three, so a slow job is slow throughout, and more runs can't help.
+# The import baseline doesn't tell slow jobs from fast ones (70-135 ms vs
+# 62-98 ms), so a ratio to it can't either. Twice the budget clears the slow
+# floor with 1.9x to spare and fails a 3x regression on a slow job (~930 ms).
+# A fast job can miss one, but the Ubuntu legs keep the spec's 300 ms and
+# failed every injected 3x and 5x slowdown (PR #608), and so do dev machines.
 CLI_BUDGET_S = WARM_BUDGET_S * (2 if os.environ.get("RUNNER_OS") == "macOS" else 1)
 SCHEMA = (
     "entity_types:\n"
