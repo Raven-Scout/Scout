@@ -26,7 +26,8 @@ Rules:
   that line's hits on that one note. These block in every lint mode, and
   ``SCOUT_LINT_OVERRIDE`` doesn't apply.
 - ``privacy-widening`` (**block**, scheduled runs only: ``SCOUT_MODE`` set
-  or a reader other than ``owner``, :func:`scout.kb.lint.is_scheduled`): the
+  or a reader other than ``owner``, :func:`scout.kb.lint.is_scheduled`, or a
+  live run holding the session lock, :mod:`scout.kb.live_run`): the
   commit makes a private note normal, drops the ``visibility``
   line of a note that was ``private`` where its path default is private too,
   sets or widens ``federation_scope``, adds a marker (a line whose marker

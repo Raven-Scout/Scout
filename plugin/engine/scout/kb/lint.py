@@ -825,6 +825,43 @@ def is_scheduled(env: Mapping[str, str]) -> bool:
     return _is_scheduled(env)
 
 
+def _with_live_run(repo: Path, env: Mapping[str, str], out: TextIO) -> Mapping[str, str]:
+    """``env``, or the live run's when a scheduled run holds the session lock and ``env`` says owner (#595).
+
+    The run can unset or blank ``SCOUT_MODE`` for one ``git commit``, but not
+    the lock its runner holds (:mod:`scout.kb.live_run`), so the commit is
+    checked as the run's and the event ``kb_lint.scheduled_by_lock`` leaves a
+    trace. An owner's commit during a run gets the run's rules too, and the
+    line printed here says why.
+    """
+    if is_scheduled(env):
+        return env
+    from scout.kb.live_run import live_run
+
+    root = main_root(repo)
+    run = live_run(root)
+    if run is None:
+        return env
+    _say(
+        out,
+        f"kb-lint: a scheduled run ({run.mode}) holds the session lock (PID {run.pid}), so this commit is "
+        "checked as that run's, whatever SCOUT_MODE and SCOUT_READER say. If you are the owner, commit "
+        "again once the run has ended.",
+    )
+    try:
+        from scout.events import append_event
+
+        append_event(
+            paths.logs_dir(root),
+            kind="kb_lint.scheduled_by_lock",
+            source="hook:kb-lint",
+            payload={"mode": run.mode, "pid": run.pid},
+        )
+    except Exception:  # noqa: BLE001, S110 - the verdict stands without the event
+        pass
+    return {**env, "SCOUT_MODE": run.mode, "SCOUT_READER": "autonomous"}
+
+
 def _privacy_failed(repo: Path, env: Mapping[str, str], err: Exception) -> Finding:
     """A scheduled run's refusal when the privacy checker errored (spec §8.3).
 
@@ -910,6 +947,7 @@ def run_hook(
 ) -> int:
     env = os.environ if env is None else env
     out = out or sys.stderr
+    env = _with_live_run(repo, env, out)
     # The privacy pass runs first and on its own: its verdict stands whatever
     # happens below. If it can't run, a scheduled run's commit is refused and
     # the owner's goes on with a warning and an audit row (spec §8.3; Jordan,

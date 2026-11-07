@@ -7,7 +7,8 @@
 #   SCOUT_DIR  LOG_DIR  LOG_FILE  LOCK_FILE  MODE  RUN_START
 #   RUNNER_KIND   scout | dreaming | research
 # and then calls, in order:
-#   scout_lock_acquire          0 = the lock is ours (released on EXIT);
+#   scout_lock_acquire          0 = the lock is ours (released on EXIT), with
+#                               the run marker beside it (#595);
 #                               1 = it stayed busy for the whole wait
 #   scout_redundant_wait_guard  0 = run; 1 = a session of this kind just did
 #                               this run's work, so skip it (#218)
@@ -73,6 +74,12 @@ LOCK_GUARD="$LOCK_FILE.takeover"
 # (bootstrap_lock.py), and health.py reads its mtime as the time it was taken.
 LOCK_PROGRESS="$LOCK_FILE.progress"
 LOCK_OWNER="$LOCK_FILE.owner"
+# The run marker: "<pid> <mode>" while a scheduled run holds the lock (#595).
+# The commit hook treats a commit as this run's while the lock's PID is alive
+# and the marker names it, whatever SCOUT_MODE says in the commit's
+# environment (engine/scout/kb/live_run.py). scoutctl takes the same lock
+# without one, so the owner's /scout-update is never taken for a run.
+LOCK_RUN="$LOCK_FILE.run"
 # A guard older than this was left by a process that died inside the guarded
 # section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
 LOCK_GUARD_ABANDONED_SECS=30
@@ -320,7 +327,7 @@ _scout_on_exit() {
 _scout_release_lock() {
     # If the lock was reaped and taken over while we ran, it is not ours to remove.
     if [ "$(_scout_lock_pid)" = "$$" ]; then
-        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER"
+        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER" "$LOCK_RUN"
         rm -f "$LOCK_FILE"
     fi
 }
@@ -371,7 +378,7 @@ _scout_lock_try() {
                     echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
                     echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
                 elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
-                    rm -f "$LOCK_PROGRESS"
+                    rm -f "$LOCK_PROGRESS" "$LOCK_RUN"
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -383,6 +390,7 @@ _scout_lock_try() {
                 break   # another process is already recovering it
             fi
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                rm -f "$LOCK_RUN"
                 rm -f "$LOCK_FILE"
             fi
             rm -f "$LOCK_GUARD"
@@ -413,6 +421,11 @@ scout_lock_acquire() {
     trap _scout_on_exit EXIT
     # Where this run logs, so waiters can see it progress. Best effort.
     { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
+    # The run marker, written whole (tmp + mv) so the hook never reads half of it.
+    if ! { printf '%s %s\n' "$$" "$MODE" > "$LOCK_RUN.$$" && mv -f "$LOCK_RUN.$$" "$LOCK_RUN"; } 2>/dev/null; then
+        rm -f "$LOCK_RUN.$$" 2>/dev/null || true
+        echo "=== Could not write the run marker $LOCK_RUN: this run's commits are known as scheduled only by SCOUT_MODE ===" >> "$LOG_FILE"
+    fi
     if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
         SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
         echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"

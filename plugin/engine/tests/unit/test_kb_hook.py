@@ -148,6 +148,49 @@ def test_an_owner_commit_goes_on_with_a_warning_and_an_audit_row(
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
+def _hold_lock(vault: Path, pid: int, marker: str | None) -> None:
+    """The session lock as a runner holds it (#595): the lock names ``pid``; the run marker beside it."""
+    logs = vault / ".scout-logs"
+    logs.mkdir(exist_ok=True)
+    (logs / ".scout-session.lock").write_text(f"{pid}\n")
+    if marker is not None:
+        (logs / ".scout-session.lock.run").write_text(marker)
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+@pytest.mark.parametrize("which", SCENARIOS)
+@pytest.mark.parametrize("owner_env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
+def test_a_live_runs_commit_is_refused_when_the_check_cant_run_whatever_its_env(
+    tmp_path, which: str, owner_env: dict[str, str]
+) -> None:
+    vault = _git_vault(tmp_path)
+    _hold_lock(vault, os.getpid(), f"{os.getpid()} morning-briefing\n")
+    scoutctl, _reason = _scenario(tmp_path, which)
+    proc = _run_in_vault(vault, scoutctl, **owner_env)
+    assert proc.returncode == 1
+    assert [ln for ln in proc.stderr.splitlines() if ln.startswith("kb-lint:")] == [UNAVAILABLE]
+    assert not (vault / ".scout-logs" / "kb-reads.jsonl").exists()
+
+
+@pytest.mark.parametrize("holder", ["dead", "other-holder", "bootstrap"])
+def test_a_marker_without_its_live_run_leaves_the_owner_commit_alone(tmp_path, holder: str) -> None:
+    vault = _git_vault(tmp_path)
+    if holder == "dead":
+        pid = _dead_pid()
+        _hold_lock(vault, pid, f"{pid} morning-briefing\n")
+    elif holder == "other-holder":
+        _hold_lock(vault, os.getpid(), f"{_dead_pid()} morning-briefing\n")
+    else:
+        _hold_lock(vault, os.getpid(), None)
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 0 and "WARNING" in proc.stderr
+
+
 def test_the_audit_row_goes_to_the_main_vault_from_a_linked_worktree(tmp_path) -> None:
     vault = _git_vault(tmp_path)
     subprocess.run(

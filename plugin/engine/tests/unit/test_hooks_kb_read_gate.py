@@ -173,6 +173,33 @@ def test_a_search_outside_the_vault_is_allowed(vault, tmp_path):
     assert _decision(vault, "Grep", {"pattern": "x", "path": str(elsewhere)}) is None
 
 
+# --- a run may not change the env that marks it a run, or its lock (#595) --------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u SCOUT_MODE -u SCOUT_READER git commit -m notes",
+        "SCOUT_MODE= SCOUT_READER=owner git commit -m notes",
+        "unset SCOUT_MODE; scripts/git-safe-commit.sh notes notes/a.md",
+        "env -i PATH=/usr/bin git commit -m notes",
+        "rm -f .scout-logs/.scout-session.lock.run",
+    ],
+)
+def test_run_denies_a_command_that_changes_its_run_env_or_marker(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "SCOUT_MODE" in reason and "owner" in reason
+
+
+def test_run_may_read_its_run_env(vault):
+    assert _decision(vault, "Bash", {"command": 'echo "$SCOUT_MODE ${SCOUT_READER:-}"'}) is None
+
+
+@pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
+def test_owner_session_may_change_the_run_env(vault, env):
+    assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
+
+
 # --- owner and non-vault sessions -----------------------------------------------------
 
 
@@ -304,3 +331,20 @@ def test_run_grep_always_reaches_python(vault, tmp_path):
     payload = _payload("Grep", {"pattern": "Priya"}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command", ["env -u SCOUT_MODE git commit -m x", "env -i git commit -m x", "rm .scout-logs/.scout-session.lock.run"]
+)
+def test_a_run_env_change_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word in the payload, so only the run-env patterns can send it to Python (here: missing, so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_run_env_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

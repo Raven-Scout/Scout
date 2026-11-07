@@ -6,8 +6,9 @@ line), or any exit other than 0 (pass) or 1 with a ``kb-lint:`` verdict, the
 hook prints ``kb-lint: privacy check could not run`` and then:
 
 - **a scheduled run's commit is refused** (``SCOUT_MODE`` set, or
-  ``SCOUT_READER`` set to anything but exactly ``owner``); the run's retry/park
-  handling applies;
+  ``SCOUT_READER`` set to anything but exactly ``owner``, or a live run holding
+  the session lock with its run marker, whatever the environment says:
+  ``scout.kb.live_run``, #595); the run's retry/park handling applies;
 - **the owner's interactive commit goes on**, with a loud ``kb-lint: WARNING``
   naming the problem and ``scoutctl bootstrap doctor``, and an audit row
   (``event: "privacy.check_unavailable"``, no content) appended to
@@ -48,17 +49,38 @@ _TEMPLATE = """#!/bin/sh
 # commit goes on with a warning and an audit row (#453, spec 8.3).
 SCOUTCTL={scoutctl}
 
+vault_root() {{
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$common" ]; then
+    dirname "$common"
+  else
+    git rev-parse --show-toplevel 2>/dev/null
+  fi
+}}
+
+# A scheduled run's runner holds the session lock and writes its run marker
+# beside it (scripts/scout-lock.sh). While the lock's PID is alive and the
+# marker names it (or nothing parseable), the commit is the run's, whatever its
+# environment says (#595; scout.kb.live_run).
+live_run() {{
+  root="$(vault_root)" && [ -n "$root" ] || return 1
+  lock="$root/.scout-logs/.scout-session.lock"
+  [ -f "$lock.run" ] || return 1
+  pid="$(tr -d ' \\t\\r\\n' <"$lock" 2>/dev/null)"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 0 ] && {{ kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1; }} || return 1
+  run_pid="$(head -n 1 "$lock.run" 2>/dev/null)"
+  run_pid="${{run_pid%% *}}"
+  case "$run_pid" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$run_pid" -eq "$pid" ] 2>/dev/null
+}}
+
 scheduled() {{
-  [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }}
+  [ -n "$SCOUT_MODE" ] || {{ [ -n "${{SCOUT_READER+set}}" ] && [ "$SCOUT_READER" != "owner" ]; }} || live_run
 }}
 
 audit_unavailable() {{
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-  if [ -n "$common" ]; then
-    root="$(dirname "$common")"
-  else
-    root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
-  fi
+  root="$(vault_root)" && [ -n "$root" ] || return 0
   ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
   ROW='{{"args_hash": null, "blocked": false, "command": "kb lint --staged", "event": "privacy.check_unavailable", '
   ROW="$ROW"'"paths_denied": 0, "paths_returned": 0, "private_paths": 0, "reader": "owner", '
