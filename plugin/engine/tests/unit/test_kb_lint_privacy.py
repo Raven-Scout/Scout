@@ -582,6 +582,93 @@ def test_a_run_may_still_move_ordinary_notes(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
+# ----- moves out of a path only Agnes keeps local-only (#596) -----------------------
+
+SCAN = "scans/scan.md"  # local-only on the host's list alone, never in the vault's config
+RENAMED = "knowledge-base/topics/misc/plain-renamed.md"
+
+
+def _linked(vault: Path, host_entries: list[str] | None, *, fetched_days_ago: int = 0) -> None:
+    """The vault as ``repo link`` leaves it, with the host list cached (None: no cache)."""
+    from datetime import UTC, datetime, timedelta
+
+    from scout import repo_sync as rs
+
+    head = git(vault, "rev-parse", "HEAD").strip()
+    rs.save_state(vault, rs.LinkState("https://agnes.example.com", "https://agnes.example.com/r.git", "", head, head))
+    if host_entries is not None:
+        rs.save_host_cache(vault, host_entries, now=datetime.now(UTC) - timedelta(days=fetched_days_ago))
+
+
+def _with_scan(vault: Path) -> None:
+    stage(vault, SCAN, "# Scan\n\nA stand-in for a file Agnes keeps local-only.\n")
+    commit(vault, "scan")
+
+
+def test_a_run_may_not_move_a_file_out_of_a_cached_host_local_only_path(vault: Path) -> None:
+    _with_scan(vault)
+    _linked(vault, ["Scans/"])  # folded like the host's: Scans/ covers scans/
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "privacy-widening", True, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "[privacy-widening]" in out and "local-only" in out
+    assert "scans" not in out.lower()
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_fresh_cache_lets_ordinary_moves_through(vault: Path) -> None:
+    _linked(vault, ["Scans/"])
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == []
+
+
+def test_a_missing_host_cache_warns_on_a_run_move(vault: Path) -> None:
+    """The hook can't tell whether the source was on Agnes's list: it warns, never blocks."""
+    _with_scan(vault)
+    _linked(vault, None)
+    git(vault, "mv", SCAN, "notes.md")
+    assert checks(vault, RUN) == [("notes.md", "local-only-unchecked", False, None)]
+    rc, out = hook(vault, RUN)
+    assert rc == 0 and "[local-only-unchecked]" in out and "scoutctl repo sync" in out
+    assert checks(vault) == []
+
+
+def test_a_stale_host_cache_still_blocks_its_entries_and_warns_on_the_rest(vault: Path) -> None:
+    _with_scan(vault)
+    _linked(vault, ["scans/"], fetched_days_ago=8)
+    git(vault, "mv", SCAN, "notes.md")
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == [
+        (RENAMED, "local-only-unchecked", False, None),
+        ("notes.md", "privacy-widening", True, None),
+    ]
+
+
+def test_a_missing_host_cache_does_not_warn_on_a_move_that_stays_home(vault: Path) -> None:
+    _linked(vault, None)
+    (vault / "trading/archive").mkdir()
+    git(vault, "mv", POSITIONS, "trading/archive/positions.md")
+    git(vault, "mv", "knowledge-base/topics/misc/plain.md", "trading/plain.md")
+    assert checks(vault, RUN) == []
+
+
+def test_a_move_out_of_a_config_local_only_path_blocks_without_a_cache(vault: Path) -> None:
+    _linked(vault, None)
+    git(vault, "mv", POSITIONS, "positions.md")
+    assert checks(vault, RUN) == [("positions.md", "privacy-widening", True, None)]
+
+
+def test_an_unlinked_vault_ignores_a_leftover_host_cache(vault: Path) -> None:
+    """No link, no upload: the moves judged are the config's, as before #596."""
+    from scout import repo_sync as rs
+
+    _with_scan(vault)
+    rs.save_host_cache(vault, ["scans/"])
+    git(vault, "mv", SCAN, "notes.md")
+    git(vault, "mv", PLAIN, RENAMED)
+    assert checks(vault, RUN) == []
+
+
 # ----- a run adding to a note that is already shared (#569) -----------------------
 
 SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"

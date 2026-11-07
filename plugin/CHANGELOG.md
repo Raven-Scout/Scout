@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduled run can no longer move a file out of a path only Agnes keeps local-only** (#596; `engine/scout/repo_sync.py`, `engine/scout/kb/lint_privacy.py`, `engine/scout/scripts/bootstrap_doctor.py`, `templates/.gitignore.tmpl`). #562's move check judged local-only from the vault's own lists. Local-Only Paths set in Agnes reach the vault only when `repo sync` reads them, and the commit hook runs offline, so a run could move a file out of such a folder, the hook passed it, and the next sync uploaded it from its new path. `repo link` and every `repo sync` now write the host's list, with when it was read, to `.scout-state/repo-sync-host.json`, and the hook adds those entries to the rules it judges a linked vault's moves by: a move out of one blocks with `privacy-widening`, as a move out of a `local_only_add` path does. The hook still never calls Agnes. When the cache is missing or more than 7 days old (runs sync several times a day, so a week without one means sync has stopped), the hook still blocks on the entries it has, and every other move that would upload gets a non-blocking `local-only-unchecked` warning, since failing closed would block every move. `scoutctl bootstrap doctor` warns about a linked vault's missing or stale cache, and neither message names an entry. The cache is its own file, not a key in `repo-sync.json`, so an older engine still reads the link state; `link` and `sync` add it to the vault's `.gitignore`. An unlinked vault behaves as before, and `unlink` removes the cache.
+
 ## [0.18.10] - 2026-11-07
 
 ### Added

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -318,6 +319,103 @@ def test_a_host_local_only_path_never_reaches_the_mirror(vault: Path, host: Fake
     files = mirror_history_paths(host.bare)
     assert not any(fp.casefold().startswith("raw/") for fp in files)
     assert "Raw/" in host.local_only and "trading/" in host.local_only
+
+
+# ----- the cached host list (#596) ----------------------------------------------------------
+
+# The keys v0.18.10's ``LinkState`` takes. It builds the state with ``LinkState(**data)``,
+# so any other key makes that engine refuse the whole link (``state_unreadable``).
+V0_18_10_STATE_KEYS = frozenset(
+    {
+        "agnes_url",
+        "clone_url",
+        "linked_at",
+        "last_laptop",
+        "last_mirror",
+        "pairs",
+        "confirmed_sync",
+        "schema_version",
+        "sync_only",
+    }
+)
+
+
+def test_link_and_sync_cache_the_host_local_only_list(vault: Path, host: FakeHost) -> None:
+    host.local_only = ("Raw/",)
+    _link(vault, host)
+    cache = rs.load_host_cache(vault)
+    assert cache is not None and {"Raw/", "trading/"} <= set(cache.local_only_paths)
+    assert rs.host_cache_problem(cache) is None
+    assert git(vault, "check-ignore", rs.HOST_CACHE_REL).strip() == rs.HOST_CACHE_REL
+
+    host.local_only = (*host.local_only, "Later/")  # the owner adds one in Agnes
+    rs.sync(vault, host)
+    cache = rs.load_host_cache(vault)
+    assert cache is not None and "Later/" in cache.local_only_paths
+
+
+def test_an_older_engine_still_reads_the_link_state(vault: Path, host: FakeHost) -> None:
+    """The cache lives beside the link state, so v0.18.10 reads repo-sync.json as before."""
+    host.local_only = ("Raw/",)
+    _link(vault, host)
+    rs.sync(vault, host)
+    data = json.loads(rs.state_path(vault).read_text(encoding="utf-8"))
+    assert set(data) <= V0_18_10_STATE_KEYS and data["schema_version"] == 1
+    assert "Raw/" not in rs.state_path(vault).read_text(encoding="utf-8")
+
+
+def test_sync_rewrites_a_cache_an_older_engine_never_wrote(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    rs.host_cache_path(vault).unlink()  # linked, or last synced, by an engine without the cache
+    assert rs.load_host_cache(vault) is None
+    rs.sync(vault, host)
+    assert rs.load_host_cache(vault) is not None
+
+
+def test_a_sync_on_an_old_gitignore_ignores_the_cache_too(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    gi = vault / ".gitignore"
+    gi.write_text(gi.read_text(encoding="utf-8").replace(f"{rs.HOST_CACHE_REL}\n", ""), encoding="utf-8")
+    assert rs.git(vault, "check-ignore", "-q", rs.HOST_CACHE_REL, check=False).returncode != 0
+    result = rs.sync(vault, host)
+    assert git(vault, "check-ignore", rs.HOST_CACHE_REL).strip() == rs.HOST_CACHE_REL
+    assert any(rs.HOST_CACHE_REL in n for n in result.notes)
+
+
+@pytest.mark.parametrize(
+    ("body", "readable"),
+    [
+        (None, False),
+        ("not json", False),
+        ('{"schema_version": 99, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": []}', False),
+        ('{"schema_version": 1, "fetched_at": "yesterday", "local_only_paths": []}', False),
+        ('{"schema_version": 1, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": "Raw/"}', False),
+        ('{"schema_version": 1, "fetched_at": "2026-11-01T00:00:00+00:00", "local_only_paths": ["Raw/"]}', True),
+    ],
+)
+def test_an_unreadable_host_cache_counts_as_missing(vault: Path, body: str | None, readable: bool) -> None:
+    if body is not None:
+        rs.host_cache_path(vault).parent.mkdir(parents=True, exist_ok=True)
+        rs.host_cache_path(vault).write_text(body, encoding="utf-8")
+    assert (rs.load_host_cache(vault) is not None) is readable
+
+
+def test_the_host_cache_goes_stale_after_a_week(vault: Path) -> None:
+    fetched = datetime(2026, 11, 1, 8, 0, tzinfo=UTC)
+    rs.save_host_cache(vault, ["Raw/"], now=fetched)
+    cache = rs.load_host_cache(vault)
+    assert cache is not None and cache.local_only_paths == ("Raw/",) and cache.fetched_at == fetched
+    assert rs.host_cache_problem(cache, now=fetched + timedelta(days=7)) is None
+    stale = rs.host_cache_problem(cache, now=fetched + timedelta(days=8))
+    assert stale is not None and "8 days" in stale
+    assert rs.host_cache_problem(None, now=fetched) is not None
+    assert "Raw" not in (stale or "")  # it never names a host entry
+
+
+def test_unlink_forgets_the_host_cache(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    rs.unlink(vault, host, env={})
+    assert not rs.host_cache_path(vault).exists()
 
 
 def test_sync_refuses_while_the_overlay_is_unreadable(vault: Path, host: FakeHost) -> None:
@@ -635,11 +733,13 @@ def test_otlp_settings_that_cannot_be_merged_are_refused(tmp_path: Path, body: s
 
 def test_gitignore_is_created_or_extended(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    assert rs.ensure_ignored(tmp_path) is True
-    assert rs.ensure_ignored(tmp_path) is False
+    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL]
+    assert rs.ensure_ignored(tmp_path) == []
     (tmp_path / ".gitignore").write_text("x")
-    assert rs.ensure_ignored(tmp_path) is True
+    assert rs.ensure_ignored(tmp_path) == [rs.STATE_REL, rs.HOST_CACHE_REL]
     assert (tmp_path / ".gitignore").read_text().startswith("x\n")
+    (tmp_path / ".gitignore").write_text(f"{rs.STATE_REL}\n")  # a vault linked before #596
+    assert rs.ensure_ignored(tmp_path) == [rs.HOST_CACHE_REL]
 
 
 def test_link_and_sync_preconditions(vault: Path, host: FakeHost, tmp_path: Path) -> None:
