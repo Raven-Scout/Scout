@@ -7,8 +7,10 @@
 #
 # source: "session" (actual Claude-reported cost) or "runner" (fallback from shell script).
 # Runner entries exist only so crashed sessions still leave a row, and get $0 as the
-# spent amount. budget_check.decide() sums budget_spent over EVERY row in its window,
-# whatever the source, so a session that writes its row twice is counted twice.
+# spent amount. budget_check.decide() counts each session once (_window_cost): rows
+# that share a session_id count as their largest, a session row written during a run
+# the runner priced from the transcripts is left out, and a row with no session_id
+# counts on its own, as every row did before #560.
 
 set -euo pipefail
 
@@ -71,7 +73,7 @@ fi
 # (/scout-briefing, /scout-dream nohup it from the Bash tool) inherits that session's id,
 # so stamping it there would make two different runs look like one. session-tokens rows
 # share an id on purpose (they are deltas); they come from record_run_cost, not from here.
-# budget_check.decide() reads rows with .get(), so the extra key is inert to it.
+# budget_check._window_cost() reads that id, so a session row written twice now counts once.
 SESSION_FIELD=""
 if [[ "$SOURCE" == "session" && "${CLAUDE_CODE_SESSION_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     SESSION_FIELD=",\"session_id\":\"$CLAUDE_CODE_SESSION_ID\""
