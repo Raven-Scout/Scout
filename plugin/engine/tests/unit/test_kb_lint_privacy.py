@@ -835,6 +835,41 @@ def test_a_run_may_not_write_a_new_binary_file_into_a_share(vault: Path) -> None
     assert checks(vault) == []
 
 
+@pytest.mark.parametrize(
+    ("frontmatter", "new_name"),
+    [("visibility: private", "rollout-plan.txt"), ("federation_scope: none", "rollout-plan")],
+)
+def test_a_run_may_not_share_a_note_by_renaming_it_to_a_non_note(vault: Path, frontmatter: str, new_name: str) -> None:
+    """The HEAD side is a note, so its frontmatter decides its share, not its folder default."""
+    note = SHARED + "rollout-plan.md"
+    _shared_files(vault, {note: f"---\n{frontmatter}\n---\n# Rollout plan\n\nThe pilot starts next week.\n".encode()})
+    git(vault, "mv", note, SHARED + new_name)
+    assert (SHARED + new_name, "privacy-widening", True, None) in checks(vault, RUN)
+    assert checks(vault) == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [(_CSV_TEXT, _CSV_TEXT.replace("\n", "\r\n")), (_CSV_TEXT, "﻿" + _CSV_TEXT)],
+    ids=["crlf", "bom"],
+)
+def test_a_line_ending_or_bom_change_to_a_shared_file_says_so(vault: Path, old: str, new: str) -> None:
+    """Nothing is added, but the file is rewritten: the message mustn't say a line was added."""
+    _shared_files(vault, {CSV: old.encode()})
+    stage_bytes(vault, CSV, new.encode())
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(CSV, "privacy-widening", True, None)]
+    assert "line endings" in found[0].message and "add to" not in found[0].message
+
+
+def test_a_row_added_with_a_line_ending_change_points_at_the_row(vault: Path) -> None:
+    _shared_files(vault, {CSV: _CSV_TEXT.encode()})
+    stage_bytes(vault, CSV, (_CSV_TEXT + "2026-11-09,61,1\n").replace("\n", "\r\n").encode())
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(CSV, "privacy-widening", True, 4)]
+    assert "already shared" in found[0].message
+
+
 def test_a_non_note_file_no_share_covers_is_ignored(vault: Path) -> None:
     _shared_files(vault, {"knowledge-base/topics/other/widget-metrics.csv": _CSV_TEXT.encode()})
     append(vault, "knowledge-base/topics/other/widget-metrics.csv", "2026-11-09,61,1,ask Sammy")

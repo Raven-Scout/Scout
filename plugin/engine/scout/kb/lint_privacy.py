@@ -498,7 +498,11 @@ def _non_note_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
     label = classify(rel, None, ctx.policy)
     if not label.shared_file:
         return []  # no share covers it, or the run moved it out of one
-    head = classify(sp.head_rel, None, ctx.head_policy) if sp.head_rel is not None else None
+    head: Label | None = None
+    if sp.head_rel is not None:
+        # A note renamed to a non-note name keeps its HEAD label: its frontmatter, not just its folder default.
+        head_text = head_text_lossy(ctx.repo, sp.head_rel) if _md(sp.head_rel) else None
+        head = classify(sp.head_rel, _head_window(sp.head_rel, head_text), ctx.head_policy)
     out: list[Finding] = []
 
     def block(message: str, line: int | None = None) -> None:
@@ -519,8 +523,10 @@ def _changed_shared_file(ctx: _Ctx, head_rel: str, rel: str) -> list[Finding]:
     """What a run's commit adds to a non-note file shared at HEAD and in the commit (#594).
 
     The raw blobs are compared, so two bad bytes that decode alike still
-    count. Text is compared line by line, as a note is; a file that isn't
-    UTF-8 text on either side blocks on any change.
+    count. Text is compared line by line, as a note is, after a BOM and CRLF
+    line endings are set aside; a change to those alone blocks with its own
+    message, since nothing was added. A file that isn't UTF-8 text on either
+    side blocks on any change.
     """
     old, new = head_blob(ctx.repo, head_rel), staged_blob(ctx.repo, rel)
     if old is None or old == new:
@@ -529,11 +535,22 @@ def _changed_shared_file(ctx: _Ctx, head_rel: str, rel: str) -> list[Finding]:
     if old_text is None or new_text is None:
         message = f"change a file that is already shared: it {_NOT_TEXT}, so any change counts — leave it to the owner"
         return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
-    first = _first_new_line(old_text, new_text)
+    first = _first_new_line(_plain(old_text), _plain(new_text))
     if first is None:
-        return []
+        if _first_new_line(old_text, new_text) is None:
+            return []  # lines only removed or moved
+        message = (
+            "change the encoding or line endings of a file that is already shared (a byte-order mark, or CRLF and "
+            "LF swapped): nothing was added, but the file is rewritten — leave it as it is"
+        )
+        return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
     message = "a scheduled run may not " + _ADD_TO_SHARED.format(what="file")
     return [Finding(rel, "privacy-widening", True, message, first)]
+
+
+def _plain(text: str) -> str:
+    """``text`` without a leading byte-order mark and with CRLF read as LF (line numbers are kept)."""
+    return text.removeprefix("\ufeff").replace("\r\n", "\n")
 
 
 def _as_text(data: bytes) -> str | None:
