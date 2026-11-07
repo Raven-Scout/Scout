@@ -289,10 +289,12 @@ def refresh_host_cache(vault: Path, host: Host) -> str | None:
         repo_sync.ensure_ignored(vault)  # a vault linked by an older engine ignores only repo-sync.json
         repo_sync.save_host_cache(vault, entries, agnes_url=state.agnes_url)
     except RepoSyncError as e:
-        return f"couldn't refresh the cached Agnes Local-Only list ({e.code}); the commit hook uses the old one"
+        why = e.code
     except Exception as e:  # noqa: BLE001 - any failure here (an odd answer, a full disk) must not cost the run
-        return f"couldn't refresh the cached Agnes Local-Only list ({type(e).__name__}); the commit hook uses the old one"
-    return None
+        why = type(e).__name__
+    else:
+        return None
+    return f"couldn't refresh the cached Agnes Local-Only list ({why}); the commit hook uses the old one"
 
 
 def renew(vault: Path, host: Host, run_id: str) -> LocalLease:
