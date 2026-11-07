@@ -23,6 +23,7 @@ max_front_page_growth: 512
 # under the project's knowledge/ folder, and that block must cite a source: a URL, or a wikilink to
 # a note that exists under sources/ or meetings/. A block matches a fact when every pattern in
 # `all` matches it and none in `none` does ("PR #57 is not merged yet" hasn't landed the fact).
+# A fact with `status_decision` may land on the front page instead (see proj-1240-done).
 expected_kb_facts:
   - id: pr-57-merged
     all: ['(?:api#|pull/|PR ?#?|\#)57\b', '(?i)\bmerged\b']
@@ -30,6 +31,11 @@ expected_kb_facts:
   - id: proj-1240-done
     all: ['PROJ-1240', '(?i)\b(?:done|closed|completed?|turned off|retired)\b']
     none: ["(?i)(?:\\bnot|n't)\\s+(?:yet\\s+)?(?:been\\s+)?(?:done|closed|completed?|turned off|retired)\\b"]
+    # A status-only fact: the ticket closing is current status, which the page standard puts in
+    # the front page's "Where it stands", and a run may file it there instead, as a new or changed,
+    # cited entry, when a knowledge/ block (before or after the run) matches every pattern here:
+    # the decision behind it, the decisions note's "Exports run on demand, not on a nightly schedule".
+    status_decision: ['(?i)on[- ]demand', '(?i)\bexports?\b']
   - id: row-cap-200k
     all: ['\b200[,. ]?000\b|\b200 ?[kK]\b']
 

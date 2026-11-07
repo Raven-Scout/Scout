@@ -229,6 +229,27 @@ def test_a_stream_that_does_not_start_with_init_is_killed(tmp_path: Path) -> Non
     assert json.loads((result / "aborted.json").read_text())["reason"] == "no_init"
 
 
+TITLE = json.dumps({"type": "system", "subtype": "session_title_changed", "title": "scout-morning-consolidation"})
+
+
+def test_a_session_title_before_init_is_waited_past(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, _init(["claude_ai_Slack"]), RESULT])
+    assert proc.returncode == 0, proc.stderr
+    assert not (result / "aborted.json").exists()
+
+
+def test_a_session_title_does_not_excuse_a_bad_init(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, _init(["claude_ai_Slack"], source="ANTHROPIC_API_KEY"), RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text()) == {"reason": "api_key", "source": "ANTHROPIC_API_KEY"}
+
+
+def test_a_session_title_then_no_init_is_killed(tmp_path: Path) -> None:
+    proc, result = _run(tmp_path, [TITLE, RESULT])
+    assert proc.returncode == 3
+    assert json.loads((result / "aborted.json").read_text())["reason"] == "no_init"
+
+
 def test_a_child_that_dies_before_reading_the_prompt_does_not_hang_the_shim(tmp_path: Path) -> None:
     import time
 

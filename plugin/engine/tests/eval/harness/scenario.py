@@ -58,6 +58,7 @@ class Scenario:
     kb_project: str = ""  # the KB checks: the project folder whose pages they score
     max_front_page_growth: int = DEFAULT_FRONT_PAGE_GROWTH  # front_page_growth: bytes the front page may grow
     expected_kb_facts: tuple[KbFact, ...] = ()  # kb_facts_cited: facts that must land, cited, in knowledge/
+    # (or, for a status-only fact, on the front page's "Where it stands")
     front_page_narration: tuple[Marker, ...] = ()  # front_page_no_narration: markers on each entry a run adds
 
     @property
@@ -114,8 +115,10 @@ def _growth(name: str, raw: object) -> int:
 
 
 def _kb_facts(name: str, raw: object) -> tuple[KbFact, ...]:
-    """``expected_kb_facts:``: ``[{id, all: [regex, …], none: [regex, …]}]``; ``none`` (optional) are
-    negations that keep a block from counting. A bad pattern fails before a session is spent."""
+    """``expected_kb_facts:``: ``[{id, all: [regex, …], none: [regex, …], status_decision: [regex, …]}]``;
+    ``none`` (optional) are negations that keep a block from counting. ``status_decision`` (optional)
+    marks a status-only fact: its patterns match the knowledge-note block recording the decision
+    behind the status (kb_writing.kb_facts_cited). A bad pattern fails before a session is spent."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -124,16 +127,18 @@ def _kb_facts(name: str, raw: object) -> tuple[KbFact, ...]:
     for entry in raw:
         if not isinstance(entry, dict) or not entry.get("id") or not isinstance(entry.get("all"), list):
             raise ValueError(f"scenario {name!r}: each expected_kb_facts entry needs an id and an `all` list")
-        if not isinstance(entry.get("none") or [], list):
-            raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r}: `none` must be a list")
+        for key in ("none", "status_decision"):
+            if not isinstance(entry.get(key) or [], list):
+                raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r}: `{key}` must be a list")
         try:
             patterns = tuple(re.compile(str(p)) for p in entry["all"])
             negations = tuple(re.compile(str(p)) for p in entry.get("none") or [])
+            decision = tuple(re.compile(str(p)) for p in entry.get("status_decision") or [])
         except re.error as exc:
             raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r}: bad pattern ({exc})") from exc
         if not patterns:
             raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r} has no patterns")
-        facts.append(KbFact(str(entry["id"]), patterns, negations))
+        facts.append(KbFact(str(entry["id"]), patterns, negations, decision))
     return tuple(facts)
 
 

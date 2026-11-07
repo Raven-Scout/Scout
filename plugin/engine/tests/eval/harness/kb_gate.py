@@ -124,7 +124,12 @@ def score_kb(vault: Path, spec: KbSpec, names: Sequence[str] = KB_CHECKS) -> tup
         "kb_structure": lambda: kb_structure(structure_row(vault, spec.project), spec.project),
         "front_page_growth": lambda: front_page_growth(before.front, after.front, spec.max_growth),
         "kb_facts_cited": lambda: kb_facts_cited(
-            before.knowledge, after.knowledge, spec.facts, source_keys(source_notes(vault))
+            before.knowledge,
+            after.knowledge,
+            spec.facts,
+            source_keys(source_notes(vault)),
+            front_before=before.front,
+            front_after=after.front,
         ),
         "front_page_no_narration": lambda: front_page_no_narration(
             before.front, after.front, cfg.narration_markers, spec.entry_markers

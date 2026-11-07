@@ -5,7 +5,10 @@ templates/docs/kb-page-standard.md, phases/core/write-protocol.md).
 - ``front_page_growth``: the front page grew by at most the scenario's byte limit.
 - ``kb_facts_cited``: each expected fact landed in a new or changed block of a note in the
   project's ``knowledge/`` folder, and that block cites a source: a URL, or a wikilink to a note
-  that exists under ``sources/`` or ``meetings/``.
+  that exists under ``sources/`` or ``meetings/``. A status-only fact (one with
+  ``status_decision``, such as a ticket closing) may instead land as a new or changed, cited entry
+  in the front page's "Where it stands", where the standard puts current status, when a
+  ``knowledge/`` block (before or after the run) records the decision behind it.
 - ``front_page_no_narration``: the front page's body has no narration marker, no new entry reads
   as a run's update (the scenario's ``front_page_narration`` markers: a dated or "update" bullet,
   "this run"), and no section gained a prose paragraph or a heading. Rewriting a bullet or a table
@@ -37,6 +40,7 @@ KB_CHECKS = (
 # Notes a wikilink may cite, by vault-relative folder (write-protocol.md's source notes;
 # meeting-prep.md's meetings/<slug>/YYYY-MM-DD.md, in both places a vault keeps them).
 SOURCE_ROOTS = ("knowledge-base/sources/", "knowledge-base/meetings/", "meetings/")
+STANDS = "Where it stands"  # kb-page-standard.md: the front page's current-status section
 MAX_STANDS_BULLETS = 6  # kb-page-standard.md: "Where it stands", up to 6 bullets
 _URL = re.compile(r"https?://\S+")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
@@ -49,11 +53,14 @@ _PLACEHOLDER = re.compile(r"^[_*\s]*None right now\.?[_*\s]*$", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class KbFact:
-    """A fact the run must file: a block matches when every pattern matches it and no negation does."""
+    """A fact the run must file: a block matches when every pattern matches it and no negation does.
+    ``status_decision``: for a status-only fact, patterns that all match the knowledge-note block
+    recording the decision behind the status (see :func:`kb_facts_cited`)."""
 
     id: str
     patterns: tuple[re.Pattern[str], ...]
     negations: tuple[re.Pattern[str], ...] = ()
+    status_decision: tuple[re.Pattern[str], ...] = ()
 
     def matches(self, block: str) -> bool:
         return all(p.search(block) for p in self.patterns) and not any(n.search(block) for n in self.negations)
@@ -154,26 +161,53 @@ def front_page_growth(before: str | None, after: str | None, limit: int) -> Chec
     return CheckResult("front_page_growth", new - old <= limit, (detail,))
 
 
+_CITATION = "(a URL, or a link to an existing note under sources/ or meetings/)"
+
+
 def kb_facts_cited(
-    before: Mapping[str, str], after: Mapping[str, str], facts: Sequence[KbFact], sources: Collection[str] = ()
+    before: Mapping[str, str],
+    after: Mapping[str, str],
+    facts: Sequence[KbFact],
+    sources: Collection[str] = (),
+    *,
+    front_before: str | None = None,
+    front_after: str | None = None,
 ) -> CheckResult:
     """``before``/``after``: each note in the project's ``knowledge/`` folder, path → text.
-    ``sources``: :func:`source_keys` of the notes that exist after the run."""
+    ``sources``: :func:`source_keys` of the notes that exist after the run.
+    ``front_before``/``front_after``: the front page, for a fact with ``status_decision`` that no
+    cited knowledge-note block holds. It passes when a new or changed, cited entry in "Where it
+    stands" matches it and a knowledge-note block, before or after the run, matches every
+    ``status_decision`` pattern: the status is where the standard puts it, the decision is filed."""
     if not facts:
         return CheckResult("kb_facts_cited", None, ("the scenario names no expected facts",))
     old = {_norm(b) for text in before.values() for _k, b in blocks(text)}
     fresh = [(path, b) for path, text in sorted(after.items()) for _k, b in blocks(text) if _norm(b) not in old]
+    every = [(path, b) for notes in (after, before) for path, text in sorted(notes.items()) for _k, b in blocks(text)]
+    stands = (
+        [b for section, b in _new_entries(front_before or "", front_after) if section == STANDS]
+        if front_after is not None
+        else []
+    )
     problems, found = [], []
     for fact in facts:
         hits = [(path, b) for path, b in fresh if fact.matches(b)]
         cited = [path for path, b in hits if cites(b, sources)]
+        on_front = [b for b in stands if fact.matches(b)] if fact.status_decision and not cited else []
         if cited:
             found.append(f"{fact.id}: {cited[0]}")
+        elif on_front:
+            decision = next((path for path, b in every if all(p.search(b) for p in fact.status_decision)), None)
+            if not any(cites(b, sources) for b in on_front):
+                problems.append(f"{fact.id}: on the front page's '{STANDS}' without a citation {_CITATION}")
+            elif decision is None:
+                problems.append(
+                    f"{fact.id}: on the front page's '{STANDS}', but no knowledge/ note records the decision behind it"
+                )
+            else:
+                found.append(f"{fact.id}: front page (status; decision in {decision})")
         elif hits:
-            problems.append(
-                f"{fact.id}: in {hits[0][0]} without a citation "
-                "(a URL, or a link to an existing note under sources/ or meetings/)"
-            )
+            problems.append(f"{fact.id}: in {hits[0][0]} without a citation {_CITATION}")
         else:
             problems.append(f"{fact.id}: in no new or changed block of a knowledge/ note")
     return CheckResult("kb_facts_cited", not problems, tuple(problems or found))
@@ -224,7 +258,7 @@ def front_page_no_narration(
 
 
 def _stands_bullets(text: str) -> int:
-    return sum(1 for _f, _l, t in section_entries(text, ["Where it stands"]) if _ITEM.match(t))
+    return sum(1 for _f, _l, t in section_entries(text, [STANDS]) if _ITEM.match(t))
 
 
 def front_page_bullets(before: str | None, after: str | None, limit: int, sections: Sequence[str]) -> CheckResult:
