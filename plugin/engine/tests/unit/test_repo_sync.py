@@ -485,6 +485,83 @@ def test_the_owner_confirms_a_move_out_of_a_host_only_path(vault: Path, host: Fa
     assert "notes/scan.md" in mirror_history_paths(host.bare)
 
 
+def test_a_refused_move_leaves_agnes_commits_unreplayed_and_confirming_keeps_them(
+    vault: Path, host: FakeHost, tmp_path: Path
+) -> None:
+    """The check runs before the replay: a refusal changes nothing, so the retry squashes over Agnes's tip."""
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    head = git(vault, "rev-parse", "HEAD").strip()
+    _commit_on_mirror(tmp_path, host, {"knowledge-base/topics/misc/cloud.md": "Written in Agnes.\n"}, "agnes edit")
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "local_only_move"
+    assert git(vault, "rev-parse", "HEAD").strip() == head  # nothing replayed yet
+    rs.sync(vault, host, confirm_sync=["notes/scan.md"])
+    tip = set(_bare_git(host.bare, "ls-tree", "-r", "--name-only", "main").splitlines())
+    assert {"knowledge-base/topics/misc/cloud.md", "notes/scan.md"} <= tip
+    assert (vault / "knowledge-base/topics/misc/cloud.md").exists()
+
+
+def test_a_confirmed_move_counts_for_that_sync_only(vault: Path, host: FakeHost) -> None:
+    """A later, different file moved to the same path is refused again."""
+    _linked_with_scan(vault, host)
+    _commit(vault, "scans/other.md", "# Other\n\nAnother stand-in Agnes keeps local-only.\n", "another scan")
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    rs.sync(vault, host, confirm_sync=["notes/scan.md"])
+    git(vault, "rm", "-q", "notes/scan.md")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "drop it")
+    _move(vault, "scans/other.md", "notes/scan.md", "file the other one there")
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "local_only_move"
+
+
+def test_the_owner_may_move_a_file_out_of_the_vaults_own_local_only_path(vault: Path, host: FakeHost) -> None:
+    """``trading/`` reaches Agnes's list from the vault's own policy; #562 lets the owner move out of it."""
+    _link(vault, host)
+    assert "trading/" in host.local_only
+    _move(vault, TRADING, "notes/positions.md", "the owner files it")
+    rs.sync(vault, host)
+    assert "notes/positions.md" in mirror_history_paths(host.bare)
+
+
+def _forget_last_sync(vault: Path, *, pairs_too: bool) -> None:
+    """History rewritten and collected: the last synced laptop commit no longer resolves."""
+    state = rs.load_state(vault)
+    assert state is not None
+    state.last_laptop = "f" * 40
+    if pairs_too:
+        state.pairs = [{**p, "laptop": "e" * 40} for p in state.pairs]
+    rs.save_state(vault, state)
+
+
+def test_a_lost_last_sync_falls_back_to_the_newest_synced_commit_that_resolves(vault: Path, host: FakeHost) -> None:
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    _forget_last_sync(vault, pairs_too=False)
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "local_only_move"
+
+
+def test_sync_refuses_when_no_synced_commit_resolves_and_agnes_keeps_paths_home(vault: Path, host: FakeHost) -> None:
+    _linked_with_scan(vault, host)
+    _move(vault, SCAN, "notes/scan.md", "file the scan")
+    _forget_last_sync(vault, pairs_too=True)
+    with pytest.raises(rs.RepoSyncError) as e:
+        rs.sync(vault, host)
+    assert e.value.code == "local_only_move_unchecked" and "unlink" in str(e.value)
+    assert "notes/scan.md" not in mirror_history_paths(host.bare)
+
+
+def test_a_lost_last_sync_with_only_the_vaults_own_entries_still_syncs(vault: Path, host: FakeHost) -> None:
+    _link(vault, host)
+    _commit(vault, "knowledge-base/people/priya.md", "Priya owns PROJ-1234.\n", "people: priya")
+    _forget_last_sync(vault, pairs_too=True)
+    assert rs.sync(vault, host).pushed
+
+
 def test_sync_lets_a_move_between_paths_that_stay_home_through(vault: Path, host: FakeHost) -> None:
     _linked_with_scan(vault, host)
     _move(vault, SCAN, "trading/scan.md", "file the scan with trading")

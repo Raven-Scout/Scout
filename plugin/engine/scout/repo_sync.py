@@ -1586,6 +1586,9 @@ def _sync_under_lease(
     trading_gate(vault, rules, confirmed)
     if rules.local_only(POLICY_PATH):
         raise RepoSyncError("policy_path_local_only", f"refused: a Local-Only Path covers {POLICY_PATH}")
+    # Before the replay, so a refusal leaves HEAD and the link state as they were.
+    own_entries = {fold(e) for e in _host_entries_for(policy, scope)}
+    host_moves_gate(vault, state, rules, [e for e in host_entries if fold(e) not in own_entries], confirm_sync)
 
     state.confirmed_sync = confirmed
 
@@ -1619,23 +1622,10 @@ def _sync_under_lease(
     replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
     if _is_ancestor(vault, state.last_laptop, head):
         todo = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
-        own = [c for c in todo if c not in replayed]
-        spans = [(f"{c}^", c) for c in own if _rev(vault, f"{c}^") is not None]
     else:
         todo = [head]
-        own = [c for c in todo if c not in replayed]
-        spans = [(state.last_laptop, head)] if _rev(vault, state.last_laptop) is not None else []
         result.notes.append("the vault's history no longer contains the last synced commit; pushing its HEAD")
-    # The hook's cache may have been missing or stale; only here is Agnes's list current (#596).
-    moved = host_only_moves(vault, rules, host_entries, spans)
-    if unconfirmed := [p for p in moved if p not in set(confirmed)]:
-        raise RepoSyncError(
-            "local_only_move",
-            "refused: a commit since the last sync moves a file out of a path Agnes keeps local-only, so it "
-            f"would upload from {', '.join(unconfirmed)}. If it should, run scoutctl repo sync --confirm-sync "
-            "<path>; if not, add the path to privacy.local_only_add in scout-config.yaml, then sync again",
-            {"paths": unconfirmed},
-        )
+    own = [c for c in todo if c not in replayed]
 
     builder = MirrorBuilder(vault, rules, host_entries)
     pushes: list[tuple[str, str]] = []
@@ -1716,6 +1706,47 @@ def host_only_moves(
 def _on_host_list(rel: str, host_entries: Sequence[str]) -> bool:
     f = fold(rel)
     return any(_host_matches(f, e) for e in host_entries)
+
+
+def host_moves_gate(
+    vault: Path, state: LinkState, rules: LocalOnlyRules, host_only: Sequence[str], confirmed: Sequence[str]
+) -> None:
+    """Refuse a sync whose commits move a file out of a path only Agnes keeps local-only (#596).
+
+    The commit hook judges a run's moves by a cached copy of the list, which may
+    be missing or stale; this is the one place with Agnes's current list.
+    ``host_only`` leaves out the entries the vault's own policy put there, which
+    #562 already guards (the owner may move out of those). Only this call's
+    ``--confirm-sync`` paths are allowed, each once: a span is checked only
+    until a sync gets past it.
+    """
+    if not host_only:
+        return
+    head = _head(vault)
+    if _is_ancestor(vault, state.last_laptop, head):
+        replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
+        revs = git(vault, "rev-list", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
+        spans = [(f"{c}^", c) for c in revs if c not in replayed and _rev(vault, f"{c}^") is not None]
+    else:
+        # History rewritten: compare HEAD with the newest synced commit this vault still has.
+        known = [state.last_laptop, *(p["laptop"] for p in reversed(state.pairs))]
+        base = next((c for c in known if _rev(vault, c) is not None), None)
+        if base is None:
+            raise RepoSyncError(
+                "local_only_move_unchecked",
+                "refused: no commit this vault last synced is in its history any more, so a file moved out of a "
+                "path Agnes keeps local-only can't be found. Run scoutctl repo unlink, then scoutctl repo link "
+                "--replace-remote",
+            )
+        spans = [(base, head)]
+    if unconfirmed := [p for p in host_only_moves(vault, rules, host_only, spans) if p not in set(confirmed)]:
+        raise RepoSyncError(
+            "local_only_move",
+            "refused: a commit since the last sync moves a file out of a path Agnes keeps local-only, so it "
+            f"would upload from {', '.join(unconfirmed)}. If it should, run scoutctl repo sync --confirm-sync "
+            "<path>; if not, add the path to privacy.local_only_add in scout-config.yaml, then sync again",
+            {"paths": unconfirmed},
+        )
 
 
 def _broken(policy: Policy) -> bool:

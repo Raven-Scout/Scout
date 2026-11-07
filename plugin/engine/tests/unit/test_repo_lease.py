@@ -101,6 +101,38 @@ def test_a_failed_host_list_refresh_keeps_the_run_lease(
     assert "Local-Only list" in note and "host_unreachable" in note
 
 
+def test_a_wrong_shaped_host_answer_keeps_the_run_lease(
+    linked: Path,
+    host: FakeHost,  # noqa: F811
+    runner_proc: subprocess.Popen,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JSON body of the wrong shape raises from ``AgnesHost._status``; the run still runs."""
+
+    def odd() -> rs.HostStatus:
+        raise TypeError("'int' object is not iterable")
+
+    monkeypatch.setattr(host, "status", odd)
+    lease, notes = rl.acquire_for_run(linked, host, run_id="r1", what="briefing", pid=runner_proc.pid)
+    assert host.lease is not None and host.lease["token"] == lease.token
+    (note,) = notes
+    assert "Local-Only list" in note and "TypeError" in note and "iterable" not in note
+
+
+def test_the_run_side_cache_write_keeps_the_cache_out_of_git(
+    linked: Path,
+    host: FakeHost,  # noqa: F811
+    runner_proc: subprocess.Popen,
+) -> None:
+    """A vault linked by v0.18.10 ignores only repo-sync.json; the first run must not leave the cache committable."""
+    gi = linked / ".gitignore"
+    gi.write_text(gi.read_text(encoding="utf-8").replace(f"{rs.HOST_CACHE_REL}\n", ""), encoding="utf-8")
+    rs.host_cache_path(linked).unlink()
+    rl.acquire_for_run(linked, host, run_id="r1", what="briefing", pid=runner_proc.pid)
+    assert rs.host_cache_path(linked).exists()
+    assert rs.git(linked, "check-ignore", "-q", rs.HOST_CACHE_REL, check=False).returncode == 0
+
+
 def test_a_run_is_refused_while_agnes_holds_the_lease(linked: Path, host: FakeHost) -> None:  # noqa: F811
     host.lease = {"holder_ref": "agnes:run-7", "label": "Agnes run", "token": "agnes-token"}
     with pytest.raises(rs.RepoSyncError) as e:

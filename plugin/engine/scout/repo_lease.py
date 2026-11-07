@@ -285,11 +285,13 @@ def refresh_host_cache(vault: Path, host: Host) -> str | None:
         state = repo_sync.load_state(vault)
         if state is None:
             return None
-        repo_sync.save_host_cache(vault, host.status().local_only_paths, agnes_url=state.agnes_url)
+        entries = host.status().local_only_paths
+        repo_sync.ensure_ignored(vault)  # a vault linked by an older engine ignores only repo-sync.json
+        repo_sync.save_host_cache(vault, entries, agnes_url=state.agnes_url)
     except RepoSyncError as e:
         return f"couldn't refresh the cached Agnes Local-Only list ({e.code}); the commit hook uses the old one"
-    except OSError as e:
-        return f"couldn't write the cached Agnes Local-Only list ({type(e).__name__})"
+    except Exception as e:  # noqa: BLE001 - any failure here (an odd answer, a full disk) must not cost the run
+        return f"couldn't refresh the cached Agnes Local-Only list ({type(e).__name__}); the commit hook uses the old one"
     return None
 
 

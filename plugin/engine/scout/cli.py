@@ -4046,7 +4046,10 @@ def _register_repo() -> None:
 
         Refuses while scoutctl kb policy warns privacy-overlay-unreadable.
         Never pushes a local-only path: the union of this vault's effective
-        policy and the list Agnes keeps for you.
+        policy and the list Agnes keeps for you. Refuses, before changing
+        anything, a commit that moves a file out of a path on Agnes's list
+        (not one from privacy.local_only_add) to one that uploads, until
+        --confirm-sync names its new path for that sync.
         """
         from scout import paths as _paths
         from scout.repo_sync import AgnesHost, RepoSyncError, load_state, load_token, sync
