@@ -59,7 +59,9 @@ jobs:
   # and serially: they time scoutctl's cold start, which other workers would
   # skew. On the coverage leg they run under coverage too (appended to the
   # parallel run's data), as they did when coverage was a separate job; the
-  # other two legs time them without a tracer. Neither pytest step checks the
+  # other two legs time them without a tracer. `-rP` prints what each passing
+  # perf test printed (its timings), so a budget can be set from passing runs
+  # too, not only failures (#600). Neither pytest step checks the
   # floor (each sees only part of the data); `coverage report` does, on the
   # combined total.
   #
@@ -114,7 +116,7 @@ jobs:
       - name: Pytest (parallel)
         run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=20 ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
       - name: Pytest (perf, serial)
-        run: .venv/bin/pytest tests/ -m perf -p no:xdist ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
+        run: .venv/bin/pytest tests/ -m perf -p no:xdist -rP ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
       # Exits non-zero below [tool.coverage.report] fail_under, rounding the
       # total to its `precision` (tests/unit/test_coverage_gate.py pins both).
       - name: Coverage floor
