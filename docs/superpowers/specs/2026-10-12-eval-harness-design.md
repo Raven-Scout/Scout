@@ -604,17 +604,30 @@ because the gate needs a Claude login that neither the script nor CI has.
 - **The fixture** is one project folder that meets the KB page standard (`kb structure` ✓), plus a
   day of scripted signals about it: a merged PR (fake `gh`), a ticket moved to Done (Linear stub),
   and a meeting's notes (Calendar event, notes mail). It targets why rebuilt front pages regrew:
-  consolidation runs wrote narration paragraphs onto them.
-- **Four checks** (`checks/kb_writing.py`), any failure fails the gate: `kb_structure` (the folder
-  is still ✓), `front_page_growth` (at most `max_front_page_growth` bytes, default 512; a run that
-  follows the standard shrinks this page), `kb_facts_cited` (each `expected_kb_facts` entry is in a
-  new or changed block of a `knowledge/` note, and that block has a URL or a `[[sources/…]]` link)
-  and `front_page_no_narration` (no marker from `kb_structure.narration_markers`, and no section
-  gaining a prose paragraph or a heading; a bullet or a row rewritten in place is fine).
+  consolidation runs wrote narration paragraphs onto them. Its `scout-config.add.yaml` gives the
+  vault #597's front-page lock, and `build.py` installs the kb-lint pre-commit hook after the fixture
+  commit, so the session's commits meet the rules a live vault enforces.
+- **Five checks** (`checks/kb_writing.py`); any failure fails the gate:
+  - `kb_structure`: the folder is still ✓.
+  - `front_page_growth`: at most `max_front_page_growth` bytes, default 512. A run that follows the
+    standard shrinks this page.
+  - `kb_facts_cited`: each `expected_kb_facts` entry is in a new or changed block of a `knowledge/`
+    note, none of its `none:` negations match, and the block cites a URL or a wikilink that
+    resolves to an existing note under `sources/` or `meetings/`.
+  - `front_page_no_narration`: no `kb_structure.narration_markers` hit; no new entry outside "What's
+    next" and "Key decisions" matching the scenario's `front_page_narration` markers (a dated or
+    "update" bullet, "this run", "checked gh"); no section gaining a prose paragraph or a heading.
+    The standard's "None right now." isn't a paragraph, and a lazily wrapped bullet is one entry.
+  - `front_page_bullets`: no new entry in `kb_structure.bullet_sections` over `max_bullet_chars`
+    (#597's `page-bullet`), and at most 6 "Where it stands" bullets unless the fixture had more.
 - **"Before" is the fixture commit, "after" the working tree**, so uncommitted edits count.
   `eval.sh kb-score <vault>` re-scores a kept vault without a session. Tier 0 scores canned
-  snapshots (`golden/kb-front-page/`: one good run, four bad ones) and runs the command end to end
-  with a stand-in claude.
+  snapshots (`golden/kb-front-page/`: four good runs, eight bad ones) and runs the command end to
+  end with a stand-in claude.
+- **Provenance.** The report's `sample.checkout` holds the commit, branch and a `dirty` flag of the
+  checkout that ran, so a pasted report says what it cleared. `release.sh prepare` makes the release
+  commit before it prints the reminder, so it shows the newest result's commit and says it is not a
+  run of this release.
 - **The release checklist** (README "Releases", `release.sh prepare`'s reminder, and a release-PR
   checkbox) says to run it on the release branch and not to merge on a fail.
 

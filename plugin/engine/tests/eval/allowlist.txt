@@ -337,3 +337,19 @@ Whether
 Who
 Why
 Writes
+Added
+Keep
+Matched
+# month abbreviations in the scenario's dated-entry marker
+Jan
+Feb
+Mar
+Apr
+May
+Jun
+Jul
+Aug
+Sept
+Oct
+Nov
+Dec

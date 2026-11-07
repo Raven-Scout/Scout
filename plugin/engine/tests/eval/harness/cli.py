@@ -137,7 +137,7 @@ def _cmd_kb_gate(args: argparse.Namespace) -> int:
     Exit 0 pass, 1 fail, 2 when it couldn't decide (no login, an aborted session, an unscored check).
     """
     from .checks.kb_writing import KB_CHECKS
-    from .kb_gate import REPORT_NAME, exit_code, gate_report, spec_for
+    from .kb_gate import REPORT_NAME, checkout_state, exit_code, gate_report, spec_for
     from .plan import DEFAULT_MODEL
     from .runner import LoginRequired, run_sample
 
@@ -161,6 +161,7 @@ def _cmd_kb_gate(args: argparse.Namespace) -> int:
         print("Press Enter to start, Ctrl-C to cancel: ", end="", file=sys.stderr, flush=True)
         input()
     cli_version = args.cli_version or _cli_version(real_claude)
+    checkout = checkout_state(REPO_ROOT)  # before the run: what code it tests
     try:
         sample = run_sample(
             scenario, today=today, rep=1, model=model, results_root=Path(args.results).resolve(),
@@ -173,7 +174,7 @@ def _cmd_kb_gate(args: argparse.Namespace) -> int:
     meta = {k: sample.meta.get(k) for k in ("model", "resolved_model", "cli_version", "today", "started_at")}
     report = gate_report(
         sample.result_dir / "vault", spec_for(scenario), checks, scenario=scenario.name,
-        sample={"result_dir": str(sample.result_dir), **meta, "aborted": sample.aborted},
+        sample={"result_dir": str(sample.result_dir), **meta, "checkout": checkout, "aborted": sample.aborted},
     )  # fmt: skip
     _write_report(report, [sample.result_dir / REPORT_NAME] + ([Path(args.report)] if args.report else []))
     return exit_code(report)

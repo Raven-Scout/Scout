@@ -7,7 +7,11 @@ Three layers, built fresh for every sample:
 2. the hand-written base overlay in ``tests/eval/vault/``;
 3. the scenario's own ``vault/`` overlay;
 4. the scenario's ``brain/<KIND>.md``, appended to that built brain file (a
-   vault-local brain edit, such as a Telegram copy of the wrap).
+   vault-local brain edit, such as a Telegram copy of the wrap);
+5. the scenario's ``scout-config.add.yaml``, top-level keys added to the vault's
+   ``scout-config.yaml`` (a key it already has is an error). Such a scenario also gets the
+   kb-lint pre-commit hook, installed after the fixture commit, so its ``kb_lint`` rules
+   run on the session's commits as on a live vault.
 
 Overlay text files have their date macros rendered, in contents and in path
 components. The result is committed as a one-commit git repo.
@@ -42,6 +46,8 @@ FIXTURE_GITHUB_USER = "alex-example"
 FIXTURE_REPOS = "example-org/widgets,example-org/api"
 DEFAULT_CONNECTORS = frozenset({"slack", "calendar", "linear", "github"})
 NOOP_SCRIPT = "#!/bin/bash\nexit 0\n"
+CONFIG_ADD = "scout-config.add.yaml"
+ENGINE_SCOUTCTL = PLUGIN_ROOT / "engine" / ".venv" / "bin" / "scoutctl"
 
 
 class FixtureError(Exception):
@@ -138,6 +144,9 @@ def build_vault(
         _overlay(scenario_dir / "vault", dest, today)
     if scenario_dir is not None:
         _append_brain(scenario_dir / "brain", dest, today)
+    config_add = scenario_dir / CONFIG_ADD if scenario_dir is not None else None
+    if config_add is not None and config_add.is_file():
+        _add_config(config_add, dest / "scout-config.yaml")
     (dest / "knowledge-base.md").write_text(render_dates(generate_index(), today), encoding="utf-8")
     if scheduler_tick is not None:
         _seed_scheduler_tick(dest, scheduler_tick)
@@ -154,7 +163,27 @@ def build_vault(
     _git(dest, env, "config", "gc.auto", "0")
     _git(dest, env, "add", "-A")
     _git(dest, env, "commit", "-q", "-m", "fixture")
+    if config_add is not None and config_add.is_file():
+        # After the fixture commit: the hook would judge every fixture file as new debt.
+        from scout.kb.hook import install_hook
+
+        install_hook(dest, scoutctl=str(ENGINE_SCOUTCTL))
     return dest
+
+
+def _add_config(src: Path, target: Path) -> None:
+    """Add ``src``'s top-level keys to the vault's config, keeping the installed text as it is."""
+    import yaml
+
+    add = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+    have = yaml.safe_load(target.read_text(encoding="utf-8")) or {} if target.is_file() else {}
+    if not isinstance(add, dict) or not isinstance(have, dict):
+        raise ValueError(f"{src}: a scenario config addition must be a mapping")
+    clash = sorted(set(add) & set(have))
+    if clash:
+        raise ValueError(f"{src}: the installed scout-config.yaml already sets {', '.join(clash)}")
+    old = target.read_text(encoding="utf-8") if target.is_file() else ""
+    target.write_text(old.rstrip("\n") + "\n\n" + src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _refuse_system_side_effects(cmd: list[str], env: dict[str, str]) -> None:

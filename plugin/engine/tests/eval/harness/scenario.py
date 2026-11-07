@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from scout.kb.structure import Marker
+
 from .checks.kb_writing import KB_CHECKS, KbFact
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
@@ -56,6 +58,7 @@ class Scenario:
     kb_project: str = ""  # the KB checks: the project folder whose pages they score
     max_front_page_growth: int = DEFAULT_FRONT_PAGE_GROWTH  # front_page_growth: bytes the front page may grow
     expected_kb_facts: tuple[KbFact, ...] = ()  # kb_facts_cited: facts that must land, cited, in knowledge/
+    front_page_narration: tuple[Marker, ...] = ()  # front_page_no_narration: markers on each entry a run adds
 
     @property
     def files(self) -> Path:
@@ -111,7 +114,8 @@ def _growth(name: str, raw: object) -> int:
 
 
 def _kb_facts(name: str, raw: object) -> tuple[KbFact, ...]:
-    """``expected_kb_facts:``: ``[{id, all: [regex, …]}]``. A bad pattern fails before a session is spent."""
+    """``expected_kb_facts:``: ``[{id, all: [regex, …], none: [regex, …]}]``; ``none`` (optional) are
+    negations that keep a block from counting. A bad pattern fails before a session is spent."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -120,14 +124,37 @@ def _kb_facts(name: str, raw: object) -> tuple[KbFact, ...]:
     for entry in raw:
         if not isinstance(entry, dict) or not entry.get("id") or not isinstance(entry.get("all"), list):
             raise ValueError(f"scenario {name!r}: each expected_kb_facts entry needs an id and an `all` list")
+        if not isinstance(entry.get("none") or [], list):
+            raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r}: `none` must be a list")
         try:
             patterns = tuple(re.compile(str(p)) for p in entry["all"])
+            negations = tuple(re.compile(str(p)) for p in entry.get("none") or [])
         except re.error as exc:
             raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r}: bad pattern ({exc})") from exc
         if not patterns:
             raise ValueError(f"scenario {name!r}: expected_kb_facts {entry['id']!r} has no patterns")
-        facts.append(KbFact(str(entry["id"]), patterns))
+        facts.append(KbFact(str(entry["id"]), patterns, negations))
     return tuple(facts)
+
+
+def _entry_markers(name: str, raw: object) -> tuple[Marker, ...]:
+    """``front_page_narration:``: ``[{label, pattern}]``, matched against each entry a run adds to
+    the front page. The scorer's own: ``kb_structure.narration_markers`` (and so ``kb structure``)
+    stay as the vault has them."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"scenario {name!r}: front_page_narration must be a list")
+    out = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("pattern"):
+            raise ValueError(f"scenario {name!r}: each front_page_narration entry needs a pattern (and a label)")
+        label = str(entry.get("label") or entry["pattern"])
+        try:
+            out.append(Marker(label, re.compile(str(entry["pattern"]))))
+        except re.error as exc:
+            raise ValueError(f"scenario {name!r}: front_page_narration {label!r}: bad pattern ({exc})") from exc
+    return tuple(out)
 
 
 def load_scenario(name: str) -> Scenario:
@@ -167,4 +194,5 @@ def load_scenario(name: str) -> Scenario:
         kb_project=kb_project,
         max_front_page_growth=_growth(name, raw.get("max_front_page_growth")),
         expected_kb_facts=_kb_facts(name, raw.get("expected_kb_facts")),
+        front_page_narration=_entry_markers(name, raw.get("front_page_narration")),
     )

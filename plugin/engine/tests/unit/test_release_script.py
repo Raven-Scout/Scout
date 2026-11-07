@@ -163,7 +163,8 @@ def _kb_gate_result(r, stamp, verdict):
     """A kb-gate result dir as `eval.sh kb-gate` leaves it: its report beside the sample."""
     d = r.root / ".eval-results" / f"kb-front-page-kb-gate-{stamp}-1"
     d.mkdir(parents=True)
-    report = {"gate": "kb-writing", "verdict": verdict, "passed": verdict == "pass"}
+    checkout = {"commit": "ab12cd34ef56" * 3 + "abcd", "branch": "main", "dirty": False}
+    report = {"gate": "kb-writing", "verdict": verdict, "passed": verdict == "pass", "sample": {"checkout": checkout}}
     (d / "kb-gate-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
@@ -185,7 +186,11 @@ def test_prepare_reports_the_newest_kb_gate_verdict(tmp_path):
     _kb_gate_result(r, "20200102-093000", "fail")
     done = r.run("prepare", "patch", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode == 0, done.stderr
-    assert "KB-writing gate (a release gate, run locally): newest local result 2020-01-02 09:30: fail." in done.stdout
+    newest = "KB-writing gate (a release gate, run locally): newest local result 2020-01-02 09:30, fail,"
+    assert f"{newest} on main @ {'ab12cd34ef56' * 3}abcd." in done.stdout
+    # It can't be this release's run, and says so: prepare made the release commit just before.
+    assert "That is NOT a run of this release" in done.stdout
+    assert "On release/v0.14.1, before merging the release PR" in done.stdout
 
 
 def test_prepare_names_the_headless_self_update_rehearsal(tmp_path):

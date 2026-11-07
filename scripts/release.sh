@@ -126,29 +126,37 @@ eval_reminder() {
   echo "  then paste the summary it prints into the release PR."
 }
 
-# kb_gate_reminder: print the KB-writing gate step. It IS a release gate, but one the maintainer runs:
-# it starts a model session on their own Claude login, so neither this script nor CI can run or check
-# it. Print only; callers run it as `kb_gate_reminder || true`. Its result dirs are
-# kb-front-page-kb-gate-<YYYYMMDD-HHMMSS>-1/, each with a kb-gate-report.json.
+# kb_gate_reminder RELEASE_BRANCH: print the KB-writing gate step. It IS a release gate, but one the
+# maintainer runs: it starts a model session on their own Claude login, so neither this script nor CI
+# can run or check it. Print only; callers run it as `kb_gate_reminder … || true`. Its result dirs are
+# kb-front-page-kb-gate-<YYYYMMDD-HHMMSS>-1/, each with a kb-gate-report.json naming the commit it ran.
+# prepare makes the release commit just before this, so the newest result can never be this
+# release's run: it is shown with its commit and labelled as such, never as clearance.
 kb_gate_reminder() {
-  local newest="" verdict="" d stamp
+  local release_branch="$1" newest="" verdict="" commit="" ran_on="" d stamp report
   for d in "$REPO_ROOT"/.eval-results/*-kb-gate-*/; do
-    [ -f "$d/kb-gate-report.json" ] || continue
+    report="$d/kb-gate-report.json"
+    [ -f "$report" ] || continue
     stamp="$(basename "$d" | sed -nE 's/.*-([0-9]{8}-[0-9]{6})-[0-9]+$/\1/p')"
     [ -z "$stamp" ] || [[ "$stamp" < "$newest" ]] || {
       newest="$stamp"
-      verdict="$(sed -nE 's/^  "verdict": "([a-z]+)",?$/\1/p' "$d/kb-gate-report.json")"
+      verdict="$(sed -nE 's/^  "verdict": "([a-z]+)",?$/\1/p' "$report")"
+      commit="$(sed -nE 's/^ *"commit": "([0-9a-f]{7,40})",?$/\1/p' "$report" | head -n 1)"
+      ran_on="$(sed -nE 's/^ *"branch": "([^"]+)",?$/\1/p' "$report" | head -n 1)"
     }
   done
   if [ -z "$newest" ]; then
     echo "→ KB-writing gate (a release gate, run locally): no local result yet."
   else
     echo "→ KB-writing gate (a release gate, run locally): newest local result" \
-      "${newest:0:4}-${newest:4:2}-${newest:6:2} ${newest:9:2}:${newest:11:2}: ${verdict:-unreadable}."
+      "${newest:0:4}-${newest:4:2}-${newest:6:2} ${newest:9:2}:${newest:11:2}, ${verdict:-unreadable}," \
+      "on ${ran_on:-an unknown branch} @ ${commit:-no recorded commit}."
+    echo "  That is NOT a run of this release: its commit was made just now, after that result."
   fi
-  echo "  On the release branch, before merging the release PR (1 session on your Claude login, no API key):"
+  echo "  On ${release_branch}, before merging the release PR (1 session on your Claude login, no API key):"
   echo "    plugin/scripts/eval.sh kb-gate"
-  echo "  Merge only on \"verdict\": \"pass\" (exit 0), with its JSON report pasted into the release PR."
+  echo "  Merge only on \"verdict\": \"pass\" (exit 0) from a report whose commit is ${release_branch}'s head,"
+  echo "  with that JSON report pasted into the release PR."
 }
 
 cmd_prepare() {
@@ -197,7 +205,7 @@ cmd_prepare() {
   "$PY" -m scout.scripts.release_notes --repo-root "$REPO_ROOT" "$new" --repo "$slug" --out "$notes" \
     ${prev:+--prev "${prev%% *}"} ${app_prev:+--app-prev "${app_prev%% *}"}
   eval_reminder "${prev%% *}" || true
-  kb_gate_reminder || true
+  kb_gate_reminder "$branch" || true
   echo "→ Headless self-update rehearsal (not a gate): the previous release updating itself to this one,"
   echo "  in a throwaway Linux container (or run the e2e-self-update workflow on $branch):"
   echo "    scripts/e2e/self-update/run.sh --from ${prev%% *} --to $branch"

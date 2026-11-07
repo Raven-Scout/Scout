@@ -25,6 +25,7 @@ from tests.eval.harness.checks.kb_writing import (
     front_page_growth,
     front_page_no_narration,
     kb_facts_cited,
+    source_keys,
 )
 from tests.eval.harness.dates import render_dates
 from tests.eval.harness.kb_gate import exit_code, gate_report, score_kb, spec_for, structure_row
@@ -95,12 +96,7 @@ def test_the_built_fixture_folder_meets_the_page_standard(tmp_path: Path, scenar
     row = structure_row(vault, "report-builder")
     assert row is not None and row["conforms"], row
     assert not row["over_target"]
-    assert _verdicts(vault, scenario) == {
-        "kb_structure": True,
-        "front_page_growth": True,
-        "kb_facts_cited": False,
-        "front_page_no_narration": True,
-    }
+    assert _verdicts(vault, scenario) == {**dict.fromkeys(KB_CHECKS, True), "kb_facts_cited": False}
 
 
 def test_every_signal_is_in_a_connector_fixture(scenario) -> None:
@@ -157,10 +153,13 @@ def test_a_narrated_update_paragraph_fails(tmp_path: Path, scenario) -> None:
     assert results["kb_facts_cited"].passed is True  # the knowledge notes are good's
 
 
-def test_a_front_page_that_keeps_every_detail_fails_on_growth_only(tmp_path: Path, scenario) -> None:
+def test_a_front_page_that_keeps_every_detail_fails_on_growth_and_bullet_count(tmp_path: Path, scenario) -> None:
     vault = _snapshot(tmp_path, "good", "grown")
-    verdicts = _verdicts(vault, scenario)
-    assert verdicts == {**dict.fromkeys(KB_CHECKS, True), "front_page_growth": False}
+    results = {c.name: c for c in score_kb(vault, spec_for(scenario))}
+    assert {n: c.passed for n, c in results.items()} == {
+        **dict.fromkeys(KB_CHECKS, True), "front_page_growth": False, "front_page_bullets": False,
+    }  # fmt: skip
+    assert results["front_page_bullets"].details == ("'Where it stands' has 7 bullets (the standard's cap is 6)",)
 
 
 def test_the_growth_limit_is_the_scenarios(tmp_path: Path, scenario) -> None:
@@ -180,7 +179,7 @@ def test_facts_without_a_citation_fail(tmp_path: Path, scenario) -> None:
     assert results["kb_facts_cited"].passed is False
     assert all("without a citation" in d for d in results["kb_facts_cited"].details), results["kb_facts_cited"]
     assert {n: results[n].passed for n in KB_CHECKS if n != "kb_facts_cited"} == dict.fromkeys(
-        ("kb_structure", "front_page_growth", "front_page_no_narration"), True
+        (n for n in KB_CHECKS if n != "kb_facts_cited"), True
     )
 
 
@@ -194,6 +193,94 @@ def test_a_loose_file_beside_the_front_page_fails_structure(tmp_path: Path, scen
 def test_facts_filed_only_outside_knowledge_do_not_count(tmp_path: Path, scenario) -> None:
     vault = _snapshot(tmp_path, "broken")  # the updates file alone, cited, but beside the front page
     assert _verdicts(vault, scenario)["kb_facts_cited"] is False
+
+
+def _only_failing(vault: Path, scenario) -> dict[str, tuple[str, ...]]:
+    return {c.name: c.details for c in score_kb(vault, spec_for(scenario)) if c.passed is not True}
+
+
+def test_the_standards_placeholder_line_is_not_a_new_paragraph(tmp_path: Path, scenario) -> None:
+    """Review finding 1: "_None right now._" in the emptied Open questions section passes."""
+    assert _only_failing(_snapshot(tmp_path, "good", "placeholder"), scenario) == {}
+
+
+def test_a_lazily_wrapped_bullet_is_one_entry(tmp_path: Path, scenario) -> None:
+    """Review finding 5: a bullet's unindented next line continues it, as CommonMark reads it."""
+    assert _only_failing(_snapshot(tmp_path, "good", "lazy-wrap"), scenario) == {}
+
+
+def test_a_bullet_over_the_page_bullet_cap_fails(tmp_path: Path, scenario) -> None:
+    """Review finding 2: one "Where it stands" bullet rewritten in place, past #597's 300 chars,
+    within the byte budget, so only the bullet check catches it."""
+    failing = _only_failing(_snapshot(tmp_path, "good", "long-bullet"), scenario)
+    assert list(failing) == ["front_page_bullets"]
+    assert re.fullmatch(
+        r"line \d+: a new 3\d\d-char entry \(limit 300\): - The nightly PDF.*…", failing["front_page_bullets"][0]
+    )
+
+
+def test_a_dated_update_written_as_a_bullet_fails(tmp_path: Path, scenario) -> None:
+    """Review finding 3: the update paragraph's way around the paragraph rule."""
+    failing = _only_failing(_snapshot(tmp_path, "good", "bullet-diary"), scenario)
+    assert list(failing) == ["front_page_no_narration"]
+    [detail] = failing["front_page_no_narration"]
+    assert detail.startswith("new entry reads as a run update (checked sources, dated entry, this run, update entry): ")
+
+
+def test_a_citation_to_the_meetings_own_note_counts(tmp_path: Path, scenario) -> None:
+    """Review finding 6: meeting-prep files a meeting as knowledge-base/meetings/<slug>/<date>.md."""
+    assert _only_failing(_snapshot(tmp_path, "good", "meeting-cite"), scenario) == {}
+
+
+def test_a_citation_to_a_note_nobody_wrote_does_not_count(tmp_path: Path, scenario) -> None:
+    failing = _only_failing(_snapshot(tmp_path, "good", "dangling-cite"), scenario)
+    assert list(failing) == ["kb_facts_cited"]
+    assert failing["kb_facts_cited"] == (
+        "row-cap-200k: in knowledge-base/projects/report-builder/knowledge/report-builder-decisions.md without a "
+        "citation (a URL, or a link to an existing note under sources/ or meetings/)",
+    )
+
+
+def test_facts_written_as_their_negation_have_not_landed(tmp_path: Path, scenario) -> None:
+    """Review finding 7: "is not merged yet" and "isn't done" cite the right links but say the opposite."""
+    failing = _only_failing(_snapshot(tmp_path, "good", "negated"), scenario)
+    assert list(failing) == ["kb_facts_cited"]
+    assert {d.split(":", 1)[0] for d in failing["kb_facts_cited"]} == {"pr-57-merged", "proj-1240-done"}
+
+
+def test_the_fixture_vault_runs_the_front_page_lock_with_its_hook(tmp_path: Path, scenario) -> None:
+    """The gate tests the config a live vault runs: #597's FRONT_PAGE_LOCK, enforced by the
+    kb-lint pre-commit hook. The block must stay the one test_kb_lint_front_pages pins."""
+    import yaml
+
+    from tests.unit.test_kb_lint_front_pages import FRONT_PAGE_LOCK
+
+    added = (SCENARIO / "scout-config.add.yaml").read_text(encoding="utf-8")
+    assert yaml.safe_load(added) == yaml.safe_load(FRONT_PAGE_LOCK)
+    vault = build_vault(tmp_path / "v", today=TODAY, scenario_dir=scenario.files)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    assert config["kb_lint"] == yaml.safe_load(FRONT_PAGE_LOCK)["kb_lint"] and config["timezone"] == "UTC"
+    from scout.kb.hook import MARKER, hooks_dir
+
+    assert MARKER in (hooks_dir(vault) / "pre-commit").read_text(encoding="utf-8")
+    # A run's commit that adds narration to the front page is refused, as on a live vault.
+    front = vault / PROJECT / "report-builder.md"
+    front.write_text(front.read_text(encoding="utf-8") + "\nLast verified today against gh.\n", encoding="utf-8")
+    _git(vault, "add", "-A", when=f"{TODAY}T07:00:00")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    done = subprocess.run(
+        ["git", "-c", "user.name=Alex Example", "-c", "user.email=alex@example.com", "commit", "-q", "-m", "run"],
+        cwd=vault, env=env, capture_output=True, text=True,
+    )  # fmt: skip
+    assert done.returncode != 0 and "page-narration" in done.stdout + done.stderr
+
+
+def test_a_scenario_config_addition_may_not_override_the_installed_config(tmp_path: Path) -> None:
+    sc = tmp_path / "scenario"
+    sc.mkdir()
+    (sc / "scout-config.add.yaml").write_text("timezone: Europe/Prague\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="already sets timezone"):
+        build_vault(tmp_path / "v", today=TODAY, scenario_dir=sc)
 
 
 def test_an_uncommitted_edit_counts(tmp_path: Path, scenario) -> None:
@@ -240,20 +327,38 @@ def test_a_fact_already_in_the_fixture_is_not_credited() -> None:
     assert kb_facts_cited({"k.md": note}, rewritten, [fact]).passed is True
 
 
+EXISTING = source_keys(
+    {"knowledge-base/sources/2026-10/2026-10-13-sync.md", "knowledge-base/meetings/report-sync/2026-10-13.md",
+     "knowledge-base/projects/report-builder/knowledge/report-builder-decisions.md"}
+)  # fmt: skip
+
+
 @pytest.mark.parametrize(
     ("cite", "ok"),
     [
         ("([PR](https://github.com/example-org/api/pull/57))", True),
         ("([[sources/2026-10/2026-10-13-sync]])", True),
+        ("([[knowledge-base/sources/2026-10/2026-10-13-sync.md|the sync]])", True),
         ("([[2026-10-13-sync]])", True),
-        ("([[report-builder-decisions]])", False),
+        ("([[meetings/report-sync/2026-10-13]])", True),
+        ("([[sources/2026-10/2026-10-13-nobody-wrote-this]])", False),  # dangling
+        ("([[report-builder-decisions]])", False),  # exists, but isn't a source
         ("(per the sync)", False),
     ],
 )
 def test_what_counts_as_a_citation(cite: str, ok: bool) -> None:
     fact = KbFact("x", (re.compile("200,000"),))
     after = {"k.md": f"# T\n\nThe cap is 200,000 rows {cite}.\n"}
-    assert kb_facts_cited({}, after, [fact]).passed is ok
+    assert kb_facts_cited({}, after, [fact], EXISTING).passed is ok
+
+
+def test_a_negated_fact_has_not_landed() -> None:
+    fact = KbFact(
+        "pr", (re.compile(r"#57\b"), re.compile(r"(?i)\bmerged\b")), (re.compile(r"(?i)\bnot (?:yet )?merged"),)
+    )
+    url = "([PR](https://github.com/example-org/api/pull/57))"
+    assert kb_facts_cited({}, {"k.md": f"PR #57 is not merged yet {url}.\n"}, [fact]).passed is False
+    assert kb_facts_cited({}, {"k.md": f"PR #57 merged on Tuesday {url}.\n"}, [fact]).passed is True
 
 
 def test_rewriting_a_bullet_or_row_in_place_is_not_narration() -> None:
@@ -273,6 +378,33 @@ def test_a_new_heading_or_paragraph_on_the_front_page_is_reported() -> None:
         "new heading: ### Update 2026-10-14",
         "section 'Where it stands' gained 1 paragraph",
     }
+
+
+def test_blocks_follow_lazy_continuation_but_a_blank_line_ends_an_item() -> None:
+    text = "- an item\nwrapped lazily\n\nA paragraph.\n"
+    assert blocks(text) == [("item", "- an item\nwrapped lazily"), ("prose", "A paragraph.")]
+
+
+def test_bullets_already_long_in_the_fixture_are_not_new_debt() -> None:
+    from tests.eval.harness.checks.kb_writing import front_page_bullets
+
+    long = "- " + "x" * 320
+    before = f"# P\n\n## Where it stands\n{long}\n"
+    assert front_page_bullets(before, before, 300, ["Where it stands"]).passed is True
+    assert front_page_bullets(before, before + long + "y\n", 300, ["Where it stands"]).passed is False
+    six = "".join(f"- b{i}\n" for i in range(6))
+    page = "# P\n\n## Where it stands\n"
+    assert front_page_bullets(page + six, page + six, 300, ["Where it stands"]).passed is True
+    assert front_page_bullets(page + six, page + six + "- b6\n", 300, ["Where it stands"]).passed is False
+
+
+def test_entry_markers_skip_the_sections_dated_by_design() -> None:
+    dated = (Marker("dated entry", re.compile(r"^- \d{4}-\d{2}-\d{2}")),)
+    before = "# P\n\n## Where it stands\n- a\n\n## What's next\n- 2026-10-20: pilot\n"
+    ahead = before.replace("- 2026-10-20: pilot", "- 2026-10-21: pilot")
+    assert front_page_no_narration(before, ahead, (), dated).passed is True
+    diary = before.replace("- a\n", "- a\n- 2026-10-13: checked everything\n")
+    assert front_page_no_narration(before, diary, (), dated).passed is False
 
 
 def test_growth_is_counted_in_bytes_not_characters() -> None:
@@ -369,10 +501,8 @@ def test_kb_gate_runs_one_session_and_writes_the_report(
     report = json.loads(captured.out)
     assert code == 1 and report["verdict"] == "fail"
     assert {c["name"]: c["passed"] for c in report["checks"]} == {
-        "kb_structure": True,
-        "front_page_growth": True,
+        **dict.fromkeys(KB_CHECKS, True),
         "kb_facts_cited": False,
-        "front_page_no_narration": True,
     }
     [result_dir] = (tmp_path / "results").iterdir()
     assert result_dir.name.startswith("kb-front-page-kb-gate-")
@@ -380,4 +510,8 @@ def test_kb_gate_runs_one_session_and_writes_the_report(
     assert json.loads(extra.read_text(encoding="utf-8")) == report
     assert report["sample"]["result_dir"] == str(result_dir) and report["sample"]["aborted"] is None
     assert report["sample"]["resolved_model"] == "claude-sonnet-5"
+    # Review finding 4: the report names the code it tested.
+    checkout = report["sample"]["checkout"]
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=EVAL_ROOT, capture_output=True, text=True).stdout.strip()
+    assert checkout["commit"] == head and checkout["branch"] and isinstance(checkout["dirty"], bool)
     shutil.rmtree(tmp_path / "results")

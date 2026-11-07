@@ -17,16 +17,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from scout.kb.structure import load_structure_config, structure_rows
+from scout.kb.structure import Marker, load_structure_config, structure_rows
 
 from .checks import CheckResult
 from .checks.kb_writing import (
     KB_CHECKS,
+    SOURCE_ROOTS,
     KbFact,
+    front_page_bullets,
     front_page_growth,
     front_page_no_narration,
     kb_facts_cited,
     kb_structure,
+    source_keys,
 )
 from .scenario import Scenario
 
@@ -40,10 +43,13 @@ class KbSpec:
     project: str
     max_growth: int
     facts: tuple[KbFact, ...]
+    entry_markers: tuple[Marker, ...] = ()
 
 
 def spec_for(scenario: Scenario) -> KbSpec:
-    return KbSpec(scenario.kb_project, scenario.max_front_page_growth, scenario.expected_kb_facts)
+    return KbSpec(
+        scenario.kb_project, scenario.max_front_page_growth, scenario.expected_kb_facts, scenario.front_page_narration
+    )
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,12 @@ def pages_now(vault: Path, project: str) -> KbPages:
     return KbPages(front.read_text(encoding="utf-8") if front.is_file() else None, notes)
 
 
+def source_notes(vault: Path) -> frozenset[str]:
+    """Vault-relative paths of the notes a citation may link (``SOURCE_ROOTS``), as they are now."""
+    roots = [vault / root for root in SOURCE_ROOTS if (vault / root).is_dir()]
+    return frozenset(p.relative_to(vault).as_posix() for root in roots for p in root.rglob("*.md"))
+
+
 def structure_row(vault: Path, project: str) -> dict[str, Any] | None:
     return next((r for r in structure_rows(vault) if r["project"] == project), None)
 
@@ -107,14 +119,37 @@ def score_kb(vault: Path, spec: KbSpec, names: Sequence[str] = KB_CHECKS) -> tup
     except KbReadError as exc:
         return tuple(CheckResult(n, None, (f"fixture unreadable: {exc}",)) for n in names)
     after = pages_now(vault, spec.project)
-    markers = load_structure_config(vault).narration_markers
+    cfg = load_structure_config(vault)
     run = {
         "kb_structure": lambda: kb_structure(structure_row(vault, spec.project), spec.project),
         "front_page_growth": lambda: front_page_growth(before.front, after.front, spec.max_growth),
-        "kb_facts_cited": lambda: kb_facts_cited(before.knowledge, after.knowledge, spec.facts),
-        "front_page_no_narration": lambda: front_page_no_narration(before.front, after.front, markers),
+        "kb_facts_cited": lambda: kb_facts_cited(
+            before.knowledge, after.knowledge, spec.facts, source_keys(source_notes(vault))
+        ),
+        "front_page_no_narration": lambda: front_page_no_narration(
+            before.front, after.front, cfg.narration_markers, spec.entry_markers
+        ),
+        "front_page_bullets": lambda: front_page_bullets(
+            before.front, after.front, cfg.max_bullet_chars, cfg.bullet_sections
+        ),
     }
     return tuple(run[n]() for n in names)
+
+
+def checkout_state(root: Path) -> dict[str, Any]:
+    """The code a gate run tested: HEAD, its branch, and whether the tree had changes git doesn't
+    have (``dirty``), so a pasted report says which commit it cleared. ``None`` values when git can't say."""
+
+    def ask(*args: str) -> str | None:
+        done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    status = ask("status", "--porcelain")
+    return {
+        "commit": ask("rev-parse", "HEAD"),
+        "branch": ask("rev-parse", "--abbrev-ref", "HEAD"),
+        "dirty": None if status is None else bool(status),
+    }
 
 
 def _bytes(text: str | None) -> int | None:
