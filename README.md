@@ -56,7 +56,27 @@ release also fast-forwards the `stable` branch to the release commit, which is
 what marketplace installs read. Release candidates (`vX.Y.Z-rc.N`) never move it.
 The earlier `plugin/vX.Y.Z` and `app/vX.Y.Z` tags are history.
 
-Before merging a release PR, the maintainer runs the agent-behaviour eval
+**Release gate: KB writing.** On the release branch, before merging its PR, the
+maintainer runs `plugin/scripts/eval.sh kb-gate` on their own Claude login. It
+starts one consolidation session (Sonnet; `--opus` for Opus) against a throwaway
+copy of a synthetic vault whose project front page meets the KB page standard,
+with the `kb lint` front-page lock on. It feeds the session a day of new signals
+about that project, and fails when the run broke the page:
+- `kb structure` no longer shows the folder ✓;
+- the front page grew by more than 512 bytes (`--max-growth N`);
+- the new facts didn't land in the project's `knowledge/` notes, cited to a URL
+  or to an existing source or meeting note;
+- the front page gained narration, a dated or "update" bullet, a new paragraph,
+  or a bullet over the 300-character cap.
+
+Exit 0 is a pass, 1 a fail, 2 a run that couldn't be scored. The JSON report it
+prints (also saved in the result dir as `kb-gate-report.json`) names the commit
+it ran on: paste it into the release PR, check that commit is the release
+branch's head, and don't merge on a fail.
+`plugin/scripts/eval.sh kb-score <result dir>/vault` re-scores a kept run
+without starting a session. CI never runs the gate, because it spends model usage.
+
+Before merging a release PR, the maintainer also runs the agent-behaviour eval
 locally, on their own Claude login (Sonnet, no API key):
 `plugin/scripts/eval.sh run <scenarios>`, or
 `plugin/scripts/eval.sh compare <scenarios> --base <last tag>` when

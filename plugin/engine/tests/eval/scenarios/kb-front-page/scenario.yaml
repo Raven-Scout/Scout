@@ -1,0 +1,51 @@
+# kb-front-page: does a consolidation run keep a project front page to the KB page standard while
+# new facts about the project arrive? (The KB-writing release gate: plugin/scripts/eval.sh kb-gate.)
+#
+# The vault holds one project folder, knowledge-base/projects/report-builder/, that meets the page
+# standard (`scoutctl kb structure` ✓). connectors.yaml scripts a day of signals about it: the export
+# streaming PR merged, the nightly PDF ticket moved to Done, and the weekly sync's notes raise the
+# row cap. A good run rewrites the front page's current state in place and files the detail, cited,
+# in the project's knowledge/ notes. The failure this catches: run narration and new paragraphs
+# written onto the front page, which regrow a rebuilt page within days.
+mode: morning-consolidation
+weekdays_only: false
+personas: [slack, linear, calendar, email]
+checks: [kb_structure, front_page_growth, kb_facts_cited, front_page_no_narration, front_page_bullets]
+budget: 4  # dollars, a runaway brake on the usage-equivalent figure (spec §4.1)
+
+kb_project: report-builder
+# Bytes the front page may grow by. Every new fact replaces an older one on the page (the PR is no
+# longer in review, the ticket is no longer in progress, the open question became a decision), so
+# a run that follows the standard grows it by little or nothing. Override with kb-gate --max-growth.
+max_front_page_growth: 512
+
+# Each fact must land in a new or changed block (a paragraph, list item or table row) of a note
+# under the project's knowledge/ folder, and that block must cite a source: a URL, or a wikilink to
+# a note that exists under sources/ or meetings/. A block matches a fact when every pattern in
+# `all` matches it and none in `none` does ("PR #57 is not merged yet" hasn't landed the fact).
+expected_kb_facts:
+  - id: pr-57-merged
+    all: ['(?:api#|pull/|PR ?#?|\#)57\b', '(?i)\bmerged\b']
+    none: ["(?i)(?:\\bnot|n't|\\byet to be)\\s+(?:yet\\s+)?(?:been\\s+)?merged\\b|\\bunmerged\\b"]
+  - id: proj-1240-done
+    all: ['PROJ-1240', '(?i)\b(?:done|closed|completed?|turned off|retired)\b']
+    none: ["(?i)(?:\\bnot|n't)\\s+(?:yet\\s+)?(?:been\\s+)?(?:done|closed|completed?|turned off|retired)\\b"]
+  - id: row-cap-200k
+    all: ['\b200[,. ]?000\b|\b200 ?[kK]\b']
+
+# What a run's update looks like when it is written as a bullet instead of a paragraph (the page
+# standard's rule 6: no stacked dated updates). Matched against each bullet or paragraph a run adds
+# to the front page outside "What's next" and "Key decisions", whose rows are dated by design.
+# kb_structure.narration_markers, and so `kb structure`, stay as the vault has them.
+front_page_narration:
+  - label: dated entry
+    pattern: '^(?:[-*+]|\d+[.)])?\s*(?:\*\*|__|_|\*)?\s*(?:\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.? \d{1,2})\b'
+  - label: update entry
+    pattern: '(?i)^(?:[-*+]|\d+[.)])?\s*(?:\*\*|__)?[^:]{0,30}\bupdate\b[^:]{0,15}:'
+  - label: this run
+    pattern: '(?i)\bthis (?:run|session|morning|afternoon|evening|consolidation)\b'
+  - label: checked sources
+    pattern: '(?i)\b(?:re-?)?checked (?:gh|github|linear|slack|calendar|gmail|mail|the (?:sync )?notes)\b'
+
+expected_placement: {}
+expected_closures: []
