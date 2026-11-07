@@ -8,7 +8,14 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
 
   - **Bash**: a command :func:`raw_kb_read` flags is denied. ``scoutctl``
     segments (so ``scripts/scoutctl kb …``), the engine's scripts, ``git
-    add``/``commit`` and quoted commit messages are never flagged.
+    add``/``commit`` and quoted commit messages are never flagged. So is one
+    that sets, unsets or blanks ``SCOUT_MODE``/``SCOUT_READER`` or clears the
+    environment (``env -i``), or one that detaches (``nohup``, ``setsid``,
+    ``disown``, a trailing ``&``, ``launchctl``, ``osascript``, ``open``,
+    ``tmux``/``screen``, ``script``, ``at``/``batch``, ``ssh``):
+    :func:`scout.kb.live_run.run_escape`, #595. The commit hook knows a run's
+    commits from the process table either way; the denial makes the attempt
+    fail in the open and leaves it in the transcript.
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
@@ -115,6 +122,22 @@ def _deny_search(tool: str) -> str:
     )
 
 
+def _deny_run_env() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't set, unset or blank SCOUT_MODE or SCOUT_READER, or clear its environment: "
+        "they say this session is a scheduled run and not the owner. Commit with `scripts/git-safe-commit.sh` as "
+        "usual; if a check refuses the commit, follow what it says."
+    )
+
+
+def _deny_detach() -> str:
+    return (
+        f"{MARK} A scheduled run runs its commands in the foreground: it doesn't background them (a trailing &) or "
+        "hand them to another process (nohup, setsid, disown, launchctl, osascript, open, tmux, screen, script, at, "
+        "batch, ssh). Run the command directly."
+    )
+
+
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
 
@@ -135,6 +158,11 @@ def decide(payload: Mapping[str, Any], *, reader: str) -> str | None:
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
+        from scout.kb.live_run import run_escape
+
+        escape = run_escape(command)
+        if escape is not None:
+            return _deny_run_env() if escape == "env" else _deny_detach()
         return _deny_bash() if raw_kb_read(command, in_kb=_in_kb(cwd, vault)) else None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
