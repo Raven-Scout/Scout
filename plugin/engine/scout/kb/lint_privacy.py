@@ -41,7 +41,11 @@ Rules:
   The last is a content check: the label doesn't change, but the people the
   note is shared with would read whatever the run brought in from notes they
   can't see. A removed or moved line, or a new note in a shared folder, isn't
-  refused. The owner's interactive commits aren't checked.
+  refused. The owner's interactive commits aren't checked. A non-note file a
+  share covers (``.csv``, ``.xlsx``, extensionless, …) gets the same guard in
+  a scheduled run (:func:`_non_note_findings`, #594): its text is compared
+  line by line, one that isn't UTF-8 text blocks on any change, and one new to
+  the share has its lines checked for private notes.
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
@@ -79,8 +83,10 @@ import yaml
 
 from scout.kb.git_io import (
     StagedPath,
+    head_blob,
     head_text_lossy,
     index_text_lossy,
+    staged_blob,
     staged_paths,
     staged_text_lossy,
     tracked_files,
@@ -118,7 +124,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
-from scout.repo_sync import LocalOnlyRules, RepoSyncError, load_state
+from scout.repo_sync import LocalOnlyRules, RepoSyncError, host_cache_problem, load_host_cache, load_state
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -145,6 +151,10 @@ _MESSAGES = {
     "config-widening": "a scheduled run may not change the privacy: block — leave that to the owner",
     "local-only-move": "a scheduled run may not move a file out of a local-only path (repo sync would upload it "
     "from its new path) — leave that to the owner",
+    "local-only-unchecked": "a scheduled run moved this file, and this computer's copy of Agnes's Local-Only list "
+    "is missing or out of date, so the move can't be checked against it. A scheduled run must not run scoutctl "
+    "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
+    "push a move out of a path Agnes keeps local-only, and says how to allow one",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -282,6 +292,8 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         staged: str | None = None
         if not in_privacy_scope(rel, ctx.shared_globs):
             if not _md(rel):
+                if ctx.scheduled:
+                    out += _non_note_findings(ctx, sp)
                 continue
             staged = staged_text_lossy(repo, rel)
             if _facts(rel, staged).declared == "none" and not shared_sources(_head_window(rel, staged)):
@@ -298,10 +310,11 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
 
     Any file, in the privacy scope or not, because repo sync excludes by path.
     Local-only is what :class:`scout.repo_sync.LocalOnlyRules` says: the
-    engine's lists, ``local_only_add`` and the upload allowlist (pinned for the
+    engine's lists, ``local_only_add``, the upload allowlist (pinned for the
     link, or in the config), so a move into ``sync_only`` from outside it counts
-    too. The source is judged under every policy in play, the destination under
-    the commit's alone. Git pairs the two paths (``git mv``, or a delete and an
+    too, and on a linked vault the host's list as last cached (sources only).
+    The source is judged under every policy in play, the destination under the
+    commit's alone. Git pairs the two paths (``git mv``, or a delete and an
     add of similar content in one commit); a copy, or a delete in a later
     commit, isn't seen.
     """
@@ -313,13 +326,29 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     except RepoSyncError:
         state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
     pinned = state.sync_only if state is not None else None
-    was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], (), pinned=pinned)
+    # A linked vault adds the host's list as last cached (#596): a missing or stale
+    # cache still counts what it has, and every other move that would upload gets
+    # a warning, since the hook can't ask Agnes. The cache only adds blocks: it
+    # judges sources, never the destination, so a stale entry or a cache a run
+    # wrote can't make a destination count as staying home. Sync re-checks every
+    # move against the list it fetches (repo_sync.host_only_moves).
+    host_entries: tuple[str, ...] = ()
+    unchecked = False
+    if state is not None:
+        cache = load_host_cache(ctx.repo, agnes_url=state.agnes_url)
+        host_entries = cache.local_only_paths if cache is not None else ()
+        unchecked = host_cache_problem(cache) is not None
+    was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], host_entries, pinned=pinned)
     now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
-    return [
-        Finding(rel, "privacy-widening", True, _MESSAGES["local-only-move"])
-        for src, rel in moves
-        if was.local_only(src) and not now.local_only(rel)
-    ]
+    out: list[Finding] = []
+    for src, rel in moves:
+        if now.local_only(rel):
+            continue
+        if was.local_only(src):
+            out.append(Finding(rel, "privacy-widening", True, _MESSAGES["local-only-move"]))
+        elif unchecked:
+            out.append(Finding(rel, "local-only-unchecked", False, _MESSAGES["local-only-unchecked"]))
+    return out
 
 
 def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
@@ -452,15 +481,108 @@ def _widening(
     for n in added_marker_lines(head_text, staged):
         block("add a %%privacy:allow%% marker — only the owner may", n)
     if head is not None and head.federation_scope != "none" and label.federation_scope != "none":
-        first = _first_new_line(head_text, staged)
-        if first is not None:
-            block(
-                "add to a note that is already shared — the people it is shared with would read it; "
-                "put the new material in a different note that isn't shared, or propose the edit in the "
-                "review queue; never narrow this note's share to make room",
-                first,
-            )
+        if _md(rel):
+            first = _first_new_line(head_text, staged)
+            if first is not None:
+                block(_ADD_TO_SHARED.format(what="note"), first)
+        elif sp.head_rel is not None:
+            out += _changed_shared_file(ctx, sp.head_rel, rel)
     return out
+
+
+_ADD_TO_SHARED = (
+    "add to a {what} that is already shared — the people it is shared with would read it; put the new material "
+    "in a different {what} that isn't shared, or propose the edit in the review queue; never narrow this "
+    "{what}'s share to make room"
+)
+_NOT_TEXT = "isn't UTF-8 text (binary, or another encoding), so kb lint can't tell what it holds"
+
+
+def _non_note_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
+    """A scheduled run's change to a non-note file a share covers (#594), outside the privacy scope.
+
+    A folder default shares every file under it, ``.csv``, ``.xlsx`` and
+    extensionless ones included, and they upload with the folder. The file's
+    label comes from its path alone. The rules are a shared note's (#569,
+    #586): a move into a share or to a wider one, or added or reworded text in
+    a file already shared, blocks; a removed or moved line, or a move out of
+    the share, doesn't. A file that isn't UTF-8 text blocks on any change.
+    A file new to the share has its lines checked for private notes (the
+    widening guard never sees its text); one that isn't text fails closed.
+
+    Owner commits don't come here: a data export naming a project is the
+    owner's call, and Agnes serves readers only ``.md``. Nor does a vault with
+    sharing off, where no label is shared. The private-note scan reads only a
+    file new to the share; an edit to one already shared blocks on its first
+    new line without a scan, so a big ``.csv`` costs a line diff, not a scan.
+    """
+    rel = sp.rel
+    label = classify(rel, None, ctx.policy)
+    if not label.shared_file:
+        return []  # no share covers it, or the run moved it out of one
+    head: Label | None = None
+    if sp.head_rel is not None:
+        # A note renamed to a non-note name keeps its HEAD label: its frontmatter, not just its folder default.
+        head_text = head_text_lossy(ctx.repo, sp.head_rel) if _md(sp.head_rel) else None
+        head = classify(sp.head_rel, _head_window(sp.head_rel, head_text), ctx.head_policy)
+    out: list[Finding] = []
+
+    def block(message: str, line: int | None = None) -> None:
+        out.append(Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}", line))
+
+    if head is not None and _widens(head.federation_scope, label.federation_scope):
+        block("widen who this file is shared with — leave that to the owner")
+    if sp.head_rel is not None and head is not None and head.federation_scope != "none":
+        return out + _changed_shared_file(ctx, sp.head_rel, rel)
+    text = _as_text(staged_blob(ctx.repo, rel))
+    if text is None:
+        block(f"add this file to a share: it {_NOT_TEXT} — leave that to the owner")
+        return out
+    return out + _shared_findings(ctx, rel, text, added_line_numbers(None, text))
+
+
+def _changed_shared_file(ctx: _Ctx, head_rel: str, rel: str) -> list[Finding]:
+    """What a run's commit adds to a non-note file shared at HEAD and in the commit (#594).
+
+    The raw blobs are compared, so two bad bytes that decode alike still
+    count. Text is compared line by line, as a note is, after a BOM and CRLF
+    line endings are set aside; a change to those alone blocks with its own
+    message, since nothing was added. A file that isn't UTF-8 text on either
+    side blocks on any change.
+    """
+    old, new = head_blob(ctx.repo, head_rel), staged_blob(ctx.repo, rel)
+    if old is None or old == new:
+        return []
+    old_text, new_text = _as_text(old), _as_text(new)
+    if old_text is None or new_text is None:
+        message = f"change a file that is already shared: it {_NOT_TEXT}, so any change counts — leave it to the owner"
+        return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
+    first = _first_new_line(_plain(old_text), _plain(new_text))
+    if first is None:
+        if _first_new_line(old_text, new_text) is None:
+            return []  # lines only removed or moved
+        message = (
+            "change the encoding or line endings of a file that is already shared (a byte-order mark, or CRLF and "
+            "LF swapped): nothing was added, but the file is rewritten — leave it as it is"
+        )
+        return [Finding(rel, "privacy-widening", True, f"a scheduled run may not {message}")]
+    message = "a scheduled run may not " + _ADD_TO_SHARED.format(what="file")
+    return [Finding(rel, "privacy-widening", True, message, first)]
+
+
+def _plain(text: str) -> str:
+    """``text`` without a leading byte-order mark and with CRLF read as LF (line numbers are kept)."""
+    return text.removeprefix("\ufeff").replace("\r\n", "\n")
+
+
+def _as_text(data: bytes) -> str | None:
+    """``data`` as UTF-8 text, or None for a binary file (a NUL in the first 8,000 bytes, git's test) or bad UTF-8."""
+    if b"\0" in data[:8000]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _first_new_line(old: str | None, new: str) -> int | None:
