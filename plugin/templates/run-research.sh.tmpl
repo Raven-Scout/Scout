@@ -115,6 +115,11 @@ export SCOUT_MODE="$MODE"
 # in the session are labelled for that reader.
 export SCOUT_READER=autonomous
 
+# Claude Code otherwise sets its process title to "claude", which hides its argv
+# from ps. The commit hook reads that argv to tell this run's commits from the
+# owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —
 # resolved by the engine (scout/models.py). A resolver failure never blocks the

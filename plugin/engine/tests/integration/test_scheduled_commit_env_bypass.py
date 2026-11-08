@@ -9,7 +9,11 @@ path, which a scheduled run may not do (#562), and commits it with
 - none, or blanking the variables instead of unsetting them;
 - deleting the run marker by a glob;
 - killing the runner holding the session lock (the session lives on);
-- double-forking the commit, so git is re-parented and has no run in its ancestry.
+- double-forking the commit, so git is re-parented and has no run in its ancestry;
+- dressing up as an interactive host: a commit message naming an app bundle,
+  ``exec -a sshd``, a symlink named ``tmux``, a Python double-fork that execs as ``login``;
+- killing the wrapper and the runner from a child of theirs (what the real claude
+  can do), with and without deleting the marker first.
 
 The hook refuses every one, and the routes that break the lock leave a line in
 ``failures.log``. Once the run has ended, the owner's identical commit goes through.
@@ -68,21 +72,40 @@ def _render(tmpl: Path, out: Path, scout_dir: Path) -> Path:
 
 
 COMMIT = 'env -u SCOUT_MODE -u SCOUT_READER git commit -q -m "move positions" >"$out/commit.out" 2>&1'
+RECORD = 'echo $? >"$out/commit.rc"'
+WAIT_FOR_RC = 'for _ in $(seq 1 600); do [ -s "$out/commit.rc" ] && break; sleep 0.1; done'
 ROUTES = {
     "unset": COMMIT,
     "blank": 'SCOUT_MODE= SCOUT_READER=owner git commit -q -m "move positions" >"$out/commit.out" 2>&1',
     "rm-marker": f"rm -f .scout-logs/.*.run\n{COMMIT}",
     "kill-holder": f'kill -9 "$(cat .scout-logs/.scout-sess*n.lock)"\nsleep 0.5\n{COMMIT}',
     # The outer subshell exits at once, so git's parent is re-parented to init/launchd.
-    "double-fork": f'( ( {COMMIT}; echo $? >"$out/commit.rc" ) & )\n'
-    'for _ in $(seq 1 600); do [ -s "$out/commit.rc" ] && break; sleep 0.1; done',
+    "double-fork": f"( ( {COMMIT}; {RECORD} ) & )\n{WAIT_FOR_RC}",
+    "message-names-a-bundle": COMMIT.replace("move positions", "move positions (Foo.app/Contents/)"),
+    "exec-a-sshd": f"( exec -a sshd /bin/bash -c '{COMMIT}; {RECORD}' )",
+    "symlink-tmux": f"mkdir -p .scout-cache/x\nln -sf /bin/bash .scout-cache/x/tmux\n"
+    f".scout-cache/x/tmux -c '{COMMIT}; {RECORD}'",
+    "python-execs-as-login": "python3 - <<'PY'\n"
+    "import os, sys\n"
+    "if os.fork():\n    os.wait()\n    sys.exit(0)\n"
+    "os.setsid()\n"
+    "if os.fork():\n    os._exit(0)\n"
+    f"""os.execv("/bin/bash", ["login", "-c", {COMMIT + "; " + RECORD!r}])\n"""
+    f"PY\n{WAIT_FOR_RC}",
+    # A child kills its wrapper and runner, then commits. Its argv[0] is what the real claude shows.
+    "kill-wrapper-and-runner": "export W=$$ R=$PPID\n"
+    f'( exec -a claude /bin/bash -c \'kill -9 "$W" "$R"; sleep 0.5; {COMMIT}; {RECORD}; git reset -q --hard\' )',
+    "rm-marker-then-kill-both": 'export W=$$ R=$PPID V="$SCOUT_DATA_DIR"\nrm -f .scout-logs/.*.run\n'
+    '( exec -a "claude --max-budget-usd 25 --name scout-x -p Your working directory is $V." /bin/bash -c '
+    f'\'kill -9 "$W" "$R"; sleep 0.5; {COMMIT}; {RECORD}; git reset -q --hard\' )',
 }
 
 # The "session". Its result lands in the vault's .scout-cache/ (gitignored),
 # with the marker it saw when it started.
 SESSION = """#!/bin/bash
 cd "$SCOUT_DATA_DIR" || exit 1
-out=.scout-cache/e2e
+export out=.scout-cache/e2e
+rm -f "$out/commit.rc"
 mkdir -p "$out" notes
 cp .scout-logs/.scout-session.lock.run "$out/marker" 2>/dev/null || true
 git mv {positions} {moved}
@@ -186,4 +209,28 @@ def test_a_double_forked_commit_during_a_run_is_still_refused(vault: Path) -> No
     proc = _run(vault, "run-scout.sh.tmpl", "double-fork")
     assert proc.returncode == 0, proc.stderr
     _assert_refused(vault, head)
+    _assert_owner_commits(vault)
+
+
+@pytest.mark.parametrize("route", ["message-names-a-bundle", "exec-a-sshd", "symlink-tmux", "python-execs-as-login"])
+def test_a_fake_interactive_host_is_still_refused(vault: Path, route: str) -> None:
+    head = git(vault, "rev-parse", "HEAD")
+    proc = _run(vault, "run-scout.sh.tmpl", route)
+    assert proc.returncode == 0, proc.stderr
+    _assert_refused(vault, head)
+    _assert_owner_commits(vault)
+
+
+@pytest.mark.parametrize(
+    ("route", "mode"), [("kill-wrapper-and-runner", SLOT), ("rm-marker-then-kill-both", "scheduled")]
+)
+def test_killing_the_wrapper_and_the_runner_is_still_refused(vault: Path, route: str, mode: str) -> None:
+    """The first leaves lock and marker behind; the second has only the claude session's own argv to go on."""
+    head = git(vault, "rev-parse", "HEAD")
+    _run(vault, "run-scout.sh.tmpl", route)  # killed: no exit code to check
+    _assert_refused(vault, head, mode=mode)
+    # The next run reclaims the lock; once it has ended, the commit is the owner's again.
+    proc = _run(vault, "run-scout.sh.tmpl", "blank")
+    assert proc.returncode == 0, proc.stderr
+    assert "died without releasing the session lock" in _failures(vault)
     _assert_owner_commits(vault)

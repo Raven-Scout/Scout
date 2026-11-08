@@ -76,9 +76,10 @@ LOCK_PROGRESS="$LOCK_FILE.progress"
 LOCK_OWNER="$LOCK_FILE.owner"
 # The run marker: "<pid> <mode>" while a scheduled run holds the lock (#595).
 # The commit hook knows a run's commits from the process table (this runner,
-# claude-with-retry.sh and the claude session: engine/scout/kb/live_run.py);
-# the marker only names the mode. A run that deletes or rewrites it, or the
-# lock, gains nothing, and _scout_release_lock logs it to failures.log.
+# claude-with-retry.sh and the claude session: engine/scout/kb/live_run.py). The
+# marker names the mode, and keeps a run counted as live after its holder dies
+# without releasing, until the next holder clears it. A run that deletes or
+# rewrites it or the lock is logged to failures.log by _scout_release_lock.
 LOCK_RUN="$LOCK_FILE.run"
 SCOUT_RUN_MARKED=0
 # A guard older than this was left by a process that died inside the guarded

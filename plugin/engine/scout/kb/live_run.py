@@ -6,29 +6,36 @@ so a run could commit with ``env -u SCOUT_MODE`` or ``SCOUT_MODE=`` and get the
 owner's rules. A run can change its environment and delete files, but not the
 processes it runs in, so this module reads one ``ps`` snapshot:
 
-- **The run's processes** (:func:`run_processes`): the session lock's holder
-  when its argv is a ``run-(scout|dreaming|research).sh``; any
+- **A live run** (:func:`run_processes`): the session lock's holder when its
+  argv is a ``run-(scout|dreaming|research).sh``; any
   ``<vault>/scripts/claude-with-retry.sh``; and the run's own ``claude``
   session (``--name``, ``-p`` and ``--max-budget-usd`` with the vault's path in
-  its prompt). Zombies don't count. ``scoutctl bootstrap`` takes the same lock,
-  but it isn't a runner, so the owner's ``/scout-update`` is never a run; a
-  holder PID reused after a crash isn't one either. Killing the runner leaves
-  its wrapper and its claude, which still mark the run.
+  its prompt, which ``ps`` shows because the runners export
+  ``CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1``). Zombies don't count.
+  ``scoutctl bootstrap`` takes the same lock, but it isn't a runner, so the
+  owner's ``/scout-update`` is never a run; a holder PID reused after a crash
+  isn't one either. A run also stays live while its holder is dead and the lock
+  and run marker it left both name it, until the next lock holder clears them
+  (not across a reboot): only a crash or a kill leaves that behind.
 - **Whose commit** (:func:`commit_source`), when a run of this vault is live:
-  the run's when the commit's ancestry passes through one of those processes
-  (``by: ancestry``), or reaches no interactive host (``by: detached``: a
-  double-forked or orphaned ``git`` re-parented to init/launchd). It is the
-  owner's when the ancestry reaches an interactive host first: a macOS app
-  bundle (a terminal, an IDE, the Claude or Scout app), ``sshd``/``login``, a
-  ``tmux``/``screen`` server or a known terminal emulator. A run that hands its
-  commit to a host has to detach first, which the PreToolUse gate refuses
-  (:func:`run_escape`).
+  the run's when any process in the commit's ancestry is one of those
+  (``by: ancestry``), wherever it sits: nothing the owner runs passes through a
+  run. Otherwise it is the owner's only when the ancestry reaches an interactive
+  host that started before the run did; every other chain (a double-forked or
+  orphaned ``git``) is the run's (``by: detached``, or ``stale-lock``). A host
+  is judged by its real executable (:func:`exe_path`, from the kernel, never
+  ``ps`` or argv, which the caller controls) against a fixed list
+  (:func:`is_host_exe`): an app under ``/Applications``, ``sshd``, ``login``,
+  ``tmux``, ``screen`` or a known terminal in a system directory. Start times
+  defeat a host the run starts itself, and rule out the hook's own Python and
+  ``git`` even when they live in an app bundle. An owner who opens a brand-new
+  terminal app during a run gets the run's rules until it ends.
 
 The run marker the lock script writes beside the lock
-(``.scout-logs/.scout-session.lock.run``: ``<pid> <mode>``) only names the
-mode; deleting it changes nothing here, and the lock script logs it to
-``failures.log`` at release. When ``ps`` can't run, a lock naming a live PID
-with a marker naming the same PID counts the commit as the run's (fail closed).
+(``.scout-logs/.scout-session.lock.run``: ``<pid> <mode>``) names the mode and
+tells a dead holder's run from a crashed ``scoutctl``; the lock script logs a
+deleted one to ``failures.log`` at release. When ``ps`` can't run, a lock naming
+a live PID with a marker naming the same PID counts as the run's (fail closed).
 """
 
 from __future__ import annotations
@@ -37,7 +44,9 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Mapping
+import sys
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -47,14 +56,22 @@ RUN_MARKER = LOCK_NAME + ".run"
 UNKNOWN_MODE = "scheduled"
 _MODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _DIGITS_RE = re.compile(r"^[0-9]+$")
-_PS_LINE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\S+)\s?(.*)$")
+_ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
+_PS_LINE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+((?:\d+-)?(?:\d+:)?\d+:\d+)\s?(.*)$")
 _RUNNER_RE = re.compile(r"(?:^|[\s/])run-(?:scout|dreaming|research)\.sh(?:\s|$)")
-# Interactive hosts by the basename of argv[0] (a trailing ":" dropped, for "tmux: server").
-_HOSTS = {
-    "sshd", "login", "tmux", "screen", "mosh-server", "zellij",
+# Interactive hosts, by the real executable: an app bundle in an Applications folder (Xcode's developer
+# tools live in one too, and aren't hosts), or one of these names in a system directory.
+_APP_HOST_RE = re.compile(r"^(?:/System|/Users/[^/]+)?/Applications/(?:[^/]+/)*?[^/]+\.app/Contents/")
+_HOST_NAMES = {
+    "sshd", "sshd-session", "login", "tmux", "screen", "mosh-server", "zellij",
     "gnome-terminal-server", "konsole", "xterm", "alacritty", "kitty", "wezterm-gui", "foot", "tilix",
-    "xfce4-terminal", "terminator", "ghostty", "code", "cursor", "zed",
+    "xfce4-terminal", "terminator", "ghostty", "ptyxis", "kgx", "mate-terminal", "lxterminal", "qterminal",
+    "urxvt", "rxvt", "code", "cursor", "zed",
 }  # fmt: skip
+_SYSTEM_DIR_RE = re.compile(
+    r"^(?:/s?bin|/usr/(?:local/)?(?:s?bin|libexec)|/usr/lib(?:exec)?/[^/]+|/usr/share/[^/]+|/opt/[^/]+"
+    r"|/opt/homebrew/s?bin|/(?:opt/homebrew|usr/local)/Cellar/[^/]+/[^/]+/(?:s?bin|libexec)|/nix/store/[^/]+/s?bin)$"
+)
 
 
 @dataclass(frozen=True)
@@ -63,19 +80,28 @@ class Proc:
     ppid: int
     stat: str
     command: str
+    elapsed: int  # seconds since it started
 
 
 @dataclass(frozen=True)
 class CommitSource:
     runs: bool  # the commit is the run's
     mode: str  # the live run's mode (from the marker), else UNKNOWN_MODE
-    by: str  # "ancestry", "detached" or "host"
+    by: str  # "ancestry", "detached", "stale-lock", "host" or "no-ps"
+
+
+def parse_etime(text: str) -> int:
+    """``ps`` etime (``[[dd-]hh:]mm:ss``) in seconds; 0 when it can't be read."""
+    m = _ETIME_RE.match(text.strip())
+    if m is None:
+        return 0
+    return int(m[1] or 0) * 86400 + int(m[2] or 0) * 3600 + int(m[3]) * 60 + int(m[4])
 
 
 def process_table() -> dict[int, Proc]:
     """Every process: one ``ps`` call. Raises when ``ps`` can't run."""
     out = subprocess.run(
-        ["ps", "-A", "-w", "-w", "-o", "pid=,ppid=,stat=,command="],
+        ["ps", "-A", "-w", "-w", "-o", "pid=,ppid=,stat=,etime=,command="],
         capture_output=True,
         text=True,
         errors="replace",
@@ -86,14 +112,41 @@ def process_table() -> dict[int, Proc]:
     last: Proc | None = None
     for line in out.splitlines():
         m = _PS_LINE.match(line)
-        if m is None:  # an argv with a newline in it (a run's prompt) continues the last row
+        if m is None or int(m[1]) in table:  # an argv with a newline in it (a run's prompt) continues the last row
             if last is not None:
-                last = table[last.pid] = Proc(last.pid, last.ppid, last.stat, f"{last.command}\n{line}")
+                last = table[last.pid] = Proc(last.pid, last.ppid, last.stat, f"{last.command}\n{line}", last.elapsed)
             continue
-        last = table[int(m[1])] = Proc(int(m[1]), int(m[2]), m[3], m[4])
+        last = table[int(m[1])] = Proc(int(m[1]), int(m[2]), m[3], m[5], parse_etime(m[4]))
     if not table:
         raise OSError("ps listed no processes")
     return table
+
+
+def exe_path(pid: int) -> str | None:
+    """The process's real executable, from the kernel: ``exec -a`` and symlinks don't change it. None if unknown."""
+    if sys.platform == "darwin":
+        import ctypes
+
+        try:
+            buf = ctypes.create_string_buffer(4096)
+            n = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidpath(pid, buf, 4096)
+        except OSError:
+            return None
+        return buf.value.decode(errors="replace") if n > 0 else None
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+
+
+def is_host_exe(exe: str | None) -> bool:
+    """Whether a real executable is an interactive host (see the module doc)."""
+    if not exe:
+        return False
+    if _APP_HOST_RE.match(exe):
+        return ".app/Contents/Developer/" not in exe
+    folder, _, name = exe.rpartition("/")
+    return name in _HOST_NAMES and _SYSTEM_DIR_RE.match(folder) is not None
 
 
 def _number(text: str) -> int | None:
@@ -149,13 +202,6 @@ def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None)
     return out
 
 
-def _is_host(p: Proc) -> bool:
-    if ".app/Contents/" in p.command:
-        return True
-    argv0 = p.command.split(None, 1)[0] if p.command.strip() else ""
-    return argv0.rsplit("/", 1)[-1].rstrip(":").lower() in _HOSTS
-
-
 def _ancestry(table: Mapping[int, Proc], start: int) -> list[int]:
     chain: list[int] = []
     pid: int | None = start
@@ -166,27 +212,55 @@ def _ancestry(table: Mapping[int, Proc], start: int) -> list[int]:
     return chain
 
 
+def _stale_run_age(vault: Path, table: Mapping[int, Proc], held: int | None, now: float) -> int | None:
+    """Seconds since a run whose holder died without releasing: lock and marker still name it, and no reboot since."""
+    if held is None or _marker(vault)[0] != held:
+        return None
+    holder = table.get(held)
+    if holder is not None and not holder.stat.startswith("Z"):
+        return None
+    try:
+        age = int(now - (vault / ".scout-logs" / LOCK_NAME).stat().st_mtime)
+    except OSError:
+        return None
+    init = table.get(1)
+    return None if init is not None and age > init.elapsed else max(age, 0)
+
+
 def commit_source(
-    vault: Path, table: Mapping[int, Proc], *, start: int, holder: int | None | Literal["lock"] = "lock"
+    vault: Path,
+    table: Mapping[int, Proc],
+    *,
+    start: int,
+    holder: int | None | Literal["lock"] = "lock",
+    exe: Callable[[int], str | None] | None = None,
+    now: float | None = None,
 ) -> CommitSource | None:
     """Whether the commit made by process ``start`` is a live run's, or None when no run of ``vault`` is live.
 
-    ``holder`` is the session lock's PID; by default it is read from the lock.
+    ``holder`` is the session lock's PID; by default it is read from the lock. ``exe`` reads a process's real
+    executable (default :func:`exe_path`).
     """
     held = lock_holder(vault) if holder == "lock" else holder
     run = run_processes(vault, table, holder=held)
-    if not run:
-        return None
+    if run:
+        run_age = max(table[pid].elapsed for pid in run)
+    else:
+        stale = _stale_run_age(vault, table, held, time.time() if now is None else now)
+        if stale is None:
+            return None
+        run_age = stale
     marker_pid, marker_mode = _marker(vault)
     mode = marker_mode if marker_mode is not None and marker_pid is not None and marker_pid == held else UNKNOWN_MODE
     chain = _ancestry(table, start)
+    if any(pid in run for pid in chain):
+        return CommitSource(True, mode, "ancestry")
+    read_exe = exe_path if exe is None else exe
     for pid in chain:
-        if pid in run:
-            return CommitSource(True, mode, "ancestry")
         p = table.get(pid)
-        if p is not None and _is_host(p):
+        if p is not None and p.elapsed > run_age and is_host_exe(read_exe(pid)):
             return CommitSource(False, mode, "host")
-    return CommitSource(True, mode, "detached")
+    return CommitSource(True, mode, "detached" if run else "stale-lock")
 
 
 def commit_source_now(vault: Path) -> CommitSource | None:
@@ -219,6 +293,7 @@ _SEGMENTS = re.compile(r"&&|\|\||[;|\n`]|\$\(|\(|\)")
 # A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
 _BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
 _QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {
     "nohup", "setsid", "disown", "launchctl", "osascript", "open", "tmux", "screen", "script", "at", "batch",
@@ -226,6 +301,27 @@ _DETACH = {
 }  # fmt: skip
 _PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+
+
+def _drop_heredoc_bodies(command: str) -> str:
+    """``command`` without its here-documents' bodies, which are text and not commands."""
+    lines = command.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        quoted = [m.span() for m in _QUOTED.finditer(line)]
+        for m in _HEREDOC.finditer(line):
+            if any(a <= m.start() < b for a, b in quoted):
+                continue  # "<<" inside a quoted argument
+            word = m[2] or m[3] or m[4]
+            for j in range(i, len(lines)):
+                if (lines[j].lstrip("\t") if m[1] else lines[j]) == word:
+                    i = j + 1
+                    break  # an unterminated one keeps the rest: that text is still scanned
+    return "\n".join(out)
 
 
 def _segments(command: str) -> list[str]:
@@ -317,8 +413,10 @@ def run_escape(command: str, *, depth: int = 0) -> str | None:
     the environment), "detach" (backgrounds or hands work to another process), else None.
 
     Only the forms that write count: reading ``$SCOUT_MODE``, ``printenv``, a mention in a commit message or a
-    search, and ``2>&1`` all pass.
+    search, ``2>&1``, and anything in a quoted argument or a here-document's body (a Telegram wrap's ``&amp;``)
+    all pass.
     """
+    command = _drop_heredoc_bodies(command)
     if _BACKGROUND.search(_QUOTED.sub("''", command)):
         return "detach"
     verdict: str | None = None

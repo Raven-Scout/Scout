@@ -354,6 +354,8 @@ def test_run_grep_always_reaches_python(vault, tmp_path):
         "open -a Terminal x.command",
         "echo x | at now",
         "tmux new -d x",
+        "ls notes\nnohup git commit -m x",
+        "ls notes\n\tsetsid git commit",
     ],
 )
 def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_path, command):
@@ -378,3 +380,17 @@ def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command)
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_a_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
+    tool_input = {"command": "ls notes", "description": "Open the script at env; nohup & screen"}
+    payload = _payload("Bash", tool_input, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 0 and res.stdout == "" and res.stderr == ""
+
+
+def test_the_telegram_wrap_is_allowed_through_the_real_cli(vault):
+    wrap = "scoutctl notify telegram --body-file - <<'SCOUT_WRAP'\n<b>Done.</b> R&amp;D (open since Monday)\nSCOUT_WRAP"
+    payload = _payload("Bash", {"command": wrap}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
