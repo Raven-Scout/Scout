@@ -163,12 +163,12 @@ def live(tmp_path):
     """Start a live process in the vault named like ``run-scout.sh`` or ``scripts/claude-with-retry.sh``."""
     procs: list[subprocess.Popen[bytes]] = []
 
-    def start(vault: Path, rel: str) -> int:
+    def start(vault: Path, rel: str, *args: str) -> int:
         script = vault / rel
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/bash\nsleep 60\n")
         script.chmod(0o755)
-        procs.append(subprocess.Popen([str(script)]))
+        procs.append(subprocess.Popen([str(script), *args]))
         time.sleep(0.2)  # let bash exec, so ps shows the script's argv
         return procs[-1].pid
 
@@ -180,7 +180,7 @@ def live(tmp_path):
 
 @pytest.mark.parametrize("which", SCENARIOS)
 @pytest.mark.parametrize("owner_env", [{}, {"SCOUT_READER": "owner"}, {"SCOUT_MODE": ""}])
-@pytest.mark.parametrize("marked_by", ["runner", "runner-no-marker", "wrapper"])
+@pytest.mark.parametrize("marked_by", ["runner", "runner-no-marker", "wrapper", "claude"])
 def test_a_commit_during_a_live_run_is_refused_when_the_check_cant_run_whatever_its_env(
     tmp_path, live, which: str, owner_env: dict[str, str], marked_by: str
 ) -> None:
@@ -188,6 +188,8 @@ def test_a_commit_during_a_live_run_is_refused_when_the_check_cant_run_whatever_
     vault = _git_vault(tmp_path)
     if marked_by == "wrapper":
         live(vault, "scripts/claude-with-retry.sh")  # the runner was killed; its wrapper lives on
+    elif marked_by == "claude":
+        live(tmp_path, "claude", "--max-budget-usd", "25", "--name", "scout-x", "-p", f"Work in {vault}.")
     else:
         pid = live(vault, "run-scout.sh")
         _hold_lock(vault, pid, None if marked_by == "runner-no-marker" else f"{pid} morning-briefing\n")
@@ -206,6 +208,31 @@ def _dead_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
+
+
+def test_the_hook_script_cant_match_its_own_awk() -> None:
+    """Linux ``ps`` prints awk's whole argv on one row, with ``-v root=<vault>`` beside the program text."""
+    assert "--max-budget-usd" not in render_hook("/x/scoutctl")
+
+
+@pytest.mark.parametrize("shell", [s for s in ("/bin/sh", "/bin/dash", "/usr/bin/dash") if Path(s).exists()])
+def test_a_missing_lock_says_nothing_to_the_owner(tmp_path, shell: str) -> None:
+    vault = _git_vault(tmp_path)
+    script = tmp_path / "pre-commit"
+    script.write_text(render_hook(str(tmp_path / "nope")))
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
+    proc = subprocess.run([shell, str(script)], capture_output=True, text=True, env=env, cwd=vault)
+    assert proc.returncode == 0
+    assert "scout-session.lock" not in proc.stderr and "cannot open" not in proc.stderr
+
+
+@pytest.mark.parametrize("rel", ["less-on-the-wrapper", "vim-on-the-wrapper"])
+def test_a_process_only_naming_the_wrapper_leaves_the_owner_commit_alone(tmp_path, live, rel: str) -> None:
+    vault = _git_vault(tmp_path)
+    wrapper = vault / "scripts" / "claude-with-retry.sh"
+    live(tmp_path, rel, str(wrapper))  # argv[1] names it, but a shell isn't running it
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 0 and "WARNING" in proc.stderr
 
 
 @pytest.mark.parametrize("holder", ["dead", "not-a-runner", "another-vaults-wrapper"])

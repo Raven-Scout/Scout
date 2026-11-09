@@ -119,6 +119,40 @@ def test_the_runner_holding_the_lock_its_wrapper_and_its_claude_are_the_run() ->
     assert run_processes(V, table, holder=None) == {110, 120}
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"{V}/scripts/claude-with-retry.sh {V}/.scout-logs/x.log claude",
+        f"/bin/bash {V}/scripts/claude-with-retry.sh {V}/.scout-logs/x.log claude",
+        f"bash {V}/scripts/claude-with-retry.sh",
+    ],
+)
+def test_the_wrapper_is_the_wrapper_when_it_is_what_runs(command: str) -> None:
+    table, _ = _world((110, 1, command, BASH, RUN_AGE))
+    assert run_processes(V, table, holder=None) == {110}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"/bin/zsh -c cat {V}/scripts/claude-with-retry.sh; git commit -m x",
+        f"less {V}/scripts/claude-with-retry.sh",
+        f"/bin/bash -x {V}/scripts/claude-with-retry.sh",
+        f"/bin/bash {V}/scripts/claude-with-retry.sh.bak",
+        f"vim {V}/scripts/claude-with-retry.sh",
+    ],
+)
+def test_a_command_that_only_names_the_wrapper_is_no_run(command: str) -> None:
+    table, _ = _world((110, 1, command, BASH, RUN_AGE))
+    assert run_processes(V, table, holder=None) == set()
+
+
+def test_a_vault_path_with_a_space_still_finds_its_wrapper() -> None:
+    vault = Path("/Users/alex/My Vault")
+    table, _ = _world((110, 1, f"/bin/bash {vault}/scripts/claude-with-retry.sh x", BASH, RUN_AGE))
+    assert run_processes(vault, table, holder=None) == {110}
+
+
 def test_a_killed_runner_leaves_its_wrapper_and_claude_marking_the_run() -> None:
     wrapper: Row = (110, 1, *WRAPPER[2:])  # re-parented to launchd
     table, _ = _world(wrapper, CLAUDE)
@@ -340,7 +374,12 @@ def test_a_dead_holders_marker_leaves_the_owners_old_terminal_alone(tmp_path: Pa
     _lock(tmp_path, 100, "100 morning-briefing\n", age=RUN_AGE)
     table, exes = _world(*OWNER_TERMINAL, *_commit(520))
     src = commit_source(tmp_path, table, start=902, exe=exes.get)
-    assert src is not None and not src.runs
+    assert src is not None and not src.runs and src.dead_holder
+
+
+def test_a_live_run_has_no_dead_holder() -> None:
+    src = _source(V, (*RUN, *OWNER_TERMINAL, *_commit(520)))
+    assert src is not None and not src.dead_holder
 
 
 def test_a_lock_and_marker_from_before_the_last_boot_are_no_run(tmp_path: Path) -> None:
@@ -440,13 +479,14 @@ def test_a_continuation_line_cant_rewrite_a_process_already_read(monkeypatch: py
 
 def test_the_real_executable_ignores_a_spoofed_argv0(tmp_path: Path) -> None:
     link = tmp_path / "tmux"
-    link.symlink_to("/bin/sleep")
-    for argv in (["sshd", "30"], [str(link), "30"]):
-        proc = subprocess.Popen(argv, executable=str(link))
+    link.symlink_to("/bin/bash")
+    # "; :" keeps bash from exec-ing sleep in its place.
+    for argv0 in ("sshd", str(link)):
+        proc = subprocess.Popen([argv0, "-c", "sleep 30; :"], executable=str(link))
         try:
             time.sleep(0.2)
             exe = live_run.exe_path(proc.pid)
-            assert exe is not None and Path(exe).name == "sleep", exe
+            assert exe is not None and Path(exe).name == "bash", exe
             assert not is_host_exe(exe)
         finally:
             proc.kill()
@@ -532,6 +572,56 @@ def test_the_owners_commit_during_a_run_keeps_the_owners_rules(vault: Path, monk
     assert rc == 0, out
     assert "kb-lint: a scheduled run is in progress; this commit comes from your own session" in out
     assert _events(vault) == []
+
+
+def _dead_holder(monkeypatch: pytest.MonkeyPatch, vault: Path, *, under_terminal: bool) -> None:
+    """The hook's commit after a run died and left lock and marker, from an old terminal or a new shell."""
+    me = os.getpid()
+    hook: Row = (me, 520 if under_terminal else 1, "python scoutctl kb lint --staged", VENV_PY, JUST_NOW)
+    table, exes = _world(*OWNER_TERMINAL, hook)
+    monkeypatch.setattr(live_run, "process_table", lambda: table)
+    monkeypatch.setattr(live_run, "exe_path", exes.get)
+    _lock(vault, 100, "100 morning-briefing\n", age=RUN_AGE)
+
+
+def test_a_dead_holder_tells_the_owner_what_happened_and_how_to_clear_it(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dead_holder(monkeypatch, vault, under_terminal=False)
+    _move_out_of_local_only(vault)
+    rc, out = _hook(vault, {})
+    assert rc == 1 and "[privacy-widening]" in out
+    (line,) = [ln for ln in out.splitlines() if "died" in ln]
+    assert line.startswith("kb-lint: a scheduled run (morning-briefing) died and left its session lock")
+    assert "the next run clears it" in line and "delete .scout-logs/.scout-session.lock" in line
+    assert "comes from a scheduled run" not in out
+    (event,) = _events(vault)
+    assert event["payload"] == {"mode": "morning-briefing", "by": "stale-lock"}
+
+
+def test_a_dead_holder_notice_in_the_owners_old_terminal_says_no_run_is_in_progress(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dead_holder(monkeypatch, vault, under_terminal=True)
+    _move_out_of_local_only(vault)
+    rc, out = _hook(vault, {})
+    assert rc == 0, out
+    assert "in progress" not in out
+    (line,) = [ln for ln in out.splitlines() if "died" in ln]
+    assert "your rules apply" in line and "delete .scout-logs/.scout-session.lock" in line
+    assert _events(vault) == []
+
+
+def test_clearing_a_dead_holders_lock_as_the_message_says_gives_the_owner_their_rules(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dead_holder(monkeypatch, vault, under_terminal=False)
+    _move_out_of_local_only(vault)
+    assert _hook(vault, {})[0] == 1
+    (vault / ".scout-logs" / ".scout-session.lock").unlink()
+    rc, out = _hook(vault, {})
+    assert rc == 0, out
+    assert "scheduled run" not in out
 
 
 def test_a_commit_already_marked_scheduled_leaves_no_trace(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

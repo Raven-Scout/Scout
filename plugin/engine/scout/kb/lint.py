@@ -833,7 +833,10 @@ def _with_live_run(repo: Path, env: Mapping[str, str], out: TextIO) -> Mapping[s
     passes through the run, or one detached from it while it is live, is
     checked as the run's, and the event ``kb_lint.scheduled_by_process`` leaves
     a trace. The owner's commit from their own terminal or app during a run
-    keeps the owner's rules, with a one-line notice.
+    keeps the owner's rules, with a one-line notice. A run that died leaving
+    its lock counts until that lock is cleared, so its line says how: it can only
+    reach an owner, or a run that has already killed its own parents, and the
+    event is written first.
     """
     if is_scheduled(env):
         return env
@@ -844,12 +847,28 @@ def _with_live_run(repo: Path, env: Mapping[str, str], out: TextIO) -> Mapping[s
     if src is None:
         return env
     if not src.runs:
+        if src.dead_holder:
+            _say(
+                out,
+                f"kb-lint: a scheduled run ({src.mode}) died and left its session lock; this commit comes from your "
+                "own session, so your rules apply. The next run clears it, or delete .scout-logs/.scout-session.lock.",
+            )
+        else:
+            _say(
+                out,
+                "kb-lint: a scheduled run is in progress; this commit comes from your own session, "
+                "so your rules apply.",
+            )
+        return env
+    if src.dead_holder:
         _say(
             out,
-            "kb-lint: a scheduled run is in progress; this commit comes from your own session, so your rules apply.",
+            f"kb-lint: a scheduled run ({src.mode}) died and left its session lock, so this commit gets the "
+            "scheduled-run checks. If it is your own, the next run clears it, or delete "
+            ".scout-logs/.scout-session.lock and commit again.",
         )
-        return env
-    _say(out, f"kb-lint: this commit comes from a scheduled run ({src.mode}), so the scheduled-run checks apply.")
+    else:
+        _say(out, f"kb-lint: this commit comes from a scheduled run ({src.mode}), so the scheduled-run checks apply.")
     try:
         from scout.events import append_event
 

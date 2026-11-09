@@ -61,16 +61,19 @@ vault_root() {{
 
 # A run of this vault is live while its runner holds the session lock, or its
 # claude-with-retry.sh or claude session is alive (#595; scout.kb.live_run). Without
-# scoutctl the hook can't tell whose commit it is, so any live run refuses it.
+# scoutctl the hook can't tell whose commit it is, so any live run refuses it. The
+# split "--max-budget" "-usd" keeps this awk from matching its own row in ps.
 live_run() {{
   root="$(vault_root)" && [ -n "$root" ] || return 1
-  holder="$(tr -d ' \t\r\n' <"$root/.scout-logs/.scout-session.lock" 2>/dev/null)"
+  holder="$({{ tr -d ' \\t\\r\\n' <"$root/.scout-logs/.scout-session.lock"; }} 2>/dev/null)"
   ps -A -w -w -o pid=,stat=,command= 2>/dev/null | awk -v root="$root" -v holder="$holder" '
     $2 ~ /^Z/ {{ next }}
     {{ cmd = $0; sub(/^ *[0-9]+ +[^ ]+ */, "", cmd) }}
+    {{ first = cmd; sub(/ .*/, "", first); rest = cmd; sub(/^[^ ]+ +/, "", rest) }}
     $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research)\\.sh( |$)/ {{ found = 1 }}
-    index(cmd, root "/scripts/claude-with-retry.sh") {{ found = 1 }}
-    index(cmd, "--max-budget-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}
+    index(cmd " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
+    first ~ /(^|\\/)-?(ba|z|da|k)?sh$/ && index(rest " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
+    index(cmd, "--max-budget" "-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}
     END {{ exit !found }}'
 }}
 

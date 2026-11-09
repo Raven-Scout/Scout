@@ -151,11 +151,11 @@ def _failures(vault: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def _assert_refused(vault: Path, head: str, mode: str = SLOT) -> None:
+def _assert_refused(vault: Path, head: str, mode: str = SLOT, line: str | None = None) -> None:
     out = _result(vault, "commit.out")
     assert _result(vault, "commit.rc").strip() != "0", out
     assert "[privacy-widening]" in out and "local-only" in out
-    assert f"kb-lint: this commit comes from a scheduled run ({mode})" in out
+    assert (line or f"kb-lint: this commit comes from a scheduled run ({mode})") in out
     assert git(vault, "rev-parse", "HEAD") == head
 
 
@@ -222,13 +222,17 @@ def test_a_fake_interactive_host_is_still_refused(vault: Path, route: str) -> No
 
 
 @pytest.mark.parametrize(
-    ("route", "mode"), [("kill-wrapper-and-runner", SLOT), ("rm-marker-then-kill-both", "scheduled")]
+    ("route", "line"),
+    [
+        ("kill-wrapper-and-runner", f"kb-lint: a scheduled run ({SLOT}) died and left its session lock"),
+        ("rm-marker-then-kill-both", "kb-lint: this commit comes from a scheduled run (scheduled)"),
+    ],
 )
-def test_killing_the_wrapper_and_the_runner_is_still_refused(vault: Path, route: str, mode: str) -> None:
+def test_killing_the_wrapper_and_the_runner_is_still_refused(vault: Path, route: str, line: str) -> None:
     """The first leaves lock and marker behind; the second has only the claude session's own argv to go on."""
     head = git(vault, "rev-parse", "HEAD")
     _run(vault, "run-scout.sh.tmpl", route)  # killed: no exit code to check
-    _assert_refused(vault, head, mode=mode)
+    _assert_refused(vault, head, line=line)
     # The next run reclaims the lock; once it has ended, the commit is the owner's again.
     proc = _run(vault, "run-scout.sh.tmpl", "blank")
     assert proc.returncode == 0, proc.stderr

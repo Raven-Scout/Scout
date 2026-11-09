@@ -7,8 +7,9 @@ owner's rules. A run can change its environment and delete files, but not the
 processes it runs in, so this module reads one ``ps`` snapshot:
 
 - **A live run** (:func:`run_processes`): the session lock's holder when its
-  argv is a ``run-(scout|dreaming|research).sh``; any
-  ``<vault>/scripts/claude-with-retry.sh``; and the run's own ``claude``
+  argv is a ``run-(scout|dreaming|research).sh``; a running
+  ``<vault>/scripts/claude-with-retry.sh`` (argv[0], or argv[1] of a shell; a
+  command that only names it isn't one); and the run's own ``claude``
   session (``--name``, ``-p`` and ``--max-budget-usd`` with the vault's path in
   its prompt, which ``ps`` shows because the runners export
   ``CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1``). Zombies don't count.
@@ -58,6 +59,7 @@ _MODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _DIGITS_RE = re.compile(r"^[0-9]+$")
 _ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
 _PS_LINE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+((?:\d+-)?(?:\d+:)?\d+:\d+)\s?(.*)$")
+_SHELL_RE = re.compile(r"(?:^|/)-?(?:ba|z|da|k)?sh$")
 _RUNNER_RE = re.compile(r"(?:^|[\s/])run-(?:scout|dreaming|research)\.sh(?:\s|$)")
 # Interactive hosts, by the real executable: an app bundle in an Applications folder (Xcode's developer
 # tools live in one too, and aren't hosts), or one of these names in a system directory.
@@ -88,6 +90,7 @@ class CommitSource:
     runs: bool  # the commit is the run's
     mode: str  # the live run's mode (from the marker), else UNKNOWN_MODE
     by: str  # "ancestry", "detached", "stale-lock", "host" or "no-ps"
+    dead_holder: bool = False  # no run process is left: its holder died and left lock and marker
 
 
 def parse_etime(text: str) -> int:
@@ -184,6 +187,18 @@ def _vault_paths(vault: Path) -> set[str]:
     return paths
 
 
+def _starts_word(text: str, word: str) -> bool:
+    return text == word or text.startswith(word + " ")
+
+
+def _runs_script(command: str, script: str) -> bool:
+    """Whether a command line is ``script`` running: its argv[0], or argv[1] of a shell (a shebang's form)."""
+    if _starts_word(command, script):
+        return True
+    first, _, rest = command.partition(" ")
+    return _SHELL_RE.search(first) is not None and _starts_word(rest.lstrip(), script)
+
+
 def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None) -> set[int]:
     """The live processes of a scheduled run of ``vault`` (see the module doc)."""
     roots = _vault_paths(vault)
@@ -195,7 +210,7 @@ def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None)
         cmd = p.command
         if p.pid == holder and _RUNNER_RE.search(cmd):
             out.add(p.pid)
-        elif any(w in cmd for w in wrappers):
+        elif any(_runs_script(cmd, w) for w in wrappers):
             out.add(p.pid)
         elif "--name" in cmd and "-p" in cmd and "--max-budget-usd" in cmd and any(r in cmd for r in roots):
             out.add(p.pid)
@@ -259,8 +274,8 @@ def commit_source(
     for pid in chain:
         p = table.get(pid)
         if p is not None and p.elapsed > run_age and is_host_exe(read_exe(pid)):
-            return CommitSource(False, mode, "host")
-    return CommitSource(True, mode, "detached" if run else "stale-lock")
+            return CommitSource(False, mode, "host", dead_holder=not run)
+    return CommitSource(True, mode, "detached" if run else "stale-lock", dead_holder=not run)
 
 
 def commit_source_now(vault: Path) -> CommitSource | None:
