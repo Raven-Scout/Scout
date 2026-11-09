@@ -91,6 +91,9 @@ def is_scheduled(env: Mapping[str, str]) -> bool:
     for the owner. The one predicate for the lint's widening guard
     (``scout.kb.lint_privacy``), the refusal when the privacy check can't run,
     and the privacy hooks (``scout.hooks``); the pre-commit template's
-    ``scheduled()`` and hooks.json's shell checks mirror it.
+    ``scheduled()`` and hooks.json's shell checks mirror it. At commit time,
+    where a run can change its environment for one ``git commit``, the hook
+    also counts a commit the process table shows is a live run's
+    (``scout.kb.live_run``).
     """
     return bool(env.get("SCOUT_MODE")) or resolve_reader(None, env) != "owner"

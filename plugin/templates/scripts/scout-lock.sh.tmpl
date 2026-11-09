@@ -7,7 +7,8 @@
 #   SCOUT_DIR  LOG_DIR  LOG_FILE  LOCK_FILE  MODE  RUN_START
 #   RUNNER_KIND   scout | dreaming | research
 # and then calls, in order:
-#   scout_lock_acquire          0 = the lock is ours (released on EXIT);
+#   scout_lock_acquire          0 = the lock is ours (released on EXIT), with
+#                               the run marker beside it (#595);
 #                               1 = it stayed busy for the whole wait
 #   scout_redundant_wait_guard  0 = run; 1 = a session of this kind just did
 #                               this run's work, so skip it (#218)
@@ -73,6 +74,14 @@ LOCK_GUARD="$LOCK_FILE.takeover"
 # (bootstrap_lock.py), and health.py reads its mtime as the time it was taken.
 LOCK_PROGRESS="$LOCK_FILE.progress"
 LOCK_OWNER="$LOCK_FILE.owner"
+# The run marker: "<pid> <mode>" while a scheduled run holds the lock (#595).
+# The commit hook knows a run's commits from the process table (this runner,
+# claude-with-retry.sh and the claude session: engine/scout/kb/live_run.py). The
+# marker names the mode, and keeps a run counted as live after its holder dies
+# without releasing, until the next holder clears it. A run that deletes or
+# rewrites it or the lock is logged to failures.log by _scout_release_lock.
+LOCK_RUN="$LOCK_FILE.run"
+SCOUT_RUN_MARKED=0
 # A guard older than this was left by a process that died inside the guarded
 # section; it is safe to clear. Matches bootstrap_lock._GUARD_ABANDONED_S.
 LOCK_GUARD_ABANDONED_SECS=30
@@ -317,17 +326,32 @@ _scout_on_exit() {
     _scout_release_lock
 }
 
+_scout_tampered() {
+    # A trace for a lock or marker someone else changed during this run (#595).
+    echo "=== Session lock tampered with: $1 ===" >> "$LOG_FILE"
+    echo "Session lock tampered with during $MODE (PID $$): $1 at $(date)" >> "$LOG_DIR/failures.log"
+}
+
 _scout_release_lock() {
     # If the lock was reaped and taken over while we ran, it is not ours to remove.
-    if [ "$(_scout_lock_pid)" = "$$" ]; then
-        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER"
+    # A reap KILLs the holder after TERM, so a trap that runs still finds its lock.
+    local held marker
+    held=$(_scout_lock_pid)
+    if [ "$held" = "$$" ]; then
+        if [ "$SCOUT_RUN_MARKED" = 1 ]; then
+            marker=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
+            [ "$marker" = "$$ $MODE" ] || _scout_tampered "the run marker was removed or rewritten (it read '${marker:-nothing}')"
+        fi
+        rm -f "$LOCK_PROGRESS" "$LOCK_OWNER" "$LOCK_RUN"
         rm -f "$LOCK_FILE"
+    else
+        _scout_tampered "the session lock was removed or replaced (it read '${held:-nothing}')"
     fi
 }
 
 # One try at the lock: 0 if it is now ours, 1 if someone else holds it.
 _scout_lock_try() {
-    local _lock_attempt lock_mtime lock_age
+    local _lock_attempt lock_mtime lock_age stale_mode
     # Two attempts: recover a dead or wedged holder at most once, then retry the
     # atomic create. Any other conflict means another session holds the lock.
     for _lock_attempt in 1 2; do
@@ -371,7 +395,7 @@ _scout_lock_try() {
                     echo "=== Reap FAILED: session $LOCK_PID survived SIGKILL, leaving its lock in place ===" >> "$LOG_FILE"
                     echo "Reap FAILED for PID $LOCK_PID at $(date) -- lock left in place" >> "$LOG_DIR/failures.log"
                 elif [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
-                    rm -f "$LOCK_PROGRESS"
+                    rm -f "$LOCK_PROGRESS" "$LOCK_RUN"
                     rm -f "$LOCK_FILE"
                 fi
             fi
@@ -383,6 +407,11 @@ _scout_lock_try() {
                 break   # another process is already recovering it
             fi
             if [ "$(_scout_lock_pid)" = "$LOCK_PID" ]; then
+                # A runner releases its lock on EXIT; only a crash or a kill
+                # leaves it behind, so record which (#595).
+                stale_mode=$(head -n 1 "$LOCK_RUN" 2>/dev/null || true)
+                echo "Session PID $LOCK_PID (${stale_mode:-no run marker}) died without releasing the session lock (a crash, or killed) -- found by $MODE at $(date)" >> "$LOG_DIR/failures.log"
+                rm -f "$LOCK_RUN"
                 rm -f "$LOCK_FILE"
             fi
             rm -f "$LOCK_GUARD"
@@ -413,6 +442,13 @@ scout_lock_acquire() {
     trap _scout_on_exit EXIT
     # Where this run logs, so waiters can see it progress. Best effort.
     { printf '%s\n' "$LOG_FILE" > "$LOCK_OWNER"; } 2>/dev/null || true
+    # The run marker, written whole (tmp + mv) so the hook never reads half of it.
+    if { printf '%s %s\n' "$$" "$MODE" > "$LOCK_RUN.$$" && mv -f "$LOCK_RUN.$$" "$LOCK_RUN"; } 2>/dev/null; then
+        SCOUT_RUN_MARKED=1
+    else
+        rm -f "$LOCK_RUN.$$" 2>/dev/null || true
+        echo "=== Could not write the run marker $LOCK_RUN (the commit hook still knows this run; its mode reads 'scheduled') ===" >> "$LOG_FILE"
+    fi
     if [ "$SCOUT_LOCK_CONTENDED" = 1 ]; then
         SCOUT_LOCK_WAITED=$(( $(date +%s) - started ))
         echo "=== Lock acquired after ${SCOUT_LOCK_WAITED}s wait ===" >> "$LOG_FILE"

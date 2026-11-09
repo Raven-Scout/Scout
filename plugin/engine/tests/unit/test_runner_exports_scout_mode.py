@@ -72,6 +72,15 @@ def test_runner_exports_the_autonomous_reader_before_claude_launch(name: str, _d
 
 
 @pytest.mark.parametrize(("name", "_default_mode"), RUNNERS)
+def test_runner_keeps_claudes_argv_visible_to_the_commit_hook(name: str, _default_mode: str) -> None:
+    """Claude Code sets ``process.title="claude"`` unless told not to; the commit hook reads argv from ``ps`` (#595)."""
+    text = (TEMPLATES / name).read_text(encoding="utf-8")
+    line = "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1"
+    assert text.count(line) == 1, f"{name}: exactly one export expected"
+    assert text.index(line) < text.index(CLAUDE_LAUNCH)
+
+
+@pytest.mark.parametrize(("name", "_default_mode"), RUNNERS)
 def test_runner_still_exports_data_dir(name: str, _default_mode: str) -> None:
     """Guard: the engine-package vault resolution export (Plan 5+) stays in place."""
     text = (TEMPLATES / name).read_text(encoding="utf-8")
