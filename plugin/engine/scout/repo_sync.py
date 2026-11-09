@@ -49,6 +49,13 @@ Every push goes up under the Repository Writer Lease (R2, ``scout.repo_lease``):
 a sync during a scheduled run reuses the run's lease, read from this computer's
 lease file, and any other sync or link takes the lease for itself and gives it
 back when it is done.
+
+A sync can stop anywhere between a replay and its push (a refused push, a
+SIGKILL). The state is saved after each replay, so ``last_mirror`` and ``pairs``
+say what has already come home and it is never replayed again; ``last_laptop``
+moves only when the sync finishes. The next sync reads that span from the state,
+not from what it replayed itself, so the laptop's commits still go up as one on
+top of Agnes's changes.
 """
 
 from __future__ import annotations
@@ -106,6 +113,10 @@ MIRROR_REF = "refs/scout-mirror/main"
 REMOTE_REF = "refs/scout-mirror/remote"
 REMOTE_BRANCH = "refs/heads/main"
 REPLAY_TRAILER = "Scout-Mirror-Commit"
+# A pair's kind for a replay read back from its commit's trailer, which anyone can write. It counts as a
+# replay when commits are squashed, and as a laptop commit for host_moves_gate. Older engines read it that way too.
+RECOVERED_KIND = "recovered"
+REPLAY_KINDS = frozenset({"replay", RECOVERED_KIND})
 LEASE_TOKEN_HEADER = "X-Agnes-Lease-Token"
 LEASE_GENERATION_HEADER = "X-Agnes-Lease-Generation"
 
@@ -1451,6 +1462,10 @@ def _merge3(vault: Path, base: TreeEntry, ours: TreeEntry, theirs: TreeEntry) ->
         return proc.stdout, proc.returncode == 0
 
 
+def _replay_message(meta: CommitMeta, rev: str) -> str:
+    return meta.message.rstrip("\n") + f"\n\n{REPLAY_TRAILER}: {rev}\n"
+
+
 def replay_one(
     vault: Path, rules: LocalOnlyRules, parent: str, rev: str, skipped: list[dict[str, str]] | None = None
 ) -> str | None:
@@ -1510,8 +1525,7 @@ def replay_one(
         git(vault, "update-index", "-z", "--index-info", env=idx, input="\0".join(lines) + "\0")
         tree = git(vault, "write-tree", env=idx).stdout.strip()
     meta = commit_meta(vault, rev)
-    message = meta.message.rstrip("\n") + f"\n\n{REPLAY_TRAILER}: {rev}\n"
-    new = _commit_tree(vault, tree, [head], message, meta.env())
+    new = _commit_tree(vault, tree, [head], _replay_message(meta, rev), meta.env())
     proc = git(vault, "read-tree", "-m", "-u", head, new, check=False)
     if proc.returncode != 0:
         raise RepoSyncError(
@@ -1595,6 +1609,7 @@ def _sync_under_lease(
     remote = remote_head(vault, host, status.clone_url)
     if remote is None:
         raise RepoSyncError("remote_empty", "refused: the repository on Agnes is empty; unlink, then link again")
+    replayed_to = state.last_mirror
     if remote != state.last_mirror:
         remote = fetch_remote(vault, host, status.clone_url)
         if _rev(vault, state.last_mirror) is None or not _is_ancestor(vault, state.last_mirror, remote):
@@ -1605,9 +1620,12 @@ def _sync_under_lease(
             )
         revs = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_mirror}..{remote}").stdout.split()
         parent = state.last_mirror
+        unrecorded = _unrecorded_replays(vault, state)
         for rev in revs:
-            new = replay_one(vault, rules, parent, rev, result.replay_skipped)
-            if new is not None:
+            if rev in unrecorded and _holds_replay(vault, rules, unrecorded[rev], parent, rev):
+                state.pairs.append({"laptop": unrecorded[rev], "mirror": rev, "kind": RECOVERED_KIND})
+                result.replay_skipped.extend(_outside_sync_only(vault, rules, parent, rev))
+            elif (new := replay_one(vault, rules, parent, rev, result.replay_skipped)) is not None:
                 result.replayed.append(new)
                 state.pairs.append({"laptop": new, "mirror": rev, "kind": "replay"})
                 if progress:
@@ -1615,11 +1633,13 @@ def _sync_under_lease(
             state.last_mirror = rev
             parent = rev
             save_state(vault, state)
-        if result.replay_skipped:
-            result.notes.append(_replay_skipped_note(result.replay_skipped))
+    if rules.sync_only:
+        result.replay_skipped[:0] = _skips_since_last_push(vault, rules, state, replayed_to)
+    if result.replay_skipped:
+        result.notes.append(_replay_skipped_note(result.replay_skipped))
 
     head = _head(vault)
-    replayed = {p["laptop"] for p in state.pairs if p.get("kind") == "replay"}
+    replayed = {p["laptop"] for p in state.pairs if p.get("kind") in REPLAY_KINDS}
     if _is_ancestor(vault, state.last_laptop, head):
         todo = git(vault, "rev-list", "--reverse", "--first-parent", f"{state.last_laptop}..{head}").stdout.split()
     else:
@@ -1631,7 +1651,9 @@ def _sync_under_lease(
     pushes: list[tuple[str, str]] = []
     try:
         policies = {c: builder.policy(c) for c in own}
-        squash = bool(result.replayed) or any(_broken(p) for p in policies.values())
+        # A replay in the span, this sync's or one a sync that stopped short left, means the commits
+        # before it lack Agnes's changes: their own trees on top of Agnes's tip would revert them (#609).
+        squash = len(own) < len(todo) or any(_broken(p) for p in policies.values())
         subjects = [commit_meta(vault, c).message.splitlines()[0] for c in own]
         refresh_only = not own
         if squash or refresh_only:
@@ -1676,6 +1698,75 @@ def _sync_under_lease(
     state.last_laptop = head
     save_state(vault, state)
     return result
+
+
+def _unrecorded_replays(vault: Path, state: LinkState) -> dict[str, str]:
+    """``{mirror commit: vault commit}`` for commits since the last synced one whose trailer claims a replay.
+
+    A sync killed between moving HEAD and saving the state leaves a replay the
+    state doesn't know. Doing it again isn't safe: the file may have been edited
+    or removed here since. A trailer is only a claim; :func:`_holds_replay` tests it.
+    """
+    head = _head(vault)
+    if not _is_ancestor(vault, state.last_laptop, head):
+        return {}
+    fmt = f"--format=%H %(trailers:key={REPLAY_TRAILER},valueonly,separator=%x20)"
+    lines = git(vault, "log", fmt, f"{state.last_laptop}..{head}").stdout.splitlines()
+    return {mirror: laptop for laptop, mirror in (ln.split() for ln in lines if len(ln.split()) == 2)}
+
+
+def _holds_replay(vault: Path, rules: LocalOnlyRules, commit: str, parent: str, rev: str) -> bool:
+    """Whether vault ``commit`` is the replay of mirror commit ``rev`` (on ``parent``) that its trailer says.
+
+    A replay copies the mirror commit's message and identities, and for each path
+    that can come home it changes the path or already has the mirror's version.
+    Otherwise the trailer counts for nothing and the mirror commit replays as usual,
+    where the worst outcome is a ``replay_conflict``.
+    """
+    meta = commit_meta(vault, rev)
+    found = commit_meta(vault, commit)
+    if found != dataclasses.replace(meta, sha=found.sha, tree=found.tree, message=_replay_message(meta, rev)):
+        return False
+    for ch in mirror_changes(vault, parent, rev):
+        if ch.path == POLICY_PATH or rules.refused(ch.path):
+            continue
+        ours = _blob_at(vault, commit, ch.path)
+        if ours != ch.new and ours == _blob_at(vault, f"{commit}^", ch.path):
+            return False
+    return True
+
+
+def _outside_sync_only(vault: Path, rules: LocalOnlyRules, parent: str, rev: str) -> list[dict[str, str]]:
+    """What mirror commit ``rev`` (on ``parent``) wrote outside ``privacy.sync_only``, as ``replay_one`` reports it."""
+    return [
+        {"path": ch.path, "mirror_commit": rev}
+        for ch in mirror_changes(vault, parent, rev)
+        if ch.new is not None and rules.outside_sync_only(ch.path)
+    ]
+
+
+def _skips_since_last_push(
+    vault: Path, rules: LocalOnlyRules, state: LinkState, replayed_to: str
+) -> list[dict[str, str]]:
+    """Files an earlier sync replayed past, up to ``replayed_to``, outside ``privacy.sync_only`` and still on the tip.
+
+    A sync that skips a file takes it off the tip, so one left there means that
+    sync never got to push. Its warning went with it, and the replay that would
+    warn again won't run, so the next push would remove the file unannounced.
+    """
+    base = next((p["mirror"] for p in reversed(state.pairs) if p.get("kind") not in REPLAY_KINDS), None)
+    if base is None or not _is_ancestor(vault, base, replayed_to):
+        return []
+    skipped: list[dict[str, str]] = []
+    parent = base
+    head = _head(vault)
+    for rev in git(vault, "rev-list", "--reverse", "--first-parent", f"{base}..{replayed_to}").stdout.split():
+        for skip in _outside_sync_only(vault, rules, parent, rev):
+            on_tip = _blob_at(vault, state.last_mirror, skip["path"])
+            if on_tip is not None and _blob_at(vault, head, skip["path"]) != _blob_at(vault, rev, skip["path"]):
+                skipped.append(skip)
+        parent = rev
+    return skipped
 
 
 def host_only_moves(
@@ -1729,7 +1820,7 @@ def host_moves_gate(
         spans = [(f"{c}^", c) for c in revs if c not in replayed and _rev(vault, f"{c}^") is not None]
     else:
         # History rewritten: compare HEAD with the newest synced commit this vault still has.
-        known = [state.last_laptop, *(p["laptop"] for p in reversed(state.pairs))]
+        known = [state.last_laptop, *(p["laptop"] for p in reversed(state.pairs) if p.get("kind") != RECOVERED_KIND)]
         base = next((c for c in known if _rev(vault, c) is not None), None)
         if base is None:
             raise RepoSyncError(
