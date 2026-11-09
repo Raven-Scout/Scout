@@ -191,6 +191,12 @@ def _kill_before_head_moves(real: Callable[..., Any], *a: Any, **k: Any) -> Any:
     return real(*a, **k)
 
 
+def _kill_before_mirror_ref_moves(real: Callable[..., Any], *a: Any, **k: Any) -> Any:
+    if a[1] == "update-ref" and rs.MIRROR_REF in a:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return real(*a, **k)
+
+
 def _sync_killed_at(vault: Path, host: FakeHost, point: str) -> None:
     """Run a sync in a child process that gets a real SIGKILL at ``point``: nothing after it runs."""
 
@@ -203,6 +209,9 @@ def _sync_killed_at(vault: Path, host: FakeHost, point: str) -> None:
             if point == "head":
                 real_git = rs.git
                 rs.git = lambda *a, **k: _kill_before_head_moves(real_git, *a, **k)  # type: ignore[assignment]
+            elif point == "before-ref":  # the push landed; nothing on this computer says so yet
+                real_git = rs.git
+                rs.git = lambda *a, **k: _kill_before_mirror_ref_moves(real_git, *a, **k)  # type: ignore[assignment]
             elif point == "state":
                 rs.save_state = die  # type: ignore[assignment]
             elif point == "push":
@@ -222,7 +231,7 @@ def _sync_killed_at(vault: Path, host: FakeHost, point: str) -> None:
     assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
 
 
-@pytest.mark.parametrize("point", ["head", "state", "push", "after-push"])
+@pytest.mark.parametrize("point", ["head", "state", "push", "before-ref", "after-push"])
 def test_a_sync_killed_after_the_replay_loses_nothing(vault: Path, host: FakeHost, tmp_path: Path, point: str) -> None:
     _link(vault, host)
     _commit(vault, LAPTOP_FILE, "laptop edit\n", "laptop edit")
