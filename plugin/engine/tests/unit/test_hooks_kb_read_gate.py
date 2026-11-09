@@ -235,6 +235,7 @@ def _events(vault: Path) -> list[dict]:
 def test_run_denies_a_hook_skip_names_the_form_and_records_an_event(vault, command, form):
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert form in reason and "fix" in reason.lower() and "git-safe-commit.sh" in reason
+    assert "plain `git commit`" in reason, "the helper can't commit in an engine clone: the deny covers both places"
     for word in ("lock", "PID", "process", "ancestry", "live", "host"):
         assert word not in reason, f"the deny doesn't explain how a run is told apart: {word}"
     (row,) = _events(vault)
@@ -276,6 +277,9 @@ def test_env_and_detach_denies_keep_their_messages_and_record_no_hook_skip(vault
         'git config user.email "alex@example.com"',
         "scripts/git-safe-commit.sh 'x' notes/a.md",
         "cat .git/hooks/pre-commit",
+        "cat < .git/config",
+        "python3 x.py < .git/hooks/pre-commit",
+        'grep core <<< ".git/config"',
     ],
 )
 def test_run_allows_what_only_mentions_a_hook_skip(vault, command):
@@ -485,7 +489,12 @@ def test_a_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
         "git commit -nm x",
         "git commit -an -m x",
         "git commit -m x -n",
+        'git commit -m "a; b" -n',
+        "git commit -m 'one;two' -n -- f.md",
+        'git commit -m "a | b" -n',
+        "git commit -m \"$(cat <<'EOF'\nfirst; second\nEOF\n)\" -n",
         "git am -n a.patch",
+        'git am "a;b.patch" -n',
         "git commit \\\n  -n -m x",
         "git commit \\\n  --no-verify",
         'git commit "-n" -m x',
@@ -535,6 +544,8 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
         "git commit -m x",
         'git commit -m "non-urgent note"',
         'git commit -m "a note" -q',
+        "git commit -q -m 'a; b' -- notes/a.md",
+        "git commit --amend --no-edit",
         "git commit -F notes/msg.txt",
         "git mv notes/a.md notes/b.md",
         "git merge -n feature",

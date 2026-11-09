@@ -145,8 +145,9 @@ def _deny_detach() -> str:
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
-        "private and shared notes apart. Fix what the hook reports and commit again with "
-        "`scripts/git-safe-commit.sh`. If you can't fix it, leave the file uncommitted and say so in the run notes."
+        "private and shared notes apart. Commit the normal way: `scripts/git-safe-commit.sh` in the vault, plain "
+        "`git commit` in any other repo. If a hook refuses the commit, fix what it reports; if you can't, leave the "
+        "file uncommitted and say so in the run notes."
     )
 
 

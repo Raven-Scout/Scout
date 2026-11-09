@@ -318,7 +318,7 @@ _PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 # An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
-_REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(?:>>|>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>]*)")
+_REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>]*)")
 
 # What skips or redirects the commit hooks (#607). Git takes a unique prefix of a long option.
 _NO_VERIFY = "--no-verify"
@@ -387,12 +387,13 @@ def _segments(command: str) -> list[str]:
 
 
 def _split_redirects(segment: str) -> tuple[str, list[str]]:
-    """``segment`` without its unquoted redirects, and the files they name."""
+    """``segment`` without its unquoted redirects, and the files they write: an input redirect only reads."""
     masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), segment)
     kept, targets, at = [], [], 0
     for m in _REDIRECT.finditer(masked):
         kept.append(segment[at : m.start()])
-        targets.extend(_tokens(segment[m.start(1) : m.end(1)]))
+        if ">" in m[1]:
+            targets.extend(_tokens(segment[m.start(2) : m.end(2)]))
         at = m.end()
     kept.append(segment[at:])
     return "".join(kept), targets
