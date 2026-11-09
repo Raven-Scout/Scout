@@ -28,6 +28,7 @@ def run(name, body):
     assert main([name]) == 0
 run("kb-read-gate", {"tool_name": "Bash", "tool_input": {"command": "cat knowledge-base/people/sam.md"}})
 run("kb-read-gate", {"tool_name": "Grep", "tool_input": {"pattern": "x"}})
+run("kb-read-gate", {"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}})
 run("kb-read-label", {"tool_name": "Read", "tool_input": {"file_path": str(vault / "knowledge-base/people/sam.md")}})
 run("outbound-gate", {"tool_name": "mcp__s__slack_send_message", "tool_input": {"message": "Ask Sammy."}})
 run("shared-read-record", {"tool_name": "mcp__s__shared_with_me", "tool_response": {"owners": []}})
